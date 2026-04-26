@@ -416,7 +416,6 @@ impl EvalDataset for CocoDataset {
 impl CocoDataset {
     /// Indices into [`Self::annotations`] for a given `(image, category)`
     /// cell. Empty when no GT of that category exists on that image.
-    /// Used by the per-cell gather in the evaluation orchestrator.
     pub fn ann_indices_for(&self, image: ImageId, cat: CategoryId) -> &[usize] {
         self.by_image_cat
             .get(&(image, cat))
@@ -490,9 +489,8 @@ pub struct DetectionInput {
     pub bbox: Bbox,
 }
 
-/// COCO detections collection — flat storage plus
-/// `(image, category)`-keyed indices for the per-cell gather the
-/// orchestrator drives.
+/// COCO detections collection — flat storage plus `(image, category)`-
+/// and per-image indices for the per-cell gather.
 #[derive(Debug, Clone)]
 pub struct CocoDetections {
     detections: Arc<Vec<CocoDetection>>,
@@ -575,8 +573,8 @@ impl CocoDetections {
     }
 
     /// Indices into [`Self::detections`] for every detection on an
-    /// image, regardless of category. Used by the orchestrator when
-    /// `useCats=false` (quirk **L4**).
+    /// image, regardless of category. Path used when `useCats=false`
+    /// (quirk **L4**).
     pub fn indices_for_image(&self, image: ImageId) -> &[usize] {
         self.by_image.get(&image).map_or(&[][..], Vec::as_slice)
     }

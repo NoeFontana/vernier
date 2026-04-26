@@ -45,7 +45,7 @@
 //!   [`crate::CocoDetection::area`], which the dataset layer derives
 //!   from the bbox at construction.
 
-use ndarray::Array2;
+use ndarray::{Array2, ArrayView2};
 
 use crate::accumulate::PerImageEval;
 use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, ImageId};
@@ -156,6 +156,20 @@ pub struct EvalGrid {
     pub n_images: usize,
 }
 
+impl EvalGrid {
+    /// Cell at `(category_index, area_index, image_index)`. Returns
+    /// `None` when the indices are in bounds but no cell ran (image
+    /// absent from detections, or no GTs and no DTs in the cell);
+    /// returns `None` for out-of-bounds indices as well.
+    pub fn cell(&self, k: usize, a: usize, i: usize) -> Option<&PerImageEval> {
+        if k >= self.n_categories || a >= self.n_area_ranges || i >= self.n_images {
+            return None;
+        }
+        let idx = k * self.n_area_ranges * self.n_images + a * self.n_images + i;
+        self.eval_imgs.get(idx).and_then(Option::as_ref)
+    }
+}
+
 /// Run the per-image bbox evaluation pass.
 ///
 /// Iterates `(image, category)` cells, computes the IoU matrix once per
@@ -238,18 +252,16 @@ pub fn evaluate_bbox(
                 bbox_iou.compute(&gt_kernel, &dt_kernel, &mut iou.view_mut())?;
             }
 
+            let buffers = CellBuffers {
+                gt_areas: &gt_areas,
+                gt_iscrowd: &gt_iscrowd,
+                gt_base_ignore: &gt_base_ignore,
+                dt_areas: &dt_areas,
+                dt_scores: &dt_scores,
+                iou: iou.view(),
+            };
             for (a, area) in params.area_ranges.iter().enumerate() {
-                let cell = evaluate_cell(
-                    &gt_areas,
-                    &gt_iscrowd,
-                    &gt_base_ignore,
-                    &dt_areas,
-                    &dt_scores,
-                    iou.view(),
-                    area,
-                    params.iou_thresholds,
-                    parity_mode,
-                )?;
+                let cell = evaluate_cell(&buffers, area, params.iou_thresholds, parity_mode)?;
                 eval_imgs[nk + a * n_i + i] = Some(cell);
             }
         }
@@ -291,24 +303,27 @@ fn dt_top_indices_for_cell(
         .collect()
 }
 
-// `ArrayView2` is a `Copy` view (matches `match_image`'s convention); the
-// clippy lint can't see that. Allow lives at the function level.
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+/// Area-invariant per-cell buffers shared across every area-range pass.
+struct CellBuffers<'a> {
+    gt_areas: &'a [f64],
+    gt_iscrowd: &'a [bool],
+    gt_base_ignore: &'a [bool],
+    dt_areas: &'a [f64],
+    dt_scores: &'a [f64],
+    iou: ArrayView2<'a, f64>,
+}
+
 fn evaluate_cell(
-    gt_areas: &[f64],
-    gt_iscrowd: &[bool],
-    gt_base_ignore: &[bool],
-    dt_areas: &[f64],
-    dt_scores: &[f64],
-    iou: ndarray::ArrayView2<'_, f64>,
+    buf: &CellBuffers<'_>,
     area: &AreaRange,
     iou_thresholds: &[f64],
     parity_mode: ParityMode,
 ) -> Result<PerImageEval, EvalError> {
     // D3 + D6/D7: per-call ignore = base | out-of-area.
-    let gt_ignore: Vec<bool> = gt_base_ignore
+    let gt_ignore: Vec<bool> = buf
+        .gt_base_ignore
         .iter()
-        .zip(gt_areas)
+        .zip(buf.gt_areas)
         .map(|(&base, &a)| base || !area.contains(a))
         .collect();
 
@@ -319,21 +334,21 @@ fn evaluate_cell(
         mut dt_ignore,
         ..
     } = match_image(
-        iou,
+        buf.iou,
         &gt_ignore,
-        gt_iscrowd,
-        dt_scores,
+        buf.gt_iscrowd,
+        buf.dt_scores,
         iou_thresholds,
         parity_mode,
     )?;
 
     let n_t = iou_thresholds.len();
-    let n_d = dt_scores.len();
+    let n_d = buf.dt_scores.len();
 
-    let dt_scores_sorted: Vec<f64> = dt_perm.iter().map(|&k| dt_scores[k]).collect();
+    let dt_scores_sorted: Vec<f64> = dt_perm.iter().map(|&k| buf.dt_scores[k]).collect();
     let dt_in_range_sorted: Vec<bool> = dt_perm
         .iter()
-        .map(|&k| area.contains(dt_areas[k]))
+        .map(|&k| area.contains(buf.dt_areas[k]))
         .collect();
     let gt_ignore_sorted: Vec<bool> = gt_perm.iter().map(|&k| gt_ignore[k]).collect();
 
@@ -447,7 +462,7 @@ mod tests {
         let cells: Vec<_> = grid.eval_imgs.iter().filter(|c| c.is_some()).collect();
         assert_eq!(cells.len(), 4);
         // The "all" bucket (a=0) has both DTs matched at every threshold.
-        let all_cell = grid.eval_imgs[0].as_ref().unwrap();
+        let all_cell = grid.cell(0, 0, 0).unwrap();
         assert_eq!(all_cell.dt_scores.len(), 2);
         assert!(all_cell.dt_matched.iter().all(|&m| m));
         assert!(all_cell.dt_ignore.iter().all(|&ig| !ig));
@@ -502,8 +517,7 @@ mod tests {
             use_cats: true,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
-        // small bucket: a=1 → idx 1
-        let small = grid.eval_imgs[1].as_ref().unwrap();
+        let small = grid.cell(0, 1, 0).unwrap();
         // GT is out-of-area, so gt_ignore=true.
         assert_eq!(small.gt_ignore, vec![true]);
         // DT is unmatched (no IoU with GT) AND out-of-area → B7 sets ignore.
@@ -531,13 +545,13 @@ mod tests {
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         // small (lo=0, hi=32²=1024): area 1024 fails `< 1024` → ignored.
-        let small = grid.eval_imgs[1].as_ref().unwrap();
+        let small = grid.cell(0, 1, 0).unwrap();
         assert_eq!(small.gt_ignore, vec![true]);
         // medium (lo=1024, hi=96²=9216): area 1024 fails `> 1024` → ignored.
-        let medium = grid.eval_imgs[2].as_ref().unwrap();
+        let medium = grid.cell(0, 2, 0).unwrap();
         assert_eq!(medium.gt_ignore, vec![true]);
         // all (lo=0, hi=1e10): area 1024 lies inside.
-        let all = grid.eval_imgs[0].as_ref().unwrap();
+        let all = grid.cell(0, 0, 0).unwrap();
         assert_eq!(all.gt_ignore, vec![false]);
     }
 
@@ -563,7 +577,7 @@ mod tests {
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         assert_eq!(grid.n_categories, 1);
-        let all = grid.eval_imgs[0].as_ref().unwrap();
+        let all = grid.cell(0, 0, 0).unwrap();
         // Both GTs land in the single bucket; the DT matches the second.
         assert_eq!(all.gt_ignore.len(), 2);
         assert_eq!(all.dt_scores.len(), 1);
@@ -590,7 +604,7 @@ mod tests {
             use_cats: true,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
-        let all = grid.eval_imgs[0].as_ref().unwrap();
+        let all = grid.cell(0, 0, 0).unwrap();
         // Only the top-2 by score survive the cap.
         assert_eq!(all.dt_scores.len(), 2);
         assert_eq!(all.dt_scores[0], 0.9);
@@ -625,12 +639,12 @@ mod tests {
         };
 
         let strict = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
-        let strict_all = strict.eval_imgs[0].as_ref().unwrap();
+        let strict_all = strict.cell(0, 0, 0).unwrap();
         assert_eq!(strict_all.gt_ignore, vec![false]);
         assert!(strict_all.dt_ignore.iter().all(|&ig| !ig));
 
         let corrected = evaluate_bbox(&gt, &dts, params, ParityMode::Corrected).unwrap();
-        let corrected_all = corrected.eval_imgs[0].as_ref().unwrap();
+        let corrected_all = corrected.cell(0, 0, 0).unwrap();
         assert_eq!(corrected_all.gt_ignore, vec![true]);
         // DT matched the now-ignored GT → B6 inherits the ignore flag.
         assert!(corrected_all.dt_ignore.iter().all(|&ig| ig));
@@ -638,11 +652,8 @@ mod tests {
 
     #[test]
     fn missing_dt_image_yields_none_cells() {
-        // GT image with no DT image → cell stays None? Actually the
-        // current orchestrator emits cells whenever there are GTs, so
-        // a GT-only image gets a cell with empty DTs but a non-empty
-        // gt_ignore. Pycocotools matches this — `evaluateImg` runs and
-        // returns a record (not None) when GTs exist but DTs do not.
+        // Pycocotools' `evaluateImg` returns a record (not None) when
+        // GTs exist but DTs do not — vernier matches that.
         let images = vec![img(1, 100, 100), img(2, 100, 100)];
         let cats = vec![cat(1, "thing")];
         let anns = vec![ann(1, 1, 1, (0.0, 0.0, 10.0, 10.0))];
@@ -656,18 +667,9 @@ mod tests {
             use_cats: true,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
-        // Image 1 has a GT → 4 cells (one per area range).
-        // Image 2 has neither GT nor DT → all 4 of its cells are None.
-        // Layout: [k=0][a][i] → image 1 is i=0, image 2 is i=1.
         for a in 0..4 {
-            assert!(
-                grid.eval_imgs[a * 2].is_some(),
-                "image 1 area {a} should be present"
-            );
-            assert!(
-                grid.eval_imgs[a * 2 + 1].is_none(),
-                "image 2 area {a} should be None"
-            );
+            assert!(grid.cell(0, a, 0).is_some(), "image 1 area {a}");
+            assert!(grid.cell(0, a, 1).is_none(), "image 2 area {a}");
         }
     }
 }
