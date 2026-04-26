@@ -370,6 +370,10 @@ pub fn summarize_with(
 /// (quirks **C5/L6**). Returns `-1.0` if every cell in the slice is
 /// the sentinel (mirrors pycocotools' `if len(s[s>-1])==0: -1`).
 ///
+/// The sum is computed via numpy-compatible pairwise summation
+/// ([`pairwise_sum`]) so the result is bit-identical to
+/// `np.mean(s[s>-1])` for the same input ordering.
+///
 /// Infallible: callers must validate `t_range`, `area_idx`, and `m_idx`
 /// against the `Accumulated`'s shape upfront (see [`summarize_with`]).
 fn mean_slice(
@@ -379,12 +383,17 @@ fn mean_slice(
     area_idx: usize,
     m_idx: usize,
 ) -> f64 {
-    let mut sum = 0.0_f64;
-    let mut count = 0usize;
-    let mut tally = |v: f64| {
+    let t_count = t_range.len();
+    let cap = match metric {
+        Metric::AveragePrecision => {
+            t_count * accum.precision.shape()[1] * accum.precision.shape()[2]
+        }
+        Metric::AverageRecall => t_count * accum.recall.shape()[1],
+    };
+    let mut filtered: Vec<f64> = Vec::with_capacity(cap);
+    let mut push = |v: f64| {
         if v > -1.0 {
-            sum += v;
-            count += 1;
+            filtered.push(v);
         }
     };
     for t in t_range {
@@ -396,7 +405,7 @@ fn mean_slice(
                 .index_axis(Axis(2), m_idx)
                 .iter()
                 .copied()
-                .for_each(&mut tally),
+                .for_each(&mut push),
             Metric::AverageRecall => accum
                 .recall
                 .index_axis(Axis(0), t)
@@ -404,14 +413,72 @@ fn mean_slice(
                 .index_axis(Axis(1), m_idx)
                 .iter()
                 .copied()
-                .for_each(&mut tally),
+                .for_each(&mut push),
         }
     }
-    if count == 0 {
+    if filtered.is_empty() {
         -1.0
     } else {
-        sum / count as f64
+        pairwise_sum(&filtered) / filtered.len() as f64
     }
+}
+
+/// Numpy-compatible pairwise summation for `f64` slices.
+///
+/// Matches the algorithm used by `np.add.reduce` on contiguous
+/// double-precision arrays (see numpy's
+/// `numpy/core/src/umath/loops_utils.h.src::pairwise_sum_DOUBLE`):
+///
+/// - `n < 8`: naive forward sum.
+/// - `8 <= n <= PW_BLOCKSIZE` (128): 8 separately accumulated lanes
+///   combined via a balanced tree `((r0+r1)+(r2+r3)) + ((r4+r5)+(r6+r7))`,
+///   followed by a tail loop for the remainder.
+/// - `n > PW_BLOCKSIZE`: split at `n / 2` aligned down to a multiple of
+///   8 and recurse on both halves.
+///
+/// Reproducing this here is a quirk-**C8**-style alignment: the public
+/// summary stats ride on top of `np.mean(s[s > -1])`, and any other sum
+/// order drifts by ~1 ULP.
+fn pairwise_sum(values: &[f64]) -> f64 {
+    const PW_BLOCKSIZE: usize = 128;
+    let n = values.len();
+
+    if n < 8 {
+        let mut s = 0.0_f64;
+        for &v in values {
+            s += v;
+        }
+        return s;
+    }
+
+    if n <= PW_BLOCKSIZE {
+        let mut r = [
+            values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
+        ];
+        let trunc = n - (n % 8);
+        let mut i = 8;
+        while i < trunc {
+            r[0] += values[i];
+            r[1] += values[i + 1];
+            r[2] += values[i + 2];
+            r[3] += values[i + 3];
+            r[4] += values[i + 4];
+            r[5] += values[i + 5];
+            r[6] += values[i + 6];
+            r[7] += values[i + 7];
+            i += 8;
+        }
+        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
+        while i < n {
+            res += values[i];
+            i += 1;
+        }
+        return res;
+    }
+
+    let mut n2 = n / 2;
+    n2 -= n2 % 8;
+    pairwise_sum(&values[..n2]) + pairwise_sum(&values[n2..])
 }
 
 #[cfg(test)]
@@ -635,5 +702,33 @@ mod tests {
         assert!(lines[0].contains("maxDets=100"));
         assert!(lines[6].contains("Average Recall"));
         assert!(lines[6].contains("maxDets=  1"));
+    }
+
+    #[test]
+    fn pairwise_sum_matches_numpy_add_reduce_bitwise() {
+        // 1010 alternating elements is large enough to drive both the
+        // 8-lane unrolled block and the recursive split (n > 128). The
+        // expected hex below is `np.add.reduce(v).hex()` for the same
+        // sequence; naive forward summation lands one ULP higher
+        // (`0x1.f900000002309p+8`).
+        let v: Vec<f64> = (0..1010)
+            .map(|i| if i % 2 == 0 { 1.0 } else { 1e-12 })
+            .collect();
+        let got = pairwise_sum(&v);
+        let expected = f64::from_bits(0x407f_9000_0000_22b4);
+        assert_eq!(
+            got.to_bits(),
+            expected.to_bits(),
+            "pairwise_sum drifts from numpy: got {got:e}, expected {expected:e}",
+        );
+    }
+
+    #[test]
+    fn pairwise_sum_handles_short_inputs_with_naive_fallback() {
+        // n < 8 uses the simple loop; verify a hand-checked tiny case.
+        let v = [1.0_f64, 2.0, 3.0, 4.0];
+        assert_eq!(pairwise_sum(&v), 10.0);
+        assert_eq!(pairwise_sum(&[]), 0.0);
+        assert_eq!(pairwise_sum(&[42.0]), 42.0);
     }
 }
