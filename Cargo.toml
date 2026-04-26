@@ -8,7 +8,7 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-rust-version = "1.82"
+rust-version = "1.83"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/vernier-rs/vernier"
 authors = ["The vernier authors"]
@@ -45,11 +45,11 @@ unused_must_use = "deny"
 # Pin minor versions; bumps go through an ADR if they ripple through the FFI.
 # ---------------------------------------------------------------------------
 [workspace.dependencies]
-ndarray = "0.16"
+ndarray = "0.17"
 thiserror = "2"
-pyo3 = { version = "0.23", default-features = false, features = ["macros", "abi3-py310"] }
-numpy = "0.23"
-pyo3-stub-gen = "0.7"
+pyo3 = { version = "0.28", default-features = false, features = ["macros", "abi3-py310"] }
+numpy = "0.28"
+pyo3-stub-gen = "0.22"
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit
