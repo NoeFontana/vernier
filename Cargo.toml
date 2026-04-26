@@ -10,9 +10,9 @@ version = "0.0.0"
 edition = "2021"
 rust-version = "1.83"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/vernier-rs/vernier"
+repository = "https://github.com/NoeFontana/vernier"
 authors = ["The vernier authors"]
-homepage = "https://github.com/vernier-rs/vernier"
+homepage = "https://github.com/NoeFontana/vernier"
 keywords = ["evaluation", "metrics", "computer-vision", "detection", "coco"]
 categories = ["science", "computer-vision"]
 

@@ -3,6 +3,11 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Reservation skeletons each compile into their own target/ since they are
+# standalone packages outside the main workspace.
+/tools/reservations/**/target/
+/tools/reservations/**/Cargo.lock
+
 # Python
 __pycache__/
 *.py[cod]
