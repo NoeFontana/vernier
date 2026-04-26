@@ -11,6 +11,7 @@ plus a `meta.md` explaining what the fixture exercises.
 | `crowd_region` | Crowd GT (E1) allows many-to-one matching; matched DTs become "ignore" (B6). |
 | `missing_dt_image` | DT covers a subset of GT image ids — partial recall, accumulator handles None evalImg cells. |
 | `iou_at_threshold` | DT IoU exactly 0.5 — exercises the `min(t, 1 - 1e-10)` boundary fudge (B1). |
+| `score_ties` | Two DTs with identical scores — pins stable mergesort tiebreak on input order (A1). |
 
 Adding a new fixture: create a directory with `gt.json`, `dt.json`, and a
 `meta.md` describing what it tests, then add a parametrize entry in

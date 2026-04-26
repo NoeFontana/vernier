@@ -23,6 +23,7 @@ ALL_FIXTURES = [
     "crowd_region",
     "missing_dt_image",
     "iou_at_threshold",
+    "score_ties",
 ]
 
 
