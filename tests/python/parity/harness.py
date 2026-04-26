@@ -5,9 +5,9 @@ Public API:
     assert_snapshots_equal(a, b, *, rtol=0, atol=0) -> None
 
 The reference implementation is pycocotools 2.0.11, pinned in pyproject.toml.
-The candidate ("vernier") implementation currently delegates to pycocotools
-because the Rust evaluator hasn't landed yet. When real eval code ships,
-``_run_vernier`` is the single function to update.
+The candidate ("vernier") routes through ``vernier._core``'s granular
+``evaluate_bbox_grid`` / ``accumulate`` / ``summarize`` chain so each
+intermediate stage can be diffed independently against pycocotools.
 
 Snapshot contents capture the entire COCOeval state machine:
 - ``eval_imgs``: the [K*A*I] flat list of per-(category, area-range, image)
@@ -30,8 +30,16 @@ import numpy as np
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 
+import vernier._core as _vernier_core
+
 IouType = Literal["bbox", "segm", "keypoints"]
 Impl = Literal["pycocotools", "vernier"]
+
+# Pycocotools' detection defaults (cocoeval.Params.setDetParams).
+_DEFAULT_MAX_DETS: tuple[int, ...] = (1, 10, 100)
+# ADR-0002's net-new default is "corrected"; the parity harness pins
+# "strict" because its job is bit-equality vs pycocotools.
+_PARITY_MODE: Literal["strict", "corrected"] = "strict"
 
 
 @dataclass(frozen=True)
@@ -94,9 +102,31 @@ def _run_pycocotools(gt_path: Path, dt_path: Path, iou_type: IouType) -> EvalSna
 
 
 def _run_vernier(gt_path: Path, dt_path: Path, iou_type: IouType) -> EvalSnapshot:
-    # Stub: until the Rust evaluator lands, vernier delegates to pycocotools.
-    # When that changes, the parity suite stops being a tautology.
-    return _run_pycocotools(gt_path, dt_path, iou_type)
+    if iou_type != "bbox":
+        # segm / keypoints land in Phase 2/3 — until then, defer to the
+        # reference so the harness stays usable for fixture authoring.
+        return _run_pycocotools(gt_path, dt_path, iou_type)
+
+    gt_bytes = gt_path.read_bytes()
+    # pycocotools' DT JSON is a bare list of detections; vernier accepts
+    # the same shape via CocoDetections::from_json_bytes.
+    dt_bytes = dt_path.read_bytes()
+    max_dets = list(_DEFAULT_MAX_DETS)
+
+    grid = _vernier_core.evaluate_bbox_grid(
+        gt_bytes, dt_bytes, _PARITY_MODE, max(max_dets), use_cats=True
+    )
+    acc = grid.accumulate(max_dets)
+    summary = acc.summarize(max_dets)
+
+    return EvalSnapshot(
+        eval_imgs=[_normalize_eval_img(e) for e in grid.eval_imgs()],
+        precision=np.asarray(acc.precision).copy(),
+        recall=np.asarray(acc.recall).copy(),
+        scores=np.asarray(acc.scores).copy(),
+        counts=list(acc.counts),
+        stats=np.asarray(summary.stats, dtype=np.float64).copy(),
+    )
 
 
 def _normalize_eval_img(e: Any) -> dict[str, Any] | None:

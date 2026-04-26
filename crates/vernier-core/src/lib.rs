@@ -30,7 +30,10 @@ pub use dataset::{
     CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, ImageId, ImageMeta,
 };
 pub use error::EvalError;
-pub use evaluate::{evaluate_bbox, AreaRange, EvalGrid, EvaluateBboxParams};
+pub use evaluate::{
+    evaluate_bbox, AreaRange, EvalGrid, EvalImageMeta, EvaluateBboxParams,
+    COLLAPSED_CATEGORY_SENTINEL,
+};
 pub use matching::{match_image, MatchResult};
 pub use parity::{
     iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,

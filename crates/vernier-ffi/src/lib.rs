@@ -13,14 +13,16 @@
 //! objects: data conversion happens at the boundary, before [`Python::detach`];
 //! results are converted back after the GIL is re-acquired.
 
+use numpy::ndarray::Array1;
+use numpy::ToPyArray;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyDict, PyList};
 
 use vernier_core::{
     accumulate, evaluate_bbox, iou_thresholds, recall_thresholds, summarize_detection,
-    AccumulateParams, AreaRange, CocoDataset, CocoDetections, EvalError, EvaluateBboxParams,
-    ParityMode, Summary,
+    AccumulateParams, Accumulated, AreaRange, CocoDataset, CocoDetections, EvalError, EvalGrid,
+    EvalImageMeta, EvaluateBboxParams, ParityMode, PerImageEval, Summary,
 };
 
 /// Returns the underlying `vernier-core` version string. Useful as a smoke
@@ -59,6 +61,226 @@ impl PySummary {
     }
 }
 
+/// Frozen wrapper around [`vernier_core::EvalGrid`]. Produced by
+/// [`evaluate_bbox_grid`]; consumed by [`PyEvalGrid::accumulate`]. The
+/// `eval_imgs` accessor materializes the pycocotools-shaped per-cell
+/// dicts on demand.
+#[pyclass(module = "vernier._core", name = "EvalGrid", frozen)]
+struct PyEvalGrid {
+    inner: EvalGrid,
+    parity: ParityMode,
+}
+
+#[pymethods]
+impl PyEvalGrid {
+    /// `K`: number of categories evaluated (`1` when `use_cats=False`).
+    #[getter]
+    fn n_categories(&self) -> usize {
+        self.inner.n_categories
+    }
+
+    /// `A`: number of area ranges (`4` for the COCO default grid).
+    #[getter]
+    fn n_area_ranges(&self) -> usize {
+        self.inner.n_area_ranges
+    }
+
+    /// `I`: number of images (every image in the GT dataset).
+    #[getter]
+    fn n_images(&self) -> usize {
+        self.inner.n_images
+    }
+
+    /// Flat `[k][a][i]` list of pycocotools-shaped per-cell dicts. Each
+    /// entry is either `None` (cell did not run) or a dict with keys
+    /// matching `pycocotools.cocoeval.COCOeval._ImageEvaluationResult`:
+    /// `image_id`, `category_id`, `aRng`, `maxDet`, `dtIds`, `gtIds`,
+    /// `dtMatches`, `gtMatches`, `dtScores`, `gtIgnore`, `dtIgnore`.
+    fn eval_imgs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for (cell, meta) in self
+            .inner
+            .eval_imgs
+            .iter()
+            .zip(self.inner.eval_imgs_meta.iter())
+        {
+            match (cell, meta) {
+                (Some(cell), Some(meta)) => list.append(eval_img_dict(py, cell, meta)?)?,
+                _ => list.append(py.None())?,
+            }
+        }
+        Ok(list)
+    }
+
+    /// Accumulate this grid into precision / recall / scores tensors.
+    /// `max_dets` is the full ladder fed to pycocotools' `accumulate`
+    /// (default `[1, 10, 100]`); each entry must be `<=` the
+    /// `max_dets_per_image` used to build the grid.
+    fn accumulate(&self, py: Python<'_>, max_dets: Vec<usize>) -> PyResult<PyAccumulated> {
+        require_nonempty_max_dets(&max_dets)?;
+        let parity = self.parity;
+        let n_categories = self.inner.n_categories;
+        let n_area_ranges = self.inner.n_area_ranges;
+        let n_images = self.inner.n_images;
+        let eval_imgs = &self.inner.eval_imgs;
+        let acc = py
+            .detach(|| {
+                accumulate(
+                    eval_imgs,
+                    AccumulateParams {
+                        iou_thresholds: iou_thresholds(),
+                        recall_thresholds: recall_thresholds(),
+                        max_dets: &max_dets,
+                        n_categories,
+                        n_area_ranges,
+                        n_images,
+                    },
+                    parity,
+                )
+            })
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok(PyAccumulated {
+            inner: acc,
+            max_dets,
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "EvalGrid(n_categories={}, n_area_ranges={}, n_images={})",
+            self.inner.n_categories, self.inner.n_area_ranges, self.inner.n_images
+        )
+    }
+}
+
+/// Frozen wrapper around [`vernier_core::Accumulated`]. Carries the
+/// `max_dets` ladder used by `accumulate`; `summarize` reuses it.
+#[pyclass(module = "vernier._core", name = "Accumulated", frozen)]
+struct PyAccumulated {
+    inner: Accumulated,
+    max_dets: Vec<usize>,
+}
+
+#[pymethods]
+impl PyAccumulated {
+    /// 5-D precision tensor `(T, R, K, A, M)`. Right-monotonic precision
+    /// interpolated at every recall threshold. Cells with no in-bucket
+    /// data carry `-1.0` (quirk **C5**).
+    #[getter]
+    fn precision<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray5<f64>> {
+        self.inner.precision.to_pyarray(py)
+    }
+
+    /// 4-D recall tensor `(T, K, A, M)`. Cells with no data carry `-1.0`.
+    #[getter]
+    fn recall<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray4<f64>> {
+        self.inner.recall.to_pyarray(py)
+    }
+
+    /// 5-D scores tensor `(T, R, K, A, M)`. The DT score at each
+    /// (threshold, recall sample) point.
+    #[getter]
+    fn scores<'py>(&self, py: Python<'py>) -> Bound<'py, numpy::PyArray5<f64>> {
+        self.inner.scores.to_pyarray(py)
+    }
+
+    /// Pycocotools-shaped `eval["counts"]`: `[T, R, K, A, M]`.
+    #[getter]
+    fn counts(&self) -> Vec<usize> {
+        self.inner.precision.shape().to_vec()
+    }
+
+    /// Summarize this accumulator into the canonical 12-stat detection
+    /// vector. `max_dets` defaults to the ladder this accumulator was
+    /// built with; pass an explicit value to override.
+    #[pyo3(signature = (max_dets=None))]
+    fn summarize(&self, py: Python<'_>, max_dets: Option<Vec<usize>>) -> PyResult<PySummary> {
+        let dets = max_dets.unwrap_or_else(|| self.max_dets.clone());
+        require_nonempty_max_dets(&dets)?;
+        let acc = &self.inner;
+        let summary = py
+            .detach(|| summarize_detection(acc, iou_thresholds(), &dets))
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok(PySummary { inner: summary })
+    }
+
+    fn __repr__(&self) -> String {
+        let p = &self.inner.precision;
+        let s = p.shape();
+        format!(
+            "Accumulated(precision={}x{}x{}x{}x{})",
+            s[0], s[1], s[2], s[3], s[4]
+        )
+    }
+}
+
+/// Build a single pycocotools-shaped `evalImgs` dict from one cell.
+fn eval_img_dict<'py>(
+    py: Python<'py>,
+    cell: &PerImageEval,
+    meta: &EvalImageMeta,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("image_id", meta.image_id)?;
+    dict.set_item("category_id", meta.category_id)?;
+    dict.set_item("aRng", &meta.area_rng[..])?;
+    dict.set_item("maxDet", meta.max_det)?;
+    dict.set_item("dtIds", &meta.dt_ids[..])?;
+    dict.set_item("gtIds", &meta.gt_ids[..])?;
+    dict.set_item("dtMatches", meta.dt_matches.to_pyarray(py))?;
+    dict.set_item("gtMatches", meta.gt_matches.to_pyarray(py))?;
+    dict.set_item("dtScores", &cell.dt_scores[..])?;
+    let gt_ignore = Array1::from_iter(cell.gt_ignore.iter().map(|&b| u8::from(b)));
+    dict.set_item("gtIgnore", gt_ignore.to_pyarray(py))?;
+    let dt_ignore = cell.dt_ignore.map(|&b| u8::from(b));
+    dict.set_item("dtIgnore", dt_ignore.to_pyarray(py))?;
+    Ok(dict)
+}
+
+/// Run the bbox per-image evaluation pass and return the
+/// pycocotools-shaped grid.
+///
+/// `max_dets_per_image` is the single-int top-N cap applied per
+/// `(image, category)` cell — pass the *largest* entry of the eventual
+/// `accumulate()` `max_dets` ladder. Smaller ladder entries are sliced
+/// downstream by `accumulate`.
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats))]
+fn evaluate_bbox_grid(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+) -> PyResult<PyEvalGrid> {
+    let parity = parse_parity_mode(parity_mode)?;
+    let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let area = AreaRange::coco_default();
+    let grid = py
+        .detach(move || {
+            evaluate_bbox(
+                &gt,
+                &dt,
+                EvaluateBboxParams {
+                    iou_thresholds: iou_thresholds(),
+                    area_ranges: &area,
+                    max_dets_per_image,
+                    use_cats,
+                },
+                parity,
+            )
+        })
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    Ok(PyEvalGrid {
+        inner: grid,
+        parity,
+    })
+}
+
 /// Run the bbox evaluation pipeline end-to-end and return a [`PySummary`].
 ///
 /// `gt_json` and `dt_json` are the COCO ground-truth and detection JSON
@@ -78,14 +300,7 @@ fn evaluate_bbox_summary(
     use_cats: bool,
 ) -> PyResult<PySummary> {
     let parity = parse_parity_mode(parity_mode)?;
-    if max_dets.is_empty() {
-        return Err(PyValueError::new_err(
-            "max_dets must contain at least one entry",
-        ));
-    }
-    // Parse JSON under the GIL: PyBytes borrows release as soon as parsing
-    // returns, and the resulting Arc-backed datasets are Send + Sync, so the
-    // closure below can take them by value without copying the raw payload.
+    require_nonempty_max_dets(&max_dets)?;
     let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
@@ -128,6 +343,16 @@ fn run_bbox_pipeline(
     summarize_detection(&acc, iou_thr, max_dets)
 }
 
+fn require_nonempty_max_dets(max_dets: &[usize]) -> PyResult<()> {
+    if max_dets.is_empty() {
+        Err(PyValueError::new_err(
+            "max_dets must contain at least one entry",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn parse_parity_mode(s: &str) -> PyResult<ParityMode> {
     match s {
         "strict" => Ok(ParityMode::Strict),
@@ -143,7 +368,10 @@ fn parse_parity_mode(s: &str) -> PyResult<ParityMode> {
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
     m.add_class::<PySummary>()?;
+    m.add_class::<PyEvalGrid>()?;
+    m.add_class::<PyAccumulated>()?;
     m.add("__version__", vernier_core::VERSION)?;
     Ok(())
 }

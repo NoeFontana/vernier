@@ -54,6 +54,10 @@ use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
 use crate::similarity::{BboxAnn, BboxIou, Similarity};
 
+/// Sentinel `category_id` emitted on every cell when `use_cats=false`.
+/// Mirrors pycocotools' `p.catIds = [-1]` collapse (quirk **L4**).
+pub const COLLAPSED_CATEGORY_SENTINEL: i64 = -1;
+
 /// Sentinel upper bound for "unbounded" area buckets, mirroring the
 /// `1e10` pycocotools uses for `all` / `large`.
 pub const AREA_UNBOUNDED: f64 = 1e10;
@@ -136,6 +140,40 @@ pub struct EvaluateBboxParams<'p> {
     pub use_cats: bool,
 }
 
+/// Pycocotools-shaped per-cell bookkeeping that the matching engine
+/// strips out when packing [`PerImageEval`]. Surfaced separately so the
+/// accumulator stays narrow per ADR-0005, and FFI / `COCOeval` drop-in
+/// consumers can reconstruct `evalImgs` dicts without re-running eval.
+///
+/// All `dt_*` axes are in score-descending sorted order (stable
+/// mergesort, quirk **A1**); all `gt_*` axes are in ignore-ascending
+/// sorted order (quirk **A4**). `dt_matches` and `gt_matches` carry
+/// pycocotools' value semantics: `i64` annotation ids on a hit, `0` on a
+/// miss (matching `dtm`/`gtm` initialization in `cocoeval.py`).
+#[derive(Debug, Clone)]
+pub struct EvalImageMeta {
+    /// COCO image id for this cell.
+    pub image_id: i64,
+    /// COCO category id, or [`COLLAPSED_CATEGORY_SENTINEL`] when
+    /// `use_cats=false`.
+    pub category_id: i64,
+    /// Active area range as `[lo, hi]`, mirroring pycocotools' `aRng`.
+    pub area_rng: [f64; 2],
+    /// `max_dets_per_image` cap that produced this cell's DT slice.
+    pub max_det: usize,
+    /// DT annotation ids in sorted-DT order, length `D`.
+    pub dt_ids: Vec<i64>,
+    /// GT annotation ids in sorted-GT order, length `G`.
+    pub gt_ids: Vec<i64>,
+    /// Shape `(T, D)`. GT id matched at `(threshold, sorted-DT k)`, or
+    /// `0` if unmatched (pycocotools sentinel; safe because COCO ids are
+    /// `>= 1` per spec, and vernier's auto-id assignment also starts at 1).
+    pub dt_matches: Array2<i64>,
+    /// Shape `(T, G)`. DT id matched at `(threshold, sorted-GT k)`, or
+    /// `0` if unmatched (same `>= 1` invariant as `dt_matches`).
+    pub gt_matches: Array2<i64>,
+}
+
 /// Output of [`evaluate_bbox`] — the flat `(K, A, I)` grid of
 /// [`PerImageEval`] cells the accumulator consumes, plus the dimensions
 /// needed to construct [`crate::AccumulateParams`].
@@ -146,6 +184,10 @@ pub struct EvalGrid {
     /// detections, no GTs and no DTs in the cell). Layout is K-major,
     /// then A, then I — `eval_imgs[k * A * I + a * I + i]`.
     pub eval_imgs: Vec<Option<PerImageEval>>,
+    /// Pycocotools-shaped bookkeeping for each populated cell (same
+    /// `[k][a][i]` layout as `eval_imgs`; `None` wherever `eval_imgs` is
+    /// `None`).
+    pub eval_imgs_meta: Vec<Option<EvalImageMeta>>,
     /// `K` axis size: the number of categories used for evaluation, or
     /// `1` when `use_cats=false`.
     pub n_categories: usize,
@@ -162,11 +204,22 @@ impl EvalGrid {
     /// absent from detections, or no GTs and no DTs in the cell);
     /// returns `None` for out-of-bounds indices as well.
     pub fn cell(&self, k: usize, a: usize, i: usize) -> Option<&PerImageEval> {
+        let idx = self.flat_index(k, a, i)?;
+        self.eval_imgs.get(idx).and_then(Option::as_ref)
+    }
+
+    /// Pycocotools-shaped bookkeeping at `(category_index, area_index,
+    /// image_index)`. `None` exactly when [`EvalGrid::cell`] is `None`.
+    pub fn cell_meta(&self, k: usize, a: usize, i: usize) -> Option<&EvalImageMeta> {
+        let idx = self.flat_index(k, a, i)?;
+        self.eval_imgs_meta.get(idx).and_then(Option::as_ref)
+    }
+
+    fn flat_index(&self, k: usize, a: usize, i: usize) -> Option<usize> {
         if k >= self.n_categories || a >= self.n_area_ranges || i >= self.n_images {
             return None;
         }
-        let idx = k * self.n_area_ranges * self.n_images + a * self.n_images + i;
-        self.eval_imgs.get(idx).and_then(Option::as_ref)
+        Some(k * self.n_area_ranges * self.n_images + a * self.n_images + i)
     }
 }
 
@@ -205,9 +258,11 @@ pub fn evaluate_bbox(
 
     let bbox_iou = BboxIou;
     let mut eval_imgs: Vec<Option<PerImageEval>> = vec![None; n_k * n_a * n_i];
+    let mut eval_imgs_meta: Vec<Option<EvalImageMeta>> = vec![None; n_k * n_a * n_i];
 
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
+        let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
         for (i, image_id) in image_ids.iter().enumerate() {
             let gt_indices = gt_indices_for_cell(gt, *image_id, *cat);
             let dt_indices =
@@ -227,8 +282,10 @@ pub fn evaluate_bbox(
                 .iter()
                 .map(|&j| gt_anns[j].effective_ignore(parity_mode))
                 .collect();
+            let gt_ids: Vec<i64> = gt_indices.iter().map(|&j| gt_anns[j].id.0).collect();
             let dt_areas: Vec<f64> = dt_indices.iter().map(|&j| dt_anns[j].area).collect();
             let dt_scores: Vec<f64> = dt_indices.iter().map(|&j| dt_anns[j].score).collect();
+            let dt_ids: Vec<i64> = dt_indices.iter().map(|&j| dt_anns[j].id.0).collect();
 
             let gt_kernel: Vec<BboxAnn> = gt_indices
                 .iter()
@@ -253,22 +310,31 @@ pub fn evaluate_bbox(
             }
 
             let buffers = CellBuffers {
+                image_id: image_id.0,
+                category_id,
+                max_det: params.max_dets_per_image,
                 gt_areas: &gt_areas,
                 gt_iscrowd: &gt_iscrowd,
                 gt_base_ignore: &gt_base_ignore,
+                gt_ids: &gt_ids,
                 dt_areas: &dt_areas,
                 dt_scores: &dt_scores,
+                dt_ids: &dt_ids,
                 iou: iou.view(),
             };
             for (a, area) in params.area_ranges.iter().enumerate() {
-                let cell = evaluate_cell(&buffers, area, params.iou_thresholds, parity_mode)?;
-                eval_imgs[nk + a * n_i + i] = Some(cell);
+                let (cell, meta) =
+                    evaluate_cell(&buffers, area, params.iou_thresholds, parity_mode)?;
+                let flat = nk + a * n_i + i;
+                eval_imgs[flat] = Some(cell);
+                eval_imgs_meta[flat] = Some(meta);
             }
         }
     }
 
     Ok(EvalGrid {
         eval_imgs,
+        eval_imgs_meta,
         n_categories: n_k,
         n_area_ranges: n_a,
         n_images: n_i,
@@ -305,11 +371,16 @@ fn dt_top_indices_for_cell(
 
 /// Area-invariant per-cell buffers shared across every area-range pass.
 struct CellBuffers<'a> {
+    image_id: i64,
+    category_id: i64,
+    max_det: usize,
     gt_areas: &'a [f64],
     gt_iscrowd: &'a [bool],
     gt_base_ignore: &'a [bool],
+    gt_ids: &'a [i64],
     dt_areas: &'a [f64],
     dt_scores: &'a [f64],
+    dt_ids: &'a [i64],
     iou: ArrayView2<'a, f64>,
 }
 
@@ -318,7 +389,7 @@ fn evaluate_cell(
     area: &AreaRange,
     iou_thresholds: &[f64],
     parity_mode: ParityMode,
-) -> Result<PerImageEval, EvalError> {
+) -> Result<(PerImageEval, EvalImageMeta), EvalError> {
     // D3 + D6/D7: per-call ignore = base | out-of-area.
     let gt_ignore: Vec<bool> = buf
         .gt_base_ignore
@@ -330,9 +401,9 @@ fn evaluate_cell(
     let MatchResult {
         dt_perm,
         gt_perm,
-        dt_matches,
+        dt_matches: dt_matches_pos,
+        gt_matches: gt_matches_pos,
         mut dt_ignore,
-        ..
     } = match_image(
         buf.iou,
         &gt_ignore,
@@ -344,6 +415,7 @@ fn evaluate_cell(
 
     let n_t = iou_thresholds.len();
     let n_d = buf.dt_scores.len();
+    let n_g = gt_ignore.len();
 
     let dt_scores_sorted: Vec<f64> = dt_perm.iter().map(|&k| buf.dt_scores[k]).collect();
     let dt_in_range_sorted: Vec<bool> = dt_perm
@@ -351,25 +423,50 @@ fn evaluate_cell(
         .map(|&k| area.contains(buf.dt_areas[k]))
         .collect();
     let gt_ignore_sorted: Vec<bool> = gt_perm.iter().map(|&k| gt_ignore[k]).collect();
+    let dt_ids_sorted: Vec<i64> = dt_perm.iter().map(|&k| buf.dt_ids[k]).collect();
+    let gt_ids_sorted: Vec<i64> = gt_perm.iter().map(|&k| buf.gt_ids[k]).collect();
 
     let mut dt_matched = Array2::<bool>::default((n_t, n_d));
+    let mut dt_matches_id = Array2::<i64>::zeros((n_t, n_d));
+    let mut gt_matches_id = Array2::<i64>::zeros((n_t, n_g));
     for t in 0..n_t {
         for d in 0..n_d {
-            let matched = dt_matches[(t, d)] >= 0;
+            let m = dt_matches_pos[(t, d)];
+            let matched = m >= 0;
             dt_matched[(t, d)] = matched;
+            if matched {
+                dt_matches_id[(t, d)] = gt_ids_sorted[m as usize];
+            }
             // B7: unmatched AND out-of-area → ignore.
             if !matched && !dt_in_range_sorted[d] {
                 dt_ignore[(t, d)] = true;
             }
         }
+        for g in 0..n_g {
+            let p = gt_matches_pos[(t, g)];
+            if p >= 0 {
+                gt_matches_id[(t, g)] = dt_ids_sorted[p as usize];
+            }
+        }
     }
 
-    Ok(PerImageEval {
+    let cell = PerImageEval {
         dt_scores: dt_scores_sorted,
         dt_matched,
         dt_ignore,
         gt_ignore: gt_ignore_sorted,
-    })
+    };
+    let meta = EvalImageMeta {
+        image_id: buf.image_id,
+        category_id: buf.category_id,
+        area_rng: [area.lo, area.hi],
+        max_det: buf.max_det,
+        dt_ids: dt_ids_sorted,
+        gt_ids: gt_ids_sorted,
+        dt_matches: dt_matches_id,
+        gt_matches: gt_matches_id,
+    };
+    Ok((cell, meta))
 }
 
 #[cfg(test)]
@@ -648,6 +745,77 @@ mod tests {
         assert_eq!(corrected_all.gt_ignore, vec![true]);
         // DT matched the now-ignored GT → B6 inherits the ignore flag.
         assert!(corrected_all.dt_ignore.iter().all(|&ig| ig));
+    }
+
+    #[test]
+    fn cell_meta_carries_pycocotools_shape() {
+        let grid = perfect_match_grid();
+        // The "all" bucket sees both DTs matched.
+        let meta = grid.cell_meta(0, 0, 0).unwrap();
+        assert_eq!(meta.image_id, 1);
+        assert_eq!(meta.category_id, 1);
+        assert_eq!(meta.area_rng, [0.0, AREA_UNBOUNDED]);
+        assert_eq!(meta.max_det, 100);
+        // DTs sorted score-desc: id=1 (score 0.9) before id=2 (score 0.8).
+        assert_eq!(meta.dt_ids, vec![1, 2]);
+        // GTs sorted ignore-asc: both non-ignore, stable order preserved.
+        assert_eq!(meta.gt_ids, vec![1, 2]);
+        let n_t = iou_thresholds().len();
+        assert_eq!(meta.dt_matches.shape(), &[n_t, 2]);
+        assert_eq!(meta.gt_matches.shape(), &[n_t, 2]);
+        // dt_matches carries the matched GT id (or 0); both DTs perfectly
+        // overlap their same-position GT at every threshold.
+        for t in 0..n_t {
+            assert_eq!(meta.dt_matches[(t, 0)], 1, "dt[0] -> gt[1] at t={t}");
+            assert_eq!(meta.dt_matches[(t, 1)], 2, "dt[1] -> gt[2] at t={t}");
+            assert_eq!(meta.gt_matches[(t, 0)], 1, "gt[1] -> dt[1] at t={t}");
+            assert_eq!(meta.gt_matches[(t, 1)], 2, "gt[2] -> dt[2] at t={t}");
+        }
+    }
+
+    #[test]
+    fn cell_meta_unmatched_dt_uses_zero_sentinel() {
+        // Single GT, single DT with no overlap → unmatched at every threshold.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann(7, 1, 1, (0.0, 0.0, 10.0, 10.0))];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input(1, 1, 0.5, (50.0, 50.0, 10.0, 10.0))])
+            .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateBboxParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let meta = grid.cell_meta(0, 0, 0).unwrap();
+        assert_eq!(meta.gt_ids, vec![7]);
+        // Auto-assigned DT id starts at 1 (first detection).
+        assert_eq!(meta.dt_ids.len(), 1);
+        assert!(meta.dt_matches.iter().all(|&x| x == 0));
+        assert!(meta.gt_matches.iter().all(|&x| x == 0));
+    }
+
+    #[test]
+    fn cell_meta_use_cats_false_emits_sentinel_category() {
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "a"), cat(2, "b")];
+        let anns = vec![ann(1, 1, 1, (0.0, 0.0, 10.0, 10.0))];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts =
+            CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0))]).unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateBboxParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: false,
+        };
+        let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let meta = grid.cell_meta(0, 0, 0).unwrap();
+        assert_eq!(meta.category_id, COLLAPSED_CATEGORY_SENTINEL);
     }
 
     #[test]
