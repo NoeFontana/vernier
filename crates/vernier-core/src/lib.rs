@@ -17,6 +17,7 @@
 
 pub mod dataset;
 pub mod error;
+pub mod matching;
 pub mod parity;
 pub mod similarity;
 
@@ -25,6 +26,7 @@ pub use dataset::{
     CocoJson, EvalDataset, ImageId, ImageMeta,
 };
 pub use error::EvalError;
+pub use matching::{match_image, MatchResult};
 pub use parity::{
     iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,
 };
