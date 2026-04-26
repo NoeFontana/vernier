@@ -1,5 +1,5 @@
 [build-system]
-requires = ["maturin>=1.7,<2.0"]
+requires = ["maturin>=1.13,<2.0"]
 build-backend = "maturin"
 
 # ---------------------------------------------------------------------------
@@ -25,17 +25,18 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Rust",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
-    "numpy>=1.24",
+    "numpy>=2.0",
 ]
 
 [project.optional-dependencies]
-torch = ["torch>=2.1"]
-viz = ["plotly>=5.20"]
+torch = ["torch>=2.4"]
+viz = ["plotly>=6.0"]
 
 [project.urls]
 Homepage = "https://github.com/vernier-rs/vernier"
@@ -58,11 +59,11 @@ strip = true
 # ---------------------------------------------------------------------------
 [dependency-groups]
 dev = [
-    "maturin>=1.7,<2.0",
-    "pytest>=8",
-    "pytest-benchmark>=4",
-    "ruff>=0.7",
-    "pyright>=1.1.380",
+    "maturin>=1.13,<2.0",
+    "pytest>=9",
+    "pytest-benchmark>=5",
+    "ruff>=0.15",
+    "pyright>=1.1.409",
 ]
 
 # ---------------------------------------------------------------------------
