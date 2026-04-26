@@ -35,13 +35,13 @@ For each row, the reported number is the mean of every cell in the slice whose v
 vernier does not assume the M-axis is `[1, 10, 100]`. The summarizer:
 
 - Uses `max_dets[m_max]` (the largest cap) for every AP line and for `AR_S` / `AR_M` / `AR_L`.
-- Looks up `1`, `10`, `100` by value for `AR_1`, `AR_10`, `AR_100` respectively. If any of those three are missing from the supplied `max_dets`, summarization fails with [`EvalError::InvalidAnnotation`].
+- Looks up `1`, `10`, `100` by value for `AR_1`, `AR_10`, `AR_100` respectively. If any of those three are missing from the supplied `max_dets`, summarization fails with [`EvalError::InvalidConfig`].
 
 This matches what pycocotools does at `cocoeval.py:466-471` (`maxDets[0]`, `maxDets[1]`, `maxDets[2]`), but the value-lookup makes it robust to the default being changed by a caller.
 
 ## How `summarize_detection` resolves the IoU axis
 
-For the AP@.50 / AP@.75 lines, vernier scans `iou_thresholds` for an entry within `1e-12` of the target. The pycocotools default is `numpy.linspace(0.5, 0.95, 10)`, which has `0.50` exactly and `0.7499999999999999` for `0.75` — within tolerance. If the threshold is missing entirely, summarization fails with [`EvalError::InvalidAnnotation`].
+For the AP@.50 / AP@.75 lines, vernier scans `iou_thresholds` for an entry within `1e-12` of the target. The pycocotools default is `numpy.linspace(0.5, 0.95, 10)`, which has `0.50` exactly and `0.7499999999999999` for `0.75` — within tolerance. If the threshold is missing entirely, summarization fails with [`EvalError::InvalidConfig`].
 
 For all other lines, the IoU axis is averaged across (length `T`).
 

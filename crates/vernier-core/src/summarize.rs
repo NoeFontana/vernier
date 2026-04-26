@@ -47,8 +47,7 @@ impl AreaRng {
     }
 }
 
-/// Discriminator passed to [`mean_slice`] and emitted in
-/// [`StatLine`].
+/// AP / AR selector emitted on every [`StatLine`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Metric {
     /// Average Precision — slices `Accumulated::precision`.
@@ -102,13 +101,9 @@ impl Summary {
         self.lines
             .iter()
             .map(|line| {
-                let title = match line.metric {
-                    Metric::AveragePrecision => "Average Precision",
-                    Metric::AverageRecall => "Average Recall",
-                };
-                let kind = match line.metric {
-                    Metric::AveragePrecision => "(AP)",
-                    Metric::AverageRecall => "(AR)",
+                let (title, kind) = match line.metric {
+                    Metric::AveragePrecision => ("Average Precision", "(AP)"),
+                    Metric::AverageRecall => ("Average Recall", "(AR)"),
                 };
                 let iou = match line.iou_threshold {
                     Some(t) => format!("{t:0.2}"),
@@ -248,14 +243,10 @@ fn mean_slice(
     };
     let a = area.index();
 
-    // C5: skip -1 sentinels in the mean. Each cell view is built by
-    // chained `index_axis` (safe; `s!` would require unsafe and the
-    // crate is `#![forbid(unsafe_code)]`). For precision shape
-    // `(T, R, K, A, M)` the chain peels T → A → M, leaving `(R, K)`;
-    // for recall `(T, K, A, M)` it peels T → A → M, leaving `(K,)`.
+    // C5: skip -1 sentinels in the mean.
     let mut sum = 0.0_f64;
     let mut count = 0usize;
-    let mut accumulate = |v: f64| {
+    let mut tally = |v: f64| {
         if v > -1.0 {
             sum += v;
             count += 1;
@@ -270,7 +261,7 @@ fn mean_slice(
                 .index_axis(Axis(2), m_idx)
                 .iter()
                 .copied()
-                .for_each(&mut accumulate),
+                .for_each(&mut tally),
             Metric::AverageRecall => accum
                 .recall
                 .index_axis(Axis(0), t)
@@ -278,7 +269,7 @@ fn mean_slice(
                 .index_axis(Axis(1), m_idx)
                 .iter()
                 .copied()
-                .for_each(&mut accumulate),
+                .for_each(&mut tally),
         }
     }
     Ok(if count == 0 { -1.0 } else { sum / count as f64 })

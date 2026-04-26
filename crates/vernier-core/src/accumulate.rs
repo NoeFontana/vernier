@@ -45,7 +45,7 @@
 //! responsibilities. The orchestrator that builds [`PerImageEval`]
 //! folds B7 in alongside the matching engine's B6.
 
-use ndarray::{Array2, Array4, Array5};
+use ndarray::{Array2, Array4, Array5, Axis};
 
 use crate::error::EvalError;
 use crate::parity::{argsort_score_desc, ParityMode, PARITY_EPS};
@@ -246,21 +246,22 @@ fn accumulate_cell(
     recall: &mut Array4<f64>,
     scores: &mut Array5<f64>,
 ) {
-    // Per-image `[0:maxDet]` slice + concat across images, then re-sort
-    // the merged stream — mirrors pycocotools cocoeval.py:362-367.
-    let mut all_scores: Vec<f64> = Vec::new();
     let mut takes: Vec<usize> = Vec::with_capacity(cells.len());
+    let mut total = 0usize;
     for cell in cells {
         let take = cell.dt_scores.len().min(max_det);
         takes.push(take);
+        total += take;
+    }
+    let mut all_scores: Vec<f64> = Vec::with_capacity(total);
+    for (cell, &take) in cells.iter().zip(&takes) {
         all_scores.extend_from_slice(&cell.dt_scores[..take]);
     }
 
     let n_d = all_scores.len();
     if n_d == 0 {
-        // No detections to score, but npig > 0 — recall is 0 across all
-        // thresholds. precision/scores stay at -1 (pycocotools' upstream
-        // `if nd: ... else: recall = 0` branch).
+        // No detections, but npig > 0 — recall collapses to 0; precision
+        // and scores keep the -1 sentinel.
         for t in 0..n_t {
             recall[(t, k, a, m)] = 0.0;
         }
@@ -272,17 +273,17 @@ fn accumulate_cell(
     let npig_f = npig as f64;
     let mut rc = vec![0.0_f64; n_d];
     let mut pr = vec![0.0_f64; n_d];
-    // Hoisted above the t-loop: every slot is unconditionally
-    // overwritten on each pass, so a single allocation suffices.
     let mut dtm = vec![false; n_d];
     let mut dtg = vec![false; n_d];
 
     for t in 0..n_t {
         let mut cursor = 0;
         for (cell, &take) in cells.iter().zip(&takes) {
+            let m_row = cell.dt_matched.row(t);
+            let g_row = cell.dt_ignore.row(t);
             for d in 0..take {
-                dtm[cursor] = cell.dt_matched[(t, d)];
-                dtg[cursor] = cell.dt_ignore[(t, d)];
+                dtm[cursor] = m_row[d];
+                dtg[cursor] = g_row[d];
                 cursor += 1;
             }
         }
@@ -312,18 +313,27 @@ fn accumulate_cell(
             }
         }
 
-        // C1 + C3: searchsorted-left + bounds-checked gather (replaces
-        // the bare `try/except` in pycocotools). Past the end of the
-        // curve, slots stay at 0.0 — overwriting the -1 sentinel so the
-        // summarizer's `s[s > -1]` filter still sees them as valid.
+        // C1 + C3: searchsorted-left + bounds-check. Past the curve,
+        // slots are filled with 0.0 — overwriting the -1 sentinel so the
+        // summarizer's `s > -1` filter keeps them.
+        let mut p_lane = precision
+            .index_axis_mut(Axis(0), t)
+            .index_axis_move(Axis(1), k)
+            .index_axis_move(Axis(1), a)
+            .index_axis_move(Axis(1), m);
+        let mut s_lane = scores
+            .index_axis_mut(Axis(0), t)
+            .index_axis_move(Axis(1), k)
+            .index_axis_move(Axis(1), a)
+            .index_axis_move(Axis(1), m);
         for (ri, &target) in recall_thresholds.iter().enumerate() {
             let pi = rc.partition_point(|&v| v < target);
             if pi < n_d {
-                precision[(t, ri, k, a, m)] = pr[pi];
-                scores[(t, ri, k, a, m)] = all_scores[perm[pi]];
+                p_lane[ri] = pr[pi];
+                s_lane[ri] = all_scores[perm[pi]];
             } else {
-                precision[(t, ri, k, a, m)] = 0.0;
-                scores[(t, ri, k, a, m)] = 0.0;
+                p_lane[ri] = 0.0;
+                s_lane[ri] = 0.0;
             }
         }
     }
