@@ -148,9 +148,8 @@ pub fn match_image(
         });
     }
 
-    // A1 (strict): stable mergesort by `-score`. Rust's `sort_by` is
-    // stable; ties on score resolve to input order — exactly what
-    // numpy's `argsort(kind='mergesort')` on `-d['score']` produces.
+    // A1 (strict): stable sort by `-score`; ties resolve to input order,
+    // matching numpy's `argsort(kind='mergesort')` on `-d['score']`.
     let mut dt_perm: Vec<usize> = (0..n_d).collect();
     dt_perm.sort_by(|&a, &b| {
         dt_scores[b]
@@ -158,7 +157,8 @@ pub fn match_image(
             .unwrap_or(Ordering::Equal)
     });
 
-    // A4 (strict): stable mergesort by `_ignore` ascending. `false` < `true`.
+    // A4 (strict): stable sort GTs by `_ignore`, so non-ignore precede
+    // ignore. The B3 early-termination relies on this layout.
     let mut gt_perm: Vec<usize> = (0..n_g).collect();
     gt_perm.sort_by_key(|&i| gt_ignore[i]);
 
@@ -303,8 +303,9 @@ mod tests {
         let r = run(&iou, &[false], &[true], &[0.9, 0.8], &[0.5]);
         assert_eq!(r.dt_matches[(0, 0)], 0);
         assert_eq!(r.dt_matches[(0, 1)], 0);
-        // gt_matches stores the LAST DT that matched the crowd (the
-        // loop overwrites on each successive match).
+        // B4 corollary: `gt_matches` is overwritten on each successive
+        // match, so it ends pointing at the last DT — pinning this
+        // matters because pycocotools has the same overwrite semantics.
         assert_eq!(r.gt_matches[(0, 0)], 1);
     }
 
