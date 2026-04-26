@@ -35,7 +35,7 @@
 //! - **J3** (`strict`): detection-side area derivation lives in the
 //!   future `loadRes`-equivalent path, not here.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -328,15 +328,15 @@ impl CocoDataset {
         annotations: Vec<CocoAnnotation>,
         categories: Vec<CategoryMeta>,
     ) -> Result<Self, EvalError> {
-        let known_images: HashMap<ImageId, ()> = images.iter().map(|i| (i.id, ())).collect();
-        let known_categories: HashMap<CategoryId, ()> =
-            categories.iter().map(|c| (c.id, ())).collect();
+        let known_images: HashSet<ImageId> = images.iter().map(|i| i.id).collect();
+        let known_categories: HashSet<CategoryId> = categories.iter().map(|c| c.id).collect();
 
-        let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::new();
-        let mut by_category: HashMap<CategoryId, Vec<usize>> = HashMap::new();
+        let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::with_capacity(images.len());
+        let mut by_category: HashMap<CategoryId, Vec<usize>> =
+            HashMap::with_capacity(categories.len());
 
         for (idx, ann) in annotations.iter().enumerate() {
-            if !known_images.contains_key(&ann.image_id) {
+            if !known_images.contains(&ann.image_id) {
                 return Err(EvalError::InvalidAnnotation {
                     detail: format!(
                         "annotation id={} references unknown image_id={}",
@@ -344,7 +344,7 @@ impl CocoDataset {
                     ),
                 });
             }
-            if !known_categories.contains_key(&ann.category_id) {
+            if !known_categories.contains(&ann.category_id) {
                 return Err(EvalError::InvalidAnnotation {
                     detail: format!(
                         "annotation id={} references unknown category_id={}",
@@ -354,17 +354,6 @@ impl CocoDataset {
             }
             by_image.entry(ann.image_id).or_default().push(idx);
             by_category.entry(ann.category_id).or_default().push(idx);
-        }
-
-        // Pre-seed empty entries for images and categories that exist
-        // but have no annotations. The matching loop relies on
-        // `ann_indices_for_image` returning an empty slice (not a
-        // panic) for these cases.
-        for img in &images {
-            by_image.entry(img.id).or_default();
-        }
-        for cat in &categories {
-            by_category.entry(cat.id).or_default();
         }
 
         Ok(Self {
@@ -416,58 +405,46 @@ impl EvalDataset for CocoDataset {
 // serde glue
 // ---------------------------------------------------------------------------
 
-/// Deserialize a JSON int (`0` / `1`) or bool into a `bool`. COCO JSON
-/// uses `0`/`1` ints for `iscrowd`; a permissive reader accepts bool.
+/// COCO JSON uses `0`/`1` ints for `iscrowd` / `ignore`, but a
+/// permissive reader also accepts bool literals. Shared between the
+/// required and optional flag deserializers below.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum BoolOrInt {
+    Bool(bool),
+    Int(i64),
+}
+
+impl BoolOrInt {
+    fn into_bool<E: serde::de::Error>(self) -> Result<bool, E> {
+        match self {
+            Self::Bool(b) => Ok(b),
+            Self::Int(0) => Ok(false),
+            Self::Int(1) => Ok(true),
+            Self::Int(other) => Err(E::custom(format!(
+                "expected 0 or 1 for COCO bool field, got {other}"
+            ))),
+        }
+    }
+}
+
 fn deserialize_bool_int<'de, D>(de: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::Error as DeError;
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum BoolOrInt {
-        Bool(bool),
-        Int(i64),
-    }
-
-    match BoolOrInt::deserialize(de)? {
-        BoolOrInt::Bool(b) => Ok(b),
-        BoolOrInt::Int(0) => Ok(false),
-        BoolOrInt::Int(1) => Ok(true),
-        BoolOrInt::Int(other) => Err(DeError::custom(format!(
-            "expected 0 or 1 for COCO bool field, got {other}"
-        ))),
-    }
+    BoolOrInt::deserialize(de)?.into_bool()
 }
 
 fn deserialize_opt_bool_int<'de, D>(de: D) -> Result<Option<bool>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::Error as DeError;
-
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum OptBoolOrInt {
-        Bool(bool),
-        Int(i64),
-        Null,
-    }
-
-    match Option::<OptBoolOrInt>::deserialize(de)? {
-        None | Some(OptBoolOrInt::Null) => Ok(None),
-        Some(OptBoolOrInt::Bool(b)) => Ok(Some(b)),
-        Some(OptBoolOrInt::Int(0)) => Ok(Some(false)),
-        Some(OptBoolOrInt::Int(1)) => Ok(Some(true)),
-        Some(OptBoolOrInt::Int(other)) => Err(DeError::custom(format!(
-            "expected 0 or 1 for optional COCO bool field, got {other}"
-        ))),
-    }
+    Option::<BoolOrInt>::deserialize(de)?
+        .map(BoolOrInt::into_bool)
+        .transpose()
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     use proptest::prelude::*;

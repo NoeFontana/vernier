@@ -89,7 +89,6 @@ fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -102,7 +101,8 @@ mod tests {
 
     #[test]
     fn iou_boundary_eps_is_1e_neg_10() {
-        // ce:276 — `min(t, 1 - 1e-10)` on the initial best-IoU.
+        // pycocotools/cocoeval.py:276 — `min(t, 1 - 1e-10)` seeds the
+        // initial best-IoU so detections at exactly the threshold match.
         assert_eq!(IOU_BOUNDARY_EPS, 1e-10);
     }
 
