@@ -18,6 +18,7 @@
 pub mod accumulate;
 pub mod dataset;
 pub mod error;
+pub mod evaluate;
 pub mod matching;
 pub mod parity;
 pub mod similarity;
@@ -26,9 +27,10 @@ pub mod summarize;
 pub use accumulate::{accumulate, AccumulateParams, Accumulated, PerImageEval};
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
-    CocoJson, EvalDataset, ImageId, ImageMeta,
+    CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, ImageId, ImageMeta,
 };
 pub use error::EvalError;
+pub use evaluate::{evaluate_bbox, AreaRange, EvalGrid, EvaluateBboxParams};
 pub use matching::{match_image, MatchResult};
 pub use parity::{
     iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,
