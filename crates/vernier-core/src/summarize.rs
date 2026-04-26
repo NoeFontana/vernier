@@ -16,6 +16,8 @@
 //! - **L7** (`corrected`): the result is a value (`Summary`), not a
 //!   property side-effect on the evaluator.
 
+use ndarray::Axis;
+
 use crate::accumulate::Accumulated;
 use crate::error::EvalError;
 
@@ -76,21 +78,22 @@ pub struct StatLine {
 
 /// Result of summarizing an [`Accumulated`].
 ///
-/// `stats` is the canonical 12-element vector pycocotools'
-/// `summarize()` writes into `eval.stats`. `lines` carries the same
-/// values with their slicing metadata so callers can render or
-/// post-process them without re-deriving the layout.
+/// `lines` is the canonical 12-element table; element `i` matches the
+/// pycocotools ordering `[AP, AP50, AP75, AP_S, AP_M, AP_L, AR_1,
+/// AR_10, AR_100, AR_S, AR_M, AR_L]`. Use [`Summary::stats`] to get
+/// just the 12 numeric values in that order.
 #[derive(Debug, Clone)]
 pub struct Summary {
-    /// Twelve mean values, in the canonical pycocotools order:
-    /// `[AP, AP50, AP75, AP_S, AP_M, AP_L, AR_1, AR_10, AR_100, AR_S,
-    /// AR_M, AR_L]`.
-    pub stats: Vec<f64>,
-    /// Same values as `stats`, paired with their slicing metadata.
+    /// Twelve evaluation lines, paired with slicing metadata.
     pub lines: Vec<StatLine>,
 }
 
 impl Summary {
+    /// Twelve mean values in the canonical pycocotools order. Equivalent
+    /// to `lines.iter().map(|l| l.value).collect()`.
+    pub fn stats(&self) -> Vec<f64> {
+        self.lines.iter().map(|l| l.value).collect()
+    }
     /// Render the canonical pycocotools text table (12 lines, each in
     /// the upstream `Average Precision (AP) @[ IoU=... | area=... |
     /// maxDets=... ] = 0.xxx` shape). Returned as a `Vec<String>`; the
@@ -138,8 +141,9 @@ impl Summary {
 /// Returns [`EvalError::DimensionMismatch`] if `iou_thresholds` length
 /// does not match `accum.precision`'s `T` axis, or if `max_dets`
 /// length does not match the `M` axis. Returns
-/// [`EvalError::InvalidAnnotation`] (with `detail = "iou_threshold"`)
-/// when AP@.50 / AP@.75 are not present in `iou_thresholds`.
+/// [`EvalError::InvalidConfig`] when AP@.50 / AP@.75 are not present in
+/// `iou_thresholds`, or when `max_dets` lacks one of `[1, 10, 100]`
+/// (needed for the AR_1/AR_10/AR_100 lines).
 pub fn summarize_detection(
     accum: &Accumulated,
     iou_thresholds: &[f64],
@@ -179,16 +183,15 @@ pub fn summarize_detection(
         max_dets
             .iter()
             .position(|&d| d == target)
-            .ok_or_else(|| EvalError::InvalidAnnotation {
+            .ok_or_else(|| EvalError::InvalidConfig {
                 detail: format!("max_dets does not contain {target}"),
             })
     };
 
-    // Build the 12-stat plan as (metric, iouThr, area, max_dets index).
     // Pycocotools indexes maxDets[0|1|2] for AR_{1,10,100} and
     // maxDets[2] for everything else; we honor whatever the user
     // actually passed for the M-axis but map to the same intent.
-    let plan: Vec<(Metric, Option<f64>, AreaRng, usize)> = vec![
+    let plan: [(Metric, Option<f64>, AreaRng, usize); 12] = [
         (Metric::AveragePrecision, None, AreaRng::All, m_max),
         (Metric::AveragePrecision, Some(0.5), AreaRng::All, m_max),
         (Metric::AveragePrecision, Some(0.75), AreaRng::All, m_max),
@@ -203,21 +206,21 @@ pub fn summarize_detection(
         (Metric::AverageRecall, None, AreaRng::Large, m_max),
     ];
 
-    let mut stats = Vec::with_capacity(plan.len());
-    let mut lines = Vec::with_capacity(plan.len());
-    for &(metric, iou_thr, area, m_idx) in &plan {
-        let value = mean_slice(accum, metric, iou_thr, area, m_idx, iou_thresholds)?;
-        stats.push(value);
-        lines.push(StatLine {
-            metric,
-            iou_threshold: iou_thr,
-            area,
-            max_dets: max_dets[m_idx],
-            value,
-        });
-    }
+    let lines = plan
+        .iter()
+        .map(|&(metric, iou_thr, area, m_idx)| {
+            let value = mean_slice(accum, metric, iou_thr, area, m_idx, iou_thresholds)?;
+            Ok(StatLine {
+                metric,
+                iou_threshold: iou_thr,
+                area,
+                max_dets: max_dets[m_idx],
+                value,
+            })
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
 
-    Ok(Summary { stats, lines })
+    Ok(Summary { lines })
 }
 
 /// Mean of an `Accumulated` slice, filtering out the `-1` sentinel
@@ -237,46 +240,45 @@ fn mean_slice(
             let t = iou_thresholds
                 .iter()
                 .position(|&v| (v - target).abs() < 1e-12)
-                .ok_or_else(|| EvalError::InvalidAnnotation {
+                .ok_or_else(|| EvalError::InvalidConfig {
                     detail: format!("iou_threshold {target} not in ladder"),
                 })?;
             t..(t + 1)
         }
     };
-    let a_idx = area.index();
+    let a = area.index();
 
+    // C5: skip -1 sentinels in the mean. Each cell view is built by
+    // chained `index_axis` (safe; `s!` would require unsafe and the
+    // crate is `#![forbid(unsafe_code)]`). For precision shape
+    // `(T, R, K, A, M)` the chain peels T → A → M, leaving `(R, K)`;
+    // for recall `(T, K, A, M)` it peels T → A → M, leaving `(K,)`.
     let mut sum = 0.0_f64;
     let mut count = 0usize;
-    match metric {
-        Metric::AveragePrecision => {
-            let p_shape = accum.precision.shape();
-            let n_r = p_shape[1];
-            let n_k = p_shape[2];
-            // C5: skip -1 sentinels in the average.
-            for t in t_range {
-                for r in 0..n_r {
-                    for k in 0..n_k {
-                        let v = accum.precision[(t, r, k, a_idx, m_idx)];
-                        if v > -1.0 {
-                            sum += v;
-                            count += 1;
-                        }
-                    }
-                }
-            }
+    let mut accumulate = |v: f64| {
+        if v > -1.0 {
+            sum += v;
+            count += 1;
         }
-        Metric::AverageRecall => {
-            let r_shape = accum.recall.shape();
-            let n_k = r_shape[1];
-            for t in t_range {
-                for k in 0..n_k {
-                    let v = accum.recall[(t, k, a_idx, m_idx)];
-                    if v > -1.0 {
-                        sum += v;
-                        count += 1;
-                    }
-                }
-            }
+    };
+    for t in t_range {
+        match metric {
+            Metric::AveragePrecision => accum
+                .precision
+                .index_axis(Axis(0), t)
+                .index_axis(Axis(2), a)
+                .index_axis(Axis(2), m_idx)
+                .iter()
+                .copied()
+                .for_each(&mut accumulate),
+            Metric::AverageRecall => accum
+                .recall
+                .index_axis(Axis(0), t)
+                .index_axis(Axis(1), a)
+                .index_axis(Axis(1), m_idx)
+                .iter()
+                .copied()
+                .for_each(&mut accumulate),
         }
     }
     Ok(if count == 0 { -1.0 } else { sum / count as f64 })
@@ -323,15 +325,16 @@ mod tests {
         let accum = accumulate(&grid, p, ParityMode::Strict).unwrap();
         let summary = summarize_detection(&accum, iou, &max_dets).unwrap();
 
-        assert_eq!(summary.stats.len(), 12);
+        let stats = summary.stats();
+        assert_eq!(stats.len(), 12);
         // AP[all], AP50, AP75, AR_1, AR_10, AR_100 should all be ~1.0.
         for &i in &[0usize, 1, 2, 6, 7, 8] {
-            let v = summary.stats[i];
+            let v = stats[i];
             assert!((v - 1.0).abs() < 1e-9, "stat[{i}] = {v}");
         }
         // small / medium / large carry -1 (no data).
         for &i in &[3usize, 4, 5, 9, 10, 11] {
-            assert_eq!(summary.stats[i], -1.0, "stat[{i}] should be -1 sentinel");
+            assert_eq!(stats[i], -1.0, "stat[{i}] should be -1 sentinel");
         }
     }
 
@@ -350,13 +353,13 @@ mod tests {
         };
         let accum = accumulate(&[], p, ParityMode::Strict).unwrap();
         let summary = summarize_detection(&accum, iou, &max_dets).unwrap();
-        assert!(summary.stats.iter().all(|&v| v == -1.0));
+        assert!(summary.stats().iter().all(|&v| v == -1.0));
     }
 
     #[test]
     fn missing_max_det_value_is_typed_error() {
-        // AR_1 line requires max_dets to contain 1; if we only hand it
-        // [10, 100], summarization fails with InvalidAnnotation.
+        // AR_1 line requires max_dets to contain 1; without it,
+        // summarization fails with InvalidConfig.
         let iou = iou_thresholds();
         let max_dets = [10usize, 100];
         let accum = Accumulated {
@@ -365,7 +368,7 @@ mod tests {
             scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 2), -1.0),
         };
         let err = summarize_detection(&accum, iou, &max_dets).unwrap_err();
-        assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
+        assert!(matches!(err, EvalError::InvalidConfig { .. }));
     }
 
     #[test]

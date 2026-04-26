@@ -48,4 +48,15 @@ pub enum EvalError {
         /// Where the non-finite value was encountered.
         context: &'static str,
     },
+
+    /// Caller-supplied evaluation parameters are inconsistent with the
+    /// data they're being applied to (e.g., a maxDet value that the
+    /// accumulator never saw, an IoU threshold absent from the
+    /// ladder). Distinct from `InvalidAnnotation`, which is for
+    /// dataset-side data errors.
+    #[error("invalid config: {detail}")]
+    InvalidConfig {
+        /// Free-form detail string identifying the offending parameter.
+        detail: String,
+    },
 }

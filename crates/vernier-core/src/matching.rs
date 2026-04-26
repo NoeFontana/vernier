@@ -54,12 +54,10 @@
 //! of which the matching engine takes as input. The accumulator
 //! applies B7 before building the curve.
 
-use std::cmp::Ordering;
-
 use ndarray::{Array2, ArrayView2};
 
 use crate::error::EvalError;
-use crate::parity::{ParityMode, IOU_BOUNDARY_EPS};
+use crate::parity::{argsort_score_desc, ParityMode, IOU_BOUNDARY_EPS};
 
 /// Per-image, per-category greedy match between ground-truth and
 /// detection annotations across every IoU threshold.
@@ -148,14 +146,7 @@ pub fn match_image(
         });
     }
 
-    // A1 (strict): stable sort by `-score`; ties resolve to input order,
-    // matching numpy's `argsort(kind='mergesort')` on `-d['score']`.
-    let mut dt_perm: Vec<usize> = (0..n_d).collect();
-    dt_perm.sort_by(|&a, &b| {
-        dt_scores[b]
-            .partial_cmp(&dt_scores[a])
-            .unwrap_or(Ordering::Equal)
-    });
+    let dt_perm = argsort_score_desc(dt_scores);
 
     // A4 (strict): stable sort GTs by `_ignore`, so non-ignore precede
     // ignore. The B3 early-termination relies on this layout.

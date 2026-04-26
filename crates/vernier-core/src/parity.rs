@@ -10,6 +10,7 @@
 //! Changes here ripple through every algorithm crate and require their
 //! own ADR.
 
+use std::cmp::Ordering;
 use std::sync::OnceLock;
 
 /// Three-tier parity mode (per ADR-0002).
@@ -62,6 +63,19 @@ pub fn iou_thresholds() -> &'static [f64] {
 pub fn recall_thresholds() -> &'static [f64] {
     static RECALL_THRESHOLDS: OnceLock<Vec<f64>> = OnceLock::new();
     RECALL_THRESHOLDS.get_or_init(|| linspace(0.0, 1.0, 101))
+}
+
+/// Stable score-descending argsort. (Quirk **A1** — strict.)
+///
+/// Mirrors `np.argsort(-scores, kind='mergesort')`: the returned
+/// permutation indexes `scores` such that `scores[perm[0]] >=
+/// scores[perm[1]] >= ...`, with ties resolved to the input order.
+/// Used by the matching engine for per-image DT ordering and by the
+/// accumulator for the merged-stream re-sort across images.
+pub fn argsort_score_desc(scores: &[f64]) -> Vec<usize> {
+    let mut perm: Vec<usize> = (0..scores.len()).collect();
+    perm.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(Ordering::Equal));
+    perm
 }
 
 /// Reproduces `numpy.linspace(start, stop, num, endpoint=True)`.

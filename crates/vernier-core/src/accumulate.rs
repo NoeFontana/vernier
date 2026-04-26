@@ -45,12 +45,10 @@
 //! responsibilities. The orchestrator that builds [`PerImageEval`]
 //! folds B7 in alongside the matching engine's B6.
 
-use std::cmp::Ordering;
-
 use ndarray::{Array2, Array4, Array5};
 
 use crate::error::EvalError;
-use crate::parity::{ParityMode, PARITY_EPS};
+use crate::parity::{argsort_score_desc, ParityMode, PARITY_EPS};
 
 /// Per `(image, category, areaRange)` slice of evaluation data, in the
 /// shape the accumulator consumes.
@@ -248,8 +246,8 @@ fn accumulate_cell(
     recall: &mut Array4<f64>,
     scores: &mut Array5<f64>,
 ) {
-    // Concatenate dt_scores across all images in this cell, truncated to
-    // max_det per image (mirroring pycocotools' `[0:maxDet]` slice).
+    // Per-image `[0:maxDet]` slice + concat across images, then re-sort
+    // the merged stream — mirrors pycocotools cocoeval.py:362-367.
     let mut all_scores: Vec<f64> = Vec::new();
     let mut takes: Vec<usize> = Vec::with_capacity(cells.len());
     for cell in cells {
@@ -261,34 +259,25 @@ fn accumulate_cell(
     let n_d = all_scores.len();
     if n_d == 0 {
         // No detections to score, but npig > 0 — recall is 0 across all
-        // thresholds. precision/scores stay at the -1 sentinel because
-        // pycocotools' inner loop never executes (`nd == 0` skips the
-        // recall write too, but only when there are no thresholds).
-        // Mirroring the upstream `if nd: ... else: recall = 0` branch.
+        // thresholds. precision/scores stay at -1 (pycocotools' upstream
+        // `if nd: ... else: recall = 0` branch).
         for t in 0..n_t {
             recall[(t, k, a, m)] = 0.0;
         }
         return;
     }
 
-    // A1 (strict): stable sort of `-score` across the merged stream.
-    let mut perm: Vec<usize> = (0..n_d).collect();
-    perm.sort_by(|&i, &j| {
-        all_scores[j]
-            .partial_cmp(&all_scores[i])
-            .unwrap_or(Ordering::Equal)
-    });
-    let scores_sorted: Vec<f64> = perm.iter().map(|&i| all_scores[i]).collect();
+    let perm = argsort_score_desc(&all_scores);
 
     let npig_f = npig as f64;
     let mut rc = vec![0.0_f64; n_d];
     let mut pr = vec![0.0_f64; n_d];
+    // Hoisted above the t-loop: every slot is unconditionally
+    // overwritten on each pass, so a single allocation suffices.
+    let mut dtm = vec![false; n_d];
+    let mut dtg = vec![false; n_d];
 
     for t in 0..n_t {
-        // Build per-DT (matched, ignore) for this threshold across the
-        // merged stream, then permute by `perm`.
-        let mut dtm = vec![false; n_d];
-        let mut dtg = vec![false; n_d];
         let mut cursor = 0;
         for (cell, &take) in cells.iter().zip(&takes) {
             for d in 0..take {
@@ -324,43 +313,20 @@ fn accumulate_cell(
         }
 
         // C1 + C3: searchsorted-left + bounds-checked gather (replaces
-        // the bare try/except in pycocotools).
+        // the bare `try/except` in pycocotools). Past the end of the
+        // curve, slots stay at 0.0 — overwriting the -1 sentinel so the
+        // summarizer's `s[s > -1]` filter still sees them as valid.
         for (ri, &target) in recall_thresholds.iter().enumerate() {
-            let pi = searchsorted_left(&rc, target);
+            let pi = rc.partition_point(|&v| v < target);
             if pi < n_d {
                 precision[(t, ri, k, a, m)] = pr[pi];
-                scores[(t, ri, k, a, m)] = scores_sorted[pi];
+                scores[(t, ri, k, a, m)] = all_scores[perm[pi]];
             } else {
-                // Past the end of the curve: mirror pycocotools' silent
-                // skip — the slot stays at 0.0 (initialized via `q =
-                // np.zeros((R,))` upstream). Overwrite the -1 sentinel
-                // here so the summarizer's `s[s > -1]` filter sees it.
                 precision[(t, ri, k, a, m)] = 0.0;
                 scores[(t, ri, k, a, m)] = 0.0;
             }
         }
     }
-}
-
-/// Reproduces `np.searchsorted(haystack, target, side='left')` for an
-/// ascending-sorted slice.
-///
-/// Returns the leftmost index `i` such that `haystack[i] >= target`, or
-/// `haystack.len()` if no such index exists. NaNs in either input are
-/// not expected — recall values are always in `[0, 1]` and the recall
-/// thresholds are pinned by [`crate::recall_thresholds`].
-fn searchsorted_left(haystack: &[f64], target: f64) -> usize {
-    let mut lo = 0usize;
-    let mut hi = haystack.len();
-    while lo < hi {
-        let mid = lo + (hi - lo) / 2;
-        if haystack[mid] < target {
-            lo = mid + 1;
-        } else {
-            hi = mid;
-        }
-    }
-    lo
 }
 
 #[cfg(test)]
@@ -411,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn cell_with_no_dt_but_one_real_gt_yields_zero_recall_and_neg_one_precision() {
+    fn no_dt_with_real_gt_yields_zero_recall_and_sentinel_precision() {
         // C5: precision stays at -1 sentinel; recall is 0 for every t.
         let cell = PerImageEval {
             dt_scores: vec![],
@@ -526,16 +492,15 @@ mod tests {
     }
 
     #[test]
-    fn searchsorted_left_matches_numpy_semantics() {
+    fn partition_point_matches_numpy_searchsorted_left() {
+        // Pinning the stdlib semantics so a future swap (e.g., to a
+        // SIMD search) keeps `np.searchsorted(..., side='left')` parity.
         let haystack = [0.1, 0.3, 0.3, 0.7];
-        // < first element → 0
-        assert_eq!(searchsorted_left(&haystack, 0.0), 0);
-        // exactly equal: leftmost match
-        assert_eq!(searchsorted_left(&haystack, 0.3), 1);
-        // strictly between: insertion point
-        assert_eq!(searchsorted_left(&haystack, 0.5), 3);
-        // larger than max: len
-        assert_eq!(searchsorted_left(&haystack, 1.0), 4);
+        let lookup = |t: f64| haystack.partition_point(|&v| v < t);
+        assert_eq!(lookup(0.0), 0);
+        assert_eq!(lookup(0.3), 1); // leftmost equal
+        assert_eq!(lookup(0.5), 3);
+        assert_eq!(lookup(1.0), 4); // past end
     }
 
     #[test]
