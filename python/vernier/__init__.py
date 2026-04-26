@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._core import Summary, evaluate_bbox_summary, version
 
@@ -25,12 +26,6 @@ __all__ = [
 ]
 
 __version__: str = version()
-
-#: Three-tier parity mode (per ADR-0002). ``"strict"`` reproduces every
-#: pycocotools 2.0.11 behavior bit-exactly; ``"corrected"`` opts into the
-#: opinionated fixes catalogued in
-#: ``docs/engineering/pycocotools-quirks.md``.
-ParityMode = Literal["strict", "corrected"]
 
 #: Similarity / IoU type. Phase 1 ships ``"bbox"``; ``"segm"`` and
 #: ``"keypoints"`` arrive in Phase 2/3.

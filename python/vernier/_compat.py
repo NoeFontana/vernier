@@ -14,8 +14,9 @@ alias.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Final, Literal, Protocol
 
 import numpy as np
 from numpy.typing import NDArray
@@ -24,22 +25,49 @@ from vernier._core import EvalGrid, Summary, evaluate_bbox_grid
 
 ParityMode = Literal["strict", "corrected"]
 
+PARITY_STRICT: Final[ParityMode] = "strict"
+PARITY_CORRECTED: Final[ParityMode] = "corrected"
+IOU_BBOX: Final[str] = "bbox"
+IOU_SEGM: Final[str] = "segm"
+
 # Pycocotools' Params(iouType="bbox") defaults — mirrored verbatim so
 # parity mode "strict" reproduces the upstream constants bit-exactly.
-_DEFAULT_IOU_THRS: NDArray[np.float64] = np.linspace(
+_DEFAULT_IOU_THRS: Final[NDArray[np.float64]] = np.linspace(
     0.5, 0.95, int(np.round((0.95 - 0.5) / 0.05)) + 1, endpoint=True
 )
-_DEFAULT_REC_THRS: NDArray[np.float64] = np.linspace(
+_DEFAULT_REC_THRS: Final[NDArray[np.float64]] = np.linspace(
     0.0, 1.0, int(np.round((1.0 - 0.0) / 0.01)) + 1, endpoint=True
 )
-_DEFAULT_AREA_RNG: list[list[float]] = [
+_DEFAULT_AREA_RNG: Final[list[list[float]]] = [
     [0, 1e10],
     [0, 32**2],
     [32**2, 96**2],
     [96**2, 1e10],
 ]
-_DEFAULT_AREA_RNG_LBL: list[str] = ["all", "small", "medium", "large"]
-_DEFAULT_MAX_DETS: list[int] = [1, 10, 100]
+_DEFAULT_AREA_RNG_LBL: Final[list[str]] = ["all", "small", "medium", "large"]
+_DEFAULT_MAX_DETS: Final[list[int]] = [1, 10, 100]
+
+
+class CocoLike(Protocol):
+    """Structural type for the pycocotools.coco.COCO surface we touch.
+
+    Defined as a Protocol because pycocotools ships no ``py.typed``
+    marker; a hard import of the upstream class would force pyright
+    into an ``Unknown`` cliff. The drop-in only depends on the four
+    members below — anything else passes through ``self.cocoGt`` /
+    ``self.cocoDt`` as ``Any``.
+    """
+
+    # Read-only property keeps the protocol covariant: a plain
+    # ``dataset: Mapping`` attribute is invariant on pyright, which
+    # rejects pycocotools' more specific ``_Dataset`` TypedDict. We
+    # only ever read this attribute, so the property surface is the
+    # honest annotation.
+    @property
+    def dataset(self) -> Mapping[str, Any]: ...
+
+    def getImgIds(self) -> list[int]: ...  # noqa: N802  pycocotools API
+    def getCatIds(self) -> list[int]: ...  # noqa: N802  pycocotools API
 
 
 class _Params:
@@ -54,14 +82,18 @@ class _Params:
     def __init__(self) -> None:
         self.imgIds: list[int] = []
         self.catIds: list[int] = []
-        self.iouThrs: NDArray[np.float64] = np.array(_DEFAULT_IOU_THRS, dtype=np.float64)
-        self.recThrs: NDArray[np.float64] = np.array(_DEFAULT_REC_THRS, dtype=np.float64)
+        # Bind defaults by reference so _validate_supported_params can
+        # short-circuit via identity (`is _DEFAULT_IOU_THRS`) when the
+        # user has not mutated. Pycocotools rebinds rather than mutates
+        # these arrays in place, so the shared reference is safe.
+        self.iouThrs: NDArray[np.float64] = _DEFAULT_IOU_THRS
+        self.recThrs: NDArray[np.float64] = _DEFAULT_REC_THRS
         self.maxDets: list[int] = list(_DEFAULT_MAX_DETS)
         self.areaRng: list[list[float]] = [list(r) for r in _DEFAULT_AREA_RNG]
         self.areaRngLbl: list[str] = list(_DEFAULT_AREA_RNG_LBL)
         self.useCats: int = 1
         self.useSegm: int | None = None
-        self.iouType: str = "bbox"
+        self.iouType: str = IOU_BBOX
 
 
 class PycocotoolsCOCOeval:
@@ -79,17 +111,17 @@ class PycocotoolsCOCOeval:
     lifetime.
     """
 
-    DEFAULT_PARITY_MODE: ClassVar[ParityMode] = "strict"
+    DEFAULT_PARITY_MODE: ClassVar[ParityMode] = PARITY_STRICT
 
     def __init__(
         self,
-        cocoGt: Any = None,  # noqa: N803  pycocotools API
-        cocoDt: Any = None,  # noqa: N803  pycocotools API
-        iouType: str = "segm",  # noqa: N803  pycocotools API
+        cocoGt: CocoLike | None = None,  # noqa: N803  pycocotools API
+        cocoDt: CocoLike | None = None,  # noqa: N803  pycocotools API
+        iouType: str = IOU_SEGM,  # noqa: N803  pycocotools API
         *,
         parity_mode: ParityMode | None = None,
     ) -> None:
-        if iouType != "bbox":
+        if iouType != IOU_BBOX:
             raise NotImplementedError(
                 f"vernier.COCOeval supports iouType='bbox' only (got {iouType!r}); "
                 "segm/keypoints land in Phase 2/3"
@@ -144,34 +176,37 @@ class PycocotoolsCOCOeval:
         # Quirk L5 disposition: strict mirrors pycocotools' stdout side
         # effect; corrected stays silent (the structured Summary on
         # ``self._summary`` is the canonical surface).
-        if self._parity_mode == "strict":
+        if self._parity_mode == PARITY_STRICT:
             for line in self._summary.pretty_lines():
                 print(line)
 
     def _validate_supported_params(self) -> None:
-        if not np.array_equal(self.params.iouThrs, _DEFAULT_IOU_THRS):
-            raise NotImplementedError(
-                "vernier.COCOeval does not yet support custom params.iouThrs; "
-                "reset to the pycocotools default (linspace(0.5, 0.95, 10))"
-            )
-        if not np.array_equal(self.params.recThrs, _DEFAULT_REC_THRS):
-            raise NotImplementedError(
-                "vernier.COCOeval does not yet support custom params.recThrs; "
-                "reset to the pycocotools default (linspace(0.0, 1.0, 101))"
-            )
+        assert self.cocoGt is not None  # evaluate() guards this
+        _reject_if_mutated_array(self.params.iouThrs, _DEFAULT_IOU_THRS, "iouThrs")
+        _reject_if_mutated_array(self.params.recThrs, _DEFAULT_REC_THRS, "recThrs")
         if [list(r) for r in self.params.areaRng] != [list(r) for r in _DEFAULT_AREA_RNG]:
-            raise NotImplementedError("vernier.COCOeval does not yet support custom params.areaRng")
-        gt_img_ids = sorted(self.cocoGt.getImgIds())
-        if sorted(self.params.imgIds) != gt_img_ids:
-            raise NotImplementedError(
-                "vernier.COCOeval does not yet support params.imgIds subsetting; "
-                "evaluate the full dataset"
-            )
-        gt_cat_ids = sorted(self.cocoGt.getCatIds())
-        if sorted(self.params.catIds) != gt_cat_ids:
-            raise NotImplementedError(
-                "vernier.COCOeval does not yet support params.catIds subsetting"
-            )
+            _raise_unsupported("areaRng")
+        if sorted(self.params.imgIds) != sorted(self.cocoGt.getImgIds()):
+            _raise_unsupported("imgIds", "subsetting; evaluate the full dataset")
+        if sorted(self.params.catIds) != sorted(self.cocoGt.getCatIds()):
+            _raise_unsupported("catIds", "subsetting")
+
+
+def _reject_if_mutated_array(
+    actual: NDArray[np.float64], default: NDArray[np.float64], name: str
+) -> None:
+    # Identity check first: the default _Params binds the canonical
+    # arrays by reference, so an unmutated grid is a single pointer
+    # compare instead of a 10/101-element scan on every evaluate().
+    if actual is default:
+        return
+    if not np.array_equal(actual, default):
+        _raise_unsupported(name)
+
+
+def _raise_unsupported(name: str, detail: str = "") -> None:
+    suffix = f"; {detail}" if detail else ""
+    raise NotImplementedError(f"vernier.COCOeval does not yet support custom params.{name}{suffix}")
 
 
 def _json_default(obj: Any) -> Any:

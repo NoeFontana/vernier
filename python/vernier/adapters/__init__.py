@@ -15,38 +15,45 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Callable, Generator
-from typing import Literal
 
-from vernier._compat import PycocotoolsCOCOeval
+from vernier._compat import ParityMode, PycocotoolsCOCOeval
 
-ParityMode = Literal["strict", "corrected"]
+# The original pycocotools class, captured on the first patch and
+# released only when the patch count returns to zero. Per ADR-0007
+# §"Idempotency": "The helper records the original on first call only."
+_original_cocoeval: type | None = None
 
-# LIFO stack of (saved_class, saved_default_parity_mode) entries — one
-# per outstanding patch_pycocotools call. The bottom entry is the
-# original pycocotools class; nested patches stack on top so unwinding
-# in reverse order restores intermediate states for context-manager
-# reentrancy (per ADR-0007 §"Reentrancy").
-_PATCH_STACK: list[tuple[type, ParityMode]] = []
+# Stack of saved DEFAULT_PARITY_MODE values, one per outstanding patch.
+# Pop-on-unpatch gives reentrant restoration of the class-var so nested
+# context managers (per ADR-0007 §"Reentrancy") see the outer's mode
+# again on inner exit.
+_parity_mode_stack: list[ParityMode] = []
 
 
 def patch_pycocotools(parity_mode: ParityMode = "strict") -> Callable[[], None]:
     """Replace ``pycocotools.cocoeval.COCOeval`` with vernier's drop-in.
 
-    Returns an idempotent unpatch callable that restores the previous
-    state of ``sys.modules["pycocotools.cocoeval"].COCOeval`` (the
-    original pycocotools class on the outermost unpatch). Per ADR-0007:
+    Returns an idempotent unpatch callable. The outermost unpatch
+    restores the original pycocotools class; intermediate unpatches
+    pop the parity-mode stack so nested
+    :func:`patched_pycocotools` exits restore the surrounding patch
+    state. Per ADR-0007:
 
     - Default ``parity_mode`` is ``"strict"`` because migration intent
       is bit-exactness with pycocotools.
     - Raises :class:`ImportError` if pycocotools is not installed —
       silent fallthrough would let downstream test setups think the
       patch took effect when it did not.
-    - Nested calls stack via a module-level LIFO; unpatch handles are
-      idempotent (second call is a no-op).
+    - Calling ``patch_pycocotools`` repeatedly without unpatching
+      stacks the parity-mode state but never overwrites the saved
+      original class, so the final unpatch always restores the real
+      pycocotools class.
 
     Not thread-safe — call once at process or test setup, unwind at
     teardown.
     """
+    global _original_cocoeval
+
     try:
         import pycocotools.cocoeval as cocoeval_mod
     except ImportError as exc:
@@ -56,29 +63,26 @@ def patch_pycocotools(parity_mode: ParityMode = "strict") -> Callable[[], None]:
             "`vernier.COCOeval` directly without the patch."
         ) from exc
 
-    saved_class = cocoeval_mod.COCOeval
-    saved_default = PycocotoolsCOCOeval.DEFAULT_PARITY_MODE
-    _PATCH_STACK.append((saved_class, saved_default))
+    if _original_cocoeval is None:
+        _original_cocoeval = cocoeval_mod.COCOeval
 
+    _parity_mode_stack.append(PycocotoolsCOCOeval.DEFAULT_PARITY_MODE)
     PycocotoolsCOCOeval.DEFAULT_PARITY_MODE = parity_mode
     cocoeval_mod.COCOeval = PycocotoolsCOCOeval
 
-    expected_depth = len(_PATCH_STACK)
     unpatched = False
 
     def unpatch() -> None:
         nonlocal unpatched
+        global _original_cocoeval
         if unpatched:
             return
         unpatched = True
-        # Pop the entry this call pushed. If callers unwind out of
-        # order (inner unpatch after outer), the LIFO discipline is
-        # broken — we still restore *some* prior state so the suite
-        # can continue, but we do not try to re-thread the stack.
-        if len(_PATCH_STACK) >= expected_depth and _PATCH_STACK:
-            prev_class, prev_default = _PATCH_STACK.pop()
-            cocoeval_mod.COCOeval = prev_class
-            PycocotoolsCOCOeval.DEFAULT_PARITY_MODE = prev_default
+        if _parity_mode_stack:
+            PycocotoolsCOCOeval.DEFAULT_PARITY_MODE = _parity_mode_stack.pop()
+        if not _parity_mode_stack and _original_cocoeval is not None:
+            cocoeval_mod.COCOeval = _original_cocoeval
+            _original_cocoeval = None
 
     return unpatch
 

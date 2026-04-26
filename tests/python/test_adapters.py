@@ -110,6 +110,20 @@ def test_nested_context_managers_lifo_restore_inner_then_outer() -> None:
     assert cocoeval_mod.COCOeval is ORIGINAL_COCOEVAL
 
 
+def test_double_patch_then_unwind_restores_original() -> None:
+    # ADR-0007 §"Idempotency": "Calling patch_pycocotools twice without
+    # unpatching returns an unpatch handle that, when called, restores
+    # the *original* pycocotools class — not the first-patch state."
+    # The second unpatch must collapse to the original because the
+    # adapter records the original on first patch only.
+    unpatch_a = patch_pycocotools(parity_mode="strict")
+    unpatch_b = patch_pycocotools(parity_mode="corrected")
+    unpatch_b()
+    unpatch_a()
+    assert cocoeval_mod.COCOeval is ORIGINAL_COCOEVAL
+    assert PycocotoolsCOCOeval.DEFAULT_PARITY_MODE == "strict"
+
+
 def test_patch_raises_when_pycocotools_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     # Per ADR-0007 §"What we deliberately do not do": no silent
     # fallthrough. Simulate an environment without pycocotools by

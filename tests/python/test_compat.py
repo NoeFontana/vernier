@@ -25,7 +25,7 @@ from vernier._compat import PycocotoolsCOCOeval
 FIXTURES = Path(__file__).parent / "parity" / "fixtures"
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def perfect_match_coco() -> tuple[COCO, COCO]:
     gt = COCO(str(FIXTURES / "perfect_match" / "gt.json"))
     dt = gt.loadRes(str(FIXTURES / "perfect_match" / "dt.json"))
@@ -83,7 +83,7 @@ def test_summarize_strict_mode_prints(
     e = COCOeval(gt, dt, iouType="bbox")
     e.evaluate()
     e.accumulate()
-    capsys.readouterr()  # drain anything from earlier
+    capsys.readouterr()
     e.summarize()
     out = capsys.readouterr().out
     assert "Average Precision" in out
@@ -109,10 +109,12 @@ def test_iou_type_segm_not_yet_supported(perfect_match_coco: tuple[COCO, COCO]) 
         COCOeval(gt, dt, iouType="segm")
 
 
-def test_bare_construction_defaults_to_segm_and_raises() -> None:
-    # pycocotools' COCOeval() defaults iouType to "segm"; the drop-in
-    # rejects that at construction (Phase 1 ships bbox only).
-    with pytest.raises(NotImplementedError, match="bbox"):
+def test_constructor_default_iou_type_matches_pycocotools() -> None:
+    # pycocotools.cocoeval.COCOeval()'s third positional default is
+    # iouType="segm" — preserved for signature parity even though the
+    # drop-in rejects it. Verifying the rejection message names the
+    # actual default proves the signature is intact.
+    with pytest.raises(NotImplementedError, match="segm"):
         COCOeval()
 
 
