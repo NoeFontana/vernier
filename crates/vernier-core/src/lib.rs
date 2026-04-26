@@ -15,12 +15,15 @@
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod accumulate;
 pub mod dataset;
 pub mod error;
 pub mod matching;
 pub mod parity;
 pub mod similarity;
+pub mod summarize;
 
+pub use accumulate::{accumulate, AccumulateParams, Accumulated, PerImageEval};
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
     CocoJson, EvalDataset, ImageId, ImageMeta,
@@ -31,6 +34,10 @@ pub use parity::{
     iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,
 };
 pub use similarity::{BboxAnn, BboxIou, Similarity};
+pub use summarize::{
+    summarize_detection, summarize_with, AreaRng, MaxDetSelector, Metric, StatLine, StatRequest,
+    Summary,
+};
 
 /// Library version string. Useful for parity tracing in fixtures and for
 /// debugging mismatches between Rust and Python sides of the FFI boundary.
