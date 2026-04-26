@@ -33,10 +33,10 @@ IOU_SEGM: Final[str] = "segm"
 # Pycocotools' Params(iouType="bbox") defaults — mirrored verbatim so
 # parity mode "strict" reproduces the upstream constants bit-exactly.
 _DEFAULT_IOU_THRS: Final[NDArray[np.float64]] = np.linspace(
-    0.5, 0.95, int(np.round((0.95 - 0.5) / 0.05)) + 1, endpoint=True
+    0.5, 0.95, int(np.round((0.95 - 0.5) / 0.05)) + 1, endpoint=True, dtype=np.float64
 )
 _DEFAULT_REC_THRS: Final[NDArray[np.float64]] = np.linspace(
-    0.0, 1.0, int(np.round((1.0 - 0.0) / 0.01)) + 1, endpoint=True
+    0.0, 1.0, int(np.round((1.0 - 0.0) / 0.01)) + 1, endpoint=True, dtype=np.float64
 )
 _DEFAULT_AREA_RNG: Final[list[list[float]]] = [
     [0, 1e10],
