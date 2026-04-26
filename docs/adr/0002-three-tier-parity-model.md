@@ -1,6 +1,6 @@
 # ADR-0002: Adopt a three-tier parity model against pycocotools
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-26
 - **Deciders:** @NoeFontana
 - **Consulted:** —

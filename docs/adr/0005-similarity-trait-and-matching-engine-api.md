@@ -1,6 +1,6 @@
 # ADR-0005: Lock the `Similarity` trait and matching-engine API for Phases 1–3
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-26
 - **Deciders:** @NoeFontana
 - **Consulted:** —

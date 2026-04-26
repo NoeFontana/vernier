@@ -1,6 +1,6 @@
 # ADR-0003: Use `pulp` for stable-Rust SIMD with runtime CPU dispatch
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-26
 - **Deciders:** @NoeFontana
 - **Consulted:** —

@@ -1,6 +1,6 @@
 # ADR-0004: Numerical layout policy — f32 internal, f64 boundary, SoA, pinned constants
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-26
 - **Deciders:** @NoeFontana
 - **Consulted:** —
