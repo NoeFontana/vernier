@@ -1,5 +1,11 @@
 # vernier
 
+[![CI](https://github.com/NoeFontana/vernier/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NoeFontana/vernier/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/vernier.svg?label=pypi%20%7C%20vernier)](https://pypi.org/project/vernier/)
+[![crates.io vernier](https://img.shields.io/crates/v/vernier.svg?label=crates.io%20%7C%20vernier)](https://crates.io/crates/vernier)
+[![crates.io vernier-core](https://img.shields.io/crates/v/vernier-core.svg?label=crates.io%20%7C%20vernier-core)](https://crates.io/crates/vernier-core)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+
 > High-performance, parity-preserving COCO-style evaluation for object detection,
 > instance segmentation, and keypoints. Rust core, Python frontend, optional CLI.
 

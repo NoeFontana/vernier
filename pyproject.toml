@@ -39,10 +39,10 @@ torch = ["torch>=2.4"]
 viz = ["plotly>=6.0"]
 
 [project.urls]
-Homepage = "https://github.com/vernier-rs/vernier"
-Repository = "https://github.com/vernier-rs/vernier"
-Documentation = "https://github.com/vernier-rs/vernier#readme"
-Issues = "https://github.com/vernier-rs/vernier/issues"
+Homepage = "https://github.com/NoeFontana/vernier"
+Repository = "https://github.com/NoeFontana/vernier"
+Documentation = "https://github.com/NoeFontana/vernier#readme"
+Issues = "https://github.com/NoeFontana/vernier/issues"
 
 # ---------------------------------------------------------------------------
 # Maturin: PyO3 mixed Rust/Python build
@@ -64,6 +64,11 @@ dev = [
     "pytest-benchmark>=5",
     "ruff>=0.15",
     "pyright>=1.1.409",
+    # Reference oracle for parity tests. Pinned exact: every quirk we reproduce
+    # (see docs/engineering/pycocotools-quirks.md) is keyed to this version.
+    # Bumping this is an ADR-level decision, not a routine dep update.
+    # 2.0.11 is the first release that links cleanly against NumPy 2.0+.
+    "pycocotools==2.0.11",
 ]
 
 # ---------------------------------------------------------------------------

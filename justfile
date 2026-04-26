@@ -37,6 +37,10 @@ test-rust:
 test-py:
     uv run pytest
 
+# Run only parity tests (against pycocotools reference).
+test-parity:
+    uv run pytest -m parity
+
 # ---------------------------------------------------------------------------
 # Lint & format
 # ---------------------------------------------------------------------------
