@@ -15,9 +15,13 @@ Decision Records). To propose a new ADR:
 
 ## Index
 
-| #    | Title                               | Status   |
-| ---- | ----------------------------------- | -------- |
-| 0001 | Record architecture decisions       | accepted |
+| #    | Title                                                    | Status   |
+| ---- | -------------------------------------------------------- | -------- |
+| 0001 | Record architecture decisions                            | accepted |
+| 0002 | Adopt a three-tier parity model against pycocotools      | proposed |
+| 0003 | Use `pulp` for stable-Rust SIMD with runtime CPU dispatch| proposed |
+| 0004 | Numerical layout policy — f32 internal, f64 boundary, SoA, pinned constants | proposed |
+| 0005 | Lock the `Similarity` trait and matching-engine API for Phases 1–3 | proposed |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
