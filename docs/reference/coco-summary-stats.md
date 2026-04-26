@@ -45,6 +45,12 @@ For the AP@.50 / AP@.75 lines, vernier scans `iou_thresholds` for an entry withi
 
 For all other lines, the IoU axis is averaged across (length `T`).
 
+## Custom summary plans
+
+`summarize_detection` is a thin wrapper over `summarize_with`, which evaluates an arbitrary `&[StatRequest]` plan against an `Accumulated`. The canonical 12-entry plan is exposed as `StatRequest::coco_detection_default()` for callers that want to extend rather than replace it (push extra `StatRequest` entries, swap the M-axis selectors, pin different IoU thresholds). Bit-exact parity with cocoeval is by construction: the wrapper produces the same `Summary` whether called directly or via `summarize_with(.., StatRequest::coco_detection_default(), ..)`.
+
+`MaxDetSelector::Largest` picks the trailing entry of the supplied `max_dets`; `MaxDetSelector::Value(n)` looks the value up. This preserves the cocoeval intent ("AR_1 means maxDets=1") without binding to fixed positional indices, so callers passing non-default `max_dets` (e.g. keypoint `[20]`) still get sensible plans.
+
 ## Keypoint summary
 
-The 10-stat `_summarizeKps` table is not yet implemented (Phase 3). Its layout differs only in `maxDets = [20]` and a 2-bucket area range (`medium`, `large`); the slicing is otherwise the same.
+The 10-stat `_summarizeKps` table is not yet implemented (Phase 3). Its layout differs only in `maxDets = [20]` and a 2-bucket area range (`medium`, `large`); the slicing is otherwise the same. With the plan/execution split, this is a custom plan, not a new entry point.

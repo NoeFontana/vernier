@@ -75,21 +75,23 @@ pub struct StatLine {
     pub value: f64,
 }
 
-/// Result of summarizing an [`Accumulated`].
+/// Result of evaluating a summary plan over an [`Accumulated`].
 ///
-/// `lines` is the canonical 12-element table; element `i` matches the
-/// pycocotools ordering `[AP, AP50, AP75, AP_S, AP_M, AP_L, AR_1,
-/// AR_10, AR_100, AR_S, AR_M, AR_L]`. Use [`Summary::stats`] to get
-/// just the 12 numeric values in that order.
+/// `lines.len()` matches the plan length; for the canonical pycocotools
+/// detection summary built by [`summarize_detection`], that's 12 lines
+/// in the order `[AP, AP50, AP75, AP_S, AP_M, AP_L, AR_1, AR_10,
+/// AR_100, AR_S, AR_M, AR_L]`. For custom plans evaluated via
+/// [`summarize_with`], `lines` mirrors the request order.
 #[derive(Debug, Clone)]
 pub struct Summary {
-    /// Twelve evaluation lines, paired with slicing metadata.
+    /// One entry per request in the evaluated plan, paired with slicing
+    /// metadata.
     pub lines: Vec<StatLine>,
 }
 
 impl Summary {
-    /// Twelve mean values in the canonical pycocotools order. Equivalent
-    /// to `lines.iter().map(|l| l.value).collect()`.
+    /// Numeric values in plan order. Equivalent to
+    /// `lines.iter().map(|l| l.value).collect()`.
     pub fn stats(&self) -> Vec<f64> {
         self.lines.iter().map(|l| l.value).collect()
     }
@@ -124,23 +126,121 @@ impl Summary {
     }
 }
 
-/// Twelve-stat COCO detection summary.
+/// How a [`StatRequest`] picks an entry on the M-axis of an
+/// [`Accumulated`].
 ///
-/// `iou_thresholds` and `max_dets` describe the same grid the
-/// `Accumulated` was built against. `iou_thresholds` is needed to map
-/// the AP@.50 / AP@.75 selectors to row indices; `max_dets` to map the
-/// AR_1 / AR_10 / AR_100 selectors to the M-axis.
+/// Pycocotools hard-codes `maxDets[0|1|2]` for `AR_{1,10,100}` and
+/// `maxDets[-1]` for everything else; this enum lets a plan express
+/// that intent — "the largest cap available" or "the entry whose value
+/// equals N" — without binding to fixed positional indices.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MaxDetSelector {
+    /// Pick the largest cap in the supplied `max_dets` slice. This is
+    /// what every cocoeval AP line and `AR_S` / `AR_M` / `AR_L` use.
+    Largest,
+    /// Pick the M-axis entry whose value equals this. Errors via
+    /// [`EvalError::InvalidConfig`] if the value is absent.
+    Value(usize),
+}
+
+/// One line of a summary plan — describes a single mean to compute.
+#[derive(Debug, Clone, Copy)]
+pub struct StatRequest {
+    /// AP or AR.
+    pub metric: Metric,
+    /// `None` averages across the IoU ladder; `Some(t)` pins one row.
+    pub iou_threshold: Option<f64>,
+    /// Area-range bucket on the A-axis.
+    pub area: AreaRng,
+    /// How to pick the M-axis entry.
+    pub max_dets: MaxDetSelector,
+}
+
+impl StatRequest {
+    /// Convenience constructor.
+    pub fn new(
+        metric: Metric,
+        iou_threshold: Option<f64>,
+        area: AreaRng,
+        max_dets: MaxDetSelector,
+    ) -> Self {
+        Self {
+            metric,
+            iou_threshold,
+            area,
+            max_dets,
+        }
+    }
+
+    /// The canonical 12-entry pycocotools detection plan, in the
+    /// `[AP, AP50, AP75, AP_S, AP_M, AP_L, AR_1, AR_10, AR_100, AR_S,
+    /// AR_M, AR_L]` order. Bit-exact with cocoeval is by construction:
+    /// [`summarize_detection`] is just `summarize_with(.., this, ..)`.
+    pub fn coco_detection_default() -> [Self; 12] {
+        use AreaRng::{All, Large, Medium, Small};
+        use MaxDetSelector::{Largest, Value};
+        use Metric::{AveragePrecision, AverageRecall};
+        [
+            Self::new(AveragePrecision, None, All, Largest),
+            Self::new(AveragePrecision, Some(0.5), All, Largest),
+            Self::new(AveragePrecision, Some(0.75), All, Largest),
+            Self::new(AveragePrecision, None, Small, Largest),
+            Self::new(AveragePrecision, None, Medium, Largest),
+            Self::new(AveragePrecision, None, Large, Largest),
+            Self::new(AverageRecall, None, All, Value(1)),
+            Self::new(AverageRecall, None, All, Value(10)),
+            Self::new(AverageRecall, None, All, Value(100)),
+            Self::new(AverageRecall, None, Small, Largest),
+            Self::new(AverageRecall, None, Medium, Largest),
+            Self::new(AverageRecall, None, Large, Largest),
+        ]
+    }
+}
+
+/// Twelve-stat COCO detection summary, bit-exact with cocoeval.
+///
+/// Thin wrapper over [`summarize_with`] that supplies the canonical
+/// 12-entry plan from [`StatRequest::coco_detection_default`].
+/// Downstream callers who need a different shape (LVIS area buckets,
+/// keypoint `[20]` maxDets, custom AP@.30, …) should call
+/// `summarize_with` directly with their own plan; the canonical plan is
+/// available via the constructor for those who want to extend rather
+/// than replace it.
 ///
 /// # Errors
 ///
-/// Returns [`EvalError::DimensionMismatch`] if `iou_thresholds` length
-/// does not match `accum.precision`'s `T` axis, or if `max_dets`
-/// length does not match the `M` axis. Returns
-/// [`EvalError::InvalidConfig`] when AP@.50 / AP@.75 are not present in
-/// `iou_thresholds`, or when `max_dets` lacks one of `[1, 10, 100]`
-/// (needed for the AR_1/AR_10/AR_100 lines).
+/// Same conditions as [`summarize_with`].
 pub fn summarize_detection(
     accum: &Accumulated,
+    iou_thresholds: &[f64],
+    max_dets: &[usize],
+) -> Result<Summary, EvalError> {
+    summarize_with(
+        accum,
+        &StatRequest::coco_detection_default(),
+        iou_thresholds,
+        max_dets,
+    )
+}
+
+/// Evaluate an arbitrary summary plan over an [`Accumulated`].
+///
+/// `iou_thresholds` and `max_dets` describe the grid the `Accumulated`
+/// was built against; they are needed to resolve [`StatRequest`]
+/// selectors (IoU value → T-axis index, [`MaxDetSelector`] → M-axis
+/// index) and to populate the `max_dets` field on each emitted
+/// [`StatLine`].
+///
+/// # Errors
+///
+/// Returns [`EvalError::DimensionMismatch`] if `iou_thresholds` or
+/// `max_dets` lengths disagree with `accum`'s `T`/`M` axes. Returns
+/// [`EvalError::InvalidConfig`] if any request names an IoU threshold
+/// not present in `iou_thresholds` (within `1e-12`) or a
+/// [`MaxDetSelector::Value`] absent from `max_dets`.
+pub fn summarize_with(
+    accum: &Accumulated,
+    plan: &[StatRequest],
     iou_thresholds: &[f64],
     max_dets: &[usize],
 ) -> Result<Summary, EvalError> {
@@ -174,41 +274,36 @@ pub fn summarize_detection(
     }
 
     let m_max = max_dets.len() - 1;
-    let m_at = |target: usize| {
-        max_dets
-            .iter()
-            .position(|&d| d == target)
-            .ok_or_else(|| EvalError::InvalidConfig {
-                detail: format!("max_dets does not contain {target}"),
-            })
+    let resolve_m = |sel: MaxDetSelector| -> Result<usize, EvalError> {
+        match sel {
+            MaxDetSelector::Largest => Ok(m_max),
+            MaxDetSelector::Value(v) => {
+                max_dets
+                    .iter()
+                    .position(|&d| d == v)
+                    .ok_or_else(|| EvalError::InvalidConfig {
+                        detail: format!("max_dets does not contain {v}"),
+                    })
+            }
+        }
     };
-
-    // Pycocotools indexes maxDets[0|1|2] for AR_{1,10,100} and
-    // maxDets[2] for everything else; we honor whatever the user
-    // actually passed for the M-axis but map to the same intent.
-    let plan: [(Metric, Option<f64>, AreaRng, usize); 12] = [
-        (Metric::AveragePrecision, None, AreaRng::All, m_max),
-        (Metric::AveragePrecision, Some(0.5), AreaRng::All, m_max),
-        (Metric::AveragePrecision, Some(0.75), AreaRng::All, m_max),
-        (Metric::AveragePrecision, None, AreaRng::Small, m_max),
-        (Metric::AveragePrecision, None, AreaRng::Medium, m_max),
-        (Metric::AveragePrecision, None, AreaRng::Large, m_max),
-        (Metric::AverageRecall, None, AreaRng::All, m_at(1)?),
-        (Metric::AverageRecall, None, AreaRng::All, m_at(10)?),
-        (Metric::AverageRecall, None, AreaRng::All, m_at(100)?),
-        (Metric::AverageRecall, None, AreaRng::Small, m_max),
-        (Metric::AverageRecall, None, AreaRng::Medium, m_max),
-        (Metric::AverageRecall, None, AreaRng::Large, m_max),
-    ];
 
     let lines = plan
         .iter()
-        .map(|&(metric, iou_thr, area, m_idx)| {
-            let value = mean_slice(accum, metric, iou_thr, area, m_idx, iou_thresholds)?;
+        .map(|req| {
+            let m_idx = resolve_m(req.max_dets)?;
+            let value = mean_slice(
+                accum,
+                req.metric,
+                req.iou_threshold,
+                req.area,
+                m_idx,
+                iou_thresholds,
+            )?;
             Ok(StatLine {
-                metric,
-                iou_threshold: iou_thr,
-                area,
+                metric: req.metric,
+                iou_threshold: req.iou_threshold,
+                area: req.area,
                 max_dets: max_dets[m_idx],
                 value,
             })
@@ -373,6 +468,63 @@ mod tests {
         // pass only 5 thresholds — accum was built with 10.
         let err = summarize_detection(&accum, &[0.5, 0.6, 0.7, 0.8, 0.9], &max_dets).unwrap_err();
         assert!(matches!(err, EvalError::DimensionMismatch { .. }));
+    }
+
+    #[test]
+    fn summarize_with_custom_plan_evaluates_only_requested_lines() {
+        // Demonstrates the extension point: a 2-entry plan asking for
+        // AP@.50 across all areas and AR@.75 (not in the canonical 12)
+        // — both at the largest cap. Order is preserved.
+        let iou = iou_thresholds();
+        let max_dets = [100usize];
+        let accum = Accumulated {
+            precision: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 1), 0.5),
+            recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 1), 0.7),
+            scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 1), 1.0),
+        };
+        let plan = [
+            StatRequest::new(
+                Metric::AveragePrecision,
+                Some(0.5),
+                AreaRng::All,
+                MaxDetSelector::Largest,
+            ),
+            StatRequest::new(
+                Metric::AverageRecall,
+                Some(0.75),
+                AreaRng::All,
+                MaxDetSelector::Largest,
+            ),
+        ];
+        let summary = summarize_with(&accum, &plan, iou, &max_dets).unwrap();
+        assert_eq!(summary.lines.len(), 2);
+        assert!((summary.lines[0].value - 0.5).abs() < 1e-12);
+        assert_eq!(summary.lines[0].iou_threshold, Some(0.5));
+        assert!((summary.lines[1].value - 0.7).abs() < 1e-12);
+        assert_eq!(summary.lines[1].metric, Metric::AverageRecall);
+    }
+
+    #[test]
+    fn summarize_detection_matches_canonical_plan_via_summarize_with() {
+        // The thin-wrapper invariant: results are bit-equal whether the
+        // caller invokes summarize_detection or summarize_with with the
+        // canonical plan.
+        let iou = iou_thresholds();
+        let max_dets = [1usize, 10, 100];
+        let accum = Accumulated {
+            precision: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 0.5),
+            recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 3), 0.7),
+            scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 1.0),
+        };
+        let direct = summarize_detection(&accum, iou, &max_dets).unwrap();
+        let via_plan = summarize_with(
+            &accum,
+            &StatRequest::coco_detection_default(),
+            iou,
+            &max_dets,
+        )
+        .unwrap();
+        assert_eq!(direct.stats(), via_plan.stats());
     }
 
     #[test]

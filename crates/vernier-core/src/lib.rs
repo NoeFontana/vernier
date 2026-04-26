@@ -34,7 +34,10 @@ pub use parity::{
     iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,
 };
 pub use similarity::{BboxAnn, BboxIou, Similarity};
-pub use summarize::{summarize_detection, AreaRng, Metric, StatLine, Summary};
+pub use summarize::{
+    summarize_detection, summarize_with, AreaRng, MaxDetSelector, Metric, StatLine, StatRequest,
+    Summary,
+};
 
 /// Library version string. Useful for parity tracing in fixtures and for
 /// debugging mismatches between Rust and Python sides of the FFI boundary.
