@@ -32,8 +32,13 @@
 //! - **D3** (`aligned`): annotations are not mutated mid-evaluation;
 //!   the per-call `_ignore` (which combines the dataset flag with the
 //!   current area range) is computed at eval time.
-//! - **J3** (`strict`): detection-side area derivation lives in the
-//!   future `loadRes`-equivalent path, not here.
+//! - **J3** (`strict`): detection-side area is derived at construction
+//!   from the bbox (`bbox.w * bbox.h`) and never read from JSON.
+//! - **J1** (`aligned`): user-supplied DT ids are preserved verbatim;
+//!   absent ids are auto-assigned sequentially during construction.
+//! - **E2 / J4** (`strict`): detections never carry an `iscrowd` flag
+//!   — the type does not have the field. JSON inputs that include
+//!   `iscrowd=1` are silently dropped, matching pycocotools' overwrite.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -309,6 +314,7 @@ pub struct CocoDataset {
     annotations: Arc<Vec<CocoAnnotation>>,
     by_image: HashMap<ImageId, Vec<usize>>,
     by_category: HashMap<CategoryId, Vec<usize>>,
+    by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>>,
 }
 
 impl CocoDataset {
@@ -334,6 +340,7 @@ impl CocoDataset {
         let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::with_capacity(images.len());
         let mut by_category: HashMap<CategoryId, Vec<usize>> =
             HashMap::with_capacity(categories.len());
+        let mut by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>> = HashMap::new();
 
         for (idx, ann) in annotations.iter().enumerate() {
             if !known_images.contains(&ann.image_id) {
@@ -354,6 +361,10 @@ impl CocoDataset {
             }
             by_image.entry(ann.image_id).or_default().push(idx);
             by_category.entry(ann.category_id).or_default().push(idx);
+            by_image_cat
+                .entry((ann.image_id, ann.category_id))
+                .or_default()
+                .push(idx);
         }
 
         Ok(Self {
@@ -362,6 +373,7 @@ impl CocoDataset {
             annotations: Arc::new(annotations),
             by_image,
             by_category,
+            by_image_cat,
         })
     }
 
@@ -398,6 +410,175 @@ impl EvalDataset for CocoDataset {
 
     fn ann_indices_for_category(&self, cat_id: CategoryId) -> &[usize] {
         self.by_category.get(&cat_id).map_or(&[][..], Vec::as_slice)
+    }
+}
+
+impl CocoDataset {
+    /// Indices into [`Self::annotations`] for a given `(image, category)`
+    /// cell. Empty when no GT of that category exists on that image.
+    /// Used by the per-cell gather in the evaluation orchestrator.
+    pub fn ann_indices_for(&self, image: ImageId, cat: CategoryId) -> &[usize] {
+        self.by_image_cat
+            .get(&(image, cat))
+            .map_or(&[][..], Vec::as_slice)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// detections (DT side)
+// ---------------------------------------------------------------------------
+
+/// One COCO detection record (the DT side, what `loadRes` consumes).
+///
+/// Per the dispositions in this module's header:
+///
+/// - `is_crowd` does not exist as a field — quirks **E2 / J4**.
+/// - `area` is derived from `bbox` at construction (`bbox.w * bbox.h`) —
+///   quirk **J3**.
+/// - `id` is honored when the user supplies one and auto-assigned
+///   otherwise — quirk **J1** (`aligned`, an opinionated improvement
+///   over pycocotools' silent overwrite).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CocoDetection {
+    /// Detection id. Either user-supplied (J1) or auto-assigned by
+    /// [`CocoDetections::from_inputs`].
+    pub id: AnnId,
+    /// Image this detection is on.
+    pub image_id: ImageId,
+    /// Category this detection predicts.
+    pub category_id: CategoryId,
+    /// Confidence score. Sort key for the matching engine.
+    pub score: f64,
+    /// Bounding box (`(x, y, w, h)`).
+    pub bbox: Bbox,
+    /// Pixel area, derived from `bbox` per quirk **J3**.
+    pub area: f64,
+}
+
+impl Annotation for CocoDetection {
+    fn image_id(&self) -> ImageId {
+        self.image_id
+    }
+    fn category_id(&self) -> CategoryId {
+        self.category_id
+    }
+    fn area(&self) -> f64 {
+        self.area
+    }
+    fn is_crowd(&self) -> bool {
+        false
+    }
+    fn effective_ignore(&self, _: ParityMode) -> bool {
+        false
+    }
+}
+
+/// Caller-side input for one detection. Mirrors the shape of a single
+/// entry of a COCO results JSON array but uses typed ids.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DetectionInput {
+    /// Optional user-supplied id (quirk **J1**). Absent → auto-assigned.
+    #[serde(default)]
+    pub id: Option<AnnId>,
+    /// Image id.
+    pub image_id: ImageId,
+    /// Category id.
+    pub category_id: CategoryId,
+    /// Confidence score.
+    pub score: f64,
+    /// Bounding box.
+    pub bbox: Bbox,
+}
+
+/// COCO detections collection — flat storage plus
+/// `(image, category)`-keyed indices for the per-cell gather the
+/// orchestrator drives.
+#[derive(Debug, Clone)]
+pub struct CocoDetections {
+    detections: Arc<Vec<CocoDetection>>,
+    by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>>,
+    by_image: HashMap<ImageId, Vec<usize>>,
+}
+
+impl CocoDetections {
+    /// Loads detections from the JSON array shape pycocotools'
+    /// `loadRes` consumes (a list of objects with `image_id`,
+    /// `category_id`, `bbox`, `score`, optional `id`).
+    ///
+    /// `iscrowd` and `area` fields, if present, are silently dropped:
+    /// quirks **E2/J4** force `is_crowd=0` and quirk **J3** derives
+    /// `area` from `bbox`.
+    pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, EvalError> {
+        let raw: Vec<DetectionInput> = serde_json::from_slice(bytes)?;
+        Self::from_inputs(raw)
+    }
+
+    /// Builds a [`CocoDetections`] from typed inputs. Auto-assigns ids
+    /// (quirk **J1**) for inputs that did not supply one, validates
+    /// finite scores, and derives areas (quirk **J3**).
+    pub fn from_inputs(inputs: Vec<DetectionInput>) -> Result<Self, EvalError> {
+        let mut detections = Vec::with_capacity(inputs.len());
+        let mut next_auto = 1i64;
+        for input in inputs {
+            if !input.score.is_finite() {
+                return Err(EvalError::NonFinite {
+                    context: "detection score",
+                });
+            }
+            let id = match input.id {
+                Some(id) => id,
+                None => {
+                    let id = AnnId(next_auto);
+                    next_auto += 1;
+                    id
+                }
+            };
+            detections.push(CocoDetection {
+                id,
+                image_id: input.image_id,
+                category_id: input.category_id,
+                score: input.score,
+                bbox: input.bbox,
+                area: input.bbox.w * input.bbox.h,
+            });
+        }
+
+        let mut by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>> = HashMap::new();
+        let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::new();
+        for (idx, dt) in detections.iter().enumerate() {
+            by_image_cat
+                .entry((dt.image_id, dt.category_id))
+                .or_default()
+                .push(idx);
+            by_image.entry(dt.image_id).or_default().push(idx);
+        }
+
+        Ok(Self {
+            detections: Arc::new(detections),
+            by_image_cat,
+            by_image,
+        })
+    }
+
+    /// Flat slice of every detection.
+    pub fn detections(&self) -> &[CocoDetection] {
+        &self.detections
+    }
+
+    /// Indices into [`Self::detections`] for one `(image, category)`
+    /// cell. Empty slice when the cell is empty (no detections of that
+    /// category on that image).
+    pub fn indices_for(&self, image: ImageId, cat: CategoryId) -> &[usize] {
+        self.by_image_cat
+            .get(&(image, cat))
+            .map_or(&[][..], Vec::as_slice)
+    }
+
+    /// Indices into [`Self::detections`] for every detection on an
+    /// image, regardless of category. Used by the orchestrator when
+    /// `useCats=false` (quirk **L4**).
+    pub fn indices_for_image(&self, image: ImageId) -> &[usize] {
+        self.by_image.get(&image).map_or(&[][..], Vec::as_slice)
     }
 }
 
@@ -604,6 +785,132 @@ mod tests {
         let ann = &ds.annotations()[0];
         assert!(ann.effective_ignore(ParityMode::Strict));
         assert!(ann.effective_ignore(ParityMode::Corrected));
+    }
+
+    // -- Per-cell index ((image, category)) -------------------------------
+
+    #[test]
+    fn ann_indices_for_image_cat_returns_correct_subset() {
+        const TWO_CATS: &str = r#"{
+            "images": [{"id": 1, "width": 10, "height": 10}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 2, "image_id": 1, "category_id": 2,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 3, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0}
+            ],
+            "categories": [
+                {"id": 1, "name": "a"}, {"id": 2, "name": "b"}
+            ]
+        }"#;
+        let ds = CocoDataset::from_json_bytes(TWO_CATS.as_bytes()).unwrap();
+        let cat1: Vec<AnnId> = ds
+            .ann_indices_for(ImageId(1), CategoryId(1))
+            .iter()
+            .map(|&i| ds.annotations()[i].id)
+            .collect();
+        assert_eq!(cat1, vec![AnnId(1), AnnId(3)]);
+        let cat2: Vec<AnnId> = ds
+            .ann_indices_for(ImageId(1), CategoryId(2))
+            .iter()
+            .map(|&i| ds.annotations()[i].id)
+            .collect();
+        assert_eq!(cat2, vec![AnnId(2)]);
+        assert!(ds.ann_indices_for(ImageId(1), CategoryId(99)).is_empty());
+        assert!(ds.ann_indices_for(ImageId(99), CategoryId(1)).is_empty());
+    }
+
+    // -- CocoDetections: J1 (auto-id), J3 (area from bbox), validation ----
+
+    fn dt_input(image: i64, cat: i64, score: f64, bbox: (f64, f64, f64, f64)) -> DetectionInput {
+        DetectionInput {
+            id: None,
+            image_id: ImageId(image),
+            category_id: CategoryId(cat),
+            score,
+            bbox: Bbox {
+                x: bbox.0,
+                y: bbox.1,
+                w: bbox.2,
+                h: bbox.3,
+            },
+        }
+    }
+
+    #[test]
+    fn j1_auto_assigns_ids_when_absent() {
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 1.0, 1.0)),
+            dt_input(1, 1, 0.8, (0.0, 0.0, 1.0, 1.0)),
+        ])
+        .unwrap();
+        let ids: Vec<AnnId> = dts.detections().iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![AnnId(1), AnnId(2)]);
+    }
+
+    #[test]
+    fn j1_preserves_user_supplied_ids() {
+        let mut a = dt_input(1, 1, 0.9, (0.0, 0.0, 1.0, 1.0));
+        a.id = Some(AnnId(42));
+        let mut b = dt_input(1, 1, 0.8, (0.0, 0.0, 1.0, 1.0));
+        b.id = Some(AnnId(7));
+        let dts = CocoDetections::from_inputs(vec![a, b]).unwrap();
+        let ids: Vec<AnnId> = dts.detections().iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![AnnId(42), AnnId(7)]);
+    }
+
+    #[test]
+    fn j3_derives_area_from_bbox() {
+        let dts =
+            CocoDetections::from_inputs(vec![dt_input(1, 1, 0.5, (10.0, 10.0, 4.0, 5.0))]).unwrap();
+        assert_eq!(dts.detections()[0].area, 20.0);
+    }
+
+    #[test]
+    fn rejects_non_finite_score() {
+        let err = CocoDetections::from_inputs(vec![dt_input(1, 1, f64::NAN, (0.0, 0.0, 1.0, 1.0))])
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            EvalError::NonFinite {
+                context: "detection score"
+            }
+        ));
+    }
+
+    #[test]
+    fn detections_indices_per_image_cat() {
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 1.0, 1.0)),
+            dt_input(1, 2, 0.8, (0.0, 0.0, 1.0, 1.0)),
+            dt_input(2, 1, 0.7, (0.0, 0.0, 1.0, 1.0)),
+        ])
+        .unwrap();
+        assert_eq!(dts.indices_for(ImageId(1), CategoryId(1)), &[0]);
+        assert_eq!(dts.indices_for(ImageId(1), CategoryId(2)), &[1]);
+        assert_eq!(dts.indices_for(ImageId(2), CategoryId(1)), &[2]);
+        assert!(dts.indices_for(ImageId(99), CategoryId(1)).is_empty());
+        // Quirk L4 path: indices_for_image returns every category.
+        let img1: Vec<usize> = dts.indices_for_image(ImageId(1)).to_vec();
+        assert_eq!(img1, vec![0, 1]);
+    }
+
+    #[test]
+    fn loads_detections_from_json_array() {
+        const JSON: &str = r#"[
+            {"image_id": 1, "category_id": 1, "score": 0.9,
+             "bbox": [0, 0, 2, 3]},
+            {"id": 7, "image_id": 1, "category_id": 1, "score": 0.5,
+             "bbox": [1, 1, 1, 1]}
+        ]"#;
+        let dts = CocoDetections::from_json_bytes(JSON.as_bytes()).unwrap();
+        let ds = dts.detections();
+        assert_eq!(ds[0].id, AnnId(1)); // auto-assigned
+        assert_eq!(ds[0].area, 6.0); // J3
+        assert_eq!(ds[1].id, AnnId(7)); // user-supplied (J1)
+        assert!(!ds[0].is_crowd()); // E2/J4
     }
 
     // -- Property: index invariants hold across arbitrary datasets --------
