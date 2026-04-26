@@ -11,9 +11,18 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Literal
 
+from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._core import Summary, evaluate_bbox_summary, version
 
-__all__ = ["Evaluator", "IouType", "ParityMode", "Summary", "__version__", "version"]
+__all__ = [
+    "COCOeval",
+    "Evaluator",
+    "IouType",
+    "ParityMode",
+    "Summary",
+    "__version__",
+    "version",
+]
 
 __version__: str = version()
 
