@@ -32,7 +32,7 @@ build:
 test: test-rust test-py
 
 test-rust:
-    cargo nextest run --workspace
+    uv run cargo nextest run --workspace
 
 test-py:
     uv run pytest

@@ -16,7 +16,10 @@ workspace = true
 [dependencies]
 ndarray.workspace = true
 thiserror.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
+proptest = { workspace = true }
 # Benchmarks added when the first hot path lands; gated behind a feature
 # so the main test suite stays fast.
