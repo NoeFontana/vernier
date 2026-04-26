@@ -1,0 +1,41 @@
+# Rust
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+.Python
+.pytest_cache/
+.ruff_cache/
+.pyright/
+.mypy_cache/
+*.egg-info/
+build/
+dist/
+
+# uv / venv
+.venv/
+.env
+.python-version.local
+
+# Maturin
+/python/vernier/_core*.so
+/python/vernier/_core*.pyd
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Profiling outputs
+*.prof
+flamegraph.svg
+samply-*.json.gz
+perf.data*

@@ -1,0 +1,114 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+# ---------------------------------------------------------------------------
+# Project metadata
+# ---------------------------------------------------------------------------
+[project]
+name = "vernier"
+version = "0.0.0"
+description = "High-performance, parity-preserving COCO-style evaluation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+authors = [{ name = "The vernier authors" }]
+keywords = ["evaluation", "metrics", "computer-vision", "detection", "coco", "object-detection"]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Rust",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+torch = ["torch>=2.1"]
+viz = ["plotly>=5.20"]
+
+[project.urls]
+Homepage = "https://github.com/vernier-rs/vernier"
+Repository = "https://github.com/vernier-rs/vernier"
+Documentation = "https://github.com/vernier-rs/vernier#readme"
+Issues = "https://github.com/vernier-rs/vernier/issues"
+
+# ---------------------------------------------------------------------------
+# Maturin: PyO3 mixed Rust/Python build
+# ---------------------------------------------------------------------------
+[tool.maturin]
+module-name = "vernier._core"
+manifest-path = "crates/vernier-ffi/Cargo.toml"
+python-source = "python"
+features = ["pyo3/extension-module", "extension-module"]
+strip = true
+
+# ---------------------------------------------------------------------------
+# uv dev dependencies (PEP 735)
+# ---------------------------------------------------------------------------
+[dependency-groups]
+dev = [
+    "maturin>=1.7,<2.0",
+    "pytest>=8",
+    "pytest-benchmark>=4",
+    "ruff>=0.7",
+    "pyright>=1.1.380",
+]
+
+# ---------------------------------------------------------------------------
+# Ruff: lint + format
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["python", "tests/python"]
+extend-exclude = ["target", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "UP",            # pyupgrade
+    "B",             # bugbear
+    "SIM",           # flake8-simplify
+    "RUF",           # ruff-specific
+    "N",             # pep8-naming
+    "PT",            # pytest style
+    "PYI",           # stub files
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B", "N802"]   # tests can be sloppier
+
+# ---------------------------------------------------------------------------
+# Pyright: strict on the public API, warn on tests
+# ---------------------------------------------------------------------------
+[tool.pyright]
+include = ["python", "tests/python"]
+exclude = ["**/__pycache__", "target", ".venv"]
+strict = ["python/vernier"]
+pythonVersion = "3.10"
+reportMissingImports = "error"
+reportMissingTypeStubs = "warning"
+reportUnnecessaryTypeIgnoreComment = "warning"
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
+addopts = "-ra --strict-markers --strict-config"
+markers = [
+    "slow: marks tests as slow (skip with -m 'not slow')",
+    "parity: parity tests against the reference oracle",
+]

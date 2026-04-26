@@ -1,0 +1,73 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vernier-core",
+    "crates/vernier-ffi",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.82"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/vernier-rs/vernier"
+authors = ["The vernier authors"]
+homepage = "https://github.com/vernier-rs/vernier"
+keywords = ["evaluation", "metrics", "computer-vision", "detection", "coco"]
+categories = ["science", "computer-vision"]
+
+# ---------------------------------------------------------------------------
+# Workspace-wide lints. Per the project blueprint, we deny common footguns
+# in clippy. unsafe_code is not denied workspace-wide because the FFI crate
+# may need carefully-audited unsafe for DLPack interop; each crate states
+# its own unsafe policy in its lib.rs.
+# ---------------------------------------------------------------------------
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "warn"
+print_stderr = "warn"
+# Pedantic lints we opt into selectively rather than wholesale.
+needless_pass_by_value = "warn"
+redundant_clone = "warn"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unreachable_pub = "warn"
+unused_must_use = "deny"
+
+# ---------------------------------------------------------------------------
+# Shared dependency versions. Crates inherit via `dep.workspace = true`.
+# Pin minor versions; bumps go through an ADR if they ripple through the FFI.
+# ---------------------------------------------------------------------------
+[workspace.dependencies]
+ndarray = "0.16"
+thiserror = "2"
+pyo3 = { version = "0.23", default-features = false, features = ["macros", "abi3-py310"] }
+numpy = "0.23"
+pyo3-stub-gen = "0.7"
+
+# ---------------------------------------------------------------------------
+# Release profile tuned for FFI workloads: thin LTO + single codegen unit
+# gives ~10-20% speedup on the IoU/accumulate inner loops without exploding
+# compile times the way fat LTO does. line-tables-only debug info keeps
+# wheels small while preserving stack traces.
+# ---------------------------------------------------------------------------
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = "line-tables-only"
+strip = "debuginfo"
+
+# Faster local dev: skip LTO, more codegen units.
+[profile.dev]
+opt-level = 0
+
+# bench profile mirrors release; divan and criterion both use it.
+[profile.bench]
+lto = "thin"
+codegen-units = 1

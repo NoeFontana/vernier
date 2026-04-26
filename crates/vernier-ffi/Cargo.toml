@@ -1,0 +1,28 @@
+[package]
+name = "vernier-ffi"
+description = "PyO3 bindings for the vernier evaluation library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false  # FFI shim; real distribution is via the wheel.
+
+[lib]
+name = "_core"
+crate-type = ["cdylib", "rlib"]
+
+[lints]
+workspace = true
+
+[features]
+default = []
+# Enabled by maturin during wheel builds. We keep it opt-in so that
+# `cargo test -p vernier-ffi` still links (extension-module breaks
+# linking against libpython on most platforms).
+extension-module = ["pyo3/extension-module"]
+
+[dependencies]
+vernier-core = { path = "../vernier-core", version = "0.0.0" }
+pyo3 = { workspace = true, features = ["macros", "abi3-py310"] }
+numpy.workspace = true
