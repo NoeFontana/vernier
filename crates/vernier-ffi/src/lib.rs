@@ -18,9 +18,9 @@ use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use vernier_core::{
-    accumulate, evaluate_bbox, iou_thresholds as iou_thresholds_default, recall_thresholds,
-    summarize_detection, AccumulateParams, AreaRange, CocoDataset, CocoDetections, EvalError,
-    EvaluateBboxParams, ParityMode, Summary,
+    accumulate, evaluate_bbox, iou_thresholds, recall_thresholds, summarize_detection,
+    AccumulateParams, AreaRange, CocoDataset, CocoDetections, EvalError, EvaluateBboxParams,
+    ParityMode, Summary,
 };
 
 /// Returns the underlying `vernier-core` version string. Useful as a smoke
@@ -78,29 +78,34 @@ fn evaluate_bbox_summary(
     use_cats: bool,
 ) -> PyResult<PySummary> {
     let parity = parse_parity_mode(parity_mode)?;
-    // Copy the JSON bytes out of Python ownership so the Rust closure
-    // can run with the GIL released.
-    let gt_bytes: Vec<u8> = gt_json.as_bytes().to_vec();
-    let dt_bytes: Vec<u8> = dt_json.as_bytes().to_vec();
+    if max_dets.is_empty() {
+        return Err(PyValueError::new_err(
+            "max_dets must contain at least one entry",
+        ));
+    }
+    // Parse JSON under the GIL: PyBytes borrows release as soon as parsing
+    // returns, and the resulting Arc-backed datasets are Send + Sync, so the
+    // closure below can take them by value without copying the raw payload.
+    let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
     let summary = py
-        .detach(move || run_bbox_pipeline(&gt_bytes, &dt_bytes, parity, &max_dets, use_cats))
+        .detach(move || run_bbox_pipeline(&gt, &dt, parity, &max_dets, use_cats))
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
     Ok(PySummary { inner: summary })
 }
 
 fn run_bbox_pipeline(
-    gt_bytes: &[u8],
-    dt_bytes: &[u8],
+    gt: &CocoDataset,
+    dt: &CocoDetections,
     parity: ParityMode,
     max_dets: &[usize],
     use_cats: bool,
 ) -> Result<Summary, EvalError> {
-    let gt = CocoDataset::from_json_bytes(gt_bytes)?;
-    let dt = CocoDetections::from_json_bytes(dt_bytes)?;
-
-    let iou_thr = iou_thresholds_default();
+    let iou_thr = iou_thresholds();
     let area = AreaRange::coco_default();
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
     let eval_params = EvaluateBboxParams {
@@ -109,7 +114,7 @@ fn run_bbox_pipeline(
         max_dets_per_image: max_det_top,
         use_cats,
     };
-    let grid = evaluate_bbox(&gt, &dt, eval_params, parity)?;
+    let grid = evaluate_bbox(gt, dt, eval_params, parity)?;
 
     let acc_params = AccumulateParams {
         iou_thresholds: iou_thr,

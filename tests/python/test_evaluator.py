@@ -51,17 +51,21 @@ DT_PERFECT = json.dumps(
 ).encode()
 
 
+# Indices into the canonical 12-stat pycocotools detection vector; see
+# docs/reference/coco-summary-stats.md (Phase 1 deliverable) for the full table.
+AP, AP_S, AP_M, AP_L, AR_100 = 0, 3, 4, 5, 8
+
+
 def test_evaluator_perfect_match_yields_perfect_ap() -> None:
     summary = Evaluator().evaluate(GT_PERFECT, DT_PERFECT)
     stats = summary.stats
     assert isinstance(summary, Summary)
     # AP, AP_S populated; AP_M / AP_L absent (quirk C5 → -1).
-    assert stats[0] == pytest.approx(1.0)
-    assert stats[3] == pytest.approx(1.0)
-    assert stats[4] == -1.0
-    assert stats[5] == -1.0
-    # AR@100 should also be 1.0.
-    assert stats[8] == pytest.approx(1.0)
+    assert stats[AP] == pytest.approx(1.0)
+    assert stats[AP_S] == pytest.approx(1.0)
+    assert stats[AP_M] == -1.0
+    assert stats[AP_L] == -1.0
+    assert stats[AR_100] == pytest.approx(1.0)
 
 
 def test_evaluator_pretty_lines_match_pycocotools_shape() -> None:
@@ -79,7 +83,8 @@ def test_evaluator_pretty_lines_match_pycocotools_shape() -> None:
 
 def test_evaluator_is_immutable() -> None:
     e = Evaluator()
-    with pytest.raises((AttributeError, TypeError)):
+    # frozen dataclass raises FrozenInstanceError, a subclass of AttributeError.
+    with pytest.raises(AttributeError):
         e.parity_mode = "strict"  # pyright: ignore[reportAttributeAccessIssue]
 
 
