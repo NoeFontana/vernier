@@ -41,6 +41,14 @@ test-py:
 test-parity:
     uv run pytest -m parity
 
+# Run the COCO val2017 whole-dataset parity smoke.
+# Requires VERNIER_COCO_GT_PATH and VERNIER_COCO_DT_PATH to point at
+# the GT annotations and a detector predictions JSON. See
+# docs/engineering/coco-val-parity.md (and tools/fetch-coco-val.sh)
+# for the canonical setup.
+test-coco-val:
+    uv run pytest -m coco_val -v
+
 # ---------------------------------------------------------------------------
 # Lint & format
 # ---------------------------------------------------------------------------
