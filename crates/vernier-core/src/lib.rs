@@ -18,6 +18,7 @@
 pub mod dataset;
 pub mod error;
 pub mod parity;
+pub mod similarity;
 
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
@@ -27,6 +28,7 @@ pub use error::EvalError;
 pub use parity::{
     iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,
 };
+pub use similarity::{BboxAnn, BboxIou, Similarity};
 
 /// Library version string. Useful for parity tracing in fixtures and for
 /// debugging mismatches between Rust and Python sides of the FFI boundary.
