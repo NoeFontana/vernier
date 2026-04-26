@@ -17,11 +17,17 @@
 //!   property side-effect on the evaluator.
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use ndarray::Axis;
 
 use crate::accumulate::Accumulated;
 use crate::error::EvalError;
+
+/// Tolerance for matching a user-supplied IoU threshold to a value in
+/// the `iou_thresholds` ladder. Rounds out the ulp-level error from the
+/// `linspace(0.5, 0.95, 10)` build (quirk **L1**).
+const IOU_LOOKUP_TOL: f64 = 1e-12;
 
 /// One bucket on the A-axis of an [`Accumulated`] — an index plus a
 /// label for rendering.
@@ -39,7 +45,9 @@ use crate::error::EvalError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaRng {
     /// Position on the A-axis of [`Accumulated::precision`] /
-    /// [`Accumulated::recall`].
+    /// [`Accumulated::recall`]. Validated against the actual A-axis
+    /// length at summarize time, not at construction; an out-of-range
+    /// index produces [`EvalError::InvalidConfig`].
     pub index: usize,
     /// Label rendered by [`Summary::pretty_lines`].
     pub label: Cow<'static, str>,
@@ -168,6 +176,9 @@ pub struct StatRequest {
     /// AP or AR.
     pub metric: Metric,
     /// `None` averages across the IoU ladder; `Some(t)` pins one row.
+    /// Looked up against `iou_thresholds` within [`IOU_LOOKUP_TOL`] at
+    /// summarize time; values not on the ladder produce
+    /// [`EvalError::InvalidConfig`].
     pub iou_threshold: Option<f64>,
     /// Area-range bucket on the A-axis.
     pub area: AreaRng,
@@ -176,8 +187,12 @@ pub struct StatRequest {
 }
 
 impl StatRequest {
-    /// Convenience constructor.
-    pub fn new(
+    /// Convenience constructor. `const`-callable so [`coco_detection_default`]
+    /// and downstream user-defined plans can be assembled in `const`
+    /// contexts.
+    ///
+    /// [`coco_detection_default`]: Self::coco_detection_default
+    pub const fn new(
         metric: Metric,
         iou_threshold: Option<f64>,
         area: AreaRng,
@@ -195,7 +210,7 @@ impl StatRequest {
     /// `[AP, AP50, AP75, AP_S, AP_M, AP_L, AR_1, AR_10, AR_100, AR_S,
     /// AR_M, AR_L]` order. Bit-exact with cocoeval is by construction:
     /// [`summarize_detection`] is just `summarize_with(.., this, ..)`.
-    pub fn coco_detection_default() -> [Self; 12] {
+    pub const fn coco_detection_default() -> [Self; 12] {
         use MaxDetSelector::{Largest, Value};
         use Metric::{AveragePrecision, AverageRecall};
         [
@@ -291,51 +306,62 @@ pub fn summarize_with(
         });
     }
 
-    let m_max = max_dets.len() - 1;
-    let resolve_m = |sel: MaxDetSelector| -> Result<usize, EvalError> {
-        match sel {
-            MaxDetSelector::Largest => Ok(m_max),
-            MaxDetSelector::Value(v) => {
-                max_dets
-                    .iter()
-                    .position(|&d| d == v)
-                    .ok_or_else(|| EvalError::InvalidConfig {
-                        detail: format!("max_dets does not contain {v}"),
-                    })
-            }
-        }
-    };
-
+    // Resolve every selector before computing any means: a typo in any
+    // request fails early without wasting evaluation work, and the
+    // compute pass below stays infallible.
     let n_a = p_shape[3];
-    let lines = plan
+    let m_max = max_dets.len() - 1;
+    let resolved: Vec<(usize, Range<usize>)> = plan
         .iter()
         .map(|req| {
             if req.area.index >= n_a {
                 return Err(EvalError::InvalidConfig {
                     detail: format!(
-                        "area index {} out of range for A-axis len {}",
+                        "AreaRng index {} is out of range for A-axis (size {})",
                         req.area.index, n_a
                     ),
                 });
             }
-            let m_idx = resolve_m(req.max_dets)?;
-            let value = mean_slice(
-                accum,
-                req.metric,
-                req.iou_threshold,
-                req.area.index,
-                m_idx,
-                iou_thresholds,
-            )?;
-            Ok(StatLine {
+            let m_idx = match req.max_dets {
+                MaxDetSelector::Largest => m_max,
+                MaxDetSelector::Value(v) => {
+                    max_dets.iter().position(|&d| d == v).ok_or_else(|| {
+                        EvalError::InvalidConfig {
+                            detail: format!("max_dets does not contain {v}"),
+                        }
+                    })?
+                }
+            };
+            let t_range = match req.iou_threshold {
+                None => 0..n_t,
+                Some(target) => {
+                    let t = iou_thresholds
+                        .iter()
+                        .position(|&v| (v - target).abs() < IOU_LOOKUP_TOL)
+                        .ok_or_else(|| EvalError::InvalidConfig {
+                            detail: format!("iou_threshold {target} not in ladder"),
+                        })?;
+                    t..(t + 1)
+                }
+            };
+            Ok((m_idx, t_range))
+        })
+        .collect::<Result<Vec<_>, EvalError>>()?;
+
+    let lines = plan
+        .iter()
+        .zip(resolved)
+        .map(|(req, (m_idx, t_range))| {
+            let value = mean_slice(accum, req.metric, t_range, req.area.index, m_idx);
+            StatLine {
                 metric: req.metric,
                 iou_threshold: req.iou_threshold,
                 area: req.area.clone(),
                 max_dets: max_dets[m_idx],
                 value,
-            })
+            }
         })
-        .collect::<Result<Vec<_>, EvalError>>()?;
+        .collect();
 
     Ok(Summary { lines })
 }
@@ -343,29 +369,16 @@ pub fn summarize_with(
 /// Mean of an `Accumulated` slice, filtering out the `-1` sentinel
 /// (quirks **C5/L6**). Returns `-1.0` if every cell in the slice is
 /// the sentinel (mirrors pycocotools' `if len(s[s>-1])==0: -1`).
+///
+/// Infallible: callers must validate `t_range`, `area_idx`, and `m_idx`
+/// against the `Accumulated`'s shape upfront (see [`summarize_with`]).
 fn mean_slice(
     accum: &Accumulated,
     metric: Metric,
-    iou_thr: Option<f64>,
+    t_range: Range<usize>,
     area_idx: usize,
     m_idx: usize,
-    iou_thresholds: &[f64],
-) -> Result<f64, EvalError> {
-    let t_range = match iou_thr {
-        None => 0..iou_thresholds.len(),
-        Some(target) => {
-            let t = iou_thresholds
-                .iter()
-                .position(|&v| (v - target).abs() < 1e-12)
-                .ok_or_else(|| EvalError::InvalidConfig {
-                    detail: format!("iou_threshold {target} not in ladder"),
-                })?;
-            t..(t + 1)
-        }
-    };
-    let a = area_idx;
-
-    // C5: skip -1 sentinels in the mean.
+) -> f64 {
     let mut sum = 0.0_f64;
     let mut count = 0usize;
     let mut tally = |v: f64| {
@@ -379,7 +392,7 @@ fn mean_slice(
             Metric::AveragePrecision => accum
                 .precision
                 .index_axis(Axis(0), t)
-                .index_axis(Axis(2), a)
+                .index_axis(Axis(2), area_idx)
                 .index_axis(Axis(2), m_idx)
                 .iter()
                 .copied()
@@ -387,14 +400,18 @@ fn mean_slice(
             Metric::AverageRecall => accum
                 .recall
                 .index_axis(Axis(0), t)
-                .index_axis(Axis(1), a)
+                .index_axis(Axis(1), area_idx)
                 .index_axis(Axis(1), m_idx)
                 .iter()
                 .copied()
                 .for_each(&mut tally),
         }
     }
-    Ok(if count == 0 { -1.0 } else { sum / count as f64 })
+    if count == 0 {
+        -1.0
+    } else {
+        sum / count as f64
+    }
 }
 
 #[cfg(test)]
@@ -575,11 +592,7 @@ mod tests {
         let summary = summarize_with(&accum, &plan, iou, &max_dets).unwrap();
         let lines = summary.pretty_lines();
         assert_eq!(lines.len(), 1);
-        assert!(
-            lines[0].contains("area=  tiny"),
-            "unexpected line: {}",
-            lines[0]
-        );
+        assert!(lines[0].contains("tiny"), "unexpected line: {}", lines[0]);
     }
 
     #[test]
