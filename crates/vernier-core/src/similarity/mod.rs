@@ -3,9 +3,7 @@
 //! Per ADR-0005, the [`Similarity`] trait is the single extension point
 //! for new IoU types. Each impl owns its own configuration (sigmas,
 //! crowd asymmetry, prefilter thresholds, …) and the matching engine
-//! reads only the trait — never a concrete IoU type. Phase 2 (segm) and
-//! Phase 3 (keypoints/OKS) add new impls; the matching engine and
-//! accumulator are not touched.
+//! reads only the trait — never a concrete IoU type.
 //!
 //! Per ADR-0004, kernels compute in `f32` internally where the algorithm's
 //! error budget allows it, but the matrix at the boundary is always
@@ -25,14 +23,11 @@ pub use bbox::{BboxAnn, BboxIou};
 
 /// Computes a pairwise similarity matrix for one image's GT × DT pairs.
 ///
-/// Implementations:
-/// - [`BboxIou`] — axis-aligned bbox IoU (Phase 1).
-/// - `SegmIou` — RLE-mask IoU (Phase 2, future).
-/// - `OksSimilarity` — keypoint OKS (Phase 3, future).
-///
 /// The associated [`Self::Annotation`] type is the per-impl annotation
-/// shape. For bbox it carries the bbox plus the `is_crowd` flag (E1
-/// asymmetry lives in the impl, not in matching).
+/// shape. For bbox ([`BboxIou`]) it carries the bbox plus the `is_crowd`
+/// flag — the E1 asymmetry lives in the impl, not in matching, so new
+/// IoU types (segm, OKS, …) plug in without touching the matching
+/// engine.
 pub trait Similarity: Send + Sync {
     /// Per-impl annotation shape. The matching engine sees only the
     /// matrix produced by [`Self::compute`]; the annotation type stays

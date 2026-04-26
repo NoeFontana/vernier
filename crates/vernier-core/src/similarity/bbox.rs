@@ -1,4 +1,4 @@
-//! Axis-aligned bbox IoU — first [`Similarity`] impl.
+//! Axis-aligned bbox IoU.
 //!
 //! Mirrors `pycocotools.cocoeval.COCOeval.computeIoU` for `iouType="bbox"`.
 //! Per ADR-0004, intermediate values are `f32` and the matrix at the
@@ -77,84 +77,89 @@ impl Similarity for BboxIou {
             return Ok(());
         }
 
-        // SoA scatter (per ADR-0004). The per-pair compute reads four
-        // contiguous `Vec<f32>` buffers, not the AoS `&[BboxAnn]`. The
-        // scatter cost is O(n+m) and amortizes against the O(n*m) inner
-        // loop for any non-trivial input.
-        let n_gt = gts.len();
-        let n_dt = dts.len();
-
-        let mut gt_x: Vec<f32> = Vec::with_capacity(n_gt);
-        let mut gt_y: Vec<f32> = Vec::with_capacity(n_gt);
-        let mut gt_w: Vec<f32> = Vec::with_capacity(n_gt);
-        let mut gt_h: Vec<f32> = Vec::with_capacity(n_gt);
-        let mut gt_iscrowd: Vec<bool> = Vec::with_capacity(n_gt);
-        for g in gts {
-            gt_x.push(g.bbox.x as f32);
-            gt_y.push(g.bbox.y as f32);
-            gt_w.push(g.bbox.w as f32);
-            gt_h.push(g.bbox.h as f32);
-            gt_iscrowd.push(g.is_crowd);
-        }
-
-        let mut dt_x: Vec<f32> = Vec::with_capacity(n_dt);
-        let mut dt_y: Vec<f32> = Vec::with_capacity(n_dt);
-        let mut dt_w: Vec<f32> = Vec::with_capacity(n_dt);
-        let mut dt_h: Vec<f32> = Vec::with_capacity(n_dt);
-        for d in dts {
-            dt_x.push(d.bbox.x as f32);
-            dt_y.push(d.bbox.y as f32);
-            dt_w.push(d.bbox.w as f32);
-            dt_h.push(d.bbox.h as f32);
-        }
-
         // `dispatch` runs the closure with the best-available SIMD
         // target features enabled, so LLVM auto-vectorizes the inner
         // loop across AVX2 / AVX-512 / NEON without per-arch source
-        // duplication. Manual `WithSimd` impls can come later if benches
-        // show this isn't enough.
+        // duplication. The crowd flag (E1) is hoisted to the outer loop
+        // so each inner pass is branch-free FMA-chain math.
         let arch = pulp::Arch::new();
         arch.dispatch(|| {
-            for g in 0..n_gt {
-                let gxa = gt_x[g];
-                let gya = gt_y[g];
-                let gxb = gxa + gt_w[g];
-                let gyb = gya + gt_h[g];
-                let g_area = gt_w[g] * gt_h[g];
-                let crowd = gt_iscrowd[g];
+            for (g, gt) in gts.iter().enumerate() {
+                let gxa = gt.bbox.x as f32;
+                let gya = gt.bbox.y as f32;
+                let gw = gt.bbox.w as f32;
+                let gh = gt.bbox.h as f32;
+                let gxb = gxa + gw;
+                let gyb = gya + gh;
+                let g_area = gw * gh;
 
-                for d in 0..n_dt {
-                    let dxa = dt_x[d];
-                    let dya = dt_y[d];
-                    let dxb = dxa + dt_w[d];
-                    let dyb = dya + dt_h[d];
-                    let d_area = dt_w[d] * dt_h[d];
-
-                    // Quirk I4: edge-sharing → zero IoU. The
-                    // `(min - max).max(0)` form gives 0 when the boxes
-                    // touch on a side rather than overlap.
-                    let iw = (gxb.min(dxb) - gxa.max(dxa)).max(0.0);
-                    let ih = (gyb.min(dyb) - gya.max(dya)).max(0.0);
-                    let inter = iw * ih;
-
-                    // Quirk E1: crowd asymmetric IoU.
-                    let denom = if crowd {
-                        d_area
-                    } else {
-                        g_area + d_area - inter
-                    };
-
-                    // Quirk I3: single zero-denominator guard.
-                    let iou = if denom > 0.0 { inter / denom } else { 0.0 };
-
-                    // f32 → f64 is exact (per ADR-0004); the cast
-                    // introduces no rounding error.
-                    out[[g, d]] = f64::from(iou);
+                let mut row = out.row_mut(g);
+                if gt.is_crowd {
+                    for (d, dt) in dts.iter().enumerate() {
+                        row[d] = f64::from(iou_pair(gxa, gya, gxb, gyb, dt.bbox, CrowdDenom));
+                    }
+                } else {
+                    for (d, dt) in dts.iter().enumerate() {
+                        row[d] =
+                            f64::from(iou_pair(gxa, gya, gxb, gyb, dt.bbox, UnionDenom(g_area)));
+                    }
                 }
             }
         });
 
         Ok(())
+    }
+}
+
+/// Marker trait for the E1 crowd branch hoisted out of the inner loop.
+///
+/// Crowd GT uses the asymmetric `intersect / dt_area`; non-crowd GT uses
+/// the symmetric `intersect / (g_area + d_area - intersect)`. Choosing
+/// once per GT row keeps each inner loop branch-free.
+trait Denom: Copy {
+    fn denom(self, d_area: f32, inter: f32) -> f32;
+}
+
+#[derive(Clone, Copy)]
+struct CrowdDenom;
+impl Denom for CrowdDenom {
+    #[inline(always)]
+    fn denom(self, d_area: f32, _inter: f32) -> f32 {
+        d_area
+    }
+}
+
+#[derive(Clone, Copy)]
+struct UnionDenom(f32);
+impl Denom for UnionDenom {
+    #[inline(always)]
+    fn denom(self, d_area: f32, inter: f32) -> f32 {
+        self.0 + d_area - inter
+    }
+}
+
+#[inline(always)]
+fn iou_pair<D: Denom>(gxa: f32, gya: f32, gxb: f32, gyb: f32, dt: Bbox, denom: D) -> f32 {
+    let dxa = dt.x as f32;
+    let dya = dt.y as f32;
+    let dw = dt.w as f32;
+    let dh = dt.h as f32;
+    let dxb = dxa + dw;
+    let dyb = dya + dh;
+    let d_area = dw * dh;
+
+    // Quirk I4: edge-sharing → zero. `(min - max).max(0)` gives 0 when
+    // the boxes touch on a side rather than overlap.
+    let iw = (gxb.min(dxb) - gxa.max(dxa)).max(0.0);
+    let ih = (gyb.min(dyb) - gya.max(dya)).max(0.0);
+    let inter = iw * ih;
+
+    let denom = denom.denom(d_area, inter);
+    // Quirk I3: single zero-denominator guard.
+    if denom > 0.0 {
+        inter / denom
+    } else {
+        0.0
     }
 }
 
