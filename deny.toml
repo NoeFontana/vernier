@@ -6,7 +6,13 @@ all-features = true
 
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # `paste` is archived/unmaintained, pulled transitively by `pulp` (our
+    # ADR-0003 SIMD dispatch crate). No upstream replacement is available
+    # and `pulp` has no published version that drops the dep. Revisit when
+    # `pulp` migrates (e.g., to `pastey`).
+    { id = "RUSTSEC-2024-0436", reason = "transitive via pulp; no fix upstream" },
+]
 yanked = "deny"
 
 [licenses]
