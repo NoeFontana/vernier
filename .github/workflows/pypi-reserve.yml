@@ -12,15 +12,16 @@ name: PyPI Reserve
 on:
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   publish:
     name: build and publish PyPI placeholder
     runs-on: ubuntu-latest
+    # Job-level permissions REPLACE workflow-level permissions, not merge
+    # with them — both must be listed here, otherwise actions/checkout
+    # gets "Repository not found" on a private repo.
     permissions:
-      id-token: write   # required for Trusted Publisher OIDC
+      contents: read    # actions/checkout
+      id-token: write   # Trusted Publisher OIDC
     steps:
       - uses: actions/checkout@v6
 
