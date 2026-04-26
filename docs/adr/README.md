@@ -22,6 +22,8 @@ Decision Records). To propose a new ADR:
 | 0003 | Use `pulp` for stable-Rust SIMD with runtime CPU dispatch| accepted |
 | 0004 | Numerical layout policy — f32 internal, f64 boundary, SoA, pinned constants | accepted |
 | 0005 | Lock the `Similarity` trait and matching-engine API for Phases 1–3 | accepted |
+| 0006 | Threading model — GIL-drop at every PyO3 entry, single-threaded compute for Phase 1 | proposed |
+| 0007 | `patch_pycocotools` — opt-in `sys.modules` monkey-patch as the migration path | proposed |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
