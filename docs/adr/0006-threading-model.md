@@ -1,6 +1,6 @@
 # ADR-0006: Threading model — GIL-drop at every PyO3 entry, single-threaded compute for Phase 1
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-26
 - **Deciders:** @NoeFontana
 - **Consulted:** —

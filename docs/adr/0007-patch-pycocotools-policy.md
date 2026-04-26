@@ -1,6 +1,6 @@
 # ADR-0007: `patch_pycocotools` — opt-in `sys.modules` monkey-patch as the migration path
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-26
 - **Deciders:** @NoeFontana
 - **Consulted:** —
