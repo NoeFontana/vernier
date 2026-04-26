@@ -16,35 +16,60 @@
 //! - **L7** (`corrected`): the result is a value (`Summary`), not a
 //!   property side-effect on the evaluator.
 
+use std::borrow::Cow;
+
 use ndarray::Axis;
 
 use crate::accumulate::Accumulated;
 use crate::error::EvalError;
 
-/// COCO area-range buckets, as enumerated by pycocotools'
-/// `Params.areaRngLbl` for detection: `[all, small, medium, large]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AreaRng {
-    /// Full range — pycocotools' `[0, 1e10]`. Index 0.
-    All,
-    /// Small — pycocotools' `[0, 32^2]`. Index 1.
-    Small,
-    /// Medium — `[32^2, 96^2]`. Index 2.
-    Medium,
-    /// Large — `[96^2, 1e10]`. Index 3.
-    Large,
+/// One bucket on the A-axis of an [`Accumulated`] — an index plus a
+/// label for rendering.
+///
+/// The canonical pycocotools detection layout is exposed as
+/// [`AreaRng::ALL`] / [`SMALL`](Self::SMALL) / [`MEDIUM`](Self::MEDIUM)
+/// / [`LARGE`](Self::LARGE), matching the cocoeval `Params.areaRngLbl`
+/// order. Custom layouts (e.g., LVIS or robotics-style finer buckets)
+/// are constructed with [`AreaRng::new`] for owned labels or
+/// [`AreaRng::from_static`] for `&'static str` labels.
+///
+/// The *bounds* that turn an annotation's area into a bucket index
+/// live upstream, on the orchestrator that builds [`crate::PerImageEval`]
+/// cells; the summarizer only consumes the resulting A-axis index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AreaRng {
+    /// Position on the A-axis of [`Accumulated::precision`] /
+    /// [`Accumulated::recall`].
+    pub index: usize,
+    /// Label rendered by [`Summary::pretty_lines`].
+    pub label: Cow<'static, str>,
 }
 
 impl AreaRng {
-    /// Index in the canonical COCO `areaRng` table.
-    fn index(self) -> usize {
-        match self {
-            Self::All => 0,
-            Self::Small => 1,
-            Self::Medium => 2,
-            Self::Large => 3,
+    /// Construct from any owned- or borrowed-string label.
+    pub fn new(index: usize, label: impl Into<Cow<'static, str>>) -> Self {
+        Self {
+            index,
+            label: label.into(),
         }
     }
+
+    /// `const`-friendly constructor for compile-time labels.
+    pub const fn from_static(index: usize, label: &'static str) -> Self {
+        Self {
+            index,
+            label: Cow::Borrowed(label),
+        }
+    }
+
+    /// COCO `all` bucket — pycocotools' `[0, 1e10]`, A-axis index 0.
+    pub const ALL: Self = Self::from_static(0, "all");
+    /// COCO `small` bucket — pycocotools' `[0, 32^2]`, A-axis index 1.
+    pub const SMALL: Self = Self::from_static(1, "small");
+    /// COCO `medium` bucket — pycocotools' `[32^2, 96^2]`, A-axis index 2.
+    pub const MEDIUM: Self = Self::from_static(2, "medium");
+    /// COCO `large` bucket — pycocotools' `[96^2, 1e10]`, A-axis index 3.
+    pub const LARGE: Self = Self::from_static(3, "large");
 }
 
 /// AP / AR selector emitted on every [`StatLine`].
@@ -111,15 +136,9 @@ impl Summary {
                     Some(t) => format!("{t:0.2}"),
                     None => "0.50:0.95".to_string(),
                 };
-                let area = match line.area {
-                    AreaRng::All => "   all",
-                    AreaRng::Small => " small",
-                    AreaRng::Medium => "medium",
-                    AreaRng::Large => " large",
-                };
                 format!(
-                    " {title:<18} {kind} @[ IoU={iou:<9} | area={area:>6} | maxDets={:>3} ] = {:0.3}",
-                    line.max_dets, line.value
+                    " {title:<18} {kind} @[ IoU={iou:<9} | area={:>6} | maxDets={:>3} ] = {:0.3}",
+                    line.area.label, line.max_dets, line.value
                 )
             })
             .collect()
@@ -144,7 +163,7 @@ pub enum MaxDetSelector {
 }
 
 /// One line of a summary plan — describes a single mean to compute.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct StatRequest {
     /// AP or AR.
     pub metric: Metric,
@@ -177,22 +196,21 @@ impl StatRequest {
     /// AR_M, AR_L]` order. Bit-exact with cocoeval is by construction:
     /// [`summarize_detection`] is just `summarize_with(.., this, ..)`.
     pub fn coco_detection_default() -> [Self; 12] {
-        use AreaRng::{All, Large, Medium, Small};
         use MaxDetSelector::{Largest, Value};
         use Metric::{AveragePrecision, AverageRecall};
         [
-            Self::new(AveragePrecision, None, All, Largest),
-            Self::new(AveragePrecision, Some(0.5), All, Largest),
-            Self::new(AveragePrecision, Some(0.75), All, Largest),
-            Self::new(AveragePrecision, None, Small, Largest),
-            Self::new(AveragePrecision, None, Medium, Largest),
-            Self::new(AveragePrecision, None, Large, Largest),
-            Self::new(AverageRecall, None, All, Value(1)),
-            Self::new(AverageRecall, None, All, Value(10)),
-            Self::new(AverageRecall, None, All, Value(100)),
-            Self::new(AverageRecall, None, Small, Largest),
-            Self::new(AverageRecall, None, Medium, Largest),
-            Self::new(AverageRecall, None, Large, Largest),
+            Self::new(AveragePrecision, None, AreaRng::ALL, Largest),
+            Self::new(AveragePrecision, Some(0.5), AreaRng::ALL, Largest),
+            Self::new(AveragePrecision, Some(0.75), AreaRng::ALL, Largest),
+            Self::new(AveragePrecision, None, AreaRng::SMALL, Largest),
+            Self::new(AveragePrecision, None, AreaRng::MEDIUM, Largest),
+            Self::new(AveragePrecision, None, AreaRng::LARGE, Largest),
+            Self::new(AverageRecall, None, AreaRng::ALL, Value(1)),
+            Self::new(AverageRecall, None, AreaRng::ALL, Value(10)),
+            Self::new(AverageRecall, None, AreaRng::ALL, Value(100)),
+            Self::new(AverageRecall, None, AreaRng::SMALL, Largest),
+            Self::new(AverageRecall, None, AreaRng::MEDIUM, Largest),
+            Self::new(AverageRecall, None, AreaRng::LARGE, Largest),
         ]
     }
 }
@@ -288,22 +306,31 @@ pub fn summarize_with(
         }
     };
 
+    let n_a = p_shape[3];
     let lines = plan
         .iter()
         .map(|req| {
+            if req.area.index >= n_a {
+                return Err(EvalError::InvalidConfig {
+                    detail: format!(
+                        "area index {} out of range for A-axis len {}",
+                        req.area.index, n_a
+                    ),
+                });
+            }
             let m_idx = resolve_m(req.max_dets)?;
             let value = mean_slice(
                 accum,
                 req.metric,
                 req.iou_threshold,
-                req.area,
+                req.area.index,
                 m_idx,
                 iou_thresholds,
             )?;
             Ok(StatLine {
                 metric: req.metric,
                 iou_threshold: req.iou_threshold,
-                area: req.area,
+                area: req.area.clone(),
                 max_dets: max_dets[m_idx],
                 value,
             })
@@ -320,7 +347,7 @@ fn mean_slice(
     accum: &Accumulated,
     metric: Metric,
     iou_thr: Option<f64>,
-    area: AreaRng,
+    area_idx: usize,
     m_idx: usize,
     iou_thresholds: &[f64],
 ) -> Result<f64, EvalError> {
@@ -336,7 +363,7 @@ fn mean_slice(
             t..(t + 1)
         }
     };
-    let a = area.index();
+    let a = area_idx;
 
     // C5: skip -1 sentinels in the mean.
     let mut sum = 0.0_f64;
@@ -486,13 +513,13 @@ mod tests {
             StatRequest::new(
                 Metric::AveragePrecision,
                 Some(0.5),
-                AreaRng::All,
+                AreaRng::ALL,
                 MaxDetSelector::Largest,
             ),
             StatRequest::new(
                 Metric::AverageRecall,
                 Some(0.75),
-                AreaRng::All,
+                AreaRng::ALL,
                 MaxDetSelector::Largest,
             ),
         ];
@@ -525,6 +552,54 @@ mod tests {
         )
         .unwrap();
         assert_eq!(direct.stats(), via_plan.stats());
+    }
+
+    #[test]
+    fn custom_area_bucket_with_owned_label_renders_in_pretty_lines() {
+        // 5-bucket A-axis (e.g. an orchestrator that adds a "tiny"
+        // bucket below "small"). The plan addresses index 4 by name and
+        // the label flows through to pretty_lines.
+        let iou = iou_thresholds();
+        let max_dets = [100usize];
+        let accum = Accumulated {
+            precision: Array5::<f64>::from_elem((iou.len(), 101, 1, 5, 1), 1.0),
+            recall: Array4::<f64>::from_elem((iou.len(), 1, 5, 1), 1.0),
+            scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 5, 1), 1.0),
+        };
+        let plan = [StatRequest::new(
+            Metric::AveragePrecision,
+            None,
+            AreaRng::new(4, "tiny"),
+            MaxDetSelector::Largest,
+        )];
+        let summary = summarize_with(&accum, &plan, iou, &max_dets).unwrap();
+        let lines = summary.pretty_lines();
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].contains("area=  tiny"),
+            "unexpected line: {}",
+            lines[0]
+        );
+    }
+
+    #[test]
+    fn out_of_range_area_index_is_typed_error() {
+        // Plan addresses A-axis index 4 against a 4-bucket Accumulated.
+        let iou = iou_thresholds();
+        let max_dets = [100usize];
+        let accum = Accumulated {
+            precision: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 1), 1.0),
+            recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 1), 1.0),
+            scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 1), 1.0),
+        };
+        let plan = [StatRequest::new(
+            Metric::AveragePrecision,
+            None,
+            AreaRng::new(4, "tiny"),
+            MaxDetSelector::Largest,
+        )];
+        let err = summarize_with(&accum, &plan, iou, &max_dets).unwrap_err();
+        assert!(matches!(err, EvalError::InvalidConfig { .. }));
     }
 
     #[test]
