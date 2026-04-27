@@ -1,6 +1,6 @@
 # ADR-0004: Numerical layout policy — f32 internal, f64 boundary, SoA, pinned constants
 
-- **Status:** accepted
+- **Status:** accepted (bbox-IoU clause superseded by ADR-0008)
 - **Date:** 2026-04-26
 - **Deciders:** @NoeFontana
 - **Consulted:** —

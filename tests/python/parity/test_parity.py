@@ -24,6 +24,7 @@ ALL_FIXTURES = [
     "missing_dt_image",
     "iou_at_threshold",
     "score_ties",
+    "crowd_overlap_tiebreak",
 ]
 
 

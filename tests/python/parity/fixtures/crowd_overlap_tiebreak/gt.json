@@ -1,0 +1,12 @@
+{
+  "images": [
+    {"id": 1, "width": 640, "height": 480, "file_name": "img1.png"}
+  ],
+  "annotations": [
+    {"id": 1284714, "image_id": 1, "category_id": 1, "bbox": [394.3, 127.59, 40.72, 92.29], "area": 2209.38, "iscrowd": 0},
+    {"id": 900100002299, "image_id": 1, "category_id": 1, "bbox": [0, 18, 499, 263], "area": 87090.0, "iscrowd": 1}
+  ],
+  "categories": [
+    {"id": 1, "name": "person", "supercategory": "person"}
+  ]
+}

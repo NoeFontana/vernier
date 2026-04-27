@@ -1,11 +1,10 @@
 //! Axis-aligned bbox IoU.
 //!
 //! Mirrors `pycocotools.cocoeval.COCOeval.computeIoU` for `iouType="bbox"`.
-//! Per ADR-0004, intermediate values are `f32` and the matrix at the
-//! boundary is `f64`; the cast happens at the last write. Per ADR-0003,
-//! the inner loop is wrapped in [`pulp::Arch::dispatch`] so the same
-//! source compiles to AVX2 / AVX-512 / NEON variants picked at process
-//! start.
+//! Per ADR-0008, intermediates are `f64` end-to-end so the kernel matches
+//! pycocotools' `maskUtils.iou` (also f64) bit-for-bit. Per ADR-0003, the
+//! inner loop is wrapped in [`pulp::Arch::dispatch`] so it compiles to
+//! AVX2 / AVX-512 / NEON variants picked at process start.
 //!
 //! ## Quirk dispositions
 //!
@@ -85,10 +84,10 @@ impl Similarity for BboxIou {
         let arch = pulp::Arch::new();
         arch.dispatch(|| {
             for (g, gt) in gts.iter().enumerate() {
-                let gxa = gt.bbox.x as f32;
-                let gya = gt.bbox.y as f32;
-                let gw = gt.bbox.w as f32;
-                let gh = gt.bbox.h as f32;
+                let gxa = gt.bbox.x;
+                let gya = gt.bbox.y;
+                let gw = gt.bbox.w;
+                let gh = gt.bbox.h;
                 let gxb = gxa + gw;
                 let gyb = gya + gh;
                 let g_area = gw * gh;
@@ -96,12 +95,11 @@ impl Similarity for BboxIou {
                 let mut row = out.row_mut(g);
                 if gt.is_crowd {
                     for (d, dt) in dts.iter().enumerate() {
-                        row[d] = f64::from(iou_pair(gxa, gya, gxb, gyb, dt.bbox, CrowdDenom));
+                        row[d] = iou_pair(gxa, gya, gxb, gyb, dt.bbox, CrowdDenom);
                     }
                 } else {
                     for (d, dt) in dts.iter().enumerate() {
-                        row[d] =
-                            f64::from(iou_pair(gxa, gya, gxb, gyb, dt.bbox, UnionDenom(g_area)));
+                        row[d] = iou_pair(gxa, gya, gxb, gyb, dt.bbox, UnionDenom(g_area));
                     }
                 }
             }
@@ -117,33 +115,33 @@ impl Similarity for BboxIou {
 /// the symmetric `intersect / (g_area + d_area - intersect)`. Choosing
 /// once per GT row keeps each inner loop branch-free.
 trait Denom: Copy {
-    fn denom(self, d_area: f32, inter: f32) -> f32;
+    fn denom(self, d_area: f64, inter: f64) -> f64;
 }
 
 #[derive(Clone, Copy)]
 struct CrowdDenom;
 impl Denom for CrowdDenom {
     #[inline(always)]
-    fn denom(self, d_area: f32, _inter: f32) -> f32 {
+    fn denom(self, d_area: f64, _inter: f64) -> f64 {
         d_area
     }
 }
 
 #[derive(Clone, Copy)]
-struct UnionDenom(f32);
+struct UnionDenom(f64);
 impl Denom for UnionDenom {
     #[inline(always)]
-    fn denom(self, d_area: f32, inter: f32) -> f32 {
+    fn denom(self, d_area: f64, inter: f64) -> f64 {
         self.0 + d_area - inter
     }
 }
 
 #[inline(always)]
-fn iou_pair<D: Denom>(gxa: f32, gya: f32, gxb: f32, gyb: f32, dt: Bbox, denom: D) -> f32 {
-    let dxa = dt.x as f32;
-    let dya = dt.y as f32;
-    let dw = dt.w as f32;
-    let dh = dt.h as f32;
+fn iou_pair<D: Denom>(gxa: f64, gya: f64, gxb: f64, gyb: f64, dt: Bbox, denom: D) -> f64 {
+    let dxa = dt.x;
+    let dya = dt.y;
+    let dw = dt.w;
+    let dh = dt.h;
     let dxb = dxa + dw;
     let dyb = dya + dh;
     let d_area = dw * dh;
@@ -210,12 +208,11 @@ mod tests {
     #[test]
     fn quarter_overlap_matches_hand_traced_value() {
         // GT [0,0,2,2] (area 4); DT [1,1,2,2] (area 4); intersect 1×1=1.
-        // IoU = 1 / (4 + 4 - 1) = 1/7. With f32 internals and an exact
-        // f32→f64 cast, the bit pattern equals the f32 1/7 widened.
+        // IoU = 1 / (4 + 4 - 1) = 1/7, bit-equal to f64 1/7 (ADR-0008).
         let gts = [make_ann(0.0, 0.0, 2.0, 2.0, false)];
         let dts = [make_ann(1.0, 1.0, 2.0, 2.0, false)];
         let m = compute(&gts, &dts);
-        let expected = f64::from(1.0_f32 / 7.0_f32);
+        let expected = 1.0_f64 / 7.0_f64;
         assert_eq!(m[[0, 0]].to_bits(), expected.to_bits());
     }
 
@@ -230,7 +227,7 @@ mod tests {
         let crowd_m = compute(&gts_crowd, &dts);
         let normal_m = compute(&gts_normal, &dts);
         assert_eq!(crowd_m[[0, 0]].to_bits(), 1.0_f64.to_bits());
-        let expected_normal = f64::from(1.0_f32 / 100.0_f32);
+        let expected_normal = 1.0_f64 / 100.0_f64;
         assert_eq!(normal_m[[0, 0]].to_bits(), expected_normal.to_bits());
     }
 
@@ -310,7 +307,7 @@ mod tests {
         let m = compute(&gts, &dts);
 
         assert_eq!(m[[0, 0]].to_bits(), 1.0_f64.to_bits());
-        assert_eq!(m[[0, 1]].to_bits(), f64::from(1.0_f32 / 7.0_f32).to_bits());
+        assert_eq!(m[[0, 1]].to_bits(), (1.0_f64 / 7.0_f64).to_bits());
         assert_eq!(m[[0, 2]].to_bits(), 0.0_f64.to_bits());
 
         assert_eq!(m[[1, 0]].to_bits(), 0.0_f64.to_bits());
