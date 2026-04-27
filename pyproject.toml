@@ -117,4 +117,5 @@ addopts = "-ra --strict-markers --strict-config"
 markers = [
     "slow: marks tests as slow (skip with -m 'not slow')",
     "parity: parity tests against the reference oracle",
+    "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
 ]

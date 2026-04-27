@@ -44,3 +44,7 @@ dist/
 flamegraph.svg
 samply-*.json.gz
 perf.data*
+
+# COCO val2017 parity cache (license-restricted; see
+# docs/engineering/coco-val-parity.md).
+/.cache/
