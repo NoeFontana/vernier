@@ -78,6 +78,64 @@ impl Rle {
         [xs, ys, xe - xs + 1, ye - ys + 1]
     }
 
+    /// Foreground intersection area of two RLEs sharing `(h, w)`.
+    ///
+    /// Equivalent to `Self::merge(&[self.clone(), other.clone()],
+    /// true)?.area()` but skips the merged-counts allocation. Used by
+    /// the segm-IoU kernel per pair after the bbox prefilter — the
+    /// inner sweep mirrors `rleIou` (`mc:33-49`) without materializing
+    /// the merged stream.
+    ///
+    /// Returns [`MaskError::DimensionMismatch`] if `(h, w)` disagree
+    /// (quirk **I2** disposition `corrected`: pycocotools' `rleIou`
+    /// silently writes a `-1` sentinel here).
+    pub fn intersect_area(&self, other: &Rle) -> Result<u64, MaskError> {
+        if self.h != other.h || self.w != other.w {
+            return Err(MaskError::DimensionMismatch {
+                expected: (self.h, self.w),
+                got: (other.h, other.w),
+            });
+        }
+        if self.h == 0 || self.w == 0 {
+            return Ok(0);
+        }
+        let a = &self.counts;
+        let b = &other.counts;
+        if a.is_empty() || b.is_empty() {
+            return Ok(0);
+        }
+        let mut ai = 1usize;
+        let mut bi = 1usize;
+        let mut ca = u64::from(a[0]);
+        let mut cb = u64::from(b[0]);
+        let mut va = false;
+        let mut vb = false;
+        let mut inter: u64 = 0;
+        let mut ct: u64 = 1;
+        while ct > 0 {
+            let c = ca.min(cb);
+            if va && vb {
+                inter += c;
+            }
+            ct = 0;
+            ca -= c;
+            if ca == 0 && ai < a.len() {
+                ca = u64::from(a[ai]);
+                ai += 1;
+                va = !va;
+            }
+            ct += ca;
+            cb -= c;
+            if cb == 0 && bi < b.len() {
+                cb = u64::from(b[bi]);
+                bi += 1;
+                vb = !vb;
+            }
+            ct += cb;
+        }
+        Ok(inter)
+    }
+
     /// Merges a slice of RLEs into one by intersection (`AND`) or
     /// union (`OR`).
     ///
@@ -313,6 +371,67 @@ mod tests {
         let u = Rle::merge(&[a, b, c], false).unwrap();
         // Union = [1,1,0,1] = [0,2,1,1].
         assert_eq!(u, rle(2, 2, vec![0, 2, 1, 1]));
+    }
+
+    #[test]
+    fn intersect_area_matches_merge_then_area_for_overlap() {
+        let a = rle(2, 2, vec![0, 1, 3]);
+        let b = rle(2, 2, vec![0, 2, 2]);
+        let via_merge = Rle::merge(&[a.clone(), b.clone()], true).unwrap().area();
+        let direct = a.intersect_area(&b).unwrap();
+        assert_eq!(direct, via_merge);
+        assert_eq!(direct, 1);
+    }
+
+    #[test]
+    fn intersect_area_disjoint_is_zero() {
+        let a = rle(2, 2, vec![0, 1, 3]);
+        let b = rle(2, 2, vec![3, 1]);
+        assert_eq!(a.intersect_area(&b).unwrap(), 0);
+    }
+
+    #[test]
+    fn intersect_area_dimension_mismatch_errors() {
+        let a = rle(2, 2, vec![4]);
+        let b = rle(3, 3, vec![9]);
+        let err = a.intersect_area(&b).unwrap_err();
+        assert!(matches!(
+            err,
+            MaskError::DimensionMismatch {
+                expected: (2, 2),
+                got: (3, 3)
+            }
+        ));
+    }
+
+    #[test]
+    fn intersect_area_zero_shape_or_empty_counts_is_zero() {
+        assert_eq!(
+            rle(0, 0, vec![])
+                .intersect_area(&rle(0, 0, vec![]))
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            rle(2, 2, vec![])
+                .intersect_area(&rle(2, 2, vec![0, 4]))
+                .unwrap(),
+            0
+        );
+    }
+
+    proptest! {
+        #[test]
+        fn intersect_area_matches_merge_pair(
+            a_bytes in raster_strategy(4, 4),
+            b_bytes in raster_strategy(4, 4),
+        ) {
+            let ra = Rle::from_raster_bytes(&a_bytes, 4, 4)?;
+            let rb = Rle::from_raster_bytes(&b_bytes, 4, 4)?;
+            let direct = ra.intersect_area(&rb)?;
+            let via_merge = Rle::merge(&[ra, rb], true)?.area();
+            prop_assert_eq!(direct, via_merge);
+        }
     }
 
     fn raster_strategy(h: u32, w: u32) -> impl Strategy<Value = Vec<u8>> {

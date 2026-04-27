@@ -20,8 +20,10 @@ use ndarray::ArrayViewMut2;
 use crate::error::EvalError;
 
 pub mod bbox;
+pub mod segm;
 
 pub use bbox::{BboxAnn, BboxIou};
+pub use segm::{SegmAnn, SegmIou};
 
 /// Computes a pairwise similarity matrix for one image's GT × DT pairs.
 ///
