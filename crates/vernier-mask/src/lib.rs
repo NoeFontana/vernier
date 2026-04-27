@@ -25,13 +25,8 @@
 
 use thiserror::Error;
 
-/// Errors raised by mask operations.
-///
-/// Variants cover the cases where pycocotools silently returns a
-/// sentinel value (`0` from `rleDecode` on overflow, `-1` from
-/// `rleIou` on dimension mismatch, an empty 0×0 RLE from `rleMerge`
-/// on dimension mismatch). Vernier's contract per ADR-0002 is to
-/// raise rather than silently corrupt downstream computations.
+/// Errors raised by mask operations. See crate-level docs for the
+/// sentinel-vs-error rationale.
 #[derive(Debug, Error)]
 pub enum MaskError {
     /// Operands have inconsistent `(h, w)` shapes. Quirks H2, I2.
