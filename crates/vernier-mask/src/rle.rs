@@ -27,11 +27,6 @@ pub struct Rle {
 }
 
 impl Rle {
-    /// Constructs an `Rle` from raw fields.
-    pub fn new(h: u32, w: u32, counts: Vec<u32>) -> Self {
-        Self { h, w, counts }
-    }
-
     /// Encodes `self` to the COCO 6-bit char string. Output bytes
     /// are in `b'0'..=b'o'` and round-trip through
     /// [`Rle::from_string_bytes`].
@@ -58,7 +53,11 @@ mod tests {
 
     #[test]
     fn round_trip_via_struct() {
-        let rle = Rle::new(10, 10, vec![3, 2, 1, 4, 90]);
+        let rle = Rle {
+            h: 10,
+            w: 10,
+            counts: vec![3, 2, 1, 4, 90],
+        };
         let s = rle.to_string_bytes();
         let parsed = Rle::from_string_bytes(&s, 10, 10).unwrap();
         assert_eq!(parsed, rle);
@@ -66,7 +65,11 @@ mod tests {
 
     #[test]
     fn empty_rle_round_trip() {
-        let rle = Rle::new(0, 0, vec![]);
+        let rle = Rle {
+            h: 0,
+            w: 0,
+            counts: vec![],
+        };
         assert_eq!(rle.to_string_bytes(), b"");
         assert_eq!(Rle::from_string_bytes(b"", 0, 0).unwrap(), rle);
     }

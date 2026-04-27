@@ -22,7 +22,7 @@
 //! Rust formulation `!0_i64 << shift` which is the same bit pattern
 //! in two's complement (quirk **G3** disposition: `aligned`).
 
-use crate::error::MaskError;
+use crate::error::{MalformedRleReason, MaskError};
 
 const SHIFT_CHUNK: u32 = 5;
 const CONT_MASK: i64 = 0x20;
@@ -32,11 +32,11 @@ const ASCII_OFFSET: i64 = 0x30;
 const WIRE_MIN: u8 = 0x30;
 const WIRE_MAX: u8 = 0x6F;
 
-/// Maximum chars per run. A `u32` plus sign bit fits in 33 bits;
-/// at 5 data bits per char that's 7 chars (35 bits). 13 leaves
-/// generous headroom and prevents `5 * k` from approaching the
-/// 64-bit shift boundary on malformed input.
-const MAX_CHARS_PER_RUN: u32 = 13;
+/// Tight algebraic bound: a `u32` plus a sign-disambiguation bit
+/// fits in 33 bits, which at 5 data bits per char is 7 chars.
+/// Inputs that produce more chars cannot represent a valid `u32`
+/// run length and are rejected to bound work on malformed input.
+const MAX_CHARS_PER_RUN: u32 = 7;
 
 /// Encodes a slice of run lengths into the COCO 6-bit char string.
 ///
@@ -72,31 +72,23 @@ pub fn encode_counts(counts: &[u32]) -> Vec<u8> {
 /// decoded run length that does not fit in `u32`.
 pub fn decode_counts(s: &[u8]) -> Result<Vec<u32>, MaskError> {
     let mut counts = Vec::with_capacity(s.len() / 2 + 1);
-    let mut p = 0usize;
-    while p < s.len() {
+    let mut iter = s.iter().copied();
+    while let Some(mut byte) = iter.next() {
         let mut x: i64 = 0;
         let mut k: u32 = 0;
         loop {
-            if p >= s.len() {
-                return Err(MaskError::MalformedRle {
-                    reason: "string ended mid-run (continuation bit set on final byte)",
-                });
-            }
-            let byte = s[p];
             if !(WIRE_MIN..=WIRE_MAX).contains(&byte) {
-                return Err(MaskError::MalformedRle {
-                    reason: "byte outside legal [0x30, 0x6F] range",
-                });
+                return Err(MaskError::MalformedRle(MalformedRleReason::ByteOutOfRange));
             }
             if k >= MAX_CHARS_PER_RUN {
-                return Err(MaskError::MalformedRle {
-                    reason: "run encoding exceeds maximum char count",
-                });
+                return Err(MaskError::MalformedRle(
+                    MalformedRleReason::ChunkLimitExceeded,
+                ));
             }
+            // byte is provably in [0x30, 0x6F], so c lands in [0, 0x3F].
             let c = (byte as i64) - ASCII_OFFSET;
             x |= (c & DATA_MASK) << (SHIFT_CHUNK * k);
             let more = c & CONT_MASK != 0;
-            p += 1;
             k += 1;
             if !more {
                 if c & SIGN_MASK != 0 {
@@ -104,14 +96,15 @@ pub fn decode_counts(s: &[u8]) -> Result<Vec<u32>, MaskError> {
                 }
                 break;
             }
+            byte = iter
+                .next()
+                .ok_or(MaskError::MalformedRle(MalformedRleReason::TruncatedString))?;
         }
         if counts.len() > 2 {
             x += counts[counts.len() - 2] as i64;
         }
         if !(0..=i64::from(u32::MAX)).contains(&x) {
-            return Err(MaskError::MalformedRle {
-                reason: "decoded run length outside u32 range",
-            });
+            return Err(MaskError::MalformedRle(MalformedRleReason::U32Overflow));
         }
         counts.push(x as u32);
     }
@@ -131,8 +124,6 @@ mod tests {
 
     #[test]
     fn small_single_char_runs() {
-        // Each value < 16 fits in one char with no sign bit set.
-        // Values 0..=9 map to ASCII '0'..='9'.
         assert_eq!(encode_counts(&[0]), b"0");
         assert_eq!(encode_counts(&[5]), b"5");
         assert_eq!(decode_counts(b"0").unwrap(), vec![0]);
@@ -141,17 +132,12 @@ mod tests {
 
     #[test]
     fn value_16_needs_two_chars_for_sign_disambiguation() {
-        // 16 has bit 4 set in its low 5 bits; the encoder cannot
-        // emit it as one char without it being mistaken for a
-        // sign-extended -16, so a continuation char follows.
         assert_eq!(encode_counts(&[16]), b"`0");
         assert_eq!(decode_counts(b"`0").unwrap(), vec![16]);
     }
 
     #[test]
     fn differential_kicks_in_at_index_three() {
-        // First three runs encoded as-is; from i>2 the encoder
-        // writes counts[i] - counts[i-2].
         let counts = vec![1, 2, 3, 4, 5];
         let encoded = encode_counts(&counts);
         assert_eq!(encoded, b"12322");
@@ -160,8 +146,7 @@ mod tests {
 
     #[test]
     fn negative_differential_uses_sign_extension() {
-        // counts[3] - counts[1] = 1 - 2 = -1, encoded as 'O'
-        // (0x4F = 0x30 + 0x1F, sign bit set, no continuation).
+        // counts[3] - counts[1] = -1, encoded as 'O' = 0x4F (sign bit set, no continuation).
         let counts = vec![1, 2, 3, 1];
         let encoded = encode_counts(&counts);
         assert_eq!(encoded, b"123O");
@@ -170,23 +155,22 @@ mod tests {
 
     #[test]
     fn rejects_out_of_range_byte() {
-        assert!(matches!(
-            decode_counts(b"5\x20"),
-            Err(MaskError::MalformedRle { .. })
-        ));
+        assert_eq!(
+            decode_counts(b"5\x20").unwrap_err().to_string(),
+            "malformed RLE counts string: byte outside legal [0x30, 0x6F] range",
+        );
         assert!(matches!(
             decode_counts(b"5p"),
-            Err(MaskError::MalformedRle { .. })
+            Err(MaskError::MalformedRle(MalformedRleReason::ByteOutOfRange))
         ));
     }
 
     #[test]
     fn rejects_truncated_run() {
-        // Continuation bit set ('`' = 0x60 = continuation) but
-        // string ends before the next char arrives.
+        // '`' = 0x60 sets the continuation bit but no follow-up byte arrives.
         assert!(matches!(
             decode_counts(b"`"),
-            Err(MaskError::MalformedRle { .. })
+            Err(MaskError::MalformedRle(MalformedRleReason::TruncatedString))
         ));
     }
 
