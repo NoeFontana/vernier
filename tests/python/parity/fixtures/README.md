@@ -12,6 +12,7 @@ plus a `meta.md` explaining what the fixture exercises.
 | `missing_dt_image` | DT covers a subset of GT image ids — partial recall, accumulator handles None evalImg cells. |
 | `iou_at_threshold` | DT IoU exactly 0.5 — exercises the `min(t, 1 - 1e-10)` boundary fudge (B1). |
 | `score_ties` | Two DTs with identical scores — pins stable mergesort tiebreak on input order (A1). |
+| `crowd_overlap_tiebreak` | Overlapping crowd + non-crowd GT at IoU≈1 — pins f64-end-to-end IoU so the "later equal wins" matcher (B2) reproduces pycocotools' last-bit tiebreak (ADR-0008). |
 
 Adding a new fixture: create a directory with `gt.json`, `dt.json`, and a
 `meta.md` describing what it tests, then add a parametrize entry in

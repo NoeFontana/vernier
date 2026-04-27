@@ -88,21 +88,20 @@ feedback. Options when the suite stabilises:
 Pick whichever the headline parity claim needs first; both keep the
 PR-time matrix lean.
 
-## Expected status today (Phase 1 Week 5)
+## Expected status today
 
-`test_coco_val2017_bbox_parity_perfect_dt` is currently marked
-`xfail(strict=False)`. The perfect-DT smoke runs end-to-end on all
-5000 val2017 images, but the candidate diverges from pycocotools on a
-handful of images where overlapping GT bboxes force an arbitrary
-tiebreak (quirk **A4**, `_ignore`-ascending GT order). The matching
-engine that owns this decision is the Phase 1 Week 3 deliverable —
-Week 5 only ships the FFI surface around it. The xfail flips to
-`xpass` as Weeks 3-4 land their final passes; at that point the
-marker comes off.
-
+Both `test_coco_val2017_bbox_parity_perfect_dt` (synthetic smoke) and
 `test_coco_val2017_bbox_parity` (real detector predictions, env-var
-gated) has no xfail. Runs that diverge on real data are real
-regressions to file.
+gated) pass without xfail. Bit-exact bbox parity holds on all 5000
+val2017 images: every `evalImgs` cell, the precision/recall/scores
+tensors, and the 12-element stats vector match pycocotools.
+
+The earlier perfect-DT divergence on overlapping crowd/non-crowd ties
+(quirk **A4**) was rooted in `f32` IoU intermediates losing
+bit-equivalence with pycocotools' `f64` `maskUtils.iou` kernel.
+ADR-0008 supersedes the bbox clause of ADR-0004 and pins bbox IoU at
+`f64` end-to-end; runs that diverge on real data are real regressions
+to file.
 
 ## What this test cannot catch
 

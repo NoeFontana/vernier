@@ -5,9 +5,11 @@
 //! crowd asymmetry, prefilter thresholds, …) and the matching engine
 //! reads only the trait — never a concrete IoU type.
 //!
-//! Per ADR-0004, kernels compute in `f32` internally where the algorithm's
-//! error budget allows it, but the matrix at the boundary is always
-//! `f64`. The cast happens at the last write.
+//! Per ADR-0004 (and ADR-0008 for bbox), kernels pick an internal numeric
+//! type tuned to the algorithm's error budget — bbox IoU is `f64`
+//! end-to-end; future segm and OKS kernels follow the f32-internal /
+//! f64-boundary policy from ADR-0004. Every impl writes the boundary
+//! matrix as `f64`.
 //!
 //! Per ADR-0003, inner loops are wrapped in `pulp::Arch::dispatch` so
 //! the same source compiles to AVX2 / AVX-512 / NEON variants picked at

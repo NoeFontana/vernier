@@ -62,17 +62,6 @@ def test_coco_val2017_bbox_parity() -> None:
 
 @pytest.mark.parity
 @pytest.mark.coco_val
-@pytest.mark.xfail(
-    strict=False,
-    reason=(
-        "Phase 1 Week 5 ships the FFI surface; the matching engine "
-        "(Week 3) and accumulator (Week 4) are still maturing. The "
-        "perfect-DT smoke surfaces overlapping-GT tiebreak (A4) "
-        "divergence on a handful of val2017 images. Tracked as the "
-        "headline parity goal — turns green as those weeks land. See "
-        "docs/engineering/coco-val-parity.md."
-    ),
-)
 def test_coco_val2017_bbox_parity_perfect_dt() -> None:
     """Synthesised perfect-DT smoke: scale-only check (AP is trivially 1.0)."""
     cache = _cache_dir()
