@@ -19,34 +19,52 @@ EXPECTED_SHA256="e8c7f7908f1d7278341fae127d0da654f102f11bd7b21d8aeefa635b8c810b6
 mkdir -p "${CACHE_DIR}"
 gt_path="${CACHE_DIR}/${GT_FILENAME}"
 
+need_fetch=1
 if [[ -f "${gt_path}" ]]; then
     actual="$(sha256sum "${gt_path}" | awk '{print $1}')"
     if [[ "${actual}" == "${EXPECTED_SHA256}" ]]; then
         echo "GT already present and verified at ${gt_path}"
-        printf '\nexport %s=%s\n' "VERNIER_COCO_GT_PATH" "${gt_path}"
-        exit 0
+        need_fetch=0
+    else
+        echo "GT at ${gt_path} has unexpected SHA256 (got ${actual}); re-fetching"
+        rm -f "${gt_path}"
     fi
-    echo "GT at ${gt_path} has unexpected SHA256 (got ${actual}); re-fetching"
-    rm -f "${gt_path}"
 fi
 
-zip_path="${CACHE_DIR}/annotations_trainval2017.zip"
-echo "Downloading ${ANNOTATIONS_URL} → ${zip_path}"
-curl --fail --location --output "${zip_path}" "${ANNOTATIONS_URL}"
+if [[ "${need_fetch}" -eq 1 ]]; then
+    zip_path="${CACHE_DIR}/annotations_trainval2017.zip"
+    echo "Downloading ${ANNOTATIONS_URL} → ${zip_path}"
+    curl --fail --location --output "${zip_path}" "${ANNOTATIONS_URL}"
 
-echo "Extracting ${GT_FILENAME}"
-unzip -j -o "${zip_path}" "annotations/${GT_FILENAME}" -d "${CACHE_DIR}"
-rm -f "${zip_path}"
+    echo "Extracting ${GT_FILENAME}"
+    unzip -j -o "${zip_path}" "annotations/${GT_FILENAME}" -d "${CACHE_DIR}"
+    rm -f "${zip_path}"
 
-actual="$(sha256sum "${gt_path}" | awk '{print $1}')"
-if [[ "${actual}" != "${EXPECTED_SHA256}" ]]; then
-    echo "ERROR: SHA256 mismatch for ${gt_path}" >&2
-    echo "  expected: ${EXPECTED_SHA256}" >&2
-    echo "  actual:   ${actual}" >&2
-    exit 1
+    actual="$(sha256sum "${gt_path}" | awk '{print $1}')"
+    if [[ "${actual}" != "${EXPECTED_SHA256}" ]]; then
+        echo "ERROR: SHA256 mismatch for ${gt_path}" >&2
+        echo "  expected: ${EXPECTED_SHA256}" >&2
+        echo "  actual:   ${actual}" >&2
+        exit 1
+    fi
+    echo "GT ready at ${gt_path}"
 fi
 
-echo "GT ready at ${gt_path}"
-printf '\nexport %s=%s\n' "VERNIER_COCO_GT_PATH" "${gt_path}"
-echo "Now point VERNIER_COCO_DT_PATH at a detector predictions JSON; see"
-echo "docs/engineering/coco-val-parity.md."
+dt_path="${CACHE_DIR}/perfect_dt.json"
+if [[ ! -f "${dt_path}" ]]; then
+    echo "Synthesising a 'perfect' DT (score=1.0 for every non-crowd GT) → ${dt_path}"
+    python3 "$(dirname "${BASH_SOURCE[0]}")/make-perfect-dt.py" "${gt_path}" "${dt_path}"
+fi
+
+cat <<MSG
+
+Cache ready. Export the env vars (or eval the lines below) and run
+\`just test-coco-val\`:
+
+  export VERNIER_COCO_GT_PATH=${gt_path}
+  export VERNIER_COCO_DT_PATH=${dt_path}
+
+The synthesised DT is a smoke test only (AP[0.5:0.95] is trivially
+1.0); for non-trivial parity, point VERNIER_COCO_DT_PATH at a real
+detector's predictions JSON. See docs/engineering/coco-val-parity.md.
+MSG

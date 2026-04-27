@@ -38,20 +38,26 @@ Default cache dir: `<repo>/.cache/coco-val2017/` (gitignored).
    script (`e8c7f790…b6f`) so a corrupted or substituted download
    fails loudly.
 
-2. **Provide a detector predictions JSON.** The repo ships no
-   defaults — the parity claim is independent of which detector you
-   run. Pick any published baseline whose predictions JSON is COCO-
-   format compatible (`[{"image_id", "category_id", "bbox",
-   "score"}, …]`). Common choices:
+2. **Provide a detector predictions JSON.** Two paths:
 
-   - **Detectron2 model zoo** — e.g. Faster R-CNN R50-FPN's
-     `coco_instances_results.json` from the official release.
-   - **MMDetection** — pickle-free `*.bbox.json` outputs from
-     `tools/test.py … --out`.
-   - **Ultralytics** — `yolo val ... save_json=True` produces
-     `predictions.json`.
+   - **Synthetic 'perfect' DT (smoke).** `fetch-coco-val.sh` calls
+     `tools/make-perfect-dt.py` to materialise
+     `.cache/coco-val2017/perfect_dt.json` — one detection (score
+     1.0) per non-crowd GT annotation. This exercises the full
+     pipeline at real-world scale (5000 images, 80 categories,
+     ~36k annotations), but AP is trivially 1.0 — it's a plumbing
+     and scale check, not a numerical parity claim.
+   - **Real detector predictions (headline parity).** Pick any
+     published baseline whose predictions JSON is COCO-format
+     compatible (`[{"image_id", "category_id", "bbox", "score"},
+     …]`) and point `VERNIER_COCO_DT_PATH` at it. Common sources:
 
-   Save it anywhere; the test only cares about the path.
+     - **Detectron2 model zoo** — e.g. Faster R-CNN R50-FPN's
+       `coco_instances_results.json` from the official release.
+     - **MMDetection** — pickle-free `*.bbox.json` outputs from
+       `tools/test.py … --out`.
+     - **Ultralytics** — `yolo val ... save_json=True` produces
+       `predictions.json`.
 
 3. **Export both env vars** (the helper prints the line for the GT
    one) and run:
@@ -81,6 +87,22 @@ feedback. Options when the suite stabilises:
 
 Pick whichever the headline parity claim needs first; both keep the
 PR-time matrix lean.
+
+## Expected status today (Phase 1 Week 5)
+
+`test_coco_val2017_bbox_parity_perfect_dt` is currently marked
+`xfail(strict=False)`. The perfect-DT smoke runs end-to-end on all
+5000 val2017 images, but the candidate diverges from pycocotools on a
+handful of images where overlapping GT bboxes force an arbitrary
+tiebreak (quirk **A4**, `_ignore`-ascending GT order). The matching
+engine that owns this decision is the Phase 1 Week 3 deliverable —
+Week 5 only ships the FFI surface around it. The xfail flips to
+`xpass` as Weeks 3-4 land their final passes; at that point the
+marker comes off.
+
+`test_coco_val2017_bbox_parity` (real detector predictions, env-var
+gated) has no xfail. Runs that diverge on real data are real
+regressions to file.
 
 ## What this test cannot catch
 
