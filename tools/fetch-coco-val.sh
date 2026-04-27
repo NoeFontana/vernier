@@ -14,7 +14,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_DIR="${VERNIER_COCO_CACHE:-${REPO_ROOT}/.cache/coco-val2017}"
 ANNOTATIONS_URL="http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
 GT_FILENAME="instances_val2017.json"
-EXPECTED_SHA256="4949ddca8ddc46b08bdedba2ac9e0e3a83e08f9ee94373caa4dd13a31acca7e9"
+EXPECTED_SHA256="e8c7f7908f1d7278341fae127d0da654f102f11bd7b21d8aeefa635b8c810b6f"
 
 mkdir -p "${CACHE_DIR}"
 gt_path="${CACHE_DIR}/${GT_FILENAME}"

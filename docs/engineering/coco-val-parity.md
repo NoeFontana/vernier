@@ -35,7 +35,7 @@ Default cache dir: `<repo>/.cache/coco-val2017/` (gitignored).
    The script downloads the `annotations_trainval2017.zip` from the
    canonical CDN, extracts only `instances_val2017.json` into the
    cache, and verifies its SHA256. The expected hash is pinned in the
-   script (`4949ddca…7e9`) so a corrupted or substituted download
+   script (`e8c7f790…b6f`) so a corrupted or substituted download
    fails loudly.
 
 2. **Provide a detector predictions JSON.** The repo ships no
