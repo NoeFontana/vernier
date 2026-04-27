@@ -97,8 +97,8 @@ def test_with_options_returns_new_instance() -> None:
 
 
 def test_evaluator_rejects_unknown_iou_type() -> None:
-    e = Evaluator(iou_type="segm")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="bbox"):
+    e = Evaluator(iou_type="keypoints")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="iou_type"):
         e.evaluate(GT_PERFECT, DT_PERFECT)
 
 

@@ -102,9 +102,9 @@ def _run_pycocotools(gt_path: Path, dt_path: Path, iou_type: IouType) -> EvalSna
 
 
 def _run_vernier(gt_path: Path, dt_path: Path, iou_type: IouType) -> EvalSnapshot:
-    if iou_type != "bbox":
-        # segm / keypoints land in Phase 2/3 — until then, defer to the
-        # reference so the harness stays usable for fixture authoring.
+    if iou_type == "keypoints":
+        # Keypoints lands in Phase 3 — until then, defer to the reference
+        # so the harness stays usable for fixture authoring.
         return _run_pycocotools(gt_path, dt_path, iou_type)
 
     gt_bytes = gt_path.read_bytes()
@@ -113,9 +113,10 @@ def _run_vernier(gt_path: Path, dt_path: Path, iou_type: IouType) -> EvalSnapsho
     dt_bytes = dt_path.read_bytes()
     max_dets = list(_DEFAULT_MAX_DETS)
 
-    grid = _vernier_core.evaluate_bbox_grid(
-        gt_bytes, dt_bytes, _PARITY_MODE, max(max_dets), use_cats=True
+    grid_fn = (
+        _vernier_core.evaluate_segm_grid if iou_type == "segm" else _vernier_core.evaluate_bbox_grid
     )
+    grid = grid_fn(gt_bytes, dt_bytes, _PARITY_MODE, max(max_dets), use_cats=True)
     acc = grid.accumulate(max_dets)
     summary = acc.summarize(max_dets)
 

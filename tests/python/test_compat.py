@@ -103,19 +103,18 @@ def test_summarize_corrected_mode_is_silent(
     assert capsys.readouterr().out == ""
 
 
-def test_iou_type_segm_not_yet_supported(perfect_match_coco: tuple[COCO, COCO]) -> None:
+def test_iou_type_keypoints_not_yet_supported(perfect_match_coco: tuple[COCO, COCO]) -> None:
     gt, dt = perfect_match_coco
-    with pytest.raises(NotImplementedError, match="bbox"):
-        COCOeval(gt, dt, iouType="segm")
+    with pytest.raises(NotImplementedError, match="keypoints"):
+        COCOeval(gt, dt, iouType="keypoints")
 
 
 def test_constructor_default_iou_type_matches_pycocotools() -> None:
     # pycocotools.cocoeval.COCOeval()'s third positional default is
-    # iouType="segm" — preserved for signature parity even though the
-    # drop-in rejects it. Verifying the rejection message names the
-    # actual default proves the signature is intact.
-    with pytest.raises(NotImplementedError, match="segm"):
-        COCOeval()
+    # iouType="segm"; the drop-in mirrors it so existing user code
+    # constructed without a positional iouType lands on the same path.
+    e = COCOeval()
+    assert e.params.iouType == "segm"
 
 
 def test_evaluate_without_inputs_raises() -> None:

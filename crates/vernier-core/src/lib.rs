@@ -32,8 +32,8 @@ pub use dataset::{
 };
 pub use error::EvalError;
 pub use evaluate::{
-    evaluate_bbox, AreaRange, EvalGrid, EvalImageMeta, EvaluateBboxParams,
-    COLLAPSED_CATEGORY_SENTINEL,
+    evaluate_bbox, evaluate_segm, evaluate_with, AreaRange, EvalGrid, EvalImageMeta, EvalKernel,
+    EvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
 };
 pub use matching::{match_image, MatchResult};
 pub use parity::{
