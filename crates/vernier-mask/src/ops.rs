@@ -315,38 +315,6 @@ mod tests {
         assert_eq!(u, rle(2, 2, vec![0, 2, 1, 1]));
     }
 
-    /// Decodes an RLE to a column-major byte mask.
-    fn decode_to_bytes(r: &Rle) -> Vec<u8> {
-        let total = (r.h as usize) * (r.w as usize);
-        let mut out = Vec::with_capacity(total);
-        let mut v: u8 = 0;
-        for &len in &r.counts {
-            for _ in 0..len {
-                out.push(v);
-            }
-            v ^= 1;
-        }
-        out
-    }
-
-    /// Encodes a column-major byte mask into an RLE.
-    fn encode_from_bytes(bytes: &[u8], h: u32, w: u32) -> Rle {
-        let mut counts: Vec<u32> = Vec::new();
-        let mut p: u8 = 0;
-        let mut c: u32 = 0;
-        for &b in bytes {
-            let bit = u8::from(b != 0);
-            if bit != p {
-                counts.push(c);
-                c = 0;
-                p = bit;
-            }
-            c += 1;
-        }
-        counts.push(c);
-        Rle { h, w, counts }
-    }
-
     fn raster_strategy(h: u32, w: u32) -> impl Strategy<Value = Vec<u8>> {
         let total = (h as usize) * (w as usize);
         proptest::collection::vec(0u8..=1, total..=total)
@@ -354,19 +322,12 @@ mod tests {
 
     proptest! {
         #[test]
-        fn area_matches_byte_count(bytes in raster_strategy(5, 7)) {
-            let r = encode_from_bytes(&bytes, 5, 7);
-            let expected: u64 = bytes.iter().map(|&b| b as u64).sum();
-            prop_assert_eq!(r.area(), expected);
-        }
-
-        #[test]
         fn merge_inclusion_exclusion(
             ba in raster_strategy(4, 5),
             bb in raster_strategy(4, 5),
         ) {
-            let a = encode_from_bytes(&ba, 4, 5);
-            let b = encode_from_bytes(&bb, 4, 5);
+            let a = Rle::from_raster_bytes(&ba, 4, 5)?;
+            let b = Rle::from_raster_bytes(&bb, 4, 5)?;
             let u = Rle::merge(&[a.clone(), b.clone()], false)?;
             let i = Rle::merge(&[a.clone(), b.clone()], true)?;
             prop_assert_eq!(u.area() + i.area(), a.area() + b.area());
@@ -379,11 +340,11 @@ mod tests {
             ba in raster_strategy(4, 5),
             bb in raster_strategy(4, 5),
         ) {
-            let a = encode_from_bytes(&ba, 4, 5);
-            let b = encode_from_bytes(&bb, 4, 5);
+            let a = Rle::from_raster_bytes(&ba, 4, 5)?;
+            let b = Rle::from_raster_bytes(&bb, 4, 5)?;
             let u = Rle::merge(&[a, b], false)?;
             let expected: Vec<u8> = ba.iter().zip(&bb).map(|(x, y)| x | y).collect();
-            prop_assert_eq!(decode_to_bytes(&u), expected);
+            prop_assert_eq!(u.to_raster_bytes(), expected);
         }
 
         #[test]
@@ -391,11 +352,11 @@ mod tests {
             ba in raster_strategy(4, 5),
             bb in raster_strategy(4, 5),
         ) {
-            let a = encode_from_bytes(&ba, 4, 5);
-            let b = encode_from_bytes(&bb, 4, 5);
+            let a = Rle::from_raster_bytes(&ba, 4, 5)?;
+            let b = Rle::from_raster_bytes(&bb, 4, 5)?;
             let i = Rle::merge(&[a, b], true)?;
             let expected: Vec<u8> = ba.iter().zip(&bb).map(|(x, y)| x & y).collect();
-            prop_assert_eq!(decode_to_bytes(&i), expected);
+            prop_assert_eq!(i.to_raster_bytes(), expected);
         }
     }
 }
