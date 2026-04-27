@@ -20,6 +20,24 @@ pub enum MaskError {
     /// bytes (`mc:259`); vernier rejects them.
     #[error("malformed RLE counts string: {0}")]
     MalformedRle(MalformedRleReason),
+
+    /// Raster byte slice length doesn't match the declared
+    /// `(h, w)` shape. `corrected` per ADR-0002: the C `rleEncode`
+    /// (`mc:32-41`) trusts the declared `h*w` and reads past the
+    /// end of `M` on mismatch.
+    #[error(
+        "raster length {got} bytes does not match shape ({h}, {w}) (expected h*w = {expected})"
+    )]
+    RasterLengthMismatch {
+        /// Declared mask height.
+        h: u32,
+        /// Declared mask width.
+        w: u32,
+        /// Expected length: `h * w`.
+        expected: u64,
+        /// Actual byte-slice length received.
+        got: usize,
+    },
 }
 
 /// Concrete reason a counts string failed to decode. Programmatically
