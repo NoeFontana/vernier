@@ -1,6 +1,6 @@
 # ADR-0009: Split mask kernels into a `vernier-mask` workspace crate
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-27
 - **Deciders:** @NoeFontana
 - **Consulted:** —

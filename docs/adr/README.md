@@ -25,7 +25,7 @@ Decision Records). To propose a new ADR:
 | 0006 | Threading model — GIL-drop at every PyO3 entry, single-threaded compute for Phase 1 | accepted |
 | 0007 | `patch_pycocotools` — opt-in `sys.modules` monkey-patch as the migration path | accepted |
 | 0008 | Bbox IoU computes in `f64` end-to-end (supersedes ADR-0004's bbox clause) | accepted |
-| 0009 | Split mask kernels into a `vernier-mask` workspace crate | proposed |
+| 0009 | Split mask kernels into a `vernier-mask` workspace crate | accepted |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
