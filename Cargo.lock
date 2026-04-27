@@ -673,6 +673,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernier-mask"
+version = "0.0.0"
+dependencies = [
+ "proptest",
+ "thiserror",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

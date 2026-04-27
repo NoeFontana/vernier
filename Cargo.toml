@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/vernier-core",
     "crates/vernier-ffi",
+    "crates/vernier-mask",
 ]
 
 [workspace.package]
