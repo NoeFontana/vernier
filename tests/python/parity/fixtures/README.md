@@ -13,11 +13,15 @@ plus a `meta.md` explaining what the fixture exercises.
 | `iou_at_threshold` | DT IoU exactly 0.5 — exercises the `min(t, 1 - 1e-10)` boundary fudge (B1). |
 | `score_ties` | Two DTs with identical scores — pins stable mergesort tiebreak on input order (A1). |
 | `crowd_overlap_tiebreak` | Overlapping crowd + non-crowd GT at IoU≈1 — pins f64-end-to-end IoU so the "later equal wins" matcher (B2) reproduces pycocotools' last-bit tiebreak (ADR-0008). |
+| `perfect_match_segm` | Segm baseline: 1 polygon GT + 1 identical polygon DT. Mask-IoU=1.0 across all thresholds. |
 
 Adding a new fixture: create a directory with `gt.json`, `dt.json`, and a
-`meta.md` describing what it tests, then add a parametrize entry in
+`meta.md` describing what it tests, then add the fixture name to
+`BBOX_FIXTURES` (bbox path) or `SEGM_FIXTURES` (segm path) in
 `test_parity.py`. Keep fixtures small (single images, ≤3 annotations); large
 COCO subsets belong in integration tests pulled from `fiftyone`, not here.
 
-All fixtures are bbox-only by default. Segmentation and keypoints variants
-can be added once the segm/keypoints code paths land in vernier.
+Segm fixtures must include a `segmentation` field on every GT and DT —
+absent fields raise `EvalError::InvalidAnnotation` instead of being
+silently treated as empty. Keypoints fixtures land alongside the Phase 3
+keypoints code path.

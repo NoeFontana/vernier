@@ -46,3 +46,17 @@ def evaluate_bbox_grid(
     max_dets_per_image: int,
     use_cats: bool,
 ) -> EvalGrid: ...
+def evaluate_segm_summary(
+    gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+) -> Summary: ...
+def evaluate_segm_grid(
+    gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> EvalGrid: ...

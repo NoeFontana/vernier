@@ -17,7 +17,7 @@ from .harness import IouType, assert_snapshots_equal, snapshot
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
-ALL_FIXTURES = [
+BBOX_FIXTURES = [
     "perfect_match",
     "zero_overlap",
     "crowd_region",
@@ -27,10 +27,18 @@ ALL_FIXTURES = [
     "crowd_overlap_tiebreak",
 ]
 
+SEGM_FIXTURES = [
+    "perfect_match_segm",
+]
+
+PARITY_CASES: list[tuple[str, IouType]] = [
+    *((f, "bbox") for f in BBOX_FIXTURES),
+    *((f, "segm") for f in SEGM_FIXTURES),
+]
+
 
 @pytest.mark.parity
-@pytest.mark.parametrize("fixture", ALL_FIXTURES)
-@pytest.mark.parametrize("iou_type", ["bbox"])
+@pytest.mark.parametrize(("fixture", "iou_type"), PARITY_CASES)
 def test_parity_against_reference(fixture: str, iou_type: IouType) -> None:
     gt = FIXTURES / fixture / "gt.json"
     dt = FIXTURES / fixture / "dt.json"

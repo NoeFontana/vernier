@@ -21,7 +21,7 @@ from typing import Any, ClassVar, Final, Literal, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from vernier._core import EvalGrid, Summary, evaluate_bbox_grid
+from vernier._core import EvalGrid, Summary, evaluate_bbox_grid, evaluate_segm_grid
 
 ParityMode = Literal["strict", "corrected"]
 
@@ -121,10 +121,10 @@ class PycocotoolsCOCOeval:
         *,
         parity_mode: ParityMode | None = None,
     ) -> None:
-        if iouType != IOU_BBOX:
+        if iouType not in (IOU_BBOX, IOU_SEGM):
             raise NotImplementedError(
-                f"vernier.COCOeval supports iouType='bbox' only (got {iouType!r}); "
-                "segm/keypoints land in Phase 2/3"
+                f"vernier.COCOeval supports iouType in ('bbox', 'segm') (got {iouType!r}); "
+                "keypoints lands in Phase 3"
             )
         self.cocoGt = cocoGt
         self.cocoDt = cocoDt
@@ -149,9 +149,8 @@ class PycocotoolsCOCOeval:
         dt_bytes = json.dumps(dt_anns, default=_json_default).encode()
         max_det_top = max(self.params.maxDets)
         use_cats = bool(self.params.useCats)
-        self._grid = evaluate_bbox_grid(
-            gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats
-        )
+        run = evaluate_segm_grid if self.params.iouType == IOU_SEGM else evaluate_bbox_grid
+        self._grid = run(gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats)
         self.evalImgs = self._grid.eval_imgs()
 
     def accumulate(self, p: Any = None) -> None:

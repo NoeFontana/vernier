@@ -1,12 +1,18 @@
-//! Per-image bbox evaluation orchestrator.
+//! Per-image evaluation orchestrator.
 //!
 //! The bridge between the dataset layer ([`crate::CocoDataset`] /
 //! [`crate::CocoDetections`]) and the IoU-type-agnostic spine
 //! ([`crate::match_image`] → [`crate::accumulate`]). Pycocotools fuses
 //! these in `evaluate()` (cocoeval.py 174-216); we keep the layers
-//! separate so the spine stays untouchable per ADR-0005, and Phase 2/3
-//! orchestrators (segm / keypoints) reuse the same shape with a
-//! different [`crate::Similarity`] impl.
+//! separate so the spine stays untouchable per ADR-0005.
+//!
+//! The pass is generic over [`EvalKernel`] — a `Similarity` supertrait
+//! that adds the dataset-bridging methods that turn a `(image, category)`
+//! cell into kernel-typed annotations. Bbox and segm reuse the same
+//! orchestrator with [`BboxIou`] and [`SegmIou`] respectively; future
+//! kernels (OKS, Boundary IoU) plug in by adding one
+//! `impl EvalKernel for FooIou` block — `match_image`, `accumulate`,
+//! and `summarize_*` stay untouched.
 //!
 //! ## What this layer does
 //!
@@ -16,7 +22,9 @@
 //! 2. Pre-filter DTs to the top `max_dets_per_image` by score (the
 //!    matching engine and accumulator both rely on this cap; smaller
 //!    `max_dets` values are sliced downstream by `accumulate`).
-//! 3. Compute the GT × DT IoU matrix once via [`crate::BboxIou`].
+//! 3. Build the kernel's annotation slices via
+//!    [`EvalKernel::build_gt_anns`] / [`EvalKernel::build_dt_anns`] and
+//!    compute the GT × DT IoU matrix once via [`Similarity::compute`].
 //! 4. For each area range, build the per-call `_ignore` vector
 //!    (quirk **D3**) from the dataset's base ignore (D1) plus the area
 //!    filter (D6/D7), run [`crate::match_image`], apply quirk **B7** by
@@ -40,7 +48,7 @@
 //!   matching as a no-op.
 //! - **E2 / J4** (`strict`): DTs never carry an `is_crowd` flag — the
 //!   [`crate::CocoDetection`] type lacks the field. Only GT crowdness
-//!   drives the E1 asymmetry inside [`crate::BboxIou`].
+//!   drives the E1 asymmetry inside the kernel.
 //! - **J3** (`strict`): DT areas are read from
 //!   [`crate::CocoDetection::area`], which the dataset layer derives
 //!   from the bbox at construction.
@@ -48,11 +56,14 @@
 use ndarray::{Array2, ArrayView2};
 
 use crate::accumulate::PerImageEval;
-use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, ImageId};
+use crate::dataset::{
+    CategoryId, CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, EvalDataset, ImageId,
+    ImageMeta,
+};
 use crate::error::EvalError;
 use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
-use crate::similarity::{BboxAnn, BboxIou, Similarity};
+use crate::similarity::{BboxAnn, BboxIou, SegmAnn, SegmIou, Similarity};
 
 /// Sentinel `category_id` emitted on every cell when `use_cats=false`.
 /// Mirrors pycocotools' `p.catIds = [-1]` collapse (quirk **L4**).
@@ -115,12 +126,11 @@ impl AreaRange {
     }
 }
 
-/// Inputs to [`evaluate_bbox`]. Mirrors the small slice of pycocotools'
-/// `Params` that actually feeds the matcher — the rest (recall
-/// thresholds, full max-dets ladder) lives on [`crate::AccumulateParams`]
-/// downstream.
+/// Inputs to [`evaluate_bbox`] / [`evaluate_segm`] / [`evaluate_with`].
+/// IoU-agnostic — kernel-specific configuration (sigmas, prefilter
+/// thresholds, …) lives on the [`EvalKernel`] passed alongside.
 #[derive(Debug, Clone, Copy)]
-pub struct EvaluateBboxParams<'p> {
+pub struct EvaluateParams<'p> {
     /// IoU thresholds, length `T`. Use [`crate::iou_thresholds`] for the
     /// canonical 10-point COCO ladder.
     pub iou_thresholds: &'p [f64],
@@ -138,6 +148,125 @@ pub struct EvaluateBboxParams<'p> {
     /// collapsed onto a single bucket `k=0` and `category_id` is ignored
     /// for gather purposes.
     pub use_cats: bool,
+}
+
+/// Bridges a [`CocoDataset`] / [`CocoDetections`] cell to a kernel's
+/// annotation type.
+///
+/// Per ADR-0005, the per-image pass is generic over this trait so a new
+/// IoU type plugs in via one `impl EvalKernel for FooIou` block — the
+/// matching engine, accumulator, and summarizer never see the new type.
+///
+/// Implementors do the per-cell rasterization / lookup that a [`Similarity`]
+/// kernel can't (because [`Similarity`] is dataset-agnostic by design).
+/// `image` carries the `(h, w)` segm impls need for [`crate::Segmentation::to_rle`].
+pub trait EvalKernel: Similarity {
+    /// Build the kernel's GT annotation slice for one `(image, category)`
+    /// cell. `indices` selects from `gt_anns` in the order the cell
+    /// matcher will see.
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<Vec<Self::Annotation>, EvalError>;
+
+    /// Build the kernel's DT annotation slice for one `(image, category)`
+    /// cell, in score-descending sorted order matching `dt_indices`.
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<Vec<Self::Annotation>, EvalError>;
+}
+
+impl EvalKernel for BboxIou {
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        _image: &ImageMeta,
+    ) -> Result<Vec<BboxAnn>, EvalError> {
+        Ok(indices
+            .iter()
+            .map(|&j| BboxAnn {
+                bbox: gt_anns[j].bbox,
+                is_crowd: gt_anns[j].is_crowd,
+            })
+            .collect())
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        _image: &ImageMeta,
+    ) -> Result<Vec<BboxAnn>, EvalError> {
+        // E2/J4: DT never carries crowd.
+        Ok(indices
+            .iter()
+            .map(|&j| BboxAnn {
+                bbox: dt_anns[j].bbox,
+                is_crowd: false,
+            })
+            .collect())
+    }
+}
+
+impl EvalKernel for SegmIou {
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        indices
+            .iter()
+            .map(|&j| {
+                let ann = &gt_anns[j];
+                let seg = ann
+                    .segmentation
+                    .as_ref()
+                    .ok_or_else(|| missing_segmentation_err("GT", ann.id.0, image.id.0))?;
+                Ok(SegmAnn {
+                    rle: seg.to_rle(image.height, image.width)?,
+                    is_crowd: ann.is_crowd,
+                })
+            })
+            .collect()
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        indices
+            .iter()
+            .map(|&j| {
+                let dt = &dt_anns[j];
+                let seg = dt
+                    .segmentation
+                    .as_ref()
+                    .ok_or_else(|| missing_segmentation_err("DT", dt.id.0, image.id.0))?;
+                Ok(SegmAnn {
+                    rle: seg.to_rle(image.height, image.width)?,
+                    is_crowd: false,
+                })
+            })
+            .collect()
+    }
+}
+
+fn missing_segmentation_err(kind: &str, ann_id: i64, image_id: i64) -> EvalError {
+    EvalError::InvalidAnnotation {
+        detail: format!(
+            "{kind} id={ann_id} on image {image_id} has no `segmentation` field; \
+             segm eval requires one on every entry"
+        ),
+    }
 }
 
 /// Pycocotools-shaped per-cell bookkeeping that the matching engine
@@ -223,27 +352,32 @@ impl EvalGrid {
     }
 }
 
-/// Run the per-image bbox evaluation pass.
+/// Run the per-image evaluation pass with the given [`EvalKernel`].
 ///
 /// Iterates `(image, category)` cells, computes the IoU matrix once per
-/// cell with [`crate::BboxIou`], runs [`crate::match_image`] once per
-/// area range, and packs the results into a flat
-/// `[k][a][i]`-ordered grid suitable for [`crate::accumulate`].
+/// cell via the kernel, runs [`crate::match_image`] once per area range,
+/// and packs the results into a flat `[k][a][i]`-ordered grid suitable
+/// for [`crate::accumulate`].
+///
+/// Most callers want [`evaluate_bbox`] or [`evaluate_segm`]; this entry
+/// point is exposed for downstream code that ships its own kernel.
 ///
 /// # Errors
 ///
-/// Propagates [`EvalError`] from the underlying [`crate::Similarity`]
-/// and [`crate::match_image`] calls.
-pub fn evaluate_bbox(
+/// Propagates [`EvalError`] from the underlying [`Similarity`],
+/// [`EvalKernel::build_gt_anns`] / [`EvalKernel::build_dt_anns`], and
+/// [`crate::match_image`] calls.
+pub fn evaluate_with<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
-    params: EvaluateBboxParams<'_>,
+    params: EvaluateParams<'_>,
     parity_mode: ParityMode,
+    kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
     // Image and category ordering: id-ascending, deterministic across runs.
-    let mut image_ids: Vec<ImageId> = gt.images().iter().map(|im| im.id).collect();
-    image_ids.sort_unstable_by_key(|id| id.0);
-    let n_i = image_ids.len();
+    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
+    images.sort_unstable_by_key(|im| im.id.0);
+    let n_i = images.len();
     let n_a = params.area_ranges.len();
 
     // L4: collapse to a single virtual bucket when `use_cats=false`.
@@ -256,17 +390,16 @@ pub fn evaluate_bbox(
     };
     let n_k = category_buckets.len();
 
-    let bbox_iou = BboxIou;
     let mut eval_imgs: Vec<Option<PerImageEval>> = vec![None; n_k * n_a * n_i];
     let mut eval_imgs_meta: Vec<Option<EvalImageMeta>> = vec![None; n_k * n_a * n_i];
 
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
         let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
-        for (i, image_id) in image_ids.iter().enumerate() {
-            let gt_indices = gt_indices_for_cell(gt, *image_id, *cat);
-            let dt_indices =
-                dt_top_indices_for_cell(dt, *image_id, *cat, params.max_dets_per_image);
+        for (i, image) in images.iter().enumerate() {
+            let image_id = image.id;
+            let gt_indices = gt_indices_for_cell(gt, image_id, *cat);
+            let dt_indices = dt_top_indices_for_cell(dt, image_id, *cat, params.max_dets_per_image);
             if gt_indices.is_empty() && dt_indices.is_empty() {
                 continue;
             }
@@ -287,26 +420,12 @@ pub fn evaluate_bbox(
             let dt_scores: Vec<f64> = dt_indices.iter().map(|&j| dt_anns[j].score).collect();
             let dt_ids: Vec<i64> = dt_indices.iter().map(|&j| dt_anns[j].id.0).collect();
 
-            let gt_kernel: Vec<BboxAnn> = gt_indices
-                .iter()
-                .zip(&gt_iscrowd)
-                .map(|(&j, &is_crowd)| BboxAnn {
-                    bbox: gt_anns[j].bbox,
-                    is_crowd,
-                })
-                .collect();
-            // E2/J4: DT never carries crowd.
-            let dt_kernel: Vec<BboxAnn> = dt_indices
-                .iter()
-                .map(|&j| BboxAnn {
-                    bbox: dt_anns[j].bbox,
-                    is_crowd: false,
-                })
-                .collect();
+            let gt_kernel = kernel.build_gt_anns(gt_anns, gt_indices, image)?;
+            let dt_kernel = kernel.build_dt_anns(dt_anns, &dt_indices, image)?;
 
             let mut iou = Array2::<f64>::zeros((gt_kernel.len(), dt_kernel.len()));
             if !gt_kernel.is_empty() && !dt_kernel.is_empty() {
-                bbox_iou.compute(&gt_kernel, &dt_kernel, &mut iou.view_mut())?;
+                kernel.compute(&gt_kernel, &dt_kernel, &mut iou.view_mut())?;
             }
 
             let buffers = CellBuffers {
@@ -339,6 +458,44 @@ pub fn evaluate_bbox(
         n_area_ranges: n_a,
         n_images: n_i,
     })
+}
+
+/// Run the per-image bbox evaluation pass. Thin wrapper over
+/// [`evaluate_with`] with the [`BboxIou`] kernel.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_bbox(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with(gt, dt, params, parity_mode, &BboxIou)
+}
+
+/// Run the per-image segmentation-mask evaluation pass. Thin wrapper
+/// over [`evaluate_with`] with the [`SegmIou`] kernel.
+///
+/// Every GT and DT must carry a `segmentation` field; running segm eval
+/// against bbox-only inputs raises
+/// [`EvalError::InvalidAnnotation`] with the offending id, instead of
+/// silently treating absent masks as empty (the disposition documented
+/// alongside quirk **K3**).
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_segm(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with(gt, dt, params, parity_mode, &SegmIou)
 }
 
 fn gt_indices_for_cell(gt: &CocoDataset, image: ImageId, cat: Option<CategoryId>) -> &[usize] {
@@ -542,7 +699,7 @@ mod tests {
         ])
         .unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -609,7 +766,7 @@ mod tests {
             CocoDetections::from_inputs(vec![dt_input(1, 1, 0.5, (200.0, 200.0, 50.0, 50.0))])
                 .unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -636,7 +793,7 @@ mod tests {
         let dts =
             CocoDetections::from_inputs(vec![dt_input(1, 1, 0.5, (0.0, 0.0, 32.0, 32.0))]).unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -668,7 +825,7 @@ mod tests {
         let dts = CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (50.0, 50.0, 10.0, 10.0))])
             .unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -696,7 +853,7 @@ mod tests {
         ])
         .unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 2,
@@ -730,7 +887,7 @@ mod tests {
         let dts =
             CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0))]).unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -785,7 +942,7 @@ mod tests {
         let dts = CocoDetections::from_inputs(vec![dt_input(1, 1, 0.5, (50.0, 50.0, 10.0, 10.0))])
             .unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -809,7 +966,7 @@ mod tests {
         let dts =
             CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0))]).unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -830,7 +987,7 @@ mod tests {
         let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
         let dts = CocoDetections::from_inputs(vec![]).unwrap();
         let area = AreaRange::coco_default();
-        let params = EvaluateBboxParams {
+        let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
             area_ranges: &area,
             max_dets_per_image: 100,
@@ -841,5 +998,204 @@ mod tests {
             assert!(grid.cell(0, a, 0).is_some(), "image 1 area {a}");
             assert!(grid.cell(0, a, 1).is_none(), "image 2 area {a}");
         }
+    }
+
+    use crate::segmentation::Segmentation;
+
+    fn square_polygon(x: f64, y: f64, side: f64) -> Segmentation {
+        Segmentation::Polygons(vec![vec![
+            x,
+            y,
+            x + side,
+            y,
+            x + side,
+            y + side,
+            x,
+            y + side,
+        ]])
+    }
+
+    fn ann_with_segm(
+        id: i64,
+        image: i64,
+        cat: i64,
+        bbox: (f64, f64, f64, f64),
+        segm: Segmentation,
+    ) -> CocoAnnotation {
+        CocoAnnotation {
+            id: AnnId(id),
+            image_id: ImageId(image),
+            category_id: CategoryId(cat),
+            area: bbox.2 * bbox.3,
+            is_crowd: false,
+            ignore_flag: None,
+            bbox: Bbox {
+                x: bbox.0,
+                y: bbox.1,
+                w: bbox.2,
+                h: bbox.3,
+            },
+            segmentation: Some(segm),
+        }
+    }
+
+    fn dt_input_with_segm(
+        image: i64,
+        cat: i64,
+        score: f64,
+        bbox: (f64, f64, f64, f64),
+        segm: Segmentation,
+    ) -> DetectionInput {
+        DetectionInput {
+            id: None,
+            image_id: ImageId(image),
+            category_id: CategoryId(cat),
+            score,
+            bbox: Bbox {
+                x: bbox.0,
+                y: bbox.1,
+                w: bbox.2,
+                h: bbox.3,
+            },
+            segmentation: Some(segm),
+        }
+    }
+
+    #[test]
+    fn segm_perfect_overlap_summarizes_to_one() {
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (10.0, 10.0, 20.0, 20.0),
+            square_polygon(10.0, 10.0, 20.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_segm(
+            1,
+            1,
+            0.9,
+            (10.0, 10.0, 20.0, 20.0),
+            square_polygon(10.0, 10.0, 20.0),
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let max_dets = vec![1usize, 10, 100];
+        let acc = accumulate(
+            &grid.eval_imgs,
+            AccumulateParams {
+                iou_thresholds: iou_thresholds(),
+                recall_thresholds: recall_thresholds(),
+                max_dets: &max_dets,
+                n_categories: grid.n_categories,
+                n_area_ranges: grid.n_area_ranges,
+                n_images: grid.n_images,
+            },
+            ParityMode::Strict,
+        )
+        .unwrap();
+        let summary = summarize_detection(&acc, iou_thresholds(), &max_dets).unwrap();
+        let stats = summary.stats();
+        assert!((stats[0] - 1.0).abs() < 1e-12, "AP={}", stats[0]);
+    }
+
+    #[test]
+    fn segm_disjoint_masks_summarize_to_zero() {
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_segm(
+            1,
+            1,
+            0.9,
+            (50.0, 50.0, 10.0, 10.0),
+            square_polygon(50.0, 50.0, 10.0),
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let all = grid.cell(0, 0, 0).unwrap();
+        // No overlap → no match at any threshold.
+        assert!(all.dt_matched.iter().all(|&m| !m));
+    }
+
+    #[test]
+    fn segm_missing_gt_segmentation_surfaces_typed_error() {
+        // GT has no `segmentation` field; running segm eval against it
+        // must surface InvalidAnnotation, not silently treat as empty.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann(7, 1, 1, (0.0, 0.0, 10.0, 10.0))];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_segm(
+            1,
+            1,
+            0.9,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let err = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap_err();
+        match err {
+            EvalError::InvalidAnnotation { detail } => {
+                assert!(detail.contains("GT id=7"), "msg: {detail}");
+            }
+            other => panic!("expected InvalidAnnotation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn segm_missing_dt_segmentation_surfaces_typed_error() {
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        // DT without a segmentation field.
+        let dts =
+            CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0))]).unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let err = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap_err();
+        assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
     }
 }

@@ -13,7 +13,7 @@ from typing import Literal
 
 from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
-from vernier._core import Summary, evaluate_bbox_summary, version
+from vernier._core import Summary, evaluate_bbox_summary, evaluate_segm_summary, version
 
 __all__ = [
     "COCOeval",
@@ -27,14 +27,14 @@ __all__ = [
 
 __version__: str = version()
 
-#: Similarity / IoU type. Phase 1 ships ``"bbox"``; ``"segm"`` and
-#: ``"keypoints"`` arrive in Phase 2/3.
-IouType = Literal["bbox"]
+#: Similarity / IoU type. Phase 1 ships ``"bbox"``; ``"segm"`` arrives
+#: with Phase 2; ``"keypoints"`` with Phase 3.
+IouType = Literal["bbox", "segm"]
 
 
 @dataclass(frozen=True, slots=True)
 class Evaluator:
-    """Extended-API COCO-style evaluator (Phase 1: bbox only).
+    """Extended-API COCO-style evaluator.
 
     The instance is immutable per ADR-0006: construct once, call
     :meth:`evaluate` per dataset/detections pair. To change a parameter,
@@ -44,6 +44,11 @@ class Evaluator:
     ``parity_mode``, which defaults to ``"corrected"`` (the ADR-0002
     recommendation for net-new users); migrating users wanting bit-exact
     pycocotools behavior should set ``parity_mode="strict"``.
+
+    Supported ``iou_type`` values: ``"bbox"`` (Phase 1) and ``"segm"``
+    (Phase 2). Segm requires every GT and DT to carry a ``segmentation``
+    field; absent fields raise ``ValueError`` instead of being silently
+    treated as empty.
     """
 
     iou_type: IouType = "bbox"
@@ -78,6 +83,10 @@ class Evaluator:
         same shapes pycocotools' ``COCO(...)`` and ``COCO.loadRes(...)``
         consume).
         """
-        if self.iou_type != "bbox":
-            raise ValueError(f"unsupported iou_type {self.iou_type!r}; Phase 1 ships 'bbox' only")
-        return evaluate_bbox_summary(gt, dt, self.parity_mode, list(self.max_dets), self.use_cats)
+        if self.iou_type == "bbox":
+            run = evaluate_bbox_summary
+        elif self.iou_type == "segm":
+            run = evaluate_segm_summary
+        else:
+            raise ValueError(f"unsupported iou_type {self.iou_type!r}")
+        return run(gt, dt, self.parity_mode, list(self.max_dets), self.use_cats)

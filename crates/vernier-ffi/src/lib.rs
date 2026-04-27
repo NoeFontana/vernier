@@ -20,9 +20,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use vernier_core::{
-    accumulate, evaluate_bbox, iou_thresholds, recall_thresholds, summarize_detection,
-    AccumulateParams, Accumulated, AreaRange, CocoDataset, CocoDetections, EvalError, EvalGrid,
-    EvalImageMeta, EvaluateBboxParams, ParityMode, PerImageEval, Summary,
+    accumulate, evaluate_bbox, evaluate_segm, iou_thresholds, recall_thresholds,
+    summarize_detection, AccumulateParams, Accumulated, AreaRange, CocoDataset, CocoDetections,
+    EvalError, EvalGrid, EvalImageMeta, EvaluateParams, ParityMode, PerImageEval, Summary,
 };
 
 /// Returns the underlying `vernier-core` version string. Useful as a smoke
@@ -237,17 +237,40 @@ fn eval_img_dict<'py>(
     Ok(dict)
 }
 
-/// Run the bbox per-image evaluation pass and return the
-/// pycocotools-shaped grid.
+/// Type-erased eval kernel selector for the FFI surface. Each variant
+/// dispatches to the corresponding `evaluate_*` function in
+/// `vernier-core`.
+#[derive(Debug, Clone, Copy)]
+enum EvalIouType {
+    Bbox,
+    Segm,
+}
+
+impl EvalIouType {
+    fn run(
+        self,
+        gt: &CocoDataset,
+        dt: &CocoDetections,
+        params: EvaluateParams<'_>,
+        parity: ParityMode,
+    ) -> Result<EvalGrid, EvalError> {
+        match self {
+            Self::Bbox => evaluate_bbox(gt, dt, params, parity),
+            Self::Segm => evaluate_segm(gt, dt, params, parity),
+        }
+    }
+}
+
+/// Run the per-image evaluation pass and return the pycocotools-shaped
+/// grid.
 ///
 /// `max_dets_per_image` is the single-int top-N cap applied per
 /// `(image, category)` cell — pass the *largest* entry of the eventual
 /// `accumulate()` `max_dets` ladder. Smaller ladder entries are sliced
 /// downstream by `accumulate`.
-#[pyfunction]
-#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats))]
-fn evaluate_bbox_grid(
+fn evaluate_grid_impl(
     py: Python<'_>,
+    iou_type: EvalIouType,
     gt_json: &Bound<'_, PyBytes>,
     dt_json: &Bound<'_, PyBytes>,
     parity_mode: &str,
@@ -262,10 +285,10 @@ fn evaluate_bbox_grid(
     let area = AreaRange::coco_default();
     let grid = py
         .detach(move || {
-            evaluate_bbox(
+            iou_type.run(
                 &gt,
                 &dt,
-                EvaluateBboxParams {
+                EvaluateParams {
                     iou_thresholds: iou_thresholds(),
                     area_ranges: &area,
                     max_dets_per_image,
@@ -281,7 +304,54 @@ fn evaluate_bbox_grid(
     })
 }
 
-/// Run the bbox evaluation pipeline end-to-end and return a [`PySummary`].
+/// Bbox per-image evaluation pass — see [`evaluate_grid_impl`].
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats))]
+fn evaluate_bbox_grid(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+) -> PyResult<PyEvalGrid> {
+    evaluate_grid_impl(
+        py,
+        EvalIouType::Bbox,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+    )
+}
+
+/// Segm per-image evaluation pass. Both GT and DT JSON must carry a
+/// `segmentation` field on every entry; absent fields raise a typed
+/// `ValueError` instead of being silently treated as empty.
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats))]
+fn evaluate_segm_grid(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+) -> PyResult<PyEvalGrid> {
+    evaluate_grid_impl(
+        py,
+        EvalIouType::Segm,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+    )
+}
+
+/// Run an end-to-end evaluation pipeline (grid → accumulate → summarize)
+/// and return a [`PySummary`].
 ///
 /// `gt_json` and `dt_json` are the COCO ground-truth and detection JSON
 /// payloads as bytes (the same shapes pycocotools' `COCO(...)` /
@@ -289,10 +359,9 @@ fn evaluate_bbox_grid(
 /// per ADR-0002. `max_dets` is the maxDets ladder fed to accumulate /
 /// summarize (pycocotools default `[1, 10, 100]`). `use_cats` mirrors
 /// pycocotools' `useCats` (quirk **L4**).
-#[pyfunction]
-#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets, use_cats))]
-fn evaluate_bbox_summary(
+fn evaluate_summary_impl(
     py: Python<'_>,
+    iou_type: EvalIouType,
     gt_json: &Bound<'_, PyBytes>,
     dt_json: &Bound<'_, PyBytes>,
     parity_mode: &str,
@@ -307,13 +376,59 @@ fn evaluate_bbox_summary(
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
     let summary = py
-        .detach(move || run_bbox_pipeline(&gt, &dt, parity, &max_dets, use_cats))
+        .detach(move || run_pipeline(iou_type, &gt, &dt, parity, &max_dets, use_cats))
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
     Ok(PySummary { inner: summary })
 }
 
-fn run_bbox_pipeline(
+/// Bbox end-to-end pipeline — see [`evaluate_summary_impl`].
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets, use_cats))]
+fn evaluate_bbox_summary(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+) -> PyResult<PySummary> {
+    evaluate_summary_impl(
+        py,
+        EvalIouType::Bbox,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
+/// Segm end-to-end pipeline — see [`evaluate_summary_impl`]. Both GT
+/// and DT must carry segmentation fields.
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets, use_cats))]
+fn evaluate_segm_summary(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+) -> PyResult<PySummary> {
+    evaluate_summary_impl(
+        py,
+        EvalIouType::Segm,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
+fn run_pipeline(
+    iou_type: EvalIouType,
     gt: &CocoDataset,
     dt: &CocoDetections,
     parity: ParityMode,
@@ -323,13 +438,13 @@ fn run_bbox_pipeline(
     let iou_thr = iou_thresholds();
     let area = AreaRange::coco_default();
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
-    let eval_params = EvaluateBboxParams {
+    let eval_params = EvaluateParams {
         iou_thresholds: iou_thr,
         area_ranges: &area,
         max_dets_per_image: max_det_top,
         use_cats,
     };
-    let grid = evaluate_bbox(gt, dt, eval_params, parity)?;
+    let grid = iou_type.run(gt, dt, eval_params, parity)?;
 
     let acc_params = AccumulateParams {
         iou_thresholds: iou_thr,
@@ -369,6 +484,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_segm_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_segm_grid, m)?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
