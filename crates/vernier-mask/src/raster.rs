@@ -17,6 +17,11 @@
 use crate::error::{MalformedRleReason, MaskError};
 use crate::rle::Rle;
 
+/// Initial capacity for the encoder's `counts` vec. Eliminates the
+/// first several doublings on typical masks without overshooting on
+/// tiny ones. Capped to keep small masks from over-allocating.
+const ENCODE_COUNTS_CAPACITY_HINT: usize = 64;
+
 impl Rle {
     /// Encodes a column-major byte mask of shape `(h, w)` into an
     /// RLE.
@@ -43,19 +48,26 @@ impl Rle {
                 counts: vec![],
             });
         }
-        let mut counts: Vec<u32> = Vec::new();
+        let mut counts: Vec<u32> =
+            Vec::with_capacity((mask.len() + 1).min(ENCODE_COUNTS_CAPACITY_HINT));
         let mut phase: u8 = 0;
         let mut run: u64 = 0;
         for &byte in mask {
             let bit = u8::from(byte != 0);
             if bit != phase {
-                counts.push(u32_or_overflow(run)?);
+                counts.push(
+                    u32::try_from(run)
+                        .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?,
+                );
                 run = 0;
                 phase = bit;
             }
             run += 1;
         }
-        counts.push(u32_or_overflow(run)?);
+        counts.push(
+            u32::try_from(run)
+                .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?,
+        );
         Ok(Rle { h, w, counts })
     }
 
@@ -76,10 +88,6 @@ impl Rle {
         }
         out
     }
-}
-
-fn u32_or_overflow(run: u64) -> Result<u32, MaskError> {
-    u32::try_from(run).map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))
 }
 
 #[cfg(test)]
