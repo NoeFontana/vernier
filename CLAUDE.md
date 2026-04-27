@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Mixed Rust/Python monorepo. Build is glued by `maturin` + `uv`; tasks via `just`.
 
 - `crates/vernier-core/` — pure Rust evaluation logic. **No Python deps.** Source of truth for semantics. `#![forbid(unsafe_code)]`.
+- `crates/vernier-mask/` — pure Rust COCO RLE codec, polygon rasterizer, mask ops (per ADR-0009). Leaf crate: depended on by `vernier-core`, never the reverse. **No Python deps.** `#![forbid(unsafe_code)]`.
 - `crates/vernier-ffi/` — PyO3 bindings, compiled as the `vernier._core` extension module. **Data conversion only, no business logic** — if logic creeps in here it belongs in `vernier-core`. Not published as a crate (`publish = false`); ships inside the wheel.
 - `python/vernier/` — thin Python wrapper, the user-facing API. `pyright` runs `strict` on this directory.
 - `tools/reservations/` — placeholder packages that hold names on crates.io / PyPI. Each has its own `[workspace]` table and is deliberately **outside** the Cargo workspace. Don't add it to workspace members and don't `just build` it. See `docs/engineering/registry-reservations.md`.

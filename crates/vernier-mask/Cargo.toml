@@ -1,0 +1,20 @@
+[package]
+name = "vernier-mask"
+description = "COCO RLE codec, polygon rasterizer, and mask kernels for the vernier evaluation library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["evaluation", "rle", "mask", "segmentation", "coco"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }
