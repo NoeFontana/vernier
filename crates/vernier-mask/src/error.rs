@@ -38,6 +38,12 @@ pub enum MaskError {
         /// Actual byte-slice length received.
         got: usize,
     },
+
+    /// Polygon vertex slice is unusable. `corrected` per ADR-0002,
+    /// quirk **K1**: the C `rleFrPoly` (`mc:193-235`) silently
+    /// produces malformed output on degenerate input.
+    #[error("malformed polygon: {0}")]
+    MalformedPolygon(MalformedPolygonReason),
 }
 
 /// Concrete reason a counts string failed to decode. Programmatically
@@ -59,4 +65,22 @@ pub enum MalformedRleReason {
     /// undo step.
     #[error("decoded run length outside u32 range")]
     U32Overflow,
+}
+
+/// Concrete reason a polygon failed to rasterize. Quirk **K1**
+/// disposition `corrected`: pycocotools accepts these inputs and
+/// emits silently malformed RLE; vernier rejects them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum MalformedPolygonReason {
+    /// Coordinate slice has odd length (not a sequence of `(x, y)`
+    /// pairs).
+    #[error("vertex slice length must be even (got {0})")]
+    OddCoordinateCount(usize),
+    /// Polygon has fewer than 3 vertices. The 1- and 2-vertex cases
+    /// are ambiguous with bbox/uncompressed-RLE inputs upstream.
+    #[error("polygon needs at least 3 vertices (got {0})")]
+    TooFewVertices(usize),
+    /// A coordinate is non-finite (NaN or infinite).
+    #[error("coordinate at index {0} is not finite")]
+    NonFiniteCoordinate(usize),
 }

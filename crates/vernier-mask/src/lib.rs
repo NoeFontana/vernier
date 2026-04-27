@@ -26,6 +26,7 @@
 pub mod codec;
 pub mod error;
 pub mod ops;
+pub mod polygon;
 pub mod raster;
 pub mod rle;
 
