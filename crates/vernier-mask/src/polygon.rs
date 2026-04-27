@@ -84,8 +84,7 @@ impl Rle {
             });
         }
 
-        // Stage 1: upsample. Closing vertex is appended so each edge
-        // can be addressed as `[j, j+1]` for `j ∈ 0..k`.
+        // Closing vertex appended so each edge is `[j, j+1]` for `j ∈ 0..k`.
         let mut sx: Vec<i32> = Vec::with_capacity(k + 1);
         let mut sy: Vec<i32> = Vec::with_capacity(k + 1);
         for j in 0..k {
@@ -95,8 +94,8 @@ impl Rle {
         sx.push(sx[0]);
         sy.push(sy[0]);
 
-        // Stage 2: densify. Capacity = sum of major-axis lengths +1
-        // per edge — matches the C `m` accumulator in `mc:201`.
+        // Densify. Capacity = sum of per-edge `max(|dx|, |dy|) + 1` matches
+        // the C `m` accumulator in `mc:201`.
         let total_dense: usize = (0..k)
             .map(|j| {
                 let dx = (sx[j + 1] - sx[j]).unsigned_abs();
@@ -110,49 +109,37 @@ impl Rle {
             densify_edge(sx[j], sx[j + 1], sy[j], sy[j + 1], &mut u, &mut v);
         }
 
-        // Stage 3: y-boundary downsample. `bx`, `by` collect image-
-        // coord crossings; capacity is at worst `u.len()`.
-        let mut bx: Vec<u32> = Vec::with_capacity(u.len());
-        let mut by: Vec<u32> = Vec::with_capacity(u.len());
+        // Y-boundary downsample directly into column-major flat indices.
+        let h64 = u64::from(h);
+        let w64 = u64::from(w);
         let w_max = f64::from(w - 1);
         let h_max = f64::from(h);
+        let mut a: Vec<u64> = Vec::with_capacity(u.len() + 1);
         for j in 1..u.len() {
             if u[j] == u[j - 1] {
                 continue;
             }
-            // x: cell-boundary the polygon just crossed. Direction-
-            // aware, per the C ternary in `mc:219`.
+            // x: direction-aware (cell the boundary just left), per `mc:219`.
             let xd_super = if u[j] < u[j - 1] { u[j] } else { u[j] - 1 };
             let xd = (f64::from(xd_super) + 0.5) / SUPERSAMPLE_SCALE - 0.5;
-            // Quirk H5: only crossings exactly on an integer pixel
-            // boundary survive; out-of-image crossings are dropped.
-            if xd.floor() != xd || xd < 0.0 || xd > w_max {
+            // Quirk H5: only crossings exactly on an integer pixel boundary
+            // survive; out-of-image crossings are dropped.
+            if xd.fract() != 0.0 || xd < 0.0 || xd > w_max {
                 continue;
             }
-            // y: minimum of the two endpoints, intentionally ignoring
-            // direction — quirk H4. Clamp then `ceil`.
+            // y: minimum of the two endpoints regardless of direction —
+            // quirk H4 asymmetry. Clamp to `[0, h]` then `ceil`.
             let yd_super = v[j].min(v[j - 1]);
             let yd = (f64::from(yd_super) + 0.5) / SUPERSAMPLE_SCALE - 0.5;
             let yd = yd.clamp(0.0, h_max).ceil();
-            // xd is a non-negative integer ≤ w-1, yd ∈ [0, h]; both
-            // fit u32. (h, w themselves are u32.)
-            bx.push(xd as u32);
-            by.push(yd as u32);
+            // xd is a non-negative integer ≤ w-1, yd ∈ [0, h]; product +
+            // sum fits u64 since h, w are u32.
+            a.push((xd as u64) * h64 + yd as u64);
         }
-
-        // Stage 4: build sorted column-major flat indices, append
-        // the `h*w` sentinel so the final run extends to mask end.
-        let h64 = u64::from(h);
-        let w64 = u64::from(w);
-        let total_pixels = h64 * w64;
-        let mut a: Vec<u64> = Vec::with_capacity(bx.len() + 1);
-        for i in 0..bx.len() {
-            a.push(u64::from(bx[i]) * h64 + u64::from(by[i]));
-        }
-        a.push(total_pixels);
+        // Sentinel `h*w` extends the final run to mask end.
+        a.push(h64 * w64);
         a.sort_unstable();
 
-        // Differential encode in place.
         let mut prev: u64 = 0;
         for slot in a.iter_mut() {
             let cur = *slot;
@@ -160,26 +147,32 @@ impl Rle {
             prev = cur;
         }
 
-        // Compact zero-length runs. Mirrors `mc:231-233`: a zero
-        // gap means two crossings landed on the same flat index, so
-        // the next run folds back into the most recent emitted run.
+        // Compact zero-length runs. Mirrors `mc:231-233`: a zero gap means
+        // two crossings landed on the same flat index, so the next run folds
+        // back into the most recent emitted run.
         let mut counts: Vec<u32> = Vec::with_capacity(a.len());
-        counts.push(u32_from_u64(a[0])?);
+        counts.push(
+            u32::try_from(a[0])
+                .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?,
+        );
         let mut i = 1usize;
         while i < a.len() {
             let cur = a[i];
             i += 1;
             if cur > 0 {
-                counts.push(u32_from_u64(cur)?);
+                counts.push(
+                    u32::try_from(cur)
+                        .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?,
+                );
                 continue;
             }
-            // cur == 0: bridge to the next run if one exists.
             if i < a.len() {
                 let bridged = a[i];
                 i += 1;
                 let last_idx = counts.len() - 1;
                 let merged = u64::from(counts[last_idx]) + bridged;
-                counts[last_idx] = u32_from_u64(merged)?;
+                counts[last_idx] = u32::try_from(merged)
+                    .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?;
             }
         }
 
@@ -249,10 +242,6 @@ fn densify_edge(
             u.push((f64::from(xs) + s * f64::from(t) + 0.5) as i32);
         }
     }
-}
-
-fn u32_from_u64(value: u64) -> Result<u32, MaskError> {
-    u32::try_from(value).map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))
 }
 
 #[cfg(test)]
@@ -379,11 +368,9 @@ mod tests {
     proptest! {
         #[test]
         fn random_polygon_round_trips_to_well_formed_rle(
-            verts in proptest::collection::vec(0.0_f64..16.0_f64, 6..40).prop_filter(
-                "even length",
-                |v| v.len() % 2 == 0,
-            )
+            pairs in proptest::collection::vec((0.0_f64..16.0_f64, 0.0_f64..16.0_f64), 3..20)
         ) {
+            let verts: Vec<f64> = pairs.into_iter().flat_map(|(x, y)| [x, y]).collect();
             let r = Rle::from_polygon(&verts, 16, 16)?;
             // Counts must sum to h*w, and the mask must round-trip.
             let total: u64 = r.counts.iter().map(|&c| u64::from(c)).sum();
