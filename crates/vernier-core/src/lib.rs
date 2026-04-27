@@ -21,6 +21,7 @@ pub mod error;
 pub mod evaluate;
 pub mod matching;
 pub mod parity;
+pub mod segmentation;
 pub mod similarity;
 pub mod summarize;
 
@@ -38,6 +39,7 @@ pub use matching::{match_image, MatchResult};
 pub use parity::{
     iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,
 };
+pub use segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
 pub use similarity::{BboxAnn, BboxIou, Similarity};
 pub use summarize::{
     summarize_detection, summarize_with, AreaRng, MaxDetSelector, Metric, StatLine, StatRequest,

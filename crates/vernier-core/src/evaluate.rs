@@ -508,6 +508,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            segmentation: None,
         }
     }
 
@@ -523,6 +524,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            segmentation: None,
         }
     }
 

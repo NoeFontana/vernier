@@ -179,6 +179,34 @@ impl Rle {
         Ok(Rle { h, w, counts })
     }
 
+    /// Rasterizes a multi-polygon segmentation into a single RLE
+    /// via union (quirk **K2**: COCO multi-polygon GT — e.g., a
+    /// person split across an occluder — is treated as one mask).
+    ///
+    /// Empty input yields the all-background RLE of shape `(h, w)`
+    /// (one run of `h*w` zero pixels, or empty for a 0-area image).
+    /// A singleton slice skips the merge round-trip.
+    pub fn from_polygons(polys: &[Vec<f64>], h: u32, w: u32) -> Result<Self, MaskError> {
+        if let [single] = polys {
+            return Self::from_polygon(single, h, w);
+        }
+        if polys.is_empty() {
+            let total = u64::from(h) * u64::from(w);
+            let counts = if total == 0 {
+                vec![]
+            } else {
+                vec![u32::try_from(total)
+                    .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?]
+            };
+            return Ok(Rle { h, w, counts });
+        }
+        let rles: Vec<Rle> = polys
+            .iter()
+            .map(|p| Self::from_polygon(p, h, w))
+            .collect::<Result<_, _>>()?;
+        Self::merge(&rles, false)
+    }
+
     /// Rasterizes an axis-aligned bbox `[x, y, w, h]` into an RLE.
     ///
     /// Mirrors `rleFrBbox` (`mc:180-187`): a bbox is a 4-vertex
@@ -351,6 +379,32 @@ mod tests {
             }
         }
         assert_eq!(mask, expected);
+    }
+
+    #[test]
+    fn from_polygons_empty_yields_all_background_at_requested_shape() {
+        let r = Rle::from_polygons(&[], 4, 4).unwrap();
+        assert_eq!(r, rle(4, 4, vec![16]));
+        assert_eq!(r.area(), 0);
+        let r = Rle::from_polygons(&[], 0, 0).unwrap();
+        assert_eq!(r, rle(0, 0, vec![]));
+    }
+
+    #[test]
+    fn from_polygons_singleton_matches_from_polygon() {
+        let xy = vec![0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0];
+        let one = Rle::from_polygons(std::slice::from_ref(&xy), 4, 4).unwrap();
+        let direct = Rle::from_polygon(&xy, 4, 4).unwrap();
+        assert_eq!(one, direct);
+    }
+
+    #[test]
+    fn from_polygons_multi_unions_disjoint_regions_k2() {
+        let a = vec![0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0];
+        let b = vec![3.0, 0.0, 5.0, 0.0, 5.0, 2.0, 3.0, 2.0];
+        let r = Rle::from_polygons(&[a, b], 8, 8).unwrap();
+        // Two 2×2 regions → 4 + 4 foreground pixels.
+        assert_eq!(r.area(), 8);
     }
 
     #[test]
