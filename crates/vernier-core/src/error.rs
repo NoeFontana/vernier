@@ -6,6 +6,7 @@
 //! (per ADR-0005).
 
 use thiserror::Error;
+use vernier_mask::MaskError;
 
 /// Unified error type for evaluation paths.
 ///
@@ -39,6 +40,12 @@ pub enum EvalError {
     /// JSON deserialization failed before any vernier-side validation.
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+
+    /// Mask-side operation failed (codec decode, polygon rasterization,
+    /// merge dimension mismatch). Propagated from `vernier-mask` per
+    /// ADR-0009's one-way dependency.
+    #[error("mask: {0}")]
+    Mask(#[from] MaskError),
 
     /// Numeric input was not finite (NaN or infinity reached an
     /// arithmetic that cannot tolerate it). Used at boundaries where

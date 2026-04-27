@@ -47,6 +47,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::EvalError;
 use crate::parity::ParityMode;
+use crate::segmentation::Segmentation;
 
 /// Newtype for image ids. Sourced from the JSON `id` field; preserved
 /// verbatim. Crowd_region's image with `id = 1` becomes
@@ -157,9 +158,16 @@ pub struct CocoAnnotation {
     pub ignore_flag: Option<bool>,
     /// Bounding box. Required for every COCO ground-truth annotation
     /// (even keypoint-only annotations carry a bbox; the bbox is what
-    /// `J3` derives DT-area from). Phase 2 adds `segmentation`,
-    /// Phase 3 adds `keypoints` as additional optional fields.
+    /// `J3` derives DT-area from). Phase 3 adds `keypoints` as an
+    /// additional optional field.
     pub bbox: Bbox,
+    /// COCO `segmentation` field, in any of the three shapes
+    /// pycocotools accepts (multi-polygon, uncompressed RLE,
+    /// compressed RLE). `None` for keypoint-only annotations or
+    /// fixtures that omit it. The matching engine normalizes via
+    /// [`Segmentation::to_rle`] at eval time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segmentation: Option<Segmentation>,
 }
 
 impl CocoAnnotation {
@@ -437,7 +445,7 @@ impl CocoDataset {
 /// - `id` is honored when the user supplies one and auto-assigned
 ///   otherwise — quirk **J1** (`aligned`, an opinionated improvement
 ///   over pycocotools' silent overwrite).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CocoDetection {
     /// Detection id. Either user-supplied (J1) or auto-assigned by
     /// [`CocoDetections::from_inputs`].
@@ -452,6 +460,10 @@ pub struct CocoDetection {
     pub bbox: Bbox,
     /// Pixel area, derived from `bbox` per quirk **J3**.
     pub area: f64,
+    /// Segmentation prediction, when the detector emits one. `None`
+    /// for bbox-only detectors. Parity dispositions match
+    /// [`CocoAnnotation::segmentation`].
+    pub segmentation: Option<Segmentation>,
 }
 
 impl Annotation for CocoDetection {
@@ -474,7 +486,7 @@ impl Annotation for CocoDetection {
 
 /// Caller-side input for one detection. Mirrors the shape of a single
 /// entry of a COCO results JSON array but uses typed ids.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DetectionInput {
     /// Optional user-supplied id (quirk **J1**). Absent → auto-assigned.
     #[serde(default)]
@@ -487,6 +499,11 @@ pub struct DetectionInput {
     pub score: f64,
     /// Bounding box.
     pub bbox: Bbox,
+    /// Optional segmentation prediction. `None` for bbox-only
+    /// detectors. Stored verbatim and normalized via
+    /// [`Segmentation::to_rle`] at eval time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segmentation: Option<Segmentation>,
 }
 
 /// COCO detections collection — flat storage plus `(image, category)`-
@@ -538,6 +555,7 @@ impl CocoDetections {
                 score: input.score,
                 bbox: input.bbox,
                 area: input.bbox.w * input.bbox.h,
+                segmentation: input.segmentation,
             });
         }
 
@@ -834,6 +852,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            segmentation: None,
         }
     }
 
@@ -909,6 +928,95 @@ mod tests {
         assert_eq!(ds[0].area, 6.0); // J3
         assert_eq!(ds[1].id, AnnId(7)); // user-supplied (J1)
         assert!(!ds[0].is_crowd()); // E2/J4
+        assert!(ds[0].segmentation.is_none());
+    }
+
+    // -- Phase 2: segmentation field on GT and DT -----------------------------
+
+    #[test]
+    fn gt_loads_polygon_segmentation() {
+        const JSON: &str = r#"{
+            "images": [{"id": 1, "width": 10, "height": 10}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 4, 4], "area": 16, "iscrowd": 0,
+                 "segmentation": [[0, 0, 4, 0, 4, 4, 0, 4]]}
+            ],
+            "categories": [{"id": 1, "name": "thing"}]
+        }"#;
+        let ds = CocoDataset::from_json_bytes(JSON.as_bytes()).unwrap();
+        let seg = ds.annotations()[0].segmentation.as_ref().unwrap();
+        let rle = seg.to_rle(10, 10).unwrap();
+        // 4×4 polygon → 16 foreground pixels.
+        assert_eq!(rle.area(), 16);
+    }
+
+    #[test]
+    fn gt_loads_compressed_rle_segmentation() {
+        // Build a known compressed counts string from a known RLE so we
+        // exercise the str-counts path without hand-encoding the wire.
+        let counts_str = String::from_utf8(vernier_mask::encode_counts(&[0, 16])).unwrap();
+        let json = format!(
+            r#"{{
+            "images": [{{"id": 1, "width": 4, "height": 4}}],
+            "annotations": [
+                {{"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 4, 4], "area": 16, "iscrowd": 1,
+                 "segmentation": {{"size": [4, 4], "counts": "{counts_str}"}}}}
+            ],
+            "categories": [{{"id": 1, "name": "thing"}}]
+        }}"#
+        );
+        let ds = CocoDataset::from_json_bytes(json.as_bytes()).unwrap();
+        let seg = ds.annotations()[0].segmentation.as_ref().unwrap();
+        let rle = seg.to_rle(4, 4).unwrap();
+        assert_eq!((rle.h, rle.w), (4, 4));
+        assert_eq!(rle.area(), 16);
+    }
+
+    #[test]
+    fn gt_segmentation_round_trips_through_to_json_value() {
+        const JSON: &str = r#"{
+            "images": [{"id": 1, "width": 10, "height": 10}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 4, 4], "area": 16, "iscrowd": 0,
+                 "segmentation": [[0, 0, 4, 0, 4, 4, 0, 4]]}
+            ],
+            "categories": [{"id": 1, "name": "thing"}]
+        }"#;
+        let ds = CocoDataset::from_json_bytes(JSON.as_bytes()).unwrap();
+        let serialized = serde_json::to_string(&ds.to_json_value()).unwrap();
+        let again = CocoDataset::from_json_bytes(serialized.as_bytes()).unwrap();
+        assert_eq!(ds.annotations(), again.annotations());
+    }
+
+    #[test]
+    fn gt_without_segmentation_field_loads_as_none() {
+        // Existing bbox-only fixtures must still parse — segmentation
+        // is opt-in.
+        let ds = load_crowd_region();
+        assert!(ds.annotations().iter().all(|a| a.segmentation.is_none()));
+    }
+
+    #[test]
+    fn dt_loads_compressed_rle_segmentation() {
+        const JSON: &str = r#"[
+            {"image_id": 1, "category_id": 1, "score": 0.9,
+             "bbox": [0, 0, 4, 4],
+             "segmentation": {"size": [4, 4], "counts": "04L4"}}
+        ]"#;
+        let dts = CocoDetections::from_json_bytes(JSON.as_bytes()).unwrap();
+        assert!(dts.detections()[0].segmentation.is_some());
+    }
+
+    #[test]
+    fn dt_without_segmentation_loads_as_none() {
+        const JSON: &str = r#"[
+            {"image_id": 1, "category_id": 1, "score": 0.9, "bbox": [0, 0, 1, 1]}
+        ]"#;
+        let dts = CocoDetections::from_json_bytes(JSON.as_bytes()).unwrap();
+        assert!(dts.detections()[0].segmentation.is_none());
     }
 
     // -- Property: index invariants hold across arbitrary datasets --------
@@ -977,6 +1085,7 @@ mod tests {
                     is_crowd: false,
                     ignore_flag: None,
                     bbox: Bbox { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
+                    segmentation: None,
                 });
             }
 
