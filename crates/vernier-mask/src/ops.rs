@@ -54,8 +54,6 @@ impl Rle {
             if j % 2 == 0 || len == 0 {
                 continue;
             }
-            // start and cc-1 are valid pixel indices in [0, h*w-1]
-            // for any well-formed RLE.
             let y_start = (start % h64) as u32;
             let x_start = (start / h64) as u32;
             let y_end = ((cc - 1) % h64) as u32;
@@ -111,8 +109,9 @@ impl Rle {
         if rles.len() == 1 || h == 0 || w == 0 {
             return Ok(first.clone());
         }
-        let mut acc = first.counts.clone();
-        for r in &rles[1..] {
+        // rles.len() >= 2 by this point.
+        let mut acc = merge_pair(&first.counts, &rles[1].counts, intersect)?;
+        for r in &rles[2..] {
             acc = merge_pair(&acc, &r.counts, intersect)?;
         }
         Ok(Rle { h, w, counts: acc })
@@ -194,7 +193,6 @@ mod tests {
 
     #[test]
     fn area_sums_odd_indexed_runs() {
-        // bg=3, fg=2, bg=1, fg=4, bg=90 → fg total = 2 + 4 = 6.
         assert_eq!(rle(10, 10, vec![3, 2, 1, 4, 90]).area(), 6);
     }
 
@@ -217,7 +215,6 @@ mod tests {
 
     #[test]
     fn bbox_full_image() {
-        // 2x3, all foreground → counts=[0, 6]. xs=0,xe=2,ys=0,ye=1.
         assert_eq!(rle(2, 3, vec![0, 6]).bbox(), [0, 0, 3, 2]);
     }
 
@@ -318,7 +315,7 @@ mod tests {
         assert_eq!(u, rle(2, 2, vec![0, 2, 1, 1]));
     }
 
-    /// Decodes an RLE to a column-major byte mask. Used only by tests.
+    /// Decodes an RLE to a column-major byte mask.
     fn decode_to_bytes(r: &Rle) -> Vec<u8> {
         let total = (r.h as usize) * (r.w as usize);
         let mut out = Vec::with_capacity(total);
@@ -332,7 +329,7 @@ mod tests {
         out
     }
 
-    /// Encodes a column-major byte mask into an RLE. Used only by tests.
+    /// Encodes a column-major byte mask into an RLE.
     fn encode_from_bytes(bytes: &[u8], h: u32, w: u32) -> Rle {
         let mut counts: Vec<u32> = Vec::new();
         let mut p: u8 = 0;
