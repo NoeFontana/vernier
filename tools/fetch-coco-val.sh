@@ -31,6 +31,8 @@ if [[ -f "${gt_path}" ]]; then
     fi
 fi
 
+dt_path="${CACHE_DIR}/perfect_dt.json"
+
 if [[ "${need_fetch}" -eq 1 ]]; then
     zip_path="${CACHE_DIR}/annotations_trainval2017.zip"
     echo "Downloading ${ANNOTATIONS_URL} → ${zip_path}"
@@ -48,12 +50,13 @@ if [[ "${need_fetch}" -eq 1 ]]; then
         exit 1
     fi
     echo "GT ready at ${gt_path}"
+    # GT just changed; the cached perfect-DT is now stale.
+    rm -f "${dt_path}"
 fi
 
-dt_path="${CACHE_DIR}/perfect_dt.json"
 if [[ ! -f "${dt_path}" ]]; then
     echo "Synthesising a 'perfect' DT (score=1.0 for every non-crowd GT) → ${dt_path}"
-    python3 "$(dirname "${BASH_SOURCE[0]}")/make-perfect-dt.py" "${gt_path}" "${dt_path}"
+    python3 "${REPO_ROOT}/tools/make-perfect-dt.py" "${gt_path}" "${dt_path}"
 fi
 
 cat <<MSG

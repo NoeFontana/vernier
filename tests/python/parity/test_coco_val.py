@@ -24,38 +24,40 @@ from .harness import assert_snapshots_equal, snapshot
 
 _GT_ENV = "VERNIER_COCO_GT_PATH"
 _DT_ENV = "VERNIER_COCO_DT_PATH"
+_CACHE_ENV = "VERNIER_COCO_CACHE"
 
-# Cache layout produced by tools/fetch-coco-val.sh; the perfect-DT smoke
-# reads from here directly so it does not collide with the env-var test
-# (which is for real detector predictions).
+# Mirrors tools/fetch-coco-val.sh: same default and same VERNIER_COCO_CACHE
+# override, so the perfect-DT test finds the artifacts the helper wrote.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_CACHE_DIR = _REPO_ROOT / ".cache" / "coco-val2017"
-_CACHED_GT = _CACHE_DIR / "instances_val2017.json"
-_CACHED_PERFECT_DT = _CACHE_DIR / "perfect_dt.json"
+_DEFAULT_CACHE_DIR = _REPO_ROOT / ".cache" / "coco-val2017"
 
 
-def _resolve(env: str) -> Path | None:
+def _cache_dir() -> Path:
+    override = os.environ.get(_CACHE_ENV)
+    return Path(override).expanduser() if override else _DEFAULT_CACHE_DIR
+
+
+def _require_env_path(env: str) -> Path:
     value = os.environ.get(env)
     if not value:
-        return None
+        pytest.skip(f"{env} is unset; see docs/engineering/coco-val-parity.md")
     path = Path(value).expanduser()
-    return path if path.is_file() else None
+    if not path.is_file():
+        pytest.skip(f"{env}={value!r} does not point to a file")
+    return path
+
+
+def _assert_bbox_parity(gt: Path, dt: Path) -> None:
+    ref = snapshot("pycocotools", gt, dt, "bbox")
+    cand = snapshot("vernier", gt, dt, "bbox")
+    assert_snapshots_equal(ref, cand)
 
 
 @pytest.mark.parity
 @pytest.mark.coco_val
 def test_coco_val2017_bbox_parity() -> None:
     """Real detector predictions: bring your own JSON via env vars."""
-    gt = _resolve(_GT_ENV)
-    dt = _resolve(_DT_ENV)
-    if gt is None or dt is None:
-        pytest.skip(
-            f"set {_GT_ENV} and {_DT_ENV} to existing files to enable; "
-            "see docs/engineering/coco-val-parity.md"
-        )
-    ref = snapshot("pycocotools", gt, dt, "bbox")
-    cand = snapshot("vernier", gt, dt, "bbox")
-    assert_snapshots_equal(ref, cand)
+    _assert_bbox_parity(_require_env_path(_GT_ENV), _require_env_path(_DT_ENV))
 
 
 @pytest.mark.parity
@@ -73,11 +75,12 @@ def test_coco_val2017_bbox_parity() -> None:
 )
 def test_coco_val2017_bbox_parity_perfect_dt() -> None:
     """Synthesised perfect-DT smoke: scale-only check (AP is trivially 1.0)."""
-    if not _CACHED_GT.is_file() or not _CACHED_PERFECT_DT.is_file():
+    cache = _cache_dir()
+    gt = cache / "instances_val2017.json"
+    dt = cache / "perfect_dt.json"
+    if not gt.is_file() or not dt.is_file():
         pytest.skip(
-            "run ./tools/fetch-coco-val.sh to populate the cache; "
+            f"run ./tools/fetch-coco-val.sh to populate {cache}; "
             "see docs/engineering/coco-val-parity.md"
         )
-    ref = snapshot("pycocotools", _CACHED_GT, _CACHED_PERFECT_DT, "bbox")
-    cand = snapshot("vernier", _CACHED_GT, _CACHED_PERFECT_DT, "bbox")
-    assert_snapshots_equal(ref, cand)
+    _assert_bbox_parity(gt, dt)

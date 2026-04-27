@@ -33,6 +33,12 @@ def main() -> int:
     with gt_path.open("rb") as f:
         gt = json.load(f)
 
+    if "annotations" not in gt:
+        print(f"ERROR: {gt_path} has no 'annotations' key", file=sys.stderr)
+        return 1
+
+    non_crowd = [a for a in gt["annotations"] if not a.get("iscrowd", 0)]
+
     # Score = 1 - eps*idx so every detection has a unique, deterministic
     # score in input order. All-equal scores would force pycocotools'
     # stable mergesort and vernier's argsort to disagree on tie order
@@ -47,11 +53,11 @@ def main() -> int:
             "bbox": ann["bbox"],
             "score": 1.0 - 1e-9 * idx,
         }
-        for idx, ann in enumerate(a for a in gt.get("annotations", []) if not a.get("iscrowd", 0))
+        for idx, ann in enumerate(non_crowd)
     ]
 
     with dt_path.open("w") as f:
-        json.dump(detections, f)
+        json.dump(detections, f, separators=(",", ":"))
 
     print(f"wrote {len(detections)} detections → {dt_path}")
     return 0
