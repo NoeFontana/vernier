@@ -25,6 +25,7 @@
 
 pub mod codec;
 pub mod error;
+pub mod ops;
 pub mod rle;
 
 pub use codec::{decode_counts, encode_counts};
