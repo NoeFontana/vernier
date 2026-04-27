@@ -23,21 +23,13 @@
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
-use thiserror::Error;
+pub mod codec;
+pub mod error;
+pub mod rle;
 
-/// Errors raised by mask operations. See crate-level docs for the
-/// sentinel-vs-error rationale.
-#[derive(Debug, Error)]
-pub enum MaskError {
-    /// Operands have inconsistent `(h, w)` shapes. Quirks H2, I2.
-    #[error("mask dimension mismatch: expected {expected:?}, got {got:?}")]
-    DimensionMismatch {
-        /// Expected `(h, w)`.
-        expected: (u32, u32),
-        /// Actual `(h, w)`.
-        got: (u32, u32),
-    },
-}
+pub use codec::{decode_counts, encode_counts};
+pub use error::MaskError;
+pub use rle::Rle;
 
 /// Library version string. Useful for parity tracing and debugging
 /// FFI mismatches.
