@@ -100,12 +100,11 @@ impl Similarity for SegmIou {
         let d_bbox: Vec<BboxAnn> = dts.iter().map(|d| to_bbox_ann(&d.rle, false)).collect();
         BboxIou.compute(&g_bbox, &d_bbox, out)?;
 
-        let g_area: Vec<u64> = gts.iter().map(|g| g.rle.area()).collect();
         let d_area: Vec<u64> = dts.iter().map(|d| d.rle.area()).collect();
 
         for g in 0..gts.len() {
             let crowd = gts[g].is_crowd;
-            let ga = g_area[g];
+            let ga = gts[g].rle.area();
             for d in 0..dts.len() {
                 if out[[g, d]] <= 0.0 {
                     continue;
@@ -180,9 +179,7 @@ mod tests {
 
     #[test]
     fn partial_overlap_matches_hand_traced_ratio() {
-        // Same column-major masks as ops.rs::merge_intersection_two_overlapping:
-        // GT=[1,0,0,0] (area 1), DT=[1,1,0,0] (area 2), inter=1.
-        // IoU = 1 / (1 + 2 - 1) = 1/2.
+        // GT area 1, DT area 2, inter 1 → IoU = 1 / (1 + 2 - 1) = 1/2.
         let g = rle(2, 2, vec![0, 1, 3]);
         let d = rle(2, 2, vec![0, 2, 2]);
         let m = compute(&[ann(g, false)], &[ann(d, false)]);
