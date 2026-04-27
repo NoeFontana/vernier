@@ -947,14 +947,11 @@ mod tests {
         let ds = CocoDataset::from_json_bytes(JSON.as_bytes()).unwrap();
         let seg = ds.annotations()[0].segmentation.as_ref().unwrap();
         let rle = seg.to_rle(10, 10).unwrap();
-        // 4×4 polygon → 16 foreground pixels.
         assert_eq!(rle.area(), 16);
     }
 
     #[test]
     fn gt_loads_compressed_rle_segmentation() {
-        // Build a known compressed counts string from a known RLE so we
-        // exercise the str-counts path without hand-encoding the wire.
         let counts_str = String::from_utf8(vernier_mask::encode_counts(&[0, 16])).unwrap();
         let json = format!(
             r#"{{
@@ -993,8 +990,6 @@ mod tests {
 
     #[test]
     fn gt_without_segmentation_field_loads_as_none() {
-        // Existing bbox-only fixtures must still parse — segmentation
-        // is opt-in.
         let ds = load_crowd_region();
         assert!(ds.annotations().iter().all(|a| a.segmentation.is_none()));
     }

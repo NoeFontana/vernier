@@ -94,13 +94,7 @@ impl Segmentation {
     ///   `corrected`).
     pub fn to_rle(&self, h: u32, w: u32) -> Result<Rle, EvalError> {
         match self {
-            Self::Polygons(polys) => {
-                let rles: Vec<Rle> = polys
-                    .iter()
-                    .map(|p| Rle::from_polygon(p, h, w))
-                    .collect::<Result<_, _>>()?;
-                Ok(Rle::merge(&rles, false)?)
-            }
+            Self::Polygons(polys) => Ok(Rle::from_polygons(polys, h, w)?),
             Self::Rle(rle) => {
                 let [rh, rw] = rle.size;
                 if rh != h || rw != w {
@@ -223,6 +217,18 @@ mod tests {
             }
             other => panic!("expected DimensionMismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn empty_polygon_list_yields_all_background_at_requested_shape() {
+        // `[]` is degenerate but legal COCO; pycocotools silently
+        // emits a 0×0 RLE here. K2/H2 disposition: produce a
+        // well-formed all-bg RLE at the caller's (h, w).
+        let s = parse("[]");
+        let rle = s.to_rle(4, 4).unwrap();
+        assert_eq!(rle.h, 4);
+        assert_eq!(rle.w, 4);
+        assert_eq!(rle.area(), 0);
     }
 
     #[test]
