@@ -16,6 +16,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod accumulate;
+pub mod boundary_parity;
 pub mod dataset;
 pub mod error;
 pub mod evaluate;
@@ -26,6 +27,7 @@ pub mod similarity;
 pub mod summarize;
 
 pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, PerImageEval};
+pub use boundary_parity::{BOUNDARY_DILATION_RATIO_DEFAULT, BOUNDARY_PARITY_EPS};
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
     CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, ImageId, ImageMeta,

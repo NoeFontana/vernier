@@ -1,11 +1,20 @@
-//! RLE-on-RLE operations: foreground area, tight bounding box, and
-//! N-way merge (intersection / union).
+//! RLE-on-RLE operations: foreground area, tight bounding box,
+//! N-way merge (intersection / union), Chebyshev-ball erosion, and
+//! the boundary band used by the boundary-IoU metric.
 //!
 //! Mirrors `rleArea` (`mc:88-91`), `rleToBbox` (`mc:149-178`), and
 //! `rleMerge` (`mc:65-86`) from `pycocotools-2.0.11/common/maskApi.c`.
+//! The erosion + boundary-band kernels are not part of pycocotools;
+//! their oracle is `bowenc0221/boundary-iou-api` (per ADR-0010).
 //!
 //! Per pycocotools' column-major (Fortran) convention, a flat pixel
 //! index `idx` decomposes as `y = idx % h`, `x = idx / h`.
+
+pub mod boundary;
+pub mod erode;
+
+pub use boundary::boundary_band;
+pub use erode::erode_chebyshev_ball;
 
 use crate::error::{MalformedRleReason, MaskError};
 use crate::rle::Rle;
@@ -167,7 +176,6 @@ impl Rle {
         if rles.len() == 1 || h == 0 || w == 0 {
             return Ok(first.clone());
         }
-        // rles.len() >= 2 by this point.
         let mut acc = merge_pair(&first.counts, &rles[1].counts, intersect)?;
         for r in &rles[2..] {
             acc = merge_pair(&acc, &r.counts, intersect)?;

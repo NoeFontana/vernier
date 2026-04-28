@@ -32,6 +32,7 @@ pub mod rle;
 
 pub use codec::{decode_counts, encode_counts};
 pub use error::MaskError;
+pub use ops::{boundary_band, erode_chebyshev_ball};
 pub use rle::Rle;
 
 /// Library version string. Useful for parity tracing and debugging
