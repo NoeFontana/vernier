@@ -114,6 +114,10 @@ select = [
 # ---------------------------------------------------------------------------
 [tool.pyright]
 include = ["python", "tests/python"]
+# Resolve `vernier` from the source layout so pyright works without an
+# editable install (CI lint job runs with `uv sync --no-install-project`
+# to skip the maturin Rust build).
+extraPaths = ["python"]
 exclude = [
     "**/__pycache__",
     "target",
