@@ -9,10 +9,11 @@
 //! callers reinterpret the slice as a numpy `(h, w)` array with
 //! `order='F'` without copying.
 //!
-//! Per quirk **G6** disposition: `corrected` — any non-zero byte is
-//! treated as foreground (`1`) on encode. The C version writes the
-//! literal byte value into its `p` (current-phase) state and silently
-//! produces garbage on non-binary input.
+//! Per quirk **G6** disposition: `strict` — any non-zero byte is
+//! treated as foreground (`1`) on encode, matching pycocotools'
+//! `T[j]!=p` comparison (`mc:32-41`). A uint8 mask with values
+//! `{0, 2}` thus encodes identically to `{0, 1}`, bit-for-bit with
+//! the reference.
 
 use crate::error::{MalformedRleReason, MaskError};
 use crate::rle::Rle;
