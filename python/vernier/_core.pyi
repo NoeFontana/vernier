@@ -60,3 +60,19 @@ def evaluate_segm_grid(
     max_dets_per_image: int,
     use_cats: bool,
 ) -> EvalGrid: ...
+def evaluate_boundary_summary(
+    gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+    dilation_ratio: float,
+) -> Summary: ...
+def evaluate_boundary_grid(
+    gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    dilation_ratio: float,
+) -> EvalGrid: ...

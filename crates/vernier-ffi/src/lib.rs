@@ -20,9 +20,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use vernier_core::{
-    accumulate, evaluate_bbox, evaluate_segm, iou_thresholds, recall_thresholds, sort_max_dets,
-    summarize_detection, AccumulateParams, Accumulated, AreaRange, CocoDataset, CocoDetections,
-    EvalError, EvalGrid, EvalImageMeta, EvaluateParams, ParityMode, PerImageEval, Summary,
+    accumulate, evaluate_bbox, evaluate_boundary, evaluate_segm, iou_thresholds, recall_thresholds,
+    sort_max_dets, summarize_detection, AccumulateParams, Accumulated, AreaRange, CocoDataset,
+    CocoDetections, EvalError, EvalGrid, EvalImageMeta, EvaluateParams, ParityMode, PerImageEval,
+    Summary,
 };
 
 /// Returns the underlying `vernier-core` version string. Useful as a smoke
@@ -252,11 +253,14 @@ fn eval_img_dict<'py>(
 
 /// Type-erased eval kernel selector for the FFI surface. Each variant
 /// dispatches to the corresponding `evaluate_*` function in
-/// `vernier-core`.
+/// `vernier-core`. Boundary carries its `dilation_ratio` here so the
+/// FFI signature for each Python entry point stays a function of
+/// exactly that kernel's parameters (per ADR-0011).
 #[derive(Debug, Clone, Copy)]
 enum EvalIouType {
     Bbox,
     Segm,
+    Boundary { dilation_ratio: f64 },
 }
 
 impl EvalIouType {
@@ -270,6 +274,9 @@ impl EvalIouType {
         match self {
             Self::Bbox => evaluate_bbox(gt, dt, params, parity),
             Self::Segm => evaluate_segm(gt, dt, params, parity),
+            Self::Boundary { dilation_ratio } => {
+                evaluate_boundary(gt, dt, params, parity, dilation_ratio)
+            }
         }
     }
 }
@@ -363,6 +370,33 @@ fn evaluate_segm_grid(
     )
 }
 
+/// Boundary-IoU per-image evaluation pass (ADR-0010). Same
+/// segmentation-field requirements as [`evaluate_segm_grid`].
+/// `dilation_ratio` is the boundary band width as a fraction of the
+/// image diagonal (`0.02` COCO default; `0.008` LVIS variant).
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats, dilation_ratio))]
+fn evaluate_boundary_grid(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    dilation_ratio: f64,
+) -> PyResult<PyEvalGrid> {
+    let iou_type = boundary_iou_type(dilation_ratio)?;
+    evaluate_grid_impl(
+        py,
+        iou_type,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+    )
+}
+
 /// Run an end-to-end evaluation pipeline (grid → accumulate → summarize)
 /// and return a [`PySummary`].
 ///
@@ -447,6 +481,32 @@ fn evaluate_segm_summary(
     )
 }
 
+/// Boundary end-to-end pipeline (ADR-0010) — see
+/// [`evaluate_summary_impl`]. Both GT and DT must carry segmentation
+/// fields. `dilation_ratio` matches [`evaluate_boundary_grid`].
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets, use_cats, dilation_ratio))]
+fn evaluate_boundary_summary(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    dilation_ratio: f64,
+) -> PyResult<PySummary> {
+    let iou_type = boundary_iou_type(dilation_ratio)?;
+    evaluate_summary_impl(
+        py,
+        iou_type,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
 fn run_pipeline(
     iou_type: EvalIouType,
     gt: &CocoDataset,
@@ -478,6 +538,15 @@ fn run_pipeline(
     summarize_detection(&acc, iou_thr, max_dets)
 }
 
+fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
+    if !dilation_ratio.is_finite() || dilation_ratio <= 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "dilation_ratio must be a positive finite float, got {dilation_ratio}"
+        )));
+    }
+    Ok(EvalIouType::Boundary { dilation_ratio })
+}
+
 fn require_nonempty_max_dets(max_dets: &[usize]) -> PyResult<()> {
     if max_dets.is_empty() {
         Err(PyValueError::new_err(
@@ -506,6 +575,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_boundary_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_boundary_grid, m)?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;

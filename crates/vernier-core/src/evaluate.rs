@@ -81,7 +81,7 @@ use crate::error::EvalError;
 use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
 use crate::segmentation::Segmentation;
-use crate::similarity::{BboxAnn, BboxIou, SegmAnn, SegmIou, Similarity};
+use crate::similarity::{BboxAnn, BboxIou, BoundaryIou, SegmAnn, SegmIou, Similarity};
 use vernier_mask::Rle;
 
 /// Sentinel `category_id` emitted on every cell when `use_cats=false`.
@@ -149,7 +149,7 @@ impl AreaRange {
     }
 }
 
-/// Inputs to [`evaluate_bbox`] / [`evaluate_segm`] / [`evaluate_with`].
+/// Inputs to [`evaluate_bbox`] / [`evaluate_segm`] / [`evaluate_boundary`] / [`evaluate_with`].
 /// IoU-agnostic — kernel-specific configuration (sigmas, prefilter
 /// thresholds, …) lives on the [`EvalKernel`] passed alongside.
 #[derive(Debug, Clone, Copy)]
@@ -251,20 +251,7 @@ impl EvalKernel for SegmIou {
         indices: &[usize],
         image: &ImageMeta,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        indices
-            .iter()
-            .map(|&j| {
-                let ann = &gt_anns[j];
-                let seg = ann
-                    .segmentation
-                    .as_ref()
-                    .ok_or_else(|| missing_segmentation_err("GT", ann.id.0, image.id.0))?;
-                Ok(SegmAnn {
-                    rle: seg.to_rle(image.height, image.width)?,
-                    is_crowd: ann.is_crowd,
-                })
-            })
-            .collect()
+        build_segm_gt_anns(gt_anns, indices, image)
     }
 
     fn build_dt_anns(
@@ -274,39 +261,90 @@ impl EvalKernel for SegmIou {
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        indices
-            .iter()
-            .map(|&j| {
-                let dt = &dt_anns[j];
-                let rle = match (&dt.segmentation, parity_mode) {
-                    (Some(seg), _) => seg.to_rle(image.height, image.width)?,
-                    // J2 (`strict`): pycocotools' coco.py:341 synthesizes
-                    // a rectangular polygon `[[x1,y1, x1,y2, x2,y2, x2,y1]]`
-                    // from the bbox when a DT under iouType="segm" lacks
-                    // a `segmentation` field. We reproduce that path
-                    // bit-for-bit so strict-mode parity covers bbox-only
-                    // result files.
-                    (None, ParityMode::Strict) => {
-                        synthesize_dt_segm_from_bbox(&dt.bbox, image.height, image.width)?
-                    }
-                    // J2 (`corrected`) + J6 (`corrected`): silent coercion
-                    // of bbox results to rectangle masks is a footgun.
-                    // Refusing here also turns a heterogeneous DT list
-                    // (some entries with segm, some without) under
-                    // iouType="segm" into a clean, per-entry-pinpointed
-                    // error rather than the first-entry-decides dispatch
-                    // pycocotools follows.
-                    (None, ParityMode::Corrected) => {
-                        return Err(missing_segmentation_err("DT", dt.id.0, image.id.0));
-                    }
-                };
-                Ok(SegmAnn {
-                    rle,
-                    is_crowd: false,
-                })
-            })
-            .collect()
+        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
     }
+}
+
+impl EvalKernel for BoundaryIou {
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        build_segm_gt_anns(gt_anns, indices, image)
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        image: &ImageMeta,
+        parity_mode: ParityMode,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+    }
+}
+
+fn build_segm_gt_anns(
+    gt_anns: &[CocoAnnotation],
+    indices: &[usize],
+    image: &ImageMeta,
+) -> Result<Vec<SegmAnn>, EvalError> {
+    indices
+        .iter()
+        .map(|&j| {
+            let ann = &gt_anns[j];
+            let seg = ann
+                .segmentation
+                .as_ref()
+                .ok_or_else(|| missing_segmentation_err("GT", ann.id.0, image.id.0))?;
+            Ok(SegmAnn {
+                rle: seg.to_rle(image.height, image.width)?,
+                is_crowd: ann.is_crowd,
+            })
+        })
+        .collect()
+}
+
+fn build_segm_dt_anns(
+    dt_anns: &[CocoDetection],
+    indices: &[usize],
+    image: &ImageMeta,
+    parity_mode: ParityMode,
+) -> Result<Vec<SegmAnn>, EvalError> {
+    indices
+        .iter()
+        .map(|&j| {
+            let dt = &dt_anns[j];
+            let rle = match (&dt.segmentation, parity_mode) {
+                (Some(seg), _) => seg.to_rle(image.height, image.width)?,
+                // J2 (`strict`): pycocotools' coco.py:341 synthesizes
+                // a rectangular polygon `[[x1,y1, x1,y2, x2,y2, x2,y1]]`
+                // from the bbox when a DT under iouType="segm" lacks
+                // a `segmentation` field. We reproduce that path
+                // bit-for-bit so strict-mode parity covers bbox-only
+                // result files.
+                (None, ParityMode::Strict) => {
+                    synthesize_dt_segm_from_bbox(&dt.bbox, image.height, image.width)?
+                }
+                // J2 (`corrected`) + J6 (`corrected`): silent coercion
+                // of bbox results to rectangle masks is a footgun.
+                // Refusing here also turns a heterogeneous DT list
+                // (some entries with segm, some without) under
+                // iouType="segm" into a clean, per-entry-pinpointed
+                // error rather than the first-entry-decides dispatch
+                // pycocotools follows.
+                (None, ParityMode::Corrected) => {
+                    return Err(missing_segmentation_err("DT", dt.id.0, image.id.0));
+                }
+            };
+            Ok(SegmAnn {
+                rle,
+                is_crowd: false,
+            })
+        })
+        .collect()
 }
 
 /// J2 (`strict`): synthesize a 4-point rectangle polygon from a DT bbox
@@ -375,7 +413,8 @@ pub struct EvalImageMeta {
     pub gt_matches: Array2<i64>,
 }
 
-/// Output of [`evaluate_bbox`] — the flat `(K, A, I)` grid of
+/// Output of [`evaluate_bbox`] / [`evaluate_segm`] / [`evaluate_boundary`]
+/// — the flat `(K, A, I)` grid of
 /// [`PerImageEval`] cells the accumulator consumes, plus the dimensions
 /// needed to construct [`crate::AccumulateParams`].
 #[derive(Debug, Clone)]
@@ -431,8 +470,9 @@ impl EvalGrid {
 /// and packs the results into a flat `[k][a][i]`-ordered grid suitable
 /// for [`crate::accumulate`].
 ///
-/// Most callers want [`evaluate_bbox`] or [`evaluate_segm`]; this entry
-/// point is exposed for downstream code that ships its own kernel.
+/// Most callers want [`evaluate_bbox`], [`evaluate_segm`], or
+/// [`evaluate_boundary`]; this entry point is exposed for downstream
+/// code that ships its own kernel.
 ///
 /// # Errors
 ///
@@ -574,6 +614,30 @@ pub fn evaluate_segm(
     parity_mode: ParityMode,
 ) -> Result<EvalGrid, EvalError> {
     evaluate_with(gt, dt, params, parity_mode, &SegmIou)
+}
+
+/// Run the per-image boundary-IoU evaluation pass (ADR-0010). Thin
+/// wrapper over [`evaluate_with`] with the [`BoundaryIou`] kernel.
+///
+/// `dilation_ratio` controls the boundary band width per ADR-0010 §A2:
+/// `0.02` is the COCO default and `0.008` is the LVIS variant.
+///
+/// GT/DT segmentation handling is identical to [`evaluate_segm`] — same
+/// J2/J6 parity-mode dispatch on missing DT segmentations, same
+/// "missing GT segmentation" error.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_boundary(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    dilation_ratio: f64,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with(gt, dt, params, parity_mode, &BoundaryIou { dilation_ratio })
 }
 
 fn gt_indices_for_cell(gt: &CocoDataset, image: ImageId, cat: Option<CategoryId>) -> &[usize] {
@@ -1511,5 +1575,121 @@ mod tests {
         // rectangle), so every threshold sees both as TPs.
         assert_eq!(all.dt_matched.shape(), &[iou_thresholds().len(), 2]);
         assert!(all.dt_matched.iter().all(|&m| m));
+    }
+
+    #[test]
+    fn boundary_perfect_overlap_summarizes_to_one() {
+        // Pins the wrapper end-to-end (kernel → grid → accumulate →
+        // summarize) at AP=1; a regression in any stage trips this.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (10.0, 10.0, 20.0, 20.0),
+            square_polygon(10.0, 10.0, 20.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_segm(
+            1,
+            1,
+            0.9,
+            (10.0, 10.0, 20.0, 20.0),
+            square_polygon(10.0, 10.0, 20.0),
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
+        let max_dets = vec![1usize, 10, 100];
+        let acc = accumulate(
+            &grid.eval_imgs,
+            AccumulateParams {
+                iou_thresholds: iou_thresholds(),
+                recall_thresholds: recall_thresholds(),
+                max_dets: &max_dets,
+                n_categories: grid.n_categories,
+                n_area_ranges: grid.n_area_ranges,
+                n_images: grid.n_images,
+            },
+            ParityMode::Strict,
+        )
+        .unwrap();
+        let summary = summarize_detection(&acc, iou_thresholds(), &max_dets).unwrap();
+        let stats = summary.stats();
+        assert!((stats[0] - 1.0).abs() < 1e-12, "AP={}", stats[0]);
+    }
+
+    #[test]
+    fn boundary_disjoint_masks_summarize_to_zero() {
+        // Disjoint masks → bbox prefilter zeros the cell; no match at
+        // any threshold.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_segm(
+            1,
+            1,
+            0.9,
+            (50.0, 50.0, 10.0, 10.0),
+            square_polygon(50.0, 50.0, 10.0),
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
+        let all = grid.cell(0, 0, 0).unwrap();
+        assert!(all.dt_matched.iter().all(|&m| !m));
+    }
+
+    #[test]
+    fn boundary_missing_gt_segmentation_surfaces_typed_error() {
+        // Boundary reuses the segm GT-build path, so missing GT segm
+        // surfaces the same typed error. Pinned here so a future
+        // refactor that splits the build paths can't silently regress.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann(7, 1, 1, (0.0, 0.0, 10.0, 10.0))];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_segm(
+            1,
+            1,
+            0.9,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let err = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap_err();
+        match err {
+            EvalError::InvalidAnnotation { detail } => {
+                assert!(detail.contains("GT id=7"), "msg: {detail}");
+            }
+            other => panic!("expected InvalidAnnotation, got {other:?}"),
+        }
     }
 }
