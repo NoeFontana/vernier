@@ -156,6 +156,12 @@ class PycocotoolsCOCOeval:
     def accumulate(self, p: Any = None) -> None:
         if self._grid is None:
             raise RuntimeError("Please run evaluate() first")
+        # Quirk A2 (aligned): pycocotools' cocoeval.py:137 opens
+        # accumulate() with `p.maxDets = sorted(p.maxDets)` — silently
+        # normalize the user-facing list and the local copy that flows
+        # into the Rust side. Without this, AR_1 / AR_10 / AR_100 slots
+        # bind to whatever order the user happened to pass.
+        self.params.maxDets = sorted(self.params.maxDets)
         max_dets = list(self.params.maxDets)
         acc = self._grid.accumulate(max_dets)
         self._summary = acc.summarize(max_dets)

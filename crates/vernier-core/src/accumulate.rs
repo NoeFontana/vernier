@@ -90,6 +90,14 @@ pub struct AccumulateParams<'p> {
     /// `[1, 10, 100]`. The matching engine should be invoked with the
     /// *largest* of these — the accumulator slices to smaller caps via
     /// `[..max_det]`.
+    ///
+    /// Must be sorted ascending (quirk **A2** — aligned). Pycocotools
+    /// silently overwrites `p.maxDets = sorted(p.maxDets)` at
+    /// `cocoeval.py:137`, so the M-axis is always laid out
+    /// smallest-to-largest. The summarizer's `AR_1 / AR_10 / AR_100`
+    /// slot mapping depends on this ordering — passing `[100, 1, 10]`
+    /// without sorting would silently swap the slot semantics. Callers
+    /// at the FFI boundary use [`sort_max_dets`] to enforce this.
     pub max_dets: &'p [usize],
     /// Number of categories `K` (or `1` when `useCats == 0`).
     pub n_categories: usize,
@@ -98,6 +106,26 @@ pub struct AccumulateParams<'p> {
     pub n_area_ranges: usize,
     /// Number of images `I`.
     pub n_images: usize,
+}
+
+/// Normalize a `max_dets` ladder to ascending order, in place.
+///
+/// Mirrors `pycocotools.cocoeval.COCOeval.accumulate`'s opening line
+/// (`cocoeval.py:137`):
+///
+/// ```python
+/// p.maxDets = sorted(p.maxDets)
+/// ```
+///
+/// Quirk **A2** (aligned). The accumulator's M-axis is laid out in the
+/// order of the ladder it receives, and the summarizer's
+/// `AR_1 / AR_10 / AR_100` slot mapping is positional — sorting at the
+/// param-construction boundary keeps user input order from silently
+/// permuting the final stat vector. Stable sort (`Vec::sort`); the
+/// ladder is `usize`, so stability matches pycocotools' Python `sorted`
+/// (also stable).
+pub fn sort_max_dets(max_dets: &mut [usize]) {
+    max_dets.sort();
 }
 
 /// Output tensors produced by [`accumulate`].
@@ -701,5 +729,77 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn sort_max_dets_normalizes_ascending() {
+        // Quirk A2: pycocotools' `cocoeval.py:137` does
+        // `p.maxDets = sorted(p.maxDets)` — `sort_max_dets` is the
+        // mirror at the param-construction boundary.
+        let mut ladder = vec![100usize, 1, 10];
+        sort_max_dets(&mut ladder);
+        assert_eq!(ladder, vec![1, 10, 100]);
+    }
+
+    #[test]
+    fn sort_max_dets_is_idempotent_on_sorted_input() {
+        let mut ladder = vec![1usize, 10, 100];
+        sort_max_dets(&mut ladder);
+        assert_eq!(ladder, vec![1, 10, 100]);
+    }
+
+    #[test]
+    fn sort_max_dets_handles_duplicates_and_singletons() {
+        let mut singleton = vec![100usize];
+        sort_max_dets(&mut singleton);
+        assert_eq!(singleton, vec![100]);
+
+        let mut empty: Vec<usize> = Vec::new();
+        sort_max_dets(&mut empty);
+        assert!(empty.is_empty());
+
+        let mut dups = vec![10usize, 1, 10, 1, 100];
+        sort_max_dets(&mut dups);
+        assert_eq!(dups, vec![1, 1, 10, 10, 100]);
+    }
+
+    #[test]
+    fn permuted_ladder_after_sort_matches_canonical_order() {
+        // End-to-end: feeding `[100, 1, 10]` after `sort_max_dets`
+        // produces a `(T, R, K, A, M)` accumulator whose M-axis is
+        // identical to the one built from the canonical `[1, 10, 100]`.
+        // Without the sort, the M-axis slots would be swapped and the
+        // summarizer's positional `AR_1 / AR_10 / AR_100` mapping would
+        // bind to the wrong threshold.
+        let cell = one_threshold_eval(
+            vec![0.9, 0.8, 0.7],
+            vec![true, true, false],
+            vec![false, false, false],
+            vec![false, false, false],
+        );
+        let iou = [0.5];
+        let rec = [0.0, 0.5, 1.0];
+
+        let canonical = vec![1usize, 10, 100];
+        let canonical_acc = accumulate(
+            &[Some(cell.clone())],
+            params(&iou, &rec, &canonical, 1),
+            ParityMode::Strict,
+        )
+        .unwrap();
+
+        let mut permuted = vec![100usize, 1, 10];
+        sort_max_dets(&mut permuted);
+        assert_eq!(permuted, canonical);
+        let permuted_acc = accumulate(
+            &[Some(cell)],
+            params(&iou, &rec, &permuted, 1),
+            ParityMode::Strict,
+        )
+        .unwrap();
+
+        assert_eq!(canonical_acc.precision, permuted_acc.precision);
+        assert_eq!(canonical_acc.recall, permuted_acc.recall);
+        assert_eq!(canonical_acc.scores, permuted_acc.scores);
     }
 }
