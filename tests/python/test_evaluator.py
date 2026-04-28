@@ -151,6 +151,54 @@ def test_evaluator_propagates_dataset_validation_errors() -> None:
         Evaluator().evaluate(bad_gt, b"[]")
 
 
+def test_evaluator_default_max_dets_is_sentinel() -> None:
+    # ADR-0012: the field stores the sentinel; resolution happens at
+    # dispatch via ``_resolve_max_dets``.
+    assert Evaluator().max_dets is None
+
+
+def test_resolve_max_dets_uses_kernel_default_for_bbox() -> None:
+    assert Evaluator()._resolve_max_dets() == [1, 10, 100]
+
+
+def test_resolve_max_dets_uses_kernel_default_for_segm() -> None:
+    assert Evaluator(iou=Segm())._resolve_max_dets() == [1, 10, 100]
+
+
+def test_resolve_max_dets_uses_kernel_default_for_boundary() -> None:
+    assert Evaluator(iou=Boundary())._resolve_max_dets() == [1, 10, 100]
+
+
+def test_resolve_max_dets_explicit_override_wins() -> None:
+    assert Evaluator(max_dets=(1, 5))._resolve_max_dets() == [1, 5]
+
+
+def test_resolve_max_dets_empty_tuple_is_legal_explicit_value() -> None:
+    # An empty tuple is a deliberate caller choice ("evaluate at no
+    # ladder rungs") and must not collapse back to the kernel default.
+    assert Evaluator(max_dets=())._resolve_max_dets() == []
+
+
+def test_with_options_leaves_max_dets_unchanged_by_default() -> None:
+    base = Evaluator(max_dets=(2, 5))
+    derived = base.with_options(parity_mode="strict")
+    assert derived.max_dets == (2, 5)
+
+
+def test_with_options_max_dets_none_resets_to_kernel_canonical() -> None:
+    base = Evaluator(max_dets=(2, 5))
+    reset = base.with_options(max_dets=None)
+    assert reset.max_dets is None
+    assert reset._resolve_max_dets() == [1, 10, 100]
+
+
+def test_with_options_max_dets_tuple_overrides() -> None:
+    base = Evaluator()
+    derived = base.with_options(max_dets=(2, 5))
+    assert derived.max_dets == (2, 5)
+    assert derived._resolve_max_dets() == [2, 5]
+
+
 def test_module_exports_public_api() -> None:
     for name in (
         "Bbox",
