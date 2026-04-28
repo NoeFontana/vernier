@@ -36,10 +36,12 @@
 //!
 //! - **D3** (`aligned`): per-call `_ignore` computed without mutating
 //!   the dataset.
-//! - **D6/D7** (`strict`): area filter uses strict `<` and `>` so a GT
-//!   with area exactly equal to a boundary value is *kept* (its
-//!   `_ignore` stays at the base value). Inequality direction matches
-//!   the eval-time filter in pycocotools, *not* `getAnnIds(areaRng=...)`.
+//! - **D6/D7** (`strict`): area filter uses non-strict `<=` / `>=` on
+//!   both bounds (mirrors `cocoeval.py:251`'s
+//!   `g['area'] < aRng[0] or g['area'] > aRng[1]` exclusion). An
+//!   annotation whose area equals a bucket boundary lands in *both*
+//!   adjacent buckets. Inequality direction matches the eval-time filter
+//!   in pycocotools, *not* `getAnnIds(areaRng=...)`.
 //! - **B7** (`strict`): unmatched DTs whose area is out of range get
 //!   `dt_ignore=true` so they do not contribute to the precision/recall
 //!   curve in this area cell.
@@ -73,9 +75,9 @@ pub const COLLAPSED_CATEGORY_SENTINEL: i64 = -1;
 /// `1e10` pycocotools uses for `all` / `large`.
 pub const AREA_UNBOUNDED: f64 = 1e10;
 
-/// Open `(lo, hi)` area bucket — both bounds are strict per quirks
-/// **D6/D7**, so an annotation with area exactly equal to a bound is
-/// excluded.
+/// Closed `[lo, hi]` area bucket — both bounds are inclusive per quirks
+/// **D6/D7**, so an annotation with area exactly equal to a bound lands
+/// in this bucket (and in the adjacent one when the boundary is shared).
 ///
 /// `index` is the position on the `Accumulated` A-axis the resulting
 /// [`PerImageEval`] feeds into; matched at summarize time against
@@ -85,9 +87,9 @@ pub struct AreaRange {
     /// A-axis position. `0` is conventionally the `all` bucket, matching
     /// [`crate::AreaRng::ALL`].
     pub index: usize,
-    /// Lower bound (exclusive — quirks D6/D7).
+    /// Lower bound (inclusive — quirks D6/D7).
     pub lo: f64,
-    /// Upper bound (exclusive — quirks D6/D7). Use [`AREA_UNBOUNDED`]
+    /// Upper bound (inclusive — quirks D6/D7). Use [`AREA_UNBOUNDED`]
     /// for "no upper bound".
     pub hi: f64,
 }
@@ -122,7 +124,11 @@ impl AreaRange {
     }
 
     fn contains(&self, area: f64) -> bool {
-        area > self.lo && area < self.hi
+        // D6 (strict): pycocotools (cocoeval.py:251) keeps a GT/DT in a
+        // bucket when `not (area < lo or area > hi)`, i.e. non-strict
+        // inclusion on both ends. An area equal to a bucket boundary
+        // (e.g. 32² = 1024) therefore lands in *both* adjacent buckets.
+        area >= self.lo && area <= self.hi
     }
 }
 
@@ -782,9 +788,10 @@ mod tests {
     }
 
     #[test]
-    fn d6_d7_strict_inequality_keeps_boundary_areas() {
-        // GT exactly at the small/medium boundary (32² = 1024). With a
-        // medium range of (1024, 96²), strict `>` excludes the boundary.
+    fn d6_boundary_area_lands_in_both_buckets() {
+        // D6 (strict): pycocotools (cocoeval.py:251) uses non-strict
+        // inclusion on both ends, so a GT/DT with area exactly equal to a
+        // bucket boundary (32² = 1024) lands in *both* adjacent buckets.
         let images = vec![img(1, 100, 100)];
         let cats = vec![cat(1, "thing")];
         // 32x32 → area 1024 exactly.
@@ -800,15 +807,18 @@ mod tests {
             use_cats: true,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
-        // small (lo=0, hi=32²=1024): area 1024 fails `< 1024` → ignored.
+        // small (lo=0, hi=32²=1024): area 1024 == hi → included.
         let small = grid.cell(0, 1, 0).unwrap();
-        assert_eq!(small.gt_ignore, vec![true]);
-        // medium (lo=1024, hi=96²=9216): area 1024 fails `> 1024` → ignored.
+        assert_eq!(small.gt_ignore, vec![false]);
+        // medium (lo=1024, hi=96²=9216): area 1024 == lo → included.
         let medium = grid.cell(0, 2, 0).unwrap();
-        assert_eq!(medium.gt_ignore, vec![true]);
+        assert_eq!(medium.gt_ignore, vec![false]);
         // all (lo=0, hi=1e10): area 1024 lies inside.
         let all = grid.cell(0, 0, 0).unwrap();
         assert_eq!(all.gt_ignore, vec![false]);
+        // large (lo=96²=9216, hi=1e10): area 1024 < 9216 → ignored.
+        let large = grid.cell(0, 3, 0).unwrap();
+        assert_eq!(large.gt_ignore, vec![true]);
     }
 
     #[test]
