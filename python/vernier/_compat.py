@@ -181,6 +181,7 @@ class PycocotoolsCOCOeval:
 
     def _validate_supported_params(self) -> None:
         assert self.cocoGt is not None  # evaluate() guards this
+        _reject_use_segm(self.params.useSegm)
         _reject_if_mutated_array(self.params.iouThrs, _DEFAULT_IOU_THRS, "iouThrs")
         _reject_if_mutated_array(self.params.recThrs, _DEFAULT_REC_THRS, "recThrs")
         if [list(r) for r in self.params.areaRng] != [list(r) for r in _DEFAULT_AREA_RNG]:
@@ -206,6 +207,20 @@ def _reject_if_mutated_array(
 def _raise_unsupported(name: str, detail: str = "") -> None:
     suffix = f"; {detail}" if detail else ""
     raise NotImplementedError(f"vernier.COCOeval does not yet support custom params.{name}{suffix}")
+
+
+def _reject_use_segm(value: int | None) -> None:
+    # Quirk L3 (corrected): pycocotools' Params.useSegm has been
+    # deprecated for years but is still honored — if set, it silently
+    # overrides iouType and prints a warning. Vernier drops the
+    # honor-with-warning path entirely; users must pick iouType up
+    # front so the dispatch is unambiguous.
+    if value is not None:
+        raise NotImplementedError(
+            "params.useSegm was deprecated by pycocotools years ago and is not "
+            "honored by vernier (quirk L3). Pass iouType='bbox' or iouType='segm' "
+            "to COCOeval(...) instead."
+        )
 
 
 def _json_default(obj: Any) -> Any:
