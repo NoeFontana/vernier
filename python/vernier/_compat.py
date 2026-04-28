@@ -1,10 +1,13 @@
-"""Pycocotools compatibility surface (Phase 1: bbox).
+"""Pycocotools compatibility surface (bbox / segm / boundary).
 
 Implements :class:`PycocotoolsCOCOeval`, a drop-in replacement for
 :class:`pycocotools.cocoeval.COCOeval`. Per ADR-0007 this is the
 migration tool: downstream eval code that imports
 ``pycocotools.cocoeval.COCOeval`` runs unchanged once the symbol is
 swapped (manually, or via :func:`vernier.adapters.patch_pycocotools`).
+The constructor also accepts ``iouType="boundary"`` and a
+``dilation_ratio`` kwarg (ADR-0010), mirroring the
+``bowenc0221/boundary-iou-api`` oracle's signature.
 
 The class is named ``PycocotoolsCOCOeval`` so the swap is visible in
 tracebacks and ``repr()`` even though it lives behind the ``COCOeval``
@@ -21,7 +24,13 @@ from typing import Any, ClassVar, Final, Literal, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
-from vernier._core import EvalGrid, Summary, evaluate_bbox_grid, evaluate_segm_grid
+from vernier._core import (
+    EvalGrid,
+    Summary,
+    evaluate_bbox_grid,
+    evaluate_boundary_grid,
+    evaluate_segm_grid,
+)
 
 ParityMode = Literal["strict", "corrected"]
 
@@ -29,6 +38,10 @@ PARITY_STRICT: Final[ParityMode] = "strict"
 PARITY_CORRECTED: Final[ParityMode] = "corrected"
 IOU_BBOX: Final[str] = "bbox"
 IOU_SEGM: Final[str] = "segm"
+IOU_BOUNDARY: Final[str] = "boundary"
+# Mirrors `BoundaryIou::Default` in vernier-core (Cheng et al. 2021); the
+# bowenc0221 oracle uses the same value as its `COCOeval` default.
+DEFAULT_DILATION_RATIO: Final[float] = 0.02
 
 # Pycocotools' Params(iouType="bbox") defaults — mirrored verbatim so
 # parity mode "strict" reproduces the upstream constants bit-exactly.
@@ -97,7 +110,7 @@ class _Params:
 
 
 class PycocotoolsCOCOeval:
-    """Drop-in for ``pycocotools.cocoeval.COCOeval`` (bbox only in Phase 1).
+    """Drop-in for ``pycocotools.cocoeval.COCOeval`` (bbox / segm / boundary).
 
     Constructed identically to the upstream class. The state machine
     mirrors pycocotools: :meth:`evaluate` populates :attr:`evalImgs`,
@@ -118,18 +131,20 @@ class PycocotoolsCOCOeval:
         cocoGt: CocoLike | None = None,  # noqa: N803  pycocotools API
         cocoDt: CocoLike | None = None,  # noqa: N803  pycocotools API
         iouType: str = IOU_SEGM,  # noqa: N803  pycocotools API
+        dilation_ratio: float = DEFAULT_DILATION_RATIO,
         *,
         parity_mode: ParityMode | None = None,
     ) -> None:
-        if iouType not in (IOU_BBOX, IOU_SEGM):
+        if iouType not in (IOU_BBOX, IOU_SEGM, IOU_BOUNDARY):
             raise NotImplementedError(
-                f"vernier.COCOeval supports iouType in ('bbox', 'segm') (got {iouType!r}); "
-                "keypoints lands in Phase 3"
+                f"vernier.COCOeval supports iouType in ('bbox', 'segm', 'boundary') "
+                f"(got {iouType!r}); keypoints lands in Phase 3"
             )
         self.cocoGt = cocoGt
         self.cocoDt = cocoDt
         self.params = _Params()
         self.params.iouType = iouType
+        self._dilation_ratio = dilation_ratio
         self._parity_mode: ParityMode = parity_mode or type(self).DEFAULT_PARITY_MODE
         self.evalImgs: list[dict[str, Any] | None] = []
         self.eval: dict[str, Any] = {}
@@ -149,8 +164,25 @@ class PycocotoolsCOCOeval:
         dt_bytes = json.dumps(dt_anns, default=_json_default).encode()
         max_det_top = max(self.params.maxDets)
         use_cats = bool(self.params.useCats)
-        run = evaluate_segm_grid if self.params.iouType == IOU_SEGM else evaluate_bbox_grid
-        self._grid = run(gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats)
+        if self.params.iouType == IOU_BBOX:
+            self._grid = evaluate_bbox_grid(
+                gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats
+            )
+        elif self.params.iouType == IOU_SEGM:
+            self._grid = evaluate_segm_grid(
+                gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats
+            )
+        elif self.params.iouType == IOU_BOUNDARY:
+            self._grid = evaluate_boundary_grid(
+                gt_bytes,
+                dt_bytes,
+                self._parity_mode,
+                max_det_top,
+                use_cats,
+                self._dilation_ratio,
+            )
+        else:
+            raise NotImplementedError(f"unsupported iouType {self.params.iouType!r}")
         self.evalImgs = self._grid.eval_imgs()
 
     def accumulate(self, p: Any = None) -> None:

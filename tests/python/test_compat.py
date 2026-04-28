@@ -32,6 +32,13 @@ def perfect_match_coco() -> tuple[COCO, COCO]:
     return gt, dt
 
 
+@pytest.fixture(scope="module")
+def perfect_match_segm_coco() -> tuple[COCO, COCO]:
+    gt = COCO(str(FIXTURES / "perfect_match_segm" / "gt.json"))
+    dt = gt.loadRes(str(FIXTURES / "perfect_match_segm" / "dt.json"))
+    return gt, dt
+
+
 def test_public_alias_points_to_drop_in() -> None:
     assert COCOeval is PycocotoolsCOCOeval
 
@@ -107,6 +114,55 @@ def test_iou_type_keypoints_not_yet_supported(perfect_match_coco: tuple[COCO, CO
     gt, dt = perfect_match_coco
     with pytest.raises(NotImplementedError, match="keypoints"):
         COCOeval(gt, dt, iouType="keypoints")
+
+
+def test_boundary_iou_type_runs_end_to_end(
+    perfect_match_segm_coco: tuple[COCO, COCO],
+) -> None:
+    gt, dt = perfect_match_segm_coco
+    e = COCOeval(gt, dt, iouType="boundary")
+    e.evaluate()
+    e.accumulate()
+    e.summarize()
+    assert e.stats.shape == (12,)
+    assert e.stats[0] == pytest.approx(1.0)
+
+
+def test_boundary_dilation_ratio_propagates(
+    perfect_match_segm_coco: tuple[COCO, COCO],
+) -> None:
+    # `dilation_ratio` reaches the kernel: a degenerate band radius (very
+    # small ratio) collapses the boundary mask to zero pixels and the
+    # `min(mask_iou, boundary_iou)` composition pulls AP below 1.
+    gt, dt = perfect_match_segm_coco
+    tight = COCOeval(gt, dt, iouType="boundary", dilation_ratio=1e-6)
+    tight.evaluate()
+    tight.accumulate()
+    tight.summarize()
+    assert tight.stats[0] < 1.0
+
+
+def test_boundary_dilation_ratio_validation_propagates(
+    perfect_match_segm_coco: tuple[COCO, COCO],
+) -> None:
+    # Validation lives at the FFI boundary; the shim doesn't shadow it.
+    gt, dt = perfect_match_segm_coco
+    e = COCOeval(gt, dt, iouType="boundary", dilation_ratio=-0.1)
+    with pytest.raises(ValueError, match="dilation_ratio"):
+        e.evaluate()
+
+
+def test_dilation_ratio_ignored_for_bbox(
+    perfect_match_coco: tuple[COCO, COCO],
+) -> None:
+    # Mirrors bowenc0221's silent-accept behavior: passing
+    # `dilation_ratio` with a non-boundary iouType is a no-op.
+    gt, dt = perfect_match_coco
+    e = COCOeval(gt, dt, iouType="bbox", dilation_ratio=0.5)
+    e.evaluate()
+    e.accumulate()
+    e.summarize()
+    assert e.stats[0] == pytest.approx(1.0)
 
 
 def test_constructor_default_iou_type_matches_pycocotools() -> None:
