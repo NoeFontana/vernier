@@ -29,6 +29,10 @@ BBOX_FIXTURES = [
 
 SEGM_FIXTURES = [
     "perfect_match_segm",
+    "zero_overlap_segm",
+    "crowd_region_segm",
+    "score_ties_segm",
+    "missing_dt_image_segm",
 ]
 
 PARITY_CASES: list[tuple[str, IouType]] = [
