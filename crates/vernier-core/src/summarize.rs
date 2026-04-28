@@ -35,8 +35,8 @@ const IOU_LOOKUP_TOL: f64 = 1e-12;
 /// The canonical pycocotools detection layout is exposed as
 /// [`AreaRng::ALL`] / [`SMALL`](Self::SMALL) / [`MEDIUM`](Self::MEDIUM)
 /// / [`LARGE`](Self::LARGE), matching the cocoeval `Params.areaRngLbl`
-/// order. Custom layouts (e.g., LVIS or robotics-style finer buckets)
-/// are constructed with [`AreaRng::new`] for owned labels or
+/// order. Custom layouts (e.g., robotics-style finer buckets) are
+/// constructed with [`AreaRng::new`] for owned labels or
 /// [`AreaRng::from_static`] for `&'static str` labels.
 ///
 /// The *bounds* that turn an annotation's area into a bucket index
@@ -234,11 +234,10 @@ impl StatRequest {
 ///
 /// Thin wrapper over [`summarize_with`] that supplies the canonical
 /// 12-entry plan from [`StatRequest::coco_detection_default`].
-/// Downstream callers who need a different shape (LVIS area buckets,
-/// keypoint `[20]` maxDets, custom AP@.30, …) should call
-/// `summarize_with` directly with their own plan; the canonical plan is
-/// available via the constructor for those who want to extend rather
-/// than replace it.
+/// Downstream callers who need a different shape (keypoint `[20]`
+/// maxDets, custom AP@.30, …) should call `summarize_with` directly
+/// with their own plan; the canonical plan is available via the
+/// constructor for those who want to extend rather than replace it.
 ///
 /// # Errors
 ///

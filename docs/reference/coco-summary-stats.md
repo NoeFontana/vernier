@@ -53,7 +53,7 @@ For all other lines, the IoU axis is averaged across (length `T`).
 
 ## Custom area buckets
 
-`AreaRng` is a `(index, label)` value type, not a closed enum. The canonical pycocotools layout is exposed as `AreaRng::ALL` / `SMALL` / `MEDIUM` / `LARGE` (constants matching `[all, small, medium, large]` at A-axis indices `0..4`). Callers that build an `Accumulated` with a different number of A-axis buckets — finer breakdowns (e.g. add a "tiny" bucket below "small"), LVIS-style ranges, or robotics-relevant axes — construct `AreaRng::new(index, label)` and address them in their plan; the label flows through to `pretty_lines`.
+`AreaRng` is a `(index, label)` value type, not a closed enum. The canonical pycocotools layout is exposed as `AreaRng::ALL` / `SMALL` / `MEDIUM` / `LARGE` (constants matching `[all, small, medium, large]` at A-axis indices `0..4`). Callers that build an `Accumulated` with a different number of A-axis buckets — finer breakdowns (e.g. add a "tiny" bucket below "small") or robotics-relevant axes — construct `AreaRng::new(index, label)` and address them in their plan; the label flows through to `pretty_lines`.
 
 Note: the *bounds* that turn an annotation's area into a bucket index live upstream, on the orchestrator that builds `PerImageEval` cells (not yet implemented — Phase 1 Week 5). When that lands, it will accept an `AreaBucketing` config that pairs each label with its `[min_area, max_area]` bounds and emits the matching A-axis indices to the accumulator. The summarizer-side flexibility added here is the consumer of that config.
 

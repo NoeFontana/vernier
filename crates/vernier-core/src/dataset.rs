@@ -2,9 +2,9 @@
 //!
 //! Per ADR-0005, the matching engine and accumulator are written once
 //! and never edited; they are generic over a dataset trait, never over
-//! a concrete dataset type. Phase 2 (LVIS) and a future phase 4+
-//! (custom datasets) will add new `EvalDataset` impls without touching
-//! anything in `matching.rs` or `accumulate.rs`.
+//! a concrete dataset type. Future datasets (custom corpora, Phase 3
+//! keypoint datasets such as CrowdPose) add new `EvalDataset` impls
+//! without touching anything in `matching.rs` or `accumulate.rs`.
 //!
 //! The trait is shaped around two access patterns the matching loop
 //! drives:
@@ -189,7 +189,8 @@ impl CocoAnnotation {
 /// Common interface every annotation type on every dataset implements.
 ///
 /// The matching engine (per ADR-0005) reads only this trait — it does
-/// not see [`CocoAnnotation`] or any future `LvisAnnotation` directly.
+/// not see [`CocoAnnotation`] or any future per-dataset annotation type
+/// directly.
 pub trait Annotation {
     /// Image this annotation belongs to.
     fn image_id(&self) -> ImageId;
@@ -221,7 +222,7 @@ impl Annotation for CocoAnnotation {
     }
 }
 
-/// Trait every dataset (COCO, LVIS, CrowdPose, custom) implements.
+/// Trait every dataset (COCO, CrowdPose, custom) implements.
 ///
 /// `Send + Sync` is required by the future `BackgroundEvaluator`
 /// (separate ADR) so the dataset can be shared across worker threads
@@ -229,8 +230,7 @@ impl Annotation for CocoAnnotation {
 pub trait EvalDataset: Send + Sync {
     /// Concrete annotation type. For [`CocoDataset`] this is
     /// [`CocoAnnotation`]; future datasets may use their own type with
-    /// extra metadata (LVIS, for example, will need
-    /// `not_exhaustive_categories`).
+    /// extra metadata.
     type Annotation: Annotation;
 
     /// All images in the dataset, in input order.
