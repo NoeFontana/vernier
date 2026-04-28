@@ -8,18 +8,27 @@ change without a deprecation cycle.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import Literal
+from dataclasses import dataclass, field, replace
+from typing import NoReturn
 
 from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
-from vernier._core import Summary, evaluate_bbox_summary, evaluate_segm_summary, version
+from vernier._core import (
+    Summary,
+    evaluate_bbox_summary,
+    evaluate_boundary_summary,
+    evaluate_segm_summary,
+    version,
+)
 
 __all__ = [
+    "Bbox",
+    "Boundary",
     "COCOeval",
     "Evaluator",
-    "IouType",
+    "IouKind",
     "ParityMode",
+    "Segm",
     "Summary",
     "__version__",
     "version",
@@ -27,9 +36,33 @@ __all__ = [
 
 __version__: str = version()
 
-#: Similarity / IoU type. Phase 1 ships ``"bbox"``; ``"segm"`` arrives
-#: with Phase 2; ``"keypoints"`` with Phase 3.
-IouType = Literal["bbox", "segm"]
+
+@dataclass(frozen=True, slots=True)
+class Bbox:
+    """Bounding-box IoU kernel selector. No parameters."""
+
+
+@dataclass(frozen=True, slots=True)
+class Segm:
+    """Segmentation-mask IoU kernel selector. No parameters."""
+
+
+@dataclass(frozen=True, slots=True)
+class Boundary:
+    """Boundary IoU kernel selector (ADR-0010).
+
+    ``dilation_ratio`` is the boundary band width as a fraction of the
+    image diagonal. ``0.02`` is the COCO default; ``0.008`` is the LVIS
+    variant.
+    """
+
+    dilation_ratio: float = 0.02
+
+
+#: Discriminated union of the kernels :class:`Evaluator` accepts (ADR-0011).
+#: Per-kernel parameters live on each variant; pattern-match on
+#: :attr:`Evaluator.iou` to dispatch.
+IouKind = Bbox | Segm | Boundary
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,13 +78,12 @@ class Evaluator:
     recommendation for net-new users); migrating users wanting bit-exact
     pycocotools behavior should set ``parity_mode="strict"``.
 
-    Supported ``iou_type`` values: ``"bbox"`` (Phase 1) and ``"segm"``
-    (Phase 2). Segm requires every GT and DT to carry a ``segmentation``
-    field; absent fields raise ``ValueError`` instead of being silently
-    treated as empty.
+    The ``iou`` field is a discriminated dataclass union (:data:`IouKind`);
+    each variant carries its own kernel-specific parameters (per ADR-0011).
+    Use ``Bbox()`` / ``Segm()`` / ``Boundary(dilation_ratio=...)``.
     """
 
-    iou_type: IouType = "bbox"
+    iou: IouKind = field(default_factory=Bbox)
     parity_mode: ParityMode = "corrected"
     max_dets: tuple[int, ...] = (1, 10, 100)
     use_cats: bool = True
@@ -59,15 +91,15 @@ class Evaluator:
     def with_options(
         self,
         *,
-        iou_type: IouType | None = None,
+        iou: IouKind | None = None,
         parity_mode: ParityMode | None = None,
         max_dets: tuple[int, ...] | None = None,
         use_cats: bool | None = None,
     ) -> Evaluator:
         """Return a copy of this evaluator with the given fields overridden."""
         kwargs: dict[str, object] = {}
-        if iou_type is not None:
-            kwargs["iou_type"] = iou_type
+        if iou is not None:
+            kwargs["iou"] = iou
         if parity_mode is not None:
             kwargs["parity_mode"] = parity_mode
         if max_dets is not None:
@@ -83,10 +115,22 @@ class Evaluator:
         same shapes pycocotools' ``COCO(...)`` and ``COCO.loadRes(...)``
         consume).
         """
-        if self.iou_type == "bbox":
-            run = evaluate_bbox_summary
-        elif self.iou_type == "segm":
-            run = evaluate_segm_summary
-        else:
-            raise ValueError(f"unsupported iou_type {self.iou_type!r}")
-        return run(gt, dt, self.parity_mode, list(self.max_dets), self.use_cats)
+        max_dets_list = list(self.max_dets)
+        match self.iou:
+            case Bbox():
+                return evaluate_bbox_summary(gt, dt, self.parity_mode, max_dets_list, self.use_cats)
+            case Segm():
+                return evaluate_segm_summary(gt, dt, self.parity_mode, max_dets_list, self.use_cats)
+            case Boundary(dilation_ratio=r):
+                return evaluate_boundary_summary(
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r
+                )
+            case _:
+                _reject_unknown_iou(self.iou)
+
+
+def _reject_unknown_iou(iou: object) -> NoReturn:
+    raise TypeError(
+        f"unsupported iou kernel {iou!r}; expected Bbox(), Segm(), or "
+        f"Boundary(...) — see vernier.IouKind"
+    )

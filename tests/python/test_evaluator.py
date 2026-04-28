@@ -13,7 +13,7 @@ import json
 import pytest
 
 import vernier
-from vernier import Evaluator, Summary
+from vernier import Bbox, Boundary, Evaluator, Segm, Summary
 
 # Two perfectly-overlapping detections on a single image; expected stats
 # collapse to 1.0 across every populated bucket and -1.0 elsewhere
@@ -107,10 +107,21 @@ def test_with_options_returns_new_instance() -> None:
     assert base is not strict
 
 
-def test_evaluator_rejects_unknown_iou_type() -> None:
-    e = Evaluator(iou_type="keypoints")  # type: ignore[arg-type]
-    with pytest.raises(ValueError, match="iou_type"):
+def test_evaluator_rejects_non_kernel_iou() -> None:
+    # The union is closed at the type level; the runtime fallthrough is
+    # the only safety net for callers who bypass static checking.
+    e = Evaluator(iou="bbox")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="unsupported iou kernel"):
         e.evaluate(GT_PERFECT, DT_PERFECT)
+
+
+def test_evaluator_iou_kernels_construct_and_dispatch() -> None:
+    assert isinstance(Evaluator().iou, Bbox)
+    assert isinstance(Evaluator(iou=Segm()).iou, Segm)
+    assert Evaluator(iou=Boundary()).iou == Boundary(dilation_ratio=0.02)
+    boundary = Evaluator(iou=Boundary(dilation_ratio=0.008)).iou
+    assert isinstance(boundary, Boundary)
+    assert boundary.dilation_ratio == 0.008
 
 
 def test_evaluator_rejects_invalid_parity_mode() -> None:
@@ -141,5 +152,14 @@ def test_evaluator_propagates_dataset_validation_errors() -> None:
 
 
 def test_module_exports_public_api() -> None:
-    for name in ("Evaluator", "Summary", "ParityMode", "IouType", "version"):
+    for name in (
+        "Bbox",
+        "Boundary",
+        "Evaluator",
+        "IouKind",
+        "ParityMode",
+        "Segm",
+        "Summary",
+        "version",
+    ):
         assert hasattr(vernier, name), f"missing public export: {name}"
