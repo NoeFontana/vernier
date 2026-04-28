@@ -11,9 +11,10 @@ quirks, no fixtures, no parity harness, and no oracle. They share only
 the `ParityMode` enum (`strict` / `aligned` / `corrected`) defined in
 `crates/vernier-core/src/parity.rs`, which is the user-facing semantic
 common to all of vernier's parity stories. The boundary-specific
-constants (`BOUNDARY_DILATION_RATIO_DEFAULT`, `BOUNDARY_PARITY_EPS`,
-`ORACLE_COMMIT_SHA`, `ORACLE_OPENCV_PIN`) live in
-`crates/vernier-core/src/boundary_parity.rs`.
+constants live in `crates/vernier-core/src/boundary_parity.rs`:
+`BOUNDARY_DILATION_RATIO_DEFAULT = 0.02`,
+`BOUNDARY_PARITY_EPS = 1e-9` (IoU equality tolerance under
+`ParityMode::Aligned`), `ORACLE_COMMIT_SHA`, `ORACLE_OPENCV_PIN`.
 
 Each row below was discovered by reading the oracle line-by-line. The
 disposition column is one of:
@@ -26,6 +27,13 @@ disposition column is one of:
 - **corrected** — vernier opts to fix this. Default behavior diverges
   from the oracle and the divergence is documented as an opinionated
   improvement.
+- **informational** — pins a property of the upstream that vernier
+  *relies on* but does not reproduce (e.g., the pinned OpenCV is
+  itself deterministic). No vernier-side behavior follows; the row
+  exists as evidence for an ADR commitment.
+- A trailing `(deferred)` qualifier marks a row whose disposition
+  applies only when the relevant subsystem ships; until then, vernier
+  does not implement the behavior.
 
 The disposition column is a **draft proposal** by the author of this
 survey — ADR-0010 is the venue where it gets ratified or revised.
@@ -53,8 +61,11 @@ Conventions used below:
 
 - "bu" = `boundary_utils.py`, "ce" = `coco_instance_api/cocoeval.py`,
   "le" = `lvis_instance_api/eval.py`.
-- Line citations like `bu:14` mean `boundary_utils.py:14`. Line
-  numbers are stable as of the pinned commit.
+- Line citations like `bu:14` mean `boundary_utils.py:14`. Exact line
+  numbers are stable as of the pinned commit. A `~` prefix
+  (e.g., `ce:~270`) marks an approximate citation pointing to a
+  *section* of the file rather than a specific call site — used for
+  rows that cover several adjacent lines or a contiguous block.
 
 ---
 
@@ -70,7 +81,7 @@ count of the erosion that defines the boundary band.
 | M3 | Minimum dilation clamp: `if dilation < 1: dilation = 1`. The boundary band is never thinner than 1 pixel even for tiny images. | bu:15-16 | **strict**. Same clamp, same threshold. |
 | M4 | Default `dilation_ratio = 0.02` (Cheng et al. 2021 paper choice). Exposed as a constructor parameter on `LVISEval`; not exposed at the COCO call site (the COCO eval hardcodes 0.02). | bu:9, le:34 | **strict** for the value. **corrected** for the API: vernier exposes `dilation_ratio` on every entry point that uses boundary IoU, including the pycocotools-shim. |
 | M5 | Structuring element is 3×3 all-ones (square / Chebyshev), **not** 3×3 cross. `kernel = np.ones((3, 3), dtype=np.uint8)`. | bu:21 | **strict**. Chebyshev ball, not Manhattan. |
-| M6 | OpenCV's `cv2.erode` with a binary `np.uint8` mask and integer `iterations` is a deterministic operation in the supported OpenCV pin range. | bu:22 | **aligned**. The iterative CV-erode is bit-stable across OpenCV minor versions for binary input + 3×3 kernel + integer iterations. The risk is on `cv2.distanceTransform`, which we do not use. |
+| M6 | OpenCV's `cv2.erode` with a binary `np.uint8` mask and integer `iterations` is a deterministic operation in the supported OpenCV pin range. | bu:22 | **informational**. vernier does not consume `cv2.erode`; this row pins a property of the *upstream* needed to justify the frozen-commit + pinned-OpenCV oracle (E2 in ADR-0010). Bit-stable across OpenCV minor versions for binary input + 3×3 kernel + integer iterations; `cv2.distanceTransform`, which has known cross-version drift, is not used. |
 
 ## N. Padding and edge handling
 
@@ -121,7 +132,7 @@ separate code paths.
 |---|---|---|---|
 | Q1 | LVIS exposes `dilation_ratio` as an `LVISEval.__init__` parameter (default 0.02). The COCO instance API does not expose it at all — the value is implicit at 0.02. | le:34 | **corrected**. vernier exposes `dilation_ratio` everywhere boundary IoU is invoked, including the pycocotools-shim and the CLI. |
 | Q2 | Cityscapes instance / panoptic boundary metrics use the same `mask_to_boundary` routine with default `dilation_ratio=0.02`. No dataset-specific tuning. | (separate API files) | **strict**. Single algorithm, configurable ratio. |
-| Q3 | Panoptic boundary PQ (`boundary_iou/coco_panoptic_api/`) has its own composition logic that is **not** the simple `min(mask_iou, boundary_iou)` of the instance case. Out of scope for v0.1. | (panoptic eval) | **deferred**. A separate ADR will dispose of panoptic boundary PQ if and when vernier extends to panoptic evaluation. |
+| Q3 | Panoptic boundary PQ (`boundary_iou/coco_panoptic_api/`) has its own composition logic that is **not** the simple `min(mask_iou, boundary_iou)` of the instance case. Out of scope for v0.1. | (panoptic eval) | **corrected (deferred)**. A separate ADR will dispose of panoptic boundary PQ if and when vernier extends to panoptic evaluation; until that ADR lands, vernier does not implement panoptic boundary PQ at all. |
 
 ---
 
@@ -134,12 +145,14 @@ where each row is signed off. A short cheat-sheet:
 - **Most rows: strict.** The bowenc0221 oracle is what every paper
   cites. Reproducing it is the only way to claim the metric.
 - **A handful of aligned:** M1 (single-pass vs iterative erosion —
-  bit-equal on integer input), M6 (OpenCV stability claim within the
-  pinned version range), N4 (single-pass pad equivalence), N5 (XOR vs
-  subtract — bit-equal, safer), O3 (shared RLE intersection kernel),
-  P5 (polygon rasterisation transitive).
+  bit-equal on integer input), N4 (single-pass pad equivalence), N5
+  (XOR vs subtract — bit-equal, safer), O3 (shared RLE intersection
+  kernel), P5 (polygon rasterisation transitive).
 - **Corrected:** M4 (`dilation_ratio` exposed everywhere), Q1 (LVIS-
-  style parameterisation generalised to all entry points).
+  style parameterisation generalised to all entry points), Q3
+  (panoptic boundary PQ — deferred).
+- **Informational:** M6 (upstream `cv2.erode` determinism within the
+  pinned OpenCV range; vernier does not call it).
 
 The ADR-0010 disposition table is the canonical source; this survey
 is the per-row evidence base.
