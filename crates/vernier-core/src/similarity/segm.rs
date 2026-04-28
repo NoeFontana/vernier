@@ -207,6 +207,13 @@ mod tests {
         // E2/J4: DT iscrowd is enforced 0 at load. Even if a caller
         // smuggles is_crowd=true into a DT, the IoU must equal the
         // clean version.
+        //
+        // E3 cross-ref: the asymmetric crowd `iou()` API is enforced by
+        // the type signature — `Similarity::compute` takes one GT slice
+        // and one DT slice with no parallel `dt_iscrowd` vector — so
+        // there is no DT-side crowd input the kernel could branch on.
+        // This runtime check pins the observable behavior; the type
+        // system covers the structural side.
         let g = rle(2, 2, vec![0, 1, 3]);
         let d = rle(2, 2, vec![0, 2, 2]);
         let with_flag = compute(&[ann(g.clone(), false)], &[ann(d.clone(), true)]);

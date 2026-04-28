@@ -709,6 +709,59 @@ mod tests {
     }
 
     #[test]
+    fn d4_coco_default_area_ranges_pin_literal_values() {
+        // D4: the four COCO buckets are (0, 1e10), (0, 1024),
+        // (1024, 9216), (9216, 1e10), labelled "all" / "small" /
+        // "medium" / "large". Pin the literal numbers — the 1e10 sentinel
+        // and the 32² / 96² boundaries are the parity contract; bumping
+        // either silently in source would shift bucket membership
+        // throughout the suite.
+        let ranges = AreaRange::coco_default();
+        assert_eq!(ranges.len(), 4);
+        assert_eq!(
+            (ranges[0].lo, ranges[0].hi),
+            (0.0, 1e10),
+            "all bucket bounds"
+        );
+        assert_eq!(
+            (ranges[1].lo, ranges[1].hi),
+            (0.0, 1024.0),
+            "small bucket bounds"
+        );
+        assert_eq!(
+            (ranges[2].lo, ranges[2].hi),
+            (1024.0, 9216.0),
+            "medium bucket bounds"
+        );
+        assert_eq!(
+            (ranges[3].lo, ranges[3].hi),
+            (9216.0, 1e10),
+            "large bucket bounds"
+        );
+
+        // A-axis indices line up with crate::AreaRng's labelled
+        // constants. The summarizer keys on `index`, so this is the
+        // bridge between the orchestrator and the canonical labels.
+        use crate::summarize::AreaRng;
+        assert_eq!(ranges[0].index, AreaRng::ALL.index);
+        assert_eq!(AreaRng::ALL.label.as_ref(), "all");
+        assert_eq!(ranges[1].index, AreaRng::SMALL.index);
+        assert_eq!(AreaRng::SMALL.label.as_ref(), "small");
+        assert_eq!(ranges[2].index, AreaRng::MEDIUM.index);
+        assert_eq!(AreaRng::MEDIUM.label.as_ref(), "medium");
+        assert_eq!(ranges[3].index, AreaRng::LARGE.index);
+        assert_eq!(AreaRng::LARGE.label.as_ref(), "large");
+
+        // The 1e10 upper bound is bit-equal to pycocotools' `1e5 ** 2`.
+        // Pinning the bit pattern guarantees the strict-mode area filter
+        // makes the same `>` / `<` decisions the Python reference does.
+        let pyco_unbounded: f64 = 1e5_f64.powi(2);
+        assert_eq!(pyco_unbounded.to_bits(), 1e10_f64.to_bits());
+        assert_eq!(ranges[0].hi.to_bits(), 1e10_f64.to_bits());
+        assert_eq!(ranges[3].hi.to_bits(), 1e10_f64.to_bits());
+    }
+
+    #[test]
     fn perfect_match_produces_one_cell_per_area_range() {
         let grid = perfect_match_grid();
         assert_eq!(grid.n_categories, 1);
