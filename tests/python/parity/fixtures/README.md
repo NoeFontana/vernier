@@ -18,6 +18,8 @@ plus a `meta.md` explaining what the fixture exercises.
 | `crowd_region_segm` | Segm twin of `crowd_region` — crowd polygon covers image; pins asymmetric crowd mask-IoU (E1) and B6 ignore-inheritance under segm. |
 | `score_ties_segm` | Segm twin of `score_ties` — equal-score DTs with mask-IoU=1; pins A1 stable-sort under segm. |
 | `missing_dt_image_segm` | Segm twin of `missing_dt_image` — empty-DT cell handling under segm. |
+| `multi_polygon_gt_segm` | Single GT with two-polygon `segmentation`; pins K2 multi-polygon→single-RLE merge. |
+| `polygon_at_image_edge_segm` | Polygon with vertices at (W, H); pins H4/H5 asymmetric x/y boundary clipping and rounding in rleFrPoly. |
 
 Adding a new fixture: create a directory with `gt.json`, `dt.json`, and a
 `meta.md` describing what it tests, then add the fixture name to
