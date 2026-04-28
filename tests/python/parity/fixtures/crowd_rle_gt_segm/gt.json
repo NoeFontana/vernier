@@ -1,0 +1,28 @@
+{
+  "images": [
+    {"id": 1, "width": 100, "height": 100, "file_name": "img1.png"}
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [10, 10, 30, 30],
+      "area": 900,
+      "iscrowd": 0,
+      "segmentation": [[10, 10, 40, 10, 40, 40, 10, 40]]
+    },
+    {
+      "id": 2,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [0, 0, 100, 100],
+      "area": 10000,
+      "iscrowd": 1,
+      "segmentation": {"counts": [0, 10000], "size": [100, 100]}
+    }
+  ],
+  "categories": [
+    {"id": 1, "name": "widget", "supercategory": "thing"}
+  ]
+}
