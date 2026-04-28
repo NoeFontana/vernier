@@ -54,18 +54,35 @@
 //! - **J3** (`strict`): DT areas are read from
 //!   [`crate::CocoDetection::area`], which the dataset layer derives
 //!   from the bbox at construction.
+//! - **J2** (`strict`): under [`ParityMode::Strict`], a DT lacking a
+//!   `segmentation` field under `iouType="segm"` has its bbox
+//!   synthesized into a 4-point rectangle polygon
+//!   `[[x1,y1, x1,y2, x2,y2, x2,y1]]` and rasterized — bit-for-bit the
+//!   path `pycocotools/coco.py:341` follows. Under
+//!   [`ParityMode::Corrected`] (the default for net-new users) the
+//!   synthesis is refused with [`EvalError::InvalidAnnotation`]: silent
+//!   coercion of bbox results to rectangle masks is a footgun, and
+//!   users who want strict parity opt in.
+//! - **J6** (`corrected`): per-entry dispatch — every detection is
+//!   inspected independently for the segm/bbox kind. Under
+//!   [`ParityMode::Corrected`] heterogeneous DT lists (some entries
+//!   with `segmentation`, some without) are rejected up-front rather
+//!   than silently routed through the first-entry-decides dispatch
+//!   pycocotools follows at `coco.py:330-363`.
 
 use ndarray::{Array2, ArrayView2};
 
 use crate::accumulate::PerImageEval;
 use crate::dataset::{
-    CategoryId, CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, EvalDataset, ImageId,
-    ImageMeta,
+    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, EvalDataset,
+    ImageId, ImageMeta,
 };
 use crate::error::EvalError;
 use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
+use crate::segmentation::Segmentation;
 use crate::similarity::{BboxAnn, BboxIou, SegmAnn, SegmIou, Similarity};
+use vernier_mask::Rle;
 
 /// Sentinel `category_id` emitted on every cell when `use_cats=false`.
 /// Mirrors pycocotools' `p.catIds = [-1]` collapse (quirk **L4**).
@@ -179,11 +196,17 @@ pub trait EvalKernel: Similarity {
 
     /// Build the kernel's DT annotation slice for one `(image, category)`
     /// cell, in score-descending sorted order matching `dt_indices`.
+    ///
+    /// `parity_mode` is threaded through so kernels with parity-aware
+    /// fallbacks (segm's J2 bbox→polygon synthesis under
+    /// [`ParityMode::Strict`]) can dispatch on it without reaching back
+    /// up the call stack.
     fn build_dt_anns(
         &self,
         dt_anns: &[CocoDetection],
         indices: &[usize],
         image: &ImageMeta,
+        parity_mode: ParityMode,
     ) -> Result<Vec<Self::Annotation>, EvalError>;
 }
 
@@ -208,6 +231,7 @@ impl EvalKernel for BboxIou {
         dt_anns: &[CocoDetection],
         indices: &[usize],
         _image: &ImageMeta,
+        _parity_mode: ParityMode,
     ) -> Result<Vec<BboxAnn>, EvalError> {
         // E2/J4: DT never carries crowd.
         Ok(indices
@@ -248,17 +272,36 @@ impl EvalKernel for SegmIou {
         dt_anns: &[CocoDetection],
         indices: &[usize],
         image: &ImageMeta,
+        parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
         indices
             .iter()
             .map(|&j| {
                 let dt = &dt_anns[j];
-                let seg = dt
-                    .segmentation
-                    .as_ref()
-                    .ok_or_else(|| missing_segmentation_err("DT", dt.id.0, image.id.0))?;
+                let rle = match (&dt.segmentation, parity_mode) {
+                    (Some(seg), _) => seg.to_rle(image.height, image.width)?,
+                    // J2 (`strict`): pycocotools' coco.py:341 synthesizes
+                    // a rectangular polygon `[[x1,y1, x1,y2, x2,y2, x2,y1]]`
+                    // from the bbox when a DT under iouType="segm" lacks
+                    // a `segmentation` field. We reproduce that path
+                    // bit-for-bit so strict-mode parity covers bbox-only
+                    // result files.
+                    (None, ParityMode::Strict) => {
+                        synthesize_dt_segm_from_bbox(&dt.bbox, image.height, image.width)?
+                    }
+                    // J2 (`corrected`) + J6 (`corrected`): silent coercion
+                    // of bbox results to rectangle masks is a footgun.
+                    // Refusing here also turns a heterogeneous DT list
+                    // (some entries with segm, some without) under
+                    // iouType="segm" into a clean, per-entry-pinpointed
+                    // error rather than the first-entry-decides dispatch
+                    // pycocotools follows.
+                    (None, ParityMode::Corrected) => {
+                        return Err(missing_segmentation_err("DT", dt.id.0, image.id.0));
+                    }
+                };
                 Ok(SegmAnn {
-                    rle: seg.to_rle(image.height, image.width)?,
+                    rle,
                     is_crowd: false,
                 })
             })
@@ -266,11 +309,34 @@ impl EvalKernel for SegmIou {
     }
 }
 
+/// J2 (`strict`): synthesize a 4-point rectangle polygon from a DT bbox
+/// and rasterize it at the image's `(h, w)`. Mirrors
+/// `pycocotools/coco.py:341` exactly:
+/// `[[x1,y1, x1,y2, x2,y2, x2,y1]]` where `(x1, y1)` is the top-left and
+/// `(x2, y2) = (x1 + w, y1 + h)`.
+fn synthesize_dt_segm_from_bbox(bbox: &Bbox, h: u32, w: u32) -> Result<Rle, EvalError> {
+    let x1 = bbox.x;
+    let y1 = bbox.y;
+    let x2 = bbox.x + bbox.w;
+    let y2 = bbox.y + bbox.h;
+    let polygon = vec![x1, y1, x1, y2, x2, y2, x2, y1];
+    let segm = Segmentation::Polygons(vec![polygon]);
+    segm.to_rle(h, w)
+}
+
+/// J2 (`corrected`) / J6 (`corrected`) error path: a DT lacks the
+/// `segmentation` field under `iouType="segm"`. The detail names the
+/// offending kind (`GT` or `DT`), id, and image so a heterogeneous
+/// DT list pinpoints the first entry without segm rather than failing
+/// with a global "wrong shape" error.
 fn missing_segmentation_err(kind: &str, ann_id: i64, image_id: i64) -> EvalError {
     EvalError::InvalidAnnotation {
         detail: format!(
             "{kind} id={ann_id} on image {image_id} has no `segmentation` field; \
-             segm eval requires one on every entry"
+             segm eval in corrected mode requires one on every entry. \
+             pycocotools synthesizes a bbox-rectangle polygon here \
+             (quirks J2/J6); pass `ParityMode::Strict` to opt into that \
+             behavior."
         ),
     }
 }
@@ -427,7 +493,7 @@ pub fn evaluate_with<K: EvalKernel>(
             let dt_ids: Vec<i64> = dt_indices.iter().map(|&j| dt_anns[j].id.0).collect();
 
             let gt_kernel = kernel.build_gt_anns(gt_anns, gt_indices, image)?;
-            let dt_kernel = kernel.build_dt_anns(dt_anns, &dt_indices, image)?;
+            let dt_kernel = kernel.build_dt_anns(dt_anns, &dt_indices, image, parity_mode)?;
 
             let mut iou = Array2::<f64>::zeros((gt_kernel.len(), dt_kernel.len()));
             if !gt_kernel.is_empty() && !dt_kernel.is_empty() {
@@ -485,11 +551,17 @@ pub fn evaluate_bbox(
 /// Run the per-image segmentation-mask evaluation pass. Thin wrapper
 /// over [`evaluate_with`] with the [`SegmIou`] kernel.
 ///
-/// Every GT and DT must carry a `segmentation` field; running segm eval
-/// against bbox-only inputs raises
-/// [`EvalError::InvalidAnnotation`] with the offending id, instead of
-/// silently treating absent masks as empty (the disposition documented
-/// alongside quirk **K3**).
+/// GTs must carry a `segmentation` field. DT handling is parity-mode
+/// aware (quirks **J2** / **J6**):
+///
+/// - [`ParityMode::Strict`] reproduces `pycocotools/coco.py:341` —
+///   DTs missing a `segmentation` field have a 4-point rectangle
+///   polygon synthesized from their bbox and rasterized.
+/// - [`ParityMode::Corrected`] (the default for net-new users) raises
+///   [`EvalError::InvalidAnnotation`] instead, which also rejects
+///   heterogeneous DT lists (some entries with segm, some without)
+///   per-entry rather than via pycocotools' first-entry-decides
+///   dispatch.
 ///
 /// # Errors
 ///
@@ -1063,8 +1135,6 @@ mod tests {
         }
     }
 
-    use crate::segmentation::Segmentation;
-
     fn square_polygon(x: f64, y: f64, side: f64) -> Segmentation {
         Segmentation::Polygons(vec![vec![
             x,
@@ -1237,7 +1307,10 @@ mod tests {
     }
 
     #[test]
-    fn segm_missing_dt_segmentation_surfaces_typed_error() {
+    fn j2_bbox_only_dt_under_segm_iou_type_raises_in_corrected_mode() {
+        // Quirk J2 (`corrected`): vernier refuses to silently coerce a
+        // bbox-only DT into a rectangle mask under iouType="segm". The
+        // typed error cites the offending DT id and image.
         let images = vec![img(1, 100, 100)];
         let cats = vec![cat(1, "thing")];
         let anns = vec![ann_with_segm(
@@ -1248,7 +1321,7 @@ mod tests {
             square_polygon(0.0, 0.0, 10.0),
         )];
         let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
-        // DT without a segmentation field.
+        // DT without a segmentation field — only bbox.
         let dts =
             CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0))]).unwrap();
         let area = AreaRange::coco_default();
@@ -1258,7 +1331,185 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
         };
-        let err = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap_err();
+        let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
+        match err {
+            EvalError::InvalidAnnotation { detail } => {
+                assert!(detail.contains("DT"), "expected DT in msg: {detail}");
+                assert!(detail.contains("J2"), "expected J2 cite in msg: {detail}");
+            }
+            other => panic!("expected InvalidAnnotation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn j2_bbox_only_dt_under_segm_iou_type_synthesizes_in_strict_mode() {
+        // Quirk J2 (`strict`): pycocotools/coco.py:341 synthesizes a
+        // 4-point rectangle polygon `[[x1,y1, x1,y2, x2,y2, x2,y1]]`
+        // from the DT bbox and rasterizes it. A GT polygon perfectly
+        // covering the same rectangle therefore IoU=1 against the
+        // synthesized DT mask.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        // GT polygon covers a 10×10 square at (0, 0).
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        // DT bbox covers the same rectangle but carries no `segmentation`.
+        let dts =
+            CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0))]).unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let all = grid.cell(0, 0, 0).unwrap();
+        // Synthesized rectangle exactly covers the GT polygon → match
+        // at every threshold.
+        assert!(all.dt_matched.iter().all(|&m| m), "expected matches");
+    }
+
+    #[test]
+    fn j6_heterogeneous_dt_list_first_with_segm_second_without_raises_in_corrected_mode() {
+        // Quirk J6 (`corrected`): per-entry dispatch. A heterogeneous DT
+        // list under iouType="segm" — DT[0] carries a `segmentation`,
+        // DT[1] does not — is rejected up-front in corrected mode rather
+        // than silently routed through pycocotools' first-entry-decides
+        // dispatch (`coco.py:330-363`). Verifies that vernier inspects
+        // each entry independently rather than dispatching from `anns[0]`.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        // DT[0] has segm, DT[1] does not. pycocotools' first-entry
+        // dispatch would route into the segm path on `anns[0]`, then
+        // crash on `anns[1]` reading `ann['segmentation']`. vernier
+        // raises InvalidAnnotation pinpointing the offending entry.
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input_with_segm(
+                1,
+                1,
+                0.9,
+                (0.0, 0.0, 10.0, 10.0),
+                square_polygon(0.0, 0.0, 10.0),
+            ),
+            dt_input(1, 1, 0.8, (50.0, 50.0, 10.0, 10.0)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
         assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
+    }
+
+    #[test]
+    fn j6_heterogeneous_dt_list_first_without_segm_second_with_raises_in_corrected_mode() {
+        // Mirror of the previous test with the order reversed. If the
+        // dispatch were first-entry-decides (the pycocotools quirk J6
+        // documents), DT[0] without `segmentation` would route to a
+        // bbox-synthesis path and DT[1]'s segm would be ignored. Vernier
+        // inspects every entry: missing segm anywhere in corrected mode
+        // raises.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![ann_with_segm(
+            1,
+            1,
+            1,
+            (0.0, 0.0, 10.0, 10.0),
+            square_polygon(0.0, 0.0, 10.0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),
+            dt_input_with_segm(
+                1,
+                1,
+                0.8,
+                (50.0, 50.0, 10.0, 10.0),
+                square_polygon(50.0, 50.0, 10.0),
+            ),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
+        assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
+    }
+
+    #[test]
+    fn j6_heterogeneous_dt_list_in_strict_mode_synthesizes_per_entry() {
+        // Quirk J2 (`strict`) layered with J6: per-entry dispatch under
+        // strict mode means DTs without `segmentation` get the
+        // bbox→polygon synthesis (matching pycocotools), while DTs with
+        // a `segmentation` keep theirs. No first-entry-decides
+        // global dispatch — every entry is handled independently.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![
+            ann_with_segm(
+                1,
+                1,
+                1,
+                (0.0, 0.0, 10.0, 10.0),
+                square_polygon(0.0, 0.0, 10.0),
+            ),
+            ann_with_segm(
+                2,
+                1,
+                1,
+                (50.0, 50.0, 10.0, 10.0),
+                square_polygon(50.0, 50.0, 10.0),
+            ),
+        ];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        // DT[0] has segm covering GT[0]; DT[1] has only bbox covering GT[1].
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input_with_segm(
+                1,
+                1,
+                0.9,
+                (0.0, 0.0, 10.0, 10.0),
+                square_polygon(0.0, 0.0, 10.0),
+            ),
+            dt_input(1, 1, 0.8, (50.0, 50.0, 10.0, 10.0)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let all = grid.cell(0, 0, 0).unwrap();
+        // Both DTs match their respective GTs (DT[1] via synthesized
+        // rectangle), so every threshold sees both as TPs.
+        assert_eq!(all.dt_matched.shape(), &[iou_thresholds().len(), 2]);
+        assert!(all.dt_matched.iter().all(|&m| m));
     }
 }

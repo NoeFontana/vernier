@@ -38,6 +38,7 @@ SEGM_FIXTURES = [
     "self_intersecting_polygon_segm",
     "crowd_rle_gt_segm",
     "boundary_area_segm",
+    "heterogeneous_dt_segm",
 ]
 
 PARITY_CASES: list[tuple[str, IouType]] = [
@@ -112,3 +113,18 @@ def test_iou_at_threshold_only_matches_lowest_threshold() -> None:
         "bbox",
     )
     assert snap.stats[0] == pytest.approx(0.1, abs=1e-9)
+
+
+@pytest.mark.parity
+def test_heterogeneous_dt_segm_rejects_in_corrected_mode() -> None:
+    # Pins J6 (`corrected`): per-entry dispatch under `iouType="segm"`.
+    # The fixture mixes a DT with `segmentation` and a DT without —
+    # corrected mode raises rather than silently letting the first-entry
+    # type decide for the whole list (the pycocotools quirk J6
+    # documents).
+    import vernier._core as _vernier_core
+
+    gt_bytes = (FIXTURES / "heterogeneous_dt_segm" / "gt.json").read_bytes()
+    dt_bytes = (FIXTURES / "heterogeneous_dt_segm" / "dt.json").read_bytes()
+    with pytest.raises(ValueError, match="J2/J6"):
+        _vernier_core.evaluate_segm_grid(gt_bytes, dt_bytes, "corrected", 100, use_cats=True)
