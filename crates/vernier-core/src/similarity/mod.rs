@@ -21,10 +21,12 @@ use crate::error::EvalError;
 
 pub mod bbox;
 pub mod boundary;
+pub mod oks;
 pub mod segm;
 
 pub use bbox::{BboxAnn, BboxIou};
 pub use boundary::BoundaryIou;
+pub use oks::{OksAnn, OksSimilarity, COCO_PERSON_SIGMAS};
 pub use segm::{SegmAnn, SegmIou};
 
 /// Computes a pairwise similarity matrix for one image's GT × DT pairs.
