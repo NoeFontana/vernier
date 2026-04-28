@@ -52,6 +52,10 @@ SHAPE_FIXTURES: list[tuple[str, np.ndarray]] = [
     ("empty_25x25", np.zeros((25, 25), dtype=np.uint8)),
     ("full_25x25", np.ones((25, 25), dtype=np.uint8)),
     ("random_32x32_seed_0", _random_mask(32, 32, 0)),
+    # Degenerate sizes: `d` is clamped to 1, so the boundary is the
+    # whole foreground. Guards against off-by-one in the pad/erode loop.
+    ("single_pixel_on", np.ones((1, 1), dtype=np.uint8)),
+    ("single_pixel_off", np.zeros((1, 1), dtype=np.uint8)),
 ]
 
 

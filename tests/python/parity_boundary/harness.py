@@ -54,7 +54,9 @@ def compare_boundary(
     upstream_union = int(np.logical_or(upstream_gt, upstream_dt).sum())
     upstream_iou = (upstream_inter / upstream_union) if upstream_union else 0.0
 
-    sidecar_iou = numpy_reference.boundary_iou(gt_u8, dt_u8, dilation_ratio)
+    sidecar_inter = int(np.logical_and(sidecar_gt, sidecar_dt).sum())
+    sidecar_union = int(np.logical_or(sidecar_gt, sidecar_dt).sum())
+    sidecar_iou = (sidecar_inter / sidecar_union) if sidecar_union else 0.0
 
     # Diff is on the GT band (the operand most often shared between
     # comparisons); a single scalar is enough for "do the oracles agree
