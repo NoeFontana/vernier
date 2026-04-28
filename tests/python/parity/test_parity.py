@@ -33,6 +33,8 @@ SEGM_FIXTURES = [
     "crowd_region_segm",
     "score_ties_segm",
     "missing_dt_image_segm",
+    "multi_polygon_gt_segm",
+    "polygon_at_image_edge_segm",
 ]
 
 PARITY_CASES: list[tuple[str, IouType]] = [
