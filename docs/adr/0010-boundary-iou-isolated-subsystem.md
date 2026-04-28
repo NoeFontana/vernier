@@ -284,8 +284,15 @@ in `tests/python/parity_boundary/oracle/VENDORING.md` along with:
   break), we fork to `NoeFontana/boundary-iou-api-vendored` and
   point the vendored copy at the fork. This commitment is made now,
   in this ADR, so the fork is not a panic decision later.
-- **License preservation:** `bowenc0221/boundary-iou-api` is MIT-
-  licensed. The vendoring commit includes the upstream `LICENSE` at
+- **License preservation:** `bowenc0221/boundary-iou-api` is licensed
+  under BSD-2-Clause ("Simplified BSD" / FreeBSD form), with two
+  further BSD-2-Clause notices bundled in upstream `license.txt`:
+  COCOAPI (Piotr Dollar, Tsung-Yi Lin) covers the
+  `coco_instance_api/{coco,cocoeval}.py` derivatives, and LVIS API
+  (Agrim Gupta, Ross Girshick) covers the LVIS subtree (which we do
+  not vendor but whose notice we preserve unmodified). BSD-2-Clause
+  is compatible with vernier's MIT/Apache-2.0 dual license. The
+  vendoring commit includes upstream `license.txt` at
   `tests/python/parity_boundary/oracle/boundary_iou_api/LICENSE`
   verbatim, plus an attribution paragraph in `VENDORING.md` naming
   the upstream authors and commit SHA. `cargo deny`'s license check

@@ -27,7 +27,9 @@ pub mod similarity;
 pub mod summarize;
 
 pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, PerImageEval};
-pub use boundary_parity::{BOUNDARY_DILATION_RATIO_DEFAULT, BOUNDARY_PARITY_EPS};
+pub use boundary_parity::{
+    BOUNDARY_DILATION_RATIO_DEFAULT, BOUNDARY_PARITY_EPS, ORACLE_COMMIT_SHA, ORACLE_OPENCV_PIN,
+};
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
     CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, ImageId, ImageMeta,

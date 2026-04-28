@@ -69,6 +69,11 @@ dev = [
     # Bumping this is an ADR-level decision, not a routine dep update.
     # 2.0.11 is the first release that links cleanly against NumPy 2.0+.
     "pycocotools==2.0.11",
+    # Boundary-IoU oracle dependency: bowenc0221/boundary-iou-api's
+    # mask_to_boundary calls cv2.erode + cv2.copyMakeBorder. Pin mirrored by
+    # ORACLE_OPENCV_PIN in crates/vernier-core/src/boundary_parity.rs; both
+    # update atomically. Bumping is ADR-level (see ADR-0010 §"Oracle (E2 + E3)").
+    "opencv-python==4.10.0.84",
 ]
 
 # ---------------------------------------------------------------------------
@@ -78,7 +83,15 @@ dev = [
 line-length = 100
 target-version = "py310"
 src = ["python", "tests/python"]
-extend-exclude = ["target", ".venv"]
+# tests/python/parity_boundary/oracle/boundary_iou_api/ is verbatim vendored
+# upstream code (BSD-2-Clause). Linting it is both pointless (we don't
+# modify it) and incorrect (we'd be enforcing our style on someone else's
+# project). See VENDORING.md alongside.
+extend-exclude = [
+    "target",
+    ".venv",
+    "tests/python/parity_boundary/oracle/boundary_iou_api",
+]
 
 [tool.ruff.lint]
 select = [
@@ -101,7 +114,13 @@ select = [
 # ---------------------------------------------------------------------------
 [tool.pyright]
 include = ["python", "tests/python"]
-exclude = ["**/__pycache__", "target", ".venv"]
+exclude = [
+    "**/__pycache__",
+    "target",
+    ".venv",
+    # Verbatim vendored upstream — see VENDORING.md alongside.
+    "tests/python/parity_boundary/oracle/boundary_iou_api",
+]
 strict = ["python/vernier"]
 pythonVersion = "3.10"
 reportMissingImports = "error"
@@ -114,8 +133,18 @@ reportUnnecessaryTypeIgnoreComment = "warning"
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
 addopts = "-ra --strict-markers --strict-config"
+# Don't descend into the vendored boundary-IoU oracle tree — it's not
+# vernier's tests, and pytest collection would try to import modules that
+# need opencv-python at module load time. The harness adds the oracle to
+# sys.path explicitly when it needs to run reference comparisons.
+norecursedirs = [
+    ".venv",
+    "target",
+    "tests/python/parity_boundary/oracle/boundary_iou_api",
+]
 markers = [
     "slow: marks tests as slow (skip with -m 'not slow')",
-    "parity: parity tests against the reference oracle",
+    "parity: parity tests against the pycocotools reference oracle",
+    "parity_boundary: parity tests against the bowenc0221/boundary-iou-api reference oracle",
     "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
 ]
