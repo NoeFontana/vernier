@@ -172,6 +172,33 @@ def test_params_max_dets_mutation_propagates(
     assert e.eval["precision"].shape[-1] == 4
 
 
+def test_accumulate_normalizes_max_dets_ascending(
+    perfect_match_coco: tuple[COCO, COCO],
+) -> None:
+    # Quirk A2 (aligned): pycocotools' cocoeval.py:137 opens
+    # accumulate() with `p.maxDets = sorted(p.maxDets)`. The drop-in
+    # mirrors that — feeding `[100, 1, 10]` must produce the same M-axis
+    # layout (and therefore the same `stats` vector) as the canonical
+    # `[1, 10, 100]`, and `params.maxDets` itself must be normalized in
+    # place so downstream introspection sees the sorted ladder.
+    gt, dt = perfect_match_coco
+
+    canonical = COCOeval(gt, dt, iouType="bbox")
+    canonical.params.maxDets = [1, 10, 100]
+    canonical.evaluate()
+    canonical.accumulate()
+    canonical.summarize()
+
+    permuted = COCOeval(gt, dt, iouType="bbox")
+    permuted.params.maxDets = [100, 1, 10]
+    permuted.evaluate()
+    permuted.accumulate()
+    permuted.summarize()
+
+    assert permuted.params.maxDets == [1, 10, 100]
+    np.testing.assert_array_equal(permuted.stats, canonical.stats)
+
+
 def test_unsupported_iou_thrs_mutation_raises(
     perfect_match_coco: tuple[COCO, COCO],
 ) -> None:

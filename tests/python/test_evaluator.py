@@ -81,6 +81,17 @@ def test_evaluator_pretty_lines_match_pycocotools_shape() -> None:
     assert lines[0].rstrip().endswith("1.000")
 
 
+def test_evaluator_max_dets_order_does_not_affect_stats() -> None:
+    # Quirk A2 (aligned): the FFI surface sorts `max_dets` at the
+    # boundary, so a permuted ladder must produce the same `stats`
+    # vector as the canonical order. Without the sort, the M-axis slots
+    # bind to the wrong threshold and AR_1 / AR_10 / AR_100 silently
+    # swap.
+    canonical = Evaluator(max_dets=(1, 10, 100)).evaluate(GT_PERFECT, DT_PERFECT)
+    permuted = Evaluator(max_dets=(100, 1, 10)).evaluate(GT_PERFECT, DT_PERFECT)
+    assert canonical.stats == permuted.stats
+
+
 def test_evaluator_is_immutable() -> None:
     e = Evaluator()
     # frozen dataclass raises FrozenInstanceError, a subclass of AttributeError.

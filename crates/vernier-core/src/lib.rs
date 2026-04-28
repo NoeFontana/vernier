@@ -25,7 +25,7 @@ pub mod segmentation;
 pub mod similarity;
 pub mod summarize;
 
-pub use accumulate::{accumulate, AccumulateParams, Accumulated, PerImageEval};
+pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, PerImageEval};
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
     CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, ImageId, ImageMeta,

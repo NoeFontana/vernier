@@ -20,7 +20,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use vernier_core::{
-    accumulate, evaluate_bbox, evaluate_segm, iou_thresholds, recall_thresholds,
+    accumulate, evaluate_bbox, evaluate_segm, iou_thresholds, recall_thresholds, sort_max_dets,
     summarize_detection, AccumulateParams, Accumulated, AreaRange, CocoDataset, CocoDetections,
     EvalError, EvalGrid, EvalImageMeta, EvaluateParams, ParityMode, PerImageEval, Summary,
 };
@@ -118,6 +118,12 @@ impl PyEvalGrid {
     /// `max_dets_per_image` used to build the grid.
     fn accumulate(&self, py: Python<'_>, max_dets: Vec<usize>) -> PyResult<PyAccumulated> {
         require_nonempty_max_dets(&max_dets)?;
+        // Quirk A2 (aligned): mirror pycocotools' `cocoeval.py:137`
+        // `p.maxDets = sorted(p.maxDets)`. The accumulator's M-axis and
+        // the summarizer's positional `AR_*` slots both depend on
+        // ascending order; normalize at the FFI boundary.
+        let mut max_dets = max_dets;
+        sort_max_dets(&mut max_dets);
         let parity = self.parity;
         let n_categories = self.inner.n_categories;
         let n_area_ranges = self.inner.n_area_ranges;
@@ -195,8 +201,15 @@ impl PyAccumulated {
     /// built with; pass an explicit value to override.
     #[pyo3(signature = (max_dets=None))]
     fn summarize(&self, py: Python<'_>, max_dets: Option<Vec<usize>>) -> PyResult<PySummary> {
-        let dets = max_dets.unwrap_or_else(|| self.max_dets.clone());
+        let mut dets = max_dets.unwrap_or_else(|| self.max_dets.clone());
         require_nonempty_max_dets(&dets)?;
+        // Quirk A2 (aligned): the accumulator was built with a sorted
+        // ladder; an explicit override here must follow the same
+        // contract or the M-axis lookups in `summarize_detection`
+        // would silently misalign. `self.max_dets` is already sorted
+        // (set by `PyEvalGrid::accumulate`), so the unwrap_or branch is
+        // a no-op.
+        sort_max_dets(&mut dets);
         let acc = &self.inner;
         let summary = py
             .detach(|| summarize_detection(acc, iou_thresholds(), &dets))
@@ -370,6 +383,13 @@ fn evaluate_summary_impl(
 ) -> PyResult<PySummary> {
     let parity = parse_parity_mode(parity_mode)?;
     require_nonempty_max_dets(&max_dets)?;
+    // Quirk A2 (aligned): mirror pycocotools' `cocoeval.py:137`
+    // `p.maxDets = sorted(p.maxDets)`. Sort once here so the eval
+    // pipeline's `max_dets_per_image` cap (the largest entry) and the
+    // summarizer's positional `AR_*` lookups both see the canonical
+    // ascending ladder.
+    let mut max_dets = max_dets;
+    sort_max_dets(&mut max_dets);
     let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
