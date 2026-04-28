@@ -272,7 +272,7 @@ in `tests/python/parity_boundary/oracle/VENDORING.md` along with:
 - The OpenCV version pinned in dev-extras (the latest known-working
   version at vendoring time, tested in CI).
 - A **fork plan**: if the upstream becomes broken (CVE, OpenCV API
-  break), we fork to `vernier-fontana/boundary-iou-api-vendored` and
+  break), we fork to `NoeFontana/boundary-iou-api-vendored` and
   point the vendored copy at the fork. This commitment is made now,
   in this ADR, so the fork is not a panic decision later.
 
