@@ -4,9 +4,12 @@ on:
   push:
     tags: ["v*"]
   workflow_dispatch:
-  # Also run weekly to catch toolchain drift before a release happens.
+  # Monthly Linux-only canary to catch toolchain drift between releases.
+  # macOS/Windows are reserved for release-candidate builds (tag pushes
+  # and manual workflow_dispatch) — those runners bill at 10×/2× and
+  # routine drift detection on Linux is sufficient.
   schedule:
-    - cron: "0 6 * * 1"
+    - cron: "0 6 1 * *"
 
 permissions:
   contents: read
@@ -25,6 +28,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wheels-linux-${{ matrix.target }}-${{ matrix.manylinux }}
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -37,6 +43,9 @@ jobs:
 
   macos:
     name: macos ${{ matrix.target }}
+    # Skip on schedule: macOS runners bill 10× and are reserved for tag /
+    # manual release-candidate builds.
+    if: github.event_name != 'schedule'
     runs-on: macos-latest
     strategy:
       fail-fast: false
@@ -47,6 +56,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.x"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wheels-macos-${{ matrix.target }}
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
@@ -58,6 +70,9 @@ jobs:
 
   windows:
     name: windows ${{ matrix.target }}
+    # Skip on schedule: Windows runners bill 2× and are reserved for tag /
+    # manual release-candidate builds.
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
     strategy:
       fail-fast: false
@@ -69,6 +84,9 @@ jobs:
         with:
           python-version: "3.x"
           architecture: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wheels-windows-${{ matrix.target }}
       - uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
