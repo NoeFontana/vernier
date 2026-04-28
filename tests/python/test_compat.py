@@ -200,3 +200,37 @@ def test_unsupported_img_ids_subsetting_raises(
     e.params.imgIds = []
     with pytest.raises(NotImplementedError, match="imgIds"):
         e.evaluate()
+
+
+def test_default_use_segm_is_none_and_does_not_raise(
+    perfect_match_coco: tuple[COCO, COCO],
+) -> None:
+    # Quirk L3 (corrected): vernier rejects an *assigned* useSegm but
+    # the default sentinel of None must remain a no-op so untouched
+    # downstream code keeps working.
+    gt, dt = perfect_match_coco
+    e = COCOeval(gt, dt, iouType="bbox")
+    assert e.params.useSegm is None
+    e.evaluate()  # should not raise
+
+
+@pytest.mark.parametrize("use_segm_value", [0, 1])
+def test_assigned_use_segm_raises_with_l3_message(
+    perfect_match_coco: tuple[COCO, COCO],
+    use_segm_value: int,
+) -> None:
+    # Quirk L3 (corrected): pycocotools deprecated useSegm years ago
+    # but kept honoring it (overriding iouType, printing a warning).
+    # Vernier drops the honor path entirely — any non-None assignment
+    # must raise with a message that names useSegm, points users at
+    # iouType, and cites the L3 quirk so the error is grep-able back
+    # to the disposition table.
+    gt, dt = perfect_match_coco
+    e = COCOeval(gt, dt, iouType="bbox")
+    e.params.useSegm = use_segm_value
+    with pytest.raises(NotImplementedError) as excinfo:
+        e.evaluate()
+    msg = str(excinfo.value)
+    assert "useSegm" in msg
+    assert "iouType" in msg
+    assert "L3" in msg
