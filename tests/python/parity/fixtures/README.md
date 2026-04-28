@@ -14,6 +14,10 @@ plus a `meta.md` explaining what the fixture exercises.
 | `score_ties` | Two DTs with identical scores — pins stable mergesort tiebreak on input order (A1). |
 | `crowd_overlap_tiebreak` | Overlapping crowd + non-crowd GT at IoU≈1 — pins f64-end-to-end IoU so the "later equal wins" matcher (B2) reproduces pycocotools' last-bit tiebreak (ADR-0008). |
 | `perfect_match_segm` | Segm baseline: 1 polygon GT + 1 identical polygon DT. Mask-IoU=1.0 across all thresholds. |
+| `zero_overlap_segm` | Segm twin of `zero_overlap` — disjoint polygons, mask-IoU=0; pins the no-match accumulator path through the segm kernel. |
+| `crowd_region_segm` | Segm twin of `crowd_region` — crowd polygon covers image; pins asymmetric crowd mask-IoU (E1) and B6 ignore-inheritance under segm. |
+| `score_ties_segm` | Segm twin of `score_ties` — equal-score DTs with mask-IoU=1; pins A1 stable-sort under segm. |
+| `missing_dt_image_segm` | Segm twin of `missing_dt_image` — empty-DT cell handling under segm. |
 
 Adding a new fixture: create a directory with `gt.json`, `dt.json`, and a
 `meta.md` describing what it tests, then add the fixture name to

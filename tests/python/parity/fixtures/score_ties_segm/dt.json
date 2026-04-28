@@ -1,0 +1,16 @@
+[
+  {
+    "image_id": 1,
+    "category_id": 1,
+    "bbox": [0, 0, 50, 50],
+    "score": 0.7,
+    "segmentation": [[0, 0, 50, 0, 50, 50, 0, 50]]
+  },
+  {
+    "image_id": 1,
+    "category_id": 1,
+    "bbox": [50, 50, 50, 50],
+    "score": 0.7,
+    "segmentation": [[50, 50, 100, 50, 100, 100, 50, 100]]
+  }
+]
