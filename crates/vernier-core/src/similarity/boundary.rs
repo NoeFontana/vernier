@@ -46,10 +46,9 @@ use vernier_mask::ops::boundary_band;
 use vernier_mask::Rle;
 
 use super::bbox::{BboxAnn, BboxIou};
-use super::segm::SegmAnn;
+use super::segm::{to_bbox_ann, SegmAnn};
 use super::Similarity;
 use crate::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
-use crate::dataset::Bbox;
 use crate::error::EvalError;
 
 /// Boundary IoU [`Similarity`] impl. Carries its `dilation_ratio`
@@ -123,14 +122,28 @@ impl Similarity for BoundaryIou {
         let d_bbox: Vec<BboxAnn> = dts.iter().map(|d| to_bbox_ann(&d.rle, false)).collect();
         BboxIou.compute(&g_bbox, &d_bbox, out)?;
 
-        // Precompute boundary bands and areas. One band per annotation,
-        // shared across the entire row (gt) or column (dt) of the sweep.
-        // TODO(ADR-0010 §"Performance baseline"): parallelise via rayon
-        // when count > threshold (~16). Sequential ships first to keep
-        // this PR focused.
+        // O1/O2: skip B(g) for crowd GTs — the boundary fold is
+        // suppressed on crowd rows, so computing the band is wasted
+        // work proportional to the (often large) crowd-mask area.
+        // An empty placeholder keeps Vec indices aligned with `gts`
+        // and is never read past the crowd guard below.
+        // TODO(ADR-0010 §"Performance baseline"): parallelise both
+        // g_band and d_band precomputation via rayon when total count
+        // exceeds ~16. Sequential ships first.
+        let crowd_placeholder = Rle {
+            h,
+            w,
+            counts: vec![],
+        };
         let g_band: Vec<Rle> = gts
             .iter()
-            .map(|g| boundary_band(&g.rle, self.dilation_ratio))
+            .map(|g| {
+                if g.is_crowd {
+                    Ok(crowd_placeholder.clone())
+                } else {
+                    boundary_band(&g.rle, self.dilation_ratio)
+                }
+            })
             .collect::<Result<_, _>>()?;
         let d_band: Vec<Rle> = dts
             .iter()
@@ -149,7 +162,6 @@ impl Similarity for BoundaryIou {
                     continue;
                 }
                 let inter_mask = gts[g].rle.intersect_area(&dts[d].rle)?;
-                // E1: crowd GT uses dt_area, not the symmetric union.
                 let mask_denom = if crowd {
                     d_mask_area[d]
                 } else {
@@ -161,10 +173,9 @@ impl Similarity for BoundaryIou {
                     0.0
                 };
 
-                // O1/O2: boundary suppressed on crowd GT — the cell
-                // carries the mask IoU alone. The reference oracle does
-                // the same; folding `min` against an undefined crowd
-                // boundary term would invent semantics not in the spec.
+                // Folding `min` against the crowd-side band term would
+                // invent semantics the spec does not define (O1/O2),
+                // and we skipped its precomputation above.
                 if crowd {
                     out[[g, d]] = mask_iou;
                     continue;
@@ -183,19 +194,6 @@ impl Similarity for BoundaryIou {
         }
 
         Ok(())
-    }
-}
-
-fn to_bbox_ann(rle: &Rle, is_crowd: bool) -> BboxAnn {
-    let [x, y, w, h] = rle.bbox();
-    BboxAnn {
-        bbox: Bbox {
-            x: f64::from(x),
-            y: f64::from(y),
-            w: f64::from(w),
-            h: f64::from(h),
-        },
-        is_crowd,
     }
 }
 
@@ -396,41 +394,47 @@ mod tests {
     }
 
     #[test]
-    fn custom_dilation_ratio_changes_result() {
-        // Same fixture, two ratios: a small ratio that clamps d=1 vs a
-        // larger ratio that gives d=3. The bands differ in width, so
-        // the band-IoU term differs, so the min-folded output differs.
-        // 20×20 image, two 10×10 rectangles offset by 5 columns.
+    fn custom_dilation_ratio_flows_through_to_bands() {
+        // Same fixture as `partial_overlap_…` (which pins ratio 0.04
+        // bit-exactly). At ratio 0.10, sqrt(800) ≈ 28.28 →
+        // round(2.828) = 3, so the bands widen and the min-folded
+        // output shifts. Pin the d=3 case bit-exactly against
+        // primitives, then assert the two ratios disagree — proves
+        // the public `dilation_ratio` field actually reaches the
+        // kernel and isn't shadowed by the default.
         let h = 20;
         let w = 20;
         let gt = filled_rect(h, w, 0, 5, 10, 10);
         let dt = filled_rect(h, w, 5, 5, 10, 10);
 
-        // sqrt(800) ≈ 28.28. ratio 0.04 → round(1.131) = 1.
-        // ratio 0.10 → round(2.828) = 3.
-        let mut out_small = Array2::<f64>::zeros((1, 1));
-        BoundaryIou {
-            dilation_ratio: 0.04,
-        }
-        .compute(
-            &[ann(gt.clone(), false)],
-            &[ann(dt.clone(), false)],
-            &mut out_small.view_mut(),
-        )
-        .unwrap();
+        let run = |ratio: f64| -> f64 {
+            let mut out = Array2::<f64>::zeros((1, 1));
+            BoundaryIou {
+                dilation_ratio: ratio,
+            }
+            .compute(
+                &[ann(gt.clone(), false)],
+                &[ann(dt.clone(), false)],
+                &mut out.view_mut(),
+            )
+            .unwrap();
+            out[[0, 0]]
+        };
 
-        let mut out_large = Array2::<f64>::zeros((1, 1));
-        BoundaryIou {
-            dilation_ratio: 0.10,
-        }
-        .compute(
-            &[ann(gt, false)],
-            &[ann(dt, false)],
-            &mut out_large.view_mut(),
-        )
-        .unwrap();
+        let large_ratio = 0.10;
+        let g_band = boundary_band(&gt, large_ratio).unwrap();
+        let d_band = boundary_band(&dt, large_ratio).unwrap();
+        let inter_mask = gt.intersect_area(&dt).unwrap();
+        let mask_iou = (inter_mask as f64) / ((gt.area() + dt.area() - inter_mask) as f64);
+        let inter_bound = g_band.intersect_area(&d_band).unwrap();
+        let bound_iou =
+            (inter_bound as f64) / ((g_band.area() + d_band.area() - inter_bound) as f64);
+        let expected_large = mask_iou.min(bound_iou);
 
-        assert_ne!(out_small[[0, 0]].to_bits(), out_large[[0, 0]].to_bits());
+        let actual_small = run(0.04);
+        let actual_large = run(large_ratio);
+        assert_eq!(actual_large.to_bits(), expected_large.to_bits());
+        assert_ne!(actual_small.to_bits(), actual_large.to_bits());
     }
 
     #[test]
