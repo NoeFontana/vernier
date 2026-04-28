@@ -21,6 +21,7 @@ plus a `meta.md` explaining what the fixture exercises.
 | `multi_polygon_gt_segm` | Single GT with two-polygon `segmentation`; pins K2 multi-polygon→single-RLE merge. |
 | `polygon_at_image_edge_segm` | Polygon with vertices at (W, H); pins H4/H5 asymmetric x/y boundary clipping and rounding in rleFrPoly. |
 | `self_intersecting_polygon_segm` | Bowtie polygon (self-crossing at centre); pins H3 — rasterized mask depends on point-order under the supersampled Bresenham boundary walk. |
+| `crowd_rle_gt_segm` | Crowd GT shipped as `{"counts": [...], "size": [...]}` dict (real-world COCO format) instead of polygon; pins the uncompressed-RLE input path alongside E1 asymmetric crowd IoU. |
 
 Adding a new fixture: create a directory with `gt.json`, `dt.json`, and a
 `meta.md` describing what it tests, then add the fixture name to
