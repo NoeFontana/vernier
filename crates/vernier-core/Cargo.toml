@@ -25,5 +25,11 @@ vernier-mask = { path = "../vernier-mask", version = "0.0.0" }
 
 [dev-dependencies]
 proptest = { workspace = true }
-# Benchmarks added when the first hot path lands; gated behind a feature
-# so the main test suite stays fast.
+# Microbenches via divan. Dev-only: never linked into the production
+# wheel or any non-bench target. `harness = false` on each [[bench]]
+# entry keeps libtest out as well.
+divan = "0.1"
+
+[[bench]]
+name = "bbox_iou"
+harness = false

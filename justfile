@@ -72,6 +72,15 @@ fmt:
     uv run ruff check --fix .
 
 # ---------------------------------------------------------------------------
+# Benchmarks
+# ---------------------------------------------------------------------------
+
+# Run microbenchmarks (divan). Dev-only — divan is a dev-dep and never
+# linked into the production wheel or any non-bench target.
+bench:
+    cargo bench --workspace
+
+# ---------------------------------------------------------------------------
 # Audit & maintenance
 # ---------------------------------------------------------------------------
 
