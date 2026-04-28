@@ -9,7 +9,7 @@ change without a deprecation cycle.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import NoReturn
+from typing import Final, NoReturn
 
 from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
@@ -65,6 +65,35 @@ class Boundary:
 IouKind = Bbox | Segm | Boundary
 
 
+#: Per-kernel canonical ``max_dets`` ladders used when
+#: :attr:`Evaluator.max_dets` is left at its sentinel default. Mirrors
+#: pycocotools' coupling of summary defaults to the chosen IoU kernel
+#: (ADR-0012); future kernels (e.g. ``Keypoints``) extend this table.
+_KERNEL_MAX_DETS: Final[dict[type[IouKind], tuple[int, ...]]] = {
+    Bbox: (1, 10, 100),
+    Segm: (1, 10, 100),
+    Boundary: (1, 10, 100),
+}
+
+
+class _UnsetType:
+    """Singleton sentinel type for ``with_options`` keyword defaults.
+
+    A dedicated class — rather than ``object()`` — lets pyright narrow
+    on ``isinstance(arg, _UnsetType)`` cleanly without typing the
+    parameter as ``Any``. Mirrors the pattern used by
+    :data:`dataclasses.MISSING` and :data:`typing.NoDefault`.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return "<UNSET>"
+
+
+_UNSET: Final[_UnsetType] = _UnsetType()
+
+
 @dataclass(frozen=True, slots=True)
 class Evaluator:
     """Extended-API COCO-style evaluator.
@@ -81,28 +110,50 @@ class Evaluator:
     The ``iou`` field is a discriminated dataclass union (:data:`IouKind`);
     each variant carries its own kernel-specific parameters (per ADR-0011).
     Use ``Bbox()`` / ``Segm()`` / ``Boundary(dilation_ratio=...)``.
+
+    ``max_dets`` defaults to ``None``, meaning "use the canonical ladder
+    for the selected ``iou`` kernel" (ADR-0012). Resolution happens at
+    dispatch via :data:`_KERNEL_MAX_DETS`; explicit values always win.
+    The current three kernels all resolve to ``(1, 10, 100)``.
     """
 
     iou: IouKind = field(default_factory=Bbox)
     parity_mode: ParityMode = "corrected"
-    max_dets: tuple[int, ...] = (1, 10, 100)
+    max_dets: tuple[int, ...] | None = None
     use_cats: bool = True
+
+    def _resolve_max_dets(self) -> list[int]:
+        """Materialize the effective ``max_dets`` ladder for this evaluator.
+
+        Falls back to an empty ladder when ``iou`` is an unrecognized
+        type so the dispatch ``case _:`` arm in :meth:`evaluate` can
+        surface the friendly :class:`TypeError` instead of a ``KeyError``.
+        """
+        explicit = self.max_dets
+        if explicit is not None:
+            return list(explicit)
+        return list(_KERNEL_MAX_DETS.get(type(self.iou), ()))
 
     def with_options(
         self,
         *,
         iou: IouKind | None = None,
         parity_mode: ParityMode | None = None,
-        max_dets: tuple[int, ...] | None = None,
+        max_dets: tuple[int, ...] | None | _UnsetType = _UNSET,
         use_cats: bool | None = None,
     ) -> Evaluator:
-        """Return a copy of this evaluator with the given fields overridden."""
+        """Return a copy of this evaluator with the given fields overridden.
+
+        ``max_dets`` is three-valued: the default sentinel leaves the
+        field unchanged, ``None`` resets to the kernel-canonical ladder,
+        and a tuple sets an explicit override.
+        """
         kwargs: dict[str, object] = {}
         if iou is not None:
             kwargs["iou"] = iou
         if parity_mode is not None:
             kwargs["parity_mode"] = parity_mode
-        if max_dets is not None:
+        if not isinstance(max_dets, _UnsetType):
             kwargs["max_dets"] = max_dets
         if use_cats is not None:
             kwargs["use_cats"] = use_cats
@@ -115,7 +166,7 @@ class Evaluator:
         same shapes pycocotools' ``COCO(...)`` and ``COCO.loadRes(...)``
         consume).
         """
-        max_dets_list = list(self.max_dets)
+        max_dets_list = self._resolve_max_dets()
         match self.iou:
             case Bbox():
                 return evaluate_bbox_summary(gt, dt, self.parity_mode, max_dets_list, self.use_cats)
