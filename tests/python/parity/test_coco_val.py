@@ -20,10 +20,11 @@ from pathlib import Path
 
 import pytest
 
-from .harness import assert_snapshots_equal, snapshot
+from .harness import IouType, assert_snapshots_equal, snapshot
 
 _GT_ENV = "VERNIER_COCO_GT_PATH"
 _DT_ENV = "VERNIER_COCO_DT_PATH"
+_DT_SEGM_ENV = "VERNIER_COCO_DT_SEGM_PATH"
 _CACHE_ENV = "VERNIER_COCO_CACHE"
 
 # Mirrors tools/fetch-coco-val.sh: same default and same VERNIER_COCO_CACHE
@@ -47,29 +48,47 @@ def _require_env_path(env: str) -> Path:
     return path
 
 
-def _assert_bbox_parity(gt: Path, dt: Path) -> None:
-    ref = snapshot("pycocotools", gt, dt, "bbox")
-    cand = snapshot("vernier", gt, dt, "bbox")
+def _assert_parity(gt: Path, dt: Path, iou_type: IouType) -> None:
+    ref = snapshot("pycocotools", gt, dt, iou_type)
+    cand = snapshot("vernier", gt, dt, iou_type)
     assert_snapshots_equal(ref, cand)
+
+
+def _assert_perfect_dt_parity(dt_filename: str, iou_type: IouType) -> None:
+    cache = _cache_dir()
+    gt = cache / "instances_val2017.json"
+    dt = cache / dt_filename
+    if not gt.is_file() or not dt.is_file():
+        pytest.skip(
+            f"run ./tools/fetch-coco-val.sh to populate {cache}; "
+            "see docs/engineering/coco-val-parity.md"
+        )
+    _assert_parity(gt, dt, iou_type)
 
 
 @pytest.mark.parity
 @pytest.mark.coco_val
 def test_coco_val2017_bbox_parity() -> None:
     """Real detector predictions: bring your own JSON via env vars."""
-    _assert_bbox_parity(_require_env_path(_GT_ENV), _require_env_path(_DT_ENV))
+    _assert_parity(_require_env_path(_GT_ENV), _require_env_path(_DT_ENV), "bbox")
 
 
 @pytest.mark.parity
 @pytest.mark.coco_val
 def test_coco_val2017_bbox_parity_perfect_dt() -> None:
     """Synthesised perfect-DT smoke: scale-only check (AP is trivially 1.0)."""
-    cache = _cache_dir()
-    gt = cache / "instances_val2017.json"
-    dt = cache / "perfect_dt.json"
-    if not gt.is_file() or not dt.is_file():
-        pytest.skip(
-            f"run ./tools/fetch-coco-val.sh to populate {cache}; "
-            "see docs/engineering/coco-val-parity.md"
-        )
-    _assert_bbox_parity(gt, dt)
+    _assert_perfect_dt_parity("perfect_dt.json", "bbox")
+
+
+@pytest.mark.parity
+@pytest.mark.coco_val
+def test_coco_val2017_segm_parity() -> None:
+    """Real detector predictions: bring your own segm JSON via env vars."""
+    _assert_parity(_require_env_path(_GT_ENV), _require_env_path(_DT_SEGM_ENV), "segm")
+
+
+@pytest.mark.parity
+@pytest.mark.coco_val
+def test_coco_val2017_segm_parity_perfect_dt() -> None:
+    """Synthesised perfect-DT smoke for segm: every det carries GT polygons."""
+    _assert_perfect_dt_parity("perfect_dt_segm.json", "segm")

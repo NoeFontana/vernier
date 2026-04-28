@@ -31,7 +31,8 @@ if [[ -f "${gt_path}" ]]; then
     fi
 fi
 
-dt_path="${CACHE_DIR}/perfect_dt.json"
+dt_bbox_path="${CACHE_DIR}/perfect_dt.json"
+dt_segm_path="${CACHE_DIR}/perfect_dt_segm.json"
 
 if [[ "${need_fetch}" -eq 1 ]]; then
     zip_path="${CACHE_DIR}/annotations_trainval2017.zip"
@@ -50,14 +51,21 @@ if [[ "${need_fetch}" -eq 1 ]]; then
         exit 1
     fi
     echo "GT ready at ${gt_path}"
-    # GT just changed; the cached perfect-DT is now stale.
-    rm -f "${dt_path}"
+    # GT just changed; the cached perfect-DTs are now stale.
+    rm -f "${dt_bbox_path}" "${dt_segm_path}"
 fi
 
-if [[ ! -f "${dt_path}" ]]; then
-    echo "Synthesising a 'perfect' DT (score=1.0 for every non-crowd GT) → ${dt_path}"
-    python3 "${REPO_ROOT}/tools/make-perfect-dt.py" "${gt_path}" "${dt_path}"
-fi
+synthesise_dt() {
+    local label="$1" out_path="$2"
+    shift 2
+    if [[ ! -f "${out_path}" ]]; then
+        echo "Synthesising a 'perfect' ${label} DT → ${out_path}"
+        python3 "${REPO_ROOT}/tools/make-perfect-dt.py" "$@" "${gt_path}" "${out_path}"
+    fi
+}
+
+synthesise_dt bbox "${dt_bbox_path}"
+synthesise_dt segm "${dt_segm_path}" --segm
 
 cat <<MSG
 
@@ -65,9 +73,11 @@ Cache ready. Export the env vars (or eval the lines below) and run
 \`just test-coco-val\`:
 
   export VERNIER_COCO_GT_PATH=${gt_path}
-  export VERNIER_COCO_DT_PATH=${dt_path}
+  export VERNIER_COCO_DT_PATH=${dt_bbox_path}
+  export VERNIER_COCO_DT_SEGM_PATH=${dt_segm_path}
 
-The synthesised DT is a smoke test only (AP[0.5:0.95] is trivially
-1.0); for non-trivial parity, point VERNIER_COCO_DT_PATH at a real
-detector's predictions JSON. See docs/engineering/coco-val-parity.md.
+The synthesised DTs are smoke tests only (AP[0.5:0.95] is trivially
+1.0); for non-trivial parity, point VERNIER_COCO_DT_PATH /
+VERNIER_COCO_DT_SEGM_PATH at a real detector's predictions JSON. See
+docs/engineering/coco-val-parity.md.
 MSG
