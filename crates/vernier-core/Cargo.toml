@@ -33,3 +33,7 @@ divan = "0.1"
 [[bench]]
 name = "bbox_iou"
 harness = false
+
+[[bench]]
+name = "boundary_iou"
+harness = false
