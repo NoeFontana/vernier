@@ -37,6 +37,7 @@ SEGM_FIXTURES = [
     "polygon_at_image_edge_segm",
     "self_intersecting_polygon_segm",
     "crowd_rle_gt_segm",
+    "boundary_area_segm",
 ]
 
 PARITY_CASES: list[tuple[str, IouType]] = [
