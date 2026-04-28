@@ -127,7 +127,7 @@ impl Similarity for SegmIou {
     }
 }
 
-fn to_bbox_ann(rle: &Rle, is_crowd: bool) -> BboxAnn {
+pub(super) fn to_bbox_ann(rle: &Rle, is_crowd: bool) -> BboxAnn {
     let [x, y, w, h] = rle.bbox();
     BboxAnn {
         bbox: Bbox {

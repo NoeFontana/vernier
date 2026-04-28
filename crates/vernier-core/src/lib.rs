@@ -42,7 +42,7 @@ pub use evaluate::{
 pub use matching::{match_image, MatchResult};
 pub use parity::{iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, PARITY_EPS};
 pub use segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
-pub use similarity::{BboxAnn, BboxIou, SegmAnn, SegmIou, Similarity};
+pub use similarity::{BboxAnn, BboxIou, BoundaryIou, SegmAnn, SegmIou, Similarity};
 pub use summarize::{
     summarize_detection, summarize_with, AreaRng, MaxDetSelector, Metric, StatLine, StatRequest,
     Summary,
