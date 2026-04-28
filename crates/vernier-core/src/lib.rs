@@ -36,9 +36,7 @@ pub use evaluate::{
     EvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
 };
 pub use matching::{match_image, MatchResult};
-pub use parity::{
-    iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, OKS_AREA_EPS, PARITY_EPS,
-};
+pub use parity::{iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, PARITY_EPS};
 pub use segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
 pub use similarity::{BboxAnn, BboxIou, SegmAnn, SegmIou, Similarity};
 pub use summarize::{

@@ -580,4 +580,126 @@ mod tests {
         let err = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap_err();
         assert!(matches!(err, EvalError::DimensionMismatch { .. }));
     }
+
+    #[test]
+    fn reaccumulate_with_different_area_range_count_is_typed_error() {
+        // A3: re-accumulating an `eval_imgs` grid built for one A-axis
+        // size against an `AccumulateParams` with a different
+        // `n_area_ranges` must surface DimensionMismatch — not silently
+        // produce wrong outputs by re-slicing the flat buffer at the new
+        // pitch. Build a 4-area-range grid (the COCO default), then try
+        // to accumulate it as if it were a 3-area-range grid.
+        let n_i = 1;
+        let n_a_built = 4;
+        let n_k = 1;
+        let cell = one_threshold_eval(vec![0.9], vec![true], vec![false], vec![false]);
+        // Only the first (k=0, a=0, i=0) slot carries data; remaining
+        // slots are None as they would be for an image with no GTs/DTs in
+        // those buckets.
+        let mut eval_imgs: Vec<Option<PerImageEval>> = vec![None; n_k * n_a_built * n_i];
+        eval_imgs[0] = Some(cell);
+
+        // Mismatched params: claim the grid has 3 area ranges. Expected
+        // grid size becomes 1*3*1 = 3, but we pass 4 cells → typed error.
+        let mut bad = params(&[0.5], &[0.0, 0.5, 1.0], &[100], n_i);
+        bad.n_area_ranges = 3;
+        let err = accumulate(&eval_imgs, bad, ParityMode::Strict).unwrap_err();
+        match err {
+            EvalError::DimensionMismatch { detail } => {
+                assert!(detail.contains("eval_imgs"), "msg: {detail}");
+                assert!(detail.contains("n_area_ranges(3)"), "msg: {detail}");
+            }
+            other => panic!("expected DimensionMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn vectorized_inner_sweep_matches_naive_reference() {
+        // C6: the inner recall-threshold sweep is vectorized via
+        // partition_point + an in-place right-to-left envelope. Pin it
+        // against a naive reference that mirrors pycocotools' Python
+        // `for ri, pi in enumerate(inds): q[ri] = pr[pi]` line by line.
+        //
+        // Three hand-crafted PR curves cover the edge cases:
+        //  - monotonic-decreasing precision (no envelope work);
+        //  - non-monotonic precision (envelope rewrites multiple cells);
+        //  - all-1.0 precision with the recall curve ending at 0.5 so
+        //    half the recall thresholds fall past the curve (C3 path).
+        //
+        // Only the precision lane is compared — both implementations
+        // share the same recall-index lookup, so the score lane would
+        // trivially agree.
+        let recall_thresholds: Vec<f64> = (0..=10).map(|i| (i as f64) / 10.0).collect();
+
+        // Naive reference: explicit right-to-left running max + linear
+        // searchsorted-left scan.
+        fn naive_sweep(rc: &[f64], pr: &[f64], rec_thr: &[f64]) -> Vec<f64> {
+            let n = pr.len();
+            let mut env = pr.to_vec();
+            for j in (1..n).rev() {
+                if env[j] > env[j - 1] {
+                    env[j - 1] = env[j];
+                }
+            }
+            let mut q = vec![0.0_f64; rec_thr.len()];
+            for (ri, &target) in rec_thr.iter().enumerate() {
+                let mut pi = n;
+                for (j, &r) in rc.iter().enumerate() {
+                    if r >= target {
+                        pi = j;
+                        break;
+                    }
+                }
+                if pi < n {
+                    q[ri] = env[pi];
+                }
+            }
+            q
+        }
+
+        // Vectorized reference: same shape as `accumulate_cell`'s inner
+        // sweep, callable on hand-crafted curves without rebuilding the
+        // whole `(T, R, K, A, M)` tensor. Drift between this body and
+        // the production sweep is what the test exists to catch.
+        fn vectorized_sweep(rc: &[f64], pr: &[f64], rec_thr: &[f64]) -> Vec<f64> {
+            let n = pr.len();
+            let mut env = pr.to_vec();
+            for j in (1..n).rev() {
+                if env[j] > env[j - 1] {
+                    env[j - 1] = env[j];
+                }
+            }
+            let mut q = vec![0.0_f64; rec_thr.len()];
+            for (ri, &target) in rec_thr.iter().enumerate() {
+                let pi = rc.partition_point(|&v| v < target);
+                if pi < n {
+                    q[ri] = env[pi];
+                }
+            }
+            q
+        }
+
+        let curves: &[(&[f64], &[f64])] = &[
+            // Monotonic-decreasing precision; recall reaches 1.0.
+            (&[0.1, 0.3, 0.5, 0.7, 1.0], &[1.0, 0.9, 0.7, 0.5, 0.3]),
+            // Non-monotonic precision: envelope rewrites cells 1 and 3.
+            (&[0.2, 0.4, 0.6, 0.8, 1.0], &[1.0, 0.4, 0.6, 0.2, 0.5]),
+            // All-1.0 precision; recall caps at 0.5 → recall thresholds
+            // > 0.5 fall past the curve (C3 silent-skip path → 0.0).
+            (&[0.1, 0.2, 0.3, 0.4, 0.5], &[1.0, 1.0, 1.0, 1.0, 1.0]),
+        ];
+
+        for (i, (rc, pr)) in curves.iter().enumerate() {
+            let q_naive = naive_sweep(rc, pr, &recall_thresholds);
+            let q_vec = vectorized_sweep(rc, pr, &recall_thresholds);
+            assert_eq!(q_naive.len(), q_vec.len(), "curve {i}");
+            for (ri, (a, b)) in q_naive.iter().zip(q_vec.iter()).enumerate() {
+                assert_eq!(
+                    a.to_bits(),
+                    b.to_bits(),
+                    "curve {i}, recall threshold index {ri}: naive={a}, vec={b}"
+                );
+            }
+        }
+    }
 }

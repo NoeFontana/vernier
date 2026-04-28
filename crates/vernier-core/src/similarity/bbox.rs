@@ -236,6 +236,13 @@ mod tests {
         // Quirks E2/J4: DT iscrowd is enforced 0 at load. Even if the
         // caller smuggles `is_crowd: true` into a DT, the kernel must
         // not branch on it — only GT.is_crowd drives the E1 asymmetry.
+        //
+        // E3 cross-ref: there is no DT-side iscrowd vector by type
+        // construction — `Similarity::compute` takes a single GT slice
+        // plus a single DT slice, with no parallel `dt_iscrowd` array.
+        // The asymmetry of pycocotools' `iou()` API is enforced
+        // structurally, so this runtime test covers the observable
+        // behavior; no separate type-signature assertion is needed.
         let gts = [make_ann(0.0, 0.0, 2.0, 2.0, false)];
         let dts_marked = [make_ann(1.0, 1.0, 2.0, 2.0, true)];
         let dts_clean = [make_ann(1.0, 1.0, 2.0, 2.0, false)];

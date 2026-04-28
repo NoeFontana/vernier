@@ -46,10 +46,6 @@ pub const PARITY_EPS: f64 = f64::EPSILON;
 /// exactly at the threshold still matches. (Quirk **B1** — strict.)
 pub const IOU_BOUNDARY_EPS: f64 = 1e-10;
 
-/// Divide-by-zero guard added to OKS area before the per-keypoint
-/// distance is normalized by it. (Quirk **F2** — aligned.)
-pub const OKS_AREA_EPS: f64 = f64::EPSILON;
-
 /// The 10 IoU thresholds at which COCO eval reports AP. Built via the
 /// same `linspace(0.5, 0.95, 10)` formula pycocotools uses (not
 /// `arange`, which accumulates float error). (Quirk **L1** — strict.)
