@@ -1,10 +1,13 @@
 # COCO val2017 whole-dataset parity smoke
 
-Five hand-crafted fixtures in `tests/python/parity/test_parity.py` pin
-the known-quirk corners. The whole-dataset run in
-`tests/python/parity/test_coco_val.py` is the headline parity claim
-("full bbox parity green on COCO val2017") — vernier vs pycocotools,
-strict mode, every snapshot field bit-identical.
+Hand-crafted fixtures in `tests/python/parity/test_parity.py` and
+`tests/python/parity_boundary/test_parity_boundary.py` pin the known-
+quirk corners. The whole-dataset runs in
+`tests/python/parity/test_coco_val.py` (bbox + segm vs pycocotools)
+and `tests/python/parity_boundary/test_coco_val.py` (boundary vs the
+vendored `bowenc0221/boundary-iou-api` oracle, per ADR-0010) are the
+headline parity claim — strict mode, every snapshot field bit-identical
+on all 5000 val2017 images.
 
 The COCO dataset is governed by its own [terms of use][coco-terms] and
 must not be committed to this repository. The smoke test reads its
@@ -16,12 +19,16 @@ on a clean checkout.
 
 ## Environment contract
 
-| Variable                    | Required                  | What it points at                                       |
-| --------------------------- | ------------------------- | ------------------------------------------------------- |
-| `VERNIER_COCO_GT_PATH`      | yes                       | path to `instances_val2017.json`                        |
-| `VERNIER_COCO_DT_PATH`      | yes (bbox parity)         | path to a bbox detector predictions JSON (COCO-style)   |
-| `VERNIER_COCO_DT_SEGM_PATH` | yes (segm parity)         | path to a segm predictions JSON (with `segmentation`)   |
-| `VERNIER_COCO_CACHE`        | no                        | override the default cache dir                          |
+| Variable                    | Required                          | What it points at                                       |
+| --------------------------- | --------------------------------- | ------------------------------------------------------- |
+| `VERNIER_COCO_GT_PATH`      | yes                               | path to `instances_val2017.json`                        |
+| `VERNIER_COCO_DT_PATH`      | yes (bbox parity)                 | path to a bbox detector predictions JSON (COCO-style)   |
+| `VERNIER_COCO_DT_SEGM_PATH` | yes (segm + boundary parity)      | path to a segm predictions JSON (with `segmentation`)   |
+| `VERNIER_COCO_CACHE`        | no                                | override the default cache dir                          |
+
+Boundary parity reuses `VERNIER_COCO_DT_SEGM_PATH` because boundary IoU
+operates on the same `segmentation` payload — there is no separate
+boundary predictions format.
 
 Default cache dir: `<repo>/.cache/coco-val2017/` (gitignored).
 
@@ -102,17 +109,22 @@ PR-time matrix lean.
 
 ## Expected status today
 
-All four tests pass without xfail:
+All six tests pass without xfail:
 
 - `test_coco_val2017_bbox_parity_perfect_dt` — synthetic bbox smoke.
 - `test_coco_val2017_bbox_parity` — real bbox predictions, env-gated.
 - `test_coco_val2017_segm_parity_perfect_dt` — synthetic segm smoke,
   every det carries the GT polygons via `make-perfect-dt.py --segm`.
 - `test_coco_val2017_segm_parity` — real segm predictions, env-gated.
+- `test_coco_val2017_boundary_parity_perfect_dt` — synthetic boundary
+  smoke (reuses `perfect_dt_segm.json`), oracle is bowenc0221.
+- `test_coco_val2017_boundary_parity` — real segm predictions vs the
+  bowenc0221 oracle, env-gated on `VERNIER_COCO_DT_SEGM_PATH`.
 
-Bit-exact parity holds on all 5000 val2017 images for both
+Bit-exact parity holds on all 5000 val2017 images for all three
 iou_types: every `evalImgs` cell, the precision/recall/scores
-tensors, and the 12-element stats vector match pycocotools.
+tensors, and the 12-element stats vector match the respective
+reference oracle.
 
 The earlier perfect-DT divergence on overlapping crowd/non-crowd ties
 (quirk **A4**) was rooted in `f32` IoU intermediates losing
@@ -130,5 +142,9 @@ to file.
 - **Modes other than strict.** ADR-0002's `corrected` disposition is
   intentionally divergent and exercised by the per-quirk fixtures, not
   by this smoke.
-- **Keypoints.** Phase 3 work; this file will gain a `_kpts` marker
-  variant when the OKS `Similarity` impl ships.
+- **Keypoints.** Phase 3 work; this file will gain a `_kpts` variant
+  when the OKS `Similarity` impl ships.
+- **Pycocotools/bowenc0221 internal divergences from themselves.** The
+  boundary track pins the vendored oracle at the snapshot in
+  `tests/python/parity_boundary/oracle/`. Bumping it follows the same
+  ADR-level discipline as bumping the pycocotools pin.
