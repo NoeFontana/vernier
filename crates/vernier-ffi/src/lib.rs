@@ -13,6 +13,8 @@
 //! objects: data conversion happens at the boundary, before [`Python::detach`];
 //! results are converted back after the GIL is re-acquired.
 
+use std::collections::HashMap;
+
 use numpy::ndarray::Array1;
 use numpy::ToPyArray;
 use pyo3::exceptions::PyValueError;
@@ -20,10 +22,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList};
 
 use vernier_core::{
-    accumulate, evaluate_bbox, evaluate_boundary, evaluate_segm, iou_thresholds, recall_thresholds,
-    sort_max_dets, summarize_detection, AccumulateParams, Accumulated, AreaRange, CocoDataset,
-    CocoDetections, EvalError, EvalGrid, EvalImageMeta, EvaluateParams, ParityMode, PerImageEval,
-    Summary,
+    accumulate, evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm,
+    iou_thresholds, recall_thresholds, sort_max_dets, summarize_detection, summarize_with,
+    AccumulateParams, Accumulated, AreaRange, CocoDataset, CocoDetections, EvalError, EvalGrid,
+    EvalImageMeta, EvaluateParams, ParityMode, PerImageEval, StatRequest, Summary,
 };
 
 /// Returns the underlying `vernier-core` version string. Useful as a smoke
@@ -253,19 +255,24 @@ fn eval_img_dict<'py>(
 
 /// Type-erased eval kernel selector for the FFI surface. Each variant
 /// dispatches to the corresponding `evaluate_*` function in
-/// `vernier-core`. Boundary carries its `dilation_ratio` here so the
-/// FFI signature for each Python entry point stays a function of
-/// exactly that kernel's parameters (per ADR-0011).
-#[derive(Debug, Clone, Copy)]
+/// `vernier-core`. Boundary carries its `dilation_ratio` here and
+/// Keypoints its sigmas map (ADR-0012) so the FFI signature for each
+/// Python entry point stays a function of exactly that kernel's
+/// parameters (per ADR-0011).
+///
+/// The Keypoints variant carries a [`HashMap`], which is not `Copy`;
+/// the enum is therefore `Clone` only.
+#[derive(Debug, Clone)]
 enum EvalIouType {
     Bbox,
     Segm,
     Boundary { dilation_ratio: f64 },
+    Keypoints { sigmas: HashMap<i64, Vec<f64>> },
 }
 
 impl EvalIouType {
     fn run(
-        self,
+        &self,
         gt: &CocoDataset,
         dt: &CocoDetections,
         params: EvaluateParams<'_>,
@@ -275,9 +282,19 @@ impl EvalIouType {
             Self::Bbox => evaluate_bbox(gt, dt, params, parity),
             Self::Segm => evaluate_segm(gt, dt, params, parity),
             Self::Boundary { dilation_ratio } => {
-                evaluate_boundary(gt, dt, params, parity, dilation_ratio)
+                evaluate_boundary(gt, dt, params, parity, *dilation_ratio)
+            }
+            Self::Keypoints { sigmas } => {
+                evaluate_keypoints(gt, dt, params, parity, sigmas.clone())
             }
         }
+    }
+
+    /// True for the Keypoints kernel — drives the kp-vs-detection grid
+    /// and summarizer-plan dispatch in [`evaluate_grid_impl`] and
+    /// [`run_pipeline`].
+    fn is_keypoints(&self) -> bool {
+        matches!(self, Self::Keypoints { .. })
     }
 }
 
@@ -302,7 +319,10 @@ fn evaluate_grid_impl(
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-    let area = AreaRange::coco_default();
+    // Kp grid drops the small bucket (D5); detection grid keeps all
+    // four. `Vec<AreaRange>` lets either size flow through the same
+    // `&[AreaRange]` slice the eval pass consumes.
+    let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     let grid = py
         .detach(move || {
             iou_type.run(
@@ -322,6 +342,17 @@ fn evaluate_grid_impl(
         inner: grid,
         parity,
     })
+}
+
+/// Per-kernel area-range default. Keypoints uses the 3-bucket kp grid
+/// (quirk **D5** strict, ADR-0012); every other kernel uses the
+/// 4-bucket detection grid.
+fn area_ranges_for(iou_type: &EvalIouType) -> Vec<AreaRange> {
+    if iou_type.is_keypoints() {
+        AreaRange::keypoints_default().to_vec()
+    } else {
+        AreaRange::coco_default().to_vec()
+    }
 }
 
 /// Bbox per-image evaluation pass — see [`evaluate_grid_impl`].
@@ -430,7 +461,7 @@ fn evaluate_summary_impl(
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
     let summary = py
-        .detach(move || run_pipeline(iou_type, &gt, &dt, parity, &max_dets, use_cats))
+        .detach(move || run_pipeline(&iou_type, &gt, &dt, parity, &max_dets, use_cats))
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
     Ok(PySummary { inner: summary })
@@ -507,8 +538,83 @@ fn evaluate_boundary_summary(
     )
 }
 
+/// Keypoints (OKS) end-to-end pipeline (ADR-0012) — see
+/// [`evaluate_summary_impl`]. Both GT and DT must carry `keypoints`
+/// fields.
+///
+/// `sigmas` is a `dict[int, list[float] | tuple[float, ...]]` mapping
+/// `category_id` → per-keypoint sigmas. An empty dict means "use the
+/// COCO-person 17-sigma table for every category" (quirk **F1**
+/// `corrected`). Sigmas must be supplied already scaled (post-divide-
+/// by-10 per pycocotools' internal handling).
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets, use_cats, sigmas))]
+fn evaluate_keypoints_summary(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    sigmas: &Bound<'_, PyDict>,
+) -> PyResult<PySummary> {
+    let iou_type = EvalIouType::Keypoints {
+        sigmas: parse_sigmas(sigmas)?,
+    };
+    evaluate_summary_impl(
+        py,
+        iou_type,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
+/// Keypoints per-image evaluation pass (ADR-0012). Both GT and DT must
+/// carry `keypoints` fields. `sigmas` matches
+/// [`evaluate_keypoints_summary`].
+#[pyfunction]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats, sigmas))]
+fn evaluate_keypoints_grid(
+    py: Python<'_>,
+    gt_json: &Bound<'_, PyBytes>,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    sigmas: &Bound<'_, PyDict>,
+) -> PyResult<PyEvalGrid> {
+    let iou_type = EvalIouType::Keypoints {
+        sigmas: parse_sigmas(sigmas)?,
+    };
+    evaluate_grid_impl(
+        py,
+        iou_type,
+        gt_json,
+        dt_json,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+    )
+}
+
+/// Decode a Python `dict[int, Sequence[float]]` into the
+/// `HashMap<i64, Vec<f64>>` shape `OksSimilarity` consumes. Empty dict
+/// is valid — `OksSimilarity` falls back to COCO-person sigmas.
+fn parse_sigmas(d: &Bound<'_, PyDict>) -> PyResult<HashMap<i64, Vec<f64>>> {
+    let mut out: HashMap<i64, Vec<f64>> = HashMap::with_capacity(d.len());
+    for (k, v) in d.iter() {
+        let cat: i64 = k.extract()?;
+        let sigmas: Vec<f64> = v.extract()?;
+        out.insert(cat, sigmas);
+    }
+    Ok(out)
+}
+
 fn run_pipeline(
-    iou_type: EvalIouType,
+    iou_type: &EvalIouType,
     gt: &CocoDataset,
     dt: &CocoDetections,
     parity: ParityMode,
@@ -516,7 +622,7 @@ fn run_pipeline(
     use_cats: bool,
 ) -> Result<Summary, EvalError> {
     let iou_thr = iou_thresholds();
-    let area = AreaRange::coco_default();
+    let area = area_ranges_for(iou_type);
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
     let eval_params = EvaluateParams {
         iou_thresholds: iou_thr,
@@ -524,6 +630,7 @@ fn run_pipeline(
         max_dets_per_image: max_det_top,
         use_cats,
     };
+    let is_kp = iou_type.is_keypoints();
     let grid = iou_type.run(gt, dt, eval_params, parity)?;
 
     let acc_params = AccumulateParams {
@@ -535,7 +642,19 @@ fn run_pipeline(
         n_images: grid.n_images,
     };
     let acc = accumulate(&grid.eval_imgs, acc_params, parity)?;
-    summarize_detection(&acc, iou_thr, max_dets)
+    if is_kp {
+        // ADR-0012 / D5: kp summary is the 10-stat plan over the
+        // 3-bucket area grid. Detection's 12-stat plan would index
+        // off the end of the kp accumulator's A-axis.
+        summarize_with(
+            &acc,
+            &StatRequest::coco_keypoints_default(),
+            iou_thr,
+            max_dets,
+        )
+    } else {
+        summarize_detection(&acc, iou_thr, max_dets)
+    }
 }
 
 fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
@@ -577,6 +696,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_segm_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_boundary_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_boundary_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_keypoints_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_keypoints_grid, m)?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;

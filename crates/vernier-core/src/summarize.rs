@@ -228,6 +228,50 @@ impl StatRequest {
             Self::new(AverageRecall, None, AreaRng::LARGE, Largest),
         ]
     }
+
+    /// The canonical 10-entry pycocotools keypoints plan, in the
+    /// `[AP, AP50, AP75, AP_M, AP_L, AR, AR50, AR75, AR_M, AR_L]`
+    /// order (cocoeval.py:478-499 under `iouType="keypoints"`).
+    ///
+    /// Differs from [`Self::coco_detection_default`] in three ways,
+    /// all per ADR-0012:
+    ///
+    /// - 10 entries, not 12 — the small-area row is dropped on both
+    ///   AP and AR (quirk **D5**).
+    /// - Every entry uses [`MaxDetSelector::Largest`], which resolves
+    ///   to the kp-canonical `(20,)` ladder; there are no `AR_1` /
+    ///   `AR_10` / `AR_100` rows because the kp ladder has only one
+    ///   rung.
+    /// - The `AreaRng` indices `0/1/2` (all/medium/large) are
+    ///   re-indexed for the kp A-axis. Callers must pair this plan
+    ///   with [`crate::AreaRange::keypoints_default`] so the A-axis
+    ///   indices line up; the const [`AreaRng::ALL`] / `MEDIUM` /
+    ///   `LARGE` carry the four-bucket detection-grid indices and
+    ///   would index off the end of a three-bucket accumulator.
+    pub const fn coco_keypoints_default() -> [Self; 10] {
+        use MaxDetSelector::Largest;
+        use Metric::{AveragePrecision, AverageRecall};
+        // D5: re-indexed kp A-axis (0=all, 1=medium, 2=large), no small.
+        // `from_static` is `const`, so each call site materializes a
+        // fresh `AreaRng` without an intermediate `clone()` — mirroring
+        // `coco_detection_default`'s use of the const `AreaRng::ALL`
+        // / `MEDIUM` / `LARGE` constants.
+        const ALL: AreaRng = AreaRng::from_static(0, "all");
+        const MEDIUM: AreaRng = AreaRng::from_static(1, "medium");
+        const LARGE: AreaRng = AreaRng::from_static(2, "large");
+        [
+            Self::new(AveragePrecision, None, ALL, Largest),
+            Self::new(AveragePrecision, Some(0.5), ALL, Largest),
+            Self::new(AveragePrecision, Some(0.75), ALL, Largest),
+            Self::new(AveragePrecision, None, MEDIUM, Largest),
+            Self::new(AveragePrecision, None, LARGE, Largest),
+            Self::new(AverageRecall, None, ALL, Largest),
+            Self::new(AverageRecall, Some(0.5), ALL, Largest),
+            Self::new(AverageRecall, Some(0.75), ALL, Largest),
+            Self::new(AverageRecall, None, MEDIUM, Largest),
+            Self::new(AverageRecall, None, LARGE, Largest),
+        ]
+    }
 }
 
 /// Twelve-stat COCO detection summary, bit-exact with cocoeval.
@@ -720,6 +764,57 @@ mod tests {
             expected.to_bits(),
             "pairwise_sum drifts from numpy: got {got:e}, expected {expected:e}",
         );
+    }
+
+    #[test]
+    fn coco_keypoints_default_plan_pins_canonical_order() {
+        // ADR-0012 / D5: pycocotools' kp summary is exactly these 10
+        // lines, in this order. Pin metric, threshold, A-axis index,
+        // and selector so a refactor cannot silently re-order, drop a
+        // row, or re-introduce the small bucket.
+        let plan = StatRequest::coco_keypoints_default();
+        assert_eq!(plan.len(), 10);
+
+        // Each entry: (metric, iou_threshold, area_index, selector).
+        let expected: [(Metric, Option<f64>, usize, MaxDetSelector); 10] = [
+            (Metric::AveragePrecision, None, 0, MaxDetSelector::Largest), // AP
+            (
+                Metric::AveragePrecision,
+                Some(0.5),
+                0,
+                MaxDetSelector::Largest,
+            ), // AP50
+            (
+                Metric::AveragePrecision,
+                Some(0.75),
+                0,
+                MaxDetSelector::Largest,
+            ), // AP75
+            (Metric::AveragePrecision, None, 1, MaxDetSelector::Largest), // AP_M
+            (Metric::AveragePrecision, None, 2, MaxDetSelector::Largest), // AP_L
+            (Metric::AverageRecall, None, 0, MaxDetSelector::Largest),    // AR
+            (Metric::AverageRecall, Some(0.5), 0, MaxDetSelector::Largest), // AR50
+            (
+                Metric::AverageRecall,
+                Some(0.75),
+                0,
+                MaxDetSelector::Largest,
+            ), // AR75
+            (Metric::AverageRecall, None, 1, MaxDetSelector::Largest),    // AR_M
+            (Metric::AverageRecall, None, 2, MaxDetSelector::Largest),    // AR_L
+        ];
+
+        for (i, (metric, iou, idx, sel)) in expected.into_iter().enumerate() {
+            assert_eq!(plan[i].metric, metric, "row {i} metric");
+            assert_eq!(plan[i].iou_threshold, iou, "row {i} iou_threshold");
+            assert_eq!(plan[i].area.index, idx, "row {i} area index");
+            assert_eq!(plan[i].max_dets, sel, "row {i} selector");
+        }
+
+        // No row addresses A-axis index 3 (would land off the end of a
+        // 3-bucket kp accumulator) and no row addresses index 1 of the
+        // detection-grid (which is "small" — D5 forbids).
+        assert!(plan.iter().all(|r| r.area.index <= 2));
     }
 
     #[test]
