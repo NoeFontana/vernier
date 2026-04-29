@@ -19,16 +19,21 @@ on a clean checkout.
 
 ## Environment contract
 
-| Variable                    | Required                          | What it points at                                       |
-| --------------------------- | --------------------------------- | ------------------------------------------------------- |
-| `VERNIER_COCO_GT_PATH`      | yes                               | path to `instances_val2017.json`                        |
-| `VERNIER_COCO_DT_PATH`      | yes (bbox parity)                 | path to a bbox detector predictions JSON (COCO-style)   |
-| `VERNIER_COCO_DT_SEGM_PATH` | yes (segm + boundary parity)      | path to a segm predictions JSON (with `segmentation`)   |
-| `VERNIER_COCO_CACHE`        | no                                | override the default cache dir                          |
+| Variable                          | Required                          | What it points at                                       |
+| --------------------------------- | --------------------------------- | ------------------------------------------------------- |
+| `VERNIER_COCO_GT_PATH`            | yes (bbox + segm + boundary)      | path to `instances_val2017.json`                        |
+| `VERNIER_COCO_DT_PATH`            | yes (bbox parity)                 | path to a bbox detector predictions JSON (COCO-style)   |
+| `VERNIER_COCO_DT_SEGM_PATH`       | yes (segm + boundary parity)      | path to a segm predictions JSON (with `segmentation`)   |
+| `VERNIER_COCO_GT_KEYPOINTS_PATH`  | yes (keypoints parity)            | path to `person_keypoints_val2017.json`                 |
+| `VERNIER_COCO_DT_KEYPOINTS_PATH`  | yes (keypoints parity)            | path to a keypoint detector predictions JSON           |
+| `VERNIER_COCO_CACHE`              | no                                | override the default cache dir                          |
 
 Boundary parity reuses `VERNIER_COCO_DT_SEGM_PATH` because boundary IoU
 operates on the same `segmentation` payload — there is no separate
-boundary predictions format.
+boundary predictions format. Keypoints uses its own GT (the kp-flavored
+`person_keypoints_val2017.json`, distinct from the detection
+`instances_val2017.json`) and its own predictions file (each entry
+carries a 51-element `keypoints` triplet array, per ADR-0012).
 
 Default cache dir: `<repo>/.cache/coco-val2017/` (gitignored).
 
@@ -77,6 +82,13 @@ Default cache dir: `<repo>/.cache/coco-val2017/` (gitignored).
    `VERNIER_COCO_DT_SEGM_PATH` at the segm JSON. Each env var is
    only required for its own test — the suite skips the others.
 
+   Keypoints predictions live in a separate file (each detection
+   carries a 51-element `keypoints` triplet array). Common sources:
+   Detectron2's Keypoint R-CNN model zoo, MMPose's COCO-format export,
+   or any baseline targeting `person_keypoints_val2017.json`. Point
+   `VERNIER_COCO_GT_KEYPOINTS_PATH` at the GT and
+   `VERNIER_COCO_DT_KEYPOINTS_PATH` at the predictions JSON.
+
 3. **Export the env vars** (the helper prints the lines for the
    cached GT and synthesised DTs) and run:
 
@@ -89,7 +101,8 @@ Default cache dir: `<repo>/.cache/coco-val2017/` (gitignored).
 
    The tests call the parity harness with strict mode and assert
    bit-equality on `eval_imgs`, `precision`, `recall`, `scores`,
-   `counts`, and the 12-element `stats` vector for each iou_type.
+   `counts`, and the stats vector for each iou_type — 12 elements
+   for bbox/segm/boundary, 10 for keypoints (ADR-0012).
 
 ## CI integration
 
@@ -109,7 +122,7 @@ PR-time matrix lean.
 
 ## Expected status today
 
-All six tests pass without xfail:
+All seven tests pass without xfail:
 
 - `test_coco_val2017_bbox_parity_perfect_dt` — synthetic bbox smoke.
 - `test_coco_val2017_bbox_parity` — real bbox predictions, env-gated.
@@ -120,11 +133,16 @@ All six tests pass without xfail:
   smoke (reuses `perfect_dt_segm.json`), oracle is bowenc0221.
 - `test_coco_val2017_boundary_parity` — real segm predictions vs the
   bowenc0221 oracle, env-gated on `VERNIER_COCO_DT_SEGM_PATH`.
+- `test_coco_val2017_keypoints_parity` — real kp predictions vs
+  pycocotools, env-gated on `VERNIER_COCO_GT_KEYPOINTS_PATH` and
+  `VERNIER_COCO_DT_KEYPOINTS_PATH`. Asserts byte-identical 10-stat
+  summary (ADR-0012).
 
-Bit-exact parity holds on all 5000 val2017 images for all three
-iou_types: every `evalImgs` cell, the precision/recall/scores
-tensors, and the 12-element stats vector match the respective
-reference oracle.
+Bit-exact parity holds on all 5000 val2017 images for the bbox / segm
+/ boundary iou_types: every `evalImgs` cell, the precision/recall/scores
+tensors, and the 12-element stats vector match the respective reference
+oracle. Keypoints asserts byte-equality on the 10-stat summary against
+pycocotools.
 
 The earlier perfect-DT divergence on overlapping crowd/non-crowd ties
 (quirk **A4**) was rooted in `f32` IoU intermediates losing
@@ -142,8 +160,13 @@ to file.
 - **Modes other than strict.** ADR-0002's `corrected` disposition is
   intentionally divergent and exercised by the per-quirk fixtures, not
   by this smoke.
-- **Keypoints.** Phase 3 work; this file will gain a `_kpts` variant
-  when the OKS `Similarity` impl ships.
+- **Keypoints intermediates beyond the 10-stat summary.** The
+  keypoints test asserts byte-equality on the summary array only; the
+  full eval-imgs / precision / recall / scores tensor diff that the
+  bbox/segm tracks do is intentionally deferred until the harness's
+  vernier-side keypoints accumulator is wired (today's harness falls
+  back to pycocotools for keypoints, which would make a snapshot-level
+  parity claim tautological).
 - **Pycocotools/bowenc0221 internal divergences from themselves.** The
   boundary track pins the vendored oracle at the snapshot in
   `tests/python/parity_boundary/oracle/`. Bumping it follows the same

@@ -19,6 +19,12 @@ import pytest
 GT_ENV = "VERNIER_COCO_GT_PATH"
 DT_ENV = "VERNIER_COCO_DT_PATH"
 DT_SEGM_ENV = "VERNIER_COCO_DT_SEGM_PATH"
+# Keypoints needs the kp-flavored GT (`person_keypoints_val2017.json`),
+# distinct from the detection GT (`instances_val2017.json`) used by the
+# bbox/segm/boundary tracks — so it gets its own GT env var alongside
+# the predictions one.
+GT_KEYPOINTS_ENV = "VERNIER_COCO_GT_KEYPOINTS_PATH"
+DT_KEYPOINTS_ENV = "VERNIER_COCO_DT_KEYPOINTS_PATH"
 CACHE_ENV = "VERNIER_COCO_CACHE"
 
 # Mirrors tools/fetch-coco-val.sh's default and its VERNIER_COCO_CACHE
