@@ -280,31 +280,13 @@ class PycocotoolsCOCOeval:
             "recall": np.asarray(acc.recall),
             "scores": np.asarray(acc.scores),
         }
-        if self.params.iouType == IOU_KEYPOINTS:
-            # The Rust `Accumulated::summarize` is hard-wired to the
-            # detection 12-stat plan; for kp we compute the 10-stat plan
-            # in Python using the same precision/recall slice geometry
-            # pycocotools' `_summarizeKps` uses (ADR-0012 / D5).
-            self._summary = None
-        else:
-            self._summary = acc.summarize(max_dets)
+        plan: Literal["detection", "keypoints"] = (
+            "keypoints" if self.params.iouType == IOU_KEYPOINTS else "detection"
+        )
+        self._summary = acc.summarize(max_dets, plan=plan)
 
     def summarize(self) -> None:
-        if not self.eval:
-            raise RuntimeError("Please run accumulate() first")
-        if self.params.iouType == IOU_KEYPOINTS:
-            stats, lines = _summarize_keypoints(
-                np.asarray(self.eval["precision"], dtype=np.float64),
-                np.asarray(self.eval["recall"], dtype=np.float64),
-                self.params.iouThrs,
-                self.params.maxDets,
-            )
-            self.stats = stats
-            if self._parity_mode == PARITY_STRICT:
-                for line in lines:
-                    print(line)
-            return
-        if self._summary is None:
+        if not self.eval or self._summary is None:
             raise RuntimeError("Please run accumulate() first")
         self.stats = np.asarray(self._summary.stats, dtype=np.float64)
         # Quirk L5 disposition: strict mirrors pycocotools' stdout side
@@ -390,89 +372,3 @@ def _json_default(obj: Any) -> Any:
     if hasattr(obj, "item"):
         return obj.item()
     raise TypeError(f"not JSON-serializable: {type(obj).__name__}")
-
-
-# Mirrors pycocotools' `_summarizeKps` over (T, R, K, A=3, M=1) precision
-# and (T, K, A=3, M=1) recall tensors. Defined as a free function so the
-# class method stays a thin dispatch — and so the geometry (which slice
-# is "AP @ medium") is testable in isolation. Returns ``(stats, lines)``
-# where ``stats`` is the canonical 10-vec and ``lines`` is the
-# pycocotools-shaped pretty-print lines (quirk L5).
-_KP_AREA_INDEX_ALL: Final[int] = 0
-_KP_AREA_INDEX_MEDIUM: Final[int] = 1
-_KP_AREA_INDEX_LARGE: Final[int] = 2
-_KP_AREA_LABEL: Final[dict[int, str]] = {
-    _KP_AREA_INDEX_ALL: "all",
-    _KP_AREA_INDEX_MEDIUM: "medium",
-    _KP_AREA_INDEX_LARGE: "large",
-}
-_KP_LINE_FMT: Final[str] = (
-    " {title:<18} {tag} @[ IoU={iou:<9} | area={area:>6s} | maxDets={mdet:>3d} ] = {val:0.3f}"
-)
-
-
-def _summarize_keypoints(
-    precision: NDArray[np.float64],
-    recall: NDArray[np.float64],
-    iou_thrs: NDArray[np.float64],
-    max_dets: list[int],
-) -> tuple[NDArray[np.float64], list[str]]:
-    if not max_dets:
-        raise RuntimeError("max_dets must be non-empty")
-    m = max_dets[0]
-    iou_full = f"{iou_thrs[0]:0.2f}:{iou_thrs[-1]:0.2f}"
-
-    def _ap(area_idx: int, iou_thr: float | None = None) -> float:
-        s = precision
-        if iou_thr is not None:
-            t = int(np.where(np.isclose(iou_thrs, iou_thr))[0][0])
-            s = s[t : t + 1]
-        s = s[:, :, :, area_idx : area_idx + 1, 0:1]
-        return float(_mean_ignoring_neg1(s))
-
-    def _ar(area_idx: int, iou_thr: float | None = None) -> float:
-        s = recall
-        if iou_thr is not None:
-            t = int(np.where(np.isclose(iou_thrs, iou_thr))[0][0])
-            s = s[t : t + 1]
-        s = s[:, :, area_idx : area_idx + 1, 0:1]
-        return float(_mean_ignoring_neg1(s))
-
-    plan: list[tuple[bool, int, float | None]] = [
-        (True, _KP_AREA_INDEX_ALL, None),
-        (True, _KP_AREA_INDEX_ALL, 0.5),
-        (True, _KP_AREA_INDEX_ALL, 0.75),
-        (True, _KP_AREA_INDEX_MEDIUM, None),
-        (True, _KP_AREA_INDEX_LARGE, None),
-        (False, _KP_AREA_INDEX_ALL, None),
-        (False, _KP_AREA_INDEX_ALL, 0.5),
-        (False, _KP_AREA_INDEX_ALL, 0.75),
-        (False, _KP_AREA_INDEX_MEDIUM, None),
-        (False, _KP_AREA_INDEX_LARGE, None),
-    ]
-    stats = np.zeros(len(plan), dtype=np.float64)
-    lines: list[str] = []
-    for i, (is_ap, area_idx, iou_thr) in enumerate(plan):
-        val = _ap(area_idx, iou_thr) if is_ap else _ar(area_idx, iou_thr)
-        stats[i] = val
-        lines.append(
-            _KP_LINE_FMT.format(
-                title="Average Precision" if is_ap else "Average Recall",
-                tag="(AP)" if is_ap else "(AR)",
-                iou=iou_full if iou_thr is None else f"{iou_thr:0.2f}",
-                area=_KP_AREA_LABEL[area_idx],
-                mdet=m,
-                val=val,
-            )
-        )
-    return stats, lines
-
-
-def _mean_ignoring_neg1(arr: NDArray[np.float64]) -> float:
-    # Quirk C5: cells with no in-bucket data are tagged ``-1.0``;
-    # pycocotools' summarizer averages only the populated entries. If
-    # nothing survives, the slot reads ``-1.0`` (pycocotools convention).
-    valid = arr[arr > -1]
-    if valid.size == 0:
-        return -1.0
-    return float(np.mean(valid))

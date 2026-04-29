@@ -159,15 +159,7 @@ def _run_vernier(
             gt_bytes, dt_bytes, _PARITY_MODE, max(max_dets), True, sigmas_dict
         )
         acc = grid.accumulate(max_dets)
-        # The FFI Accumulated.summarize hardcodes the detection 12-stat
-        # plan, which would index off the end of the kp accumulator's
-        # 3-bucket A-axis. The unified `evaluate_keypoints_summary`
-        # entrypoint dispatches to the kp summary plan; call it for the
-        # stats vector and reuse the grid for eval_imgs / acc for the
-        # tensors. Same input bytes → byte-identical eval_imgs / acc.
-        summary = _vernier_core.evaluate_keypoints_summary(
-            gt_bytes, dt_bytes, _PARITY_MODE, max_dets, True, sigmas_dict
-        )
+        summary = acc.summarize(max_dets, plan="keypoints")
     else:
         max_dets = list(_DEFAULT_MAX_DETS)
         grid_fn = (

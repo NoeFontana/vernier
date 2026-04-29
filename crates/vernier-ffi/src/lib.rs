@@ -199,23 +199,41 @@ impl PyAccumulated {
         self.inner.precision.shape().to_vec()
     }
 
-    /// Summarize this accumulator into the canonical 12-stat detection
-    /// vector. `max_dets` defaults to the ladder this accumulator was
-    /// built with; pass an explicit value to override.
-    #[pyo3(signature = (max_dets=None))]
-    fn summarize(&self, py: Python<'_>, max_dets: Option<Vec<usize>>) -> PyResult<PySummary> {
+    /// Summarize this accumulator. `plan` selects the stat plan:
+    /// `"detection"` (default) yields the canonical 12-stat detection
+    /// vector via [`vernier_core::summarize_detection`]; `"keypoints"`
+    /// yields the 10-stat keypoints vector via
+    /// [`vernier_core::StatRequest::coco_keypoints_default`] (ADR-0012).
+    /// Pairing the kp plan with a detection-grid accumulator (4-bucket
+    /// A-axis) reads the kp re-indexed buckets, and vice-versa indexes
+    /// off the end — match the plan to the kernel that built the grid.
+    /// `max_dets` defaults to the ladder this accumulator was built
+    /// with; pass an explicit value to override.
+    #[pyo3(signature = (max_dets=None, *, plan=None))]
+    fn summarize(
+        &self,
+        py: Python<'_>,
+        max_dets: Option<Vec<usize>>,
+        plan: Option<&str>,
+    ) -> PyResult<PySummary> {
+        let plan = parse_summarize_plan(plan.unwrap_or("detection"))?;
         let mut dets = max_dets.unwrap_or_else(|| self.max_dets.clone());
         require_nonempty_max_dets(&dets)?;
         // Quirk A2 (aligned): the accumulator was built with a sorted
         // ladder; an explicit override here must follow the same
-        // contract or the M-axis lookups in `summarize_detection`
-        // would silently misalign. `self.max_dets` is already sorted
-        // (set by `PyEvalGrid::accumulate`), so the unwrap_or branch is
-        // a no-op.
+        // contract or the M-axis lookups in the summarizer would
+        // silently misalign. `self.max_dets` is already sorted (set by
+        // `PyEvalGrid::accumulate`), so the unwrap_or branch is a no-op.
         sort_max_dets(&mut dets);
         let acc = &self.inner;
+        let iou_thr = iou_thresholds();
         let summary = py
-            .detach(|| summarize_detection(acc, iou_thresholds(), &dets))
+            .detach(|| match plan {
+                SummarizePlan::Detection => summarize_detection(acc, iou_thr, &dets),
+                SummarizePlan::Keypoints => {
+                    summarize_with(acc, &StatRequest::coco_keypoints_default(), iou_thr, &dets)
+                }
+            })
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Ok(PySummary { inner: summary })
     }
@@ -682,6 +700,26 @@ fn parse_parity_mode(s: &str) -> PyResult<ParityMode> {
         "corrected" => Ok(ParityMode::Corrected),
         other => Err(PyValueError::new_err(format!(
             "invalid parity_mode {other:?}; expected 'strict' or 'corrected'"
+        ))),
+    }
+}
+
+/// Selects the canonical pycocotools stat plan for
+/// [`PyAccumulated::summarize`]. The detection plan resolves to
+/// [`vernier_core::summarize_detection`] (12 stats); the keypoints
+/// plan resolves to [`vernier_core::StatRequest::coco_keypoints_default`]
+/// (10 stats, ADR-0012).
+enum SummarizePlan {
+    Detection,
+    Keypoints,
+}
+
+fn parse_summarize_plan(s: &str) -> PyResult<SummarizePlan> {
+    match s {
+        "detection" => Ok(SummarizePlan::Detection),
+        "keypoints" => Ok(SummarizePlan::Keypoints),
+        other => Err(PyValueError::new_err(format!(
+            "invalid plan {other:?}; expected 'detection' or 'keypoints'"
         ))),
     }
 }
