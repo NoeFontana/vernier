@@ -1,6 +1,6 @@
 # ADR-0012: OKS keypoints public surface and kernel-coupled defaults
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-28
 - **Deciders:** @NoeFontana
 - **Consulted:** —
@@ -188,7 +188,7 @@ surfaces it with the same sentinel-resolution shape used here for
 
 `max_dets` becoming nullable means `with_options(max_dets=None)` is
 ambiguous between "leave unchanged" and "reset to kernel-canonical."
-The follow-up implementation PR threads a private sentinel
+The implementation threads a private sentinel
 (`_UNSET`-style singleton) through `with_options` so that `None` means
 "reset" and the absence of the keyword means "leave unchanged." This is
 helper-method scope; the public `Evaluator` constructor is unaffected.

@@ -1,6 +1,6 @@
 # ADR-0015: Ship `vernier-cli` as a workspace binary that links `vernier-core` directly
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-29
 - **Deciders:** @NoeFontana
 - **Consulted:** —
@@ -564,9 +564,9 @@ to:
   file. This matters for CI pipelines where one job writes the
   result and another consumes it via a shared filesystem.
 - **Parent-directory creation is opt-in.** `--output
-  ./does/not/exist/result.json` fails with exit code 1 unless
-  the user passes `--mkdir` (or its equivalent — final flag name
-  TBD in the implementation PR). We do not silently create paths.
+  ./does/not/exist/result.json` fails with exit code 1; we do not
+  silently create paths. A `--mkdir`-style opt-in flag is a
+  follow-up — out of scope for the initial surface.
 
 The result: byte-equal output for byte-equal input, across runs,
 machines, and elapsed time — with one well-defined exception
@@ -980,5 +980,5 @@ duplicates the other.
   the promotion to workspace member.
 - `docs/reference/coco-summary-stats.md` — referenced from the JSON
   schema doc to anchor the `stats[i]` ↔ `lines[i]` correspondence.
-- `docs/reference/cli-output-schema.md` (new) — versioned JSON
-  output schema. Created as part of the ADR's implementation PR.
+- `docs/reference/cli-output-schema.md` — versioned JSON output
+  schema, shipped alongside this ADR's implementation.
