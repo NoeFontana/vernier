@@ -324,3 +324,33 @@ def test_keypoints_per_category_sigmas() -> None:
     summary = Evaluator(iou=custom, parity_mode="strict").evaluate(GT_KP, DT_KP)
     assert isinstance(summary, Summary)
     assert len(summary.stats) == 10
+
+
+# --- Accumulated.summarize plan dispatch (FFI surface for ADR-0012) ----------
+
+
+def test_accumulated_summarize_default_plan_is_detection() -> None:
+    from vernier import _core
+
+    grid = _core.evaluate_bbox_grid(GT_PERFECT, DT_PERFECT, "strict", 100, True)
+    acc = grid.accumulate([1, 10, 100])
+    summary = acc.summarize([1, 10, 100])
+    assert len(summary.stats) == 12
+
+
+def test_accumulated_summarize_keypoints_plan_yields_10_stats() -> None:
+    from vernier import _core
+
+    grid = _core.evaluate_keypoints_grid(GT_KP, DT_KP, "strict", 20, True, {})
+    acc = grid.accumulate([20])
+    summary = acc.summarize([20], plan="keypoints")
+    assert len(summary.stats) == 10
+
+
+def test_accumulated_summarize_invalid_plan_raises() -> None:
+    from vernier import _core
+
+    grid = _core.evaluate_bbox_grid(GT_PERFECT, DT_PERFECT, "strict", 100, True)
+    acc = grid.accumulate([1, 10, 100])
+    with pytest.raises(ValueError, match="invalid plan"):
+        acc.summarize([1, 10, 100], plan="nonsense")  # pyright: ignore[reportArgumentType]

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
@@ -29,7 +29,12 @@ class Accumulated:
     def scores(self) -> NDArray[np.float64]: ...
     @property
     def counts(self) -> list[int]: ...
-    def summarize(self, max_dets: list[int] | None = ...) -> Summary: ...
+    def summarize(
+        self,
+        max_dets: list[int] | None = ...,
+        *,
+        plan: Literal["detection", "keypoints"] | None = ...,
+    ) -> Summary: ...
 
 def version() -> str: ...
 def evaluate_bbox_summary(
