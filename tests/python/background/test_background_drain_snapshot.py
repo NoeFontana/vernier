@@ -14,7 +14,8 @@ import pytest
 
 import vernier
 
-from .conftest import drain_until_idle, shard_dt_bytes
+from ..parity.conftest import shard_dt_bytes
+from .conftest import drain_until_idle
 
 IouType = Literal["bbox", "segm", "boundary", "keypoints"]
 

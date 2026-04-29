@@ -1,39 +1,14 @@
 """Phase G fixtures and helpers (ADR-0014 BackgroundEvaluator).
 
-The shard helper is a verbatim copy of
-``tests/python/parity/streaming/conftest.py``'s ``shard_dt_bytes`` so this
-directory stays self-contained — the streaming test tree is the source of
-truth for the same partition rules; copying lets the background tests
-move independently if the streaming layout changes later.
+The shard helper lives in `tests/python/parity/conftest.py`; this
+module exports the worker-quiescence helper that is unique to the
+background suite.
 """
 
 from __future__ import annotations
 
-import json
-import random
 import time
-from pathlib import Path
 from typing import Any
-
-
-def shard_dt_bytes(dt_path: Path, n_shards: int, seed: int) -> list[bytes]:
-    """Split DT records by image_id into ``n_shards`` disjoint payloads.
-
-    Splitting by image_id (not by record) avoids the streaming /
-    background evaluator's duplicate-image-id rejection: the same image
-    can never appear in two batches.
-    """
-    records = json.loads(dt_path.read_text())
-    by_image: dict[int, list[dict]] = {}
-    for r in records:
-        by_image.setdefault(r["image_id"], []).append(r)
-    image_ids = sorted(by_image.keys())
-    rng = random.Random(seed)
-    rng.shuffle(image_ids)
-    shards: list[list[dict]] = [[] for _ in range(n_shards)]
-    for i, img_id in enumerate(image_ids):
-        shards[i % n_shards].extend(by_image[img_id])
-    return [json.dumps(s).encode("utf-8") for s in shards]
 
 
 def drain_until_idle(ev: Any, timeout: float = 5.0) -> None:
