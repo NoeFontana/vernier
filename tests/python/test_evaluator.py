@@ -13,7 +13,7 @@ import json
 import pytest
 
 import vernier
-from vernier import Bbox, Boundary, Evaluator, Segm, Summary
+from vernier import Bbox, Boundary, Evaluator, Keypoints, Segm, Summary
 
 # Two perfectly-overlapping detections on a single image; expected stats
 # collapse to 1.0 across every populated bucket and -1.0 elsewhere
@@ -205,9 +205,122 @@ def test_module_exports_public_api() -> None:
         "Boundary",
         "Evaluator",
         "IouKind",
+        "Keypoints",
         "ParityMode",
         "Segm",
         "Summary",
         "version",
     ):
         assert hasattr(vernier, name), f"missing public export: {name}"
+
+
+# --- Keypoints (OKS / ADR-0012) -----------------------------------------------
+
+# Synthetic kp fixture: one image, one person GT with 17 visible keypoints,
+# one DT with the same shape and a high score. AP@all should land at 1.0
+# because the predicted keypoints are byte-identical to the GT's.
+_KP_COORDS: tuple[tuple[float, float], ...] = (
+    (10.0, 10.0),
+    (12.0, 8.0),
+    (8.0, 8.0),
+    (14.0, 9.0),
+    (6.0, 9.0),
+    (16.0, 20.0),
+    (4.0, 20.0),
+    (18.0, 30.0),
+    (2.0, 30.0),
+    (20.0, 40.0),
+    (0.0, 40.0),
+    (14.0, 50.0),
+    (6.0, 50.0),
+    (16.0, 65.0),
+    (4.0, 65.0),
+    (18.0, 80.0),
+    (2.0, 80.0),
+)
+
+
+def _flatten_kp(coords: tuple[tuple[float, float], ...], visibility: int = 2) -> list[float]:
+    flat: list[float] = []
+    for x, y in coords:
+        flat.extend((x, y, float(visibility)))
+    return flat
+
+
+GT_KP = json.dumps(
+    {
+        "images": [{"id": 1, "width": 100, "height": 100}],
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                # bbox area lands the annotation in the "large" kp area
+                # bucket (>32**2 == 1024).
+                "bbox": [0, 0, 40, 80],
+                "area": 3200,
+                "iscrowd": 0,
+                "num_keypoints": 17,
+                "keypoints": _flatten_kp(_KP_COORDS),
+            },
+        ],
+        "categories": [{"id": 1, "name": "person"}],
+    }
+).encode()
+
+DT_KP = json.dumps(
+    [
+        {
+            "image_id": 1,
+            "category_id": 1,
+            "score": 0.99,
+            # DT carries an explicit bbox (quirk J3 derives area from it);
+            # the kp kernel still consumes the bbox for area-bucket binning.
+            "bbox": [0, 0, 40, 80],
+            "keypoints": _flatten_kp(_KP_COORDS),
+        },
+    ]
+).encode()
+
+
+def test_keypoints_kernel_max_dets_default() -> None:
+    # Per ADR-0012, the OKS kernel ladder is the single rung (20,) — distinct
+    # from the (1, 10, 100) detection ladder shared by Bbox/Segm/Boundary.
+    assert Evaluator(iou=Keypoints())._resolve_max_dets() == [20]
+
+
+def test_keypoints_max_dets_explicit_override() -> None:
+    assert Evaluator(iou=Keypoints(), max_dets=(50,))._resolve_max_dets() == [50]
+
+
+def test_keypoints_with_options_resets_to_kernel_default() -> None:
+    base = Evaluator(iou=Keypoints(), max_dets=(50,))
+    reset = base.with_options(max_dets=None)
+    assert reset.max_dets is None
+    assert reset._resolve_max_dets() == [20]
+
+
+def test_keypoints_default_sigmas_is_empty_mapping() -> None:
+    # The default sigmas mapping is empty; the FFI maps an empty dict to
+    # pycocotools' COCO-person 17-sigma table for every category (quirk F1).
+    assert Keypoints().sigmas == {}
+
+
+def test_keypoints_evaluator_dispatches_to_oks() -> None:
+    summary = Evaluator(iou=Keypoints(), parity_mode="strict").evaluate(GT_KP, DT_KP)
+    assert isinstance(summary, Summary)
+    # Quirk D5: kp summary is 10 stats (re-indexed A-axis, no `_S` row).
+    assert len(summary.stats) == 10
+    # AP@all and AR@all collapse to 1.0 on a perfect prediction.
+    ap_all, ar_all = summary.stats[0], summary.stats[5]
+    assert ap_all == pytest.approx(1.0)
+    assert ar_all == pytest.approx(1.0)
+
+
+def test_keypoints_per_category_sigmas() -> None:
+    # Override the COCO-person table with a uniform per-keypoint sigma for
+    # category 1; assert evaluation succeeds and shape is unchanged.
+    custom = Keypoints(sigmas={1: (0.05,) * 17})
+    summary = Evaluator(iou=custom, parity_mode="strict").evaluate(GT_KP, DT_KP)
+    assert isinstance(summary, Summary)
+    assert len(summary.stats) == 10

@@ -8,6 +8,7 @@ change without a deprecation cycle.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Final, NoReturn
 
@@ -17,6 +18,7 @@ from vernier._core import (
     Summary,
     evaluate_bbox_summary,
     evaluate_boundary_summary,
+    evaluate_keypoints_summary,
     evaluate_segm_summary,
     version,
 )
@@ -27,6 +29,7 @@ __all__ = [
     "COCOeval",
     "Evaluator",
     "IouKind",
+    "Keypoints",
     "ParityMode",
     "Segm",
     "Summary",
@@ -59,20 +62,39 @@ class Boundary:
     dilation_ratio: float = 0.02
 
 
+@dataclass(frozen=True, slots=True)
+class Keypoints:
+    """OKS (Object Keypoint Similarity) kernel selector (ADR-0012).
+
+    ``sigmas`` maps ``category_id`` -> per-keypoint sigma tuple. An empty
+    mapping (the default) uses pycocotools' COCO-person 17-sigma table
+    for every category. Per-category overrides honor quirk **F1**
+    ("corrected"): pycocotools hard-codes the COCO-person sigmas; vernier
+    accepts a per-category mapping while keeping the default byte-identical
+    on single-category-person datasets.
+    """
+
+    sigmas: Mapping[int, tuple[float, ...]] = field(
+        default_factory=lambda: dict[int, tuple[float, ...]](),
+    )
+
+
 #: Discriminated union of the kernels :class:`Evaluator` accepts (ADR-0011).
 #: Per-kernel parameters live on each variant; pattern-match on
 #: :attr:`Evaluator.iou` to dispatch.
-IouKind = Bbox | Segm | Boundary
+IouKind = Bbox | Segm | Boundary | Keypoints
 
 
 #: Per-kernel canonical ``max_dets`` ladders used when
 #: :attr:`Evaluator.max_dets` is left at its sentinel default. Mirrors
 #: pycocotools' coupling of summary defaults to the chosen IoU kernel
-#: (ADR-0012); future kernels (e.g. ``Keypoints``) extend this table.
+#: (ADR-0012). The ``Keypoints`` ladder is ``(20,)`` per pycocotools'
+#: ``setKpParams``; the other three kernels share the detection ladder.
 _KERNEL_MAX_DETS: Final[dict[type[IouKind], tuple[int, ...]]] = {
     Bbox: (1, 10, 100),
     Segm: (1, 10, 100),
     Boundary: (1, 10, 100),
+    Keypoints: (20,),
 }
 
 
@@ -176,12 +198,24 @@ class Evaluator:
                 return evaluate_boundary_summary(
                     gt, dt, self.parity_mode, max_dets_list, self.use_cats, r
                 )
+            case Keypoints(sigmas=s):
+                # PyO3's `extract::<Vec<f64>>` accepts iterables; converting
+                # tuple -> list at the boundary is the conservative shape
+                # (some PyO3 minor versions vary on tuple iteration).
+                return evaluate_keypoints_summary(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    {cat: list(sigs) for cat, sigs in s.items()},
+                )
             case _:
                 _reject_unknown_iou(self.iou)
 
 
 def _reject_unknown_iou(iou: object) -> NoReturn:
     raise TypeError(
-        f"unsupported iou kernel {iou!r}; expected Bbox(), Segm(), or "
-        f"Boundary(...) — see vernier.IouKind"
+        f"unsupported iou kernel {iou!r}; expected Bbox(), Segm(), "
+        f"Boundary(...), or Keypoints(...) — see vernier.IouKind"
     )

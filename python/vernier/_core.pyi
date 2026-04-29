@@ -76,3 +76,19 @@ def evaluate_boundary_grid(
     use_cats: bool,
     dilation_ratio: float,
 ) -> EvalGrid: ...
+def evaluate_keypoints_summary(
+    gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+    sigmas: dict[int, list[float]],
+) -> Summary: ...
+def evaluate_keypoints_grid(
+    gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    sigmas: dict[int, list[float]],
+) -> EvalGrid: ...
