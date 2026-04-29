@@ -54,8 +54,8 @@ move except for a fork.
 - `boundary_iou/lvis_instance_api/eval.py` — `LVISEval` analogue with
   the same composition and a parameterised `dilation_ratio`.
 - `boundary_iou/coco_panoptic_api/evaluation.py` — panoptic boundary
-  PQ. Out of scope for vernier v0.1; quirks listed here for future
-  reference only.
+  PQ. Out of scope for the current 0.0.x release line; quirks listed
+  here for future reference only.
 
 Conventions used below:
 
@@ -132,7 +132,7 @@ separate code paths.
 |---|---|---|---|
 | Q1 | LVIS exposes `dilation_ratio` as an `LVISEval.__init__` parameter (default 0.02). The COCO instance API does not expose it at all — the value is implicit at 0.02. | le:34 | **corrected**. vernier exposes `dilation_ratio` everywhere boundary IoU is invoked, including the pycocotools-shim and the CLI. |
 | Q2 | Cityscapes instance / panoptic boundary metrics use the same `mask_to_boundary` routine with default `dilation_ratio=0.02`. No dataset-specific tuning. | (separate API files) | **strict**. Single algorithm, configurable ratio. |
-| Q3 | Panoptic boundary PQ (`boundary_iou/coco_panoptic_api/`) has its own composition logic that is **not** the simple `min(mask_iou, boundary_iou)` of the instance case. Out of scope for v0.1. | (panoptic eval) | **corrected (deferred)**. A separate ADR will dispose of panoptic boundary PQ if and when vernier extends to panoptic evaluation; until that ADR lands, vernier does not implement panoptic boundary PQ at all. |
+| Q3 | Panoptic boundary PQ (`boundary_iou/coco_panoptic_api/`) has its own composition logic that is **not** the simple `min(mask_iou, boundary_iou)` of the instance case. Out of scope for the current 0.0.x release line. | (panoptic eval) | **corrected (deferred)**. A separate ADR will dispose of panoptic boundary PQ if and when vernier extends to panoptic evaluation; until that ADR lands, vernier does not implement panoptic boundary PQ at all. |
 
 ---
 
@@ -198,4 +198,5 @@ small reproducer before signing off.
 These open questions are the tail; the head is large and the
 disposition table above is high-confidence. ADR-0010 ratifies the
 table modulo the open questions above, which are tracked as
-follow-up fixtures rather than blockers on the v0.1 ship.
+follow-up fixtures rather than blockers on the initial boundary-IoU
+ship under the 0.0.x release line.

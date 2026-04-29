@@ -35,8 +35,8 @@ oracle refresh (when `bowenc0221` finally breaks under an OpenCV bump)
 or an LVIS-specific `dilation_ratio = 0.008` variant would force edits to
 documents that have nothing to do with pycocotools. The naïve port also
 inherits the iterative-erosion performance disaster, which would make
-boundary IoU 10–30× slower than mask IoU at v0.1 and silently set a bad
-ceiling for every downstream that adopts it.
+boundary IoU 10–30× slower than mask IoU on first ship and silently set
+a bad ceiling for every downstream that adopts it.
 
 This ADR ratifies the decisions needed to ship boundary IoU as a
 **first-class but isolated subsystem**: its own oracle pin, its own
@@ -64,10 +64,10 @@ while preserving both *mathematical parity* with the paper and
   Eq. 2) and **implementation parity** (bit-equal output on shared
   fixtures) must be achievable. They are independent: an
   implementation can satisfy one without the other.
-- Performance must be competitive with the mask IoU path **from v0.1**,
-  not deferred. Shipping a slow-but-correct first cut creates a
-  numbers-don't-change-but-perf-does revision later that breaks user
-  expectations.
+- Performance must be competitive with the mask IoU path **from the
+  first ship**, not deferred. Shipping a slow-but-correct first cut
+  creates a numbers-don't-change-but-perf-does revision later that
+  breaks user expectations.
 - ADR-0008's commitment to f64 IoU end-to-end is non-negotiable.
 - ADR-0009's commitment that vernier-mask is a pure-Rust leaf reusable
   by non-evaluator users stands: boundary kernels go in vernier-mask.
@@ -311,7 +311,8 @@ this ADR rather than the upstream.
 Boundary IoU performance is governed by three budgets. They are
 *targets-by-engineering-judgment* at proposal time (no measurement
 exists yet); their job is to be the contract the implementation
-must hit and the CI gate must enforce before v0.1 ships.
+must hit and the CI gate must enforce before boundary IoU first
+ships under the 0.0.x release line.
 
 - **Per-mask boundary RLE precomputation:** wall-clock time at the
   median over a benchmark suite of 1000 representative masks must be
@@ -330,13 +331,14 @@ These budgets ship as `crates/vernier-core/benches/boundary_iou.rs`
 and fails the build on budget regression is a deliverable of the
 same PR that wires `BoundaryIou` into the public API — i.e., the
 budgets are *not* enforced by CI today, but they are blocking on
-the v0.1 ship of boundary IoU. Budgets are revisited only via
+the first ship of boundary IoU. Budgets are revisited only via
 follow-up ADR.
 
 The bitpacking question (storing the dense binary mask as packed bits,
 processing 64 columns per word with bitwise AND for erosion) is
-explicitly **out of scope** for v0.1. The byte-per-pixel implementation
-is simpler, easier to validate, and is expected to meet the 3× budget
+explicitly **out of scope** for the first ship. The byte-per-pixel
+implementation is simpler, easier to validate, and is expected to
+meet the 3× budget
 with margin (back-of-envelope; first measurement at bench-job-landing
 time). If the byte-per-pixel form misses the 3× budget on first
 measurement, bitpacking is a follow-up ADR with its own perf and
@@ -388,7 +390,7 @@ detail.
 
 ### Positive
 
-- Boundary IoU ships at v0.1 of the metric without contaminating
+- Boundary IoU ships in its first form without contaminating
   pycocotools parity infrastructure. Future oracle refreshes,
   algorithm variants (LVIS's 0.008), or quirks discoveries are local
   edits to boundary-specific files. No churn in the documents that
@@ -434,7 +436,7 @@ detail.
 - Keeping `ParityMode` global is revisitable. If a third oracle
   joins (e.g., a panoptic-boundary variant in the future), the
   global mode might need per-IoU-type overrides — that's a future
-  ADR, not a v0.1 concern.
+  ADR, not a first-ship concern.
 - The decision to defer bitpacked-binary erosion to a follow-up ADR
   is itself revisitable. If the byte-per-pixel implementation
   misses the 3× budget on first measurement, we open that ADR

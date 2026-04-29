@@ -78,7 +78,7 @@ Skipped:
 
 | Upstream path | Why skipped |
 | ------------- | ----------- |
-| `boundary_iou/cityscapes_instance_api/` | Cityscapes parity is out of scope for vernier v0.1 (see ADR-0010 §"Performance baseline"). |
+| `boundary_iou/cityscapes_instance_api/` | Cityscapes parity is out of scope for the current 0.0.x release line (see ADR-0010 §"Performance baseline"). |
 | `boundary_iou/cityscapes_panoptic_api/` | Panoptic parity is out of scope. |
 | `boundary_iou/coco_panoptic_api/` | Panoptic parity is out of scope. |
 | `boundary_iou/lvis_instance_api/` | LVIS dropped from Phase 2 (see ADR-0010 §"Decision drivers" — not a primary deliverable). |

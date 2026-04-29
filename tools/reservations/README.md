@@ -2,8 +2,8 @@
 
 This directory holds the throwaway packages we publish at v0.0.0 to claim
 the names `vernier`, `vernier-core`, `vernier-mask` on crates.io and
-`vernier` on PyPI. `vernier-cli` lived here until v0.2.0; per ADR-0015 it
-was promoted to a real workspace member at `crates/vernier-cli/`.
+`vernier` on PyPI. `vernier-cli` lived here until it was promoted to a
+real workspace member at `crates/vernier-cli/` per ADR-0015.
 
 These are **not** part of the workspace and are **not** built by `just
 build`. Each crate skeleton is its own standalone package (note the empty
@@ -32,8 +32,10 @@ published to crates.io as a standalone package.
 For `vernier-core` we already have a real crate at `crates/vernier-core/`,
 but publishing it today would commit us to an API surface that doesn't
 exist yet. The reservation skeleton publishes a deliberately empty v0.0.0
-and lets the real crate evolve in-tree until we're ready to cut a real
-release.
+and lets the real crate evolve in-tree. The project ships under 0.0.x
+patches (v0.0.1, v0.0.2, …) until the core and extended feature set is
+complete; the move to a stable 0.1.0+ release line is a deliberate
+later decision.
 
 ## Publishing
 

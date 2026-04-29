@@ -46,8 +46,9 @@ for. It breaks for three real consumers we already see:
 The reservation crate `vernier-cli` (`tools/reservations/crates/vernier-cli/`,
 v0.0.0 on crates.io, README dated to a never-shipped v0.1.0) has been
 holding the name in anticipation of this ADR. It contains no real
-code; promoting it into the workspace as the v0.2.0 binary is the
-mechanical part. The architectural decisions are:
+code; promoting it into the workspace as the binary that ships under
+the 0.0.x release line is the mechanical part. The architectural
+decisions are:
 
 - Where the binary lives in the workspace, what it depends on, and
   what it does *not* depend on.
@@ -105,11 +106,11 @@ touches PyO3 — which is itself a deliberate design choice the
   exposes `--dilation-ratio`, defaults to `0.02` (the bowenc0221
   reference value), and refuses to accept the flag when the IoU type
   is anything else.
-- **Structured file output is a v0.2 commitment, not a follow-up.**
+- **Structured file output is a first-ship commitment, not a follow-up.**
   CI pipelines need to parse, share, and store eval results — that
-  rules out shipping with text-only at v0.2 and adding a structured
-  format in a later release. Both text and JSON formatters ship at
-  v0.2, and the surface lets a single invocation emit *multiple*
+  rules out shipping with text-only and adding a structured format
+  later. Both text and JSON formatters ship in the initial CLI
+  surface, and the surface lets a single invocation emit *multiple*
   formats from one eval run (see *Formatter abstraction* below). A
   team that lands on vernier today must not be forced to
   regex-scrape the text output to populate a results dashboard.
@@ -131,11 +132,14 @@ touches PyO3 — which is itself a deliberate design choice the
   directly. `vernier-ffi` is not in its dep tree. This keeps the
   binary's compile time short, its size small, and its release
   cycle independent of PyO3 ABI churn.
-- **Output stability.** The CLI is a *committed* surface starting at
-  v0.2.0. Flag additions are SemVer-minor; flag removals or behavior
-  changes are SemVer-major. The strict-mode text output is parity-
-  pinned to pycocotools v2.0.11 — changing it requires the same ADR
-  bar as bumping the pycocotools pin (ADR-0002 territory).
+- **Output stability.** The CLI surface this ADR ratifies is a
+  *committed* surface from its first ship under the 0.0.x release
+  line. Flag additions are additive across 0.0.x patches; flag
+  removals or behavior changes require a follow-up ADR (and, once
+  the project moves to a stable 0.1.0+ line, a major-version bump).
+  The strict-mode text output is parity-pinned to pycocotools
+  v2.0.11 — changing it requires the same ADR bar as bumping the
+  pycocotools pin (ADR-0002 territory).
 
 ## Considered options
 
@@ -161,8 +165,8 @@ The chosen design is one option per axis.
 4. **Standalone repo (`vernier-cli` as a separate git project).**
    Free of the workspace's lint and dep policies. Loses the lockstep
    release cadence with `vernier-core`; users who upgrade the wheel
-   from 0.2.0 to 0.3.0 would have to remember to upgrade the CLI
-   independently.
+   from one 0.0.x patch to the next would have to remember to upgrade
+   the CLI independently.
 
 ### Axis 2 — CLI structure (top-level vs. subcommand)
 
@@ -175,9 +179,9 @@ The chosen design is one option per axis.
 
 ### Axis 3 — Output surface and default format
 
-Both text and JSON formatters ship at v0.2; the axis covers (a) the
-flag shape that selects them and (b) which formatter is the no-flag
-default. Multi-emit (a single eval producing multiple output formats)
+Both text and JSON formatters ship in the initial CLI surface; the
+axis covers (a) the flag shape that selects them and (b) which
+formatter is the no-flag default. Multi-emit (a single eval producing multiple output formats)
 is required by the CI persona and is not negotiable; the question is
 how the surface expresses it.
 
@@ -212,9 +216,9 @@ how the surface expresses it.
 The chosen design is **Axis 1 option 1, Axis 2 option 1, Axis 3 option 1**:
 a workspace member at `crates/vernier-cli/`, packaging the binary
 `vernier`, structured as subcommands (`vernier eval ...` is the only
-verb at v0.2; future verbs land additively), with text-by-default
-output that reproduces pycocotools' `summarize()` stdout in strict
-mode.
+verb in the initial surface; future verbs land additively), with
+text-by-default output that reproduces pycocotools' `summarize()`
+stdout in strict mode.
 
 The reasoning per axis:
 
@@ -260,7 +264,7 @@ member, with `package.name = "vernier-cli"` and `[[bin]] name = "vernier"`.
 Workspace `Cargo.toml`'s `members` list grows by one entry. The
 reservation tracking doc (`docs/engineering/registry-reservations.md`)
 gets a row update marking `vernier-cli` as "promoted to workspace
-member at v0.2.0".
+member per ADR-0015".
 
 The retirement is a deliberate one-way door: once `vernier-cli` is
 a workspace member, the placeholder slot on crates.io is consumed
@@ -277,7 +281,7 @@ crates/vernier-cli/
 │   ├── cli.rs             # clap derive structs, validation
 │   ├── commands/
 │   │   ├── mod.rs
-│   │   └── eval.rs        # vernier eval — the only verb at v0.2
+│   │   └── eval.rs        # vernier eval — the only verb in the initial surface
 │   ├── format/
 │   │   ├── mod.rs         # Formatter trait, registry()
 │   │   ├── text.rs        # impl Formatter for Text
@@ -356,14 +360,14 @@ Five non-obvious points about this surface:
   "bad invocation" from "eval ran but failed."
 - **`--quiet` is stderr-only.** Stdout always carries the summary.
   `--quiet` suppresses the (currently-empty, but reserved) stderr
-  diagnostic stream. We do not ship a `--verbose` flag at v0.2;
-  if structured logs become a real need, that lands behind a
-  follow-up ADR adding `tracing` as a top-level dep.
+  diagnostic stream. We do not ship a `--verbose` flag in the initial
+  surface; if structured logs become a real need, that lands behind
+  a follow-up ADR adding `tracing` as a top-level dep.
 - **`--emit FMT[=PATH]` is the only output flag and is
   repeatable.** A single invocation can emit text, JSON, and
   future formats from one eval run by listing `--emit` multiple
-  times. `FMT` is a registered formatter name (`text`, `json` at
-  v0.2). `=PATH` selects a destination; omitting it writes to
+  times. `FMT` is a registered formatter name (`text`, `json` in
+  the initial surface). `=PATH` selects a destination; omitting it writes to
   stdout. At most one `--emit` may target stdout (otherwise the
   outputs would interleave in the byte stream); duplicate file
   paths are also rejected. Default if no `--emit` is provided:
@@ -507,13 +511,16 @@ The JSON schema is documented in
 ```
 
 The `version` field is the *schema* version, not the vernier
-version. v0.2's CLI ships `"version": "1"`. Schema changes that
-add fields are backward-compatible (`"version": "1"` still parses
-forward); schema changes that rename or remove fields bump to
-`"version": "2"` and the CLI's `--format json` defaults stay on
-`"version": "1"` until the next major release. The CLI exposes
+package version — the schema is decoupled from the package version
+on purpose, so `"version": "1"` documents stay consumable across
+0.0.x patches and any future package-level cuts. The initial CLI
+surface ships `"version": "1"`. Schema changes that add fields are
+backward-compatible (`"version": "1"` still parses forward);
+schema changes that rename or remove fields bump to `"version":
+"2"` and the CLI's `--format json` defaults stay on `"version":
+"1"` until a future release switches the default. The CLI exposes
 `--json-schema-version 2` opt-in for users who want the new shape
-before the major bump.
+before that switch.
 
 `stats` is duplicated alongside `lines` because tools that already
 consume the pycocotools `stats` array (12-element det / 10-element
@@ -564,14 +571,16 @@ to:
 The result: byte-equal output for byte-equal input, across runs,
 machines, and elapsed time — with one well-defined exception
 (the schema version field, which only changes on schema
-revisions). A user who pins `vernier-cli == 0.2.x` gets stable
-output bytes for stable input bytes for the duration of the
-0.2 series.
+revisions). A user who pins `vernier-cli` to a specific 0.0.x
+patch gets stable output bytes for stable input bytes for the
+duration of that patch (and across subsequent 0.0.x patches that
+keep `"version": "1"`).
 
 ### Format alternatives considered (and deferred)
 
 The "JSON or better" bar deserves a direct answer. The CLI ships
-JSON at v0.2 and explicitly defers the following alternatives:
+JSON in its initial surface and explicitly defers the following
+alternatives:
 
 - **NDJSON / JSON Lines.** Right format for an event stream, wrong
   format for a single summary document. A vernier eval produces
@@ -587,8 +596,8 @@ JSON at v0.2 and explicitly defers the following alternatives:
   deps), produces a binary blob `jq` can't read, and the
   per-record overhead is wasteful for a 12-row table. The right
   shape is a follow-up tool (`vernier aggregate results-*.json
-  --output history.parquet`), not the v0.2 CLI's primary output
-  format. ADR-0001 §"Add or remove a top-level dependency" gates
+  --output history.parquet`), not the CLI's primary output format
+  in its initial surface. ADR-0001 §"Add or remove a top-level dependency" gates
   the `arrow` / `parquet` decision when that follow-up arrives.
 - **JUnit XML / TAP.** Right format for *test reports* with a
   binary pass/fail axis; wrong format for a stats summary. CI
@@ -608,15 +617,15 @@ JSON at v0.2 and explicitly defers the following alternatives:
   shape as JSON. Loses `jq`-style ad-hoc inspection, which is the
   CI persona's primary consumption mode. If someone has a real
   use case where the JSON size is the bottleneck, that's a
-  follow-up flag — not a v0.2 default.
+  follow-up flag — not a first-ship default.
 
 The pattern across these: each alternative has a *real* use case,
 none of them are a better fit than JSON for the single-eval
 single-document CLI shape this ADR ships. Aggregation tooling,
 streaming front-ends, and binary-encoded outputs are follow-ups
-that compose on top of the JSON surface; v0.2 commits to JSON as
-the structured output, with the schema versioned to make later
-breaking changes possible.
+that compose on top of the JSON surface; the initial CLI surface
+commits to JSON as the structured output, with the schema versioned
+to make later breaking changes possible.
 
 Critically, none of these follow-ups requires re-architecting the
 CLI. Adding `--emit ndjson=stream.ndjson` or `--emit
@@ -625,8 +634,8 @@ junit=report.xml` is a new module under
 and a clap-derive enum addition — nothing more. The eval pipeline
 does not care which formatters consume its output. This is the
 load-bearing property of the `Formatter` trait: format additions
-are SemVer-minor, never SemVer-major, and never require an ADR
-unless they pull in a new top-level dep (Parquet, MessagePack)
+are additive surface changes, never breaking, and never require an
+ADR unless they pull in a new top-level dep (Parquet, MessagePack)
 or change the kernel surface (NDJSON streaming).
 
 ### Exit codes
@@ -661,9 +670,9 @@ This is the standard Unix discipline. The CLI does not deviate.
 
 - **crates.io.** `cargo install vernier-cli` is the supported install
   for users with a Rust toolchain. The package is published from the
-  same workspace and tracks the workspace `version` field, so
-  `vernier == 0.2.0` and `vernier-cli == 0.2.0` are released
-  together.
+  same workspace and tracks the workspace `version` field, so the
+  `vernier` wheel and the `vernier-cli` binary are released together
+  under the same 0.0.x patch.
 - **Pre-built binaries.** GitHub Releases ship binaries for
   `x86_64-unknown-linux-gnu`, `aarch64-apple-darwin`, and
   `x86_64-pc-windows-msvc`. The release workflow extends the
@@ -674,9 +683,10 @@ This is the standard Unix discipline. The CLI does not deviate.
   signature.
 - **`cargo binstall` works** because we publish releases with the
   binstall-conventional naming. No explicit binstall metadata is
-  needed at v0.2; we add `[package.metadata.binstall]` if and only
-  if the default heuristics fail on a target.
-- **Homebrew, conda-forge, etc.** are out of scope for v0.2. The
+  needed in the initial surface; we add `[package.metadata.binstall]`
+  if and only if the default heuristics fail on a target.
+- **Homebrew, conda-forge, etc.** are out of scope for the initial
+  surface. The
   community can package the binary; we do not commit to maintaining
   those formulae.
 
@@ -755,26 +765,29 @@ duplicates the other.
 
 ### Versioning and stability commitments
 
-- **`vernier eval` is committed surface at v0.2.0.** Flag additions
-  are SemVer-minor; flag removals or default changes are SemVer-major.
-  We do not introduce flags whose default we expect to change in a
-  later release; if the future of a flag is unclear, it lives behind
-  a `--unstable-X` prefix until the design firms up.
+- **`vernier eval` is committed surface from its first ship under
+  the 0.0.x release line.** Flag additions are additive across
+  0.0.x patches; flag removals or default changes require a follow-up
+  ADR (and, once the project moves to a stable 0.1.0+ line, a
+  major-version bump). We do not introduce flags whose default we
+  expect to change in a later release; if the future of a flag is
+  unclear, it lives behind a `--unstable-X` prefix until the design
+  firms up.
 - **Strict-mode text output is parity-pinned to pycocotools v2.0.11.**
   Changing it requires the same bar as bumping the pycocotools pin
   (ADR-0002 territory: a new ADR with disposition update across
   every affected quirk).
-- **JSON schema is versioned independently.** `version` field bumps
-  on breaking changes. The CLI honors the historical schema until
-  the next major release.
+- **JSON schema is versioned independently of the package.** `version`
+  field bumps on breaking shape changes. The CLI honors the historical
+  schema as the default until a future release switches the default.
 
 ### What this ADR explicitly does *not* decide
 
 - **A streaming subcommand.** `StreamingEvaluator` (ADR-0013) and
-  `BackgroundEvaluator` (ADR-0014) are Python-only at v0.2. A
-  `vernier eval --stream` flag (or a `vernier stream` subcommand)
-  is a follow-up ADR; the chosen subcommand structure leaves the
-  extension point open.
+  `BackgroundEvaluator` (ADR-0014) are Python-only in the initial
+  CLI surface. A `vernier eval --stream` flag (or a `vernier stream`
+  subcommand) is a follow-up ADR; the chosen subcommand structure
+  leaves the extension point open.
 - **A `--threads N` flag.** ADR-0006 commits to single-threaded
   compute through Phase 5; the CLI honors that. If the threading
   model changes, the flag lands with the ADR that changes it.
@@ -785,24 +798,24 @@ duplicates the other.
 - **Subcommands beyond `eval`.** `vernier check` (fixture sanity),
   `vernier diff` (Summary JSON differ), and `vernier reservations`
   (workspace tooling) are plausible future verbs. None of them is
-  v0.2 work; the subcommand structure exists to keep them cheap to
-  add later.
+  initial-surface work; the subcommand structure exists to keep
+  them cheap to add later.
 - **Aggregation across many runs.** Parquet / Arrow output for
   building a regression-tracking dataset is a separate tool
-  (`vernier aggregate` or external) that consumes the v0.2 JSON
-  output. Discussed in *Format alternatives considered*; not on
-  the v0.2 menu.
+  (`vernier aggregate` or external) that consumes the initial-surface
+  JSON output. Discussed in *Format alternatives considered*; not on
+  the initial-surface menu.
 - **NDJSON streaming output.** The right format for the streaming
   evaluator's CLI front-end (when ADR-0013 grows one) and not for
   the single-shot `vernier eval`. Discussed in *Format alternatives
-  considered*; the v0.2 JSON shape is the per-snapshot record that
-  a future NDJSON envelope will wrap.
+  considered*; the initial-surface JSON shape is the per-snapshot
+  record that a future NDJSON envelope will wrap.
 - **JUnit XML / TAP output.** A pass/fail wrapper around the JSON
   summary requires a per-metric threshold policy that does not
   belong in the CLI. Users who want it build it on top of
   `--format json`.
 - **Color, progress bars, structured logs.** No `colored`,
-  `indicatif`, or `tracing` deps at v0.2. If user demand
+  `indicatif`, or `tracing` deps in the initial surface. If user demand
   materializes, those are individual follow-up ADRs (ADR-0001
   §"Add or remove a top-level dependency").
 - **Homebrew / conda-forge / OS package formulae.** Out of scope.
@@ -837,17 +850,17 @@ duplicates the other.
   release matrix grows by three targets, binary signing becomes a
   topic the project has to take a position on, and `cargo install
   vernier-cli` becomes a support surface. `clap` is a top-level dep
-  we don't get to walk back without a major-version flag-shape
-  change. The CLI's flag surface is a public-API commitment from
-  v0.2 forward; we lose the freedom to rename or drop flags
-  without a release-engineering cost. The JSON schema is a second
-  public-API commitment — once `"version": "1"` is in the wild, we
-  cannot reshape it without bumping schema-version (and
-  maintaining the older shape for the major-release window). The
-  output-determinism guarantees (sorted keys, no timestamps,
-  atomic writes) are durable contracts; relaxing any of them
-  later breaks the regression-archive use case the v0.2 commitment
-  is built around.
+  we don't get to walk back without a flag-shape break (cheap during
+  0.0.x, expensive once the project moves to a stable 0.1.0+ line).
+  The CLI's flag surface is a public-API commitment from its first
+  ship; we lose the freedom to rename or drop flags without a
+  release-engineering cost. The JSON schema is a second public-API
+  commitment — once `"version": "1"` is in the wild, we cannot
+  reshape it without bumping schema-version (and maintaining the
+  older shape for the bump window). The output-determinism guarantees
+  (sorted keys, no timestamps, atomic writes) are durable contracts;
+  relaxing any of them later breaks the regression-archive use case
+  the initial-surface commitment is built around.
 - **Neutral.** `vernier eval` and the in-process `Evaluator` cover
   overlapping territory for the in-Python persona — both produce a
   `Summary` from GT/DT. Documentation positions the CLI as the
@@ -946,7 +959,7 @@ duplicates the other.
   Phases 1–3. The CLI is an orchestration layer above the spine; it
   does not edit `matching.rs` or `accumulate.rs`.
 - ADR-0006 — Threading model. The CLI honors the single-threaded
-  compute commitment; `--threads` is not on the v0.2 menu.
+  compute commitment; `--threads` is not on the initial-surface menu.
 - ADR-0007 — `patch_pycocotools` policy. The CLI is the complement:
   out-of-process, no Python interpreter, shell-driven. The two
   surfaces are siblings.
