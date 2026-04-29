@@ -19,7 +19,7 @@ import pytest
 
 import vernier
 
-from .conftest import shard_dt_bytes
+from ..parity.conftest import shard_dt_bytes
 
 IouType = Literal["bbox", "segm", "boundary", "keypoints"]
 

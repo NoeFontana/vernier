@@ -20,7 +20,7 @@ import pytest
 
 import vernier
 
-from .conftest import shard_dt_bytes
+from ..conftest import shard_dt_bytes
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 

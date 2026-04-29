@@ -21,43 +21,23 @@ import pytest
 
 import vernier
 
-from .conftest import shard_dt_bytes
+from ..conftest import shard_dt_bytes
+from ..test_parity import BBOX_FIXTURES, SEGM_FIXTURES
 
 IouType = Literal["bbox", "segm", "boundary", "keypoints"]
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
-
-_BBOX_FIXTURES: list[str] = [
-    "perfect_match",
-    "zero_overlap",
-    "crowd_region",
-    "missing_dt_image",
-    "iou_at_threshold",
-    "score_ties",
-    "crowd_overlap_tiebreak",
-]
-
-_SEGM_FIXTURES: list[str] = [
-    "perfect_match_segm",
-    "zero_overlap_segm",
-    "crowd_region_segm",
-    "score_ties_segm",
-    "missing_dt_image_segm",
-    "multi_polygon_gt_segm",
-    "polygon_at_image_edge_segm",
-    "self_intersecting_polygon_segm",
-    "crowd_rle_gt_segm",
-    "boundary_area_segm",
-]
-
 # `heterogeneous_dt_segm` is intentionally omitted: it is a corrected-mode
 # rejection fixture (quirk J6) that raises in both batch and streaming
-# paths under strict parity it has different semantics; it does not
-# exercise the streaming-vs-batch parity claim this module pins.
+# paths under strict parity, so it does not exercise the streaming-vs-batch
+# parity claim this module pins. Every other entry from BBOX_FIXTURES /
+# SEGM_FIXTURES is in scope; new fixtures added there are picked up
+# automatically.
+_SEGM_FIXTURES = [f for f in SEGM_FIXTURES if f != "heterogeneous_dt_segm"]
 
 _PARITY_CASES: list[tuple[str, IouType]] = [
-    *((f, "bbox") for f in _BBOX_FIXTURES),
+    *((f, "bbox") for f in BBOX_FIXTURES),
     *((f, "segm") for f in _SEGM_FIXTURES),
 ]
 

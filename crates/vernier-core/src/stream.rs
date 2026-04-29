@@ -22,7 +22,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::accumulate::{accumulate, AccumulateParams, PerImageEval};
 use crate::dataset::{
@@ -244,6 +243,15 @@ pub struct StreamingEvaluator<K: EvalKernel> {
     grid_meta: EvalGridMeta,
     cells: PerImageEvalStore,
     seen_images: HashSet<i64>,
+    /// Image-grid indices for every entry in `seen_images`. Maintained
+    /// incrementally so `compute_summary` can decide which GT-only
+    /// cells to overlay without re-walking `seen_images` every call.
+    seen_image_indices: HashSet<usize>,
+    /// Lazily-built GT-only `(K, A, I)` grid used by `compute_summary`
+    /// to file cells for images that have not yet received any
+    /// detection. GT is immutable, so the grid is computed at most
+    /// once across the evaluator's lifetime.
+    gt_only_cells: Option<Vec<Option<PerImageEval>>>,
     n_detections: usize,
     /// Monotonic DT-id counter. Reserved for the strict-mode
     /// `(score, stream_position)` tiebreak (ADR-0013 §Determinism); not
@@ -253,7 +261,7 @@ pub struct StreamingEvaluator<K: EvalKernel> {
     bytes_dt_scores: usize,
     bytes_match_flags: usize,
     budget: MemoryBudget,
-    soft_warn_fired: AtomicBool,
+    soft_warn_fired: bool,
 }
 
 impl<K: EvalKernel> StreamingEvaluator<K> {
@@ -285,13 +293,15 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             grid_meta,
             cells: PerImageEvalStore::new(),
             seen_images: HashSet::new(),
+            seen_image_indices: HashSet::new(),
+            gt_only_cells: None,
             n_detections: 0,
             next_dt_id: 1,
             bytes_cells_struct: 0,
             bytes_dt_scores: 0,
             bytes_match_flags: 0,
             budget,
-            soft_warn_fired: AtomicBool::new(false),
+            soft_warn_fired: false,
         })
     }
 
@@ -406,19 +416,19 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             // they produce no cells anyway.
         }
 
-        // Pre-compute insertion cost: walk the grid, gather cells
-        // alongside their (k, a, i) coordinates and per-cell costs.
+        // Pre-compute insertion cost. Iterate batch images first so the
+        // walk is `O(batch_size * K * A)` instead of `O(I * K * A)` —
+        // critical at COCO scale where `I` is in the thousands but a
+        // typical training-loop batch covers tens of images.
         let n_t = self.params.iou_thresholds.len();
+        let n_k = grid.n_categories;
         let n_a = grid.n_area_ranges;
         let n_i = grid.n_images;
         let mut staged: Vec<(usize, usize, usize, PerImageEval, CellCost)> = Vec::new();
         let mut cost_total = CellCost::default();
-        for k in 0..grid.n_categories {
-            for a in 0..n_a {
-                for i in 0..n_i {
-                    if !batch_image_indices.contains(&i) {
-                        continue;
-                    }
+        for &i in &batch_image_indices {
+            for k in 0..n_k {
+                for a in 0..n_a {
                     let flat = k * n_a * n_i + a * n_i + i;
                     if let Some(cell) = grid.eval_imgs.get(flat).and_then(|opt| opt.as_ref()) {
                         let cost = cell_cost(cell, n_t);
@@ -465,12 +475,16 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         for id in &batch_image_ids {
             self.seen_images.insert(*id);
         }
+        for idx in &batch_image_indices {
+            self.seen_image_indices.insert(*idx);
+        }
 
-        // Soft-warn check (one-shot).
         let total_used = self.memory_used_bytes();
         let threshold = (self.budget.bytes as f64 * self.budget.soft_warn_fraction) as usize;
-        let soft_warn_triggered =
-            total_used >= threshold && self.soft_warn_fired.swap(true, Ordering::AcqRel).eq(&false);
+        let soft_warn_triggered = total_used >= threshold && !self.soft_warn_fired;
+        if soft_warn_triggered {
+            self.soft_warn_fired = true;
+        }
 
         Ok(UpdateReport {
             n_detections_accepted,
@@ -481,16 +495,19 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     }
 
     /// Compute a [`Summary`] over the current store. Cheap to call
-    /// repeatedly; does not mutate the evaluator. Bit-identical to a
-    /// batch run over the union of all detections submitted via
-    /// `update()` so far (modulo stream-order ULP wobble in
-    /// `corrected` mode — see ADR-0013 §Determinism).
+    /// repeatedly. Bit-identical to a batch run over the union of all
+    /// detections submitted via `update()` so far (modulo stream-order
+    /// ULP wobble in `corrected` mode — see ADR-0013 §Determinism).
+    ///
+    /// Takes `&mut self` because the first call materializes a cached
+    /// GT-only `(K, A, I)` grid for images that haven't received any
+    /// detection yet; subsequent snapshots reuse the cache.
     ///
     /// # Errors
     ///
     /// Propagates [`EvalError`] from the underlying [`accumulate`] or
     /// summarize call.
-    pub fn snapshot(&self) -> Result<Summary, EvalError> {
+    pub fn snapshot(&mut self) -> Result<Summary, EvalError> {
         self.compute_summary()
     }
 
@@ -499,7 +516,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// # Errors
     ///
     /// Same conditions as [`Self::snapshot`].
-    pub fn snapshot_running(&self) -> Result<Summary, EvalError> {
+    pub fn snapshot_running(&mut self) -> Result<Summary, EvalError> {
         // TODO(ADR-0013): running-mode PR-curve approximation.
         self.snapshot()
     }
@@ -510,7 +527,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// Propagates [`EvalError`] from the underlying [`accumulate`] or
     /// summarize call.
-    pub fn finalize(self) -> Result<Summary, EvalError> {
+    pub fn finalize(mut self) -> Result<Summary, EvalError> {
         self.compute_summary()
     }
 
@@ -538,9 +555,29 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         })
     }
 
+    /// Compute the GT-only `(K, A, I)` grid once and cache it. Subsequent
+    /// snapshots reuse the cached grid; GT is immutable, so the
+    /// underlying `evaluate_with` result never goes stale.
+    fn ensure_gt_only_cells(&mut self) -> Result<(), EvalError> {
+        if self.gt_only_cells.is_some() {
+            return Ok(());
+        }
+        let empty_dt = CocoDetections::from_inputs(Vec::new())?;
+        let grid = evaluate_with(
+            &self.dataset,
+            &empty_dt,
+            self.params.borrow(),
+            self.parity_mode,
+            &self.kernel,
+        )?;
+        self.gt_only_cells = Some(grid.eval_imgs);
+        Ok(())
+    }
+
     /// Internal: shared implementation of `snapshot` and `finalize`.
-    /// They differ only in whether `self` is borrowed or moved.
-    fn compute_summary(&self) -> Result<Summary, EvalError> {
+    /// Mutates `self` only to populate the lazy `gt_only_cells` cache
+    /// on its first call.
+    fn compute_summary(&mut self) -> Result<Summary, EvalError> {
         let mut eval_imgs = self.cells.flatten(&self.grid_meta);
 
         // Overlay GT-only cells for images that never received any
@@ -551,45 +588,25 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // images with no DTs anywhere in the stream — see ADR-0013
         // §"Per-image cell coverage".
         if self.images_seen() < self.grid_meta.n_images {
-            let empty_dt = CocoDetections::from_inputs(Vec::new())?;
-            let gt_only_grid = evaluate_with(
-                &self.dataset,
-                &empty_dt,
-                self.params.borrow(),
-                self.parity_mode,
-                &self.kernel,
-            )?;
-            let n_a = gt_only_grid.n_area_ranges;
-            let n_i = gt_only_grid.n_images;
-            // Any image whose ID is in seen_images is one we already
-            // filed cells for (possibly with empty DTs); skip those.
-            let mut seen_indices: HashSet<usize> = HashSet::with_capacity(self.seen_images.len());
-            for id in &self.seen_images {
-                if let Some(&idx) = self.grid_meta.image_id_to_idx.get(&ImageId(*id)) {
-                    seen_indices.insert(idx);
+            self.ensure_gt_only_cells()?;
+            let n_k = self.grid_meta.n_categories;
+            let n_a = self.grid_meta.n_area_ranges;
+            let n_i = self.grid_meta.n_images;
+            let gt_only = self
+                .gt_only_cells
+                .as_ref()
+                .ok_or_else(|| EvalError::InvalidConfig {
+                    detail: "gt_only_cells cache missing after init".into(),
+                })?;
+            for i in 0..n_i {
+                if self.seen_image_indices.contains(&i) {
+                    continue;
                 }
-            }
-            for k in 0..gt_only_grid.n_categories {
-                for a in 0..n_a {
-                    for i in 0..n_i {
-                        if seen_indices.contains(&i) {
-                            continue;
-                        }
+                for k in 0..n_k {
+                    for a in 0..n_a {
                         let flat = k * n_a * n_i + a * n_i + i;
-                        if let Some(cell) = gt_only_grid
-                            .eval_imgs
-                            .get(flat)
-                            .and_then(|opt| opt.as_ref())
-                        {
-                            // Only overlay if our store doesn't already
-                            // have a cell here (defensive — should not
-                            // happen since seen_indices filter is
-                            // redundant with the per-batch insert
-                            // policy, but keeps the precedence rule
-                            // explicit).
-                            if eval_imgs[flat].is_none() {
-                                eval_imgs[flat] = Some(cell.clone());
-                            }
+                        if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
+                            eval_imgs[flat] = Some(cell.clone());
                         }
                     }
                 }

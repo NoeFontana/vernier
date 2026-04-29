@@ -28,7 +28,6 @@
 //!   on the constructing thread.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -846,7 +845,7 @@ impl StreamingState {
         }
     }
 
-    fn snapshot(&self, running: bool) -> Result<Summary, EvalError> {
+    fn snapshot(&mut self, running: bool) -> Result<Summary, EvalError> {
         match self {
             Self::Bbox(ev) => {
                 if running {
@@ -953,7 +952,6 @@ impl StreamingState {
 struct PyStreamingEvaluator {
     state: Mutex<StreamingState>,
     owner_thread: Mutex<Option<std::thread::ThreadId>>,
-    warned_soft_budget: AtomicBool,
 }
 
 impl PyStreamingEvaluator {
@@ -1102,7 +1100,6 @@ impl PyStreamingEvaluator {
         Ok(Self {
             state: Mutex::new(state),
             owner_thread: Mutex::new(None),
-            warned_soft_budget: AtomicBool::new(false),
         })
     }
 
@@ -1136,10 +1133,9 @@ impl PyStreamingEvaluator {
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
 
-        // One-shot soft-warn emission. The atomic guard ensures even
-        // re-entrant code paths (e.g., a warning filter that re-calls
-        // update) won't fire the warning twice.
-        if report.soft_warn_triggered && !self.warned_soft_budget.swap(true, Ordering::AcqRel) {
+        // `report.soft_warn_triggered` is set by the core evaluator
+        // exactly once per stream — no FFI-side latch needed.
+        if report.soft_warn_triggered {
             let warnings = py.import("warnings")?;
             let warn_class = py.get_type::<MemoryBudgetWarning>();
             let msg = format!(
@@ -1168,7 +1164,7 @@ impl PyStreamingEvaluator {
         let state_mutex = &self.state;
         let summary = py
             .detach(move || {
-                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
                     detail: "StreamingEvaluator state mutex poisoned".into(),
                 })?;
                 guard.snapshot(running)

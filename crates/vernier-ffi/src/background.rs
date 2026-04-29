@@ -25,7 +25,7 @@
 //! (`Duration::ZERO`) or waits up to `timeout`, returning [`QueueFull`]
 //! if the worker doesn't drain in time.
 
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{sync_channel, Receiver, RecvError, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -119,10 +119,6 @@ pub(crate) struct BackgroundState {
     /// breaches). The FFI surface checks this on every entry, raises if
     /// `Some`, and clears it.
     pub(crate) last_error: Mutex<Option<EvalError>>,
-    /// Set to `true` if the worker thread is detected as dead (e.g.
-    /// `JoinHandle::join` returned `Err`, or a send to the channel
-    /// failed). Latched.
-    pub(crate) worker_dead: AtomicBool,
     /// Result of the worker's best-effort scheduling adjustment
     /// (nice + affinity). The FFI reads this once after `spawn` and
     /// emits a single `UserWarning` on `Err`.
@@ -137,7 +133,6 @@ impl BackgroundState {
             queue_depth: AtomicUsize::new(0),
             memory_used_bytes: AtomicUsize::new(0),
             last_error: Mutex::new(None),
-            worker_dead: AtomicBool::new(false),
             scheduling_outcome: Mutex::new(None),
         }
     }
@@ -234,11 +229,9 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
         match self.sender.send(WorkerMessage::Update(parsed)) {
             Ok(()) => Ok(()),
             Err(_) => {
-                // Worker is gone; the queue increment above is now
-                // stale, but the value is advisory and the worker_dead
-                // flag is what control flow keys off.
+                // Worker is gone; roll back the advisory queue counter
+                // and report the disconnect to the caller.
                 self.state.queue_depth.fetch_sub(1, Ordering::AcqRel);
-                self.state.worker_dead.store(true, Ordering::Release);
                 Err(EvalError::InvalidConfig {
                     detail: "background worker is no longer accepting submissions".to_string(),
                 })
@@ -307,7 +300,6 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
                     thread::sleep(POLL_INTERVAL.min(remaining));
                 }
                 Err(TrySendError::Disconnected(_)) => {
-                    self.state.worker_dead.store(true, Ordering::Release);
                     return Err(SubmitError::Eval(EvalError::InvalidConfig {
                         detail: "background worker is no longer accepting submissions".to_string(),
                     }));
@@ -327,21 +319,14 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
                 reply: reply_tx,
                 peek,
             })
-            .map_err(|_| {
-                self.state.worker_dead.store(true, Ordering::Release);
-                EvalError::InvalidConfig {
-                    detail: "background worker is no longer accepting snapshot requests"
-                        .to_string(),
-                }
+            .map_err(|_| EvalError::InvalidConfig {
+                detail: "background worker is no longer accepting snapshot requests".to_string(),
             })?;
         match reply_rx.recv() {
             Ok(result) => result,
-            Err(_) => {
-                self.state.worker_dead.store(true, Ordering::Release);
-                Err(EvalError::InvalidConfig {
-                    detail: "background worker dropped snapshot reply channel".to_string(),
-                })
-            }
+            Err(_) => Err(EvalError::InvalidConfig {
+                detail: "background worker dropped snapshot reply channel".to_string(),
+            }),
         }
     }
 
@@ -355,43 +340,28 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
         let (reply_tx, reply_rx) = sync_channel::<Result<Summary, EvalError>>(1);
         self.sender
             .send(WorkerMessage::Finalize { reply: reply_tx })
-            .map_err(|_| {
-                self.state.worker_dead.store(true, Ordering::Release);
-                EvalError::InvalidConfig {
-                    detail: "background worker is no longer accepting finalize requests"
-                        .to_string(),
-                }
+            .map_err(|_| EvalError::InvalidConfig {
+                detail: "background worker is no longer accepting finalize requests".to_string(),
             })?;
         let summary = match reply_rx.recv() {
             Ok(result) => result,
-            Err(_) => {
-                self.state.worker_dead.store(true, Ordering::Release);
-                Err(EvalError::InvalidConfig {
-                    detail: "background worker dropped finalize reply channel".to_string(),
-                })
-            }
+            Err(_) => Err(EvalError::InvalidConfig {
+                detail: "background worker dropped finalize reply channel".to_string(),
+            }),
         };
 
-        // Join the worker. A `Result::Err` from `JoinHandle::join` is a
-        // panic payload; everything else is an Ok/Err return from the
-        // worker loop.
         let join_result = match self.take_worker() {
             Some(handle) => handle.join(),
             None => return summary,
         };
         match join_result {
             Ok(Ok(())) => summary,
-            Ok(Err(worker_err)) => {
-                // Worker returned cleanly with an error; prefer that
-                // over whatever finalize produced.
-                Err(worker_err)
-            }
-            Err(payload) => {
-                self.state.worker_dead.store(true, Ordering::Release);
-                Err(EvalError::InvalidConfig {
-                    detail: format!("background worker panicked: {payload:?}"),
-                })
-            }
+            // Worker returned cleanly with an error; prefer that over
+            // whatever finalize produced.
+            Ok(Err(worker_err)) => Err(worker_err),
+            Err(payload) => Err(EvalError::InvalidConfig {
+                detail: format!("background worker panicked: {payload:?}"),
+            }),
         }
     }
 
@@ -415,10 +385,8 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
             }
             if Instant::now() >= deadline {
                 // Drop the handle without joining; the worker will
-                // outlive this wrapper, but the channel is closed so it
-                // will exit on its next `recv`. Mark dead so accessors
-                // don't lie.
-                self.state.worker_dead.store(true, Ordering::Release);
+                // outlive this wrapper, but the channel is closed so
+                // it will exit on its next `recv`.
                 return;
             }
             thread::sleep(Duration::from_millis(10));
