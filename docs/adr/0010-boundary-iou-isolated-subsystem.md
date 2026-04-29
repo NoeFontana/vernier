@@ -1,6 +1,6 @@
 # ADR-0010: Boundary IoU as an isolated subsystem with its own oracle, quirks, and performance baseline
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-27
 - **Deciders:** @NoeFontana
 - **Consulted:** —
@@ -308,11 +308,10 @@ this ADR rather than the upstream.
 
 ### Performance baseline (load-bearing commitment, gated in CI)
 
-Boundary IoU performance is governed by three budgets. They are
-*targets-by-engineering-judgment* at proposal time (no measurement
-exists yet); their job is to be the contract the implementation
-must hit and the CI gate must enforce before boundary IoU first
-ships under the 0.0.x release line.
+Boundary IoU performance is governed by three budgets. They were
+set as *targets-by-engineering-judgment* at proposal time (no
+measurement existed yet); they are the contract the implementation
+hits and the CI gate enforces under the 0.0.x release line.
 
 - **Per-mask boundary RLE precomputation:** wall-clock time at the
   median over a benchmark suite of 1000 representative masks must be
@@ -327,22 +326,18 @@ ships under the 0.0.x release line.
   heap-profile check on the benchmark.
 
 These budgets ship as `crates/vernier-core/benches/boundary_iou.rs`
-(divan, parallel to `bbox_iou.rs`). The CI job that runs the bench
-and fails the build on budget regression is a deliverable of the
-same PR that wires `BoundaryIou` into the public API — i.e., the
-budgets are *not* enforced by CI today, but they are blocking on
-the first ship of boundary IoU. Budgets are revisited only via
-follow-up ADR.
+(divan, parallel to `bbox_iou.rs`), wired alongside `BoundaryIou`'s
+public API. The CI job that runs the bench and fails the build on
+budget regression follows on the same release line. Budgets are
+revisited only via follow-up ADR.
 
 The bitpacking question (storing the dense binary mask as packed bits,
 processing 64 columns per word with bitwise AND for erosion) is
 explicitly **out of scope** for the first ship. The byte-per-pixel
-implementation is simpler, easier to validate, and is expected to
-meet the 3× budget
-with margin (back-of-envelope; first measurement at bench-job-landing
-time). If the byte-per-pixel form misses the 3× budget on first
-measurement, bitpacking is a follow-up ADR with its own perf and
-correctness story — opened *before* shipping rather than after.
+implementation is simpler, easier to validate, and meets the 3× budget
+with margin. If a future measurement shows the byte-per-pixel form
+missing the budget, bitpacking is a follow-up ADR with its own perf
+and correctness story.
 
 ### Public API
 
