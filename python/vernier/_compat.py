@@ -1,4 +1,4 @@
-"""Pycocotools compatibility surface (bbox / segm / boundary).
+"""Pycocotools compatibility surface (bbox / segm / boundary / keypoints).
 
 Implements :class:`PycocotoolsCOCOeval`, a drop-in replacement for
 :class:`pycocotools.cocoeval.COCOeval`. Per ADR-0007 this is the
@@ -7,7 +7,9 @@ migration tool: downstream eval code that imports
 swapped (manually, or via :func:`vernier.adapters.patch_pycocotools`).
 The constructor also accepts ``iouType="boundary"`` and a
 ``dilation_ratio`` kwarg (ADR-0010), mirroring the
-``bowenc0221/boundary-iou-api`` oracle's signature.
+``bowenc0221/boundary-iou-api`` oracle's signature, and
+``iouType="keypoints"`` (ADR-0012) with ``params.kpt_oks_sigmas``
+honored on the params object per pycocotools convention.
 
 The class is named ``PycocotoolsCOCOeval`` so the swap is visible in
 tracebacks and ``repr()`` even though it lives behind the ``COCOeval``
@@ -29,16 +31,19 @@ from vernier._core import (
     Summary,
     evaluate_bbox_grid,
     evaluate_boundary_grid,
+    evaluate_keypoints_grid,
     evaluate_segm_grid,
 )
 
 ParityMode = Literal["strict", "corrected"]
+IouType = Literal["bbox", "segm", "boundary", "keypoints"]
 
 PARITY_STRICT: Final[ParityMode] = "strict"
 PARITY_CORRECTED: Final[ParityMode] = "corrected"
-IOU_BBOX: Final[str] = "bbox"
-IOU_SEGM: Final[str] = "segm"
-IOU_BOUNDARY: Final[str] = "boundary"
+IOU_BBOX: Final[IouType] = "bbox"
+IOU_SEGM: Final[IouType] = "segm"
+IOU_BOUNDARY: Final[IouType] = "boundary"
+IOU_KEYPOINTS: Final[IouType] = "keypoints"
 # Mirrors `BoundaryIou::Default` in vernier-core (Cheng et al. 2021); the
 # bowenc0221 oracle uses the same value as its `COCOeval` default.
 DEFAULT_DILATION_RATIO: Final[float] = 0.02
@@ -59,6 +64,49 @@ _DEFAULT_AREA_RNG: Final[list[list[float]]] = [
 ]
 _DEFAULT_AREA_RNG_LBL: Final[list[str]] = ["all", "small", "medium", "large"]
 _DEFAULT_MAX_DETS: Final[list[int]] = [1, 10, 100]
+
+# Pycocotools' Params(iouType="keypoints").setKpParams() defaults — quirk
+# D5 drops the "small" bucket (kp summary never asks for it) and the
+# ladder is the single rung [20]. Mirrored verbatim so strict parity
+# reproduces the upstream constants. The literal `1e5 ** 2` matches the
+# upstream source even though it equals `1e10` numerically.
+_KP_DEFAULT_AREA_RNG: Final[list[list[float]]] = [
+    [0, 1e5**2],
+    [32**2, 96**2],
+    [96**2, 1e5**2],
+]
+_KP_DEFAULT_AREA_RNG_LBL: Final[list[str]] = ["all", "medium", "large"]
+_KP_DEFAULT_MAX_DETS: Final[list[int]] = [20]
+# COCO-person 17-keypoint sigma table from pycocotools' ``setKpParams``.
+# Bound by reference for identity-checked shortcut in
+# :meth:`PycocotoolsCOCOeval._validate_supported_params` — pycocotools
+# itself rebinds the array (rather than mutating in place) when callers
+# customize sigmas, so the shared reference is safe.
+_KP_DEFAULT_OKS_SIGMAS: Final[NDArray[np.float64]] = (
+    np.array(
+        [
+            0.26,
+            0.25,
+            0.25,
+            0.35,
+            0.35,
+            0.79,
+            0.79,
+            0.72,
+            0.72,
+            0.62,
+            0.62,
+            1.07,
+            1.07,
+            0.87,
+            0.87,
+            0.89,
+            0.89,
+        ],
+        dtype=np.float64,
+    )
+    / 10.0
+)
 
 
 class CocoLike(Protocol):
@@ -84,15 +132,21 @@ class CocoLike(Protocol):
 
 
 class _Params:
-    """Mutable params namespace mirroring ``pycocotools.cocoeval.Params(iouType='bbox')``.
+    """Mutable params namespace mirroring ``pycocotools.cocoeval.Params``.
 
     Phase 1 only honors ``maxDets`` and ``useCats`` mutations; mutating
     the threshold or area-range fields raises ``NotImplementedError`` at
     :meth:`PycocotoolsCOCOeval.evaluate` time so the divergence is loud
     (vs. silently ignored).
+
+    Constructed with the iouType so the area-range / maxDets / sigmas
+    defaults branch the same way pycocotools' ``__init__`` dispatches
+    between ``setDetParams`` and ``setKpParams``. The keypoints branch
+    (ADR-0012) drops the "small" bucket (quirk D5), pins the ladder to
+    ``[20]``, and exposes ``kpt_oks_sigmas`` (quirk F1).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, iouType: IouType = IOU_BBOX) -> None:  # noqa: N803  pycocotools API
         self.imgIds: list[int] = []
         self.catIds: list[int] = []
         # Bind defaults by reference so _validate_supported_params can
@@ -101,16 +155,26 @@ class _Params:
         # these arrays in place, so the shared reference is safe.
         self.iouThrs: NDArray[np.float64] = _DEFAULT_IOU_THRS
         self.recThrs: NDArray[np.float64] = _DEFAULT_REC_THRS
-        self.maxDets: list[int] = list(_DEFAULT_MAX_DETS)
-        self.areaRng: list[list[float]] = [list(r) for r in _DEFAULT_AREA_RNG]
-        self.areaRngLbl: list[str] = list(_DEFAULT_AREA_RNG_LBL)
+        if iouType == IOU_KEYPOINTS:
+            self.maxDets: list[int] = list(_KP_DEFAULT_MAX_DETS)
+            self.areaRng: list[list[float]] = [list(r) for r in _KP_DEFAULT_AREA_RNG]
+            self.areaRngLbl: list[str] = list(_KP_DEFAULT_AREA_RNG_LBL)
+            # pycocotools stores a single 17-tuple on the params object
+            # that applies to every category; vernier's Rust core takes
+            # `dict[int, list[float]]`, so the FFI translation in
+            # `evaluate()` fans this out across `cocoGt.cats` keys.
+            self.kpt_oks_sigmas: NDArray[np.float64] = _KP_DEFAULT_OKS_SIGMAS
+        else:
+            self.maxDets = list(_DEFAULT_MAX_DETS)
+            self.areaRng = [list(r) for r in _DEFAULT_AREA_RNG]
+            self.areaRngLbl = list(_DEFAULT_AREA_RNG_LBL)
         self.useCats: int = 1
         self.useSegm: int | None = None
-        self.iouType: str = IOU_BBOX
+        self.iouType: IouType = iouType
 
 
 class PycocotoolsCOCOeval:
-    """Drop-in for ``pycocotools.cocoeval.COCOeval`` (bbox / segm / boundary).
+    """Drop-in for ``pycocotools.cocoeval.COCOeval`` (bbox / segm / boundary / keypoints).
 
     Constructed identically to the upstream class. The state machine
     mirrors pycocotools: :meth:`evaluate` populates :attr:`evalImgs`,
@@ -135,15 +199,18 @@ class PycocotoolsCOCOeval:
         *,
         parity_mode: ParityMode | None = None,
     ) -> None:
-        if iouType not in (IOU_BBOX, IOU_SEGM, IOU_BOUNDARY):
+        if iouType not in (IOU_BBOX, IOU_SEGM, IOU_BOUNDARY, IOU_KEYPOINTS):
             raise NotImplementedError(
-                f"vernier.COCOeval supports iouType in ('bbox', 'segm', 'boundary') "
-                f"(got {iouType!r}); keypoints lands in Phase 3"
+                f"vernier.COCOeval supports iouType in "
+                f"('bbox', 'segm', 'boundary', 'keypoints') (got {iouType!r})"
             )
+        # Pyright narrows `iouType: str` to the four-element `IouType`
+        # Literal via the membership check above; the explicit annotation
+        # makes that contract self-documenting at the dispatch boundary.
+        kind: IouType = iouType
         self.cocoGt = cocoGt
         self.cocoDt = cocoDt
-        self.params = _Params()
-        self.params.iouType = iouType
+        self.params = _Params(kind)
         self._dilation_ratio = dilation_ratio
         self._parity_mode: ParityMode = parity_mode or type(self).DEFAULT_PARITY_MODE
         self.evalImgs: list[dict[str, Any] | None] = []
@@ -181,6 +248,15 @@ class PycocotoolsCOCOeval:
                 use_cats,
                 self._dilation_ratio,
             )
+        elif self.params.iouType == IOU_KEYPOINTS:
+            self._grid = evaluate_keypoints_grid(
+                gt_bytes,
+                dt_bytes,
+                self._parity_mode,
+                max_det_top,
+                use_cats,
+                self._resolve_kp_sigmas(),
+            )
         else:
             raise NotImplementedError(f"unsupported iouType {self.params.iouType!r}")
         self.evalImgs = self._grid.eval_imgs()
@@ -196,7 +272,6 @@ class PycocotoolsCOCOeval:
         self.params.maxDets = sorted(self.params.maxDets)
         max_dets = list(self.params.maxDets)
         acc = self._grid.accumulate(max_dets)
-        self._summary = acc.summarize(max_dets)
         self.eval = {
             "params": self.params if p is None else p,
             "counts": list(acc.counts),
@@ -205,9 +280,31 @@ class PycocotoolsCOCOeval:
             "recall": np.asarray(acc.recall),
             "scores": np.asarray(acc.scores),
         }
+        if self.params.iouType == IOU_KEYPOINTS:
+            # The Rust `Accumulated::summarize` is hard-wired to the
+            # detection 12-stat plan; for kp we compute the 10-stat plan
+            # in Python using the same precision/recall slice geometry
+            # pycocotools' `_summarizeKps` uses (ADR-0012 / D5).
+            self._summary = None
+        else:
+            self._summary = acc.summarize(max_dets)
 
     def summarize(self) -> None:
-        if not self.eval or self._summary is None:
+        if not self.eval:
+            raise RuntimeError("Please run accumulate() first")
+        if self.params.iouType == IOU_KEYPOINTS:
+            stats, lines = _summarize_keypoints(
+                np.asarray(self.eval["precision"], dtype=np.float64),
+                np.asarray(self.eval["recall"], dtype=np.float64),
+                self.params.iouThrs,
+                self.params.maxDets,
+            )
+            self.stats = stats
+            if self._parity_mode == PARITY_STRICT:
+                for line in lines:
+                    print(line)
+            return
+        if self._summary is None:
             raise RuntimeError("Please run accumulate() first")
         self.stats = np.asarray(self._summary.stats, dtype=np.float64)
         # Quirk L5 disposition: strict mirrors pycocotools' stdout side
@@ -222,12 +319,39 @@ class PycocotoolsCOCOeval:
         _reject_use_segm(self.params.useSegm)
         _reject_if_mutated_array(self.params.iouThrs, _DEFAULT_IOU_THRS, "iouThrs")
         _reject_if_mutated_array(self.params.recThrs, _DEFAULT_REC_THRS, "recThrs")
-        if [list(r) for r in self.params.areaRng] != [list(r) for r in _DEFAULT_AREA_RNG]:
+        # Quirk D5 / ADR-0012: kp uses a 3-bucket area grid. The valid
+        # default is per-iouType, so dispatch on iouType rather than
+        # comparing against a single canonical list.
+        canonical_area = (
+            _KP_DEFAULT_AREA_RNG if self.params.iouType == IOU_KEYPOINTS else _DEFAULT_AREA_RNG
+        )
+        if [list(r) for r in self.params.areaRng] != [list(r) for r in canonical_area]:
             _raise_unsupported("areaRng")
         if sorted(self.params.imgIds) != sorted(self.cocoGt.getImgIds()):
             _raise_unsupported("imgIds", "subsetting; evaluate the full dataset")
         if sorted(self.params.catIds) != sorted(self.cocoGt.getCatIds()):
             _raise_unsupported("catIds", "subsetting")
+
+    def _resolve_kp_sigmas(self) -> dict[int, list[float]]:
+        """Translate ``params.kpt_oks_sigmas`` into the FFI's per-cat shape.
+
+        Pycocotools stores a single 17-tuple on the params object that
+        applies to every category; vernier's Rust core takes
+        ``dict[int, list[float]]``. If the user has not mutated the
+        sigma array the identity check short-circuits to an empty dict
+        — the Rust core's ``OksSimilarity`` falls back to the COCO-person
+        defaults, keeping output byte-identical to pycocotools on the
+        common path. If the array has been replaced, fan it out across
+        every ``cocoGt`` category id (quirk F1).
+        """
+        sigmas = self.params.kpt_oks_sigmas
+        if sigmas is _KP_DEFAULT_OKS_SIGMAS:
+            return {}
+        if np.array_equal(sigmas, _KP_DEFAULT_OKS_SIGMAS):
+            return {}
+        assert self.cocoGt is not None  # evaluate() guards this
+        custom = [float(v) for v in np.asarray(sigmas, dtype=np.float64).ravel()]
+        return {int(cat): list(custom) for cat in self.cocoGt.getCatIds()}
 
 
 def _reject_if_mutated_array(
@@ -266,3 +390,89 @@ def _json_default(obj: Any) -> Any:
     if hasattr(obj, "item"):
         return obj.item()
     raise TypeError(f"not JSON-serializable: {type(obj).__name__}")
+
+
+# Mirrors pycocotools' `_summarizeKps` over (T, R, K, A=3, M=1) precision
+# and (T, K, A=3, M=1) recall tensors. Defined as a free function so the
+# class method stays a thin dispatch — and so the geometry (which slice
+# is "AP @ medium") is testable in isolation. Returns ``(stats, lines)``
+# where ``stats`` is the canonical 10-vec and ``lines`` is the
+# pycocotools-shaped pretty-print lines (quirk L5).
+_KP_AREA_INDEX_ALL: Final[int] = 0
+_KP_AREA_INDEX_MEDIUM: Final[int] = 1
+_KP_AREA_INDEX_LARGE: Final[int] = 2
+_KP_AREA_LABEL: Final[dict[int, str]] = {
+    _KP_AREA_INDEX_ALL: "all",
+    _KP_AREA_INDEX_MEDIUM: "medium",
+    _KP_AREA_INDEX_LARGE: "large",
+}
+_KP_LINE_FMT: Final[str] = (
+    " {title:<18} {tag} @[ IoU={iou:<9} | area={area:>6s} | maxDets={mdet:>3d} ] = {val:0.3f}"
+)
+
+
+def _summarize_keypoints(
+    precision: NDArray[np.float64],
+    recall: NDArray[np.float64],
+    iou_thrs: NDArray[np.float64],
+    max_dets: list[int],
+) -> tuple[NDArray[np.float64], list[str]]:
+    if not max_dets:
+        raise RuntimeError("max_dets must be non-empty")
+    m = max_dets[0]
+    iou_full = f"{iou_thrs[0]:0.2f}:{iou_thrs[-1]:0.2f}"
+
+    def _ap(area_idx: int, iou_thr: float | None = None) -> float:
+        s = precision
+        if iou_thr is not None:
+            t = int(np.where(np.isclose(iou_thrs, iou_thr))[0][0])
+            s = s[t : t + 1]
+        s = s[:, :, :, area_idx : area_idx + 1, 0:1]
+        return float(_mean_ignoring_neg1(s))
+
+    def _ar(area_idx: int, iou_thr: float | None = None) -> float:
+        s = recall
+        if iou_thr is not None:
+            t = int(np.where(np.isclose(iou_thrs, iou_thr))[0][0])
+            s = s[t : t + 1]
+        s = s[:, :, area_idx : area_idx + 1, 0:1]
+        return float(_mean_ignoring_neg1(s))
+
+    plan: list[tuple[bool, int, float | None]] = [
+        (True, _KP_AREA_INDEX_ALL, None),
+        (True, _KP_AREA_INDEX_ALL, 0.5),
+        (True, _KP_AREA_INDEX_ALL, 0.75),
+        (True, _KP_AREA_INDEX_MEDIUM, None),
+        (True, _KP_AREA_INDEX_LARGE, None),
+        (False, _KP_AREA_INDEX_ALL, None),
+        (False, _KP_AREA_INDEX_ALL, 0.5),
+        (False, _KP_AREA_INDEX_ALL, 0.75),
+        (False, _KP_AREA_INDEX_MEDIUM, None),
+        (False, _KP_AREA_INDEX_LARGE, None),
+    ]
+    stats = np.zeros(len(plan), dtype=np.float64)
+    lines: list[str] = []
+    for i, (is_ap, area_idx, iou_thr) in enumerate(plan):
+        val = _ap(area_idx, iou_thr) if is_ap else _ar(area_idx, iou_thr)
+        stats[i] = val
+        lines.append(
+            _KP_LINE_FMT.format(
+                title="Average Precision" if is_ap else "Average Recall",
+                tag="(AP)" if is_ap else "(AR)",
+                iou=iou_full if iou_thr is None else f"{iou_thr:0.2f}",
+                area=_KP_AREA_LABEL[area_idx],
+                mdet=m,
+                val=val,
+            )
+        )
+    return stats, lines
+
+
+def _mean_ignoring_neg1(arr: NDArray[np.float64]) -> float:
+    # Quirk C5: cells with no in-bucket data are tagged ``-1.0``;
+    # pycocotools' summarizer averages only the populated entries. If
+    # nothing survives, the slot reads ``-1.0`` (pycocotools convention).
+    valid = arr[arr > -1]
+    if valid.size == 0:
+        return -1.0
+    return float(np.mean(valid))

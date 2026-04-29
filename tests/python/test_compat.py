@@ -13,16 +13,95 @@ state-machine compliance.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 from pycocotools.coco import COCO
 
+import vernier
 from vernier import COCOeval
 from vernier._compat import PycocotoolsCOCOeval
 
 FIXTURES = Path(__file__).parent / "parity" / "fixtures"
+
+# Synthetic 17-keypoint perfect-match fixture (mirrors the inline shape
+# used by ``tests/python/test_evaluator.py``). One image, one person GT
+# with all 17 keypoints visible; one DT with byte-identical coordinates.
+# AP @ default sigmas collapses to 1.0 — the perfect-prediction sentinel
+# that drives the parity assertions below.
+_KP_COORDS: tuple[tuple[float, float], ...] = (
+    (10.0, 10.0),
+    (12.0, 8.0),
+    (8.0, 8.0),
+    (14.0, 9.0),
+    (6.0, 9.0),
+    (16.0, 20.0),
+    (4.0, 20.0),
+    (18.0, 30.0),
+    (2.0, 30.0),
+    (20.0, 40.0),
+    (0.0, 40.0),
+    (14.0, 50.0),
+    (6.0, 50.0),
+    (16.0, 65.0),
+    (4.0, 65.0),
+    (18.0, 80.0),
+    (2.0, 80.0),
+)
+
+
+def _flatten_kp(coords: tuple[tuple[float, float], ...], visibility: int = 2) -> list[float]:
+    flat: list[float] = []
+    for x, y in coords:
+        flat.extend((x, y, float(visibility)))
+    return flat
+
+
+def _kp_gt_dict() -> dict[str, object]:
+    return {
+        "images": [{"id": 1, "width": 100, "height": 100}],
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 1,
+                "category_id": 1,
+                # bbox area 3200 lands in the 'large' kp area bucket
+                # (>96^2 == 9216 is 'large'; 32^2..96^2 is 'medium';
+                # this annotation is in 'medium').
+                "bbox": [0, 0, 40, 80],
+                "area": 3200,
+                "iscrowd": 0,
+                "num_keypoints": 17,
+                "keypoints": _flatten_kp(_KP_COORDS),
+            },
+        ],
+        "categories": [{"id": 1, "name": "person"}],
+    }
+
+
+def _kp_dt_list() -> list[dict[str, object]]:
+    return [
+        {
+            "image_id": 1,
+            "category_id": 1,
+            "score": 0.99,
+            "bbox": [0, 0, 40, 80],
+            "keypoints": _flatten_kp(_KP_COORDS),
+        },
+    ]
+
+
+@pytest.fixture
+def perfect_match_kp_coco(tmp_path: Path) -> tuple[COCO, COCO]:
+    gt_path = tmp_path / "kp_gt.json"
+    dt_path = tmp_path / "kp_dt.json"
+    gt_path.write_text(json.dumps(_kp_gt_dict()))
+    dt_path.write_text(json.dumps(_kp_dt_list()))
+    gt = COCO(str(gt_path))
+    dt = gt.loadRes(str(dt_path))
+    return gt, dt
 
 
 @pytest.fixture(scope="module")
@@ -110,10 +189,121 @@ def test_summarize_corrected_mode_is_silent(
     assert capsys.readouterr().out == ""
 
 
-def test_iou_type_keypoints_not_yet_supported(perfect_match_coco: tuple[COCO, COCO]) -> None:
-    gt, dt = perfect_match_coco
-    with pytest.raises(NotImplementedError, match="keypoints"):
-        COCOeval(gt, dt, iouType="keypoints")
+def test_iou_type_keypoints_constructs(perfect_match_kp_coco: tuple[COCO, COCO]) -> None:
+    # The shim accepts iouType="keypoints" without raising — the
+    # explicit Phase-3 rejection has been replaced by an OKS dispatch.
+    gt, dt = perfect_match_kp_coco
+    e = COCOeval(gt, dt, iouType="keypoints")
+    assert e.params.iouType == "keypoints"
+
+
+def test_keypoints_default_param_grid_matches_pycocotools(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    # Mirrors `setKpParams` in pycocotools: kp drops the small bucket
+    # (quirk D5), pins the ladder to [20], and exposes a default
+    # COCO-person 17-sigma table on `params.kpt_oks_sigmas` (quirk F1).
+    gt, dt = perfect_match_kp_coco
+    e = COCOeval(gt, dt, iouType="keypoints")
+    assert e.params.maxDets == [20]
+    assert e.params.areaRng == [[0, 1e5**2], [32**2, 96**2], [96**2, 1e5**2]]
+    assert e.params.areaRngLbl == ["all", "medium", "large"]
+    assert e.params.kpt_oks_sigmas.shape == (17,)
+    # Spot-check the COCO-person sigma table (nose / left-eye).
+    np.testing.assert_allclose(e.params.kpt_oks_sigmas[:2], [0.026, 0.025])
+
+
+def test_keypoints_evaluate_end_to_end(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Perfect prediction collapses AP and AR to 1.0; the kp summary plan
+    # produces 10 stats (vs. 12 for detection).
+    gt, dt = perfect_match_kp_coco
+    e = COCOeval(gt, dt, iouType="keypoints")
+    e.evaluate()
+    e.accumulate()
+    capsys.readouterr()
+    e.summarize()
+    assert e.stats.shape == (10,)
+    assert e.stats[0] == pytest.approx(1.0)  # AP @ all
+    assert e.stats[5] == pytest.approx(1.0)  # AR @ all
+
+
+def test_keypoints_shim_matches_pycocotools_strict(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    # Strict mode is bit-exact with pycocotools. Build a fresh
+    # pycocotools-native evaluator on the same GT/DT and assert the
+    # 10-stat vector matches array-equal (not allclose).
+    from pycocotools.cocoeval import COCOeval as PycocoEval
+
+    gt, dt = perfect_match_kp_coco
+    ref = PycocoEval(gt, dt, iouType="keypoints")
+    ref.evaluate()
+    ref.accumulate()
+    ref.summarize()
+
+    shim = COCOeval(gt, dt, iouType="keypoints", parity_mode="strict")
+    shim.evaluate()
+    shim.accumulate()
+    shim.summarize()
+
+    np.testing.assert_array_equal(shim.stats, ref.stats)
+
+
+def test_keypoints_shim_matches_evaluator_api(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    # The shim's keypoints path dispatches to the same Rust kernel as
+    # `vernier.Evaluator(iou=Keypoints())`; on a shared GT/DT pair the
+    # summary statistics agree element-wise.
+    gt, dt = perfect_match_kp_coco
+    shim = COCOeval(gt, dt, iouType="keypoints", parity_mode="strict")
+    shim.evaluate()
+    shim.accumulate()
+    shim.summarize()
+
+    gt_bytes = json.dumps(_kp_gt_dict()).encode()
+    dt_bytes = json.dumps(_kp_dt_list()).encode()
+    direct = vernier.Evaluator(iou=vernier.Keypoints(), parity_mode="strict").evaluate(
+        gt_bytes, dt_bytes
+    )
+    np.testing.assert_array_equal(shim.stats, np.asarray(direct.stats, dtype=np.float64))
+
+
+def test_keypoints_custom_sigmas_propagates_to_kernel(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    # Quirk F1: pycocotools stores a single 17-tuple on the params
+    # object; vernier fans it out across every GT category id at the
+    # FFI boundary. Tightening sigmas by ~30x squeezes OKS toward an
+    # indicator function — a deliberately-shifted DT that the default
+    # sigmas tolerate (AP=1.0) collapses under the tight sigmas.
+    gt, _ = perfect_match_kp_coco
+
+    # Shift each predicted x by 5 px so the prediction is no longer
+    # byte-identical to GT but still inside default OKS tolerance.
+    shifted_dt = _kp_dt_list()
+    shifted_kps = list(shifted_dt[0]["keypoints"])  # type: ignore[arg-type]
+    for i in range(0, len(shifted_kps), 3):
+        shifted_kps[i] += 5.0
+    shifted_dt[0]["keypoints"] = shifted_kps
+    res = gt.loadRes(shifted_dt)
+
+    default = COCOeval(gt, res, iouType="keypoints")
+    default.evaluate()
+    default.accumulate()
+    default.summarize()
+
+    tight = COCOeval(gt, res, iouType="keypoints")
+    tight.params.kpt_oks_sigmas = np.full(17, 1e-3, dtype=np.float64)
+    tight.evaluate()
+    tight.accumulate()
+    tight.summarize()
+
+    # AP collapses under tight sigmas; default sigmas tolerate the shift.
+    assert tight.stats[0] < default.stats[0]
 
 
 def test_boundary_iou_type_runs_end_to_end(
