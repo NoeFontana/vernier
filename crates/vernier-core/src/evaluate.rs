@@ -202,6 +202,37 @@ pub struct EvaluateParams<'p> {
     pub use_cats: bool,
 }
 
+/// Owned counterpart to [`EvaluateParams`].
+///
+/// The streaming evaluator holds its config across many `update()`
+/// calls and cannot borrow per-call slices the way the batch entry
+/// points do. [`Self::borrow`] reconstructs an [`EvaluateParams`] view
+/// that reuses this struct's storage, so handing the owned form to the
+/// unchanged `evaluate_with` path is zero-cost.
+#[derive(Debug, Clone)]
+pub struct OwnedEvaluateParams {
+    /// IoU thresholds, length `T`.
+    pub iou_thresholds: Vec<f64>,
+    /// Area ranges (owned).
+    pub area_ranges: Vec<AreaRange>,
+    /// Top-N filter applied to DTs per `(image, category)` cell before matching.
+    pub max_dets_per_image: usize,
+    /// Quirk **L4** collapse flag.
+    pub use_cats: bool,
+}
+
+impl OwnedEvaluateParams {
+    /// Borrowed view. Reuses `self`'s storage; no allocation.
+    pub fn borrow(&self) -> EvaluateParams<'_> {
+        EvaluateParams {
+            iou_thresholds: &self.iou_thresholds,
+            area_ranges: &self.area_ranges,
+            max_dets_per_image: self.max_dets_per_image,
+            use_cats: self.use_cats,
+        }
+    }
+}
+
 /// Bridges a [`CocoDataset`] / [`CocoDetections`] cell to a kernel's
 /// annotation type.
 ///
@@ -249,6 +280,18 @@ pub trait EvalKernel: Similarity {
     /// ignore. Bbox / segm / boundary kernels keep the default — D2 is
     /// keypoints-specific and must not bleed across kernels.
     fn extra_gt_ignore(&self, _ann: &CocoAnnotation) -> bool {
+        false
+    }
+
+    /// Marker: is this kernel the keypoints (OKS) kernel?
+    ///
+    /// The streaming evaluator dispatches its summarizer choice on this
+    /// flag: keypoints kernels resolve to the 10-stat
+    /// [`crate::StatRequest::coco_keypoints_default`] plan, every other
+    /// kernel resolves to the 12-stat detection plan. Default `false`;
+    /// [`OksSimilarity`] overrides to `true`. Additive trait method —
+    /// existing implementors keep the default.
+    fn is_keypoints(&self) -> bool {
         false
     }
 }
@@ -402,6 +445,10 @@ impl EvalKernel for OksSimilarity {
             .or_else(|| ann.keypoints.as_deref().map(count_visible_keypoints))
             .unwrap_or(0);
         visible == 0
+    }
+
+    fn is_keypoints(&self) -> bool {
+        true
     }
 }
 

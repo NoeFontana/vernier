@@ -12,21 +12,62 @@
 //! historical `allow_threads`). The wrapped closure may not touch Python
 //! objects: data conversion happens at the boundary, before [`Python::detach`];
 //! results are converted back after the GIL is re-acquired.
+//!
+//! Two pyclasses extend the threading model beyond the immutable batch
+//! evaluators:
+//!
+//! - [`PyStreamingEvaluator`] (ADR-0013) is mutable but **single-writer**:
+//!   the `ThreadId` of the first caller is stashed on first `update()`,
+//!   and submissions from any other thread raise `RuntimeError`.
+//! - [`PyBackgroundEvaluator`] (ADR-0014) wraps a streaming evaluator in
+//!   a dedicated worker thread. The worker owns the inner evaluator,
+//!   so the single-writer rule is satisfied by construction; callers
+//!   may submit from any thread. Best-effort `nice` and core-affinity
+//!   are applied to the worker via `thread-priority` and `core_affinity`;
+//!   any scheduling syscall failure surfaces as a one-shot `UserWarning`
+//!   on the constructing thread.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 
 use numpy::ndarray::Array1;
 use numpy::ToPyArray;
-use pyo3::exceptions::PyValueError;
+use pyo3::create_exception;
+use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList};
+use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
 use vernier_core::{
     accumulate, evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm,
     iou_thresholds, recall_thresholds, sort_max_dets, summarize_detection, summarize_with,
-    AccumulateParams, Accumulated, AreaRange, CocoDataset, CocoDetections, EvalError, EvalGrid,
-    EvalImageMeta, EvaluateParams, ParityMode, PerImageEval, StatRequest, Summary,
+    AccumulateParams, Accumulated, AreaRange, BboxIou, BoundaryIou, CocoDataset, CocoDetections,
+    EvalError, EvalGrid, EvalImageMeta, EvaluateParams, MemoryBudget, OksSimilarity,
+    OwnedEvaluateParams, ParityMode, ParsedDetections, PerImageEval, SegmIou, StatRequest,
+    StreamingEvaluator, Summary, UpdateReport,
 };
+
+mod background;
+
+create_exception!(
+    vernier._core,
+    OutOfBudgetError,
+    pyo3::exceptions::PyRuntimeError,
+    "Memory budget for the streaming evaluator was exceeded.\n\nAttributes: used_bytes, budget_bytes, breakdown."
+);
+create_exception!(
+    vernier._core,
+    QueueFullError,
+    pyo3::exceptions::PyRuntimeError,
+    "Background evaluator's submit queue was full.\n\nAttributes: queue_capacity, timeout."
+);
+create_exception!(
+    vernier._core,
+    MemoryBudgetWarning,
+    pyo3::exceptions::PyUserWarning,
+    "Streaming evaluator's memory usage crossed the soft-warn threshold."
+);
 
 /// Returns the underlying `vernier-core` version string. Useful as a smoke
 /// test that the FFI bridge is wired up and the dynamic linker can find the
@@ -724,6 +765,1023 @@ fn parse_summarize_plan(s: &str) -> PyResult<SummarizePlan> {
     }
 }
 
+/// Map a [`vernier_core::EvalError`] into a `PyErr`. The [`OutOfBudget`]
+/// variant is materialized into an [`OutOfBudgetError`] with the
+/// `used_bytes`, `budget_bytes`, and `breakdown` attributes set on the
+/// exception instance so callers can read them programmatically. The
+/// [`NotImplemented`] variant maps to [`PyNotImplementedError`]. All
+/// other variants fall back to a `PyValueError` formatted via the
+/// underlying [`std::fmt::Display`] impl.
+fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
+    match e {
+        EvalError::OutOfBudget {
+            used_bytes,
+            budget_bytes,
+            breakdown,
+        } => {
+            let exc = OutOfBudgetError::new_err(format!(
+                "memory budget exceeded: used {used_bytes} / budget {budget_bytes} bytes"
+            ));
+            let value = exc.value(py);
+            // Best-effort attribute decoration: if any setattr fails we
+            // surface the underlying PyErr instead of the OutOfBudget so
+            // the user notices the bridge break, but in practice the
+            // type/string conversions here cannot fail.
+            let breakdown_dict = PyDict::new(py);
+            for (k, v) in breakdown.iter() {
+                if let Err(err) = breakdown_dict.set_item(*k, *v) {
+                    return err;
+                }
+            }
+            if let Err(err) = value.setattr("used_bytes", used_bytes) {
+                return err;
+            }
+            if let Err(err) = value.setattr("budget_bytes", budget_bytes) {
+                return err;
+            }
+            if let Err(err) = value.setattr("breakdown", breakdown_dict) {
+                return err;
+            }
+            exc
+        }
+        EvalError::NotImplemented { feature } => {
+            PyNotImplementedError::new_err(feature.to_string())
+        }
+        other => PyValueError::new_err(format!("{other}")),
+    }
+}
+
+/// Kernel-erased wrapper around a [`StreamingEvaluator<K>`].
+///
+/// One variant per supported kernel plus a [`Self::Finalized`] sentinel
+/// the FFI swaps in when [`StreamingEvaluator::finalize`] consumes the
+/// inner value. The [`Self::Finalized`] state rejects every operation
+/// with [`EvalError::InvalidConfig`] — the error surfaces in Python as
+/// a `ValueError` via [`eval_error_to_pyerr`].
+enum StreamingState {
+    Bbox(StreamingEvaluator<BboxIou>),
+    Segm(StreamingEvaluator<SegmIou>),
+    Boundary(StreamingEvaluator<BoundaryIou>),
+    Keypoints(StreamingEvaluator<OksSimilarity>),
+    Finalized,
+}
+
+/// Build the `EvalError` returned for any operation attempted after
+/// `finalize()`. Sole consumer of the error message; centralized so the
+/// string stays consistent across dispatch arms.
+fn finalized_error() -> EvalError {
+    EvalError::InvalidConfig {
+        detail: "StreamingEvaluator has already been finalized".into(),
+    }
+}
+
+impl StreamingState {
+    fn update(&mut self, json_bytes: &[u8]) -> Result<UpdateReport, EvalError> {
+        match self {
+            Self::Bbox(ev) => ev.update(json_bytes),
+            Self::Segm(ev) => ev.update(json_bytes),
+            Self::Boundary(ev) => ev.update(json_bytes),
+            Self::Keypoints(ev) => ev.update(json_bytes),
+            Self::Finalized => Err(finalized_error()),
+        }
+    }
+
+    fn snapshot(&self, running: bool) -> Result<Summary, EvalError> {
+        match self {
+            Self::Bbox(ev) => {
+                if running {
+                    ev.snapshot_running()
+                } else {
+                    ev.snapshot()
+                }
+            }
+            Self::Segm(ev) => {
+                if running {
+                    ev.snapshot_running()
+                } else {
+                    ev.snapshot()
+                }
+            }
+            Self::Boundary(ev) => {
+                if running {
+                    ev.snapshot_running()
+                } else {
+                    ev.snapshot()
+                }
+            }
+            Self::Keypoints(ev) => {
+                if running {
+                    ev.snapshot_running()
+                } else {
+                    ev.snapshot()
+                }
+            }
+            Self::Finalized => Err(finalized_error()),
+        }
+    }
+
+    fn take_and_finalize(&mut self) -> Result<Summary, EvalError> {
+        // Swap a [`Self::Finalized`] sentinel into place so we can move
+        // out of the variant by value. If the inner finalize errors, the
+        // evaluator is still considered consumed — re-running finalize
+        // would not produce a useful summary either.
+        let prev = std::mem::replace(self, Self::Finalized);
+        match prev {
+            Self::Bbox(ev) => ev.finalize(),
+            Self::Segm(ev) => ev.finalize(),
+            Self::Boundary(ev) => ev.finalize(),
+            Self::Keypoints(ev) => ev.finalize(),
+            Self::Finalized => Err(finalized_error()),
+        }
+    }
+
+    fn images_seen(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.images_seen(),
+            Self::Segm(ev) => ev.images_seen(),
+            Self::Boundary(ev) => ev.images_seen(),
+            Self::Keypoints(ev) => ev.images_seen(),
+            Self::Finalized => 0,
+        }
+    }
+
+    fn detections_seen(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.detections_seen(),
+            Self::Segm(ev) => ev.detections_seen(),
+            Self::Boundary(ev) => ev.detections_seen(),
+            Self::Keypoints(ev) => ev.detections_seen(),
+            Self::Finalized => 0,
+        }
+    }
+
+    fn images_pending(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.images_pending(),
+            Self::Segm(ev) => ev.images_pending(),
+            Self::Boundary(ev) => ev.images_pending(),
+            Self::Keypoints(ev) => ev.images_pending(),
+            Self::Finalized => 0,
+        }
+    }
+
+    fn memory_used_bytes(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.memory_used_bytes(),
+            Self::Segm(ev) => ev.memory_used_bytes(),
+            Self::Boundary(ev) => ev.memory_used_bytes(),
+            Self::Keypoints(ev) => ev.memory_used_bytes(),
+            Self::Finalized => 0,
+        }
+    }
+
+    fn memory_budget_bytes(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.budget().bytes,
+            Self::Segm(ev) => ev.budget().bytes,
+            Self::Boundary(ev) => ev.budget().bytes,
+            Self::Keypoints(ev) => ev.budget().bytes,
+            Self::Finalized => 0,
+        }
+    }
+}
+
+/// Streaming evaluator surface (ADR-0013). Single-writer per the runtime
+/// `owner_thread` check; mutable state guarded by an internal `Mutex` so
+/// the pyclass can stay non-frozen and accept `&self` on its methods.
+#[pyclass(module = "vernier._core", name = "StreamingEvaluator")]
+struct PyStreamingEvaluator {
+    state: Mutex<StreamingState>,
+    owner_thread: Mutex<Option<std::thread::ThreadId>>,
+    warned_soft_budget: AtomicBool,
+}
+
+impl PyStreamingEvaluator {
+    fn lock_state(&self) -> PyResult<std::sync::MutexGuard<'_, StreamingState>> {
+        self.state
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("StreamingEvaluator state mutex poisoned"))
+    }
+
+    /// Single-writer guard. The first `update()` call records the
+    /// calling thread; later calls verify it. Mismatch raises a
+    /// `RuntimeError` that names both threads.
+    fn check_owner_thread(&self) -> PyResult<()> {
+        let mut owner = self.owner_thread.lock().map_err(|_| {
+            PyRuntimeError::new_err("StreamingEvaluator owner_thread mutex poisoned")
+        })?;
+        let current = std::thread::current().id();
+        match *owner {
+            None => {
+                *owner = Some(current);
+                Ok(())
+            }
+            Some(prior) if prior == current => Ok(()),
+            Some(prior) => Err(PyRuntimeError::new_err(format!(
+                "StreamingEvaluator is single-writer; submitted from {current:?}, owned by {prior:?}"
+            ))),
+        }
+    }
+}
+
+#[pymethods]
+impl PyStreamingEvaluator {
+    #[new]
+    #[pyo3(signature = (
+        gt_json,
+        *,
+        iou_type = "bbox",
+        parity_mode = "corrected",
+        max_dets = vec![1, 10, 100],
+        use_cats = true,
+        memory_budget_bytes = None,
+        dilation_ratio = 0.02,
+        sigmas = None,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        gt_json: &Bound<'_, PyBytes>,
+        iou_type: &str,
+        parity_mode: &str,
+        max_dets: Vec<usize>,
+        use_cats: bool,
+        memory_budget_bytes: Option<usize>,
+        dilation_ratio: f64,
+        sigmas: Option<&Bound<'_, PyDict>>,
+    ) -> PyResult<Self> {
+        let parity = parse_parity_mode(parity_mode)?;
+        require_nonempty_max_dets(&max_dets)?;
+        // Quirk A2 (aligned): same sort the batch path applies — the
+        // largest entry caps `max_dets_per_image`; smaller entries are
+        // sliced downstream by `accumulate`.
+        let mut max_dets = max_dets;
+        sort_max_dets(&mut max_dets);
+        let max_dets_per_image = max_dets.iter().copied().max().unwrap_or(100);
+
+        let budget = match memory_budget_bytes {
+            Some(b) => MemoryBudget {
+                bytes: b,
+                soft_warn_fraction: 0.80,
+            },
+            None => MemoryBudget::auto_default(),
+        };
+
+        let dataset = CocoDataset::from_json_bytes(gt_json.as_bytes())
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+
+        // Build the kernel-typed evaluator. Each arm constructs the
+        // matching `EvalIouType` solely to reuse `area_ranges_for`'s
+        // detection-vs-keypoints fork; this keeps the area-bucket
+        // selection logic in one place.
+        let state = match iou_type {
+            "bbox" => {
+                let area = area_ranges_for(&EvalIouType::Bbox);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                StreamingState::Bbox(ev)
+            }
+            "segm" => {
+                let area = area_ranges_for(&EvalIouType::Segm);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                StreamingState::Segm(ev)
+            }
+            "boundary" => {
+                let iou_kind = boundary_iou_type(dilation_ratio)?;
+                let area = area_ranges_for(&iou_kind);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let kernel = BoundaryIou { dilation_ratio };
+                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                StreamingState::Boundary(ev)
+            }
+            "keypoints" => {
+                let parsed_sigmas = match sigmas {
+                    Some(d) => parse_sigmas(d)?,
+                    None => HashMap::new(),
+                };
+                let iou_kind = EvalIouType::Keypoints {
+                    sigmas: parsed_sigmas.clone(),
+                };
+                let area = area_ranges_for(&iou_kind);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let kernel = OksSimilarity::new(parsed_sigmas);
+                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                StreamingState::Keypoints(ev)
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid iou_type {other:?}; expected 'bbox', 'segm', 'boundary', or 'keypoints'"
+                )));
+            }
+        };
+
+        Ok(Self {
+            state: Mutex::new(state),
+            owner_thread: Mutex::new(None),
+            warned_soft_budget: AtomicBool::new(false),
+        })
+    }
+
+    /// Submit a batch of detections (loadRes-shaped JSON bytes). Returns
+    /// an `_UpdateReportDict` describing what was accepted plus the
+    /// post-update memory total. Single-writer: only the first calling
+    /// thread is permitted to call this method.
+    fn update<'py>(
+        &self,
+        py: Python<'py>,
+        detections: &Bound<'py, PyBytes>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        self.check_owner_thread()?;
+        // Take an owned copy of the bytes so we can drop the GIL for the
+        // (potentially expensive) update_parsed call below. Cloning the
+        // wire payload once is cheap relative to the parse + match work.
+        let bytes: Vec<u8> = detections.as_bytes().to_vec();
+        // Lock inside `py.detach` so the `MutexGuard` (which is `!Send`)
+        // never crosses the closure boundary on Send-checking. The
+        // `Mutex` itself is `Send + Sync`, so a borrow of it is fine to
+        // capture into the GIL-released body.
+        let state_mutex = &self.state;
+        let (report, memory_used_bytes) = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "StreamingEvaluator state mutex poisoned".into(),
+                })?;
+                let report = guard.update(&bytes)?;
+                let memory = guard.memory_used_bytes();
+                Ok::<(UpdateReport, usize), EvalError>((report, memory))
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+
+        // One-shot soft-warn emission. The atomic guard ensures even
+        // re-entrant code paths (e.g., a warning filter that re-calls
+        // update) won't fire the warning twice.
+        if report.soft_warn_triggered && !self.warned_soft_budget.swap(true, Ordering::AcqRel) {
+            let warnings = py.import("warnings")?;
+            let warn_class = py.get_type::<MemoryBudgetWarning>();
+            let msg = format!(
+                "StreamingEvaluator memory usage crossed the soft-warn threshold ({} bytes used)",
+                memory_used_bytes
+            );
+            warnings.getattr("warn")?.call1((msg, warn_class))?;
+        }
+
+        let dict = PyDict::new(py);
+        // `n_images_in_batch` is the closest analog to "new_images" —
+        // the streaming evaluator rejects re-submissions so every image
+        // in a batch is necessarily new.
+        dict.set_item("new_images", report.n_images_in_batch)?;
+        dict.set_item("new_detections", report.n_detections_accepted)?;
+        dict.set_item("memory_used_bytes", memory_used_bytes)?;
+        dict.set_item("soft_warn_triggered", report.soft_warn_triggered)?;
+        Ok(dict)
+    }
+
+    /// Compute a `Summary` over the current store. `running=True` selects
+    /// the "fast" snapshot path (currently identical to the regular
+    /// snapshot — see `StreamingEvaluator::snapshot_running` rustdoc).
+    #[pyo3(signature = (*, running = false))]
+    fn snapshot(&self, py: Python<'_>, running: bool) -> PyResult<PySummary> {
+        let state_mutex = &self.state;
+        let summary = py
+            .detach(move || {
+                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "StreamingEvaluator state mutex poisoned".into(),
+                })?;
+                guard.snapshot(running)
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PySummary { inner: summary })
+    }
+
+    /// Consume the evaluator and return the final summary. Subsequent
+    /// calls on this object error out with the "already finalized"
+    /// message.
+    fn finalize(&self, py: Python<'_>) -> PyResult<PySummary> {
+        let state_mutex = &self.state;
+        let summary = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "StreamingEvaluator state mutex poisoned".into(),
+                })?;
+                guard.take_and_finalize()
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PySummary { inner: summary })
+    }
+
+    /// Distinct images that have received at least one detection.
+    #[getter]
+    fn images_seen(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.images_seen())
+    }
+
+    /// Cumulative number of detections accepted across all batches.
+    #[getter]
+    fn detections_seen(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.detections_seen())
+    }
+
+    /// GT images that have not yet received any detection.
+    #[getter]
+    fn images_pending(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.images_pending())
+    }
+
+    /// Bytes the evaluator currently holds across cells, scores, and
+    /// match flags.
+    #[getter]
+    fn memory_used_bytes(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.memory_used_bytes())
+    }
+
+    /// Configured hard cap; an `update()` whose insert would push past
+    /// this number raises `OutOfBudgetError`.
+    #[getter]
+    fn memory_budget_bytes(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.memory_budget_bytes())
+    }
+}
+
+/// Kernel-erased wrapper around a [`background::BackgroundEvaluator<K>`].
+///
+/// Mirrors [`StreamingState`] for the background surface. Each variant
+/// owns a worker thread that in turn owns a `StreamingEvaluator<K>`. The
+/// [`Self::Finalized`] sentinel rejects every operation with
+/// [`EvalError::InvalidConfig`] (mapped to a `ValueError` in Python).
+enum BackgroundEvalState {
+    Bbox(background::BackgroundEvaluator<BboxIou>),
+    Segm(background::BackgroundEvaluator<SegmIou>),
+    Boundary(background::BackgroundEvaluator<BoundaryIou>),
+    Keypoints(background::BackgroundEvaluator<OksSimilarity>),
+    Finalized,
+}
+
+/// Build the `EvalError` returned for any operation attempted after
+/// `finalize()` on the background surface. Mirrors [`finalized_error`].
+fn background_finalized_error() -> EvalError {
+    EvalError::InvalidConfig {
+        detail: "BackgroundEvaluator has already been finalized".into(),
+    }
+}
+
+impl BackgroundEvalState {
+    /// Parse the wire-format detection bytes for the active kernel and
+    /// post the resulting batch to the worker. `timeout` mirrors the
+    /// Python `timeout=` parameter on `submit()`:
+    ///
+    /// - `None` → block forever (`submit_blocking`)
+    /// - `Some(Duration::ZERO)` → single non-blocking attempt
+    /// - `Some(t > 0)` → bounded wait
+    fn submit(
+        &self,
+        bytes: &[u8],
+        timeout: Option<Duration>,
+    ) -> Result<(), background::SubmitError> {
+        match self {
+            Self::Bbox(ev) => {
+                let parsed = ParsedDetections::<BboxIou>::from_json_bytes(bytes)
+                    .map_err(background::SubmitError::Eval)?;
+                match timeout {
+                    None => ev
+                        .submit_blocking(parsed)
+                        .map_err(background::SubmitError::Eval),
+                    Some(t) => ev.submit_timeout(parsed, t),
+                }
+            }
+            Self::Segm(ev) => {
+                let parsed = ParsedDetections::<SegmIou>::from_json_bytes(bytes)
+                    .map_err(background::SubmitError::Eval)?;
+                match timeout {
+                    None => ev
+                        .submit_blocking(parsed)
+                        .map_err(background::SubmitError::Eval),
+                    Some(t) => ev.submit_timeout(parsed, t),
+                }
+            }
+            Self::Boundary(ev) => {
+                let parsed = ParsedDetections::<BoundaryIou>::from_json_bytes(bytes)
+                    .map_err(background::SubmitError::Eval)?;
+                match timeout {
+                    None => ev
+                        .submit_blocking(parsed)
+                        .map_err(background::SubmitError::Eval),
+                    Some(t) => ev.submit_timeout(parsed, t),
+                }
+            }
+            Self::Keypoints(ev) => {
+                let parsed = ParsedDetections::<OksSimilarity>::from_json_bytes(bytes)
+                    .map_err(background::SubmitError::Eval)?;
+                match timeout {
+                    None => ev
+                        .submit_blocking(parsed)
+                        .map_err(background::SubmitError::Eval),
+                    Some(t) => ev.submit_timeout(parsed, t),
+                }
+            }
+            Self::Finalized => Err(background::SubmitError::Eval(background_finalized_error())),
+        }
+    }
+
+    fn snapshot(&self, peek: bool) -> Result<Summary, EvalError> {
+        match self {
+            Self::Bbox(ev) => ev.snapshot(peek),
+            Self::Segm(ev) => ev.snapshot(peek),
+            Self::Boundary(ev) => ev.snapshot(peek),
+            Self::Keypoints(ev) => ev.snapshot(peek),
+            Self::Finalized => Err(background_finalized_error()),
+        }
+    }
+
+    fn take_and_finalize(&mut self) -> Result<Summary, EvalError> {
+        let prev = std::mem::replace(self, Self::Finalized);
+        match prev {
+            Self::Bbox(ev) => ev.finalize(),
+            Self::Segm(ev) => ev.finalize(),
+            Self::Boundary(ev) => ev.finalize(),
+            Self::Keypoints(ev) => ev.finalize(),
+            Self::Finalized => Err(background_finalized_error()),
+        }
+    }
+
+    fn take_scheduling_outcome(&self) -> Option<Result<(), String>> {
+        match self {
+            Self::Bbox(ev) => ev.take_scheduling_outcome(),
+            Self::Segm(ev) => ev.take_scheduling_outcome(),
+            Self::Boundary(ev) => ev.take_scheduling_outcome(),
+            Self::Keypoints(ev) => ev.take_scheduling_outcome(),
+            Self::Finalized => None,
+        }
+    }
+
+    fn images_seen(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.images_seen(),
+            Self::Segm(ev) => ev.images_seen(),
+            Self::Boundary(ev) => ev.images_seen(),
+            Self::Keypoints(ev) => ev.images_seen(),
+            Self::Finalized => 0,
+        }
+    }
+
+    fn detections_seen(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.detections_seen(),
+            Self::Segm(ev) => ev.detections_seen(),
+            Self::Boundary(ev) => ev.detections_seen(),
+            Self::Keypoints(ev) => ev.detections_seen(),
+            Self::Finalized => 0,
+        }
+    }
+
+    fn queue_depth(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.queue_depth(),
+            Self::Segm(ev) => ev.queue_depth(),
+            Self::Boundary(ev) => ev.queue_depth(),
+            Self::Keypoints(ev) => ev.queue_depth(),
+            Self::Finalized => 0,
+        }
+    }
+
+    fn memory_used_bytes(&self) -> usize {
+        match self {
+            Self::Bbox(ev) => ev.memory_used_bytes(),
+            Self::Segm(ev) => ev.memory_used_bytes(),
+            Self::Boundary(ev) => ev.memory_used_bytes(),
+            Self::Keypoints(ev) => ev.memory_used_bytes(),
+            Self::Finalized => 0,
+        }
+    }
+
+    /// Best-effort cooperative shutdown. Used by `__exit__` and `__del__`
+    /// when the evaluator hasn't already been finalized.
+    fn shutdown(&mut self) {
+        let prev = std::mem::replace(self, Self::Finalized);
+        match prev {
+            Self::Bbox(ev) => ev.shutdown(),
+            Self::Segm(ev) => ev.shutdown(),
+            Self::Boundary(ev) => ev.shutdown(),
+            Self::Keypoints(ev) => ev.shutdown(),
+            Self::Finalized => {}
+        }
+    }
+
+    /// Test-only: forward to the worker's `_inject_poison_for_tests`.
+    /// Gated behind the `test-poison` Cargo feature; only the panic-recovery
+    /// test in `tests/python/background/test_background_worker_panic.py`
+    /// reaches this.
+    #[cfg(feature = "test-poison")]
+    fn inject_poison_for_tests(&self) -> Result<(), EvalError> {
+        match self {
+            Self::Bbox(ev) => ev._inject_poison_for_tests(),
+            Self::Segm(ev) => ev._inject_poison_for_tests(),
+            Self::Boundary(ev) => ev._inject_poison_for_tests(),
+            Self::Keypoints(ev) => ev._inject_poison_for_tests(),
+            Self::Finalized => Err(background_finalized_error()),
+        }
+    }
+}
+
+/// Map a [`background::SubmitError`] to a Python exception. `Eval` is
+/// routed through [`eval_error_to_pyerr`]; `Full` is materialized into a
+/// [`QueueFullError`] with the `queue_capacity` and `timeout` (in
+/// fractional seconds) attached as instance attributes.
+fn submit_error_to_pyerr(py: Python<'_>, e: background::SubmitError) -> PyErr {
+    match e {
+        background::SubmitError::Eval(inner) => eval_error_to_pyerr(py, inner),
+        background::SubmitError::Full(full) => {
+            let exc = QueueFullError::new_err(format!(
+                "background submit queue full (capacity={}, timeout={:?})",
+                full.queue_capacity, full.timeout
+            ));
+            let value = exc.value(py);
+            if let Err(err) = value.setattr("queue_capacity", full.queue_capacity) {
+                return err;
+            }
+            // `timeout` is always finite here — `submit_blocking` (the
+            // `None` Python case) cannot return `Full` — so report it as
+            // a float in seconds, matching the docstring on
+            // `QueueFullError`.
+            let timeout_secs = full.timeout.as_secs_f64();
+            if let Err(err) = value.setattr("timeout", timeout_secs) {
+                return err;
+            }
+            exc
+        }
+    }
+}
+
+/// Background-evaluator surface (ADR-0014). Wraps a worker thread that
+/// owns the `StreamingEvaluator<K>`; every public method either sends on
+/// the channel or reads atomic counters. Not frozen — `finalize()` and
+/// `__exit__` need to mutate state.
+#[pyclass(module = "vernier._core", name = "BackgroundEvaluator")]
+struct PyBackgroundEvaluator {
+    state: Mutex<BackgroundEvalState>,
+}
+
+impl PyBackgroundEvaluator {
+    fn lock_state(&self) -> PyResult<std::sync::MutexGuard<'_, BackgroundEvalState>> {
+        self.state
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("BackgroundEvaluator state mutex poisoned"))
+    }
+}
+
+#[pymethods]
+impl PyBackgroundEvaluator {
+    #[new]
+    #[pyo3(signature = (
+        gt_json,
+        *,
+        iou_type = "bbox",
+        parity_mode = "corrected",
+        max_dets = vec![1, 10, 100],
+        use_cats = true,
+        memory_budget_bytes = None,
+        dilation_ratio = 0.02,
+        sigmas = None,
+        queue_capacity = 8,
+        worker_affinity = None,
+        worker_nice = 5,
+        shutdown_timeout_seconds = 5.0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        gt_json: &Bound<'_, PyBytes>,
+        iou_type: &str,
+        parity_mode: &str,
+        max_dets: Vec<usize>,
+        use_cats: bool,
+        memory_budget_bytes: Option<usize>,
+        dilation_ratio: f64,
+        sigmas: Option<&Bound<'_, PyDict>>,
+        queue_capacity: usize,
+        worker_affinity: Option<usize>,
+        worker_nice: i32,
+        shutdown_timeout_seconds: f64,
+    ) -> PyResult<Self> {
+        let parity = parse_parity_mode(parity_mode)?;
+        require_nonempty_max_dets(&max_dets)?;
+        // Quirk A2 (aligned): same sort the streaming/batch paths apply.
+        let mut max_dets = max_dets;
+        sort_max_dets(&mut max_dets);
+        let max_dets_per_image = max_dets.iter().copied().max().unwrap_or(100);
+
+        let budget = match memory_budget_bytes {
+            Some(b) => MemoryBudget {
+                bytes: b,
+                soft_warn_fraction: 0.80,
+            },
+            None => MemoryBudget::auto_default(),
+        };
+
+        let dataset = CocoDataset::from_json_bytes(gt_json.as_bytes())
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+
+        if !shutdown_timeout_seconds.is_finite() || shutdown_timeout_seconds < 0.0 {
+            return Err(PyValueError::new_err(format!(
+                "shutdown_timeout_seconds must be a non-negative finite float, got {shutdown_timeout_seconds}"
+            )));
+        }
+        let config = background::BackgroundConfig {
+            queue_capacity,
+            worker_affinity,
+            worker_nice,
+            shutdown_timeout: Duration::from_secs_f64(shutdown_timeout_seconds),
+        };
+
+        let state = match iou_type {
+            "bbox" => {
+                let area = area_ranges_for(&EvalIouType::Bbox);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                let bg = background::BackgroundEvaluator::spawn(ev, config)
+                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                BackgroundEvalState::Bbox(bg)
+            }
+            "segm" => {
+                let area = area_ranges_for(&EvalIouType::Segm);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                let bg = background::BackgroundEvaluator::spawn(ev, config)
+                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                BackgroundEvalState::Segm(bg)
+            }
+            "boundary" => {
+                let iou_kind = boundary_iou_type(dilation_ratio)?;
+                let area = area_ranges_for(&iou_kind);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let kernel = BoundaryIou { dilation_ratio };
+                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                let bg = background::BackgroundEvaluator::spawn(ev, config)
+                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                BackgroundEvalState::Boundary(bg)
+            }
+            "keypoints" => {
+                let parsed_sigmas = match sigmas {
+                    Some(d) => parse_sigmas(d)?,
+                    None => HashMap::new(),
+                };
+                let iou_kind = EvalIouType::Keypoints {
+                    sigmas: parsed_sigmas.clone(),
+                };
+                let area = area_ranges_for(&iou_kind);
+                let params = OwnedEvaluateParams {
+                    iou_thresholds: iou_thresholds().to_vec(),
+                    area_ranges: area,
+                    max_dets_per_image,
+                    use_cats,
+                };
+                let kernel = OksSimilarity::new(parsed_sigmas);
+                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                let bg = background::BackgroundEvaluator::spawn(ev, config)
+                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                BackgroundEvalState::Keypoints(bg)
+            }
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "invalid iou_type {other:?}; expected 'bbox', 'segm', 'boundary', or 'keypoints'"
+                )));
+            }
+        };
+
+        let this = Self {
+            state: Mutex::new(state),
+        };
+
+        // Briefly poll for the worker's startup scheduling result. The
+        // worker stamps `state.scheduling_outcome` before pulling its
+        // first message; with a 1ms cadence and 10 rounds we give it up
+        // to ~10ms of slack. If still `None`, drop it on the floor —
+        // it'll be re-checked next time something reads scheduling.
+        let outcome: Option<Result<(), String>> = {
+            let mut found: Option<Result<(), String>> = None;
+            for _ in 0..10 {
+                {
+                    let guard = this.lock_state()?;
+                    if let Some(o) = guard.take_scheduling_outcome() {
+                        found = Some(o);
+                        break;
+                    }
+                }
+                py.detach(|| std::thread::sleep(Duration::from_millis(1)));
+            }
+            found
+        };
+        if let Some(Err(msg)) = outcome {
+            // Use plain `UserWarning` here (per ADR-0014 §"Worker
+            // scheduling"): MemoryBudgetWarning is for soft-budget
+            // crossings, not scheduling. Emit-once is implicit — the
+            // worker only stamps the outcome once.
+            let warnings = py.import("warnings")?;
+            let warn_class = py.get_type::<PyUserWarning>();
+            let full_msg = format!("BackgroundEvaluator scheduling: {msg}");
+            warnings.getattr("warn")?.call1((full_msg, warn_class))?;
+        }
+
+        Ok(this)
+    }
+
+    /// Submit a parsed-JSON detection batch to the worker. `timeout`
+    /// controls backpressure:
+    ///
+    /// - `None` (default) → block until a slot is free
+    /// - `0.0` → single non-blocking attempt; raise `QueueFullError` if
+    ///   the queue is full
+    /// - `t > 0.0` → wait up to `t` seconds; raise `QueueFullError` on
+    ///   timeout
+    #[pyo3(signature = (detections, *, timeout = None))]
+    fn submit(
+        &self,
+        py: Python<'_>,
+        detections: &Bound<'_, PyBytes>,
+        timeout: Option<f64>,
+    ) -> PyResult<()> {
+        let timeout_dur = match timeout {
+            None => None,
+            Some(t) => {
+                if !t.is_finite() || t < 0.0 {
+                    return Err(PyValueError::new_err(format!(
+                        "timeout must be a non-negative finite float or None, got {t}"
+                    )));
+                }
+                Some(Duration::from_secs_f64(t))
+            }
+        };
+        // Copy bytes out under the GIL so the parse + send can run with
+        // the GIL released. The kernel-typed parse happens inside
+        // `BackgroundEvalState::submit` to keep the dispatch single-site.
+        let bytes: Vec<u8> = detections.as_bytes().to_vec();
+        let state_mutex = &self.state;
+        let result = py.detach(move || {
+            let guard = state_mutex.lock().map_err(|_| {
+                background::SubmitError::Eval(EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })
+            })?;
+            guard.submit(&bytes, timeout_dur)
+        });
+        result.map_err(|e| submit_error_to_pyerr(py, e))
+    }
+
+    /// Compute a `Summary` against the worker's current store. `peek=True`
+    /// uses the cheaper snapshot path (currently identical to the regular
+    /// snapshot).
+    #[pyo3(signature = (*, peek = false))]
+    fn snapshot(&self, py: Python<'_>, peek: bool) -> PyResult<PySummary> {
+        let state_mutex = &self.state;
+        let summary = py
+            .detach(move || {
+                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })?;
+                guard.snapshot(peek)
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PySummary { inner: summary })
+    }
+
+    /// Drain the queue, finalize the evaluator, and join the worker.
+    /// Subsequent calls error with the "already finalized" message.
+    fn finalize(&self, py: Python<'_>) -> PyResult<PySummary> {
+        let state_mutex = &self.state;
+        let summary = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })?;
+                guard.take_and_finalize()
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PySummary { inner: summary })
+    }
+
+    /// Context-manager entry. Returns `self` so `with ev as e:` binds
+    /// the same instance the user constructed.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Context-manager exit: best-effort shutdown. Errors raised inside
+    /// the `with` block are propagated; errors from the shutdown itself
+    /// are silenced (the original exception is more important).
+    #[pyo3(signature = (_exc_type=None, _exc=None, _tb=None))]
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        _exc_type: Option<Py<PyAny>>,
+        _exc: Option<Py<PyAny>>,
+        _tb: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        let state_mutex = &self.state;
+        py.detach(|| {
+            if let Ok(mut guard) = state_mutex.lock() {
+                guard.shutdown();
+            }
+        });
+        Ok(())
+    }
+
+    /// Best-effort cleanup if the user lets the wrapper go out of scope
+    /// without explicit `finalize()` / `__exit__`. Silences all errors —
+    /// raising from `__del__` is invisible to the caller anyway.
+    ///
+    /// `shutdown()` polls the worker's `JoinHandle` for up to
+    /// `shutdown_timeout` (5 s by default), so dropping the GIL via
+    /// `py.detach` is mandatory: otherwise garbage collection from the
+    /// main interpreter thread can freeze for seconds.
+    fn __del__(&self, py: Python<'_>) {
+        let state_mutex = &self.state;
+        py.detach(|| {
+            if let Ok(mut guard) = state_mutex.lock() {
+                guard.shutdown();
+            }
+        });
+    }
+
+    /// Mirror of `StreamingEvaluator::images_seen()`. Advisory — updated
+    /// by the worker after each successful submit.
+    #[getter]
+    fn images_seen(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.images_seen())
+    }
+
+    /// Mirror of `StreamingEvaluator::detections_seen()`. Advisory.
+    #[getter]
+    fn detections_seen(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.detections_seen())
+    }
+
+    /// Approximate count of `Update` messages waiting in the channel.
+    #[getter]
+    fn queue_depth(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.queue_depth())
+    }
+
+    /// Mirror of `StreamingEvaluator::memory_used_bytes()`. Advisory.
+    #[getter]
+    fn memory_used_bytes(&self) -> PyResult<usize> {
+        Ok(self.lock_state()?.memory_used_bytes())
+    }
+
+    /// Test-only: post a `Poison` message that panics the worker. Visible
+    /// only when the FFI crate is compiled with `--features test-poison`.
+    /// The `tests/python/background/test_background_worker_panic.py` test
+    /// uses `hasattr(...)` to skip itself when the feature is absent.
+    #[cfg(feature = "test-poison")]
+    fn _inject_poison_for_tests(&self, py: Python<'_>) -> PyResult<()> {
+        let guard = self.lock_state()?;
+        guard
+            .inject_poison_for_tests()
+            .map_err(|e| eval_error_to_pyerr(py, e))
+    }
+}
+
 /// The native module exposed to Python as `vernier._core`.
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -739,6 +1797,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
+    m.add_class::<PyStreamingEvaluator>()?;
+    m.add_class::<PyBackgroundEvaluator>()?;
+    m.add("OutOfBudgetError", m.py().get_type::<OutOfBudgetError>())?;
+    m.add("QueueFullError", m.py().get_type::<QueueFullError>())?;
+    m.add(
+        "MemoryBudgetWarning",
+        m.py().get_type::<MemoryBudgetWarning>(),
+    )?;
     m.add("__version__", vernier_core::VERSION)?;
     Ok(())
 }

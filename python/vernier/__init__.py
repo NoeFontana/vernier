@@ -15,6 +15,11 @@ from typing import Final, NoReturn
 from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._core import (
+    BackgroundEvaluator,
+    MemoryBudgetWarning,
+    OutOfBudgetError,
+    QueueFullError,
+    StreamingEvaluator,
     Summary,
     evaluate_bbox_summary,
     evaluate_boundary_summary,
@@ -24,14 +29,19 @@ from vernier._core import (
 )
 
 __all__ = [
+    "BackgroundEvaluator",
     "Bbox",
     "Boundary",
     "COCOeval",
     "Evaluator",
     "IouKind",
     "Keypoints",
+    "MemoryBudgetWarning",
+    "OutOfBudgetError",
     "ParityMode",
+    "QueueFullError",
     "Segm",
+    "StreamingEvaluator",
     "Summary",
     "__version__",
     "version",

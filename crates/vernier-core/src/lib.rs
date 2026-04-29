@@ -24,6 +24,7 @@ pub mod matching;
 pub mod parity;
 pub mod segmentation;
 pub mod similarity;
+pub mod stream;
 pub mod summarize;
 
 pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, PerImageEval};
@@ -37,7 +38,8 @@ pub use dataset::{
 pub use error::EvalError;
 pub use evaluate::{
     evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, evaluate_with, AreaRange,
-    EvalGrid, EvalImageMeta, EvalKernel, EvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
+    EvalGrid, EvalImageMeta, EvalKernel, EvaluateParams, OwnedEvaluateParams,
+    COLLAPSED_CATEGORY_SENTINEL,
 };
 pub use matching::{match_image, MatchResult};
 pub use parity::{iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, PARITY_EPS};
@@ -45,6 +47,10 @@ pub use segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
 pub use similarity::{
     BboxAnn, BboxIou, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmIou, Similarity,
     COCO_PERSON_SIGMAS,
+};
+pub use stream::{
+    EvalGridMeta, MemoryBudget, ParsedDetections, PerImageEvalStore, StreamingEvaluator,
+    UpdateReport,
 };
 pub use summarize::{
     summarize_detection, summarize_with, AreaRng, MaxDetSelector, Metric, StatLine, StatRequest,

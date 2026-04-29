@@ -66,4 +66,28 @@ pub enum EvalError {
         /// Free-form detail string identifying the offending parameter.
         detail: String,
     },
+
+    /// Streaming evaluator memory budget exceeded. Carries a breakdown of
+    /// where bytes are spent so the user can pick a remediation (shard,
+    /// shrink iou_thresholds, raise budget).
+    #[error("memory budget exceeded: used {used_bytes} / budget {budget_bytes} bytes")]
+    OutOfBudget {
+        /// Total bytes the evaluator was holding when it tripped the budget.
+        used_bytes: usize,
+        /// Configured budget cap.
+        budget_bytes: usize,
+        /// Stable keys: `"cells_store"`, `"scores"`, `"match_flags"`. The
+        /// schema is future-additive — consumers must tolerate extra keys.
+        breakdown: std::collections::HashMap<&'static str, usize>,
+    },
+
+    /// Feature wired but not yet implemented in v0. Used by the streaming
+    /// evaluator's `checkpoint`/`restore` pair, deferred per the user's
+    /// scope decision; future ADR re-introduces the implementation.
+    #[error("not implemented: {feature}")]
+    NotImplemented {
+        /// Stable identifier of the unimplemented feature, e.g.
+        /// `"StreamingEvaluator::checkpoint"`.
+        feature: &'static str,
+    },
 }
