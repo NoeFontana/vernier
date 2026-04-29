@@ -6,13 +6,13 @@ or yanked.
 
 ## What is reserved
 
-| Registry  | Name            | Owner        | First version |
-|-----------|-----------------|--------------|---------------|
-| crates.io | `vernier`       | `NoeFontana` | `0.0.0`       |
-| crates.io | `vernier-core`  | `NoeFontana` | `0.0.0`       |
-| crates.io | `vernier-mask`  | `NoeFontana` | `0.0.0`       |
-| crates.io | `vernier-cli`   | `NoeFontana` | `0.0.0`       |
-| PyPI      | `vernier`       | `NoeFontana` | `0.0.0`       |
+| Registry  | Name            | Owner        | First version | Status                                                |
+|-----------|-----------------|--------------|---------------|-------------------------------------------------------|
+| crates.io | `vernier`       | `NoeFontana` | `0.0.0`       | placeholder                                           |
+| crates.io | `vernier-core`  | `NoeFontana` | `0.0.0`       | placeholder                                           |
+| crates.io | `vernier-mask`  | `NoeFontana` | `0.0.0`       | placeholder                                           |
+| crates.io | `vernier-cli`   | `NoeFontana` | `0.0.0`       | promoted to workspace member at v0.2.0 (ADR-0015)     |
+| PyPI      | `vernier`       | `NoeFontana` | `0.0.0`       | placeholder                                           |
 
 Each v0.0.0 artifact is a deliberately empty placeholder. The skeletons
 live under `tools/reservations/` in this repo. They are **not** part of

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Reserve the `vernier`, `vernier-core`, `vernier-mask`, `vernier-cli` names
-# on crates.io and the `vernier` name on PyPI.
+# Reserve the `vernier`, `vernier-core`, `vernier-mask` names
+# on crates.io and the `vernier` name on PyPI. (`vernier-cli` was promoted
+# to a real workspace member at v0.2.0 and is no longer reserved here.)
 #
 # Default mode is --dry-run: every step runs in validation mode and nothing
 # is uploaded. Pass --publish to actually upload to crates.io. PyPI uploads
@@ -11,7 +12,7 @@
 # Usage:
 #   ./reserve.sh                         # dry-run everything (default)
 #   ./reserve.sh --dry-run               # explicit dry-run
-#   ./reserve.sh --publish               # publish all 4 crates to crates.io
+#   ./reserve.sh --publish               # publish all 3 crates to crates.io
 #   ./reserve.sh --publish --only NAME   # publish a single crate (e.g. vernier-mask)
 #
 # Auth for --publish:
@@ -26,7 +27,7 @@ PYPI_DIR="${SCRIPT_DIR}/pypi/vernier"
 
 # Order matters only for legibility; crates.io has no inter-package
 # dependencies among these placeholders.
-CRATES=("vernier-core" "vernier-mask" "vernier-cli" "vernier")
+CRATES=("vernier-core" "vernier-mask" "vernier")
 
 MODE="dry-run"
 ONLY=""

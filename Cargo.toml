@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/vernier-cli",
     "crates/vernier-core",
     "crates/vernier-ffi",
     "crates/vernier-mask",
@@ -56,9 +57,16 @@ pulp = "0.22"
 # JSON serialization for COCO dataset round-tripping (Phase 1+).
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# CLI argument parsing for `vernier-cli` (per ADR-0015). Pinned by
+# minor version so the binary's flag surface evolves on a single
+# clap version across the workspace.
+clap = { version = "4", features = ["derive"] }
 # Property-based testing for index invariants and parity fuzz. Dev-dep
 # in consumer crates; pinned here so crates inherit a single version.
 proptest = "1"
+# CLI integration testing for `vernier-cli` (per ADR-0015). Dev-dep only.
+assert_cmd = "2"
+predicates = "3"
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit

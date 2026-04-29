@@ -1,8 +1,9 @@
 # Registry name reservations
 
 This directory holds the throwaway packages we publish at v0.0.0 to claim
-the names `vernier`, `vernier-core`, `vernier-mask`, `vernier-cli` on
-crates.io and `vernier` on PyPI.
+the names `vernier`, `vernier-core`, `vernier-mask` on crates.io and
+`vernier` on PyPI. `vernier-cli` lived here until v0.2.0; per ADR-0015 it
+was promoted to a real workspace member at `crates/vernier-cli/`.
 
 These are **not** part of the workspace and are **not** built by `just
 build`. Each crate skeleton is its own standalone package (note the empty
@@ -17,8 +18,7 @@ tools/reservations/
 ├── crates/
 │   ├── vernier/        # crates.io: vernier (top-level umbrella name)
 │   ├── vernier-core/   # crates.io: vernier-core (pure-Rust core)
-│   ├── vernier-mask/   # crates.io: vernier-mask (RLE/mask helpers)
-│   └── vernier-cli/    # crates.io: vernier-cli (planned CLI tool)
+│   └── vernier-mask/   # crates.io: vernier-mask (RLE/mask helpers)
 └── pypi/
     └── vernier/        # PyPI: vernier (the eventual wheel)
 ```
