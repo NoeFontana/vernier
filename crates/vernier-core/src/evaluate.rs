@@ -143,6 +143,32 @@ impl AreaRange {
         ]
     }
 
+    /// Keypoints area grid (per ADR-0012, quirk **D5**): `all`, `medium`,
+    /// `large` — pycocotools drops the `small` bucket for kp eval. The
+    /// A-axis is compressed to 3 entries with indices `0 = all`,
+    /// `1 = medium`, `2 = large`. Pair with
+    /// [`crate::summarize::StatRequest::coco_keypoints_default`] so the
+    /// summarizer's `req.area.index` lookups land on the right slice.
+    pub fn keypoints_default() -> [Self; 3] {
+        [
+            Self {
+                index: 0,
+                lo: 0.0,
+                hi: AREA_UNBOUNDED,
+            },
+            Self {
+                index: 1,
+                lo: 32.0 * 32.0,
+                hi: 96.0 * 96.0,
+            },
+            Self {
+                index: 2,
+                lo: 96.0 * 96.0,
+                hi: AREA_UNBOUNDED,
+            },
+        ]
+    }
+
     fn contains(&self, area: f64) -> bool {
         // D6 (strict): pycocotools (cocoeval.py:251) keeps a GT/DT in a
         // bucket when `not (area < lo or area > hi)`, i.e. non-strict
@@ -314,9 +340,10 @@ impl EvalKernel for OksSimilarity {
             .iter()
             .map(|&j| {
                 let ann = &gt_anns[j];
-                let kps = ann.keypoints.as_deref().ok_or_else(|| {
-                    missing_keypoints_err("GT", ann.id.0, ann.image_id.0)
-                })?;
+                let kps = ann
+                    .keypoints
+                    .as_deref()
+                    .ok_or_else(|| missing_keypoints_err("GT", ann.id.0, ann.image_id.0))?;
                 let num_keypoints = ann
                     .num_keypoints
                     .unwrap_or_else(|| count_visible_keypoints(kps));
@@ -346,9 +373,10 @@ impl EvalKernel for OksSimilarity {
             .iter()
             .map(|&j| {
                 let dt = &dt_anns[j];
-                let kps = dt.keypoints.as_deref().ok_or_else(|| {
-                    missing_keypoints_err("DT", dt.id.0, dt.image_id.0)
-                })?;
+                let kps = dt
+                    .keypoints
+                    .as_deref()
+                    .ok_or_else(|| missing_keypoints_err("DT", dt.id.0, dt.image_id.0))?;
                 let num_keypoints = dt
                     .num_keypoints
                     .unwrap_or_else(|| count_visible_keypoints(kps));
@@ -640,8 +668,7 @@ pub fn evaluate_with<K: EvalKernel>(
             let gt_base_ignore: Vec<bool> = gt_indices
                 .iter()
                 .map(|&j| {
-                    gt_anns[j].effective_ignore(parity_mode)
-                        || kernel.extra_gt_ignore(&gt_anns[j])
+                    gt_anns[j].effective_ignore(parity_mode) || kernel.extra_gt_ignore(&gt_anns[j])
                 })
                 .collect();
             let gt_ids: Vec<i64> = gt_indices.iter().map(|&j| gt_anns[j].id.0).collect();
@@ -2124,8 +2151,8 @@ mod tests {
         let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
         // DT has bbox + score but no keypoints — uses the existing
         // bbox-only `dt_input` helper.
-        let dts =
-            CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (40.0, 40.0, 20.0, 20.0))]).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (40.0, 40.0, 20.0, 20.0))])
+            .unwrap();
         let area = AreaRange::coco_default();
         let params = EvaluateParams {
             iou_thresholds: iou_thresholds(),
@@ -2133,8 +2160,8 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
         };
-        let err = evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new())
-            .unwrap_err();
+        let err =
+            evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap_err();
         match err {
             EvalError::InvalidAnnotation { detail } => {
                 assert!(detail.contains("DT"), "expected DT in msg: {detail}");
