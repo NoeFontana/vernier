@@ -1,0 +1,22 @@
+{
+  "images": [
+    {"id": 1, "width": 200, "height": 200, "file_name": "img1.png"}
+  ],
+  "annotations": [
+    {
+      "id": 1, "image_id": 1, "category_id": 1, "iscrowd": 0,
+      "bbox": [10, 10, 80, 80], "area": 6400, "num_keypoints": 17,
+      "keypoints": [
+        20, 20, 2,  30, 20, 2,  40, 20, 2,  50, 20, 2,  60, 20, 2,
+        20, 40, 2,  30, 40, 2,  40, 40, 2,  50, 40, 2,  60, 40, 2,
+        20, 60, 2,  30, 60, 2,  40, 60, 2,  50, 60, 2,  60, 60, 2,
+        20, 80, 2,  30, 80, 2
+      ]
+    }
+  ],
+  "categories": [
+    {"id": 1, "name": "person", "supercategory": "person",
+     "keypoints": ["k0","k1","k2","k3","k4","k5","k6","k7","k8","k9","k10","k11","k12","k13","k14","k15","k16"],
+     "skeleton": []}
+  ]
+}
