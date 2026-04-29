@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from .harness import IouType, assert_snapshots_equal, snapshot
+from .harness import IouType, SigmasMap, assert_snapshots_equal, snapshot
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -41,6 +41,36 @@ SEGM_FIXTURES = [
     "heterogeneous_dt_segm",
 ]
 
+# Per-category sigma override, expressed in pycocotools' post-divide form
+# (i.e. matching the values stored on `Params.kpt_oks_sigmas` after
+# `setKpParams` runs). Used by the F1 fixture below; the harness routes
+# the same vector to both pycocotools (`params.kpt_oks_sigmas = ...`) and
+# vernier (`Keypoints(sigmas={cat: ...})`).
+_KEYPOINTS_F1_SIGMAS: tuple[float, ...] = tuple(0.05 for _ in range(17))
+
+# Keypoints fixtures and the quirk(s) each pins. Authored alongside
+# Phase 3 (ADR-0012); each entry exercises a specific quirk disposition
+# in `docs/engineering/pycocotools-quirks.md`.
+KEYPOINTS_FIXTURES: list[tuple[str, SigmasMap | None]] = [
+    # Sanity baseline (AP=1.0). Nothing quirk-specific; pins that the
+    # keypoints harness path is not all-zero.
+    ("keypoints_perfect_match", None),
+    # D2: GT with all visibilities=0 is implicit-ignore. The DT must not
+    # be charged as a false positive.
+    ("keypoints_zero_visibility", None),
+    # F3 + F4: GT has zero visible keypoints but a real bbox. OKS falls
+    # back to the 2x bbox surrogate; DT keypoints sit in the asymmetric
+    # `[bb_x - bb_w, bb_x + 2*bb_w]` band.
+    ("keypoints_no_keypoints_surrogate", None),
+    # D5: keypoints kp grid drops the "small" bucket; verifies the
+    # 3-bucket areaRng (all/medium/large) — GTs are sized to land in
+    # medium and large buckets.
+    ("keypoints_areaRng_buckets", None),
+    # F1: per-category sigma override. Both sides see the same sigma
+    # vector (single-category fixture).
+    ("keypoints_custom_sigmas", {1: _KEYPOINTS_F1_SIGMAS}),
+]
+
 PARITY_CASES: list[tuple[str, IouType]] = [
     *((f, "bbox") for f in BBOX_FIXTURES),
     *((f, "segm") for f in SEGM_FIXTURES),
@@ -54,6 +84,16 @@ def test_parity_against_reference(fixture: str, iou_type: IouType) -> None:
     dt = FIXTURES / fixture / "dt.json"
     ref = snapshot("pycocotools", gt, dt, iou_type)
     cand = snapshot("vernier", gt, dt, iou_type)
+    assert_snapshots_equal(ref, cand)
+
+
+@pytest.mark.parity
+@pytest.mark.parametrize(("fixture", "sigmas"), KEYPOINTS_FIXTURES)
+def test_keypoints_parity_against_reference(fixture: str, sigmas: SigmasMap | None) -> None:
+    gt = FIXTURES / fixture / "gt.json"
+    dt = FIXTURES / fixture / "dt.json"
+    ref = snapshot("pycocotools", gt, dt, "keypoints", sigmas=sigmas)
+    cand = snapshot("vernier", gt, dt, "keypoints", sigmas=sigmas)
     assert_snapshots_equal(ref, cand)
 
 
