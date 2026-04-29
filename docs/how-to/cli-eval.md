@@ -81,16 +81,16 @@ Categories absent from `sigmas.json` fall back to the COCO-person 17-keypoint de
 vernier eval --gt gt.json --dt dt.json --iou-type bbox --quiet
 ```
 
-`--quiet` silences the (currently-empty, but reserved) stderr diagnostic stream. Stdout — the summary itself — is unaffected; `--quiet` and `--emit text` compose without surprises. Errors that abort the run still write a typed message to stderr and exit non-zero regardless of `--quiet`. The CLI does not ship a `--verbose` flag at v0.2; structured logging is a follow-up ADR (ADR-0015 §"What this ADR explicitly does *not* decide").
+`--quiet` silences the (currently-empty, but reserved) stderr diagnostic stream. Stdout — the summary itself — is unaffected; `--quiet` and `--emit text` compose without surprises. Errors that abort the run still write a typed message to stderr and exit non-zero regardless of `--quiet`. The CLI does not ship a `--verbose` flag in the current 0.0.x release line; structured logging is a follow-up ADR (ADR-0015 §"What this ADR explicitly does *not* decide").
 
 ## Pin the JSON schema version for archived results
 
 ```sh
-# v0.2: the only shipped schema is "1"; this is what every --emit json writes today.
+# Today the only shipped schema is "1"; this is what every --emit json writes.
 vernier eval --gt gt.json --dt dt.json --iou-type bbox --emit json=result.json
 ```
 
-At v0.2 the JSON formatter writes `"version": "1"` and there is no other shipped schema — `--emit json,version=N` is the planned per-formatter knob (ADR-0015 §"Formatter: JSON") for opting into a future schema before the major bump that retires `"1"`. The schema is a SemVer-major contract surface: archived `"version": "1"` documents remain consumable through the next major-release window. If you store eval results long-term, pin both `vernier-cli` (e.g. `cargo install vernier-cli@^0.2`) and the schema version field on read — `jq -e '.version == "1"' result.json` is enough to fail fast when a future toolchain change starts emitting a different shape.
+The JSON formatter writes `"version": "1"` and there is no other shipped schema — `--emit json,version=N` is the planned per-formatter knob (ADR-0015 §"Formatter: JSON") for opting into a future schema. The schema version is a contract surface independent of the package version: archived `"version": "1"` documents remain consumable across 0.0.x patches and through any future deprecation window before `"1"` is retired. If you store eval results long-term, pin both `vernier-cli` to a specific 0.0.x patch and the schema version field on read — `jq -e '.version == "1"' result.json` is enough to fail fast when a future toolchain change starts emitting a different shape.
 
 ## See also
 

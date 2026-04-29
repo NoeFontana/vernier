@@ -2,13 +2,13 @@
 
 The JSON formatter shipped by `vernier-cli` (ADR-0015) writes a single document per invocation. The shape is versioned independently of the `vernier-cli` package version: the document carries a `version` field whose value is the *schema* version, currently `"1"`. This page is the field-by-field reference for that schema.
 
-The schema is a SemVer-major contract surface for the CLI — additive changes (new fields, new metric rows in known IoU types) ship as SemVer-minor; renames or removals require a schema-version bump and a SemVer-major release of `vernier-cli`. ADR-0015 §"Versioning and stability commitments" pins this commitment.
+The schema is a stability contract surface for the CLI — additive changes (new fields, new metric rows in known IoU types) keep the same `version` string; renames or removals require a schema-version bump (`"1"` → `"2"`). The `vernier-cli` package itself is shipping under 0.0.x patches today, but the schema version is decoupled from the package version on purpose: `"version": "1"` documents archived against any 0.0.x release stay consumable across all subsequent 0.0.x patches. ADR-0015 §"Versioning and stability commitments" pins this commitment.
 
 ## Top-level fields
 
 | Field         | Type                                                | Notes                                                                                                                                                       |
 |---------------|-----------------------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `version`     | string                                              | Schema version. `"1"` for everything emitted by `vernier-cli` v0.2.x. Bumps on breaking shape changes; see *Schema versioning* below.                       |
+| `version`     | string                                              | Schema version. `"1"` for everything `vernier-cli` emits today. Bumps on breaking shape changes; see *Schema versioning* below.                              |
 | `iou_type`    | string, one of `bbox` / `segm` / `boundary` / `keypoints` | Mirrors the `--iou-type` flag and the `IouKind` variant the kernel ran. Required: `--iou-type` has no default.                                         |
 | `parity_mode` | string, one of `strict` / `corrected`               | The kernel-resolved parity mode. `--parity-mode aligned` collapses to `strict` per ADR-0002 (aligned-tier changes are output-equivalent), so the JSON only ever carries the two distinct kernel modes. Default `strict` (ADR-0015).                                                                                              |
 | `max_dets`    | array of non-negative integers                      | The `M`-axis of the accumulator the eval ran on. Defaults resolve via the kernel-canonical path (ADR-0012): `[1, 10, 100]` for det-family, `[20]` for kp.   |
@@ -159,7 +159,7 @@ Per ADR-0012 / quirk D5, the keypoint summary drops the `small` area bucket and 
 
 ADR-0015 §"Output determinism" pins the following invariants for the JSON formatter; every consumer that archives or diffs the output relies on them:
 
-- **Fixed key order.** Object keys are emitted in the schema-defined order documented above (top-level and per-`Line`), not insertion order and not sorted alphabetically. The `lines` array is in plan order — the same order `Summary::pretty_lines()` produces — never sorted by metric name. Reordering keys in a future PR is a SemVer-major change.
+- **Fixed key order.** Object keys are emitted in the schema-defined order documented above (top-level and per-`Line`), not insertion order and not sorted alphabetically. The `lines` array is in plan order — the same order `Summary::pretty_lines()` produces — never sorted by metric name. Reordering keys in a future PR is a schema-version bump.
 - **No timestamps.** No `generated_at`, `started_at`, `wall_clock_seconds`, or any other field whose value changes between two runs of the same input. The eval inputs (GT, DT, flags) define the result's identity.
 - **No environment leakage.** No host, user, working directory, or vernier-build-metadata fields. The schema's `version` is the contract surface; the *commit* of vernier that produced the file lives in `Cargo.lock` / the release tag, not in the document.
 - **Round-trip-safe float formatting.** `value` fields use Rust's default `{}` for `f64`, which is the shortest representation that round-trips through `f64::from_str`. Stable across the workspace MSRV (rustc 1.83+) and across platforms.
@@ -172,10 +172,10 @@ The contract: byte-equal output for byte-equal input, across runs, machines, and
 `version` tracks the *schema*, not the `vernier-cli` package version. The CLI commits to:
 
 - **Backward-compatible additions** ship under the same `version` value. New fields appended to the top level or to `lines[]` for an existing IoU type do not bump `version`.
-- **Renames, removals, or shape changes** bump `version` to the next integer string and ship as a SemVer-major release of `vernier-cli`. The older shape remains the default until the next major release of `vernier-cli`; the per-formatter knob `--emit json[,version=N]` (ADR-0015 §"Formatter: JSON") is the planned opt-in for newer shapes ahead of the major bump. At v0.2 the only shipped schema is `"1"` and `--emit json,version=N` has no other accepted values.
-- **Older schemas remain consumable** through one major-release window. A pipeline that pins `vernier-cli` to a specific `0.2.x` and stores its output for replay can read the same bytes back through any later `0.2.x` and any `0.3.x` (the next major-release window). At the second major bump after a schema retires, parsers may stop accepting it.
+- **Renames, removals, or shape changes** bump `version` to the next integer string. The older shape remains the CLI's default until a future release switches the default; the per-formatter knob `--emit json[,version=N]` (ADR-0015 §"Formatter: JSON") is the planned opt-in for newer shapes ahead of that switch. Today the only shipped schema is `"1"` and `--emit json,version=N` has no other accepted values.
+- **Older schemas remain consumable** for one schema generation past the default switch. A pipeline that pins `vernier-cli` to a specific 0.0.x patch and stores its output for replay can read the same bytes back through every subsequent 0.0.x patch that keeps `"version": "1"` as the default, and through the first generation after the default flips. The generation after that, parsers may stop accepting `"1"`.
 
-The schema is a SemVer-major contract surface — the same bar as the CLI flag shape. Reshaping `"version": "1"` outside this discipline breaks the regression-archive use case the v0.2 commitment is built around.
+The schema version is decoupled from the package version on purpose — `vernier-cli` ships under 0.0.x patches today (no SemVer guarantees on the package), but `"version": "1"` is a hard contract: reshaping it outside the discipline above breaks the regression-archive use case the JSON formatter is built around.
 
 ## See also
 

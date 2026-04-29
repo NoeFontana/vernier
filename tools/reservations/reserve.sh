@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reserve the `vernier`, `vernier-core`, `vernier-mask` names
 # on crates.io and the `vernier` name on PyPI. (`vernier-cli` was promoted
-# to a real workspace member at v0.2.0 and is no longer reserved here.)
+# to a real workspace member per ADR-0015 and is no longer reserved here.)
 #
 # Default mode is --dry-run: every step runs in validation mode and nothing
 # is uploaded. Pass --publish to actually upload to crates.io. PyPI uploads

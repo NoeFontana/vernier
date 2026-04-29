@@ -11,7 +11,7 @@ or yanked.
 | crates.io | `vernier`       | `NoeFontana` | `0.0.0`       | placeholder                                           |
 | crates.io | `vernier-core`  | `NoeFontana` | `0.0.0`       | placeholder                                           |
 | crates.io | `vernier-mask`  | `NoeFontana` | `0.0.0`       | placeholder                                           |
-| crates.io | `vernier-cli`   | `NoeFontana` | `0.0.0`       | promoted to workspace member at v0.2.0 (ADR-0015)     |
+| crates.io | `vernier-cli`   | `NoeFontana` | `0.0.0`       | promoted to workspace member per ADR-0015             |
 | PyPI      | `vernier`       | `NoeFontana` | `0.0.0`       | placeholder                                           |
 
 Each v0.0.0 artifact is a deliberately empty placeholder. The skeletons
@@ -36,7 +36,10 @@ The real `vernier-core` already exists at `crates/vernier-core/` in the
 workspace. Publishing it today would commit us to whatever
 half-implemented public API happens to be there, and crates.io versions
 are immutable. The placeholder skeleton publishes a deliberately empty
-v0.0.0 and lets the real crate evolve in-tree until we cut a real v0.1.0.
+v0.0.0 and lets the real crate evolve in-tree under 0.0.x patches —
+the project ships v0.0.1, v0.0.2, … until the core and extended feature
+set is complete. Moving to a stable 0.1.0+ release line is a deliberate
+later decision.
 
 The placeholder for the umbrella `vernier` crate is similarly throwaway.
 Eventually that name will host the user-facing crate; until we know what
@@ -50,8 +53,9 @@ org) baked in. crates.io does **not** allow editing or re-publishing a
 version, only yanking — so v0.0.0 will keep that stale URL forever.
 
 Action: nothing. The in-tree skeletons have been corrected to
-`https://github.com/NoeFontana/vernier`, so v0.0.1+ will be right. Nobody
-reads the metadata of a v0.0.0 placeholder.
+`https://github.com/NoeFontana/vernier`, so 0.0.x patches (v0.0.1,
+v0.0.2, …) will be right. Nobody reads the metadata of a v0.0.0
+placeholder.
 
 ## Auth
 
@@ -101,7 +105,7 @@ For PyPI, push the workflow to `main`, then trigger
 `PyPI Reserve` from the GitHub Actions UI (or `gh workflow run
 pypi-reserve.yml`).
 
-## Publishing the real v0.1.0
+## Publishing the real crates
 
 When the real implementation lands, the reservation skeletons can be
 deleted from the tree (the on-registry artifacts are what hold the names).
@@ -110,11 +114,16 @@ The publish path then becomes:
 
 - **crates.io**: `cargo publish` from each real crate (`crates/vernier-core/`,
   the eventual `crates/vernier/` umbrella, etc.). The first
-  non-placeholder version must be `>= 0.1.0` since v0.0.0 is taken.
+  non-placeholder version must be `>= 0.0.1` since v0.0.0 is taken;
+  the project ships under 0.0.x patches until the core and extended
+  feature set is complete.
 - **PyPI**: re-point the trusted publisher at `wheels.yml`, uncomment the
-  release block at the bottom of that workflow, and tag a `v0.1.0`
-  release. The maturin pipeline builds linux/macos/windows wheels and
-  uploads them via OIDC.
+  release block at the bottom of that workflow, and tag the corresponding
+  `v0.0.x` release. The maturin pipeline builds linux/macos/windows
+  wheels and uploads them via OIDC.
+
+The first move to `0.1.0+` is a deliberate, separate decision (likely
+warrants its own ADR for stability commitments) — not a routine publish.
 
 ## Yank / transfer policy
 
