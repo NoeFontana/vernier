@@ -1,0 +1,11 @@
+{
+  "images": [
+    {"id": 1, "width": 100, "height": 100, "file_name": "img1.jpg"}
+  ],
+  "categories": [
+    {"id": 1, "name": "obj"}
+  ],
+  "annotations": [
+    {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10.0, 10.0, 20.0, 20.0], "area": 400.0, "iscrowd": 0}
+  ]
+}

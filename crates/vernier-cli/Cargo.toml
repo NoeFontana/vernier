@@ -1,0 +1,31 @@
+[package]
+name = "vernier-cli"
+description = "Command-line driver for the vernier evaluation library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["evaluation", "cli", "computer-vision", "detection", "coco"]
+categories = ["science", "computer-vision", "command-line-utilities"]
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "vernier"
+path = "src/main.rs"
+
+[dependencies]
+# Pure-Rust dep tree per ADR-0015: the binary links `vernier-core`
+# directly and never touches PyO3. `vernier-ffi` is deliberately absent.
+vernier-core = { path = "../vernier-core", version = "0.0.0" }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
