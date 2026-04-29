@@ -81,7 +81,10 @@ use crate::error::EvalError;
 use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
 use crate::segmentation::Segmentation;
-use crate::similarity::{BboxAnn, BboxIou, BoundaryIou, SegmAnn, SegmIou, Similarity};
+use crate::similarity::{
+    BboxAnn, BboxIou, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmIou, Similarity,
+};
+use std::collections::HashMap;
 use vernier_mask::Rle;
 
 /// Sentinel `category_id` emitted on every cell when `use_cats=false`.
@@ -208,6 +211,20 @@ pub trait EvalKernel: Similarity {
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<Self::Annotation>, EvalError>;
+
+    /// Optional kernel-specific GT ignore override. Default `false` (no
+    /// kernel reason to ignore).
+    ///
+    /// The orchestrator OR-s the result with the dataset-level
+    /// [`CocoAnnotation::effective_ignore`] (quirk **D1**) when building
+    /// `gt_base_ignore`. [`OksSimilarity`] overrides this to fold in
+    /// quirk **D2** (`strict`): GT with zero visible keypoints is
+    /// treated as an implicit ignore region, OR-ed with the existing
+    /// ignore. Bbox / segm / boundary kernels keep the default — D2 is
+    /// keypoints-specific and must not bleed across kernels.
+    fn extra_gt_ignore(&self, _ann: &CocoAnnotation) -> bool {
+        false
+    }
 }
 
 impl EvalKernel for BboxIou {
@@ -283,6 +300,101 @@ impl EvalKernel for BoundaryIou {
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
         build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+    }
+}
+
+impl EvalKernel for OksSimilarity {
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        _image: &ImageMeta,
+    ) -> Result<Vec<OksAnn>, EvalError> {
+        indices
+            .iter()
+            .map(|&j| {
+                let ann = &gt_anns[j];
+                let kps = ann.keypoints.as_deref().ok_or_else(|| {
+                    missing_keypoints_err("GT", ann.id.0, ann.image_id.0)
+                })?;
+                let num_keypoints = ann
+                    .num_keypoints
+                    .unwrap_or_else(|| count_visible_keypoints(kps));
+                Ok(OksAnn {
+                    category_id: ann.category_id.0,
+                    keypoints: kps.to_vec(),
+                    num_keypoints,
+                    bbox: ann.bbox.into(),
+                    area: ann.area,
+                })
+            })
+            .collect()
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        _image: &ImageMeta,
+        _parity_mode: ParityMode,
+    ) -> Result<Vec<OksAnn>, EvalError> {
+        // E2/J4: DT never carries crowd. There is no parity-mode J2
+        // analog for keypoints — pycocotools has no bbox→keypoint
+        // synthesis path, so a missing `keypoints` field is always an
+        // [`EvalError::InvalidAnnotation`] regardless of mode.
+        indices
+            .iter()
+            .map(|&j| {
+                let dt = &dt_anns[j];
+                let kps = dt.keypoints.as_deref().ok_or_else(|| {
+                    missing_keypoints_err("DT", dt.id.0, dt.image_id.0)
+                })?;
+                let num_keypoints = dt
+                    .num_keypoints
+                    .unwrap_or_else(|| count_visible_keypoints(kps));
+                Ok(OksAnn {
+                    category_id: dt.category_id.0,
+                    keypoints: kps.to_vec(),
+                    num_keypoints,
+                    bbox: dt.bbox.into(),
+                    area: dt.area,
+                })
+            })
+            .collect()
+    }
+
+    fn extra_gt_ignore(&self, ann: &CocoAnnotation) -> bool {
+        // D2 (`strict`): GT with zero visible keypoints is an implicit
+        // ignore region. Annotations without a `keypoints` field at all
+        // are treated as zero-visible — `build_gt_anns` will reject
+        // them downstream, but this hook runs before that and must
+        // stay total.
+        let visible = ann
+            .num_keypoints
+            .or_else(|| ann.keypoints.as_deref().map(count_visible_keypoints))
+            .unwrap_or(0);
+        visible == 0
+    }
+}
+
+/// Count of *visible* keypoints (`v > 0`) in a flat
+/// `[x, y, v, ...]` triplet vector. Used as the fallback for
+/// pycocotools-precomputed `num_keypoints` on inputs that omit it.
+fn count_visible_keypoints(kps: &[f64]) -> u32 {
+    kps.chunks_exact(3).filter(|t| t[2] > 0.0).count() as u32
+}
+
+/// OKS path equivalent of [`missing_segmentation_err`] — names the
+/// offending kind/id/image when a `keypoints` field is required and
+/// absent. Unlike segm there is no parity-mode escape hatch.
+fn missing_keypoints_err(kind: &str, ann_id: i64, image_id: i64) -> EvalError {
+    EvalError::InvalidAnnotation {
+        detail: format!(
+            "{kind} id={ann_id} on image {image_id} has no `keypoints` field; \
+             OKS eval requires keypoints on every entry. There is no \
+             pycocotools-equivalent bbox-synthesis fallback for keypoints \
+             (unlike segm quirk J2)."
+        ),
     }
 }
 
@@ -523,9 +635,14 @@ pub fn evaluate_with<K: EvalKernel>(
             let gt_areas: Vec<f64> = gt_indices.iter().map(|&j| gt_anns[j].area).collect();
             let gt_iscrowd: Vec<bool> = gt_indices.iter().map(|&j| gt_anns[j].is_crowd).collect();
             // D1: parity-mode fork lives on the annotation; pass through.
+            // Kernel-specific ignore reasons (OKS quirk **D2**) are
+            // OR-ed in via [`EvalKernel::extra_gt_ignore`].
             let gt_base_ignore: Vec<bool> = gt_indices
                 .iter()
-                .map(|&j| gt_anns[j].effective_ignore(parity_mode))
+                .map(|&j| {
+                    gt_anns[j].effective_ignore(parity_mode)
+                        || kernel.extra_gt_ignore(&gt_anns[j])
+                })
                 .collect();
             let gt_ids: Vec<i64> = gt_indices.iter().map(|&j| gt_anns[j].id.0).collect();
             let dt_areas: Vec<f64> = dt_indices.iter().map(|&j| dt_anns[j].area).collect();
@@ -638,6 +755,56 @@ pub fn evaluate_boundary(
     dilation_ratio: f64,
 ) -> Result<EvalGrid, EvalError> {
     evaluate_with(gt, dt, params, parity_mode, &BoundaryIou { dilation_ratio })
+}
+
+/// Run the per-image OKS (`iouType="keypoints"`) evaluation pass per
+/// ADR-0012. Thin wrapper over [`evaluate_with`] with the
+/// [`OksSimilarity`] kernel.
+///
+/// `sigmas` is the per-category sigma override map consumed by
+/// [`OksSimilarity::new`]: an empty map means "use
+/// [`crate::COCO_PERSON_SIGMAS`] for every category" (quirk **F1**,
+/// `corrected`). Sigma resolution rules — including the COCO-person
+/// default and the 17-keypoint length contract — are documented on
+/// [`OksSimilarity`].
+///
+/// ## Caller responsibilities
+///
+/// - **Area ranges (quirk D5).** The keypoints-canonical 3-entry grid
+///   (`all`, `medium`, `large` — pycocotools omits `small`) lives on the
+///   caller side; pass it through `params.area_ranges`. Reusing the
+///   detection-canonical 4-entry grid silently introduces an empty
+///   `small` bucket that diverges from the parity oracle.
+/// - `params.use_cats=true` is the standard configuration for
+///   keypoints; per-category sigmas resolve via [`OksSimilarity`]
+///   regardless.
+///
+/// ## Quirks honored here
+///
+/// - **D2** (`strict`): GT with zero visible keypoints is treated as an
+///   implicit ignore region, OR-ed with the dataset-level ignore
+///   ([`CocoAnnotation::effective_ignore`]) via
+///   [`EvalKernel::extra_gt_ignore`].
+/// - **F1**/**F2**/**F3**/**F4**/**F5**: inherited from
+///   [`OksSimilarity::compute`].
+///
+/// GTs and DTs must carry a `keypoints` field; absence raises
+/// [`EvalError::InvalidAnnotation`]. There is no
+/// parity-mode-conditional bbox synthesis fallback for keypoints (no
+/// J2 analog).
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_keypoints(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    sigmas: HashMap<i64, Vec<f64>>,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with(gt, dt, params, parity_mode, &OksSimilarity::new(sigmas))
 }
 
 fn gt_indices_for_cell(gt: &CocoDataset, image: ImageId, cat: Option<CategoryId>) -> &[usize] {
@@ -808,6 +975,8 @@ mod tests {
                 h: bbox.3,
             },
             segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
         }
     }
 
@@ -824,6 +993,8 @@ mod tests {
                 h: bbox.3,
             },
             segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
         }
     }
 
@@ -1233,6 +1404,8 @@ mod tests {
                 h: bbox.3,
             },
             segmentation: Some(segm),
+            keypoints: None,
+            num_keypoints: None,
         }
     }
 
@@ -1255,6 +1428,8 @@ mod tests {
                 h: bbox.3,
             },
             segmentation: Some(segm),
+            keypoints: None,
+            num_keypoints: None,
         }
     }
 
@@ -1658,6 +1833,354 @@ mod tests {
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
         assert!(all.dt_matched.iter().all(|&m| !m));
+    }
+
+    // ---------------------------------------------------------------
+    // Phase 3: keypoints (OKS) eval pipeline (ADR-0012).
+    // ---------------------------------------------------------------
+
+    /// Builds a flat `[x, y, v, ...]` keypoint vector at a single point.
+    /// `len` controls the per-category sigma length the kernel expects
+    /// (17 for COCO-person).
+    fn const_kps_vec(x: f64, y: f64, v: u32, len: usize) -> Vec<f64> {
+        let mut out = Vec::with_capacity(3 * len);
+        for _ in 0..len {
+            out.push(x);
+            out.push(y);
+            out.push(f64::from(v));
+        }
+        out
+    }
+
+    fn ann_with_kps(
+        id: i64,
+        image: i64,
+        cat: i64,
+        bbox: (f64, f64, f64, f64),
+        keypoints: Vec<f64>,
+        num_keypoints: Option<u32>,
+    ) -> CocoAnnotation {
+        CocoAnnotation {
+            id: AnnId(id),
+            image_id: ImageId(image),
+            category_id: CategoryId(cat),
+            area: bbox.2 * bbox.3,
+            is_crowd: false,
+            ignore_flag: None,
+            bbox: Bbox {
+                x: bbox.0,
+                y: bbox.1,
+                w: bbox.2,
+                h: bbox.3,
+            },
+            segmentation: None,
+            keypoints: Some(keypoints),
+            num_keypoints,
+        }
+    }
+
+    fn dt_input_with_kps(
+        image: i64,
+        cat: i64,
+        score: f64,
+        bbox: (f64, f64, f64, f64),
+        keypoints: Vec<f64>,
+    ) -> DetectionInput {
+        DetectionInput {
+            id: None,
+            image_id: ImageId(image),
+            category_id: CategoryId(cat),
+            score,
+            bbox: Bbox {
+                x: bbox.0,
+                y: bbox.1,
+                w: bbox.2,
+                h: bbox.3,
+            },
+            segmentation: None,
+            keypoints: Some(keypoints),
+            num_keypoints: None,
+        }
+    }
+
+    #[test]
+    fn test_evaluate_keypoints_perfect_match() {
+        // 1 image, 1 GT person, 1 DT person matching exactly. Every
+        // keypoint aligns → OKS = 1.0 → matched at every threshold,
+        // and the meta gt_matches matrix carries the matched DT id.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "person")];
+        let kps = const_kps_vec(50.0, 50.0, 2, 17);
+        let anns = vec![ann_with_kps(
+            1,
+            1,
+            1,
+            (40.0, 40.0, 20.0, 20.0),
+            kps.clone(),
+            None,
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_kps(
+            1,
+            1,
+            0.9,
+            (40.0, 40.0, 20.0, 20.0),
+            kps,
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid =
+            evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
+        let cell = grid.cell(0, 0, 0).unwrap();
+        // gt_ignore is false (visible keypoints), so the GT is in play.
+        assert_eq!(cell.gt_ignore, vec![false]);
+        // Every threshold matches the DT at score 0.9.
+        assert!(cell.dt_matched.iter().all(|&m| m));
+        // Meta carries the matched DT id at every threshold for this GT.
+        let meta = grid.cell_meta(0, 0, 0).unwrap();
+        assert!(
+            meta.gt_matches.iter().all(|&id| id > 0),
+            "every threshold should match the DT id (>0)",
+        );
+    }
+
+    #[test]
+    fn test_evaluate_keypoints_zero_overlap() {
+        // 1 GT and 1 DT keypoints far apart (separated by ~1000 px on
+        // a 10×10 bbox). OKS drops well below 0.5 → no match at any
+        // threshold ≥ 0.5.
+        let images = vec![img(1, 2000, 2000)];
+        let cats = vec![cat(1, "person")];
+        let gt_kps = const_kps_vec(50.0, 50.0, 2, 17);
+        let dt_kps = const_kps_vec(1500.0, 1500.0, 2, 17);
+        let anns = vec![ann_with_kps(
+            1,
+            1,
+            1,
+            (40.0, 40.0, 20.0, 20.0),
+            gt_kps,
+            None,
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_kps(
+            1,
+            1,
+            0.9,
+            (1490.0, 1490.0, 20.0, 20.0),
+            dt_kps,
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid =
+            evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
+        let cell = grid.cell(0, 0, 0).unwrap();
+        assert!(
+            cell.dt_matched.iter().all(|&m| !m),
+            "DTs far from GT should not match at any IoU threshold",
+        );
+    }
+
+    #[test]
+    fn test_evaluate_keypoints_d2_implicit_ignore() {
+        // D2 (`strict`): GT with `num_keypoints == 0` is treated as an
+        // implicit ignore region, OR-ed with the existing ignore. This
+        // GT carries v=0 on every triplet (so num_keypoints derives to
+        // 0 even without the precomputed field) and is not is_crowd.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "person")];
+        let gt_kps = const_kps_vec(50.0, 50.0, 0, 17);
+        let dt_kps = const_kps_vec(50.0, 50.0, 2, 17);
+        let anns = vec![ann_with_kps(
+            1,
+            1,
+            1,
+            (40.0, 40.0, 20.0, 20.0),
+            gt_kps,
+            // Explicit Some(0) covers the precomputed-num_keypoints
+            // path; the kernel treats it identically to deriving from
+            // visibility flags.
+            Some(0),
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![dt_input_with_kps(
+            1,
+            1,
+            0.9,
+            (40.0, 40.0, 20.0, 20.0),
+            dt_kps,
+        )])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid =
+            evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
+        let cell = grid.cell(0, 0, 0).unwrap();
+        assert_eq!(
+            cell.gt_ignore,
+            vec![true],
+            "D2: zero-visible-keypoints GT must be ignored",
+        );
+    }
+
+    #[test]
+    fn test_evaluate_keypoints_per_category_sigmas() {
+        // Two GTs in different categories; sigmas provided per category.
+        // Each row of the OKS matrix uses the right sigma vector — we
+        // verify by asserting the cell evaluates without error and that
+        // both DTs match their same-category GT with the override-tuned
+        // sigmas. We pick large sigmas (0.5) so a 1-pixel offset still
+        // OKS≈1, ensuring matches at every threshold.
+        let images = vec![img(1, 200, 200)];
+        let cats = vec![cat(1, "person"), cat(2, "dog")];
+        let gt_kps = const_kps_vec(50.0, 50.0, 2, 17);
+        let anns = vec![
+            ann_with_kps(1, 1, 1, (40.0, 40.0, 20.0, 20.0), gt_kps, None),
+            ann_with_kps(
+                2,
+                1,
+                2,
+                (140.0, 140.0, 20.0, 20.0),
+                const_kps_vec(150.0, 150.0, 2, 17),
+                None,
+            ),
+        ];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        // DT[0] near GT[0] (cat 1), DT[1] near GT[1] (cat 2). Both off
+        // by 1 pixel.
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input_with_kps(
+                1,
+                1,
+                0.9,
+                (40.0, 40.0, 20.0, 20.0),
+                const_kps_vec(51.0, 50.0, 2, 17),
+            ),
+            dt_input_with_kps(
+                1,
+                2,
+                0.8,
+                (140.0, 140.0, 20.0, 20.0),
+                const_kps_vec(151.0, 150.0, 2, 17),
+            ),
+        ])
+        .unwrap();
+        let mut sigmas: HashMap<i64, Vec<f64>> = HashMap::new();
+        sigmas.insert(1, vec![0.5_f64; 17]);
+        sigmas.insert(2, vec![0.5_f64; 17]);
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let grid = evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, sigmas).unwrap();
+        // K-axis is [cat 1, cat 2]; each cell sees one GT and one DT.
+        let cell_cat1 = grid.cell(0, 0, 0).unwrap();
+        let cell_cat2 = grid.cell(1, 0, 0).unwrap();
+        assert!(
+            cell_cat1.dt_matched.iter().all(|&m| m),
+            "cat-1 DT should match cat-1 GT under override sigmas",
+        );
+        assert!(
+            cell_cat2.dt_matched.iter().all(|&m| m),
+            "cat-2 DT should match cat-2 GT under override sigmas",
+        );
+    }
+
+    #[test]
+    fn test_evaluate_keypoints_missing_dt_kps_rejected() {
+        // DT entry without `keypoints` field → the kernel build path
+        // surfaces InvalidAnnotation. There is no parity-mode J2 analog
+        // for keypoints (no bbox-synthesis fallback).
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "person")];
+        let gt_kps = const_kps_vec(50.0, 50.0, 2, 17);
+        let anns = vec![ann_with_kps(
+            1,
+            1,
+            1,
+            (40.0, 40.0, 20.0, 20.0),
+            gt_kps,
+            None,
+        )];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        // DT has bbox + score but no keypoints — uses the existing
+        // bbox-only `dt_input` helper.
+        let dts =
+            CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (40.0, 40.0, 20.0, 20.0))]).unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        let err = evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new())
+            .unwrap_err();
+        match err {
+            EvalError::InvalidAnnotation { detail } => {
+                assert!(detail.contains("DT"), "expected DT in msg: {detail}");
+                assert!(
+                    detail.contains("keypoints"),
+                    "expected keypoints in msg: {detail}",
+                );
+            }
+            other => panic!("expected InvalidAnnotation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_keypoints_default_ignore_for_other_kernels() {
+        // The D2 implicit-ignore clause must not bleed across kernels.
+        // BboxIou::extra_gt_ignore (default impl) returns false even for
+        // an annotation with num_keypoints=0; only OksSimilarity
+        // overrides it.
+        let ann_zero_kps = ann_with_kps(
+            1,
+            1,
+            1,
+            (0.0, 0.0, 10.0, 10.0),
+            const_kps_vec(0.0, 0.0, 0, 17),
+            Some(0),
+        );
+        assert!(
+            !BboxIou.extra_gt_ignore(&ann_zero_kps),
+            "BboxIou must keep the default `false` ignore",
+        );
+        assert!(
+            !SegmIou.extra_gt_ignore(&ann_zero_kps),
+            "SegmIou must keep the default `false` ignore",
+        );
+        assert!(
+            !BoundaryIou {
+                dilation_ratio: 0.02,
+            }
+            .extra_gt_ignore(&ann_zero_kps),
+            "BoundaryIou must keep the default `false` ignore",
+        );
+        // And the OKS kernel does flip it on the same annotation.
+        assert!(
+            OksSimilarity::default().extra_gt_ignore(&ann_zero_kps),
+            "OksSimilarity must flip D2 to true on zero-visible-keypoints GT",
+        );
     }
 
     #[test]

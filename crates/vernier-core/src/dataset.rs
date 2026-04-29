@@ -168,6 +168,18 @@ pub struct CocoAnnotation {
     /// [`Segmentation::to_rle`] at eval time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segmentation: Option<Segmentation>,
+    /// Flat keypoint triplets `[x_1, y_1, v_1, x_2, y_2, v_2, ...]`
+    /// (per ADR-0012). `None` for non-keypoint annotations; the eval
+    /// pipeline raises [`EvalError::InvalidAnnotation`] when a GT is
+    /// missing keypoints under `iouType="keypoints"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keypoints: Option<Vec<f64>>,
+    /// COCO `num_keypoints` count of *visible* keypoints (`v > 0`),
+    /// per ADR-0012. pycocotools precomputes this on GT (driving the
+    /// quirk **D2** implicit-ignore branch); on DT it is not required
+    /// and is derived from `keypoints` when needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_keypoints: Option<u32>,
 }
 
 impl CocoAnnotation {
@@ -464,6 +476,16 @@ pub struct CocoDetection {
     /// for bbox-only detectors. Parity dispositions match
     /// [`CocoAnnotation::segmentation`].
     pub segmentation: Option<Segmentation>,
+    /// Flat keypoint triplets `[x_1, y_1, v_1, x_2, y_2, v_2, ...]`
+    /// (per ADR-0012). `None` for bbox-/segm-only detectors; the eval
+    /// pipeline raises [`EvalError::InvalidAnnotation`] when a DT is
+    /// missing keypoints under `iouType="keypoints"`.
+    pub keypoints: Option<Vec<f64>>,
+    /// COCO `num_keypoints` count of *visible* keypoints. On DT this
+    /// field is not required (pycocotools never reads it); the OKS
+    /// pipeline derives it from `keypoints` when needed. Tracked here
+    /// for shape-parity with [`CocoAnnotation::num_keypoints`].
+    pub num_keypoints: Option<u32>,
 }
 
 impl Annotation for CocoDetection {
@@ -504,6 +526,14 @@ pub struct DetectionInput {
     /// [`Segmentation::to_rle`] at eval time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub segmentation: Option<Segmentation>,
+    /// Optional keypoint prediction (flat `[x, y, v, ...]` triplets,
+    /// per ADR-0012). `None` for non-keypoint detectors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keypoints: Option<Vec<f64>>,
+    /// Optional `num_keypoints` count. The OKS path derives this from
+    /// `keypoints` when absent (DT side does not require it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_keypoints: Option<u32>,
 }
 
 /// COCO detections collection — flat storage plus `(image, category)`-
@@ -556,6 +586,8 @@ impl CocoDetections {
                 bbox: input.bbox,
                 area: input.bbox.w * input.bbox.h,
                 segmentation: input.segmentation,
+                keypoints: input.keypoints,
+                num_keypoints: input.num_keypoints,
             });
         }
 
@@ -853,6 +885,8 @@ mod tests {
                 h: bbox.3,
             },
             segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
         }
     }
 
@@ -1081,6 +1115,8 @@ mod tests {
                     ignore_flag: None,
                     bbox: Bbox { x: 0.0, y: 0.0, w: 1.0, h: 1.0 },
                     segmentation: None,
+                    keypoints: None,
+                    num_keypoints: None,
                 });
             }
 
