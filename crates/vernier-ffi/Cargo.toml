@@ -21,8 +21,17 @@ default = []
 # `cargo test -p vernier-ffi` still links (extension-module breaks
 # linking against libpython on most platforms).
 extension-module = ["pyo3/extension-module"]
+# Enables `WorkerMessage::Poison` and `BackgroundEvaluator::_inject_poison_for_tests`
+# for the panic-recovery test in tests/python/background/. CI runs
+# `maturin develop --features test-poison` for that single job.
+test-poison = []
 
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.0.0" }
 pyo3.workspace = true
 numpy.workspace = true
+# FFI-internal scheduling deps for the background evaluator (ADR-0014).
+# Both are best-effort and crate-local; do NOT promote to
+# `[workspace.dependencies]` (only one consumer).
+thread-priority = "1"
+core_affinity = "0.8"
