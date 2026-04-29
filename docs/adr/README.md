@@ -29,6 +29,8 @@ Decision Records). To propose a new ADR:
 | 0010 | Boundary IoU as an isolated subsystem with its own oracle, quirks, and performance baseline | proposed |
 | 0011 | Discriminated kernel config replaces the `iou_type` string literal | accepted |
 | 0012 | OKS keypoints public surface and quirk dispositions      | proposed |
+| 0013 | Streaming evaluator — store per-image evals, fold on snapshot and finalize | accepted |
+| 0014 | `BackgroundEvaluator` — single-worker, bounded-queue async wrapper around `StreamingEvaluator` | accepted |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
