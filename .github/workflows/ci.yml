@@ -1,16 +1,10 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "docs/**"
-      - "**/*.md"
-      - "LICENSE*"
-      - ".gitignore"
-      - "tools/reservations/**"
-      - ".github/workflows/wheels.yml"
-      - ".github/workflows/pypi-reserve.yml"
+  # PR is the gate: every change reaches main through a PR, and the PR
+  # CI tests that exact merge commit. Re-running everything on push to
+  # main would just duplicate work — `wheels.yml` covers tag-time
+  # release builds.
   pull_request:
     paths-ignore:
       - "docs/**"
@@ -117,8 +111,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Narrow on PR (abi3 floor + ceiling); full sweep on push to main.
-        python-version: ${{ github.event_name == 'pull_request' && fromJSON('["3.10", "3.14"]') || fromJSON('["3.10", "3.11", "3.12", "3.13", "3.14"]') }}
+        # abi3 floor + ceiling. The middle versions (3.11/3.12/3.13)
+        # share the same abi3-py310 wheel, so per-version test runs are
+        # rarely informative; a monthly cron could backfill if needed.
+        python-version: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
