@@ -31,6 +31,7 @@ Decision Records). To propose a new ADR:
 | 0012 | OKS keypoints public surface and quirk dispositions      | proposed |
 | 0013 | Streaming evaluator — store per-image evals, fold on snapshot and finalize | accepted |
 | 0014 | `BackgroundEvaluator` — single-worker, bounded-queue async wrapper around `StreamingEvaluator` | accepted |
+| 0015 | Ship `vernier-cli` as a workspace binary that links `vernier-core` directly | proposed |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
