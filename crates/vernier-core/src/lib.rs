@@ -17,6 +17,7 @@
 
 pub mod accumulate;
 pub mod boundary_parity;
+pub mod breakdown;
 pub mod dataset;
 pub mod error;
 pub mod evaluate;
@@ -30,6 +31,7 @@ pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, P
 pub use boundary_parity::{
     BOUNDARY_DILATION_RATIO_DEFAULT, BOUNDARY_PARITY_EPS, ORACLE_COMMIT_SHA, ORACLE_OPENCV_PIN,
 };
+pub use breakdown::{Breakdown, Bucket};
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
     CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, ImageId, ImageMeta,
