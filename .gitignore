@@ -33,6 +33,7 @@ dist/
 /python/vernier/_core*.pyd
 
 # Editors
+.claude/
 .idea/
 .vscode/
 *.swp
