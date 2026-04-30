@@ -20,7 +20,7 @@ path = "src/main.rs"
 [dependencies]
 # Pure-Rust dep tree per ADR-0015: the binary links `vernier-core`
 # directly and never touches PyO3. `vernier-ffi` is deliberately absent.
-vernier-core = { path = "../vernier-core", version = "0.0.0" }
+vernier-core = { path = "../vernier-core", version = "0.0.1" }
 clap = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

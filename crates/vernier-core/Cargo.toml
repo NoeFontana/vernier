@@ -21,7 +21,7 @@ serde_json = { workspace = true }
 pulp.workspace = true
 # Pure-Rust mask kernels per ADR-0009. One-way dependency: core consumes
 # the codec/rasterizer/ops surface; mask never depends on core.
-vernier-mask = { path = "../vernier-mask", version = "0.0.0" }
+vernier-mask = { path = "../vernier-mask", version = "0.0.1" }
 
 [dev-dependencies]
 proptest = { workspace = true }
