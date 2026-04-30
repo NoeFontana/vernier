@@ -17,11 +17,17 @@ sdist   ─┤            ├─► publish-pypi      (env: pypi,      OIDC → 
 verify-tag ──────────────► (gates both publish jobs)
 ```
 
-Both publish jobs are gated by GitHub `environment:` rules — a required
-reviewer must approve in the Actions UI before any bytes upload. PyPI
-permits yank but never re-upload of the same version; crates.io permits
-yank only as a deprecation signal. A mistaken publish costs a patch
-bump, so the manual gate is a deliberate speed bump.
+Neither publish job is wrapped in a GitHub `environment:` for now —
+GitHub Actions only enforces the required-reviewer protection rule on
+private repos under Pro/Team tiers, and this repo is free-tier
+private. An empty `environment:` field is worse than none (it implies
+a checkpoint that doesn't actually fire), so the workflow relies on
+`verify-tag` plus deliberate tag pushes as its safety net. PyPI
+permits yank but never re-upload of the same version; crates.io
+permits yank only as a deprecation signal. A mistaken publish costs a
+patch bump, so the recommendation when this repo goes public — or
+upgrades to a tier that enforces environment protections — is to put
+the gate back; the runbook calls out the spot.
 
 ## One-time setup
 
@@ -31,9 +37,8 @@ Done once per repo, then the per-release flow takes over.
 
 The `vernier` PyPI project already has a Trusted Publisher entry from
 the 0.0.0 reservation, but it's pointed at the now-deleted
-`pypi-reserve.yml` workflow with `Environment: none`. The first tag
-push will fail OIDC matching unless this entry is updated **before**
-pushing `v0.0.1`.
+`pypi-reserve.yml` workflow. The first tag push will fail OIDC
+matching unless this entry is updated **before** pushing `v0.0.1`.
 
 At <https://pypi.org/manage/project/vernier/settings/publishing/>,
 edit the existing entry (or delete + re-add) so it reads:
@@ -41,12 +46,11 @@ edit the existing entry (or delete + re-add) so it reads:
 - Owner: `NoeFontana`
 - Repository: `vernier`
 - Workflow: `wheels.yml`
-- Environment: `pypi`
+- Environment: *(leave blank)*
 
-The environment field is what binds the publisher to the
-`environment: pypi` gate in the `publish-pypi` job — without it, the
-required-reviewer checkpoint is bypassed even if the workflow asks
-for it.
+When the repo eventually goes public — or this account upgrades to a
+tier that enforces environment protection rules — set Environment to
+`pypi` and add `environment: pypi` to the `publish-pypi` job.
 
 ### 2. crates.io Trusted Publishers (one entry per crate)
 
@@ -56,9 +60,13 @@ the three published crates needs its own configuration at
 
 | Crate | Repository | Workflow | Environment |
 |---|---|---|---|
-| `vernier-mask` | `NoeFontana/vernier` | `wheels.yml` | `crates-io` |
-| `vernier-core` | `NoeFontana/vernier` | `wheels.yml` | `crates-io` |
-| `vernier-cli`  | `NoeFontana/vernier` | `wheels.yml` | `crates-io` |
+| `vernier-mask` | `NoeFontana/vernier` | `wheels.yml` | *(blank)* |
+| `vernier-core` | `NoeFontana/vernier` | `wheels.yml` | *(blank)* |
+| `vernier-cli`  | `NoeFontana/vernier` | `wheels.yml` | *(blank)* |
+
+When the repo goes public, set Environment to `crates-io` for each
+entry and add `environment: crates-io` to the `publish-crates-io`
+job.
 
 `vernier-ffi` is `publish = false` (ships only inside the wheel) and
 the top-level `vernier` crate name is held by the placeholder under
@@ -72,15 +80,10 @@ bootstrap" below.
 
 ### 3. GitHub repo environments
 
-In `Settings → Environments`, create two environments:
-
-- **`pypi`** — required reviewer: repo owner. No deployment branch
-  restrictions (the `if: startsWith(github.ref, 'refs/tags/v')` on the
-  job already constrains who can trigger it).
-- **`crates-io`** — same.
-
-The required-reviewer gate is the one human checkpoint between a
-pushed tag and an irreversible publish.
+Skipped while this repo is free-tier private — the protection rules
+that would make the gate worth setting up are paid features. When
+that changes, see the inline notes in §1 and §2 above for the bits
+to flip.
 
 ## First release bootstrap (v0.0.1 only)
 
@@ -143,18 +146,18 @@ git switch main && git pull --ff-only
 git tag -s vX.Y.Z -m "Release X.Y.Z"
 git push origin vX.Y.Z
 
-# 3. The tag push triggers wheels.yml. Watch the run:
+# 3. The tag push triggers wheels.yml. Watch the run; verify-tag is
+#    the only checkpoint between the tag and the irreversible publish.
 gh run watch --exit-status
 
-# 4. When publish-pypi and publish-crates-io enter the "Waiting" state,
-#    review the run summary at https://github.com/NoeFontana/vernier/actions
-#    and approve each environment. The verify-tag job has already
-#    confirmed the tag matches workspace + pyproject.
-
-# 5. Smoke-verify the published artifacts.
+# 4. Smoke-verify the published artifacts.
 pip install --no-cache-dir vernier==X.Y.Z
 cargo install --version X.Y.Z vernier-cli  # or `cargo add vernier-core` in a scratch crate
 ```
+
+> **No manual approval gate.** Tag push goes straight through to
+> publish — there is no "Waiting for approval" step. Push the tag
+> only when the release PR is fully merged and you're committed.
 
 ## Rollback / failure modes
 

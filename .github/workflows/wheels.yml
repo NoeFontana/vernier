@@ -173,17 +173,21 @@ jobs:
 
   # PyPI publish via Trusted Publisher (OIDC — no API token stored in
   # GitHub secrets). Requires the `vernier` Trusted Publisher set up at
-  # https://pypi.org/manage/account/publishing/ and the `pypi`
-  # environment configured in repo settings with required reviewers.
-  # The environment gate gives a human a chance to abort before any
-  # bytes are uploaded — PyPI permits yank but never re-upload of the
-  # same version, so a mistake here costs a patch bump.
+  # https://pypi.org/manage/account/publishing/ pointing at this
+  # workflow with `Environment` left blank.
+  #
+  # No `environment:` gate on the job: GitHub Actions only enforces the
+  # required-reviewer protection rule on private repos under Pro/Team
+  # tiers. On free-tier private repos the gate is a no-op, which is
+  # worse than no gate (it implies a checkpoint that doesn't exist).
+  # `verify-tag` plus deliberate tag pushes are the safety net; revisit
+  # this when the repo goes public or upgrades to a tier that enforces
+  # environment protections.
   publish-pypi:
     name: publish to PyPI
     needs: [linux, macos, windows, smoke, sdist, verify-tag]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    environment: pypi
     permissions:
       id-token: write   # OIDC for Trusted Publisher
     steps:
@@ -201,8 +205,13 @@ jobs:
   # crates.io publish via Trusted Publisher (OIDC — no
   # CARGO_REGISTRY_TOKEN secret). Requires Trusted Publishers set up at
   # https://crates.io/me/trusted-publishers FOR EACH crate
-  # (`vernier-mask`, `vernier-core`, `vernier-cli`) — crates.io scopes
-  # publishers per crate, unlike PyPI's per-project scope.
+  # (`vernier-mask`, `vernier-core`, `vernier-cli`) with `Environment`
+  # left blank — crates.io scopes publishers per crate, unlike PyPI's
+  # per-project scope.
+  #
+  # No `environment:` gate on the job for the same reason as
+  # `publish-pypi` above: free-tier private-repo environments don't
+  # enforce protection rules.
   #
   # Order matters: `vernier-cli` and `vernier-ffi` depend on
   # `vernier-core` which depends on `vernier-mask`. Modern cargo
@@ -214,7 +223,6 @@ jobs:
     needs: [linux, macos, windows, smoke, verify-tag]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
-    environment: crates-io
     permissions:
       id-token: write   # OIDC for crates-io-auth-action
       contents: read    # actions/checkout
