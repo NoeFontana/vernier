@@ -13,7 +13,6 @@ on:
       - ".gitignore"
       - "tools/reservations/**"
       - ".github/workflows/wheels.yml"
-      - ".github/workflows/pypi-reserve.yml"
 
 env:
   CARGO_TERM_COLOR: always

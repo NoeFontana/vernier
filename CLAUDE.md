@@ -62,5 +62,5 @@ The parity harness (`tests/python/parity/harness.py`) double-runs reference and 
 ## Non-trivial workflows
 
 - **Adding a quirk-driven test:** put a fixture in `tests/python/parity/fixtures/<name>/{gt,dt}.json`, add the name to `ALL_FIXTURES` in `tests/python/parity/test_parity.py`. The disposition table in `docs/engineering/pycocotools-quirks.md` is the canonical index — cite quirks by ID (e.g., "B1", "D6").
-- **Reserving a new registry name:** edit `tools/reservations/`, then `./tools/reservations/reserve.sh --publish` (crates.io) or trigger `pypi-reserve.yml` (PyPI). Don't expect this to interact with the workspace.
+- **Reserving a new registry name:** edit `tools/reservations/`, then `./tools/reservations/reserve.sh --publish` (crates.io). PyPI reservations are now folded into the release path — see `docs/engineering/release-runbook.md`. Don't expect either to interact with the workspace.
 - **Committing:** conventional commits encouraged. `just lint && just test && just audit` mirrors CI.

@@ -60,6 +60,7 @@ placeholder.
 ## Auth
 
 ### crates.io
+For **reservation crates** (the placeholders under `tools/reservations/`):
 API token, scoped to `publish-new` and `publish-update` for the four
 reserved crate names. Either:
 
@@ -67,9 +68,12 @@ reserved crate names. Either:
 - `CARGO_REGISTRY_TOKEN=<token> ./tools/reservations/reserve.sh --publish`
   — ephemeral, scoped to the one invocation.
 
-There is **no automated crates.io publish**. crates.io versions are
-irreversible; gating publishes behind a manual local command keeps the
-mistake-blast-radius small.
+For **real crate releases** (`vernier-mask` / `vernier-core` /
+`vernier-cli`): Trusted Publisher (OIDC) wired through
+`wheels.yml` on `v*` tag push. See
+[`release-runbook.md`](release-runbook.md) for the operator flow,
+including the one-time per-crate setup at
+<https://crates.io/me/trusted-publishers>.
 
 ### PyPI
 Trusted Publisher (OIDC) configured at
@@ -78,14 +82,18 @@ Trusted Publisher (OIDC) configured at
 - PyPI project: `vernier`
 - Owner: `NoeFontana`
 - Repository: `vernier`
-- Workflow: `pypi-reserve.yml` (for the placeholder) /
-  `wheels.yml` (for the eventual real wheel — currently the OIDC publish
-  step is stubbed out at the bottom of that file)
-- Environment: none
+- Workflow: `wheels.yml`
+- Environment: `pypi`
 
 No API token is stored anywhere. The GHA workflow's `id-token: write`
 permission lets GitHub mint a short-lived OIDC token that PyPI matches
 against the configured trusted publisher.
+
+> **Migration note.** The original 0.0.0 reservation was published via
+> the now-deleted `pypi-reserve.yml` with `Environment: none`. Before
+> the v0.0.1 publish, the trusted-publisher entry must be re-pointed
+> at `Workflow: wheels.yml` + `Environment: pypi` — see
+> [`release-runbook.md`](release-runbook.md) §"One-time setup".
 
 ## Publishing the placeholders
 
@@ -101,9 +109,9 @@ cargo login <token>
 ./tools/reservations/reserve.sh --publish --only vernier-mask
 ```
 
-For PyPI, push the workflow to `main`, then trigger
-`PyPI Reserve` from the GitHub Actions UI (or `gh workflow run
-pypi-reserve.yml`).
+For PyPI, the v0.0.0 reservation has already shipped. Future PyPI
+publishes ride `wheels.yml` on tag push — see
+[`release-runbook.md`](release-runbook.md).
 
 ## Publishing the real crates
 
@@ -112,15 +120,15 @@ deleted from the tree (the on-registry artifacts are what hold the names).
 
 The publish path then becomes:
 
-- **crates.io**: `cargo publish` from each real crate (`crates/vernier-core/`,
-  the eventual `crates/vernier/` umbrella, etc.). The first
-  non-placeholder version must be `>= 0.0.1` since v0.0.0 is taken;
-  the project ships under 0.0.x patches until the core and extended
-  feature set is complete.
-- **PyPI**: re-point the trusted publisher at `wheels.yml`, uncomment the
-  release block at the bottom of that workflow, and tag the corresponding
-  `v0.0.x` release. The maturin pipeline builds linux/macos/windows
-  wheels and uploads them via OIDC.
+- **crates.io**: `cargo publish` runs from `wheels.yml`'s
+  `publish-crates-io` job on `v*` tag push, in dependency order
+  (`vernier-mask` → `vernier-core` → `vernier-cli`) via Trusted
+  Publishers. The first non-placeholder version must be `>= 0.0.1`
+  since v0.0.0 is taken; the project ships under 0.0.x patches until
+  the core and extended feature set is complete. The `vernier`
+  umbrella name stays at 0.0.0 indefinitely.
+- **PyPI**: `wheels.yml`'s `publish-pypi` job uploads linux/macos/windows
+  wheels + sdist on tag push, gated by the `pypi` environment.
 
 The first move to `0.1.0+` is a deliberate, separate decision (likely
 warrants its own ADR for stability commitments) — not a routine publish.
