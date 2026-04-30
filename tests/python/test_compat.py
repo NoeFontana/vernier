@@ -289,7 +289,7 @@ def test_keypoints_custom_sigmas_propagates_to_kernel(
     for i in range(0, len(shifted_kps), 3):
         shifted_kps[i] += 5.0
     shifted_dt[0]["keypoints"] = shifted_kps
-    res = gt.loadRes(shifted_dt)
+    res = gt.loadRes(shifted_dt)  # pyright: ignore[reportArgumentType]
 
     default = COCOeval(gt, res, iouType="keypoints")
     default.evaluate()

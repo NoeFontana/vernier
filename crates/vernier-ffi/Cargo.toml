@@ -27,7 +27,7 @@ extension-module = ["pyo3/extension-module"]
 test-poison = []
 
 [dependencies]
-vernier-core = { path = "../vernier-core", version = "0.0.0" }
+vernier-core = { path = "../vernier-core", version = "0.0.1" }
 pyo3.workspace = true
 numpy.workspace = true
 # FFI-internal scheduling deps for the background evaluator (ADR-0014).
