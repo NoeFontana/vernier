@@ -49,3 +49,11 @@ perf.data*
 # COCO val2017 parity cache (license-restricted; see
 # docs/engineering/coco-val-parity.md).
 /.cache/
+
+# Bench harness (ADR-0017) — results, profiles, and per-env venvs are
+# all dev-machine-local. Sync state via `just bench-sync`.
+/bench/results/
+/bench/profiles/
+/bench/.venv/
+/bench/envs/*/.venv/
+/bench/uv.lock.bak

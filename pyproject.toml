@@ -94,10 +94,13 @@ src = ["python", "tests/python"]
 # upstream code (BSD-2-Clause). Linting it is both pointless (we don't
 # modify it) and incorrect (we'd be enforcing our style on someone else's
 # project). See VENDORING.md alongside.
+# bench/ is the local-only benchmark harness (ADR-0017) — it has its own
+# pyproject.toml + ruff config and is linted via its own pipeline.
 extend-exclude = [
     "target",
     ".venv",
     "tests/python/parity_boundary/oracle/boundary_iou_api",
+    "bench",
 ]
 
 [tool.ruff.lint]
@@ -131,6 +134,8 @@ exclude = [
     ".venv",
     # Verbatim vendored upstream — see VENDORING.md alongside.
     "tests/python/parity_boundary/oracle/boundary_iou_api",
+    # ADR-0017 bench harness — typed independently from its own pyproject.
+    "bench",
 ]
 strict = ["python/vernier"]
 pythonVersion = "3.10"
