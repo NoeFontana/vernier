@@ -53,6 +53,13 @@ manifest-path = "crates/vernier-ffi/Cargo.toml"
 python-source = "python"
 features = ["pyo3/extension-module", "extension-module"]
 strip = true
+# Maturin's sdist is rooted at the FFI crate manifest above, so repo-root
+# files (LICENSE-*, …) need an explicit include — without this, PKG-INFO
+# declares License-File entries that PyPI rejects as missing on upload.
+include = [
+    { path = "LICENSE-APACHE", format = "sdist" },
+    { path = "LICENSE-MIT",    format = "sdist" },
+]
 
 # ---------------------------------------------------------------------------
 # uv dev dependencies (PEP 735)
