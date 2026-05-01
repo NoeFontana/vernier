@@ -1,0 +1,25 @@
+[project]
+name = "vernier-bench-env-vernier"
+version = "0.0.0"
+description = "uv env for the vernier runner subprocess (ADR-0017)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# This env exists only to materialize a venv with the right dep set —
+# the runner module is imported from the ``vernier-bench`` package the
+# parent directory provides. uv treats this as a non-package project.
+dependencies = [
+    "vernier",
+    "vernier-bench",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+]
+
+# Path-deps. ``uv sync`` invokes maturin to build vernier from the repo
+# root and hatchling to build vernier-bench from ``../../`` .
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+vernier = { path = "../../..", editable = false }
+vernier-bench = { path = "../..", editable = false }

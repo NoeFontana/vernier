@@ -1,0 +1,41 @@
+[project]
+name = "vernier-bench"
+version = "0.0.0"
+description = "Local benchmarking harness for vernier (ADR-0017)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+# Harness orchestrator deps. The runner subprocesses live in
+# envs/<impl>/ with their own dep sets — the orchestrator does not
+# import vernier, pycocotools, faster-coco-eval, or boundary-iou-api.
+dependencies = [
+    "click>=8.1",
+    "numpy>=2.0",
+    "polars>=1.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+vernier-bench = "bench.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["bench"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "N", "PT"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"

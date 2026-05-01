@@ -1,0 +1,10 @@
+# Local-only artifacts. Anything not listed here is checked in (the
+# harness sources, per-env pyproject + uv.lock pairs, the boundary-iou
+# oracle symlink), so a fresh clone can `just bench-sync` and run.
+results/
+profiles/
+.venv/
+envs/*/.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/

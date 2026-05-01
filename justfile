@@ -75,10 +75,24 @@ fmt:
 # Benchmarks
 # ---------------------------------------------------------------------------
 
-# Run microbenchmarks (divan). Dev-only — divan is a dev-dep and never
+# Run Rust microbenchmarks (divan). Dev-only — divan is a dev-dep and never
 # linked into the production wheel or any non-bench target.
-bench:
+ubench:
     cargo bench --workspace
+
+# Sync the local bench harness env and per-impl envs (ADR-0017).
+bench-sync:
+    uv sync --directory bench
+    uv sync --directory bench/envs/vernier
+
+# Run the bench harness's own pytest suite. Isolated from `just test-py`.
+bench-test:
+    uv run --directory bench pytest tests/
+
+# Run the bench harness end-to-end. Forwards all args to `vernier-bench run`.
+# Example: just bench-run --impl vernier --workload smoke --iou bbox
+bench-run *ARGS:
+    uv run --directory bench python -m bench run {{ARGS}}
 
 # ---------------------------------------------------------------------------
 # Audit & maintenance
