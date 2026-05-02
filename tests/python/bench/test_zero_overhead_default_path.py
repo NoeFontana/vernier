@@ -17,7 +17,7 @@ from vernier import Evaluator
 from vernier._core import evaluate_bbox_summary
 
 
-# 16 images × 4 categories — heavy enough for the timer to see the
+# 16 images x 4 categories — heavy enough for the timer to see the
 # Python wrapper overhead, light enough not to slow CI.
 def _build_workload() -> tuple[bytes, bytes]:
     images = [{"id": i, "width": 200, "height": 200} for i in range(1, 17)]

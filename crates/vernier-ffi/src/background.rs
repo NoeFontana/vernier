@@ -31,7 +31,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use vernier_core::{EvalError, EvalKernel, ParsedDetections, StreamingEvaluator, Summary};
+use vernier_core::{
+    EvalError, EvalKernel, ParsedDetections, StreamingEvaluator, Summary, Tables, TablesConfig,
+    TablesRequest,
+};
 
 /// Configuration knobs for the background worker.
 ///
@@ -85,9 +88,24 @@ pub(crate) enum WorkerMessage<K: EvalKernel + Send + 'static> {
         reply: SyncSender<Result<Summary, EvalError>>,
         peek: bool,
     },
+    /// Snapshot variant that also builds the requested result tables.
+    /// `peek` is unused (tables don't have a "running" approximation —
+    /// the tables represent committed state).
+    SnapshotWithTables {
+        reply: SyncSender<Result<(Summary, Tables), EvalError>>,
+        request: TablesRequest,
+        config: TablesConfig,
+    },
     /// Drain and finalize. The worker replies and exits the loop.
     Finalize {
         reply: SyncSender<Result<Summary, EvalError>>,
+    },
+    /// Finalize variant that also builds the requested result tables.
+    /// Worker exits after sending the reply.
+    FinalizeWithTables {
+        reply: SyncSender<Result<(Summary, Tables), EvalError>>,
+        request: TablesRequest,
+        config: TablesConfig,
     },
     /// Cooperative shutdown — the worker exits without finalizing.
     Shutdown,
@@ -330,6 +348,32 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
         }
     }
 
+    /// Tables-aware snapshot. `peek` is ignored — tables only have a
+    /// committed-state interpretation.
+    pub(crate) fn snapshot_with_tables(
+        &self,
+        request: TablesRequest,
+        config: TablesConfig,
+    ) -> Result<(Summary, Tables), EvalError> {
+        self.take_last_error()?;
+        let (reply_tx, reply_rx) = sync_channel::<Result<(Summary, Tables), EvalError>>(1);
+        self.sender
+            .send(WorkerMessage::SnapshotWithTables {
+                reply: reply_tx,
+                request,
+                config,
+            })
+            .map_err(|_| EvalError::InvalidConfig {
+                detail: "background worker is no longer accepting snapshot requests".to_string(),
+            })?;
+        match reply_rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(EvalError::InvalidConfig {
+                detail: "background worker dropped snapshot reply channel".to_string(),
+            }),
+        }
+    }
+
     /// Drain the queue, finalize the evaluator, and join the worker.
     ///
     /// Consumes `self` — the wrapper is unusable afterwards. The FFI
@@ -358,6 +402,44 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
             Ok(Ok(())) => summary,
             // Worker returned cleanly with an error; prefer that over
             // whatever finalize produced.
+            Ok(Err(worker_err)) => Err(worker_err),
+            Err(payload) => Err(EvalError::InvalidConfig {
+                detail: format!("background worker panicked: {payload:?}"),
+            }),
+        }
+    }
+
+    /// Tables-aware finalize. Same shape as [`Self::finalize`]; consumes
+    /// the wrapper.
+    pub(crate) fn finalize_with_tables(
+        self,
+        request: TablesRequest,
+        config: TablesConfig,
+    ) -> Result<(Summary, Tables), EvalError> {
+        self.take_last_error()?;
+        let (reply_tx, reply_rx) = sync_channel::<Result<(Summary, Tables), EvalError>>(1);
+        self.sender
+            .send(WorkerMessage::FinalizeWithTables {
+                reply: reply_tx,
+                request,
+                config,
+            })
+            .map_err(|_| EvalError::InvalidConfig {
+                detail: "background worker is no longer accepting finalize requests".to_string(),
+            })?;
+        let result = match reply_rx.recv() {
+            Ok(r) => r,
+            Err(_) => Err(EvalError::InvalidConfig {
+                detail: "background worker dropped finalize reply channel".to_string(),
+            }),
+        };
+
+        let join_result = match self.take_worker() {
+            Some(handle) => handle.join(),
+            None => return result,
+        };
+        match join_result {
+            Ok(Ok(())) => result,
             Ok(Err(worker_err)) => Err(worker_err),
             Err(payload) => Err(EvalError::InvalidConfig {
                 detail: format!("background worker panicked: {payload:?}"),
@@ -521,11 +603,28 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
                 };
                 let _ = reply.send(s);
             }
+            Ok(WorkerMessage::SnapshotWithTables {
+                reply,
+                request,
+                config,
+            }) => {
+                let s = evaluator.snapshot_with_tables(request, &config);
+                let _ = reply.send(s);
+            }
             Ok(WorkerMessage::Finalize { reply }) => {
                 // `finalize()` consumes the evaluator. The local binding
                 // owns it outright, so the move out of the loop body is
                 // unconditional — reaching this arm always exits the loop.
                 let s = evaluator.finalize();
+                let _ = reply.send(s);
+                return Ok(());
+            }
+            Ok(WorkerMessage::FinalizeWithTables {
+                reply,
+                request,
+                config,
+            }) => {
+                let s = evaluator.finalize_with_tables(request, &config);
                 let _ = reply.send(s);
                 return Ok(());
             }
