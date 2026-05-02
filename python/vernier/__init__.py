@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
-from typing import Final, NoReturn
+from typing import Final, Literal, NoReturn, overload
 
 from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
@@ -22,16 +22,24 @@ from vernier._core import (
     QueueFullError,
     StreamingEvaluator,
     Summary,
+    evaluate_bbox_grid,
     evaluate_bbox_summary,
     evaluate_bbox_summary_with_dataset,
+    evaluate_boundary_grid,
     evaluate_boundary_summary,
     evaluate_boundary_summary_with_dataset,
     evaluate_keypoints_summary,
     evaluate_keypoints_summary_with_dataset,
+    evaluate_segm_grid,
     evaluate_segm_summary,
     evaluate_segm_summary_with_dataset,
+    per_class_to_arrow_pycapsule,
+    per_detection_to_arrow_pycapsule,
+    per_image_to_arrow_pycapsule,
+    per_pair_to_arrow_pycapsule,
     version,
 )
+from vernier._types import EvalResult, TableName, TablesConfig, normalize_tables_arg
 
 __all__ = [
     "BackgroundEvaluator",
@@ -39,6 +47,7 @@ __all__ = [
     "Boundary",
     "COCOeval",
     "Dataset",
+    "EvalResult",
     "Evaluator",
     "IouKind",
     "Keypoints",
@@ -49,6 +58,8 @@ __all__ = [
     "Segm",
     "StreamingEvaluator",
     "Summary",
+    "TableName",
+    "TablesConfig",
     "__version__",
     "version",
 ]
@@ -197,7 +208,34 @@ class Evaluator:
             kwargs["use_cats"] = use_cats
         return replace(self, **kwargs)
 
-    def evaluate(self, gt: bytes | Dataset, dt: bytes) -> Summary:
+    @overload
+    def evaluate(
+        self,
+        gt: bytes | Dataset,
+        dt: bytes,
+        *,
+        tables: None = None,
+        tables_config: TablesConfig | None = None,
+    ) -> Summary: ...
+
+    @overload
+    def evaluate(
+        self,
+        gt: bytes | Dataset,
+        dt: bytes,
+        *,
+        tables: Literal["all"] | tuple[TableName, ...],
+        tables_config: TablesConfig | None = None,
+    ) -> EvalResult: ...
+
+    def evaluate(
+        self,
+        gt: bytes | Dataset,
+        dt: bytes,
+        *,
+        tables: Literal["all"] | tuple[TableName, ...] | None = None,
+        tables_config: TablesConfig | None = None,
+    ) -> Summary | EvalResult:
         """Run the evaluation pipeline against a GT/DT JSON pair.
 
         ``dt`` is the raw COCO JSON payload as bytes (the same shape
@@ -205,8 +243,18 @@ class Evaluator:
         the GT JSON bytes (parse-and-discard, identical to prior
         behavior) or a :class:`Dataset` handle (parsed-once, with the
         cache reused across calls — see ADR-0020).
+
+        ``tables=`` is the opt-in keyword for result tables. Defaults
+        to ``None``, returning :class:`Summary` (existing behavior,
+        bit-identical to 0.0.1). Pass ``"all"`` or a tuple of
+        :data:`TableName`\\ s to opt into the wider :class:`EvalResult`
+        return type.
         """
         max_dets_list = self._resolve_max_dets()
+        if tables is not None:
+            return self._evaluate_with_tables(
+                gt, dt, max_dets_list, tables, tables_config or TablesConfig()
+            )
         if isinstance(gt, Dataset):
             return self._evaluate_with_dataset(gt, dt, max_dets_list)
         match self.iou:
@@ -229,6 +277,106 @@ class Evaluator:
                 )
             case _:
                 _reject_unknown_iou(self.iou)
+
+    def _evaluate_with_tables(
+        self,
+        gt: bytes | Dataset,
+        dt: bytes,
+        max_dets_list: list[int],
+        tables: Literal["all"] | tuple[TableName, ...],
+        tables_config: TablesConfig,
+    ) -> EvalResult:
+        """Tables-enabled evaluate path. Builds the EvalGrid, runs
+        accumulate + summarize, then dispatches per-table FFI builders
+        for the requested set."""
+        requested = normalize_tables_arg(tables)
+
+        # The tables= path needs JSON bytes today; pre-parsed Dataset
+        # handles aren't threaded through yet.
+        if isinstance(gt, Dataset):
+            raise NotImplementedError(
+                "tables= path requires GT JSON bytes; Dataset handles are not "
+                "yet supported on this path"
+            )
+
+        # per_detection (best_iou) and per_pair require the spine to
+        # retain its IoU matrices.
+        need_retention = bool(requested & {"per_detection", "per_pair"})
+
+        match self.iou:
+            case Bbox():
+                grid = evaluate_bbox_grid(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    need_retention,
+                )
+            case Segm():
+                grid = evaluate_segm_grid(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    need_retention,
+                )
+            case Boundary(dilation_ratio=r):
+                grid = evaluate_boundary_grid(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    r,
+                    need_retention,
+                )
+            case Keypoints():
+                raise NotImplementedError(
+                    "tables= is detection-only in v0.5; keypoints uses a 3-bucket "
+                    "area grid that per_image/per_class do not target"
+                )
+            case _:
+                _reject_unknown_iou(self.iou)
+
+        accum = grid.accumulate(max_dets_list)
+        summary = accum.summarize(max_dets_list)
+        dataset = Dataset.from_json(gt)
+
+        per_image_batch = (
+            per_image_to_arrow_pycapsule(grid, dataset)
+            if "per_image" in requested
+            else None
+        )
+        per_class_batch = (
+            per_class_to_arrow_pycapsule(grid, accum, dataset)
+            if "per_class" in requested
+            else None
+        )
+        per_detection_batch = (
+            per_detection_to_arrow_pycapsule(
+                grid, dt, tables_config.per_detection_with_geometry
+            )
+            if "per_detection" in requested
+            else None
+        )
+        per_pair_batch = (
+            per_pair_to_arrow_pycapsule(
+                grid,
+                tables_config.per_pair_iou_floor,
+                tables_config.per_pair_max_rows,
+            )
+            if "per_pair" in requested
+            else None
+        )
+        return EvalResult(
+            summary=summary,
+            _per_image_batch=per_image_batch,
+            _per_class_batch=per_class_batch,
+            _per_detection_batch=per_detection_batch,
+            _per_pair_batch=per_pair_batch,
+        )
 
     def _evaluate_with_dataset(self, gt: Dataset, dt: bytes, max_dets_list: list[int]) -> Summary:
         match self.iou:

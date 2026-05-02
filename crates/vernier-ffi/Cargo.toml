@@ -30,6 +30,13 @@ test-poison = []
 vernier-core = { path = "../vernier-core", version = "0.0.1" }
 pyo3.workspace = true
 numpy.workspace = true
+# Arrow columnar buffers for ADR-0019 result tables. Subset is
+# deliberate (no `arrow-ipc`, no `arrow-pyarrow`); see workspace
+# Cargo.toml for the rationale.
+arrow-array.workspace = true
+arrow-buffer.workspace = true
+arrow-data.workspace = true
+arrow-schema.workspace = true
 # FFI-internal scheduling deps for the background evaluator (ADR-0014).
 # Both are best-effort and crate-local; do NOT promote to
 # `[workspace.dependencies]` (only one consumer).

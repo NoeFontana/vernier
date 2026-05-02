@@ -37,42 +37,39 @@ from ..coco_val_paths import (
 from .harness import IouType, assert_snapshots_equal, snapshot
 
 
+# All tests in this file run against the full COCO val2017 dataset
+# (~5k images, ~36k anns) when the cache is populated, so each call
+# spends 20-40 seconds in pycocotools-vs-vernier compute. Mark slow so
+# `-m "not slow"` keeps `just test-py` snappy.
+pytestmark = [pytest.mark.parity, pytest.mark.coco_val, pytest.mark.slow]
+
+
 def _assert_parity(gt: Path, dt: Path, iou_type: IouType) -> None:
     ref = snapshot("pycocotools", gt, dt, iou_type)
     cand = snapshot("vernier", gt, dt, iou_type)
     assert_snapshots_equal(ref, cand)
 
 
-@pytest.mark.parity
-@pytest.mark.coco_val
 def test_coco_val2017_bbox_parity() -> None:
     """Real detector predictions: bring your own JSON via env vars."""
     _assert_parity(require_env_path(GT_ENV), require_env_path(DT_ENV), "bbox")
 
 
-@pytest.mark.parity
-@pytest.mark.coco_val
 def test_coco_val2017_bbox_parity_perfect_dt() -> None:
     """Synthesised perfect-DT smoke: scale-only check (AP is trivially 1.0)."""
     _assert_parity(*require_perfect_dt_artifacts("perfect_dt.json"), "bbox")
 
 
-@pytest.mark.parity
-@pytest.mark.coco_val
 def test_coco_val2017_segm_parity() -> None:
     """Real detector predictions: bring your own segm JSON via env vars."""
     _assert_parity(require_env_path(GT_ENV), require_env_path(DT_SEGM_ENV), "segm")
 
 
-@pytest.mark.parity
-@pytest.mark.coco_val
 def test_coco_val2017_segm_parity_perfect_dt() -> None:
     """Synthesised perfect-DT smoke for segm: every det carries GT polygons."""
     _assert_parity(*require_perfect_dt_artifacts("perfect_dt_segm.json"), "segm")
 
 
-@pytest.mark.parity
-@pytest.mark.coco_val
 def test_coco_val2017_keypoints_parity() -> None:
     """Real keypoint detector predictions: bring your own JSON via env vars.
 

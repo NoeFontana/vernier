@@ -27,6 +27,7 @@ pub mod segmentation;
 pub mod similarity;
 pub mod stream;
 pub mod summarize;
+pub mod tables;
 
 pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, PerImageEval};
 pub use boundary_parity::{
@@ -57,6 +58,12 @@ pub use stream::{
 pub use summarize::{
     summarize_detection, summarize_with, AreaRng, MaxDetSelector, Metric, StatLine, StatRequest,
     Summary,
+};
+pub use tables::{
+    aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
+    build_per_pair, build_tables, BboxColumns, MatchStatus, PerClassSupport, PerClassTable,
+    PerDetectionTable, PerImageTable, PerPairTable, RetainedIous, Tables, TablesConfig,
+    TablesRequest,
 };
 
 /// Library version string. Useful for parity tracing in fixtures and for

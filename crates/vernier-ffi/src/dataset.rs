@@ -76,6 +76,13 @@ impl PyDataset {
             segm_cache: Arc::clone(&self.segm_cache),
         }
     }
+
+    /// Crate-internal `Arc` clone of the GT dataset. Used by the
+    /// result-tables FFI module so the table builder closure can move
+    /// the dataset into `py.detach` without re-parsing the JSON.
+    pub(crate) fn dataset_ref(&self) -> Arc<vernier_core::CocoDataset> {
+        Arc::clone(&self.inner)
+    }
 }
 
 #[pymethods]

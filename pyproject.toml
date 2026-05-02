@@ -37,6 +37,11 @@ dependencies = [
 [project.optional-dependencies]
 torch = ["torch>=2.4"]
 viz = ["plotly>=6.0"]
+# Result tables (ADR-0019). polars is the canonical consumer for the
+# Arrow PyCapsule the FFI emits; pandas/duckdb/pyarrow also work and
+# are *not* declared here because they are optional alternatives the
+# user picks themselves.
+tables = ["polars>=1.0"]
 
 [project.urls]
 Homepage = "https://github.com/NoeFontana/vernier"
@@ -81,6 +86,11 @@ dev = [
     # ORACLE_OPENCV_PIN in crates/vernier-core/src/boundary_parity.rs; both
     # update atomically. Bumping is ADR-level (see ADR-0010 §"Oracle (E2 + E3)").
     "opencv-python==4.10.0.84",
+    # Result tables consumer (ADR-0019). polars validates the Arrow
+    # PyCapsule round-trip in tests/python/tables/. Available to the
+    # `tables` extra for end users; mirrored here so tests can rely on
+    # it without conditional skips.
+    "polars>=1.0",
 ]
 
 # ---------------------------------------------------------------------------
