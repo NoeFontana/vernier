@@ -35,6 +35,7 @@ Decision Records). To propose a new ADR:
 | 0016 | Generalize the A-axis as a value-typed `Breakdown`       | proposed |
 | 0017 | Local bench harness — subprocess-isolated, uv-managed, parity-coupled | proposed |
 | 0018 | Calibration metrics for modern detection architectures   | proposed |
+| 0019 | Result tables — opt-in, Arrow-backed, zero-overhead by default | proposed |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
