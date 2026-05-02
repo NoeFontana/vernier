@@ -315,28 +315,23 @@ impl SegmentTable {
     /// boundary-IoU kernel's segment tables) skip the round-trip
     /// entirely.
     pub fn push_from_raster(&mut self, raster: &[u8]) -> u64 {
-        let mut area: u64 = 0;
-        let mut run_start: u64 = 0;
-        let mut in_run = false;
-        for (i, &b) in raster.iter().enumerate() {
-            let fg = b != 0;
-            if fg && !in_run {
-                run_start = i as u64;
-                in_run = true;
-            } else if !fg && in_run {
-                let end = i as u64;
-                self.flat.push(run_start);
-                self.flat.push(end);
-                area += end - run_start;
-                in_run = false;
-            }
-        }
-        if in_run {
-            let end = raster.len() as u64;
-            self.flat.push(run_start);
-            self.flat.push(end);
-            area += end - run_start;
-        }
+        let area = scan_segments_raster(&mut self.flat, raster);
+        self.idx.push(self.flat.len());
+        area
+    }
+
+    /// Appends one row by walking two column-major byte rasters in
+    /// lockstep, treating `(a[i] ^ b[i]) != 0` as the fg predicate per
+    /// quirk **G6**. Returns the fg-byte count (== row area).
+    ///
+    /// Equivalent to XOR'ing `a` into a temporary buffer and calling
+    /// [`Self::push_from_raster`], but skips the intermediate buffer
+    /// pass — the boundary-band derivation hot path uses this to
+    /// emit segments directly from the `(mask, eroded)` raster pair
+    /// without materializing the band raster.
+    pub fn push_from_rasters_xor(&mut self, a: &[u8], b: &[u8]) -> u64 {
+        debug_assert_eq!(a.len(), b.len());
+        let area = scan_segments_xor(&mut self.flat, a, b);
         self.idx.push(self.flat.len());
         area
     }
@@ -356,6 +351,113 @@ impl SegmentTable {
             return &[];
         }
         self.row(self.len() - 1)
+    }
+}
+
+/// 8-byte word size for the chunked fast-skip predicate. Any 8-byte
+/// window whose bytes are all zero (raster scan) or all equal (XOR
+/// scan over the `(mask, eroded)` band pair) gets skipped in O(1).
+/// 8 fits in a `u64` register so the all-zero check is one compare;
+/// wider chunks (32, 64) measured slower on val2017 because they
+/// triggered more transitions per chunk and reduced the fast-skip
+/// rate below the threshold where the per-chunk overhead pays off.
+const SCAN_CHUNK: usize = 8;
+
+/// Pushes `[start, end]` segments for each contiguous run of `b != 0`
+/// in `raster`, returning fg byte count. Chunked u64 fast-skip over
+/// all-zero windows when not currently in a run.
+fn scan_segments_raster(flat: &mut Vec<u64>, raster: &[u8]) -> u64 {
+    let mut state = ScanState::new();
+    let chunks = raster.chunks_exact(SCAN_CHUNK);
+    let tail = chunks.remainder();
+    let body_len = raster.len() - tail.len();
+    for (chunk_idx, chunk) in chunks.enumerate() {
+        let i = chunk_idx * SCAN_CHUNK;
+        let word = u64::from_ne_bytes(chunk.try_into().unwrap_or([0; SCAN_CHUNK]));
+        if word == 0 && !state.in_run {
+            continue;
+        }
+        for (j, &b) in chunk.iter().enumerate() {
+            state.step(flat, (i + j) as u64, b != 0);
+        }
+    }
+    for (k, &b) in tail.iter().enumerate() {
+        state.step(flat, (body_len + k) as u64, b != 0);
+    }
+    state.finish(flat, raster.len() as u64)
+}
+
+/// Same chunked scan as [`scan_segments_raster`], but the predicate
+/// is `(a[i] ^ b[i]) != 0`. The all-equal fast-skip catches both
+/// pure-background windows (mask = eroded = 0) and pure-interior
+/// windows (mask = eroded = 1) — the two regions that dominate the
+/// boundary-band raster.
+fn scan_segments_xor(flat: &mut Vec<u64>, a: &[u8], b: &[u8]) -> u64 {
+    debug_assert_eq!(a.len(), b.len());
+    let len = a.len().min(b.len());
+    let mut state = ScanState::new();
+    let body_len = len - (len % SCAN_CHUNK);
+    let mut i = 0usize;
+    while i < body_len {
+        let ac = &a[i..i + SCAN_CHUNK];
+        let bc = &b[i..i + SCAN_CHUNK];
+        let av = u64::from_ne_bytes(ac.try_into().unwrap_or([0; SCAN_CHUNK]));
+        let bv = u64::from_ne_bytes(bc.try_into().unwrap_or([0; SCAN_CHUNK]));
+        let xor = av ^ bv;
+        if xor == 0 && !state.in_run {
+            i += SCAN_CHUNK;
+            continue;
+        }
+        let xor_bytes = xor.to_ne_bytes();
+        for (j, &byte) in xor_bytes.iter().enumerate() {
+            state.step(flat, (i + j) as u64, byte != 0);
+        }
+        i += SCAN_CHUNK;
+    }
+    for k in body_len..len {
+        state.step(flat, k as u64, (a[k] ^ b[k]) != 0);
+    }
+    state.finish(flat, len as u64)
+}
+
+/// Mutable scan state shared by [`scan_segments_raster`] and
+/// [`scan_segments_xor`]. Folds the segment-emit + area-accumulate
+/// state machine into one struct.
+struct ScanState {
+    area: u64,
+    run_start: u64,
+    in_run: bool,
+}
+
+impl ScanState {
+    fn new() -> Self {
+        Self {
+            area: 0,
+            run_start: 0,
+            in_run: false,
+        }
+    }
+
+    #[inline(always)]
+    fn step(&mut self, flat: &mut Vec<u64>, i: u64, fg: bool) {
+        if fg && !self.in_run {
+            self.run_start = i;
+            self.in_run = true;
+        } else if !fg && self.in_run {
+            flat.push(self.run_start);
+            flat.push(i);
+            self.area += i - self.run_start;
+            self.in_run = false;
+        }
+    }
+
+    fn finish(self, flat: &mut Vec<u64>, end: u64) -> u64 {
+        if self.in_run {
+            flat.push(self.run_start);
+            flat.push(end);
+            return self.area + end - self.run_start;
+        }
+        self.area
     }
 }
 
@@ -764,6 +866,33 @@ mod tests {
         assert_eq!(table.row(0), &[1u64, 3]);
     }
 
+    #[test]
+    fn segment_table_push_from_rasters_xor_matches_pre_xored_path() {
+        // Pin the band-derivation invariant: the fused xor-scan produces
+        // the same `(area, segments)` as XOR'ing into a temp buffer
+        // first, then walking the buffer with `push_from_raster`.
+        let mask = [1u8, 1, 1, 1, 0, 1, 1, 0];
+        let eroded = [0u8, 1, 1, 0, 0, 1, 0, 0];
+        let xored: Vec<u8> = mask.iter().zip(&eroded).map(|(m, e)| m ^ e).collect();
+
+        let mut expected = SegmentTable::new();
+        let expected_area = expected.push_from_raster(&xored);
+
+        let mut actual = SegmentTable::new();
+        let actual_area = actual.push_from_rasters_xor(&mask, &eroded);
+
+        assert_eq!(actual_area, expected_area);
+        assert_eq!(actual.row(0), expected.row(0));
+    }
+
+    #[test]
+    fn segment_table_push_from_rasters_xor_empty() {
+        let mut table = SegmentTable::new();
+        let area = table.push_from_rasters_xor(&[], &[]);
+        assert_eq!(area, 0);
+        assert!(table.row(0).is_empty());
+    }
+
     proptest! {
         #[test]
         fn intersect_area_matches_merge_pair(
@@ -820,6 +949,22 @@ mod tests {
             let from_bin_area = from_bin.push_from_raster(&binarised);
             prop_assert_eq!(from_raw_area, from_bin_area);
             prop_assert_eq!(from_raw.row(0), from_bin.row(0));
+        }
+
+        #[test]
+        fn push_from_rasters_xor_matches_pre_xor_path(
+            a_bytes in raster_strategy(4, 5),
+            b_bytes in raster_strategy(4, 5),
+        ) {
+            let xored: Vec<u8> = a_bytes.iter().zip(&b_bytes).map(|(a, b)| a ^ b).collect();
+            let mut expected = SegmentTable::new();
+            let expected_area = expected.push_from_raster(&xored);
+
+            let mut actual = SegmentTable::new();
+            let actual_area = actual.push_from_rasters_xor(&a_bytes, &b_bytes);
+
+            prop_assert_eq!(actual_area, expected_area);
+            prop_assert_eq!(actual.row(0), expected.row(0));
         }
     }
 
