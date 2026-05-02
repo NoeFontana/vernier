@@ -7,6 +7,12 @@ Workload identifiers:
 - ``coco_val2017_jittered_seed<N>`` — COCO val2017 GT (sha256-pinned)
   with deterministic Gaussian-jittered DT for seed ``<N>``. Bbox-only
   for now.
+- ``coco_val2017_perfect_segm`` — COCO val2017 GT paired with the
+  ``perfect_dt_segm.json`` "GT-as-DT" predictions used by the parity
+  suite. Exercises segm + boundary at val2017 scale (5000 imgs / ~36k
+  anns); under-stresses matching because every DT lines up with a GT,
+  which keeps it useful as a perf smoke but not as a realistic detector
+  benchmark.
 - ``synthetic:k=v,k=v[,...]`` — parametric stress-test. Required keys:
   ``n_images``, ``seed``. Optional: ``n_categories`` (default 80),
   ``dt_per_image`` (default 30), ``gt_per_image`` (default 10) — chosen
@@ -86,6 +92,16 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             supported_iou_types=frozenset({"bbox"}),
         )
 
+    if workload_name == "coco_val2017_perfect_segm":
+        gt = coco_val2017.gt_path()
+        dt = coco_val2017.perfect_dt_segm_path()
+        return Workload(
+            workload_id="coco_val2017_perfect_segm",
+            gt_path=gt,
+            dt_path=dt,
+            supported_iou_types=frozenset({"segm", "boundary"}),
+        )
+
     if workload_name.startswith(_SYNTHETIC_PREFIX):
         params = _parse_synthetic_args(workload_name.removeprefix(_SYNTHETIC_PREFIX))
         gt, dt = synthetic.make_workload(**params)
@@ -98,5 +114,6 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
 
     raise ValueError(
         f"unknown workload {workload_name!r}; "
-        f"known: 'smoke', 'coco_val2017_jittered_seed<N>', 'synthetic:n_images=...,seed=...'"
+        f"known: 'smoke', 'coco_val2017_jittered_seed<N>', "
+        f"'coco_val2017_perfect_segm', 'synthetic:n_images=...,seed=...'"
     )
