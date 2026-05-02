@@ -29,9 +29,7 @@ def test_synthetic_minimal_args_uses_defaults(
     assert w.supported_iou_types == frozenset({"bbox"})
 
 
-def test_synthetic_overrides_defaults(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_synthetic_overrides_defaults(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("VERNIER_BENCH_CACHE", str(tmp_path))
     w = resolve(
         "synthetic:n_images=2,seed=0,n_categories=4,dt_per_image=1,gt_per_image=1",

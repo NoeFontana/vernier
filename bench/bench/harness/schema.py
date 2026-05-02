@@ -76,12 +76,24 @@ class StageAggregation(BaseModel):
     max_ns: int
 
 
+class IqrGateResult(BaseModel):
+    """Outcome of the release-mode IQR-relative-to-median gate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stage: str
+    relative: float
+    threshold: float
+    passed: bool
+
+
 class Aggregation(BaseModel):
     """Across-rep summary. ``None`` in dev mode (one rep)."""
 
     model_config = ConfigDict(extra="forbid")
 
     stages: dict[str, StageAggregation]
+    iqr_gate: IqrGateResult | None = None
 
 
 class BenchResult(BaseModel):

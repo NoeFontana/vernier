@@ -119,10 +119,7 @@ def _compare_pair(
     diff = np.abs(tensor_a - tensor_b)
     # Strict tier: bit-equality, not "diff <= 0" (NaNs in either tensor
     # would make a finite-diff check pass spuriously).
-    if tier == "strict":
-        divergent_mask = ~(tensor_a == tensor_b)
-    else:
-        divergent_mask = diff > atol
+    divergent_mask = ~(tensor_a == tensor_b) if tier == "strict" else diff > atol
 
     divergent_count = int(divergent_mask.sum())
     first_divergence: Divergence | None = None
