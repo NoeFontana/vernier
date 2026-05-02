@@ -230,9 +230,7 @@ class Evaluator:
             case _:
                 _reject_unknown_iou(self.iou)
 
-    def _evaluate_with_dataset(
-        self, gt: Dataset, dt: bytes, max_dets_list: list[int]
-    ) -> Summary:
+    def _evaluate_with_dataset(self, gt: Dataset, dt: bytes, max_dets_list: list[int]) -> Summary:
         match self.iou:
             case Bbox():
                 return evaluate_bbox_summary_with_dataset(

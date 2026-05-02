@@ -38,7 +38,7 @@ def test_dataset_repr_shape() -> None:
 
 
 def test_dataset_from_json_rejects_malformed_payload() -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=r"(?i)json|parse"):
         Dataset.from_json(b"not-json")
 
 
@@ -151,7 +151,7 @@ def test_dataset_shared_across_threads_produces_identical_summaries() -> None:
 
 def test_warm_dataset_path_is_not_slower_than_cold_on_boundary() -> None:
     # Lenient timing assertion: cache reuse must not regress the warm
-    # path. We don't assert "warm is N× faster" — on tiny fixtures that
+    # path. We don't assert "warm is Nx faster" — on tiny fixtures that
     # ratio is dominated by FFI overhead — only that the warm call is
     # within a generous envelope of the cold one. A regression that
     # accidentally rebuilt the cache every call would blow this budget.
@@ -170,7 +170,7 @@ def test_warm_dataset_path_is_not_slower_than_cold_on_boundary() -> None:
     e.evaluate(ds, DT_SEGM)
     warm_ns = time.perf_counter_ns() - t0
 
-    # 5× envelope is deliberately wide — the assertion exists to catch
+    # 5x envelope is deliberately wide — the assertion exists to catch
     # gross regressions (e.g. accidental cache disable), not to lock in
     # a perf number. Real cache-effect measurement is the bench's job.
     assert warm_ns < 5 * cold_ns, (
