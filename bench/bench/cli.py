@@ -11,6 +11,8 @@ defaults to skipping parity (instrumentation perturbs measurement).
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import cast, get_args
 
 import click
@@ -20,6 +22,14 @@ from bench.harness.orchestrate import CellSpec, run_cell
 from bench.harness.paths import BENCH_ROOT, REPO_ROOT
 from bench.harness.platform_check import UnsupportedPlatformError, ensure_linux
 from bench.harness.schema import IouType, Mode
+from bench.reports.compare import compare_shas
+from bench.reports.load import load_tree
+from bench.reports.longitudinal import build_series, parse_since
+from bench.reports.render import (
+    render_compare_markdown,
+    render_longitudinal_markdown,
+    render_longitudinal_svg,
+)
 from bench.workloads import resolve
 
 _IOU_CHOICES: tuple[str, ...] = get_args(IouType)
@@ -137,6 +147,68 @@ def run_cmd(
                 f"parity: FAILED — see {result.divergence_report_path}",
                 err=True,
             )
+
+
+@main.command("compare")
+@click.option("--base", "base_sha", required=True, help="Base git sha (full or 12-char prefix).")
+@click.option("--head", "head_sha", required=True, help="Head git sha (full or 12-char prefix).")
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, writable=True),
+    default=None,
+    help="Write the markdown table to this path; default is stdout.",
+)
+def compare_cmd(base_sha: str, head_sha: str, output: str | None) -> None:
+    """Render a per-cell delta table for ``base_sha`` vs ``head_sha``."""
+    df = load_tree(BENCH_ROOT / "results", shas={base_sha, head_sha})
+    rows = compare_shas(df, base_sha=base_sha, head_sha=head_sha)
+    if not rows:
+        raise click.ClickException(
+            f"no rows for either {base_sha[:12]} or {head_sha[:12]} under bench/results/"
+        )
+    md = render_compare_markdown(rows, base_sha=base_sha, head_sha=head_sha)
+    if output:
+        Path(output).write_text(md)
+        click.echo(f"compare: {output}")
+    else:
+        click.echo(md, nl=False)
+
+
+@main.command("report")
+@click.option(
+    "--since",
+    "since_spec",
+    default="30d",
+    show_default=True,
+    help="Window like 30d / 6h / 2w / 90m.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False, writable=True),
+    default=None,
+    help="Write report.md and report.svg here; default is stdout (markdown only).",
+)
+def report_cmd(since_spec: str, output_dir: str | None) -> None:
+    """Render a longitudinal view for the last ``--since`` window."""
+    try:
+        since = parse_since(since_spec)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
+
+    cutoff = (datetime.now(tz=timezone.utc) - since).timestamp()
+    df = load_tree(BENCH_ROOT / "results", mtime_after=cutoff)
+    series = build_series(df)
+    md = render_longitudinal_markdown(series)
+    svg = render_longitudinal_svg(series)
+    if output_dir:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "report.md").write_text(md)
+        (out / "report.svg").write_text(svg)
+        click.echo(f"report: {out / 'report.md'}")
+        click.echo(f"report: {out / 'report.svg'}")
+    else:
+        click.echo(md, nl=False)
 
 
 if __name__ == "__main__":
