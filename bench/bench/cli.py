@@ -1,8 +1,9 @@
 """``vernier-bench`` command-line entry point.
 
 ``run`` fans out across the impls supported for the requested
-(workload, iou) cell. Skipped cells are silent for ``--impl all`` and
-loud for an explicit ``--impl <name>``.
+(workload, iou) cell, then runs the cross-impl parity check unless
+``--no-parity`` is passed. Skipped cells are silent for ``--impl all``
+and loud for an explicit ``--impl <name>``.
 """
 
 from __future__ import annotations
@@ -13,8 +14,7 @@ from typing import cast, get_args
 import click
 
 from bench.harness.matrix import ALL_IMPLS, IMPL_IOU_SUPPORT, impls_for_iou
-from bench.harness.orchestrate import RunSpec
-from bench.harness.orchestrate import run as run_spec
+from bench.harness.orchestrate import CellSpec, run_cell
 from bench.harness.paths import BENCH_ROOT, REPO_ROOT
 from bench.harness.schema import IouType
 from bench.workloads import resolve
@@ -57,7 +57,15 @@ def main() -> None:
     help="Run mode. M1/M2 supports dev only; release/profile land in M5.",
 )
 @click.option("--seed", "run_seed", type=int, default=0, show_default=True)
-def run_cmd(impl: str, workload: str, iou_type: str, mode: str, run_seed: int) -> None:
+@click.option(
+    "--no-parity",
+    is_flag=True,
+    default=False,
+    help="Skip the cross-impl parity check after the fan-out.",
+)
+def run_cmd(
+    impl: str, workload: str, iou_type: str, mode: str, run_seed: int, no_parity: bool
+) -> None:
     workload_obj = resolve(workload, REPO_ROOT)
     iou = cast(IouType, iou_type)
 
@@ -79,20 +87,30 @@ def run_cmd(impl: str, workload: str, iou_type: str, mode: str, run_seed: int) -
             )
         impls = [impl]
 
-    for impl_name in impls:
-        spec = RunSpec(
-            bench_root=BENCH_ROOT,
-            repo_root=REPO_ROOT,
-            impl=impl_name,
-            workload_id=workload_obj.workload_id,
-            iou_type=iou,
-            gt_path=workload_obj.gt_path,
-            dt_path=workload_obj.dt_path,
-            mode=mode,
-            run_seed=run_seed,
-        )
-        out = run_spec(spec)
-        click.echo(f"{impl_name}: {out}")
+    cell = CellSpec(
+        bench_root=BENCH_ROOT,
+        repo_root=REPO_ROOT,
+        impls=impls,
+        workload_id=workload_obj.workload_id,
+        iou_type=iou,
+        gt_path=workload_obj.gt_path,
+        dt_path=workload_obj.dt_path,
+        mode=mode,
+        run_seed=run_seed,
+    )
+    result = run_cell(cell, parity=not no_parity)
+
+    for impl_name, json_path in result.impl_jsons.items():
+        click.echo(f"{impl_name}: {json_path}")
+
+    if result.parity is not None:
+        if result.parity.passed:
+            click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+        else:
+            click.echo(
+                f"parity: FAILED — see {result.divergence_report_path}",
+                err=True,
+            )
 
 
 if __name__ == "__main__":

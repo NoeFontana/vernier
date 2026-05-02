@@ -1,7 +1,10 @@
 """Subprocess fan-out and result assembly (ADR-0017 §"Runner contract").
 
 M1 scope: single subprocess, single rep, no warmup, no parity coupling.
-M2 fans out across runners; M3 adds parity; M5 adds rep loop, randomized
+M2 fans out across runners. M3 closes the cell with a parity check —
+``run_cell`` loops every requested impl, then loads the tensors and
+runs ``parity.compare_cell``; failures persist a divergence report
+next to the impl results. M5 will add the rep loop, randomized
 schedule, IQR gate, and machine fingerprint.
 
 Every runner subprocess is invoked as
@@ -20,9 +23,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
+
 from bench import HARNESS_VERSION
 from bench.harness import machine
 from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
+from bench.harness.parity import CellParityReport, compare_cell, write_report
 from bench.harness.schema import (
     BenchResult,
     IouType,
@@ -153,3 +159,79 @@ def run(spec: RunSpec) -> Path:
     out_json = out_dir / f"{spec.impl}.json"
     out_json.write_text(result.model_dump_json(indent=2))
     return out_json
+
+
+@dataclass(frozen=True)
+class CellSpec:
+    """One ``(workload, iou)`` cell with the impls to fan out across.
+
+    Caller is responsible for filtering ``impls`` to entries that
+    support ``iou_type`` (the CLI does this via the matrix module).
+    """
+
+    bench_root: Path
+    repo_root: Path
+    impls: list[str]
+    workload_id: str
+    iou_type: IouType
+    gt_path: Path
+    dt_path: Path
+    mode: Mode
+    run_seed: int
+
+
+@dataclass(frozen=True)
+class CellRun:
+    impl_jsons: dict[str, Path]
+    parity: CellParityReport | None
+    divergence_report_path: Path | None
+
+
+def run_cell(cell: CellSpec, *, parity: bool = True) -> CellRun:
+    """Fan out across ``cell.impls``, then run the cross-impl parity check.
+
+    ``parity=False`` skips the comparison entirely (the
+    ``--no-parity`` escape hatch). When parity runs and fails, a
+    ``divergence_report.json`` lands next to the impl JSON files in the
+    cell's result dir.
+    """
+    impl_jsons: dict[str, Path] = {}
+    impl_tensors: dict[str, np.ndarray] = {}
+    impl_sha256: dict[str, str] = {}
+
+    for impl_name in cell.impls:
+        spec = RunSpec(
+            bench_root=cell.bench_root,
+            repo_root=cell.repo_root,
+            impl=impl_name,
+            workload_id=cell.workload_id,
+            iou_type=cell.iou_type,
+            gt_path=cell.gt_path,
+            dt_path=cell.dt_path,
+            mode=cell.mode,
+            run_seed=cell.run_seed,
+        )
+        out_json = run(spec)
+        impl_jsons[impl_name] = out_json
+        result = BenchResult.model_validate_json(out_json.read_bytes())
+        impl_tensors[impl_name] = np.load(out_json.with_name(result.tensor_path))
+        impl_sha256[impl_name] = result.tensor_sha256
+
+    parity_report: CellParityReport | None = None
+    divergence_report_path: Path | None = None
+    if parity:
+        parity_report = compare_cell(
+            workload_id=cell.workload_id,
+            iou_type=cell.iou_type,
+            impl_tensors=impl_tensors,
+            impl_sha256=impl_sha256,
+        )
+        if not parity_report.passed:
+            out_dir = next(iter(impl_jsons.values())).parent
+            divergence_report_path = write_report(parity_report, out_dir)
+
+    return CellRun(
+        impl_jsons=impl_jsons,
+        parity=parity_report,
+        divergence_report_path=divergence_report_path,
+    )
