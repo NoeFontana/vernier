@@ -22,7 +22,7 @@ from typing import Literal
 
 from bench import HARNESS_VERSION
 from bench.harness import machine
-from bench.harness.matrix import runner_module, uv_run_argv
+from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.schema import (
     BenchResult,
     IouType,
@@ -87,7 +87,7 @@ def _spawn_one_rep(
         str(rep_npy),
     )
     parent_start = time.perf_counter_ns()
-    proc = subprocess.Popen(cmd)
+    proc = subprocess.Popen(cmd, env=uv_run_env(spec.bench_root, spec.impl))
     _pid, status, rusage = os.wait4(proc.pid, 0)
     parent_wall_ns = time.perf_counter_ns() - parent_start
     if status != 0:

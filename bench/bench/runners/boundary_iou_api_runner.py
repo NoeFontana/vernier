@@ -2,10 +2,12 @@
 ``bench/envs/boundary-iou-api``.
 
 The oracle is a verbatim symlinked checkout at ``./oracle/`` (see
-``VENDORING.md`` next to this file). The bootstrap section below
-mirrors ``tests/python/parity_boundary/conftest.py`` — keep them in
-sync (matplotlib stub, single-core multiprocessing, ``np.float`` alias,
-oracle path injection).
+``VENDORING.md`` next to this file). The orchestrator puts that
+directory on ``PYTHONPATH`` via ``uv_run_env`` so the runner doesn't
+have to mutate ``sys.path`` itself; the bootstrap section below covers
+the remaining import-time fixups (matplotlib stub, single-core
+multiprocessing, ``np.float`` alias) that mirror
+``tests/python/parity_boundary/conftest.py``.
 """
 
 from __future__ import annotations
@@ -15,13 +17,6 @@ import sys
 import types
 from collections.abc import Callable
 from typing import Any
-
-from bench.harness.matrix import env_dir
-from bench.harness.paths import BENCH_ROOT
-
-_ORACLE_PATH = env_dir(BENCH_ROOT, "boundary-iou-api") / "oracle"
-if str(_ORACLE_PATH) not in sys.path:
-    sys.path.insert(0, str(_ORACLE_PATH))
 
 
 def _stub_matplotlib() -> None:

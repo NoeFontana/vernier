@@ -11,7 +11,7 @@ import subprocess
 
 import pytest
 
-from bench.harness.matrix import ALL_IMPLS, runner_module, uv_run_argv
+from bench.harness.matrix import ALL_IMPLS, runner_module, uv_run_argv, uv_run_env
 from bench.harness.paths import BENCH_ROOT
 from tests.conftest import skip_if_no_env
 
@@ -31,6 +31,7 @@ def test_runner_help_advertises_protocol(impl: str) -> None:
 
     proc = subprocess.run(
         uv_run_argv(BENCH_ROOT, impl, "-m", runner_module(impl), "--help"),
+        env=uv_run_env(BENCH_ROOT, impl),
         check=False,
         capture_output=True,
         text=True,

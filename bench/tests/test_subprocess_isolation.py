@@ -17,7 +17,7 @@ import subprocess
 
 import pytest
 
-from bench.harness.matrix import runner_module, uv_run_argv
+from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.paths import BENCH_ROOT
 from tests.conftest import skip_if_no_env
 
@@ -35,6 +35,7 @@ def test_runner_module_binds_expected_namespace(impl: str, expected: str) -> Non
     script = f"import {runner_module(impl)} as r; print(r.COCO.__module__)"
     proc = subprocess.run(
         uv_run_argv(BENCH_ROOT, impl, "-c", script),
+        env=uv_run_env(BENCH_ROOT, impl),
         check=False,
         capture_output=True,
         text=True,
@@ -63,6 +64,7 @@ def test_vernier_runner_does_not_import_pycocotools() -> None:
             "assert 'faster_coco_eval' not in sys.modules; "
             "assert 'boundary_iou' not in sys.modules; print('ok')",
         ),
+        env=uv_run_env(BENCH_ROOT, "vernier"),
         check=False,
         capture_output=True,
         text=True,
