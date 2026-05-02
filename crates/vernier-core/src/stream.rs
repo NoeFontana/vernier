@@ -234,6 +234,11 @@ impl<K: EvalKernel> ParsedDetections<K> {
 /// [`Self::finalize`] consumes the evaluator and returns the same
 /// [`Summary`]. Bit-identical to a batch run over the union of all
 /// `update()` batches submitted in order.
+///
+/// When `params.retain_iou` is `true`, the evaluator additionally
+/// retains a [`crate::RetainedIous`] store keyed by `(k, i)`, populated
+/// incrementally as each batch's `evaluate_with` returns its per-batch
+/// retentions. Consumed by the per_pair / per_detection table builders.
 #[derive(Debug)]
 pub struct StreamingEvaluator<K: EvalKernel> {
     dataset: CocoDataset,
@@ -242,6 +247,10 @@ pub struct StreamingEvaluator<K: EvalKernel> {
     parity_mode: ParityMode,
     grid_meta: EvalGridMeta,
     cells: PerImageEvalStore,
+    /// Per-`(category, image)` IoU matrices retained across `update()`
+    /// calls. `None` on the default path (`params.retain_iou=false`);
+    /// `Some` when retention was opted into at construction.
+    retained_ious: Option<crate::tables::RetainedIous>,
     seen_images: HashSet<i64>,
     /// Image-grid indices for every entry in `seen_images`. Maintained
     /// incrementally so `compute_summary` can decide which GT-only
@@ -285,6 +294,11 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             });
         }
         let grid_meta = build_grid_meta(&dataset, &params);
+        let retained_ious = if params.retain_iou {
+            Some(crate::tables::RetainedIous::new())
+        } else {
+            None
+        };
         Ok(Self {
             dataset,
             kernel,
@@ -292,6 +306,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             parity_mode,
             grid_meta,
             cells: PerImageEvalStore::new(),
+            retained_ious,
             seen_images: HashSet::new(),
             seen_image_indices: HashSet::new(),
             gt_only_cells: None,
@@ -334,6 +349,13 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// Read-only access to the static grid metadata.
     pub fn grid_meta(&self) -> &EvalGridMeta {
         &self.grid_meta
+    }
+
+    /// Read-only access to the per-`(category, image)` IoU matrices
+    /// retained when `params.retain_iou` was set at construction. `None`
+    /// on the default no-retention path.
+    pub fn retained_ious(&self) -> Option<&crate::tables::RetainedIous> {
+        self.retained_ious.as_ref()
     }
 
     /// Update with a new batch of detections, parsed from
@@ -393,7 +415,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // when no detection in this batch landed on it. We filter those
         // out below: streaming semantics file a cell exactly once,
         // when its image first appears in a batch.
-        let grid = evaluate_with(
+        let mut grid = evaluate_with(
             &self.dataset,
             &detections,
             self.params.borrow(),
@@ -469,6 +491,20 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             self.bytes_match_flags += cost.match_flags;
         }
 
+        // Streaming rejects duplicate image_ids earlier, so each (k, i)
+        // entry is inserted at most once across all `update()` calls.
+        if let (Some(store), Some(per_batch)) =
+            (self.retained_ious.as_mut(), grid.retained_ious.as_mut())
+        {
+            for k in 0..n_k {
+                for &i in &batch_image_indices {
+                    if let Some(iou) = per_batch.remove(k, i) {
+                        store.insert(k, i, iou);
+                    }
+                }
+            }
+        }
+
         let n_detections_accepted = detections.detections().len();
         self.n_detections += n_detections_accepted;
         self.next_dt_id = self.next_dt_id.saturating_add(n_detections_accepted as i64);
@@ -529,6 +565,159 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// summarize call.
     pub fn finalize(mut self) -> Result<Summary, EvalError> {
         self.compute_summary()
+    }
+
+    /// Consume the evaluator and return both its final [`Summary`] and
+    /// the requested result tables.
+    ///
+    /// v0.5 supports the *cheap* tables ([`crate::TablesRequest::per_image`],
+    /// [`crate::TablesRequest::per_class`]) on the streaming path —
+    /// neither needs the per-cell `EvalImageMeta` the cells store would
+    /// have to also retain. `per_detection` / `per_pair` on streaming
+    /// returns [`EvalError::NotImplemented`]; callers who need those
+    /// today should run the same workload via [`crate::evaluate_with`]
+    /// in batch mode.
+    ///
+    /// # Errors
+    ///
+    /// - [`EvalError::NotImplemented`] when `request.per_detection` or
+    ///   `request.per_pair` is set.
+    /// - Any error from the underlying [`accumulate`] / summarize /
+    ///   [`crate::build_per_image`] / [`crate::build_per_class`] calls.
+    pub fn finalize_with_tables(
+        mut self,
+        request: crate::TablesRequest,
+        config: &crate::TablesConfig,
+    ) -> Result<(Summary, crate::Tables), EvalError> {
+        self.compute_summary_and_tables(request, config)
+    }
+
+    /// Mid-stream version of [`Self::finalize_with_tables`]. See
+    /// [`Self::snapshot`] for the determinism caveat.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as [`Self::finalize_with_tables`].
+    pub fn snapshot_with_tables(
+        &mut self,
+        request: crate::TablesRequest,
+        config: &crate::TablesConfig,
+    ) -> Result<(Summary, crate::Tables), EvalError> {
+        self.compute_summary_and_tables(request, config)
+    }
+
+    fn compute_summary_and_tables(
+        &mut self,
+        request: crate::TablesRequest,
+        config: &crate::TablesConfig,
+    ) -> Result<(Summary, crate::Tables), EvalError> {
+        if request.per_detection || request.per_pair {
+            return Err(EvalError::NotImplemented {
+                feature:
+                    "StreamingEvaluator::finalize_with_tables(per_detection | per_pair) — \
+                     streaming integration requires retained EvalImageMeta and detection \
+                     tracking, slated for a follow-up. Use Evaluator.evaluate(..., \
+                     tables=...) for the full table set today.",
+            });
+        }
+
+        // Build a synthetic EvalGrid from the cells store + GT-only
+        // overlay, identical in shape to what `evaluate_with` would
+        // have produced for the union of all submitted batches. The
+        // dense `eval_imgs` slice fully drives `build_per_image` /
+        // `build_per_class`; `eval_imgs_meta` is left empty (per_image
+        // / per_class don't read it) and `retained_ious` is None.
+        let mut eval_imgs = self.cells.flatten(&self.grid_meta);
+        if self.images_seen() < self.grid_meta.n_images {
+            self.ensure_gt_only_cells()?;
+            let n_k = self.grid_meta.n_categories;
+            let n_a = self.grid_meta.n_area_ranges;
+            let n_i = self.grid_meta.n_images;
+            let gt_only = self
+                .gt_only_cells
+                .as_ref()
+                .ok_or_else(|| EvalError::InvalidConfig {
+                    detail: "gt_only_cells cache missing after init".into(),
+                })?;
+            for i in 0..n_i {
+                if self.seen_image_indices.contains(&i) {
+                    continue;
+                }
+                for k in 0..n_k {
+                    for a in 0..n_a {
+                        let flat = k * n_a * n_i + a * n_i + i;
+                        if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
+                            eval_imgs[flat] = Some(cell.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let n_k = self.grid_meta.n_categories;
+        let n_a = self.grid_meta.n_area_ranges;
+        let n_i = self.grid_meta.n_images;
+        let synthetic_grid = crate::EvalGrid {
+            eval_imgs_meta: vec![None; eval_imgs.len()],
+            eval_imgs,
+            n_categories: n_k,
+            n_area_ranges: n_a,
+            n_images: n_i,
+            retained_ious: None,
+        };
+
+        // Standard COCO ladder per the existing `compute_summary` path.
+        let max_dets: [usize; 3] = [1, 10, 100];
+        let accum_params = AccumulateParams {
+            iou_thresholds: &self.params.iou_thresholds,
+            recall_thresholds: recall_thresholds(),
+            max_dets: &max_dets,
+            n_categories: n_k,
+            n_area_ranges: n_a,
+            n_images: n_i,
+        };
+        let accumulated = accumulate(&synthetic_grid.eval_imgs, accum_params, self.parity_mode)?;
+        let summary = if self.kernel.is_keypoints() {
+            let kp_max_dets: [usize; 1] = [20];
+            let accum_params_kp = AccumulateParams {
+                iou_thresholds: &self.params.iou_thresholds,
+                recall_thresholds: recall_thresholds(),
+                max_dets: &kp_max_dets,
+                n_categories: n_k,
+                n_area_ranges: n_a,
+                n_images: n_i,
+            };
+            let accumulated_kp = accumulate(
+                &synthetic_grid.eval_imgs,
+                accum_params_kp,
+                self.parity_mode,
+            )?;
+            let plan = StatRequest::coco_keypoints_default();
+            summarize_with(
+                &accumulated_kp,
+                &plan,
+                &self.params.iou_thresholds,
+                &kp_max_dets,
+            )?
+        } else {
+            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
+        };
+
+        // Per_image / per_class only — the cheap tables. Use
+        // `build_tables` (the umbrella) so dispatch and validation
+        // stay centralized.
+        let tables = crate::build_tables(
+            &synthetic_grid,
+            &accumulated,
+            &self.dataset,
+            None,
+            None,
+            &self.params.iou_thresholds,
+            &max_dets,
+            request,
+            config,
+        )?;
+        Ok((summary, tables))
     }
 
     /// Serialize evaluator state to an opaque byte blob suitable for
@@ -792,6 +981,7 @@ mod tests {
             area_ranges: AreaRange::coco_default().to_vec(),
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         }
     }
 

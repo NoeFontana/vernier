@@ -27,7 +27,7 @@ use crate::error::EvalError;
 /// Tolerance for matching a user-supplied IoU threshold to a value in
 /// the `iou_thresholds` ladder. Rounds out the ulp-level error from the
 /// `linspace(0.5, 0.95, 10)` build (quirk **L1**).
-const IOU_LOOKUP_TOL: f64 = 1e-12;
+pub(crate) const IOU_LOOKUP_TOL: f64 = 1e-12;
 
 /// One bucket on the A-axis of an [`Accumulated`] — an index plus a
 /// label for rendering.
@@ -482,7 +482,7 @@ fn mean_slice(
 /// Reproducing this here is a quirk-**C8**-style alignment: the public
 /// summary stats ride on top of `np.mean(s[s > -1])`, and any other sum
 /// order drifts by ~1 ULP.
-fn pairwise_sum(values: &[f64]) -> f64 {
+pub(crate) fn pairwise_sum(values: &[f64]) -> f64 {
     const PW_BLOCKSIZE: usize = 128;
     let n = values.len();
 

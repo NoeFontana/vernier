@@ -22,21 +22,22 @@ from ..coco_val_paths import DT_SEGM_ENV, GT_ENV, require_env_path, require_perf
 from .e2e_harness import assert_snapshots_equal, snapshot
 
 
+# Whole-dataset runs through the cv2-based oracle pipeline; each test
+# is multi-minute when the cache is populated. Mark slow.
+pytestmark = [pytest.mark.parity_boundary, pytest.mark.coco_val, pytest.mark.slow]
+
+
 def _assert_parity(gt: Path, dt: Path) -> None:
     ref = snapshot("oracle", gt, dt)
     cand = snapshot("vernier", gt, dt)
     assert_snapshots_equal(ref, cand)
 
 
-@pytest.mark.parity_boundary
-@pytest.mark.coco_val
 def test_coco_val2017_boundary_parity() -> None:
     """Real detector segm predictions: bring your own JSON via env vars."""
     _assert_parity(require_env_path(GT_ENV), require_env_path(DT_SEGM_ENV))
 
 
-@pytest.mark.parity_boundary
-@pytest.mark.coco_val
 def test_coco_val2017_boundary_parity_perfect_dt() -> None:
     """Synthesised perfect-DT smoke: every det carries GT polygons."""
     _assert_parity(*require_perfect_dt_artifacts("perfect_dt_segm.json"))

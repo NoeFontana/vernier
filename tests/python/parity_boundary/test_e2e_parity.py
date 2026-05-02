@@ -19,6 +19,13 @@ from .e2e_harness import BoundaryEvalSnapshot, assert_snapshots_equal, snapshot
 
 FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
 
+# Each fixture re-augments every annotation with cv2-based boundary
+# masks (see `conftest.py:_force_single_process_boundary_augment` for
+# why this is single-threaded under our harness). The corpus has ~33
+# fixtures; the file as a whole is multi-minute. Mark slow so
+# `-m "not slow"` skips the whole tree.
+pytestmark = pytest.mark.slow
+
 # Reuse the segm corpus verbatim. Boundary IoU is defined for the same
 # segmentation inputs and any divergence that breaks segm parity will
 # also break boundary parity, so a single source of truth keeps the two

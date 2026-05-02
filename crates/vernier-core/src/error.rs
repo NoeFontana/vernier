@@ -90,4 +90,20 @@ pub enum EvalError {
         /// `"StreamingEvaluator::checkpoint"`.
         feature: &'static str,
     },
+
+    /// `per_pair` row count exceeded the configured cap (ADR-0019
+    /// `TablesConfig::per_pair_max_rows`). Carries the observed count
+    /// at the moment the cap was tripped and the cap value, so callers
+    /// can decide whether to raise the cap or constrain the workload.
+    #[error("per_pair table exceeded cap: would emit at least {observed} rows, cap {cap}")]
+    PerPairOverflow {
+        /// Best-effort lower bound on the row count at the moment the
+        /// cap was tripped. The check is per-cell so the actual final
+        /// count may be larger; this is the value that triggered the
+        /// abort.
+        observed: usize,
+        /// `TablesConfig::per_pair_max_rows` value the caller (or
+        /// default) configured.
+        cap: usize,
+    },
 }

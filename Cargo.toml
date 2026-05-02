@@ -67,6 +67,19 @@ proptest = "1"
 # CLI integration testing for `vernier-cli` (per ADR-0015). Dev-dep only.
 assert_cmd = "2"
 predicates = "3"
+# Arrow columnar buffers for the result-tables FFI (ADR-0019). The
+# subset is deliberate: `arrow-array` / `arrow-buffer` / `arrow-schema`
+# carry the column types and the C-Data-Interface schema we need for
+# the PyCapsule export. We skip the umbrella `arrow` crate, `arrow-ipc`,
+# `arrow-csv`, and `arrow-pyarrow` — each is an order of magnitude more
+# code, compile time, and wheel weight, for capabilities the table
+# surface deliberately does not expose (per ADR-0019 §"Crate
+# dependency"). `default-features = false` drops Apache Arrow's
+# JSON/CSV/Prettyprint helpers we have no use for.
+arrow-array = { version = "55", default-features = false, features = ["ffi"] }
+arrow-buffer = { version = "55", default-features = false }
+arrow-data = { version = "55", default-features = false, features = ["ffi"] }
+arrow-schema = { version = "55", default-features = false, features = ["ffi"] }
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit

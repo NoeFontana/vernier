@@ -49,6 +49,7 @@ use vernier_core::{
 
 mod background;
 mod dataset;
+mod tables;
 
 use dataset::{DatasetCaches, PyDataset};
 
@@ -205,6 +206,13 @@ impl PyEvalGrid {
     }
 }
 
+impl PyEvalGrid {
+    /// Crate-internal borrow used by the result-tables FFI module.
+    pub(crate) fn eval_grid_ref(&self) -> &EvalGrid {
+        &self.inner
+    }
+}
+
 /// Frozen wrapper around [`vernier_core::Accumulated`]. Carries the
 /// `max_dets` ladder used by `accumulate`; `summarize` reuses it.
 #[pyclass(module = "vernier._core", name = "Accumulated", frozen)]
@@ -288,6 +296,19 @@ impl PyAccumulated {
             "Accumulated(precision={}x{}x{}x{}x{})",
             s[0], s[1], s[2], s[3], s[4]
         )
+    }
+}
+
+impl PyAccumulated {
+    /// Crate-internal borrow used by the result-tables FFI module.
+    pub(crate) fn accumulated_ref(&self) -> &Accumulated {
+        &self.inner
+    }
+    /// Crate-internal borrow of the M-axis ladder this accumulator was
+    /// built with. Result tables that cite specific maxDets entries
+    /// look these up.
+    pub(crate) fn max_dets_slice(&self) -> &[usize] {
+        &self.max_dets
     }
 }
 
@@ -400,6 +421,7 @@ impl EvalIouType {
 /// `(image, category)` cell — pass the *largest* entry of the eventual
 /// `accumulate()` `max_dets` ladder. Smaller ladder entries are sliced
 /// downstream by `accumulate`.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_grid_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
@@ -408,13 +430,11 @@ fn evaluate_grid_impl(
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
+    retain_iou: bool,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
     let gt_bytes = gt_json.as_bytes().to_vec();
     let dt_bytes = dt_json.as_bytes().to_vec();
-    // Kp grid drops the small bucket (D5); detection grid keeps all
-    // four. `Vec<AreaRange>` lets either size flow through the same
-    // `&[AreaRange]` slice the eval pass consumes.
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     let grid = py.detach(move || -> PyResult<EvalGrid> {
         let gt = parse_gt(&gt_bytes)?;
@@ -428,6 +448,7 @@ fn evaluate_grid_impl(
                     area_ranges: &area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou,
                 },
                 parity,
             )
@@ -451,8 +472,12 @@ fn area_ranges_for(iou_type: &EvalIouType) -> Vec<AreaRange> {
 }
 
 /// Bbox per-image evaluation pass — see [`evaluate_grid_impl`].
+/// `retain_iou` (per ADR-0019 Week 2.3) keeps the per-`(category,
+/// image)` IoU matrix on the returned grid for later table
+/// construction; defaults to `False` so existing callers pay no extra
+/// allocation.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats, retain_iou=false))]
 fn evaluate_bbox_grid(
     py: Python<'_>,
     gt_json: &Bound<'_, PyBytes>,
@@ -460,6 +485,7 @@ fn evaluate_bbox_grid(
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
+    retain_iou: bool,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -469,6 +495,7 @@ fn evaluate_bbox_grid(
         parity_mode,
         max_dets_per_image,
         use_cats,
+        retain_iou,
     )
 }
 
@@ -476,7 +503,7 @@ fn evaluate_bbox_grid(
 /// `segmentation` field on every entry; absent fields raise a typed
 /// `ValueError` instead of being silently treated as empty.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats, retain_iou=false))]
 fn evaluate_segm_grid(
     py: Python<'_>,
     gt_json: &Bound<'_, PyBytes>,
@@ -484,6 +511,7 @@ fn evaluate_segm_grid(
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
+    retain_iou: bool,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -493,6 +521,7 @@ fn evaluate_segm_grid(
         parity_mode,
         max_dets_per_image,
         use_cats,
+        retain_iou,
     )
 }
 
@@ -501,7 +530,8 @@ fn evaluate_segm_grid(
 /// `dilation_ratio` is the boundary band width as a fraction of the
 /// image diagonal (`0.02` COCO default; `0.008` LVIS variant).
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt_json, dt_json, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false))]
+#[allow(clippy::too_many_arguments)]
 fn evaluate_boundary_grid(
     py: Python<'_>,
     gt_json: &Bound<'_, PyBytes>,
@@ -510,6 +540,7 @@ fn evaluate_boundary_grid(
     max_dets_per_image: usize,
     use_cats: bool,
     dilation_ratio: f64,
+    retain_iou: bool,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
     evaluate_grid_impl(
@@ -520,6 +551,7 @@ fn evaluate_boundary_grid(
         parity_mode,
         max_dets_per_image,
         use_cats,
+        retain_iou,
     )
 }
 
@@ -836,6 +868,7 @@ fn evaluate_keypoints_grid(
         parity_mode,
         max_dets_per_image,
         use_cats,
+        false,
     )
 }
 
@@ -867,6 +900,7 @@ fn run_pipeline(
         area_ranges: &area,
         max_dets_per_image: max_det_top,
         use_cats,
+        retain_iou: false,
     };
     let grid = iou_type.run(gt, dt, eval_params, parity)?;
     summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
@@ -893,6 +927,7 @@ fn run_pipeline_with_dataset(
         area_ranges: &area,
         max_dets_per_image: max_det_top,
         use_cats,
+        retain_iou: false,
     };
     let grid = iou_type.run_cached(gt, dt, eval_params, parity, caches)?;
     summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
@@ -1109,6 +1144,39 @@ impl StreamingState {
         }
     }
 
+    /// ADR-0019 Week 2.5: snapshot/finalize variant that builds the
+    /// requested result tables alongside the Summary. Per_detection
+    /// and per_pair on streaming return `NotImplemented` (the cells
+    /// store does not retain `EvalImageMeta` in v0.5).
+    fn snapshot_with_tables(
+        &mut self,
+        request: vernier_core::TablesRequest,
+        config: &vernier_core::TablesConfig,
+    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        match self {
+            Self::Bbox(ev) => ev.snapshot_with_tables(request, config),
+            Self::Segm(ev) => ev.snapshot_with_tables(request, config),
+            Self::Boundary(ev) => ev.snapshot_with_tables(request, config),
+            Self::Keypoints(ev) => ev.snapshot_with_tables(request, config),
+            Self::Finalized => Err(finalized_error()),
+        }
+    }
+
+    fn take_and_finalize_with_tables(
+        &mut self,
+        request: vernier_core::TablesRequest,
+        config: &vernier_core::TablesConfig,
+    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        let prev = std::mem::replace(self, Self::Finalized);
+        match prev {
+            Self::Bbox(ev) => ev.finalize_with_tables(request, config),
+            Self::Segm(ev) => ev.finalize_with_tables(request, config),
+            Self::Boundary(ev) => ev.finalize_with_tables(request, config),
+            Self::Keypoints(ev) => ev.finalize_with_tables(request, config),
+            Self::Finalized => Err(finalized_error()),
+        }
+    }
+
     fn images_seen(&self) -> usize {
         match self {
             Self::Bbox(ev) => ev.images_seen(),
@@ -1253,6 +1321,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1265,6 +1334,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1278,6 +1348,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -1298,6 +1369,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -1401,6 +1473,95 @@ impl PyStreamingEvaluator {
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PySummary { inner: summary })
+    }
+
+    /// ADR-0019 Week 2.5: snapshot variant that builds the requested
+    /// result tables alongside the Summary. `tables` is a tuple of
+    /// names; v0.5 supports `"per_image"` and `"per_class"`.
+    /// `per_detection` / `per_pair` raise `ValueError` (the underlying
+    /// streaming integration for those is deferred — see
+    /// `StreamingEvaluator::finalize_with_tables` rustdoc).
+    ///
+    /// Returns `(Summary, per_image_batch_or_None, per_class_batch_or_None)`;
+    /// the Python wrapper repackages this into an `EvalResult`.
+    #[pyo3(signature = (per_image=false, per_class=false))]
+    fn snapshot_with_tables(
+        &self,
+        py: Python<'_>,
+        per_image: bool,
+        per_class: bool,
+    ) -> PyResult<(
+        PySummary,
+        Option<tables::ArrowRecordBatchPy>,
+        Option<tables::ArrowRecordBatchPy>,
+    )> {
+        let state_mutex = &self.state;
+        let request = vernier_core::TablesRequest {
+            per_image,
+            per_class,
+            ..vernier_core::TablesRequest::default()
+        };
+        let cfg = vernier_core::TablesConfig::default();
+        let (summary, tables) = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "StreamingEvaluator state mutex poisoned".into(),
+                })?;
+                guard.snapshot_with_tables(request, &cfg)
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        let per_image_batch = tables
+            .per_image
+            .map(|t| tables::per_image_table_to_arrow(&t))
+            .transpose()
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        let per_class_batch = tables
+            .per_class
+            .map(|t| tables::per_class_table_to_arrow(&t))
+            .transpose()
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok((PySummary { inner: summary }, per_image_batch, per_class_batch))
+    }
+
+    /// Tables-aware finalize. Same shape as
+    /// [`Self::snapshot_with_tables`]; consumes the evaluator.
+    #[pyo3(signature = (per_image=false, per_class=false))]
+    fn finalize_with_tables(
+        &self,
+        py: Python<'_>,
+        per_image: bool,
+        per_class: bool,
+    ) -> PyResult<(
+        PySummary,
+        Option<tables::ArrowRecordBatchPy>,
+        Option<tables::ArrowRecordBatchPy>,
+    )> {
+        let state_mutex = &self.state;
+        let request = vernier_core::TablesRequest {
+            per_image,
+            per_class,
+            ..vernier_core::TablesRequest::default()
+        };
+        let cfg = vernier_core::TablesConfig::default();
+        let (summary, tables) = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "StreamingEvaluator state mutex poisoned".into(),
+                })?;
+                guard.take_and_finalize_with_tables(request, &cfg)
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        let per_image_batch = tables
+            .per_image
+            .map(|t| tables::per_image_table_to_arrow(&t))
+            .transpose()
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        let per_class_batch = tables
+            .per_class
+            .map(|t| tables::per_class_table_to_arrow(&t))
+            .transpose()
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok((PySummary { inner: summary }, per_image_batch, per_class_batch))
     }
 
     /// Distinct images that have received at least one detection.
@@ -1733,6 +1894,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1747,6 +1909,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1762,6 +1925,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -1784,6 +1948,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
+                    retain_iou: false,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -2010,12 +2175,29 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         evaluate_keypoints_summary_with_dataset,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(
+        tables::per_class_to_arrow_pycapsule,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tables::per_image_to_arrow_pycapsule,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tables::per_detection_to_arrow_pycapsule,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        tables::per_pair_to_arrow_pycapsule,
+        m
+    )?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
     m.add_class::<PyDataset>()?;
     m.add_class::<PyStreamingEvaluator>()?;
     m.add_class::<PyBackgroundEvaluator>()?;
+    m.add_class::<tables::ArrowRecordBatchPy>()?;
     m.add("OutOfBudgetError", m.py().get_type::<OutOfBudgetError>())?;
     m.add("QueueFullError", m.py().get_type::<QueueFullError>())?;
     m.add(

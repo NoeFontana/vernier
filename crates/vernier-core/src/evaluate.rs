@@ -203,6 +203,12 @@ pub struct EvaluateParams<'p> {
     /// collapsed onto a single bucket `k=0` and `category_id` is ignored
     /// for gather purposes.
     pub use_cats: bool,
+    /// When `true`, [`evaluate_with`] retains the per-`(category,
+    /// image)` IoU matrix on [`EvalGrid::retained_ious`] so the
+    /// `per_pair` / `per_detection` result tables can read it. Default
+    /// `false`; the no-retention path allocates nothing extra and is
+    /// bit-identical to the 0.0.1 release.
+    pub retain_iou: bool,
 }
 
 /// Owned counterpart to [`EvaluateParams`].
@@ -222,6 +228,8 @@ pub struct OwnedEvaluateParams {
     pub max_dets_per_image: usize,
     /// Quirk **L4** collapse flag.
     pub use_cats: bool,
+    /// IoU-matrix retention flag — see [`EvaluateParams::retain_iou`].
+    pub retain_iou: bool,
 }
 
 impl OwnedEvaluateParams {
@@ -232,6 +240,7 @@ impl OwnedEvaluateParams {
             area_ranges: &self.area_ranges,
             max_dets_per_image: self.max_dets_per_image,
             use_cats: self.use_cats,
+            retain_iou: self.retain_iou,
         }
     }
 }
@@ -628,6 +637,10 @@ pub struct EvalGrid {
     /// `I` axis size: number of images iterated over (every image in the
     /// GT dataset, in deterministic id-ascending order).
     pub n_images: usize,
+    /// Per-`(category, image)` IoU matrices retained when the caller
+    /// passed [`EvaluateParams::retain_iou`] = `true`. `None` on the
+    /// default no-retention path; one discriminant byte wide there.
+    pub retained_ious: Option<crate::tables::RetainedIous>,
 }
 
 impl EvalGrid {
@@ -696,6 +709,14 @@ pub fn evaluate_with<K: EvalKernel>(
 
     let mut eval_imgs: Vec<Option<PerImageEval>> = vec![None; n_k * n_a * n_i];
     let mut eval_imgs_meta: Vec<Option<EvalImageMeta>> = vec![None; n_k * n_a * n_i];
+    // Optional IoU retention, keyed by `(k, i)` — IoU is geometry-only,
+    // so storing per-area would duplicate ~4× under the COCO grid.
+    let mut retained_ious_map: Option<std::collections::HashMap<(usize, usize), Array2<f64>>> =
+        if params.retain_iou {
+            Some(std::collections::HashMap::new())
+        } else {
+            None
+        };
 
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
@@ -756,6 +777,14 @@ pub fn evaluate_with<K: EvalKernel>(
                 eval_imgs[flat] = Some(cell);
                 eval_imgs_meta[flat] = Some(meta);
             }
+
+            // Retain a clone of the IoU matrix exactly when the caller
+            // asked. The check is at end-of-cell so the area-range
+            // loop above runs on the borrow `buffers.iou`; cloning
+            // here costs O(G*D) f64s, only when retention is active.
+            if let Some(map) = retained_ious_map.as_mut() {
+                map.insert((k, i), iou);
+            }
         }
     }
 
@@ -765,6 +794,7 @@ pub fn evaluate_with<K: EvalKernel>(
         n_categories: n_k,
         n_area_ranges: n_a,
         n_images: n_i,
+        retained_ious: retained_ious_map.map(crate::tables::RetainedIous::from_map),
     })
 }
 
@@ -1281,6 +1311,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap()
     }
@@ -1401,6 +1432,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let small = grid.cell(0, 1, 0).unwrap();
@@ -1429,6 +1461,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         // small (lo=0, hi=32²=1024): area 1024 == hi → included.
@@ -1464,6 +1497,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: false,
+            retain_iou: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         assert_eq!(grid.n_categories, 1);
@@ -1492,6 +1526,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 2,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -1526,6 +1561,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
 
         let strict = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
@@ -1581,6 +1617,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let meta = grid.cell_meta(0, 0, 0).unwrap();
@@ -1605,6 +1642,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: false,
+            retain_iou: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let meta = grid.cell_meta(0, 0, 0).unwrap();
@@ -1626,6 +1664,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         for a in 0..4 {
@@ -1723,6 +1762,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let max_dets = vec![1usize, 10, 100];
@@ -1770,6 +1810,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -1799,6 +1840,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap_err();
         match err {
@@ -1833,6 +1875,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
         match err {
@@ -1871,6 +1914,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -1918,6 +1962,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
         assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
@@ -1958,6 +2003,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
         assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
@@ -2007,6 +2053,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -2044,6 +2091,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let max_dets = vec![1usize, 10, 100];
@@ -2093,6 +2141,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -2176,6 +2225,7 @@ mod tests {
             area_ranges: AreaRange::coco_default().to_vec(),
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         (gt, dts_a, dts_b, params)
     }
@@ -2519,6 +2569,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
@@ -2567,6 +2618,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
@@ -2613,6 +2665,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
@@ -2675,6 +2728,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let grid = evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, sigmas).unwrap();
         // K-axis is [cat 1, cat 2]; each cell sees one GT and one DT.
@@ -2717,6 +2771,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let err =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap_err();
@@ -2791,6 +2846,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
+            retain_iou: false,
         };
         let err = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap_err();
         match err {

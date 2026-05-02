@@ -154,6 +154,7 @@ fn run_pipeline(
         area_ranges: &area,
         max_dets_per_image: max_det_top,
         use_cats,
+        retain_iou: false,
     };
 
     let grid = match iou_type {
