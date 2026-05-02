@@ -207,7 +207,9 @@ pub(crate) fn segm_iou_compute(
     scratch.g_segments.clear();
     populate_gt(gts, scratch, gt_cache);
     scratch.d_bbox.clear();
-    scratch.d_bbox.extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
+    scratch
+        .d_bbox
+        .extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
     scratch.d_area.clear();
     scratch.d_area.extend(dts.iter().map(|d| d.rle.area()));
     scratch.d_segments.clear();
@@ -246,11 +248,7 @@ pub(crate) fn segm_iou_compute(
 /// Vecs are assumed already cleared with capacity preserved. Hits
 /// avoid the RLE walks that [`Rle::bbox`], [`Rle::area`], and
 /// [`Rle::decode_fg_offsets_into`] would otherwise do per call.
-fn populate_gt(
-    gts: &[SegmAnn],
-    scratch: &mut SegmComputeScratch,
-    cache: Option<&SegmGtCache>,
-) {
+fn populate_gt(gts: &[SegmAnn], scratch: &mut SegmComputeScratch, cache: Option<&SegmGtCache>) {
     let Some(cache) = cache else {
         for g in gts {
             scratch.g_bbox.push(to_bbox_ann(&g.rle, g.is_crowd));

@@ -41,8 +41,7 @@ fn dt_path() -> PathBuf {
     if let Ok(env) = env::var("VERNIER_COCO_DT_SEGM_PATH") {
         return PathBuf::from(env);
     }
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../.cache/coco-val2017/perfect_dt_segm.json")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.cache/coco-val2017/perfect_dt_segm.json")
 }
 
 fn time_ms<F: FnOnce() -> R, R>(f: F) -> (R, f64) {
@@ -68,8 +67,7 @@ fn main() {
         load_dt_ms,
     );
 
-    let (gt, parse_gt_ms) =
-        time_ms(|| CocoDataset::from_json_bytes(&gt_bytes).expect("parse GT"));
+    let (gt, parse_gt_ms) = time_ms(|| CocoDataset::from_json_bytes(&gt_bytes).expect("parse GT"));
     let (dt, parse_dt_ms) =
         time_ms(|| CocoDetections::from_json_bytes(&dt_bytes).expect("parse DT"));
     println!("Parsed GT in {parse_gt_ms:.0} ms, DT in {parse_dt_ms:.0} ms");
@@ -90,13 +88,11 @@ fn main() {
     let ratio = BOUNDARY_DILATION_RATIO_DEFAULT;
 
     println!("\n=== uncached: two back-to-back evaluate_boundary calls ===");
-    let (_, u1_ms) = time_ms(|| {
-        evaluate_boundary(&gt, &dt, params, ParityMode::Strict, ratio).unwrap()
-    });
+    let (_, u1_ms) =
+        time_ms(|| evaluate_boundary(&gt, &dt, params, ParityMode::Strict, ratio).unwrap());
     println!("call 1: {u1_ms:>9.0} ms");
-    let (_, u2_ms) = time_ms(|| {
-        evaluate_boundary(&gt, &dt, params, ParityMode::Strict, ratio).unwrap()
-    });
+    let (_, u2_ms) =
+        time_ms(|| evaluate_boundary(&gt, &dt, params, ParityMode::Strict, ratio).unwrap());
     println!("call 2: {u2_ms:>9.0} ms");
 
     println!("\n=== cached: two back-to-back evaluate_boundary_cached calls (shared cache) ===");
