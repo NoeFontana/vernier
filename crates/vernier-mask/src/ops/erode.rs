@@ -47,6 +47,7 @@ pub struct ErodeScratch {
     pub(crate) row_out: Vec<u8>,
     pub(crate) raster: Vec<u8>,
     pub(crate) eroded: Vec<u8>,
+    pub(crate) min_temp: Vec<u8>,
 }
 
 impl ErodeScratch {
@@ -106,12 +107,7 @@ fn erode_raster_chebyshev(raster: &[u8], h: usize, w: usize, d: usize) -> Vec<u8
 /// raster. Reads input from `scratch.raster` (caller writes the raster
 /// in via [`Rle::to_raster_bytes_into`] or `Vec::extend_from_slice`)
 /// and writes the eroded interior to `scratch.eroded`.
-pub(crate) fn erode_raster_into_scratch(
-    scratch: &mut ErodeScratch,
-    h: usize,
-    w: usize,
-    d: usize,
-) {
+pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w: usize, d: usize) {
     let ph = h + 2;
     let pw = w + 2;
     let pad_size = ph * pw;
@@ -132,6 +128,14 @@ pub(crate) fn erode_raster_into_scratch(
     scratch.row_out.resize(pw, 0);
     scratch.eroded.clear();
     scratch.eroded.resize(h * w, 0);
+    // Two `max(ph, pw)`-byte ping-pong halves for the sparse-table
+    // build inside `min_filter_binary`. Contents are dead on entry
+    // (overwritten before read), so grow-only — no re-zeroing on the
+    // hot path.
+    let scan_needed = 2 * ph.max(pw);
+    if scratch.min_temp.len() < scan_needed {
+        scratch.min_temp.resize(scan_needed, 0);
+    }
 
     let ErodeScratch {
         padded,
@@ -140,6 +144,7 @@ pub(crate) fn erode_raster_into_scratch(
         row_out,
         raster,
         eroded,
+        min_temp,
     } = scratch;
 
     // 1. Pad to (h+2, w+2) column-major with a 1-pixel zero ring (N1).
@@ -157,7 +162,7 @@ pub(crate) fn erode_raster_into_scratch(
         for x in 0..pw {
             row_in[x] = padded[x * ph + y];
         }
-        min_filter_binary(row_in, d, row_out);
+        min_filter_binary(row_in, d, row_out, min_temp);
         for x in 0..pw {
             row_scratch[x * ph + y] = row_out[x];
         }
@@ -170,7 +175,7 @@ pub(crate) fn erode_raster_into_scratch(
         let col = x * ph;
         let col_in = &row_scratch[col..col + ph];
         let col_out = &mut padded[col..col + ph];
-        min_filter_binary(col_in, d, col_out);
+        min_filter_binary(col_in, d, col_out, min_temp);
     }
 
     // 4. Strip the pad: copy interior (1..=w) × (1..=h) back to (h, w)
@@ -182,44 +187,105 @@ pub(crate) fn erode_raster_into_scratch(
     }
 }
 
+/// `dst[i] = a[i] & b[i]` over equal-length slices. Written as a
+/// `zip` chain so LLVM lowers it to 16/32-byte SSE2/AVX2 byte-AND
+/// lanes — the only autovec-shaped primitive `min_filter_binary`
+/// needs.
+#[inline]
+fn and_into(dst: &mut [u8], a: &[u8], b: &[u8]) {
+    debug_assert_eq!(dst.len(), a.len());
+    debug_assert_eq!(dst.len(), b.len());
+    for ((d, &x), &y) in dst.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *d = x & y;
+    }
+}
+
 /// 1D sliding-window minimum on a binary `{0, 1}` byte sequence with
 /// kernel size `2 * d + 1`. Reads outside the sequence return `1` (so
 /// they don't pull the min below) — matches `cv2.erode`'s
 /// `BORDER_CONSTANT` default for binary input.
 ///
-/// Maintains a running zero-count over the sliding window: `output[j]`
-/// is `1` iff the window `[j-d, j+d]` (with OOB filled by `1`) contains
-/// no zeros. Each step removes the leaving cell and adds the entering
-/// cell, so the inner loop is `O(n)` byte operations rather than
-/// `O(n * w)`.
-fn min_filter_binary(input: &[u8], d: usize, output: &mut [u8]) {
+/// On binary input `min` reduces to `&`. The interior is computed by
+/// a sparse-table build over `temp`: at level `l ∈ 1..=k` we have
+/// `temp_l[i] = AND input[i .. i + 2^l]`, computed as
+/// `temp_l[i] = temp_{l-1}[i] & temp_{l-1}[i + 2^(l-1)]`. With
+/// `k = floor(log2(2d + 1))` this is two non-overlapping slice
+/// reads + one slice write per level — the autovec shape. The
+/// interior output is then
+/// `output[j] = temp_k[j - d] & temp_k[j + d + 1 - 2^k]`, again two
+/// contiguous slice ANDs. Edge regions (`[0, d)` and `[n - d, n)`)
+/// straddle OOB and are clipped scalarly.
+///
+/// `temp` is caller-provided scratch of length `≥ 2 * n`: two
+/// `n`-byte ping-pong halves for the level build.
+fn min_filter_binary(input: &[u8], d: usize, output: &mut [u8], temp: &mut [u8]) {
     let n = input.len();
     debug_assert_eq!(n, output.len());
+    debug_assert!(temp.len() >= 2 * n);
     if n == 0 {
         return;
     }
-    // Initial window for output[0] is virtual indices [-d, d]. OOB
-    // values are 1, so the only zeros in this window come from
-    // input[0..=min(d, n-1)].
-    let init_end = (d + 1).min(n);
-    // u32 not i32: the slide invariant guarantees zeros never goes
-    // negative — we decrement only when input[j-1-d] was previously
-    // counted (it was a zero we admitted on a prior step). The cast
-    // is safe because the window fits in `init_end <= d+1`, and `d`
-    // is bounded by the dilation radius (small u32).
-    let mut zeros = input[..init_end].iter().filter(|&&b| b == 0).count() as u32;
-    output[0] = u8::from(zeros == 0);
-    for j in 1..n {
-        // Slide window from [j-1-d, j-1+d] to [j-d, j+d]: leave V[j-1-d],
-        // enter V[j+d]. Both are 1 (no count change) when out of range.
-        if j > d && input[j - 1 - d] == 0 {
-            zeros -= 1;
-        }
-        if j + d < n && input[j + d] == 0 {
-            zeros += 1;
-        }
-        output[j] = u8::from(zeros == 0);
+    if d == 0 {
+        output.copy_from_slice(input);
+        return;
     }
+
+    // Window-AND on the clipped range `[max(0, j-d), min(n, j+d+1))`.
+    // Used for the `n <= 2d` degenerate case and for the two edge
+    // regions of the standard path.
+    let clip_and = |j: usize| -> u8 {
+        let lo = j.saturating_sub(d);
+        let hi = (j + d + 1).min(n);
+        input[lo..hi].iter().fold(1_u8, |acc, &v| acc & v)
+    };
+
+    if n <= 2 * d {
+        for (j, out) in output.iter_mut().enumerate() {
+            *out = clip_and(j);
+        }
+        return;
+    }
+
+    for (j, out) in (0..d).zip(output[..d].iter_mut()) {
+        *out = clip_and(j);
+    }
+    for (j, out) in (n - d..n).zip(output[n - d..].iter_mut()) {
+        *out = clip_and(j);
+    }
+
+    // Sparse-table build. `win >= 3` here (`d >= 1` and the
+    // `n <= 2d` branch already returned), so `leading_zeros`
+    // doesn't observe the all-zero edge.
+    let win = 2 * d + 1;
+    let k = (usize::BITS - 1 - win.leading_zeros()) as usize;
+    let pow_k = 1_usize << k;
+
+    let (mut src, mut dst_buf) = temp.split_at_mut(n);
+
+    // Level 1 reads from `input`, skipping the otherwise-required
+    // copy of `input` into `src` before the loop. After this block,
+    // `src` holds level-1 data (or level-0 if k == 0, which doesn't
+    // happen here since win >= 3).
+    {
+        let stride = 1_usize;
+        let len = n - 2 + 1;
+        and_into(&mut src[..len], &input[..len], &input[stride..stride + len]);
+    }
+    for l in 2..=k {
+        let stride = 1_usize << (l - 1);
+        let len = n - (1_usize << l) + 1;
+        and_into(&mut dst_buf[..len], &src[..len], &src[stride..stride + len]);
+        std::mem::swap(&mut src, &mut dst_buf);
+    }
+
+    // `output[j + d] = src[j] & src[j + win - 2^k]` for the interior.
+    let interior_len = n - 2 * d;
+    let hi_off = win - pow_k;
+    and_into(
+        &mut output[d..d + interior_len],
+        &src[..interior_len],
+        &src[hi_off..hi_off + interior_len],
+    );
 }
 
 #[cfg(test)]
