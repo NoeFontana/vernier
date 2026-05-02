@@ -2270,15 +2270,9 @@ mod tests {
         assert!(cache.is_empty());
         // Post-clear the next call must repopulate from scratch and
         // still produce the right answer.
-        let after = evaluate_boundary_cached(
-            &gt,
-            &dts,
-            params.borrow(),
-            ParityMode::Strict,
-            0.02,
-            &cache,
-        )
-        .unwrap();
+        let after =
+            evaluate_boundary_cached(&gt, &dts, params.borrow(), ParityMode::Strict, 0.02, &cache)
+                .unwrap();
         let baseline =
             evaluate_boundary(&gt, &dts, params.borrow(), ParityMode::Strict, 0.02).unwrap();
         let after_scores = boundary_grid_cells(&after);
@@ -2296,13 +2290,25 @@ mod tests {
         // hold for both DT sets.
         let (gt, dts_a, dts_b, params) = boundary_cache_fixture();
         let cache = BoundaryGtCache::new();
-        let cached_a =
-            evaluate_boundary_cached(&gt, &dts_a, params.borrow(), ParityMode::Strict, 0.02, &cache)
-                .unwrap();
+        let cached_a = evaluate_boundary_cached(
+            &gt,
+            &dts_a,
+            params.borrow(),
+            ParityMode::Strict,
+            0.02,
+            &cache,
+        )
+        .unwrap();
         let len_after_a = cache.len();
-        let cached_b =
-            evaluate_boundary_cached(&gt, &dts_b, params.borrow(), ParityMode::Strict, 0.02, &cache)
-                .unwrap();
+        let cached_b = evaluate_boundary_cached(
+            &gt,
+            &dts_b,
+            params.borrow(),
+            ParityMode::Strict,
+            0.02,
+            &cache,
+        )
+        .unwrap();
         assert_eq!(cache.len(), len_after_a);
 
         let baseline_a =
@@ -2372,8 +2378,8 @@ mod tests {
         assert!(!cache.is_empty());
         cache.clear();
         assert!(cache.is_empty());
-        let after = evaluate_segm_cached(&gt, &dts, params.borrow(), ParityMode::Strict, &cache)
-            .unwrap();
+        let after =
+            evaluate_segm_cached(&gt, &dts, params.borrow(), ParityMode::Strict, &cache).unwrap();
         let baseline = evaluate_segm(&gt, &dts, params.borrow(), ParityMode::Strict).unwrap();
         for (a, b) in boundary_grid_cells(&after)
             .iter()

@@ -36,6 +36,7 @@ Decision Records). To propose a new ADR:
 | 0017 | Local bench harness — subprocess-isolated, uv-managed, parity-coupled | proposed |
 | 0018 | Calibration metrics for modern detection architectures   | proposed |
 | 0019 | Result tables — opt-in, Arrow-backed, zero-overhead by default | proposed |
+| 0020 | Parsed-once `Dataset` handle as the GT-side derivation cache | proposed |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand

@@ -39,15 +39,18 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
 use vernier_core::{
-    accumulate, evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm,
-    iou_thresholds, recall_thresholds, sort_max_dets, summarize_detection, summarize_with,
-    AccumulateParams, Accumulated, AreaRange, BboxIou, BoundaryIou, CocoDataset, CocoDetections,
-    EvalError, EvalGrid, EvalImageMeta, EvaluateParams, MemoryBudget, OksSimilarity,
-    OwnedEvaluateParams, ParityMode, ParsedDetections, PerImageEval, SegmIou, StatRequest,
-    StreamingEvaluator, Summary, UpdateReport,
+    accumulate, evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints,
+    evaluate_segm, evaluate_segm_cached, iou_thresholds, recall_thresholds, sort_max_dets,
+    summarize_detection, summarize_with, AccumulateParams, Accumulated, AreaRange, BboxIou,
+    BoundaryIou, CocoDataset, CocoDetections, EvalError, EvalGrid, EvalImageMeta, EvaluateParams,
+    MemoryBudget, OksSimilarity, OwnedEvaluateParams, ParityMode, ParsedDetections, PerImageEval,
+    SegmIou, StatRequest, StreamingEvaluator, Summary, UpdateReport,
 };
 
 mod background;
+mod dataset;
+
+use dataset::{DatasetCaches, PyDataset};
 
 create_exception!(
     vernier._core,
@@ -288,6 +291,17 @@ impl PyAccumulated {
     }
 }
 
+/// Parse a COCO GT payload, lifting `EvalError` into `PyValueError`.
+/// One helper per FFI entry — keeps the error mapping uniform.
+pub(crate) fn parse_gt(bytes: &[u8]) -> PyResult<CocoDataset> {
+    CocoDataset::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+}
+
+/// Parse a COCO detections payload (sibling of [`parse_gt`]).
+pub(crate) fn parse_dt(bytes: &[u8]) -> PyResult<CocoDetections> {
+    CocoDetections::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+}
+
 /// Build a single pycocotools-shaped `evalImgs` dict from one cell.
 fn eval_img_dict<'py>(
     py: Python<'py>,
@@ -348,6 +362,29 @@ impl EvalIouType {
         }
     }
 
+    /// `run` against the dataset's GT-side derivation caches
+    /// (ADR-0020). Mirrors [`Self::run`] but routes the kernels that
+    /// have a cache slot through their `*_cached` variants.
+    fn run_cached(
+        &self,
+        gt: &CocoDataset,
+        dt: &CocoDetections,
+        params: EvaluateParams<'_>,
+        parity: ParityMode,
+        caches: DatasetCaches<'_>,
+    ) -> Result<EvalGrid, EvalError> {
+        match self {
+            Self::Bbox => evaluate_bbox(gt, dt, params, parity),
+            Self::Segm => evaluate_segm_cached(gt, dt, params, parity, caches.segm),
+            Self::Boundary { dilation_ratio } => {
+                evaluate_boundary_cached(gt, dt, params, parity, *dilation_ratio, caches.boundary)
+            }
+            Self::Keypoints { sigmas } => {
+                evaluate_keypoints(gt, dt, params, parity, sigmas.clone())
+            }
+        }
+    }
+
     /// True for the Keypoints kernel — drives the kp-vs-detection grid
     /// and summarizer-plan dispatch in [`evaluate_grid_impl`] and
     /// [`run_pipeline`].
@@ -373,17 +410,17 @@ fn evaluate_grid_impl(
     use_cats: bool,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-    let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let gt_bytes = gt_json.as_bytes().to_vec();
+    let dt_bytes = dt_json.as_bytes().to_vec();
     // Kp grid drops the small bucket (D5); detection grid keeps all
     // four. `Vec<AreaRange>` lets either size flow through the same
     // `&[AreaRange]` slice the eval pass consumes.
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
-    let grid = py
-        .detach(move || {
-            iou_type.run(
+    let grid = py.detach(move || -> PyResult<EvalGrid> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        iou_type
+            .run(
                 &gt,
                 &dt,
                 EvaluateParams {
@@ -394,8 +431,8 @@ fn evaluate_grid_impl(
                 },
                 parity,
             )
-        })
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
     Ok(PyEvalGrid {
         inner: grid,
         parity,
@@ -513,14 +550,18 @@ fn evaluate_summary_impl(
     // ascending ladder.
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
-    let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-    let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    // The `PyBytes` borrow is GIL-tied; copy so the JSON parse can run
+    // inside `py.detach`. Cost is one memcpy per call, gain is a wider
+    // GIL-drop window for multi-threaded callers.
+    let gt_bytes = gt_json.as_bytes().to_vec();
+    let dt_bytes = dt_json.as_bytes().to_vec();
 
-    let summary = py
-        .detach(move || run_pipeline(&iou_type, &gt, &dt, parity, &max_dets, use_cats))
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let summary = py.detach(move || -> PyResult<Summary> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        run_pipeline(&iou_type, &gt, &dt, parity, &max_dets, use_cats)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
 
     Ok(PySummary { inner: summary })
 }
@@ -630,6 +671,146 @@ fn evaluate_keypoints_summary(
     )
 }
 
+/// Bbox end-to-end pipeline against a parsed-once [`PyDataset`]
+/// (ADR-0020). Reuses the dataset's parsed GT; bbox has no GT-side
+/// derivation cache today, so the only saving over
+/// [`evaluate_bbox_summary`] is the GT JSON parse.
+#[pyfunction]
+#[pyo3(signature = (dataset, dt_json, parity_mode, max_dets, use_cats))]
+fn evaluate_bbox_summary_with_dataset(
+    py: Python<'_>,
+    dataset: &PyDataset,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+) -> PyResult<PySummary> {
+    evaluate_summary_with_dataset_impl(
+        py,
+        EvalIouType::Bbox,
+        dataset,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
+/// Segm end-to-end pipeline against a parsed-once [`PyDataset`]
+/// (ADR-0020). Threads the dataset's [`SegmGtCache`] into the
+/// kernel so cross-call GT bbox+area derivation is reused.
+#[pyfunction]
+#[pyo3(signature = (dataset, dt_json, parity_mode, max_dets, use_cats))]
+fn evaluate_segm_summary_with_dataset(
+    py: Python<'_>,
+    dataset: &PyDataset,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+) -> PyResult<PySummary> {
+    evaluate_summary_with_dataset_impl(
+        py,
+        EvalIouType::Segm,
+        dataset,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
+/// Boundary end-to-end pipeline against a parsed-once [`PyDataset`]
+/// (ADR-0020). Threads the dataset's [`BoundaryGtCache`] into the
+/// kernel so cross-call GT band derivation (the dominant boundary
+/// cost) is reused. The cache is cleared if `dilation_ratio` differs
+/// from the previous call's, per ADR-0010.
+#[pyfunction]
+#[pyo3(signature = (dataset, dt_json, parity_mode, max_dets, use_cats, dilation_ratio))]
+fn evaluate_boundary_summary_with_dataset(
+    py: Python<'_>,
+    dataset: &PyDataset,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    dilation_ratio: f64,
+) -> PyResult<PySummary> {
+    let iou_type = boundary_iou_type(dilation_ratio)?;
+    evaluate_summary_with_dataset_impl(
+        py,
+        iou_type,
+        dataset,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
+/// Keypoints (OKS) end-to-end pipeline against a parsed-once
+/// [`PyDataset`] (ADR-0020). No keypoints-side cache today, so the
+/// saving over [`evaluate_keypoints_summary`] is the GT JSON parse.
+#[pyfunction]
+#[pyo3(signature = (dataset, dt_json, parity_mode, max_dets, use_cats, sigmas))]
+fn evaluate_keypoints_summary_with_dataset(
+    py: Python<'_>,
+    dataset: &PyDataset,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    sigmas: &Bound<'_, PyDict>,
+) -> PyResult<PySummary> {
+    let iou_type = EvalIouType::Keypoints {
+        sigmas: parse_sigmas(sigmas)?,
+    };
+    evaluate_summary_with_dataset_impl(
+        py,
+        iou_type,
+        dataset,
+        dt_json,
+        parity_mode,
+        max_dets,
+        use_cats,
+    )
+}
+
+/// Shared dispatch for the `evaluate_*_summary_with_dataset` family
+/// (ADR-0020). Mirrors [`evaluate_summary_impl`] but skips GT parse
+/// (the dataset already holds one) and threads the per-kernel cache
+/// from `dataset` through [`run_pipeline_with_dataset`].
+fn evaluate_summary_with_dataset_impl(
+    py: Python<'_>,
+    iou_type: EvalIouType,
+    dataset: &PyDataset,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+) -> PyResult<PySummary> {
+    let parity = parse_parity_mode(parity_mode)?;
+    require_nonempty_max_dets(&max_dets)?;
+    let mut max_dets = max_dets;
+    sort_max_dets(&mut max_dets);
+    let dt_bytes = dt_json.as_bytes().to_vec();
+    let snapshot = dataset.snapshot();
+    let summary = py.detach(move || -> PyResult<Summary> {
+        let dt = parse_dt(&dt_bytes)?;
+        run_pipeline_with_dataset(
+            &iou_type,
+            &snapshot.gt,
+            snapshot.caches(),
+            &dt,
+            parity,
+            &max_dets,
+            use_cats,
+        )
+        .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
+    Ok(PySummary { inner: summary })
+}
+
 /// Keypoints per-image evaluation pass (ADR-0012). Both GT and DT must
 /// carry `keypoints` fields. `sigmas` matches
 /// [`evaluate_keypoints_summary`].
@@ -679,18 +860,52 @@ fn run_pipeline(
     max_dets: &[usize],
     use_cats: bool,
 ) -> Result<Summary, EvalError> {
-    let iou_thr = iou_thresholds();
     let area = area_ranges_for(iou_type);
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
     let eval_params = EvaluateParams {
-        iou_thresholds: iou_thr,
+        iou_thresholds: iou_thresholds(),
         area_ranges: &area,
         max_dets_per_image: max_det_top,
         use_cats,
     };
-    let is_kp = iou_type.is_keypoints();
     let grid = iou_type.run(gt, dt, eval_params, parity)?;
+    summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
+}
 
+/// End-to-end pipeline against a parsed-once dataset (ADR-0020).
+/// Mirrors [`run_pipeline`] but routes through
+/// [`EvalIouType::run_cached`] so kernels with a cache slot
+/// (`evaluate_segm_cached`, `evaluate_boundary_cached`) reuse GT-side
+/// derivations across calls.
+fn run_pipeline_with_dataset(
+    iou_type: &EvalIouType,
+    gt: &CocoDataset,
+    caches: DatasetCaches<'_>,
+    dt: &CocoDetections,
+    parity: ParityMode,
+    max_dets: &[usize],
+    use_cats: bool,
+) -> Result<Summary, EvalError> {
+    let area = area_ranges_for(iou_type);
+    let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
+    let eval_params = EvaluateParams {
+        iou_thresholds: iou_thresholds(),
+        area_ranges: &area,
+        max_dets_per_image: max_det_top,
+        use_cats,
+    };
+    let grid = iou_type.run_cached(gt, dt, eval_params, parity, caches)?;
+    summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
+}
+
+/// Shared accumulate + summarize tail for both pipeline shapes.
+fn summarize_grid(
+    grid: &EvalGrid,
+    is_keypoints: bool,
+    parity: ParityMode,
+    max_dets: &[usize],
+) -> Result<Summary, EvalError> {
+    let iou_thr = iou_thresholds();
     let acc_params = AccumulateParams {
         iou_thresholds: iou_thr,
         recall_thresholds: recall_thresholds(),
@@ -700,7 +915,7 @@ fn run_pipeline(
         n_images: grid.n_images,
     };
     let acc = accumulate(&grid.eval_imgs, acc_params, parity)?;
-    if is_kp {
+    if is_keypoints {
         // ADR-0012 / D5: kp summary is the 10-stat plan over the
         // 3-bucket area grid. Detection's 12-stat plan would index
         // off the end of the kp accumulator's A-axis.
@@ -1024,8 +1239,7 @@ impl PyStreamingEvaluator {
             None => MemoryBudget::auto_default(),
         };
 
-        let dataset = CocoDataset::from_json_bytes(gt_json.as_bytes())
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        let dataset = parse_gt(gt_json.as_bytes())?;
 
         // Build the kernel-typed evaluator. Each arm constructs the
         // matching `EvalIouType` solely to reuse `area_ranges_for`'s
@@ -1497,8 +1711,7 @@ impl PyBackgroundEvaluator {
             None => MemoryBudget::auto_default(),
         };
 
-        let dataset = CocoDataset::from_json_bytes(gt_json.as_bytes())
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        let dataset = parse_gt(gt_json.as_bytes())?;
 
         if !shutdown_timeout_seconds.is_finite() || shutdown_timeout_seconds < 0.0 {
             return Err(PyValueError::new_err(format!(
@@ -1790,9 +2003,17 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_boundary_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_bbox_summary_with_dataset, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_segm_summary_with_dataset, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_boundary_summary_with_dataset, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        evaluate_keypoints_summary_with_dataset,
+        m
+    )?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
+    m.add_class::<PyDataset>()?;
     m.add_class::<PyStreamingEvaluator>()?;
     m.add_class::<PyBackgroundEvaluator>()?;
     m.add("OutOfBudgetError", m.py().get_type::<OutOfBudgetError>())?;

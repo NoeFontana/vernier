@@ -234,8 +234,7 @@ mod tests {
 
         let mut erode2 = ErodeScratch::new();
         let mut segments = SegmentTable::new();
-        let area =
-            boundary_band_segments_into(&r, 0.3, &mut erode2, &mut segments).unwrap();
+        let area = boundary_band_segments_into(&r, 0.3, &mut erode2, &mut segments).unwrap();
 
         assert_eq!(area, band.area());
         assert_eq!(segments.row(0), expected_offsets.as_slice());
@@ -248,8 +247,7 @@ mod tests {
         let r = rle(0, 0, vec![]);
         let mut erode = ErodeScratch::new();
         let mut segments = SegmentTable::new();
-        let area =
-            boundary_band_segments_into(&r, 0.02, &mut erode, &mut segments).unwrap();
+        let area = boundary_band_segments_into(&r, 0.02, &mut erode, &mut segments).unwrap();
         assert_eq!(area, 0);
         assert!(segments.row(0).is_empty());
     }

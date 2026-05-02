@@ -112,9 +112,27 @@ class Accumulated:
         plan: Literal["detection", "keypoints"] | None = ...,
     ) -> Summary: ...
 
+class Dataset:
+    @staticmethod
+    def from_json(gt_json: bytes) -> Dataset: ...
+    @property
+    def num_annotations(self) -> int: ...
+    @property
+    def num_images(self) -> int: ...
+    @property
+    def num_categories(self) -> int: ...
+    def clear_cache(self) -> None: ...
+
 def version() -> str: ...
 def evaluate_bbox_summary(
     gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+) -> Summary: ...
+def evaluate_bbox_summary_with_dataset(
+    gt: Dataset,
     dt_json: bytes,
     parity_mode: str,
     max_dets: list[int],
@@ -129,6 +147,13 @@ def evaluate_bbox_grid(
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+) -> Summary: ...
+def evaluate_segm_summary_with_dataset(
+    gt: Dataset,
     dt_json: bytes,
     parity_mode: str,
     max_dets: list[int],
@@ -149,6 +174,14 @@ def evaluate_boundary_summary(
     use_cats: bool,
     dilation_ratio: float,
 ) -> Summary: ...
+def evaluate_boundary_summary_with_dataset(
+    gt: Dataset,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+    dilation_ratio: float,
+) -> Summary: ...
 def evaluate_boundary_grid(
     gt_json: bytes,
     dt_json: bytes,
@@ -159,6 +192,14 @@ def evaluate_boundary_grid(
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
     gt_json: bytes,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+    sigmas: dict[int, list[float]],
+) -> Summary: ...
+def evaluate_keypoints_summary_with_dataset(
+    gt: Dataset,
     dt_json: bytes,
     parity_mode: str,
     max_dets: list[int],
