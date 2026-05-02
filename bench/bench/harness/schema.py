@@ -76,6 +76,16 @@ class StageAggregation(BaseModel):
     max_ns: int
 
 
+class MemoryAggregation(BaseModel):
+    """Across-rep ``ru_maxrss`` summary (warmup reps excluded)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    median_bytes: int
+    min_bytes: int
+    max_bytes: int
+
+
 class IqrGateResult(BaseModel):
     """Outcome of the release-mode IQR-relative-to-median gate."""
 
@@ -94,6 +104,9 @@ class Aggregation(BaseModel):
 
     stages: dict[str, StageAggregation]
     iqr_gate: IqrGateResult | None = None
+    # Backfilled lazily — older v1 result files written before RAM
+    # aggregation landed parse with this as ``None``.
+    memory: MemoryAggregation | None = None
 
 
 class BenchResult(BaseModel):

@@ -16,6 +16,7 @@ from bench.harness.schema import (
     Aggregation,
     BenchResult,
     IouType,
+    MemoryAggregation,
     RepResult,
     StageAggregation,
     StageTimings,
@@ -71,7 +72,7 @@ def _write_point(
                 warmup=False,
                 stages={"total": StageTimings(wall_ns=total_ns)},
                 summary_stats={},
-                ru_maxrss_bytes=0,
+                ru_maxrss_bytes=150 * 1024 * 1024,
                 parent_wall_ns=total_ns,
             )
         ],
@@ -83,7 +84,12 @@ def _write_point(
                     min_ns=total_ns,
                     max_ns=total_ns,
                 )
-            }
+            },
+            memory=MemoryAggregation(
+                median_bytes=150 * 1024 * 1024,
+                min_bytes=150 * 1024 * 1024,
+                max_bytes=150 * 1024 * 1024,
+            ),
         ),
         tensor_path=f"{impl}.npy",
         tensor_sha256="0" * 64,
@@ -157,6 +163,8 @@ def test_longitudinal_markdown_lists_every_point(thirty_day_tree: tuple[Path, da
     md = render_longitudinal_markdown(build_series(df))
     assert md.count("## smoke / bbox / vernier") == 1
     assert md.count("## smoke / bbox / pycocotools") == 1
+    assert "RAM (max RSS)" in md
+    assert "150.0 MiB" in md
     # 2 impls x 30 points = 60 data rows; match the leading-pipe-then-date pattern
     # so section headers and blank lines don't get counted.
     data_row_re = re.compile(r"^\| \d{4}-\d{2}-\d{2} ", re.MULTILINE)

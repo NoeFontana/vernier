@@ -16,6 +16,7 @@ from bench.harness.schema import (
     Aggregation,
     BenchResult,
     IouType,
+    MemoryAggregation,
     RepResult,
     StageAggregation,
     StageTimings,
@@ -31,13 +32,14 @@ def _stages(total_ns: int) -> dict[str, StageTimings]:
     return {"total": StageTimings(wall_ns=total_ns)}
 
 
-def _aggregation(total_ns: int) -> Aggregation:
+def _aggregation(total_ns: int, *, rss_bytes: int) -> Aggregation:
     return Aggregation(
         stages={
             "total": StageAggregation(
                 median_ns=total_ns, iqr_ns=0, min_ns=total_ns, max_ns=total_ns
             )
-        }
+        },
+        memory=MemoryAggregation(median_bytes=rss_bytes, min_bytes=rss_bytes, max_bytes=rss_bytes),
     )
 
 
@@ -49,6 +51,7 @@ def _write_result(
     iou: IouType,
     impl: str,
     total_ns: int,
+    rss_bytes: int = 100 * 1024 * 1024,
 ) -> Path:
     out_dir = result_dir(
         results_root=root,
@@ -76,11 +79,11 @@ def _write_result(
                 warmup=False,
                 stages=_stages(total_ns),
                 summary_stats={},
-                ru_maxrss_bytes=0,
+                ru_maxrss_bytes=rss_bytes,
                 parent_wall_ns=total_ns,
             )
         ],
-        aggregation=_aggregation(total_ns),
+        aggregation=_aggregation(total_ns, rss_bytes=rss_bytes),
         tensor_path=f"{impl}.npy",
         tensor_sha256="0" * 64,
     )
@@ -94,10 +97,22 @@ def synthetic_tree(tmp_path: Path) -> Path:
     base, head = "aaaaaaaa1111", "bbbbbbbb2222"
     # vernier 5% faster on head; pycocotools 10% slower.
     _write_result(
-        tmp_path, git_sha=base, workload="smoke", iou="bbox", impl="vernier", total_ns=1_000_000
+        tmp_path,
+        git_sha=base,
+        workload="smoke",
+        iou="bbox",
+        impl="vernier",
+        total_ns=1_000_000,
+        rss_bytes=200 * 1024 * 1024,
     )
     _write_result(
-        tmp_path, git_sha=head, workload="smoke", iou="bbox", impl="vernier", total_ns=950_000
+        tmp_path,
+        git_sha=head,
+        workload="smoke",
+        iou="bbox",
+        impl="vernier",
+        total_ns=950_000,
+        rss_bytes=210 * 1024 * 1024,
     )
     _write_result(
         tmp_path,
@@ -143,6 +158,9 @@ def test_compare_rows_have_expected_deltas(synthetic_tree: Path) -> None:
     assert by_impl["faster-coco-eval"].status == "head_only"
     assert by_impl["faster-coco-eval"].delta_ns is None
 
+    assert by_impl["vernier"].base_ru_maxrss_bytes == 200 * 1024 * 1024
+    assert by_impl["vernier"].head_ru_maxrss_bytes == 210 * 1024 * 1024
+
 
 def test_compare_markdown_renders_each_impl(synthetic_tree: Path) -> None:
     df = load_tree(synthetic_tree)
@@ -157,6 +175,10 @@ def test_compare_markdown_renders_each_impl(synthetic_tree: Path) -> None:
     assert "▲" in md
     assert "-5.00%" in md
     assert "+10.00%" in md
+    assert "RAM base" in md
+    assert "RAM head" in md
+    assert "200.0 MiB" in md
+    assert "210.0 MiB" in md
 
 
 def test_compare_empty_when_neither_sha_present(tmp_path: Path) -> None:

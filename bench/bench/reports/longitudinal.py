@@ -49,6 +49,7 @@ class SeriesPoint:
     git_sha: str
     median_ns: int
     iqr_ns: int
+    ru_maxrss_bytes: int | None = None
 
 
 def filter_since(
@@ -71,11 +72,13 @@ def build_series(df: pl.DataFrame) -> dict[SeriesKey, list[SeriesPoint]]:
             iou_type=str(r["iou_type"]),
             impl=str(r["impl"]),
         )
+        rss = r.get("ru_maxrss_median_bytes")
         point = SeriesPoint(
             timestamp=datetime.fromtimestamp(float(r["mtime"]), tz=timezone.utc),
             git_sha=str(r["git_sha"]),
             median_ns=int(r["total_median_ns"]),
             iqr_ns=int(r["total_iqr_ns"]) if r["total_iqr_ns"] is not None else 0,
+            ru_maxrss_bytes=int(rss) if rss is not None else None,
         )
         series.setdefault(key, []).append(point)
 

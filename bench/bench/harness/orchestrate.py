@@ -40,6 +40,7 @@ from bench.harness.schema import (
 )
 from bench.harness.stats import (
     DEFAULT_IQR_RELATIVE_THRESHOLD,
+    aggregate_memory,
     aggregate_reps,
     iqr_gate,
 )
@@ -190,7 +191,11 @@ def _assemble_impl_result(
         stages = aggregate_reps(rep_results)
         if mode == "release" and "total" in stages:
             gate_result = iqr_gate(stages, threshold=iqr_threshold)
-        aggregation = Aggregation(stages=stages, iqr_gate=gate_result)
+        aggregation = Aggregation(
+            stages=stages,
+            iqr_gate=gate_result,
+            memory=aggregate_memory(rep_results),
+        )
 
     result = BenchResult(
         impl=canonical.runner_out.impl,
