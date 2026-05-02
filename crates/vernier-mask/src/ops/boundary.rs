@@ -20,6 +20,7 @@
 
 use crate::error::MaskError;
 use crate::ops::erode::{erode_raster_into_scratch, ErodeScratch};
+use crate::ops::SegmentTable;
 use crate::rle::Rle;
 
 /// Computes the boundary band of an RLE binary mask: the set of
@@ -48,19 +49,55 @@ pub fn boundary_band_into(
     if rle.h == 0 || rle.w == 0 {
         return Ok(rle.clone());
     }
+    xor_band_raster_into_scratch(rle, dilation_ratio, scratch);
+    Rle::from_raster_bytes(&scratch.raster, rle.h, rle.w)
+}
+
+/// Computes the boundary band of `rle` and pushes its foreground
+/// segment offsets onto `segments` while returning the band area.
+///
+/// Same erosion + N5 XOR semantics as [`boundary_band_into`], but
+/// skips the intermediate band-`Rle` encode and the two follow-up
+/// `counts` walks (one for `area`, one for the offsets decode) that
+/// the boundary-IoU kernel performs after `boundary_band_into`. The
+/// XOR'd band raster — already in `scratch.raster` — is walked once
+/// via [`SegmentTable::push_from_raster`].
+///
+/// Use this on the boundary-IoU hot path; keep
+/// [`boundary_band_into`] for callers that need the band as an
+/// `Rle` (e.g. round-tripping through serialization).
+pub fn boundary_band_segments_into(
+    rle: &Rle,
+    dilation_ratio: f64,
+    scratch: &mut ErodeScratch,
+    segments: &mut SegmentTable,
+) -> Result<u64, MaskError> {
+    if rle.h == 0 || rle.w == 0 {
+        segments.push_segments(&[]);
+        return Ok(0);
+    }
+    xor_band_raster_into_scratch(rle, dilation_ratio, scratch);
+    Ok(segments.push_from_raster(&scratch.raster))
+}
+
+/// Fills `scratch.raster` with the band raster: RLE → mask raster →
+/// erode → mask XOR eroded. Shared by [`boundary_band_into`] and
+/// [`boundary_band_segments_into`]; the only difference between the
+/// two public entry points is what they do with the resulting raster.
+///
+/// N5: `mask AND NOT eroded == mask XOR eroded` under the
+/// `eroded ⊆ mask` invariant (asserted by the proptest in `erode.rs`).
+/// XOR in place so we don't need a separate band buffer.
+fn xor_band_raster_into_scratch(rle: &Rle, dilation_ratio: f64, scratch: &mut ErodeScratch) {
     let radius = dilation_pixels(rle.h, rle.w, dilation_ratio);
     let h = rle.h as usize;
     let w = rle.w as usize;
     let d = radius as usize;
     rle.to_raster_bytes_into(&mut scratch.raster);
     erode_raster_into_scratch(scratch, h, w, d);
-    // N5: mask AND NOT eroded == mask XOR eroded under the eroded ⊆ mask
-    // invariant (asserted by the proptest in erode.rs). XOR in place so
-    // we don't need a separate band buffer.
     for (m, &e) in scratch.raster.iter_mut().zip(&scratch.eroded) {
         *m ^= e;
     }
-    Rle::from_raster_bytes(&scratch.raster, rle.h, rle.w)
 }
 
 /// Quirks **M2** + **M3**: pixel dilation distance for a `(h, w)`
@@ -176,5 +213,44 @@ mod tests {
         for (mi, bi) in m.iter().zip(&b) {
             assert!(*bi <= *mi);
         }
+    }
+
+    #[test]
+    fn boundary_band_segments_into_matches_boundary_band_into() {
+        // Pin parity vs the band-as-RLE path: the fused composer's
+        // `(area, segments)` must equal `boundary_band_into(...).area()`
+        // and `decode_fg_offsets_into` for the same input.
+        let raster: Vec<u8> = vec![
+            0, 1, 1, 0, //
+            1, 1, 1, 1, //
+            1, 1, 1, 1, //
+            0, 1, 1, 0, //
+        ];
+        let r = Rle::from_raster_bytes(&raster, 4, 4).unwrap();
+        let mut erode = ErodeScratch::new();
+        let band = boundary_band_into(&r, 0.3, &mut erode).unwrap();
+        let mut expected_offsets = Vec::new();
+        band.decode_fg_offsets_into(&mut expected_offsets);
+
+        let mut erode2 = ErodeScratch::new();
+        let mut segments = SegmentTable::new();
+        let area =
+            boundary_band_segments_into(&r, 0.3, &mut erode2, &mut segments).unwrap();
+
+        assert_eq!(area, band.area());
+        assert_eq!(segments.row(0), expected_offsets.as_slice());
+    }
+
+    #[test]
+    fn boundary_band_segments_into_empty_shape() {
+        // Zero-shape RLE → empty row, area 0 (matches boundary_band_into
+        // returning the empty mask unchanged).
+        let r = rle(0, 0, vec![]);
+        let mut erode = ErodeScratch::new();
+        let mut segments = SegmentTable::new();
+        let area =
+            boundary_band_segments_into(&r, 0.02, &mut erode, &mut segments).unwrap();
+        assert_eq!(area, 0);
+        assert!(segments.row(0).is_empty());
     }
 }

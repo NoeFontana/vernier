@@ -252,6 +252,30 @@ Boundary is now faster than `boundary-iou-api` on the headline cell;
 the §"Headline — all cells" table above reflects the pre-fix numbers
 and is the historical reference point.
 
+### Post-fix #2 — band derivation single-pass decode
+
+After PR #87 closed the regression, the dominant remaining boundary
+cost was the per-annotation band raster → RLE → fg-offset
+round-trip in `boundary_band_into` + `SegmentTable::push_from_rle`.
+The next PR replaces it with a fused `boundary_band_segments_into`
+that walks the XOR'd band raster once via the new
+`SegmentTable::push_from_raster` primitive — emitting fg offsets and
+counting band-area bytes in a single pass. Skips the intermediate
+band-`Rle` allocation entirely.
+
+`coco_val2017_perfect_segm` boundary, vernier (release, N=10, IQR ≤5%):
+
+| stage    | post-#87 median | post-fix #2 median |    Δ |
+| -------- | --------------: | -----------------: | ---: |
+| total    |       59.704 s  |        51.444 s    | −13.8% |
+| evaluate |       59.620 s  |        51.360 s    | −13.9% |
+
+vs `boundary-iou-api` 63.642 s: vernier is now **1.24× faster**
+(was 1.07× post-#87). Segm cell is unchanged within IQR
+(dev-mode 1-rep control = 1.703 s vs 1.759 s release median),
+matching the expectation that the fused path touches only the
+boundary kernel.
+
 ---
 
 ## Smoke fan-out — `smoke_perfect_match_segm` (parity smoke, not a perf claim)

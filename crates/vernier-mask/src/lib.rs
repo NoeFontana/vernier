@@ -33,8 +33,8 @@ pub mod rle;
 pub use codec::{decode_counts, encode_counts};
 pub use error::MaskError;
 pub use ops::{
-    boundary_band, boundary_band_into, erode_chebyshev_ball, erode_chebyshev_ball_into,
-    intersect_area_offsets, ErodeScratch, SegmentTable,
+    boundary_band, boundary_band_into, boundary_band_segments_into, erode_chebyshev_ball,
+    erode_chebyshev_ball_into, intersect_area_offsets, ErodeScratch, SegmentTable,
 };
 pub use rle::Rle;
 
