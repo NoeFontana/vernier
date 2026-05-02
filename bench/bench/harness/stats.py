@@ -12,7 +12,12 @@ from collections.abc import Iterable, Sequence
 
 import numpy as np
 
-from bench.harness.schema import IqrGateResult, RepResult, StageAggregation
+from bench.harness.schema import (
+    IqrGateResult,
+    MemoryAggregation,
+    RepResult,
+    StageAggregation,
+)
 
 # 5% of the median is the ADR's documented gate. Tunable per machine in
 # a future config file; for now it's a single shared default.
@@ -45,6 +50,19 @@ def aggregate_reps(reps: Iterable[RepResult]) -> dict[str, StageAggregation]:
         name: aggregate_stage([r.stages[name].wall_ns for r in measurements if name in r.stages])
         for name in sorted(stage_names)
     }
+
+
+def aggregate_memory(reps: Iterable[RepResult]) -> MemoryAggregation:
+    """Median / min / max of ``ru_maxrss_bytes`` across measurement reps."""
+    measurements = [r for r in reps if not r.warmup]
+    if not measurements:
+        raise ValueError("aggregate_memory requires at least one non-warmup rep")
+    arr = np.asarray([r.ru_maxrss_bytes for r in measurements], dtype=np.int64)
+    return MemoryAggregation(
+        median_bytes=int(np.median(arr)),
+        min_bytes=int(arr.min()),
+        max_bytes=int(arr.max()),
+    )
 
 
 def iqr_gate(

@@ -39,6 +39,18 @@ def _format_ns(ns: int | None) -> str:
     return f"{ns} ns"
 
 
+def _format_bytes(b: int | None) -> str:
+    if b is None:
+        return "—"
+    if b >= 1_073_741_824:
+        return f"{b / 1_073_741_824:.2f} GiB"
+    if b >= 1_048_576:
+        return f"{b / 1_048_576:.1f} MiB"
+    if b >= 1024:
+        return f"{b / 1024:.1f} KiB"
+    return f"{b} B"
+
+
 def _format_relative(rel: float | None) -> str:
     if rel is None:
         return "—"
@@ -61,8 +73,9 @@ def render_compare_markdown(rows: Sequence[CompareRow], *, base_sha: str, head_s
     lines = [
         f"# Compare: `{base_sha[:12]}` → `{head_sha[:12]}`",
         "",
-        "| machine | workload | iou | impl | base | head | Δ | Δ% | sign | status |",
-        "|---|---|---|---|---:|---:|---:|---:|:---:|:---:|",
+        "| machine | workload | iou | impl | base | head | Δ | Δ% | sign "
+        "| RAM base | RAM head | status |",
+        "|---|---|---|---|---:|---:|---:|---:|:---:|---:|---:|:---:|",
     ]
     for r in rows:
         lines.append(
@@ -78,6 +91,8 @@ def render_compare_markdown(rows: Sequence[CompareRow], *, base_sha: str, head_s
                     _format_ns(r.delta_ns),
                     _format_relative(r.delta_relative),
                     _sign_arrow(r.delta_relative, r.status),
+                    _format_bytes(r.base_ru_maxrss_bytes),
+                    _format_bytes(r.head_ru_maxrss_bytes),
                     r.status,
                 ]
             )
@@ -99,13 +114,13 @@ def render_longitudinal_markdown(series: dict[SeriesKey, list[SeriesPoint]]) -> 
             f"(machine {key.machine_fingerprint[:8]})"
         )
         lines.append("")
-        lines.append("| timestamp (UTC) | git_sha | median | iqr |")
-        lines.append("|---|---|---:|---:|")
+        lines.append("| timestamp (UTC) | git_sha | median | iqr | RAM (max RSS) |")
+        lines.append("|---|---|---:|---:|---:|")
         for p in points:
             lines.append(
                 f"| {p.timestamp.strftime('%Y-%m-%d %H:%M:%S')} | "
                 f"`{p.git_sha[:12]}` | {_format_ns(p.median_ns)} | "
-                f"{_format_ns(p.iqr_ns)} |"
+                f"{_format_ns(p.iqr_ns)} | {_format_bytes(p.ru_maxrss_bytes)} |"
             )
     return "\n".join(lines) + "\n"
 

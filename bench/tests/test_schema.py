@@ -12,6 +12,7 @@ from bench.harness.schema import (
     Aggregation,
     BenchResult,
     BenchWarning,
+    MemoryAggregation,
     RepResult,
     RunnerRepOutput,
     StageAggregation,
@@ -89,7 +90,12 @@ def _bench_result() -> BenchResult:
                     min_ns=3_510_000,
                     max_ns=3_510_000,
                 ),
-            }
+            },
+            memory=MemoryAggregation(
+                median_bytes=42 * 1024,
+                min_bytes=42 * 1024,
+                max_bytes=42 * 1024,
+            ),
         ),
         tensor_path="vernier.npy",
         tensor_sha256="0" * 64,
