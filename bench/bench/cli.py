@@ -3,7 +3,9 @@
 ``run`` fans out across the impls supported for the requested
 (workload, iou) cell, then runs the cross-impl parity check unless
 ``--no-parity`` is passed. Skipped cells are silent for ``--impl all``
-and loud for an explicit ``--impl <name>``.
+and loud for an explicit ``--impl <name>``. Release mode adds a CPU
+governor pre-flight and an IQR-relative-to-median gate; profile mode
+defaults to skipping parity (instrumentation perturbs measurement).
 """
 
 from __future__ import annotations
@@ -16,15 +18,21 @@ import click
 from bench.harness.matrix import ALL_IMPLS, IMPL_IOU_SUPPORT, impls_for_iou
 from bench.harness.orchestrate import CellSpec, run_cell
 from bench.harness.paths import BENCH_ROOT, REPO_ROOT
-from bench.harness.schema import IouType
+from bench.harness.platform_check import UnsupportedPlatformError, ensure_linux
+from bench.harness.schema import IouType, Mode
 from bench.workloads import resolve
 
 _IOU_CHOICES: tuple[str, ...] = get_args(IouType)
+_MODE_CHOICES: tuple[str, ...] = get_args(Mode)
 
 
 @click.group()
 def main() -> None:
     """vernier-bench — local benchmarking harness (ADR-0017)."""
+    try:
+        ensure_linux()
+    except UnsupportedPlatformError as e:
+        raise click.ClickException(str(e)) from e
 
 
 @main.command("run")
@@ -40,7 +48,7 @@ def main() -> None:
     type=str,
     default="smoke",
     show_default=True,
-    help="Workload identifier. M1/M2 only knows 'smoke'.",
+    help="Workload identifier (smoke | coco_val2017_jittered_seed<N> | synthetic:k=v,...).",
 )
 @click.option(
     "--iou",
@@ -51,10 +59,13 @@ def main() -> None:
 )
 @click.option(
     "--mode",
-    type=click.Choice(["dev"]),
+    type=click.Choice(_MODE_CHOICES),
     default="dev",
     show_default=True,
-    help="Run mode. M1/M2 supports dev only; release/profile land in M5.",
+    help=(
+        "Run mode profile: dev (1 rep), release (10 reps + warmup + governor + IQR gate), "
+        "profile (1 rep, parity skipped)."
+    ),
 )
 @click.option("--seed", "run_seed", type=int, default=0, show_default=True)
 @click.option(
@@ -71,6 +82,7 @@ def run_cmd(
     except ValueError as e:
         raise click.ClickException(str(e)) from e
     iou = cast(IouType, iou_type)
+    mode_typed = cast(Mode, mode)
 
     if iou not in workload_obj.supported_iou_types:
         supported = ", ".join(sorted(workload_obj.supported_iou_types))
@@ -98,13 +110,24 @@ def run_cmd(
         iou_type=iou,
         gt_path=workload_obj.gt_path,
         dt_path=workload_obj.dt_path,
-        mode=mode,
+        mode=mode_typed,
         run_seed=run_seed,
     )
-    result = run_cell(cell, parity=not no_parity)
+    # Profile mode skips parity by default per ADR-0017 §"Run modes":
+    # instrumentation perturbs which code paths warm up.
+    do_parity = not no_parity and mode_typed != "profile"
+    result = run_cell(cell, parity=do_parity)
 
     for impl_name, json_path in result.impl_jsons.items():
         click.echo(f"{impl_name}: {json_path}")
+
+    for impl_name, outcome in result.iqr_outcomes.items():
+        status = "OK" if outcome.passed else "FAILED"
+        click.echo(
+            f"iqr_gate[{impl_name}]: {status} "
+            f"(rel={outcome.relative:.3%}, threshold={outcome.threshold:.1%})",
+            err=not outcome.passed,
+        )
 
     if result.parity is not None:
         if result.parity.passed:

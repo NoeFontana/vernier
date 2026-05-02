@@ -82,7 +82,7 @@ def _generate(*, gt_path: Path, seed: int, out: Path) -> None:
             }
         )
 
-    n_fp = int(round(FP_FRACTION * len(non_crowd)))
+    n_fp = round(FP_FRACTION * len(non_crowd))
     if n_fp and image_size_by_id and gt.get("categories"):
         image_ids = list(image_size_by_id.keys())
         category_ids = [int(c["id"]) for c in gt["categories"]]

@@ -48,9 +48,12 @@ def gt_path() -> Path:
     try:
         with urllib.request.urlopen(ANNOTATIONS_URL) as response, zip_path.open("wb") as f:
             shutil.copyfileobj(response, f)
-        with zipfile.ZipFile(zip_path) as z, z.open(f"annotations/{GT_FILENAME}") as src:
-            with gt.open("wb") as dst:
-                shutil.copyfileobj(src, dst)
+        with (
+            zipfile.ZipFile(zip_path) as z,
+            z.open(f"annotations/{GT_FILENAME}") as src,
+            gt.open("wb") as dst,
+        ):
+            shutil.copyfileobj(src, dst)
     finally:
         zip_path.unlink(missing_ok=True)
 

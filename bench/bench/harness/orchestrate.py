@@ -1,11 +1,12 @@
 """Subprocess fan-out and result assembly (ADR-0017 §"Runner contract").
 
-M1 scope: single subprocess, single rep, no warmup, no parity coupling.
-M2 fans out across runners. M3 closes the cell with a parity check —
-``run_cell`` loops every requested impl, then loads the tensors and
-runs ``parity.compare_cell``; failures persist a divergence report
-next to the impl results. M5 will add the rep loop, randomized
-schedule, IQR gate, and machine fingerprint.
+``run_cell`` is the cross-impl driver: it builds a schedule that
+interleaves every ``(impl, rep)`` pair across the cell's impl list,
+spawns each runner subprocess in randomized order per rep (deterministic
+given ``run_seed``), assembles a per-impl ``BenchResult``, then runs the
+three-tier parity check from ADR-0002. Release mode adds a governor
+pre-flight and an IQR-relative-to-median gate on the ``total`` stage
+(ADR-0017 §"Run modes").
 
 Every runner subprocess is invoked as
 ``uv run --directory <bench_root>/envs/<impl> python -m bench.runners.<impl>_runner ...``
@@ -21,7 +22,6 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 import numpy as np
 
@@ -30,13 +30,32 @@ from bench.harness import machine
 from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.parity import CellParityReport, compare_cell, write_report
 from bench.harness.schema import (
+    Aggregation,
     BenchResult,
     IouType,
+    IqrGateResult,
     Mode,
     RepResult,
     RunnerRepOutput,
 )
+from bench.harness.stats import (
+    DEFAULT_IQR_RELATIVE_THRESHOLD,
+    aggregate_reps,
+    iqr_gate,
+)
 from bench.runners._protocol import file_sha256
+
+# (n_warmup, n_measurement) per ADR-0017 §"Run modes".
+MODE_REPS: dict[Mode, tuple[int, int]] = {
+    "dev": (0, 1),
+    "release": (2, 10),
+    "profile": (0, 1),
+}
+
+
+def mode_defaults(mode: Mode) -> tuple[int, int]:
+    """Return ``(n_warmup, n_measurement)`` for ``mode``."""
+    return MODE_REPS[mode]
 
 
 @dataclass(frozen=True)
@@ -61,45 +80,57 @@ class _SpawnResult:
     tensor_path: Path
 
 
-def _result_dir(spec: RunSpec, git_sha: str, machine_fp: str) -> Path:
-    return spec.bench_root / "results" / git_sha / machine_fp / spec.workload_id / spec.iou_type
+def _result_dir(
+    *,
+    bench_root: Path,
+    git_sha: str,
+    machine_fp: str,
+    workload_id: str,
+    iou_type: IouType,
+) -> Path:
+    return bench_root / "results" / git_sha / machine_fp / workload_id / iou_type
 
 
 def _spawn_one_rep(
-    spec: RunSpec,
+    *,
+    bench_root: Path,
+    impl: str,
+    workload_id: str,
+    iou_type: IouType,
+    gt_path: Path,
+    dt_path: Path,
     rep_index: int,
     intermediate_dir: Path,
-    *,
-    warmup: Literal[False] = False,
+    warmup: bool,
 ) -> _SpawnResult:
-    rep_json = intermediate_dir / f"{spec.impl}-rep{rep_index}.json"
-    rep_npy = intermediate_dir / f"{spec.impl}-rep{rep_index}.npy"
+    rep_json = intermediate_dir / f"{impl}-rep{rep_index}.json"
+    rep_npy = intermediate_dir / f"{impl}-rep{rep_index}.npy"
     cmd = uv_run_argv(
-        spec.bench_root,
-        spec.impl,
+        bench_root,
+        impl,
         "-m",
-        runner_module(spec.impl),
+        runner_module(impl),
         "--gt",
-        str(spec.gt_path),
+        str(gt_path),
         "--dt",
-        str(spec.dt_path),
+        str(dt_path),
         "--iou-type",
-        spec.iou_type,
+        iou_type,
         "--workload-id",
-        spec.workload_id,
+        workload_id,
         "--output",
         str(rep_json),
         "--tensor-output",
         str(rep_npy),
     )
     parent_start = time.perf_counter_ns()
-    proc = subprocess.Popen(cmd, env=uv_run_env(spec.bench_root, spec.impl))
+    proc = subprocess.Popen(cmd, env=uv_run_env(bench_root, impl))
     _pid, status, rusage = os.wait4(proc.pid, 0)
     parent_wall_ns = time.perf_counter_ns() - parent_start
     if status != 0:
-        raise RuntimeError(f"runner {spec.impl} exited with status {status}; cmd={cmd}")
+        raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
     if not rep_json.exists() or not rep_npy.exists():
-        raise RuntimeError(f"runner {spec.impl} succeeded but did not produce expected outputs")
+        raise RuntimeError(f"runner {impl} succeeded but did not produce expected outputs")
     runner_out = RunnerRepOutput.model_validate_json(rep_json.read_bytes())
 
     rep_result = RepResult(
@@ -114,50 +145,123 @@ def _spawn_one_rep(
     return _SpawnResult(rep=rep_result, runner_out=runner_out, tensor_path=rep_npy)
 
 
-def run(spec: RunSpec) -> Path:
-    """Execute one (impl, workload, iou_type) cell and persist its result."""
-    git_sha = machine.git_sha(spec.repo_root)
-    machine_fp = machine.fingerprint()
+def _assemble_impl_result(
+    *,
+    impl: str,
+    out_dir: Path,
+    spawned: list[_SpawnResult],
+    iou_type: IouType,
+    workload_id: str,
+    git_sha: str,
+    machine_fp: str,
+    mode: Mode,
+    run_seed: int,
+    reps_count: int,
+    warmup_discarded: int,
+    iqr_threshold: float,
+) -> tuple[Path, np.ndarray, str, IqrGateResult | None]:
+    """Validate per-rep tensor bit-equality, promote rep 0, aggregate, write JSON."""
+    canonical_sha = spawned[0].runner_out.tensor_sha256
+    for s in spawned[1:]:
+        if s.runner_out.tensor_sha256 != canonical_sha:
+            raise RuntimeError(
+                f"per-rep tensor disagreement for impl {impl!r}: rep 0 sha "
+                f"{canonical_sha[:12]} differs from rep {s.rep.rep} sha "
+                f"{s.runner_out.tensor_sha256[:12]}"
+            )
 
-    out_dir = _result_dir(spec, git_sha, machine_fp)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    intermediate_dir = out_dir / ".intermediate"
-    intermediate_dir.mkdir(exist_ok=True)
-
-    spawned: list[_SpawnResult] = [
-        _spawn_one_rep(spec, rep_index, intermediate_dir) for rep_index in range(spec.reps_count)
-    ]
     canonical = spawned[0]
-
-    # Tensor of record is rep 0. M3 will assert every rep's tensor is
-    # bit-equal before this — promoting one is then unambiguous.
-    tensor_dst = out_dir / f"{spec.impl}.npy"
+    tensor_dst = out_dir / f"{impl}.npy"
     shutil.copyfile(canonical.tensor_path, tensor_dst)
     tensor_sha256 = file_sha256(tensor_dst)
     if tensor_sha256 != canonical.runner_out.tensor_sha256:
         raise RuntimeError("tensor sha256 mismatch between runner output and orchestrator copy")
 
+    rep_results = [s.rep for s in spawned]
+    aggregation: Aggregation | None = None
+    gate_result: IqrGateResult | None = None
+    if any(not r.warmup for r in rep_results):
+        stages = aggregate_reps(rep_results)
+        if mode == "release" and "total" in stages:
+            gate_result = iqr_gate(stages, threshold=iqr_threshold)
+        aggregation = Aggregation(stages=stages, iqr_gate=gate_result)
+
     result = BenchResult(
         impl=canonical.runner_out.impl,
         impl_version=canonical.runner_out.impl_version,
-        iou_type=spec.iou_type,
-        workload_id=spec.workload_id,
+        iou_type=iou_type,
+        workload_id=workload_id,
         git_sha=git_sha,
         machine_fingerprint=machine_fp,
         harness_version=HARNESS_VERSION,
-        mode=spec.mode,
-        run_seed=spec.run_seed,
-        reps_count=spec.reps_count,
-        warmup_discarded=spec.warmup_discarded,
-        reps=[s.rep for s in spawned],
-        aggregation=None,
-        tensor_path=f"{spec.impl}.npy",
+        mode=mode,
+        run_seed=run_seed,
+        reps_count=reps_count,
+        warmup_discarded=warmup_discarded,
+        reps=rep_results,
+        aggregation=aggregation,
+        tensor_path=f"{impl}.npy",
         tensor_sha256=tensor_sha256,
         warnings=list(canonical.runner_out.warnings),
     )
 
-    out_json = out_dir / f"{spec.impl}.json"
+    out_json = out_dir / f"{impl}.json"
     out_json.write_text(result.model_dump_json(indent=2))
+    return out_json, np.load(canonical.tensor_path), tensor_sha256, gate_result
+
+
+def run(spec: RunSpec) -> Path:
+    """Execute one impl's reps consecutively and persist the result.
+
+    Single-impl convenience entry; ``run_cell`` is the cross-impl driver.
+    Schedule is trivial here — ``warmup_discarded`` warmup reps then
+    ``reps_count`` measurement reps, all consecutive.
+    """
+    git_sha = machine.git_sha(spec.repo_root)
+    machine_fp = machine.fingerprint()
+
+    out_dir = _result_dir(
+        bench_root=spec.bench_root,
+        git_sha=git_sha,
+        machine_fp=machine_fp,
+        workload_id=spec.workload_id,
+        iou_type=spec.iou_type,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    intermediate_dir = out_dir / ".intermediate"
+    intermediate_dir.mkdir(exist_ok=True)
+
+    spawned: list[_SpawnResult] = []
+    for rep_index in range(spec.warmup_discarded + spec.reps_count):
+        warmup = rep_index < spec.warmup_discarded
+        spawned.append(
+            _spawn_one_rep(
+                bench_root=spec.bench_root,
+                impl=spec.impl,
+                workload_id=spec.workload_id,
+                iou_type=spec.iou_type,
+                gt_path=spec.gt_path,
+                dt_path=spec.dt_path,
+                rep_index=rep_index,
+                intermediate_dir=intermediate_dir,
+                warmup=warmup,
+            )
+        )
+
+    out_json, _tensor, _sha, _gate = _assemble_impl_result(
+        impl=spec.impl,
+        out_dir=out_dir,
+        spawned=spawned,
+        iou_type=spec.iou_type,
+        workload_id=spec.workload_id,
+        git_sha=git_sha,
+        machine_fp=machine_fp,
+        mode=spec.mode,
+        run_seed=spec.run_seed,
+        reps_count=spec.reps_count,
+        warmup_discarded=spec.warmup_discarded,
+        iqr_threshold=DEFAULT_IQR_RELATIVE_THRESHOLD,
+    )
     return out_json
 
 
@@ -185,37 +289,106 @@ class CellRun:
     impl_jsons: dict[str, Path]
     parity: CellParityReport | None
     divergence_report_path: Path | None
+    iqr_outcomes: dict[str, IqrGateResult]
 
 
-def run_cell(cell: CellSpec, *, parity: bool = True) -> CellRun:
-    """Fan out across ``cell.impls``, then run the cross-impl parity check.
+def _build_schedule(
+    impls: list[str], n_warmup: int, n_measurement: int, run_seed: int
+) -> list[tuple[str, int, bool]]:
+    """``[(impl, rep_index, is_warmup)]`` in execution order.
 
-    ``parity=False`` skips the comparison entirely (the
-    ``--no-parity`` escape hatch). When parity runs and fails, a
-    ``divergence_report.json`` lands next to the impl JSON files in the
-    cell's result dir.
+    Warmup reps come first; within each rep the impl order is a fresh
+    permutation drawn from ``np.random.default_rng(run_seed)``. Two
+    invocations with the same seed produce the same schedule.
     """
-    impl_jsons: dict[str, Path] = {}
-    impl_tensors: dict[str, np.ndarray] = {}
-    impl_sha256: dict[str, str] = {}
+    if not impls:
+        return []
+    rng = np.random.default_rng(run_seed)
+    schedule: list[tuple[str, int, bool]] = []
+    for rep_idx in range(n_warmup + n_measurement):
+        order = rng.permutation(len(impls))
+        warmup = rep_idx < n_warmup
+        schedule.extend((impls[int(slot)], rep_idx, warmup) for slot in order)
+    return schedule
 
-    for impl_name in cell.impls:
-        spec = RunSpec(
+
+def run_cell(
+    cell: CellSpec,
+    *,
+    parity: bool = True,
+    iqr_threshold: float = DEFAULT_IQR_RELATIVE_THRESHOLD,
+) -> CellRun:
+    """Fan out across ``cell.impls`` per ``cell.mode``'s schedule, then
+    run the cross-impl parity check.
+
+    ``parity=False`` skips the comparison entirely (the ``--no-parity``
+    escape hatch). When parity runs and fails, a ``divergence_report.json``
+    lands next to the impl JSON files in the cell's result dir. Release
+    mode also pre-flights the CPU governor and applies the IQR gate.
+    """
+    if cell.mode == "release":
+        machine.ensure_performance_governor()
+
+    n_warmup, n_measurement = mode_defaults(cell.mode)
+    schedule = _build_schedule(cell.impls, n_warmup, n_measurement, cell.run_seed)
+    total_reps = n_warmup + n_measurement
+
+    git_sha = machine.git_sha(cell.repo_root)
+    machine_fp = machine.fingerprint()
+
+    out_dir = _result_dir(
+        bench_root=cell.bench_root,
+        git_sha=git_sha,
+        machine_fp=machine_fp,
+        workload_id=cell.workload_id,
+        iou_type=cell.iou_type,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    intermediate_dir = out_dir / ".intermediate"
+    intermediate_dir.mkdir(exist_ok=True)
+
+    # spawned[impl][rep_idx] = _SpawnResult
+    spawned: dict[str, list[_SpawnResult | None]] = {
+        impl: [None] * total_reps for impl in cell.impls
+    }
+    for impl_name, rep_idx, warmup in schedule:
+        spawned[impl_name][rep_idx] = _spawn_one_rep(
             bench_root=cell.bench_root,
-            repo_root=cell.repo_root,
             impl=impl_name,
             workload_id=cell.workload_id,
             iou_type=cell.iou_type,
             gt_path=cell.gt_path,
             dt_path=cell.dt_path,
+            rep_index=rep_idx,
+            intermediate_dir=intermediate_dir,
+            warmup=warmup,
+        )
+
+    impl_jsons: dict[str, Path] = {}
+    impl_tensors: dict[str, np.ndarray] = {}
+    impl_sha256: dict[str, str] = {}
+    iqr_outcomes: dict[str, IqrGateResult] = {}
+    for impl_name in cell.impls:
+        results = [r for r in spawned[impl_name] if r is not None]
+        out_json, tensor, tensor_sha, iqr_outcome = _assemble_impl_result(
+            impl=impl_name,
+            out_dir=out_dir,
+            spawned=results,
+            iou_type=cell.iou_type,
+            workload_id=cell.workload_id,
+            git_sha=git_sha,
+            machine_fp=machine_fp,
             mode=cell.mode,
             run_seed=cell.run_seed,
+            reps_count=n_measurement,
+            warmup_discarded=n_warmup,
+            iqr_threshold=iqr_threshold,
         )
-        out_json = run(spec)
         impl_jsons[impl_name] = out_json
-        result = BenchResult.model_validate_json(out_json.read_bytes())
-        impl_tensors[impl_name] = np.load(out_json.with_name(result.tensor_path))
-        impl_sha256[impl_name] = result.tensor_sha256
+        impl_tensors[impl_name] = tensor
+        impl_sha256[impl_name] = tensor_sha
+        if iqr_outcome is not None:
+            iqr_outcomes[impl_name] = iqr_outcome
 
     parity_report: CellParityReport | None = None
     divergence_report_path: Path | None = None
@@ -227,11 +400,11 @@ def run_cell(cell: CellSpec, *, parity: bool = True) -> CellRun:
             impl_sha256=impl_sha256,
         )
         if not parity_report.passed:
-            out_dir = next(iter(impl_jsons.values())).parent
             divergence_report_path = write_report(parity_report, out_dir)
 
     return CellRun(
         impl_jsons=impl_jsons,
         parity=parity_report,
         divergence_report_path=divergence_report_path,
+        iqr_outcomes=iqr_outcomes,
     )

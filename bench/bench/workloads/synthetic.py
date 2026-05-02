@@ -27,10 +27,7 @@ IMAGE_H = 1024.0
 def workload_id(
     *, n_images: int, n_categories: int, dt_per_image: int, gt_per_image: int, seed: int
 ) -> str:
-    return (
-        f"synthetic_n{n_images}_c{n_categories}"
-        f"_g{gt_per_image}_d{dt_per_image}_s{seed}"
-    )
+    return f"synthetic_n{n_images}_c{n_categories}_g{gt_per_image}_d{dt_per_image}_s{seed}"
 
 
 def _cache_dir() -> Path:

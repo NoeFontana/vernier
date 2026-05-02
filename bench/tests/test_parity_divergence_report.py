@@ -99,6 +99,7 @@ def test_cell_run_dataclass_carries_parity() -> None:
     """``CellRun`` is the orchestrator's view of a finished cell. The
     ``parity`` field mirrors the report; ``divergence_report_path`` is
     set iff a report file was written."""
-    run = CellRun(impl_jsons={}, parity=None, divergence_report_path=None)
+    run = CellRun(impl_jsons={}, parity=None, divergence_report_path=None, iqr_outcomes={})
     assert run.parity is None
     assert run.divergence_report_path is None
+    assert run.iqr_outcomes == {}
