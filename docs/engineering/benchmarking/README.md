@@ -5,27 +5,17 @@ machine on one day — cross-machine aggregation is intentionally absent (the
 harness scopes everything by machine fingerprint, see ADR-0017 §"Out of
 scope").
 
-Convention for filenames: `YYYY-MM-<workload>-<iou>.md`. New runs go in
-this directory; older runs aren't deleted (they're history).
+One file per snapshot — typically a month's worth of cells captured
+together. Older snapshots aren't deleted (they're history); new
+captures land alongside them.
 
 ## Index
 
-* [2026-05-snapshot.md](./2026-05-snapshot.md) — **start here**.
-  Consolidated view of every release-mode cell captured this month
-  (bbox/segm/boundary on val2017, synthetic n=500, smoke fan-out).
-* [2026-05-coco-val2017-bbox.md](./2026-05-coco-val2017-bbox.md) —
-  release-mode N=10, vernier 9.1× faster than pycocotools, 3.2× faster
-  than faster-coco-eval; parity OK across both tiers.
-* [2026-05-coco-val2017-segm-boundary.md](./2026-05-coco-val2017-segm-boundary.md) —
-  release-mode N=10 on val2017 perfect-match: vernier 4.66× / 2.61×
-  faster on segm; **vernier 1.19× slower than boundary-iou-api** on
-  boundary (no boundary-mask cache yet — tracked follow-up).
-* [2026-05-synthetic-n500.md](./2026-05-synthetic-n500.md) —
-  parametric n=500 stress run; vernier 12.6× / 2.35× faster.
-* [2026-05-smoke-segm-boundary.md](./2026-05-smoke-segm-boundary.md) —
-  **not a perf claim**; harness fan-out smoke for segm + boundary IoU
-  on the 1-image parity fixture. Superseded by the val2017 doc above
-  for any actual numbers — kept for the parity-fixture cell.
+* [2026-05-snapshot.md](./2026-05-snapshot.md) — first release-mode
+  capture: bbox 9.1× / 3.2×, segm 4.66× / 2.61×, synthetic n=500
+  12.6× / 2.35× — and an honest **vernier 1.19× slower than
+  boundary-iou-api** on val2017 boundary (no boundary-mask cache yet,
+  tracked follow-up). Parity OK on every cell.
 
 ## Reproducing a run
 
