@@ -1,0 +1,23 @@
+[project]
+name = "vernier-bench-env-faster-coco-eval"
+version = "0.0.0"
+description = "uv env for the faster-coco-eval runner subprocess (ADR-0017)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# faster-coco-eval ships shims that monkey-patch the ``pycocotools``
+# namespace so existing call sites stay verbatim. The runner triggers
+# that bootstrap at module top, then imports the standard COCO /
+# COCOeval names.
+dependencies = [
+    "vernier-bench",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+    "faster-coco-eval>=1.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+vernier-bench = { path = "../..", editable = true }

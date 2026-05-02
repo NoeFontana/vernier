@@ -27,6 +27,8 @@ packages = ["bench"]
 [dependency-groups]
 dev = [
     "pytest>=9",
+    "ruff>=0.15",
+    "pyright>=1.1.409",
 ]
 
 [tool.ruff]

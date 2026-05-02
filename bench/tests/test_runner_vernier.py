@@ -1,62 +1,49 @@
 """End-to-end test for the vernier runner — invoke it as a subprocess
-against the smoke fixture, validate the JSON shape and tensor.
-
-Skipped if ``bench/envs/vernier/.venv`` hasn't been provisioned (i.e. if
-the developer hasn't run ``just bench-sync`` yet)."""
+against the smoke fixture, validate the JSON shape and tensor."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import os
 import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
 
-BENCH_ROOT = Path(__file__).resolve().parent.parent
+from bench.harness.matrix import runner_module, uv_run_argv
+from tests.conftest import BENCH_ROOT, skip_if_no_env
+
 REPO_ROOT = BENCH_ROOT.parent
-ENV_DIR = BENCH_ROOT / "envs" / "vernier"
-VERNIER_VENV = ENV_DIR / ".venv"
-
-requires_vernier_env = pytest.mark.skipif(
-    not VERNIER_VENV.exists(),
-    reason="bench/envs/vernier/.venv missing; run `just bench-sync` first",
-)
 
 
-@requires_vernier_env
 def test_vernier_runner_smoke(tmp_path: Path) -> None:
-    gt = REPO_ROOT / "tests/python/parity/fixtures/perfect_match/gt.json"
-    dt = REPO_ROOT / "tests/python/parity/fixtures/perfect_match/dt.json"
+    skip_if_no_env("vernier")
+    from bench.workloads import resolve
+
+    workload = resolve("smoke", REPO_ROOT)
     output = tmp_path / "vernier.json"
     tensor_output = tmp_path / "vernier.npy"
 
-    cmd = [
-        "uv",
-        "run",
-        "--directory",
-        str(ENV_DIR),
-        "python",
+    cmd = uv_run_argv(
+        BENCH_ROOT,
+        "vernier",
         "-m",
-        "bench.runners.vernier_runner",
+        runner_module("vernier"),
         "--gt",
-        str(gt),
+        str(workload.gt_path),
         "--dt",
-        str(dt),
+        str(workload.dt_path),
         "--iou-type",
         "bbox",
         "--workload-id",
-        "smoke_perfect_match",
+        workload.workload_id,
         "--output",
         str(output),
         "--tensor-output",
         str(tensor_output),
-    ]
-    proc = subprocess.run(
-        cmd, check=False, capture_output=True, env={**os.environ}
     )
+    proc = subprocess.run(cmd, check=False, capture_output=True)
     assert proc.returncode == 0, (
         f"runner exited {proc.returncode}\n"
         f"stdout:\n{proc.stdout.decode(errors='replace')}\n"
@@ -70,16 +57,15 @@ def test_vernier_runner_smoke(tmp_path: Path) -> None:
     assert payload["schema_version"] == 1
     assert payload["impl"] == "vernier"
     assert payload["iou_type"] == "bbox"
-    assert payload["workload_id"] == "smoke_perfect_match"
+    assert payload["workload_id"] == workload.workload_id
     for stage in ("load", "evaluate", "accumulate", "summarize", "total"):
         assert stage in payload["stages"], f"missing stage: {stage}"
         assert payload["stages"][stage]["wall_ns"] >= 0
 
-    # The smoke fixture is a single perfect match → AP should be 1.0.
+    # Smoke fixture is a single perfect match → AP should be 1.0.
     assert payload["summary_stats"]["AP"] == pytest.approx(1.0)
     assert payload["summary_stats"]["AP50"] == pytest.approx(1.0)
 
-    # Tensor sha256 echoed in JSON matches the file on disk.
     expected_sha = hashlib.sha256(tensor_output.read_bytes()).hexdigest()
     assert payload["tensor_sha256"] == expected_sha
 
@@ -88,13 +74,13 @@ def test_vernier_runner_smoke(tmp_path: Path) -> None:
     assert tensor.shape == (10, 101, 1, 4, 3), tensor.shape
 
 
-@requires_vernier_env
 def test_orchestrator_run_writes_tree(tmp_path: Path) -> None:
     """Drive the orchestrator end-to-end against an isolated bench root.
 
     Uses the real envs/ tree (so the runner subprocess has its venv) but
     redirects results/ to tmp_path so we don't pollute the real tree.
     """
+    skip_if_no_env("vernier")
     from bench.harness.orchestrate import RunSpec
     from bench.harness.orchestrate import run as run_spec
     from bench.workloads import resolve

@@ -11,11 +11,11 @@ from pydantic import ValidationError
 from bench.harness.schema import (
     Aggregation,
     BenchResult,
+    BenchWarning,
     RepResult,
     RunnerRepOutput,
     StageAggregation,
     StageTimings,
-    BenchWarning,
 )
 
 
