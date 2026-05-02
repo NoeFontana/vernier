@@ -291,6 +291,17 @@ impl PyAccumulated {
     }
 }
 
+/// Parse a COCO GT payload, lifting `EvalError` into `PyValueError`.
+/// One helper per FFI entry — keeps the error mapping uniform.
+pub(crate) fn parse_gt(bytes: &[u8]) -> PyResult<CocoDataset> {
+    CocoDataset::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+}
+
+/// Parse a COCO detections payload (sibling of [`parse_gt`]).
+pub(crate) fn parse_dt(bytes: &[u8]) -> PyResult<CocoDetections> {
+    CocoDetections::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+}
+
 /// Build a single pycocotools-shaped `evalImgs` dict from one cell.
 fn eval_img_dict<'py>(
     py: Python<'py>,
@@ -365,14 +376,9 @@ impl EvalIouType {
         match self {
             Self::Bbox => evaluate_bbox(gt, dt, params, parity),
             Self::Segm => evaluate_segm_cached(gt, dt, params, parity, caches.segm),
-            Self::Boundary { dilation_ratio } => evaluate_boundary_cached(
-                gt,
-                dt,
-                params,
-                parity,
-                *dilation_ratio,
-                caches.boundary,
-            ),
+            Self::Boundary { dilation_ratio } => {
+                evaluate_boundary_cached(gt, dt, params, parity, *dilation_ratio, caches.boundary)
+            }
             Self::Keypoints { sigmas } => {
                 evaluate_keypoints(gt, dt, params, parity, sigmas.clone())
             }
@@ -404,17 +410,17 @@ fn evaluate_grid_impl(
     use_cats: bool,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-    let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let gt_bytes = gt_json.as_bytes().to_vec();
+    let dt_bytes = dt_json.as_bytes().to_vec();
     // Kp grid drops the small bucket (D5); detection grid keeps all
     // four. `Vec<AreaRange>` lets either size flow through the same
     // `&[AreaRange]` slice the eval pass consumes.
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
-    let grid = py
-        .detach(move || {
-            iou_type.run(
+    let grid = py.detach(move || -> PyResult<EvalGrid> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        iou_type
+            .run(
                 &gt,
                 &dt,
                 EvaluateParams {
@@ -425,8 +431,8 @@ fn evaluate_grid_impl(
                 },
                 parity,
             )
-        })
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
     Ok(PyEvalGrid {
         inner: grid,
         parity,
@@ -544,14 +550,18 @@ fn evaluate_summary_impl(
     // ascending ladder.
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
-    let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-    let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    // The `PyBytes` borrow is GIL-tied; copy so the JSON parse can run
+    // inside `py.detach`. Cost is one memcpy per call, gain is a wider
+    // GIL-drop window for multi-threaded callers.
+    let gt_bytes = gt_json.as_bytes().to_vec();
+    let dt_bytes = dt_json.as_bytes().to_vec();
 
-    let summary = py
-        .detach(move || run_pipeline(&iou_type, &gt, &dt, parity, &max_dets, use_cats))
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let summary = py.detach(move || -> PyResult<Summary> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        run_pipeline(&iou_type, &gt, &dt, parity, &max_dets, use_cats)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
 
     Ok(PySummary { inner: summary })
 }
@@ -783,22 +793,21 @@ fn evaluate_summary_with_dataset_impl(
     require_nonempty_max_dets(&max_dets)?;
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
-    let dt = CocoDetections::from_json_bytes(dt_json.as_bytes())
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let dt_bytes = dt_json.as_bytes().to_vec();
     let snapshot = dataset.snapshot();
-    let summary = py
-        .detach(move || {
-            run_pipeline_with_dataset(
-                &iou_type,
-                &snapshot.gt,
-                snapshot.caches(),
-                &dt,
-                parity,
-                &max_dets,
-                use_cats,
-            )
-        })
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let summary = py.detach(move || -> PyResult<Summary> {
+        let dt = parse_dt(&dt_bytes)?;
+        run_pipeline_with_dataset(
+            &iou_type,
+            &snapshot.gt,
+            snapshot.caches(),
+            &dt,
+            parity,
+            &max_dets,
+            use_cats,
+        )
+        .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
     Ok(PySummary { inner: summary })
 }
 
@@ -1230,8 +1239,7 @@ impl PyStreamingEvaluator {
             None => MemoryBudget::auto_default(),
         };
 
-        let dataset = CocoDataset::from_json_bytes(gt_json.as_bytes())
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        let dataset = parse_gt(gt_json.as_bytes())?;
 
         // Build the kernel-typed evaluator. Each arm constructs the
         // matching `EvalIouType` solely to reuse `area_ranges_for`'s
@@ -1703,8 +1711,7 @@ impl PyBackgroundEvaluator {
             None => MemoryBudget::auto_default(),
         };
 
-        let dataset = CocoDataset::from_json_bytes(gt_json.as_bytes())
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        let dataset = parse_gt(gt_json.as_bytes())?;
 
         if !shutdown_timeout_seconds.is_finite() || shutdown_timeout_seconds < 0.0 {
             return Err(PyValueError::new_err(format!(
@@ -1999,7 +2006,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary_with_dataset, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_summary_with_dataset, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_boundary_summary_with_dataset, m)?)?;
-    m.add_function(wrap_pyfunction!(evaluate_keypoints_summary_with_dataset, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        evaluate_keypoints_summary_with_dataset,
+        m
+    )?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;

@@ -14,11 +14,12 @@
 
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
 
 use vernier_core::{BoundaryGtCache, CocoDataset, EvalDataset, SegmGtCache};
+
+use crate::parse_gt;
 
 /// Parsed-once COCO ground-truth dataset.
 ///
@@ -83,8 +84,7 @@ impl PyDataset {
     /// [`Dataset`] handle. Raises `ValueError` on malformed JSON.
     #[staticmethod]
     fn from_json(gt_json: &Bound<'_, PyBytes>) -> PyResult<Self> {
-        let gt = CocoDataset::from_json_bytes(gt_json.as_bytes())
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        let gt = parse_gt(gt_json.as_bytes())?;
         Ok(Self {
             inner: Arc::new(gt),
             boundary_cache: Arc::new(BoundaryGtCache::new()),
