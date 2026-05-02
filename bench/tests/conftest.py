@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from bench.harness.matrix import env_dir
-
-BENCH_ROOT = Path(__file__).resolve().parent.parent
+from bench.harness.paths import BENCH_ROOT
 
 
 def skip_if_no_env(impl: str) -> None:

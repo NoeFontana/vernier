@@ -12,9 +12,8 @@ import numpy as np
 import pytest
 
 from bench.harness.matrix import runner_module, uv_run_argv
-from tests.conftest import BENCH_ROOT, skip_if_no_env
-
-REPO_ROOT = BENCH_ROOT.parent
+from bench.harness.paths import BENCH_ROOT, REPO_ROOT
+from tests.conftest import skip_if_no_env
 
 
 def test_vernier_runner_smoke(tmp_path: Path) -> None:

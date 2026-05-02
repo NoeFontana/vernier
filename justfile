@@ -80,10 +80,10 @@ fmt:
 ubench:
     cargo bench --workspace
 
-# Sync the local bench harness env and per-impl envs (ADR-0017).
+# Sync the local bench harness env and every per-impl env (ADR-0017).
 bench-sync:
     uv sync --directory bench
-    uv sync --directory bench/envs/vernier
+    for env in bench/envs/*/; do uv sync --directory "$env"; done
 
 # Run the bench harness's own pytest suite. Isolated from `just test-py`.
 bench-test:

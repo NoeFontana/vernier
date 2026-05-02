@@ -14,12 +14,12 @@ from __future__ import annotations
 import sys
 import types
 from collections.abc import Callable
-from pathlib import Path
 from typing import Any
 
-_ORACLE_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "envs" / "boundary-iou-api" / "oracle"
-)
+from bench.harness.matrix import env_dir
+from bench.harness.paths import BENCH_ROOT
+
+_ORACLE_PATH = env_dir(BENCH_ROOT, "boundary-iou-api") / "oracle"
 if str(_ORACLE_PATH) not in sys.path:
     sys.path.insert(0, str(_ORACLE_PATH))
 

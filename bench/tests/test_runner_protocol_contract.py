@@ -12,7 +12,8 @@ import subprocess
 import pytest
 
 from bench.harness.matrix import ALL_IMPLS, runner_module, uv_run_argv
-from tests.conftest import BENCH_ROOT, skip_if_no_env
+from bench.harness.paths import BENCH_ROOT
+from tests.conftest import skip_if_no_env
 
 _REQUIRED_FLAGS: tuple[str, ...] = (
     "--gt",
