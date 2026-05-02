@@ -13,7 +13,7 @@
 pub mod boundary;
 pub mod erode;
 
-pub use boundary::{boundary_band, boundary_band_into};
+pub use boundary::{boundary_band, boundary_band_into, boundary_band_segments_into};
 pub use erode::{erode_chebyshev_ball, erode_chebyshev_ball_into, ErodeScratch};
 
 use crate::error::{MalformedRleReason, MaskError};
@@ -302,10 +302,60 @@ impl SegmentTable {
         self.idx.push(self.flat.len());
     }
 
+    /// Appends one row by walking a column-major byte raster: fg-byte
+    /// (`!= 0`, per quirk **G6**) transitions become `[start, end]`
+    /// cumulative-offset pairs in the flat buffer. Returns the fg-byte
+    /// count (== row area) so callers don't need a second pass over
+    /// the raster.
+    ///
+    /// Equivalent to `Rle::from_raster_bytes(raster, h, w)` followed
+    /// by `push_from_rle(&band)` plus `band.area()`, but in a single
+    /// walk of the raster — no intermediate `Rle::counts` allocation.
+    /// Hot-path callers (boundary-band derivation feeding the
+    /// boundary-IoU kernel's segment tables) skip the round-trip
+    /// entirely.
+    pub fn push_from_raster(&mut self, raster: &[u8]) -> u64 {
+        let mut area: u64 = 0;
+        let mut run_start: u64 = 0;
+        let mut in_run = false;
+        for (i, &b) in raster.iter().enumerate() {
+            let fg = b != 0;
+            if fg && !in_run {
+                run_start = i as u64;
+                in_run = true;
+            } else if !fg && in_run {
+                let end = i as u64;
+                self.flat.push(run_start);
+                self.flat.push(end);
+                area += end - run_start;
+                in_run = false;
+            }
+        }
+        if in_run {
+            let end = raster.len() as u64;
+            self.flat.push(run_start);
+            self.flat.push(end);
+            area += end - run_start;
+        }
+        self.idx.push(self.flat.len());
+        area
+    }
+
     /// Borrow row `i` as an alternating `[start, end, …]` slice
     /// suitable for [`intersect_area_offsets`].
     pub fn row(&self, i: usize) -> &[u64] {
         &self.flat[self.idx[i]..self.idx[i + 1]]
+    }
+
+    /// Borrow the most recently pushed row. Returns an empty slice
+    /// for an empty table — the boundary-IoU cache fill calls this
+    /// right after a push, so the empty case is unreachable in
+    /// practice but we keep it total.
+    pub fn last_row(&self) -> &[u64] {
+        if self.is_empty() {
+            return &[];
+        }
+        self.row(self.len() - 1)
     }
 }
 
@@ -671,6 +721,49 @@ mod tests {
         assert_eq!(table.row(0), &segs);
     }
 
+    #[test]
+    fn segment_table_push_from_raster_empty_input() {
+        let mut table = SegmentTable::new();
+        let area = table.push_from_raster(&[]);
+        assert_eq!(area, 0);
+        assert_eq!(table.row(0), &[] as &[u64]);
+        assert_eq!(table.len(), 1);
+    }
+
+    #[test]
+    fn segment_table_push_from_raster_all_background() {
+        let mut table = SegmentTable::new();
+        let area = table.push_from_raster(&[0u8; 8]);
+        assert_eq!(area, 0);
+        assert!(table.row(0).is_empty());
+    }
+
+    #[test]
+    fn segment_table_push_from_raster_all_foreground() {
+        let mut table = SegmentTable::new();
+        let area = table.push_from_raster(&[1u8; 8]);
+        assert_eq!(area, 8);
+        assert_eq!(table.row(0), &[0u64, 8]);
+    }
+
+    #[test]
+    fn segment_table_push_from_raster_leading_and_trailing_fg() {
+        // [1,1,0,1,1,1,0,1] → segments [0,2), [3,6), [7,8); area 6.
+        let mut table = SegmentTable::new();
+        let area = table.push_from_raster(&[1, 1, 0, 1, 1, 1, 0, 1]);
+        assert_eq!(area, 6);
+        assert_eq!(table.row(0), &[0u64, 2, 3, 6, 7, 8]);
+    }
+
+    #[test]
+    fn segment_table_push_from_raster_binarises_per_g6() {
+        // Non-zero bytes are foreground (G6 strict).
+        let mut table = SegmentTable::new();
+        let area = table.push_from_raster(&[0, 2, 255, 0]);
+        assert_eq!(area, 2);
+        assert_eq!(table.row(0), &[1u64, 3]);
+    }
+
     proptest! {
         #[test]
         fn intersect_area_matches_merge_pair(
@@ -698,6 +791,35 @@ mod tests {
             rb.decode_fg_offsets_into(&mut b_off);
             let via_offsets = intersect_area_offsets(&a_off, &b_off);
             prop_assert_eq!(via_offsets, scalar);
+        }
+
+        #[test]
+        fn push_from_raster_matches_from_rle_then_push_from_rle(
+            bytes in raster_strategy(4, 5),
+        ) {
+            let r = Rle::from_raster_bytes(&bytes, 4, 5)?;
+            let mut expected = SegmentTable::new();
+            expected.push_from_rle(&r);
+            let expected_area = r.area();
+
+            let mut actual = SegmentTable::new();
+            let actual_area = actual.push_from_raster(&bytes);
+
+            prop_assert_eq!(actual_area, expected_area);
+            prop_assert_eq!(actual.row(0), expected.row(0));
+        }
+
+        #[test]
+        fn push_from_raster_binarises_per_g6(
+            bytes in proptest::collection::vec(any::<u8>(), 0..120),
+        ) {
+            let binarised: Vec<u8> = bytes.iter().map(|&b| u8::from(b != 0)).collect();
+            let mut from_raw = SegmentTable::new();
+            let from_raw_area = from_raw.push_from_raster(&bytes);
+            let mut from_bin = SegmentTable::new();
+            let from_bin_area = from_bin.push_from_raster(&binarised);
+            prop_assert_eq!(from_raw_area, from_bin_area);
+            prop_assert_eq!(from_raw.row(0), from_bin.row(0));
         }
     }
 

@@ -45,7 +45,9 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use ndarray::ArrayViewMut2;
-use vernier_mask::ops::{boundary_band_into, intersect_area_offsets, ErodeScratch, SegmentTable};
+use vernier_mask::ops::{
+    boundary_band_segments_into, intersect_area_offsets, ErodeScratch, SegmentTable,
+};
 
 use super::bbox::{BboxAnn, BboxIou};
 use super::segm::{to_bbox_ann, SegmAnn};
@@ -289,9 +291,13 @@ pub(crate) fn boundary_iou_compute(
     for d in dts {
         scratch.d_mask_area.push(d.rle.area());
         scratch.d_mask_segments.push_from_rle(&d.rle);
-        let band = boundary_band_into(&d.rle, dilation_ratio, &mut scratch.erode)?;
-        scratch.d_band_area.push(band.area());
-        scratch.d_band_segments.push_from_rle(&band);
+        let band_area = boundary_band_segments_into(
+            &d.rle,
+            dilation_ratio,
+            &mut scratch.erode,
+            &mut scratch.d_band_segments,
+        )?;
+        scratch.d_band_area.push(band_area);
     }
 
     for g in 0..gts.len() {
@@ -355,36 +361,35 @@ fn populate_gt_entry(
             scratch.g_band_segments.push_segments(&entry.band_offsets);
             return Ok(());
         }
-        let entry = build_gt_entry(ann, ratio, &mut scratch.erode)?;
-        scratch.g_band_area.push(entry.band_area);
-        scratch.g_mask_segments.push_segments(&entry.mask_offsets);
-        scratch.g_band_segments.push_segments(&entry.band_offsets);
-        inner.bands.insert(ann.ann_id, entry);
+        scratch.g_mask_segments.push_from_rle(&ann.rle);
+        let band_area = boundary_band_segments_into(
+            &ann.rle,
+            ratio,
+            &mut scratch.erode,
+            &mut scratch.g_band_segments,
+        )?;
+        scratch.g_band_area.push(band_area);
+        let mask_offsets = scratch.g_mask_segments.last_row().to_vec();
+        let band_offsets = scratch.g_band_segments.last_row().to_vec();
+        inner.bands.insert(
+            ann.ann_id,
+            BoundaryGtEntry {
+                band_area,
+                mask_offsets,
+                band_offsets,
+            },
+        );
         return Ok(());
     }
-    let band = boundary_band_into(&ann.rle, ratio, &mut scratch.erode)?;
-    scratch.g_band_area.push(band.area());
     scratch.g_mask_segments.push_from_rle(&ann.rle);
-    scratch.g_band_segments.push_from_rle(&band);
+    let band_area = boundary_band_segments_into(
+        &ann.rle,
+        ratio,
+        &mut scratch.erode,
+        &mut scratch.g_band_segments,
+    )?;
+    scratch.g_band_area.push(band_area);
     Ok(())
-}
-
-fn build_gt_entry(
-    ann: &SegmAnn,
-    ratio: f64,
-    erode: &mut ErodeScratch,
-) -> Result<BoundaryGtEntry, EvalError> {
-    let band = boundary_band_into(&ann.rle, ratio, erode)?;
-    let band_area = band.area();
-    let mut mask_offsets = Vec::new();
-    let mut band_offsets = Vec::new();
-    ann.rle.decode_fg_offsets_into(&mut mask_offsets);
-    band.decode_fg_offsets_into(&mut band_offsets);
-    Ok(BoundaryGtEntry {
-        band_area,
-        mask_offsets,
-        band_offsets,
-    })
 }
 
 #[cfg(test)]
