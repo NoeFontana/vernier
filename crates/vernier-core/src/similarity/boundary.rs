@@ -45,14 +45,40 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use ndarray::ArrayViewMut2;
-use vernier_mask::ops::{boundary_band_into, ErodeScratch};
-use vernier_mask::Rle;
+use vernier_mask::ops::{boundary_band_into, intersect_area_offsets, ErodeScratch, SegmentTable};
 
 use super::bbox::{BboxAnn, BboxIou};
 use super::segm::{to_bbox_ann, SegmAnn};
 use super::Similarity;
 use crate::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
 use crate::error::EvalError;
+
+/// Reusable per-call buffers for the boundary-IoU kernel. Mirrors
+/// `SegmComputeScratch` so the dataset-wide path
+/// (`evaluate_boundary` via the private `BoundaryIouCached` kernel)
+/// amortises per-cell allocations across the val2017 pass — one
+/// `SegmentTable` allocation per buffer instead of one nested
+/// `Vec<u64>` per annotation.
+#[derive(Default)]
+pub(crate) struct BoundaryComputeScratch {
+    erode: ErodeScratch,
+    g_bbox: Vec<BboxAnn>,
+    d_bbox: Vec<BboxAnn>,
+    g_mask_area: Vec<u64>,
+    d_mask_area: Vec<u64>,
+    g_band_area: Vec<u64>,
+    d_band_area: Vec<u64>,
+    g_mask_segments: SegmentTable,
+    g_band_segments: SegmentTable,
+    d_mask_segments: SegmentTable,
+    d_band_segments: SegmentTable,
+}
+
+impl BoundaryComputeScratch {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
 
 /// Cross-call cache of GT boundary bands for the boundary IoU
 /// kernel.
@@ -80,11 +106,18 @@ pub struct BoundaryGtCache {
 
 #[derive(Default)]
 struct CacheInner {
-    bands: HashMap<i64, (Rle, u64)>,
+    bands: HashMap<i64, BoundaryGtEntry>,
     /// `None` until the first [`crate::evaluate_boundary_cached`]
     /// call populates entries. Subsequent calls compare and clear on
     /// mismatch.
     ratio: Option<f64>,
+}
+
+#[derive(Clone)]
+struct BoundaryGtEntry {
+    band_area: u64,
+    mask_offsets: Vec<u64>,
+    band_offsets: Vec<u64>,
 }
 
 impl BoundaryGtCache {
@@ -162,17 +195,17 @@ impl Similarity for BoundaryIou {
         dts: &[SegmAnn],
         out: &mut ArrayViewMut2<'_, f64>,
     ) -> Result<(), EvalError> {
-        let mut scratch = ErodeScratch::new();
+        let mut scratch = BoundaryComputeScratch::new();
         boundary_iou_compute(self.dilation_ratio, gts, dts, out, &mut scratch, None)
     }
 }
 
 /// Scratch-aware boundary-IoU compute. Same semantics as
-/// [`BoundaryIou::compute`] but reuses a caller-owned [`ErodeScratch`]
-/// across band derivations — letting the dataset-wide path
-/// (`evaluate_boundary` via the private `BoundaryIouCached` kernel)
-/// amortize per-mask scratch allocations across the ~36k anns of a
-/// val2017 pass.
+/// [`BoundaryIou::compute`] but reuses a caller-owned
+/// [`BoundaryComputeScratch`] across band derivations + segment-table
+/// builds — letting the dataset-wide path (`evaluate_boundary` via the
+/// private `BoundaryIouCached` kernel) amortize per-mask + per-cell
+/// allocations across the ~36k anns of a val2017 pass.
 ///
 /// When `gt_cache` is `Some`, GT bands are looked up by
 /// [`SegmAnn::ann_id`]; misses fall through to a fresh derivation and
@@ -185,7 +218,7 @@ pub(crate) fn boundary_iou_compute(
     gts: &[SegmAnn],
     dts: &[SegmAnn],
     out: &mut ArrayViewMut2<'_, f64>,
-    scratch: &mut ErodeScratch,
+    scratch: &mut BoundaryComputeScratch,
     gt_cache: Option<&BoundaryGtCache>,
 ) -> Result<(), EvalError> {
     if out.nrows() != gts.len() || out.ncols() != dts.len() {
@@ -219,56 +252,61 @@ pub(crate) fn boundary_iou_compute(
     // bbox IoU is 0 stay zero; non-zero cells get overwritten with
     // the boundary IoU below. BboxIou honors the same E1 crowd
     // asymmetry, so the gate is correct on crowd rows too.
-    let g_bbox: Vec<BboxAnn> = gts
-        .iter()
-        .map(|g| to_bbox_ann(&g.rle, g.is_crowd))
-        .collect();
-    let d_bbox: Vec<BboxAnn> = dts.iter().map(|d| to_bbox_ann(&d.rle, false)).collect();
-    BboxIou.compute(&g_bbox, &d_bbox, out)?;
+    scratch.g_bbox.clear();
+    scratch
+        .g_bbox
+        .extend(gts.iter().map(|g| to_bbox_ann(&g.rle, g.is_crowd)));
+    scratch.d_bbox.clear();
+    scratch
+        .d_bbox
+        .extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
+    BboxIou.compute(&scratch.g_bbox, &scratch.d_bbox, out)?;
 
     // O1/O2: skip B(g) for crowd GTs — the boundary fold is
     // suppressed on crowd rows, so computing the band is wasted
-    // work proportional to the (often large) crowd-mask area.
-    // An empty placeholder keeps Vec indices aligned with `gts`
-    // and is never read past the crowd guard below.
-    let crowd_placeholder = Rle {
-        h,
-        w,
-        counts: vec![],
-    };
-    let g_band: Vec<(Rle, u64)> = gts
-        .iter()
-        .map(|g| {
-            if g.is_crowd {
-                Ok((crowd_placeholder.clone(), 0))
-            } else {
-                derive_gt_band(g, dilation_ratio, scratch, gt_cache)
-            }
-        })
-        .collect::<Result<_, _>>()?;
-    let d_band: Vec<(Rle, u64)> = dts
-        .iter()
-        .map(|d| {
-            let band = boundary_band_into(&d.rle, dilation_ratio, scratch)?;
-            let area = band.area();
-            Ok((band, area))
-        })
-        .collect::<Result<_, EvalError>>()?;
-
-    let g_mask_area: Vec<u64> = gts.iter().map(|g| g.rle.area()).collect();
-    let d_mask_area: Vec<u64> = dts.iter().map(|d| d.rle.area()).collect();
+    // work proportional to the (often large) crowd-mask area. The
+    // mask-side offsets are still needed for `inter_mask` (E1 crowd
+    // mask IoU = inter / dt_area), so we push mask segments
+    // unconditionally; only band segments / band area get skipped.
+    scratch.g_mask_area.clear();
+    scratch.g_band_area.clear();
+    scratch.g_mask_segments.clear();
+    scratch.g_band_segments.clear();
+    for g in gts {
+        scratch.g_mask_area.push(g.rle.area());
+        if g.is_crowd {
+            scratch.g_mask_segments.push_from_rle(&g.rle);
+            scratch.g_band_area.push(0);
+            scratch.g_band_segments.push_segments(&[]);
+        } else {
+            populate_gt_entry(g, dilation_ratio, scratch, gt_cache)?;
+        }
+    }
+    scratch.d_mask_area.clear();
+    scratch.d_band_area.clear();
+    scratch.d_mask_segments.clear();
+    scratch.d_band_segments.clear();
+    for d in dts {
+        scratch.d_mask_area.push(d.rle.area());
+        scratch.d_mask_segments.push_from_rle(&d.rle);
+        let band = boundary_band_into(&d.rle, dilation_ratio, &mut scratch.erode)?;
+        scratch.d_band_area.push(band.area());
+        scratch.d_band_segments.push_from_rle(&band);
+    }
 
     for g in 0..gts.len() {
         let crowd = gts[g].is_crowd;
+        let g_mask_seg = scratch.g_mask_segments.row(g);
+        let g_band_seg = scratch.g_band_segments.row(g);
         for d in 0..dts.len() {
             if out[[g, d]] <= 0.0 {
                 continue;
             }
-            let inter_mask = gts[g].rle.intersect_area(&dts[d].rle)?;
+            let inter_mask = intersect_area_offsets(g_mask_seg, scratch.d_mask_segments.row(d));
             let mask_denom = if crowd {
-                d_mask_area[d]
+                scratch.d_mask_area[d]
             } else {
-                g_mask_area[g] + d_mask_area[d] - inter_mask
+                scratch.g_mask_area[g] + scratch.d_mask_area[d] - inter_mask
             };
             let mask_iou = if mask_denom > 0 && inter_mask > 0 {
                 (inter_mask as f64) / (mask_denom as f64)
@@ -284,8 +322,8 @@ pub(crate) fn boundary_iou_compute(
                 continue;
             }
 
-            let inter_bound = g_band[g].0.intersect_area(&d_band[d].0)?;
-            let bound_denom = g_band[g].1 + d_band[d].1 - inter_bound;
+            let inter_bound = intersect_area_offsets(g_band_seg, scratch.d_band_segments.row(d));
+            let bound_denom = scratch.g_band_area[g] + scratch.d_band_area[d] - inter_bound;
             let bound_iou = if bound_denom > 0 && inter_bound > 0 {
                 (inter_bound as f64) / (bound_denom as f64)
             } else {
@@ -299,32 +337,54 @@ pub(crate) fn boundary_iou_compute(
     Ok(())
 }
 
-/// Resolve one GT annotation's `(band, area)`. With a cache, hit-or-
-/// derive on `ann_id`; without, derive directly. The cache lock is
-/// held across the (slow) erosion call: `BoundaryIouCached` already
-/// serialises kernel calls via its `Mutex<ErodeScratch>`, so dropping
-/// the cache lock around erosion would not let any sibling thread
-/// make progress — keeping the lock held simplifies the hit/miss
-/// handling and removes a wasted second `lock()` on miss.
-fn derive_gt_band(
+/// Resolve one GT annotation's band area + mask/band fg offsets and
+/// append them to `scratch`'s segment tables. With a cache, hit on
+/// `ann_id` skips erosion + decode; on miss the entry is computed and
+/// inserted before being pushed.
+fn populate_gt_entry(
     ann: &SegmAnn,
     ratio: f64,
-    scratch: &mut ErodeScratch,
+    scratch: &mut BoundaryComputeScratch,
     cache: Option<&BoundaryGtCache>,
-) -> Result<(Rle, u64), EvalError> {
-    let Some(cache) = cache else {
-        let band = boundary_band_into(&ann.rle, ratio, scratch)?;
-        let area = band.area();
-        return Ok((band, area));
-    };
-    let mut inner = cache.lock();
-    if let Some((rle, area)) = inner.bands.get(&ann.ann_id) {
-        return Ok((rle.clone(), *area));
+) -> Result<(), EvalError> {
+    if let Some(cache) = cache {
+        let mut inner = cache.lock();
+        if let Some(entry) = inner.bands.get(&ann.ann_id) {
+            scratch.g_band_area.push(entry.band_area);
+            scratch.g_mask_segments.push_segments(&entry.mask_offsets);
+            scratch.g_band_segments.push_segments(&entry.band_offsets);
+            return Ok(());
+        }
+        let entry = build_gt_entry(ann, ratio, &mut scratch.erode)?;
+        scratch.g_band_area.push(entry.band_area);
+        scratch.g_mask_segments.push_segments(&entry.mask_offsets);
+        scratch.g_band_segments.push_segments(&entry.band_offsets);
+        inner.bands.insert(ann.ann_id, entry);
+        return Ok(());
     }
-    let band = boundary_band_into(&ann.rle, ratio, scratch)?;
-    let area = band.area();
-    inner.bands.insert(ann.ann_id, (band.clone(), area));
-    Ok((band, area))
+    let band = boundary_band_into(&ann.rle, ratio, &mut scratch.erode)?;
+    scratch.g_band_area.push(band.area());
+    scratch.g_mask_segments.push_from_rle(&ann.rle);
+    scratch.g_band_segments.push_from_rle(&band);
+    Ok(())
+}
+
+fn build_gt_entry(
+    ann: &SegmAnn,
+    ratio: f64,
+    erode: &mut ErodeScratch,
+) -> Result<BoundaryGtEntry, EvalError> {
+    let band = boundary_band_into(&ann.rle, ratio, erode)?;
+    let band_area = band.area();
+    let mut mask_offsets = Vec::new();
+    let mut band_offsets = Vec::new();
+    ann.rle.decode_fg_offsets_into(&mut mask_offsets);
+    band.decode_fg_offsets_into(&mut band_offsets);
+    Ok(BoundaryGtEntry {
+        band_area,
+        mask_offsets,
+        band_offsets,
+    })
 }
 
 #[cfg(test)]
@@ -332,6 +392,7 @@ mod tests {
     use super::*;
     use ndarray::Array2;
     use vernier_mask::ops::boundary_band;
+    use vernier_mask::Rle;
 
     fn ann(rle: Rle, is_crowd: bool) -> SegmAnn {
         SegmAnn {
