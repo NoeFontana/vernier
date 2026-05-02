@@ -10,6 +10,9 @@ this directory; older runs aren't deleted (they're history).
 
 ## Index
 
+* [2026-05-snapshot.md](./2026-05-snapshot.md) — **start here**.
+  Consolidated view of every release-mode cell captured this month
+  (bbox/segm/boundary on val2017, synthetic n=500, smoke fan-out).
 * [2026-05-coco-val2017-bbox.md](./2026-05-coco-val2017-bbox.md) —
   release-mode N=10, vernier 9.1× faster than pycocotools, 3.2× faster
   than faster-coco-eval; parity OK across both tiers.
