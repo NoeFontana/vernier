@@ -38,8 +38,11 @@
 
 use divan::{black_box, Bencher};
 use ndarray::Array2;
-use vernier_core::similarity::{BoundaryIou, SegmAnn, Similarity};
-use vernier_mask::Rle;
+use vernier_core::similarity::{BoundaryIou, Similarity};
+
+#[path = "common/mod.rs"]
+mod common;
+use common::{disjoint_rects, overlapping_rects};
 
 fn main() {
     divan::main();
@@ -52,73 +55,6 @@ fn main() {
 /// past divan's default budget. The 4-30 GT × 100 DT band tracks
 /// the real COCO eval distribution.
 const GRIDS: &[(usize, usize)] = &[(4, 100), (10, 100), (30, 100)];
-
-/// Image dimensions. Diagonal ≈ 181 px → at the default 0.02
-/// dilation ratio, `round(3.62) = 4` — large enough that a 24×24
-/// rect erodes to a non-degenerate 16×16 core and the band is a
-/// real frame, not the whole mask. The `production_disjoint`
-/// regime uses 8×8 shapes so the small-mask clamp path activates;
-/// see the comment on `disjoint_rects` for the implication.
-const H: u32 = 128;
-const W: u32 = 128;
-
-/// Builds an axis-aligned filled rectangle as an Rle (column-
-/// major raster → `from_raster_bytes`, the same primitive the
-/// production kernel consumes at the FFI boundary).
-fn filled_rect(x0: u32, y0: u32, rw: u32, rh: u32) -> Rle {
-    let mut raster = vec![0u8; (H as usize) * (W as usize)];
-    for x in x0..x0 + rw {
-        for y in y0..y0 + rh {
-            raster[(x as usize) * (H as usize) + (y as usize)] = 1;
-        }
-    }
-    Rle::from_raster_bytes(&raster, H, W).unwrap()
-}
-
-/// `n` overlapping 24×24 rectangles arranged on coprime strides
-/// against the wrap modulus so positions don't repeat across the
-/// grid (otherwise the optimizer would CSE band precomputes
-/// across duplicate shapes and bias the measurement). Strides 11
-/// and 13 are coprime with 104 = `W - 24`, so for the largest
-/// configuration (n = 100) every shape is unique.
-fn overlapping_rects(n: usize, is_crowd: bool) -> Vec<SegmAnn> {
-    let span = (W - 24) as usize;
-    (0..n)
-        .map(|i| {
-            let x0 = ((i * 11) % span) as u32;
-            let y0 = ((i * 13) % span) as u32;
-            SegmAnn {
-                rle: filled_rect(x0, y0, 24, 24),
-                is_crowd,
-                ann_id: i as i64,
-            }
-        })
-        .collect()
-}
-
-/// `n` rectangles tiled on a 12 px grid so every neighbour pair
-/// is bbox-disjoint by construction. The 8×8 shape erodes to
-/// empty under the default ratio (`round(3.62) = 4`), so the
-/// band collapses onto the full mask via the small-mask clamp —
-/// fine: the bench's job here is to expose how much per-cell
-/// (mask + band) intersect work the I1 prefilter avoids, not to
-/// stress the band precompute (`production_overlap` does that).
-fn disjoint_rects(n: usize) -> Vec<SegmAnn> {
-    let cols = ((n as f64).sqrt().ceil() as u32).max(1);
-    (0..n as u32)
-        .map(|i| {
-            let cx = i % cols;
-            let cy = i / cols;
-            let x0 = (cx * 12).min(W - 9);
-            let y0 = (cy * 12).min(H - 9);
-            SegmAnn {
-                rle: filled_rect(x0, y0, 8, 8),
-                is_crowd: false,
-                ann_id: i as i64,
-            }
-        })
-        .collect()
-}
 
 #[divan::bench(args = GRIDS)]
 fn production_overlap(bencher: Bencher, &(g, d): &(usize, usize)) {

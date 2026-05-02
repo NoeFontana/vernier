@@ -28,7 +28,8 @@ pub use bbox::{BboxAnn, BboxIou};
 pub use boundary::{BoundaryGtCache, BoundaryIou};
 pub(crate) use boundary::boundary_iou_compute;
 pub use oks::{OksAnn, OksSimilarity, COCO_PERSON_SIGMAS};
-pub use segm::{SegmAnn, SegmIou};
+pub use segm::{SegmAnn, SegmGtCache, SegmIou};
+pub(crate) use segm::{segm_iou_compute, SegmComputeScratch};
 
 /// Computes a pairwise similarity matrix for one image's GT × DT pairs.
 ///

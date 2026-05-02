@@ -24,6 +24,9 @@
 //! - **E2 / J4**: DT `is_crowd` is enforced 0 at the dataset boundary;
 //!   here we simply ignore the field on DT side, matching [`BboxIou`].
 
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard};
+
 use ndarray::ArrayViewMut2;
 use vernier_mask::Rle;
 
@@ -67,68 +70,180 @@ impl Similarity for SegmIou {
         dts: &[SegmAnn],
         out: &mut ArrayViewMut2<'_, f64>,
     ) -> Result<(), EvalError> {
-        if out.nrows() != gts.len() || out.ncols() != dts.len() {
+        let mut scratch = SegmComputeScratch::new();
+        segm_iou_compute(gts, dts, out, &mut scratch, None)
+    }
+}
+
+/// Reusable per-call buffers for the segm-IoU kernel. Lets the
+/// dataset-wide path (`evaluate_segm` via the private `SegmIouCached`
+/// kernel) amortize per-cell allocations across the ~36 k anns of a
+/// val2017 pass — `Vec::clear` + amortized capacity instead of fresh
+/// `Vec::new` per `(image, category)` cell. The GT-side buffers double
+/// as the destination for [`SegmGtCache`] hits when one is supplied.
+#[derive(Default)]
+pub(crate) struct SegmComputeScratch {
+    g_bbox: Vec<BboxAnn>,
+    d_bbox: Vec<BboxAnn>,
+    g_area: Vec<u64>,
+    d_area: Vec<u64>,
+}
+
+impl SegmComputeScratch {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// Cross-call cache of GT bbox + area for the segm IoU kernel.
+///
+/// In a training loop, validation passes call `evaluate_segm`
+/// repeatedly against the same GT but a fresh DT each epoch. Both
+/// `Rle::bbox` (the I1 prefilter input) and `Rle::area` (the union
+/// denominator) walk the GT counts on every call. A cache amortises
+/// those walks over the training run. Pass an instance to
+/// [`crate::evaluate_segm_cached`] and reuse it across calls.
+///
+/// Keyed by GT annotation id ([`SegmAnn::ann_id`], populated from
+/// `CocoAnnotation::id` at the dataset boundary).
+///
+/// Threadsafe via an internal [`Mutex`] (the kernel needs `Sync`).
+/// Single-threaded use is uncontended.
+#[derive(Default)]
+pub struct SegmGtCache {
+    inner: Mutex<HashMap<i64, (BboxAnn, u64)>>,
+}
+
+impl SegmGtCache {
+    /// Constructs an empty cache. Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of GT annotations currently held.
+    pub fn len(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Returns `true` if no GT entries are currently cached.
+    pub fn is_empty(&self) -> bool {
+        self.lock().is_empty()
+    }
+
+    /// Drops all cached entries. Useful when the GT dataset changes
+    /// mid-loop so stale `(ann_id, bbox, area)` triples don't pollute
+    /// the next call.
+    pub fn clear(&self) {
+        self.lock().clear();
+    }
+
+    fn lock(&self) -> MutexGuard<'_, HashMap<i64, (BboxAnn, u64)>> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// Scratch-aware segm-IoU compute. Same semantics as
+/// [`SegmIou::compute`] but reuses caller-owned buffers across the
+/// dataset pass.
+///
+/// When `gt_cache` is `Some`, GT bbox + area are looked up by
+/// [`SegmAnn::ann_id`]; misses fall through to a fresh derivation and
+/// populate the cache.
+pub(crate) fn segm_iou_compute(
+    gts: &[SegmAnn],
+    dts: &[SegmAnn],
+    out: &mut ArrayViewMut2<'_, f64>,
+    scratch: &mut SegmComputeScratch,
+    gt_cache: Option<&SegmGtCache>,
+) -> Result<(), EvalError> {
+    if out.nrows() != gts.len() || out.ncols() != dts.len() {
+        return Err(EvalError::DimensionMismatch {
+            detail: format!(
+                "segm IoU output is {}x{}, expected {}x{}",
+                out.nrows(),
+                out.ncols(),
+                gts.len(),
+                dts.len()
+            ),
+        });
+    }
+    if gts.is_empty() || dts.is_empty() {
+        return Ok(());
+    }
+
+    let (h, w) = (gts[0].rle.h, gts[0].rle.w);
+    for r in gts.iter().chain(dts.iter()).map(|a| &a.rle) {
+        if r.h != h || r.w != w {
             return Err(EvalError::DimensionMismatch {
                 detail: format!(
-                    "segm IoU output is {}x{}, expected {}x{}",
-                    out.nrows(),
-                    out.ncols(),
-                    gts.len(),
-                    dts.len()
+                    "segm IoU expects all RLEs at [{h}, {w}]; got [{}, {}]",
+                    r.h, r.w
                 ),
             });
         }
-        if gts.is_empty() || dts.is_empty() {
-            return Ok(());
-        }
+    }
 
-        let (h, w) = (gts[0].rle.h, gts[0].rle.w);
-        for r in gts.iter().chain(dts.iter()).map(|a| &a.rle) {
-            if r.h != h || r.w != w {
-                return Err(EvalError::DimensionMismatch {
-                    detail: format!(
-                        "segm IoU expects all RLEs at [{h}, {w}]; got [{}, {}]",
-                        r.h, r.w
-                    ),
-                });
+    // I1 prefilter: bbox IoU on the tight RLE bboxes. Cells with
+    // bb_iou == 0 stay zero; non-zero cells get overwritten with
+    // the exact RLE IoU below. BboxIou honors the same E1 crowd
+    // asymmetry, so the gate is correct on crowd rows too.
+    //
+    // GT-side bbox + area are populated together — both walk the same
+    // counts array, so a `SegmGtCache` amortises both at once.
+    scratch.g_bbox.clear();
+    scratch.g_area.clear();
+    populate_gt_bbox_area(gts, scratch, gt_cache);
+    scratch.d_bbox.clear();
+    scratch.d_bbox.extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
+    scratch.d_area.clear();
+    scratch.d_area.extend(dts.iter().map(|d| d.rle.area()));
+    BboxIou.compute(&scratch.g_bbox, &scratch.d_bbox, out)?;
+
+    for g in 0..gts.len() {
+        let crowd = gts[g].is_crowd;
+        let ga = scratch.g_area[g];
+        for d in 0..dts.len() {
+            if out[[g, d]] <= 0.0 {
+                continue;
             }
+            let inter = gts[g].rle.intersect_area(&dts[d].rle)?;
+            let denom = if crowd {
+                scratch.d_area[d]
+            } else {
+                ga + scratch.d_area[d] - inter
+            };
+            out[[g, d]] = if denom > 0 && inter > 0 {
+                (inter as f64) / (denom as f64)
+            } else {
+                0.0
+            };
         }
+    }
 
-        // I1 prefilter: bbox IoU on the tight RLE bboxes. Cells with
-        // bb_iou == 0 stay zero; non-zero cells get overwritten with
-        // the exact RLE IoU below. BboxIou honors the same E1 crowd
-        // asymmetry, so the gate is correct on crowd rows too.
-        let g_bbox: Vec<BboxAnn> = gts
-            .iter()
-            .map(|g| to_bbox_ann(&g.rle, g.is_crowd))
-            .collect();
-        let d_bbox: Vec<BboxAnn> = dts.iter().map(|d| to_bbox_ann(&d.rle, false)).collect();
-        BboxIou.compute(&g_bbox, &d_bbox, out)?;
+    Ok(())
+}
 
-        let d_area: Vec<u64> = dts.iter().map(|d| d.rle.area()).collect();
-
-        for g in 0..gts.len() {
-            let crowd = gts[g].is_crowd;
-            let ga = gts[g].rle.area();
-            for d in 0..dts.len() {
-                if out[[g, d]] <= 0.0 {
-                    continue;
-                }
-                let inter = gts[g].rle.intersect_area(&dts[d].rle)?;
-                let denom = if crowd {
-                    d_area[d]
-                } else {
-                    ga + d_area[d] - inter
-                };
-                out[[g, d]] = if denom > 0 && inter > 0 {
-                    (inter as f64) / (denom as f64)
-                } else {
-                    0.0
-                };
-            }
-        }
-
-        Ok(())
+/// Populate `scratch.g_bbox` + `scratch.g_area` for `gts`, consulting
+/// `cache` when present. Vecs are assumed already cleared with
+/// capacity preserved. Hits avoid the RLE walks that
+/// [`Rle::bbox`] / [`Rle::area`] would otherwise do per call.
+fn populate_gt_bbox_area(
+    gts: &[SegmAnn],
+    scratch: &mut SegmComputeScratch,
+    cache: Option<&SegmGtCache>,
+) {
+    let Some(cache) = cache else {
+        scratch.g_bbox.extend(gts.iter().map(|g| to_bbox_ann(&g.rle, g.is_crowd)));
+        scratch.g_area.extend(gts.iter().map(|g| g.rle.area()));
+        return;
+    };
+    let mut inner = cache.lock();
+    for g in gts {
+        let entry = inner
+            .entry(g.ann_id)
+            .or_insert_with(|| (to_bbox_ann(&g.rle, g.is_crowd), g.rle.area()));
+        scratch.g_bbox.push(entry.0);
+        scratch.g_area.push(entry.1);
     }
 }
 
