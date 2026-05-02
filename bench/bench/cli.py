@@ -66,7 +66,10 @@ def main() -> None:
 def run_cmd(
     impl: str, workload: str, iou_type: str, mode: str, run_seed: int, no_parity: bool
 ) -> None:
-    workload_obj = resolve(workload, REPO_ROOT)
+    try:
+        workload_obj = resolve(workload, REPO_ROOT)
+    except ValueError as e:
+        raise click.ClickException(str(e)) from e
     iou = cast(IouType, iou_type)
 
     if iou not in workload_obj.supported_iou_types:
