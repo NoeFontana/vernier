@@ -200,6 +200,22 @@ pub(crate) fn per_class_table_to_arrow(
     Ok(wrap_batch(per_class_record_batch(table)?))
 }
 
+/// Convert an already-built [`PerDetectionTable`] to an Arrow record
+/// batch wrapped for PyCapsule export.
+pub(crate) fn per_detection_table_to_arrow(
+    table: &PerDetectionTable,
+) -> Result<ArrowRecordBatchPy, arrow_schema::ArrowError> {
+    Ok(wrap_batch(per_detection_record_batch(table)?))
+}
+
+/// Convert an already-built [`PerPairTable`] to an Arrow record batch
+/// wrapped for PyCapsule export.
+pub(crate) fn per_pair_table_to_arrow(
+    table: &PerPairTable,
+) -> Result<ArrowRecordBatchPy, arrow_schema::ArrowError> {
+    Ok(wrap_batch(per_pair_record_batch(table)?))
+}
+
 fn per_image_record_batch(table: &PerImageTable) -> Result<RecordBatch, arrow_schema::ArrowError> {
     let schema = Arc::new(per_image_schema());
     let image_id: ArrayRef = Arc::new(Int64Array::from(table.image_id.clone()));

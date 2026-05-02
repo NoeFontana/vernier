@@ -608,6 +608,28 @@ impl CocoDetections {
         })
     }
 
+    /// Build from already-resolved records, preserving their ids and
+    /// fields verbatim. Used by the streaming evaluator to assemble a
+    /// `CocoDetections` view across batches at finalize/snapshot time
+    /// without re-running the auto-id and area-derivation logic in
+    /// [`Self::from_inputs`].
+    pub fn from_records(records: Vec<CocoDetection>) -> Self {
+        let mut by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>> = HashMap::new();
+        let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::new();
+        for (idx, dt) in records.iter().enumerate() {
+            by_image_cat
+                .entry((dt.image_id, dt.category_id))
+                .or_default()
+                .push(idx);
+            by_image.entry(dt.image_id).or_default().push(idx);
+        }
+        Self {
+            detections: Arc::new(records),
+            by_image_cat,
+            by_image,
+        }
+    }
+
     /// Flat slice of every detection.
     pub fn detections(&self) -> &[CocoDetection] {
         &self.detections

@@ -1228,6 +1228,50 @@ impl StreamingState {
     }
 }
 
+/// Return tuple shape for `snapshot_with_tables` / `finalize_with_tables`:
+/// `(Summary, per_image, per_class, per_detection, per_pair)` — each
+/// table column `Some` only when its flag was set on the call.
+type StreamingTablesResult = (
+    PySummary,
+    Option<tables::ArrowRecordBatchPy>,
+    Option<tables::ArrowRecordBatchPy>,
+    Option<tables::ArrowRecordBatchPy>,
+    Option<tables::ArrowRecordBatchPy>,
+);
+
+fn streaming_tables_result(
+    summary: Summary,
+    tables: vernier_core::Tables,
+) -> PyResult<StreamingTablesResult> {
+    let per_image = tables
+        .per_image
+        .map(|t| tables::per_image_table_to_arrow(&t))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let per_class = tables
+        .per_class
+        .map(|t| tables::per_class_table_to_arrow(&t))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let per_detection = tables
+        .per_detection
+        .map(|t| tables::per_detection_table_to_arrow(&t))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let per_pair = tables
+        .per_pair
+        .map(|t| tables::per_pair_table_to_arrow(&t))
+        .transpose()
+        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    Ok((
+        PySummary { inner: summary },
+        per_image,
+        per_class,
+        per_detection,
+        per_pair,
+    ))
+}
+
 /// Streaming evaluator surface (ADR-0013). Single-writer per the runtime
 /// `owner_thread` check; mutable state guarded by an internal `Mutex` so
 /// the pyclass can stay non-frozen and accept `&self` on its methods.
@@ -1278,6 +1322,7 @@ impl PyStreamingEvaluator {
         memory_budget_bytes = None,
         dilation_ratio = 0.02,
         sigmas = None,
+        retain_iou = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1289,6 +1334,7 @@ impl PyStreamingEvaluator {
         memory_budget_bytes: Option<usize>,
         dilation_ratio: f64,
         sigmas: Option<&Bound<'_, PyDict>>,
+        retain_iou: bool,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -1321,7 +1367,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1334,7 +1380,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1348,7 +1394,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -1369,7 +1415,7 @@ impl PyStreamingEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -1475,33 +1521,47 @@ impl PyStreamingEvaluator {
         Ok(PySummary { inner: summary })
     }
 
-    /// ADR-0019 Week 2.5: snapshot variant that builds the requested
-    /// result tables alongside the Summary. `tables` is a tuple of
-    /// names; v0.5 supports `"per_image"` and `"per_class"`.
-    /// `per_detection` / `per_pair` raise `ValueError` (the underlying
-    /// streaming integration for those is deferred — see
-    /// `StreamingEvaluator::finalize_with_tables` rustdoc).
+    /// Snapshot variant that builds the requested result tables
+    /// alongside the Summary. `per_detection` and `per_pair` require
+    /// `retain_iou=True` at construction; otherwise the call returns
+    /// `ValueError`.
     ///
-    /// Returns `(Summary, per_image_batch_or_None, per_class_batch_or_None)`;
-    /// the Python wrapper repackages this into an `EvalResult`.
-    #[pyo3(signature = (per_image=false, per_class=false))]
+    /// Returns
+    /// `(Summary, per_image_batch_or_None, per_class_batch_or_None,
+    /// per_detection_batch_or_None, per_pair_batch_or_None)`.
+    #[pyo3(signature = (
+        per_image=false,
+        per_class=false,
+        per_detection=false,
+        per_pair=false,
+        per_pair_iou_floor=0.1,
+        per_pair_max_rows=10_000_000,
+        per_detection_with_geometry=false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn snapshot_with_tables(
         &self,
         py: Python<'_>,
         per_image: bool,
         per_class: bool,
-    ) -> PyResult<(
-        PySummary,
-        Option<tables::ArrowRecordBatchPy>,
-        Option<tables::ArrowRecordBatchPy>,
-    )> {
-        let state_mutex = &self.state;
+        per_detection: bool,
+        per_pair: bool,
+        per_pair_iou_floor: f64,
+        per_pair_max_rows: usize,
+        per_detection_with_geometry: bool,
+    ) -> PyResult<StreamingTablesResult> {
         let request = vernier_core::TablesRequest {
             per_image,
             per_class,
-            ..vernier_core::TablesRequest::default()
+            per_detection,
+            per_pair,
         };
-        let cfg = vernier_core::TablesConfig::default();
+        let cfg = vernier_core::TablesConfig {
+            per_pair_iou_floor,
+            per_pair_max_rows,
+            per_detection_with_geometry,
+        };
+        let state_mutex = &self.state;
         let (summary, tables) = py
             .detach(move || {
                 let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
@@ -1510,39 +1570,44 @@ impl PyStreamingEvaluator {
                 guard.snapshot_with_tables(request, &cfg)
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
-        let per_image_batch = tables
-            .per_image
-            .map(|t| tables::per_image_table_to_arrow(&t))
-            .transpose()
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        let per_class_batch = tables
-            .per_class
-            .map(|t| tables::per_class_table_to_arrow(&t))
-            .transpose()
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        Ok((PySummary { inner: summary }, per_image_batch, per_class_batch))
+        streaming_tables_result(summary, tables)
     }
 
     /// Tables-aware finalize. Same shape as
     /// [`Self::snapshot_with_tables`]; consumes the evaluator.
-    #[pyo3(signature = (per_image=false, per_class=false))]
+    #[pyo3(signature = (
+        per_image=false,
+        per_class=false,
+        per_detection=false,
+        per_pair=false,
+        per_pair_iou_floor=0.1,
+        per_pair_max_rows=10_000_000,
+        per_detection_with_geometry=false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
     fn finalize_with_tables(
         &self,
         py: Python<'_>,
         per_image: bool,
         per_class: bool,
-    ) -> PyResult<(
-        PySummary,
-        Option<tables::ArrowRecordBatchPy>,
-        Option<tables::ArrowRecordBatchPy>,
-    )> {
-        let state_mutex = &self.state;
+        per_detection: bool,
+        per_pair: bool,
+        per_pair_iou_floor: f64,
+        per_pair_max_rows: usize,
+        per_detection_with_geometry: bool,
+    ) -> PyResult<StreamingTablesResult> {
         let request = vernier_core::TablesRequest {
             per_image,
             per_class,
-            ..vernier_core::TablesRequest::default()
+            per_detection,
+            per_pair,
         };
-        let cfg = vernier_core::TablesConfig::default();
+        let cfg = vernier_core::TablesConfig {
+            per_pair_iou_floor,
+            per_pair_max_rows,
+            per_detection_with_geometry,
+        };
+        let state_mutex = &self.state;
         let (summary, tables) = py
             .detach(move || {
                 let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
@@ -1551,17 +1616,7 @@ impl PyStreamingEvaluator {
                 guard.take_and_finalize_with_tables(request, &cfg)
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
-        let per_image_batch = tables
-            .per_image
-            .map(|t| tables::per_image_table_to_arrow(&t))
-            .transpose()
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        let per_class_batch = tables
-            .per_class
-            .map(|t| tables::per_class_table_to_arrow(&t))
-            .transpose()
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        Ok((PySummary { inner: summary }, per_image_batch, per_class_batch))
+        streaming_tables_result(summary, tables)
     }
 
     /// Distinct images that have received at least one detection.
@@ -1687,6 +1742,20 @@ impl BackgroundEvalState {
         }
     }
 
+    fn snapshot_with_tables(
+        &self,
+        request: vernier_core::TablesRequest,
+        config: vernier_core::TablesConfig,
+    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        match self {
+            Self::Bbox(ev) => ev.snapshot_with_tables(request, config),
+            Self::Segm(ev) => ev.snapshot_with_tables(request, config),
+            Self::Boundary(ev) => ev.snapshot_with_tables(request, config),
+            Self::Keypoints(ev) => ev.snapshot_with_tables(request, config),
+            Self::Finalized => Err(background_finalized_error()),
+        }
+    }
+
     fn take_and_finalize(&mut self) -> Result<Summary, EvalError> {
         let prev = std::mem::replace(self, Self::Finalized);
         match prev {
@@ -1694,6 +1763,21 @@ impl BackgroundEvalState {
             Self::Segm(ev) => ev.finalize(),
             Self::Boundary(ev) => ev.finalize(),
             Self::Keypoints(ev) => ev.finalize(),
+            Self::Finalized => Err(background_finalized_error()),
+        }
+    }
+
+    fn take_and_finalize_with_tables(
+        &mut self,
+        request: vernier_core::TablesRequest,
+        config: vernier_core::TablesConfig,
+    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        let prev = std::mem::replace(self, Self::Finalized);
+        match prev {
+            Self::Bbox(ev) => ev.finalize_with_tables(request, config),
+            Self::Segm(ev) => ev.finalize_with_tables(request, config),
+            Self::Boundary(ev) => ev.finalize_with_tables(request, config),
+            Self::Keypoints(ev) => ev.finalize_with_tables(request, config),
             Self::Finalized => Err(background_finalized_error()),
         }
     }
@@ -1840,6 +1924,7 @@ impl PyBackgroundEvaluator {
         worker_affinity = None,
         worker_nice = 5,
         shutdown_timeout_seconds = 5.0,
+        retain_iou = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1856,6 +1941,7 @@ impl PyBackgroundEvaluator {
         worker_affinity: Option<usize>,
         worker_nice: i32,
         shutdown_timeout_seconds: f64,
+        retain_iou: bool,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -1894,7 +1980,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1909,7 +1995,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -1925,7 +2011,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -1948,7 +2034,7 @@ impl PyBackgroundEvaluator {
                     area_ranges: area,
                     max_dets_per_image,
                     use_cats,
-                    retain_iou: false,
+                    retain_iou,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
@@ -2073,6 +2159,100 @@ impl PyBackgroundEvaluator {
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PySummary { inner: summary })
+    }
+
+    /// Snapshot variant that builds the requested result tables on the
+    /// worker thread (no GIL held) and ships them back. Same shape as
+    /// [`PyStreamingEvaluator::snapshot_with_tables`] but routed through
+    /// the background worker so the caller's thread isn't blocked on
+    /// pycocotools-style compute.
+    #[pyo3(signature = (
+        per_image=false,
+        per_class=false,
+        per_detection=false,
+        per_pair=false,
+        per_pair_iou_floor=0.1,
+        per_pair_max_rows=10_000_000,
+        per_detection_with_geometry=false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn snapshot_with_tables(
+        &self,
+        py: Python<'_>,
+        per_image: bool,
+        per_class: bool,
+        per_detection: bool,
+        per_pair: bool,
+        per_pair_iou_floor: f64,
+        per_pair_max_rows: usize,
+        per_detection_with_geometry: bool,
+    ) -> PyResult<StreamingTablesResult> {
+        let request = vernier_core::TablesRequest {
+            per_image,
+            per_class,
+            per_detection,
+            per_pair,
+        };
+        let cfg = vernier_core::TablesConfig {
+            per_pair_iou_floor,
+            per_pair_max_rows,
+            per_detection_with_geometry,
+        };
+        let state_mutex = &self.state;
+        let (summary, tables) = py
+            .detach(move || {
+                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })?;
+                guard.snapshot_with_tables(request, cfg)
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        streaming_tables_result(summary, tables)
+    }
+
+    /// Tables-aware finalize. Drains the queue and consumes the worker.
+    #[pyo3(signature = (
+        per_image=false,
+        per_class=false,
+        per_detection=false,
+        per_pair=false,
+        per_pair_iou_floor=0.1,
+        per_pair_max_rows=10_000_000,
+        per_detection_with_geometry=false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_with_tables(
+        &self,
+        py: Python<'_>,
+        per_image: bool,
+        per_class: bool,
+        per_detection: bool,
+        per_pair: bool,
+        per_pair_iou_floor: f64,
+        per_pair_max_rows: usize,
+        per_detection_with_geometry: bool,
+    ) -> PyResult<StreamingTablesResult> {
+        let request = vernier_core::TablesRequest {
+            per_image,
+            per_class,
+            per_detection,
+            per_pair,
+        };
+        let cfg = vernier_core::TablesConfig {
+            per_pair_iou_floor,
+            per_pair_max_rows,
+            per_detection_with_geometry,
+        };
+        let state_mutex = &self.state;
+        let (summary, tables) = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })?;
+                guard.take_and_finalize_with_tables(request, cfg)
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        streaming_tables_result(summary, tables)
     }
 
     /// Context-manager entry. Returns `self` so `with ev as e:` binds

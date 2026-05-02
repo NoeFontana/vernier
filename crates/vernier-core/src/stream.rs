@@ -29,7 +29,7 @@ use crate::dataset::{
     ImageId,
 };
 use crate::error::EvalError;
-use crate::evaluate::{evaluate_with, EvalKernel, OwnedEvaluateParams};
+use crate::evaluate::{evaluate_with, EvalImageMeta, EvalKernel, OwnedEvaluateParams};
 use crate::parity::{recall_thresholds, ParityMode};
 use crate::summarize::{summarize_detection, summarize_with, StatRequest, Summary};
 
@@ -247,10 +247,20 @@ pub struct StreamingEvaluator<K: EvalKernel> {
     parity_mode: ParityMode,
     grid_meta: EvalGridMeta,
     cells: PerImageEvalStore,
+    /// Per-`(k, a, i)` `EvalImageMeta` retained alongside `cells` when
+    /// `params.retain_iou` is true. Empty otherwise. Required by the
+    /// per_detection / per_pair builders for `dt_ids` / `gt_ids` / etc.
+    meta_cells: HashMap<(usize, usize, usize), EvalImageMeta>,
     /// Per-`(category, image)` IoU matrices retained across `update()`
     /// calls. `None` on the default path (`params.retain_iou=false`);
     /// `Some` when retention was opted into at construction.
     retained_ious: Option<crate::tables::RetainedIous>,
+    /// Detection records accumulated across `update()` calls, kept only
+    /// when `params.retain_iou` is true (consumed by `per_detection`'s
+    /// `area` / optional `bbox` columns). Records are owned and carry
+    /// their original ids; flushed into a fresh `CocoDetections` view
+    /// at finalize/snapshot time.
+    dets_seen: Vec<CocoDetection>,
     seen_images: HashSet<i64>,
     /// Image-grid indices for every entry in `seen_images`. Maintained
     /// incrementally so `compute_summary` can decide which GT-only
@@ -306,7 +316,9 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             parity_mode,
             grid_meta,
             cells: PerImageEvalStore::new(),
+            meta_cells: HashMap::new(),
             retained_ious,
+            dets_seen: Vec::new(),
             seen_images: HashSet::new(),
             seen_image_indices: HashSet::new(),
             gt_only_cells: None,
@@ -505,6 +517,27 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             }
         }
 
+        // Retain `EvalImageMeta` and detection records when `retain_iou`
+        // is on — both are needed by per_detection / per_pair table
+        // builders. Cells without retention skip this work entirely.
+        if self.params.retain_iou {
+            for &i in &batch_image_indices {
+                for k in 0..n_k {
+                    for a in 0..n_a {
+                        let flat = k * n_a * n_i + a * n_i + i;
+                        if let Some(meta) = grid
+                            .eval_imgs_meta
+                            .get_mut(flat)
+                            .and_then(Option::take)
+                        {
+                            self.meta_cells.insert((k, a, i), meta);
+                        }
+                    }
+                }
+            }
+            self.dets_seen.extend(detections.detections().iter().cloned());
+        }
+
         let n_detections_accepted = detections.detections().len();
         self.n_detections += n_detections_accepted;
         self.next_dt_id = self.next_dt_id.saturating_add(n_detections_accepted as i64);
@@ -611,13 +644,12 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         request: crate::TablesRequest,
         config: &crate::TablesConfig,
     ) -> Result<(Summary, crate::Tables), EvalError> {
-        if request.per_detection || request.per_pair {
-            return Err(EvalError::NotImplemented {
-                feature:
-                    "StreamingEvaluator::finalize_with_tables(per_detection | per_pair) — \
-                     streaming integration requires retained EvalImageMeta and detection \
-                     tracking, slated for a follow-up. Use Evaluator.evaluate(..., \
-                     tables=...) for the full table set today.",
+        if request.requires_iou_retention() && !self.params.retain_iou {
+            return Err(EvalError::InvalidConfig {
+                detail: "per_detection / per_pair require retain_iou=True at \
+                         StreamingEvaluator construction; rebuild the evaluator \
+                         with retain_iou=True to opt in"
+                    .into(),
             });
         }
 
@@ -625,14 +657,29 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // overlay, identical in shape to what `evaluate_with` would
         // have produced for the union of all submitted batches. The
         // dense `eval_imgs` slice fully drives `build_per_image` /
-        // `build_per_class`; `eval_imgs_meta` is left empty (per_image
-        // / per_class don't read it) and `retained_ious` is None.
+        // `build_per_class`; `eval_imgs_meta` is densified from
+        // `meta_cells` for per_detection / per_pair, and
+        // `retained_ious` is cloned from the streaming store.
+        let n_k = self.grid_meta.n_categories;
+        let n_a = self.grid_meta.n_area_ranges;
+        let n_i = self.grid_meta.n_images;
+        let total = n_k * n_a * n_i;
         let mut eval_imgs = self.cells.flatten(&self.grid_meta);
+        let eval_imgs_meta: Vec<Option<EvalImageMeta>> = if self.params.retain_iou {
+            let mut out: Vec<Option<EvalImageMeta>> = Vec::with_capacity(total);
+            for k in 0..n_k {
+                for a in 0..n_a {
+                    for i in 0..n_i {
+                        out.push(self.meta_cells.get(&(k, a, i)).cloned());
+                    }
+                }
+            }
+            out
+        } else {
+            vec![None; total]
+        };
         if self.images_seen() < self.grid_meta.n_images {
             self.ensure_gt_only_cells()?;
-            let n_k = self.grid_meta.n_categories;
-            let n_a = self.grid_meta.n_area_ranges;
-            let n_i = self.grid_meta.n_images;
             let gt_only = self
                 .gt_only_cells
                 .as_ref()
@@ -648,22 +695,22 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                         let flat = k * n_a * n_i + a * n_i + i;
                         if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
                             eval_imgs[flat] = Some(cell.clone());
+                            // GT-only images contribute no detections;
+                            // leave `eval_imgs_meta[flat]` at None so
+                            // per_detection / per_pair simply skip them.
                         }
                     }
                 }
             }
         }
 
-        let n_k = self.grid_meta.n_categories;
-        let n_a = self.grid_meta.n_area_ranges;
-        let n_i = self.grid_meta.n_images;
         let synthetic_grid = crate::EvalGrid {
-            eval_imgs_meta: vec![None; eval_imgs.len()],
             eval_imgs,
+            eval_imgs_meta,
             n_categories: n_k,
             n_area_ranges: n_a,
             n_images: n_i,
-            retained_ious: None,
+            retained_ious: self.retained_ious.clone(),
         };
 
         // Standard COCO ladder per the existing `compute_summary` path.
@@ -703,15 +750,20 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
         };
 
-        // Per_image / per_class only — the cheap tables. Use
-        // `build_tables` (the umbrella) so dispatch and validation
-        // stay centralized.
+        // Build a fresh `CocoDetections` view over every detection seen
+        // so far when per_detection is requested; cheaper tables don't
+        // need the records, so skip the work entirely there.
+        let detections_view = if request.per_detection {
+            Some(CocoDetections::from_records(self.dets_seen.clone()))
+        } else {
+            None
+        };
         let tables = crate::build_tables(
             &synthetic_grid,
             &accumulated,
             &self.dataset,
-            None,
-            None,
+            detections_view.as_ref(),
+            self.retained_ious.as_ref(),
             &self.params.iou_thresholds,
             &max_dets,
             request,
