@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from bench.harness.paths import REPO_ROOT
-from bench.workloads import resolve
+from bench.workloads import coco_val2017, resolve
 
 
 def test_smoke_resolves_to_local_fixture() -> None:
@@ -61,3 +61,21 @@ def test_synthetic_rejects_malformed_token() -> None:
 def test_unknown_workload_lists_known_ids() -> None:
     with pytest.raises(ValueError, match="unknown workload"):
         resolve("does-not-exist", REPO_ROOT)
+
+
+def test_coco_val2017_perfect_segm_resolves_when_inputs_present(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gt = tmp_path / "instances_val2017.json"
+    gt.write_bytes(b"{}")
+    dt = tmp_path / "perfect_dt_segm.json"
+    dt.write_bytes(b"[]")
+    # The GT loader sha256-verifies the real cached file; short-circuit it.
+    monkeypatch.setattr(coco_val2017, "gt_path", lambda: gt)
+    monkeypatch.setenv("VERNIER_COCO_DT_SEGM_PATH", str(dt))
+
+    w = resolve("coco_val2017_perfect_segm", REPO_ROOT)
+    assert w.workload_id == "coco_val2017_perfect_segm"
+    assert w.gt_path == gt
+    assert w.dt_path == dt
+    assert w.supported_iou_types == frozenset({"segm", "boundary"})

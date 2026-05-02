@@ -64,3 +64,31 @@ def gt_path() -> Path:
             f"COCO val2017 GT sha256 mismatch: expected {EXPECTED_SHA256}, got {actual}"
         )
     return gt
+
+
+def perfect_dt_segm_path() -> Path:
+    """Locate ``perfect_dt_segm.json`` (perfect-match DT with segmentation).
+
+    The file is generated locally by ``tools/make-perfect-dt.py`` (called
+    from ``tools/fetch-coco-val.sh``); it isn't downloaded, so there's no
+    sha256 to pin. We accept ``VERNIER_COCO_DT_SEGM_PATH`` (the parity
+    convention) and fall back to the parity cache at
+    ``<repo>/.cache/coco-val2017/perfect_dt_segm.json``. Raises if neither
+    is present so the harness's "missing workload input" error surfaces
+    early instead of inside a runner subprocess.
+    """
+    env_override = os.environ.get("VERNIER_COCO_DT_SEGM_PATH")
+    if env_override:
+        candidate = Path(env_override)
+        if candidate.exists():
+            return candidate
+
+    repo_root = Path(__file__).resolve().parents[3]
+    cached = repo_root / ".cache" / "coco-val2017" / "perfect_dt_segm.json"
+    if cached.exists():
+        return cached
+
+    raise RuntimeError(
+        "perfect_dt_segm.json not found; set VERNIER_COCO_DT_SEGM_PATH or "
+        "run tools/fetch-coco-val.sh to populate <repo>/.cache/coco-val2017/."
+    )
