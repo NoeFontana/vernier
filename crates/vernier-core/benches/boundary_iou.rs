@@ -90,6 +90,7 @@ fn overlapping_rects(n: usize, is_crowd: bool) -> Vec<SegmAnn> {
             SegmAnn {
                 rle: filled_rect(x0, y0, 24, 24),
                 is_crowd,
+                ann_id: i as i64,
             }
         })
         .collect()
@@ -113,6 +114,7 @@ fn disjoint_rects(n: usize) -> Vec<SegmAnn> {
             SegmAnn {
                 rle: filled_rect(x0, y0, 8, 8),
                 is_crowd: false,
+                ann_id: i as i64,
             }
         })
         .collect()

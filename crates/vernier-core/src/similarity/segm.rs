@@ -47,6 +47,11 @@ pub struct SegmAnn {
     /// Crowd flag. Drives the **E1** asymmetry on the GT side; ignored
     /// on the DT side (quirks **E2** / **J4** enforce DT `iscrowd=0`).
     pub is_crowd: bool,
+    /// Source annotation id from the dataset (`CocoAnnotation::id` /
+    /// `CocoDetection::id`). Used by
+    /// [`crate::similarity::BoundaryGtCache`] as the GT cache key in
+    /// the boundary kernel; ignored by [`SegmIou`].
+    pub ann_id: i64,
 }
 
 /// Segm IoU [`Similarity`] impl. Stateless.
@@ -146,7 +151,11 @@ mod tests {
     use ndarray::Array2;
 
     fn ann(rle: Rle, is_crowd: bool) -> SegmAnn {
-        SegmAnn { rle, is_crowd }
+        SegmAnn {
+            rle,
+            is_crowd,
+            ann_id: 0,
+        }
     }
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {

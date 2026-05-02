@@ -25,7 +25,8 @@ pub mod oks;
 pub mod segm;
 
 pub use bbox::{BboxAnn, BboxIou};
-pub use boundary::BoundaryIou;
+pub use boundary::{BoundaryGtCache, BoundaryIou};
+pub(crate) use boundary::boundary_iou_compute;
 pub use oks::{OksAnn, OksSimilarity, COCO_PERSON_SIGMAS};
 pub use segm::{SegmAnn, SegmIou};
 

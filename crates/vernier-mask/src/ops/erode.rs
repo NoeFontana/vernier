@@ -28,6 +28,34 @@
 use crate::error::MaskError;
 use crate::rle::Rle;
 
+/// Reusable scratch space for the `_into` erosion variants.
+///
+/// Holds growable buffers that get sized to the per-call shape on
+/// each invocation. Reusing one instance across many calls amortizes
+/// the per-mask allocations away — particularly useful in the
+/// boundary-IoU dataset-wide pass, which decodes / erodes /
+/// XOR-encodes ~36k masks per `evaluate_boundary` on val2017.
+///
+/// Construct with [`ErodeScratch::new`] (zero-allocation start).
+/// Buffers grow as `clear() + resize()` on each call, so a sequence
+/// of similarly-shaped masks pays zero allocations after the first.
+#[derive(Default)]
+pub struct ErodeScratch {
+    pub(crate) padded: Vec<u8>,
+    pub(crate) row_scratch: Vec<u8>,
+    pub(crate) row_in: Vec<u8>,
+    pub(crate) row_out: Vec<u8>,
+    pub(crate) raster: Vec<u8>,
+    pub(crate) eroded: Vec<u8>,
+}
+
+impl ErodeScratch {
+    /// Creates an empty scratch instance with no buffer allocations.
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 /// Erodes an RLE binary mask by a `(2 * radius_pixels + 1)`-square
 /// L-infinity (Chebyshev) ball structuring element.
 ///
@@ -38,28 +66,84 @@ use crate::rle::Rle;
 /// eroded against the zero pad, which is the metric-defining
 /// behaviour rather than an implementation quirk.
 pub fn erode_chebyshev_ball(rle: &Rle, radius_pixels: u32) -> Result<Rle, MaskError> {
+    let mut scratch = ErodeScratch::new();
+    erode_chebyshev_ball_into(rle, radius_pixels, &mut scratch)
+}
+
+/// `_into` variant of [`erode_chebyshev_ball`] reusing a caller-owned
+/// [`ErodeScratch`]. Same semantics; lets hot-path callers (e.g. the
+/// boundary-IoU dataset-wide pass) amortize per-mask allocations.
+pub fn erode_chebyshev_ball_into(
+    rle: &Rle,
+    radius_pixels: u32,
+    scratch: &mut ErodeScratch,
+) -> Result<Rle, MaskError> {
     if rle.h == 0 || rle.w == 0 || radius_pixels == 0 {
         return Ok(rle.clone());
     }
     let h = rle.h as usize;
     let w = rle.w as usize;
     let d = radius_pixels as usize;
-    let raster = rle.to_raster_bytes();
-    let eroded = erode_raster_chebyshev(&raster, h, w, d);
-    Rle::from_raster_bytes(&eroded, rle.h, rle.w)
+    rle.to_raster_bytes_into(&mut scratch.raster);
+    erode_raster_into_scratch(scratch, h, w, d);
+    Rle::from_raster_bytes(&scratch.eroded, rle.h, rle.w)
 }
 
 /// Pad → row pass → column pass → strip pad on a column-major byte
-/// raster. Crate-private so the proptest in this file can compare
+/// raster. Test-only wrapper so the proptest in this file can compare
 /// against the iterative reference without going through RLE
 /// encode/decode.
-pub(crate) fn erode_raster_chebyshev(raster: &[u8], h: usize, w: usize, d: usize) -> Vec<u8> {
+#[cfg(test)]
+fn erode_raster_chebyshev(raster: &[u8], h: usize, w: usize, d: usize) -> Vec<u8> {
+    let mut scratch = ErodeScratch::new();
+    scratch.raster.clear();
+    scratch.raster.extend_from_slice(raster);
+    erode_raster_into_scratch(&mut scratch, h, w, d);
+    scratch.eroded
+}
+
+/// Pad → row pass → column pass → strip pad on a column-major byte
+/// raster. Reads input from `scratch.raster` (caller writes the raster
+/// in via [`Rle::to_raster_bytes_into`] or `Vec::extend_from_slice`)
+/// and writes the eroded interior to `scratch.eroded`.
+pub(crate) fn erode_raster_into_scratch(
+    scratch: &mut ErodeScratch,
+    h: usize,
+    w: usize,
+    d: usize,
+) {
     let ph = h + 2;
     let pw = w + 2;
+    let pad_size = ph * pw;
+
+    // The ring of `padded` must be zero (N1); the interior is fully
+    // overwritten in step 1, so a clear-and-resize-with-zero is the
+    // simplest way to guarantee a clean ring across reuses.
+    scratch.padded.clear();
+    scratch.padded.resize(pad_size, 0);
+
+    // The remaining buffers are fully overwritten on each call; the
+    // resize-with-0 just sizes them — the value is irrelevant.
+    scratch.row_scratch.clear();
+    scratch.row_scratch.resize(pad_size, 0);
+    scratch.row_in.clear();
+    scratch.row_in.resize(pw, 0);
+    scratch.row_out.clear();
+    scratch.row_out.resize(pw, 0);
+    scratch.eroded.clear();
+    scratch.eroded.resize(h * w, 0);
+
+    let ErodeScratch {
+        padded,
+        row_scratch,
+        row_in,
+        row_out,
+        raster,
+        eroded,
+    } = scratch;
 
     // 1. Pad to (h+2, w+2) column-major with a 1-pixel zero ring (N1).
     //    Original (x, y) maps to padded (x+1, y+1).
-    let mut padded = vec![0u8; ph * pw];
     for x in 0..w {
         for y in 0..h {
             padded[(x + 1) * ph + (y + 1)] = raster[x * h + y];
@@ -68,78 +152,73 @@ pub(crate) fn erode_raster_chebyshev(raster: &[u8], h: usize, w: usize, d: usize
 
     // 2. Row pass: column-major means x-stride = ph (non-contiguous),
     //    so for each y we gather a contiguous row of length pw, run
-    //    the 1D min, and scatter the result. The row scratch buffers
-    //    are reused across rows.
-    let mut scratch = vec![0u8; ph * pw];
-    let mut row_in = vec![0u8; pw];
-    let mut row_out = vec![0u8; pw];
+    //    the 1D min, and scatter the result.
     for y in 0..ph {
         for x in 0..pw {
             row_in[x] = padded[x * ph + y];
         }
-        min_filter_binary(&row_in, d, &mut row_out);
+        min_filter_binary(row_in, d, row_out);
         for x in 0..pw {
-            scratch[x * ph + y] = row_out[x];
+            row_scratch[x * ph + y] = row_out[x];
         }
     }
 
     // 3. Column pass: y-stride = 1 means each column is a contiguous
     //    `ph`-element slice. `padded` is unused after the row pass, so
     //    reuse it as the column-pass output buffer.
-    let mut output = padded;
     for x in 0..pw {
         let col = x * ph;
-        let (col_in, col_out) = (&scratch[col..col + ph], &mut output[col..col + ph]);
+        let col_in = &row_scratch[col..col + ph];
+        let col_out = &mut padded[col..col + ph];
         min_filter_binary(col_in, d, col_out);
     }
 
     // 4. Strip the pad: copy interior (1..=w) × (1..=h) back to (h, w)
     //    column-major (N2).
-    let mut stripped = vec![0u8; h * w];
     for x in 0..w {
         for y in 0..h {
-            stripped[x * h + y] = output[(x + 1) * ph + (y + 1)];
+            eroded[x * h + y] = padded[(x + 1) * ph + (y + 1)];
         }
     }
-    stripped
 }
 
-/// 1D sliding-window minimum on a binary `{0, 1}` sequence with kernel
-/// size `2 * d + 1`. Reads outside the sequence are treated as `1`, so
-/// they don't pull the min below — this matches the OOB behaviour of
-/// `cv2.erode` with a `BORDER_CONSTANT` value of `255` on binary input
-/// (the OpenCV default for erosion).
+/// 1D sliding-window minimum on a binary `{0, 1}` byte sequence with
+/// kernel size `2 * d + 1`. Reads outside the sequence return `1` (so
+/// they don't pull the min below) — matches `cv2.erode`'s
+/// `BORDER_CONSTANT` default for binary input.
 ///
-/// O(n) regardless of `d`: maintains a running count of zeros in the
-/// in-bounds portion of the sliding window. Output is `1` iff that
-/// count is zero. This is one named instance of the van Herk /
-/// Gil-Werman family — for binary input the per-element work
-/// collapses to two conditional increments and a comparison.
+/// Maintains a running zero-count over the sliding window: `output[j]`
+/// is `1` iff the window `[j-d, j+d]` (with OOB filled by `1`) contains
+/// no zeros. Each step removes the leaving cell and adds the entering
+/// cell, so the inner loop is `O(n)` byte operations rather than
+/// `O(n * w)`.
 fn min_filter_binary(input: &[u8], d: usize, output: &mut [u8]) {
     let n = input.len();
     debug_assert_eq!(n, output.len());
     if n == 0 {
         return;
     }
-    let mut zeros: u32 = 0;
-    let initial_hi = d.min(n - 1);
-    for v in &input[0..=initial_hi] {
-        if *v == 0 {
-            zeros += 1;
-        }
-    }
+    // Initial window for output[0] is virtual indices [-d, d]. OOB
+    // values are 1, so the only zeros in this window come from
+    // input[0..=min(d, n-1)].
+    let init_end = (d + 1).min(n);
+    // u32 not i32: the slide invariant guarantees zeros never goes
+    // negative — we decrement only when input[j-1-d] was previously
+    // counted (it was a zero we admitted on a prior step). The cast
+    // is safe because the window fits in `init_end <= d+1`, and `d`
+    // is bounded by the dilation radius (small u32).
+    let mut zeros = input[..init_end].iter().filter(|&&b| b == 0).count() as u32;
     output[0] = u8::from(zeros == 0);
-    for i in 1..n {
-        // Slide by 1: position (i - d - 1) leaves the window iff it
-        // was in-bounds before — i.e., iff i > d.
-        if i > d && input[i - d - 1] == 0 {
+    for j in 1..n {
+        // Slide window from [j-1-d, j-1+d] to [j-d, j+d]: leave V[j-1-d],
+        // enter V[j+d]. Both are 1 (no count change) when out of range.
+        if j > d && input[j - 1 - d] == 0 {
             zeros -= 1;
         }
-        // Position (i + d) enters the window iff in-bounds.
-        if i + d < n && input[i + d] == 0 {
+        if j + d < n && input[j + d] == 0 {
             zeros += 1;
         }
-        output[i] = u8::from(zeros == 0);
+        output[j] = u8::from(zeros == 0);
     }
 }
 

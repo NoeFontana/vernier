@@ -167,22 +167,55 @@ perfect-match, boundary-iou-api's "augment once, evaluate cheaply"
 trade beats vernier's "derive on demand" — vernier is **1.19× slower**
 end-to-end here.
 
-### Likely causes (untested hypotheses)
+### Investigated causes (2026-05 perf push, single-threaded)
 
-1. **No boundary-mask cache.** ADR-0010 didn't pin a caching strategy,
-   and the current implementation re-derives the boundary on every
-   IoU pair. A per-annotation cache parallel to boundary-iou-api's
-   approach is the obvious fix; we'd lose the cache benefit when an
-   annotation is only consulted once but win on the dense
-   val2017-style usage.
-2. **Per-IoU dilation cost.** vernier's `evaluate` totals 75.8 s, of
-   which mask dilation is most of the work. boundary-iou-api's totals
-   show `evaluate` at 7.3 s once dilation is precomputed, suggesting
-   the cache alone could close most of the gap.
-3. **Memory pattern.** vernier's RAM is 767 MiB vs
-   boundary-iou-api's 706 MiB. A boundary cache will make the gap
-   larger, but at val2017 scale we're not RAM-bound.
+A single-threaded perf push attacked the three hypotheses from the
+plan at `.claude/plans/let-s-optimize-the-heck-adaptive-ritchie.md`.
+All three steps measured on this same workload (release, N=10 reps,
+IQR gate ≤5%); the per-step deltas isolate each lever:
 
+| step | what landed                                                             | total median | vs baseline | IQR (rel) |
+| ---- | ----------------------------------------------------------------------- | -----------: | ----------: | --------: |
+| 0    | baseline (HEAD `d1c5ad4`)                                               |    75.932 s  |          —  |     0.52% |
+| 1    | `_into` scratch variants in `vernier-mask` (alloc reduction)            |    76.007 s  |     +0.10%  |     0.59% |
+| 2    | bit-packed log-reduction `min_filter_binary`                            |    76.660 s  |     +0.96%  |     0.69% |
+| 2′   | revert Step 2 → clean scalar van Herk                                   |        —     |          —  |        —  |
+| 3    | shared `Mutex<ErodeScratch>` across cells via `BoundaryIouCached`       |    76.489 s  |     +0.73%  |     0.70% |
+
+Findings:
+
+1. **Allocation churn isn't the bottleneck.** The `_into` scratch
+   variants amortize ~216 k mallocs in the hot path (~36 k anns × ~6
+   `Vec<u8>` per `boundary_band`). Net delta: within IQR noise
+   (+0.10% from baseline). Dataset-wide scratch reuse (Step 3,
+   shared across cells) is also within noise (+0.73%). Conclusion:
+   malloc cost on this workload is well below 100 ms — far from the
+   ~12 s gap.
+2. **Bit-packed binary erosion regressed.** Packing each row to u64
+   bitstrings, sliding-AND of (2d+1) shifted copies, then unpacking
+   was algorithmically tighter but the byte-by-byte pack/unpack
+   loops dominated; net +0.96% on val2017. Reverted to scalar
+   running-zero-count van Herk on `{0,1}` bytes.
+3. **The actual gap is the inner sliding-min.** `boundary-iou-api`
+   uses `cv2.erode` (hand-tuned C SIMD with structuring-element
+   intrinsics); vernier's `min_filter_binary`
+   (`crates/vernier-mask/src/ops/erode.rs`) is a scalar
+   running-zero-count loop. ADR-0003 pins `pulp::Arch::dispatch` as
+   the stable-Rust SIMD strategy but boundary IoU's tightest inner
+   loop hasn't adopted it.
+
+Hypotheses 1 and 2 from this section's earlier draft (boundary-mask
+cache; per-IoU dilation as the dominant cost) are **not** the gap —
+the cache benefit is below noise on val2017 because erosion itself
+is the expensive step, not the malloc. Cache + scratch reuse remain
+correct in principle (they're necessary infrastructure for any
+future SIMD path that wants to amortize buffers across cells), but
+they don't pay off on their own at this scale.
+
+### Next push: byte-vectorized `pulp::Arch::dispatch` over `min_filter_binary`
+
+The deferred lever — a `pulp` byte-vector path for the sliding-min
+on `{0,1}` rows — is the structural fix expected to close the gap.
 Tracked as a follow-up; not a release blocker for v0.0.x.
 
 ---
@@ -226,8 +259,10 @@ boundary:
 
 ## Follow-ups
 
-- **Boundary-mask cache** (closes the only cell where vernier loses
-  to a baseline on real data).
+- **Byte-vectorized `pulp::Arch::dispatch` in `min_filter_binary`**
+  — the actual structural fix for the val2017 boundary cell. The
+  alloc / cache levers were tested in the 2026-05 push and are
+  within IQR; the inner sliding-min on `{0,1}` bytes is what's left.
 - **Polygon-jitter DT generator** (unlocks realistic segm + boundary
   workloads beyond perfect-match).
 - **Synthetic ladder runs** at n=2000 and n=5000 — harness already
