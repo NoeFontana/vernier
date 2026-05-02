@@ -80,15 +80,21 @@ class _SpawnResult:
     tensor_path: Path
 
 
-def _result_dir(
+def result_dir(
     *,
-    bench_root: Path,
+    results_root: Path,
     git_sha: str,
     machine_fp: str,
     workload_id: str,
     iou_type: IouType,
 ) -> Path:
-    return bench_root / "results" / git_sha / machine_fp / workload_id / iou_type
+    """Canonical cell directory: ``<results_root>/<sha>/<fp>/<workload>/<iou>/``.
+
+    ``results_root`` is the parent of the per-sha buckets; in normal
+    operation that's ``bench/results/``. Reused by reports + tests so
+    the layout has one source of truth.
+    """
+    return results_root / git_sha / machine_fp / workload_id / iou_type
 
 
 def _spawn_one_rep(
@@ -220,8 +226,8 @@ def run(spec: RunSpec) -> Path:
     git_sha = machine.git_sha(spec.repo_root)
     machine_fp = machine.fingerprint()
 
-    out_dir = _result_dir(
-        bench_root=spec.bench_root,
+    out_dir = result_dir(
+        results_root=spec.bench_root / "results",
         git_sha=git_sha,
         machine_fp=machine_fp,
         workload_id=spec.workload_id,
@@ -336,8 +342,8 @@ def run_cell(
     git_sha = machine.git_sha(cell.repo_root)
     machine_fp = machine.fingerprint()
 
-    out_dir = _result_dir(
-        bench_root=cell.bench_root,
+    out_dir = result_dir(
+        results_root=cell.bench_root / "results",
         git_sha=git_sha,
         machine_fp=machine_fp,
         workload_id=cell.workload_id,
