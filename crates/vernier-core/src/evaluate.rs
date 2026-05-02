@@ -82,12 +82,12 @@ use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
 use crate::segmentation::Segmentation;
 use crate::similarity::{
-    boundary_iou_compute, segm_iou_compute, BboxAnn, BboxIou, BoundaryGtCache, BoundaryIou, OksAnn,
-    OksSimilarity, SegmAnn, SegmComputeScratch, SegmGtCache, SegmIou, Similarity,
+    boundary_iou_compute, segm_iou_compute, BboxAnn, BboxIou, BoundaryComputeScratch,
+    BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmComputeScratch, SegmGtCache,
+    SegmIou, Similarity,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
-use vernier_mask::ops::ErodeScratch;
 use vernier_mask::Rle;
 
 /// Sentinel `category_id` emitted on every cell when `use_cats=false`.
@@ -957,21 +957,22 @@ pub fn evaluate_boundary_cached(
 fn kernel(dilation_ratio: f64, gt_cache: Option<&BoundaryGtCache>) -> BoundaryIouCached<'_> {
     BoundaryIouCached {
         dilation_ratio,
-        scratch: Mutex::new(ErodeScratch::new()),
+        scratch: Mutex::new(BoundaryComputeScratch::new()),
         gt_cache,
     }
 }
 
 /// Internal kernel used by [`evaluate_boundary`] and
 /// [`evaluate_boundary_cached`]: same semantics as [`BoundaryIou`] but
-/// threads a single [`ErodeScratch`] across every `compute` call (so
-/// the dataset-wide pass amortizes per-mask scratch allocations) and
-/// optionally consults a [`BoundaryGtCache`] for cross-call GT band
-/// reuse. Held by [`Mutex`] to satisfy `Similarity: Send + Sync`;
-/// the lock is uncontended in single-threaded use.
+/// threads a single [`BoundaryComputeScratch`] across every `compute`
+/// call (so the dataset-wide pass amortizes per-mask + per-cell
+/// allocations) and optionally consults a [`BoundaryGtCache`] for
+/// cross-call GT band reuse. Held by [`Mutex`] to satisfy
+/// `Similarity: Send + Sync`; the lock is uncontended in
+/// single-threaded use.
 struct BoundaryIouCached<'a> {
     dilation_ratio: f64,
-    scratch: Mutex<ErodeScratch>,
+    scratch: Mutex<BoundaryComputeScratch>,
     gt_cache: Option<&'a BoundaryGtCache>,
 }
 

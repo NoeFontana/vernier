@@ -34,7 +34,7 @@ pub use codec::{decode_counts, encode_counts};
 pub use error::MaskError;
 pub use ops::{
     boundary_band, boundary_band_into, erode_chebyshev_ball, erode_chebyshev_ball_into,
-    ErodeScratch,
+    intersect_area_offsets, ErodeScratch, SegmentTable,
 };
 pub use rle::Rle;
 

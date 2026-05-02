@@ -28,6 +28,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard};
 
 use ndarray::ArrayViewMut2;
+use vernier_mask::ops::{intersect_area_offsets, SegmentTable};
 use vernier_mask::Rle;
 
 use super::bbox::{BboxAnn, BboxIou};
@@ -87,6 +88,8 @@ pub(crate) struct SegmComputeScratch {
     d_bbox: Vec<BboxAnn>,
     g_area: Vec<u64>,
     d_area: Vec<u64>,
+    g_segments: SegmentTable,
+    d_segments: SegmentTable,
 }
 
 impl SegmComputeScratch {
@@ -95,13 +98,15 @@ impl SegmComputeScratch {
     }
 }
 
-/// Cross-call cache of GT bbox + area for the segm IoU kernel.
+/// Cross-call cache of GT bbox + area + foreground-segment offsets
+/// for the segm IoU kernel.
 ///
 /// In a training loop, validation passes call `evaluate_segm`
-/// repeatedly against the same GT but a fresh DT each epoch. Both
-/// `Rle::bbox` (the I1 prefilter input) and `Rle::area` (the union
-/// denominator) walk the GT counts on every call. A cache amortises
-/// those walks over the training run. Pass an instance to
+/// repeatedly against the same GT but a fresh DT each epoch. Three
+/// per-GT walks of `counts` get amortised over the training run:
+/// `Rle::bbox` (the I1 prefilter input), `Rle::area` (the union
+/// denominator), and `Rle::decode_fg_offsets_into` (the per-pair
+/// intersect kernel input). Pass an instance to
 /// [`crate::evaluate_segm_cached`] and reuse it across calls.
 ///
 /// Keyed by GT annotation id ([`SegmAnn::ann_id`], populated from
@@ -111,7 +116,14 @@ impl SegmComputeScratch {
 /// Single-threaded use is uncontended.
 #[derive(Default)]
 pub struct SegmGtCache {
-    inner: Mutex<HashMap<i64, (BboxAnn, u64)>>,
+    inner: Mutex<HashMap<i64, SegmGtEntry>>,
+}
+
+#[derive(Clone)]
+struct SegmGtEntry {
+    bbox: BboxAnn,
+    area: u64,
+    fg_offsets: Vec<u64>,
 }
 
 impl SegmGtCache {
@@ -131,13 +143,12 @@ impl SegmGtCache {
     }
 
     /// Drops all cached entries. Useful when the GT dataset changes
-    /// mid-loop so stale `(ann_id, bbox, area)` triples don't pollute
-    /// the next call.
+    /// mid-loop so stale entries don't pollute the next call.
     pub fn clear(&self) {
         self.lock().clear();
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<i64, (BboxAnn, u64)>> {
+    fn lock(&self) -> MutexGuard<'_, HashMap<i64, SegmGtEntry>> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
@@ -188,25 +199,32 @@ pub(crate) fn segm_iou_compute(
     // the exact RLE IoU below. BboxIou honors the same E1 crowd
     // asymmetry, so the gate is correct on crowd rows too.
     //
-    // GT-side bbox + area are populated together — both walk the same
-    // counts array, so a `SegmGtCache` amortises both at once.
+    // GT-side bbox + area + fg-offsets are populated together — all
+    // three walk the same counts array, so a `SegmGtCache` amortises
+    // them at once.
     scratch.g_bbox.clear();
     scratch.g_area.clear();
-    populate_gt_bbox_area(gts, scratch, gt_cache);
+    scratch.g_segments.clear();
+    populate_gt(gts, scratch, gt_cache);
     scratch.d_bbox.clear();
     scratch.d_bbox.extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
     scratch.d_area.clear();
     scratch.d_area.extend(dts.iter().map(|d| d.rle.area()));
+    scratch.d_segments.clear();
+    for d in dts {
+        scratch.d_segments.push_from_rle(&d.rle);
+    }
     BboxIou.compute(&scratch.g_bbox, &scratch.d_bbox, out)?;
 
     for g in 0..gts.len() {
         let crowd = gts[g].is_crowd;
         let ga = scratch.g_area[g];
+        let g_seg = scratch.g_segments.row(g);
         for d in 0..dts.len() {
             if out[[g, d]] <= 0.0 {
                 continue;
             }
-            let inter = gts[g].rle.intersect_area(&dts[d].rle)?;
+            let inter = intersect_area_offsets(g_seg, scratch.d_segments.row(d));
             let denom = if crowd {
                 scratch.d_area[d]
             } else {
@@ -223,27 +241,38 @@ pub(crate) fn segm_iou_compute(
     Ok(())
 }
 
-/// Populate `scratch.g_bbox` + `scratch.g_area` for `gts`, consulting
-/// `cache` when present. Vecs are assumed already cleared with
-/// capacity preserved. Hits avoid the RLE walks that
-/// [`Rle::bbox`] / [`Rle::area`] would otherwise do per call.
-fn populate_gt_bbox_area(
+/// Populate `scratch.g_bbox`, `scratch.g_area`, and
+/// `scratch.g_segments` for `gts`, consulting `cache` when present.
+/// Vecs are assumed already cleared with capacity preserved. Hits
+/// avoid the RLE walks that [`Rle::bbox`], [`Rle::area`], and
+/// [`Rle::decode_fg_offsets_into`] would otherwise do per call.
+fn populate_gt(
     gts: &[SegmAnn],
     scratch: &mut SegmComputeScratch,
     cache: Option<&SegmGtCache>,
 ) {
     let Some(cache) = cache else {
-        scratch.g_bbox.extend(gts.iter().map(|g| to_bbox_ann(&g.rle, g.is_crowd)));
-        scratch.g_area.extend(gts.iter().map(|g| g.rle.area()));
+        for g in gts {
+            scratch.g_bbox.push(to_bbox_ann(&g.rle, g.is_crowd));
+            scratch.g_area.push(g.rle.area());
+            scratch.g_segments.push_from_rle(&g.rle);
+        }
         return;
     };
     let mut inner = cache.lock();
     for g in gts {
-        let entry = inner
-            .entry(g.ann_id)
-            .or_insert_with(|| (to_bbox_ann(&g.rle, g.is_crowd), g.rle.area()));
-        scratch.g_bbox.push(entry.0);
-        scratch.g_area.push(entry.1);
+        let entry = inner.entry(g.ann_id).or_insert_with(|| {
+            let mut fg_offsets = Vec::new();
+            g.rle.decode_fg_offsets_into(&mut fg_offsets);
+            SegmGtEntry {
+                bbox: to_bbox_ann(&g.rle, g.is_crowd),
+                area: g.rle.area(),
+                fg_offsets,
+            }
+        });
+        scratch.g_bbox.push(entry.bbox);
+        scratch.g_area.push(entry.area);
+        scratch.g_segments.push_segments(&entry.fg_offsets);
     }
 }
 

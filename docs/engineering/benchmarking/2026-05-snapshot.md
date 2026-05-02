@@ -218,6 +218,40 @@ The deferred lever — a `pulp` byte-vector path for the sliding-min
 on `{0,1}` rows — is the structural fix expected to close the gap.
 Tracked as a follow-up; not a release blocker for v0.0.x.
 
+### Post-fix (2026-05-02 perf push closure)
+
+The boundary regression is closed. Two follow-up PRs landed:
+
+- **PR #86** — sparse-table AND-fold for `min_filter_binary`. Replaces
+  the scalar running-zero-count van Herk loop with a level-`l` AND of
+  two non-overlapping byte slices (`temp_l[i] = temp_{l-1}[i] &
+  temp_{l-1}[i + 2^(l-1)]`); LLVM autovectorizes the contiguous-slice
+  AND. Out-of-place ping-pong buffers avoid the scalar-fallback LLVM
+  emits when the stride is below SIMD lane width.
+- **This PR** — pre-decoded foreground-segment offsets +
+  `intersect_area_offsets`. The per-pair RLE byte-stream state machine
+  walks one run per loop iteration; replacing it with a two-pointer
+  sweep over pre-decoded fg intervals (one decode per ann per call,
+  amortised over the cell's pair count) skips the background runs that
+  dominate `Rle::counts`. New `vernier_mask::SegmentTable` is the
+  CSR-style flat-storage shared by segm + boundary kernels.
+
+Final `coco_val2017_perfect_segm` cells (release, N=10 reps,
+IQR ≤5%):
+
+| iou      | impl                | total median | vs baseline | vs vernier |
+| -------- | ------------------- | -----------: | ----------: | ---------: |
+| segm     | **vernier**         |     1.759 s  | (was 1.742) |       1.0× |
+| boundary | **vernier**         |    59.704 s  | (was 75.861) |       1.0× |
+| boundary | boundary-iou-api    |    63.642 s  |          —  | **1.07× slower** |
+
+Boundary `evaluate` stage alone: vernier **59.620 s**, IQR 0.85%.
+Segm `evaluate` stage: 1.673 s, IQR 0.9%.
+
+Boundary is now faster than `boundary-iou-api` on the headline cell;
+the §"Headline — all cells" table above reflects the pre-fix numbers
+and is the historical reference point.
+
 ---
 
 ## Smoke fan-out — `smoke_perfect_match_segm` (parity smoke, not a perf claim)
