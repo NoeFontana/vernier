@@ -12,7 +12,6 @@ The orchestrator never imports vernier or any baseline.
 
 from __future__ import annotations
 
-import hashlib
 import os
 import shutil
 import subprocess
@@ -23,6 +22,7 @@ from typing import Literal
 
 from bench import HARNESS_VERSION
 from bench.harness import machine
+from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.schema import (
     BenchResult,
     IouType,
@@ -30,6 +30,7 @@ from bench.harness.schema import (
     RepResult,
     RunnerRepOutput,
 )
+from bench.runners._protocol import file_sha256
 
 
 @dataclass(frozen=True)
@@ -54,28 +55,8 @@ class _SpawnResult:
     tensor_path: Path
 
 
-def _runner_module(impl: str) -> str:
-    return f"bench.runners.{impl}_runner"
-
-
-def _env_dir(bench_root: Path, impl: str) -> Path:
-    return bench_root / "envs" / impl
-
-
 def _result_dir(spec: RunSpec, git_sha: str, machine_fp: str) -> Path:
-    return (
-        spec.bench_root
-        / "results"
-        / git_sha
-        / machine_fp
-        / spec.workload_id
-        / spec.iou_type
-    )
-
-
-def _file_sha256(path: Path) -> str:
-    with path.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
+    return spec.bench_root / "results" / git_sha / machine_fp / spec.workload_id / spec.iou_type
 
 
 def _spawn_one_rep(
@@ -87,14 +68,11 @@ def _spawn_one_rep(
 ) -> _SpawnResult:
     rep_json = intermediate_dir / f"{spec.impl}-rep{rep_index}.json"
     rep_npy = intermediate_dir / f"{spec.impl}-rep{rep_index}.npy"
-    cmd = [
-        "uv",
-        "run",
-        "--directory",
-        str(_env_dir(spec.bench_root, spec.impl)),
-        "python",
+    cmd = uv_run_argv(
+        spec.bench_root,
+        spec.impl,
         "-m",
-        _runner_module(spec.impl),
+        runner_module(spec.impl),
         "--gt",
         str(spec.gt_path),
         "--dt",
@@ -107,19 +85,15 @@ def _spawn_one_rep(
         str(rep_json),
         "--tensor-output",
         str(rep_npy),
-    ]
+    )
     parent_start = time.perf_counter_ns()
-    proc = subprocess.Popen(cmd)
+    proc = subprocess.Popen(cmd, env=uv_run_env(spec.bench_root, spec.impl))
     _pid, status, rusage = os.wait4(proc.pid, 0)
     parent_wall_ns = time.perf_counter_ns() - parent_start
     if status != 0:
-        raise RuntimeError(
-            f"runner {spec.impl} exited with status {status}; cmd={cmd}"
-        )
+        raise RuntimeError(f"runner {spec.impl} exited with status {status}; cmd={cmd}")
     if not rep_json.exists() or not rep_npy.exists():
-        raise RuntimeError(
-            f"runner {spec.impl} succeeded but did not produce expected outputs"
-        )
+        raise RuntimeError(f"runner {spec.impl} succeeded but did not produce expected outputs")
     runner_out = RunnerRepOutput.model_validate_json(rep_json.read_bytes())
 
     rep_result = RepResult(
@@ -145,8 +119,7 @@ def run(spec: RunSpec) -> Path:
     intermediate_dir.mkdir(exist_ok=True)
 
     spawned: list[_SpawnResult] = [
-        _spawn_one_rep(spec, rep_index, intermediate_dir)
-        for rep_index in range(spec.reps_count)
+        _spawn_one_rep(spec, rep_index, intermediate_dir) for rep_index in range(spec.reps_count)
     ]
     canonical = spawned[0]
 
@@ -154,11 +127,9 @@ def run(spec: RunSpec) -> Path:
     # bit-equal before this — promoting one is then unambiguous.
     tensor_dst = out_dir / f"{spec.impl}.npy"
     shutil.copyfile(canonical.tensor_path, tensor_dst)
-    tensor_sha256 = _file_sha256(tensor_dst)
+    tensor_sha256 = file_sha256(tensor_dst)
     if tensor_sha256 != canonical.runner_out.tensor_sha256:
-        raise RuntimeError(
-            "tensor sha256 mismatch between runner output and orchestrator copy"
-        )
+        raise RuntimeError("tensor sha256 mismatch between runner output and orchestrator copy")
 
     result = BenchResult(
         impl=canonical.runner_out.impl,

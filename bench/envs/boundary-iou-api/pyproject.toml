@@ -1,0 +1,24 @@
+[project]
+name = "vernier-bench-env-boundary-iou-api"
+version = "0.0.0"
+description = "uv env for the boundary-iou-api runner subprocess (ADR-0017)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# The oracle itself is *not* on PyPI — it is the symlinked checkout at
+# ./oracle/. This env only needs the oracle's runtime deps. Both pins
+# mirror the root pyproject.toml (pycocotools is the COCOeval base
+# class, opencv backs ``boundary_utils.mask_to_boundary``).
+dependencies = [
+    "vernier-bench",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+    "pycocotools==2.0.11",
+    "opencv-python==4.10.0.84",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+vernier-bench = { path = "../..", editable = true }

@@ -1,0 +1,25 @@
+[project]
+name = "vernier-bench-env-pycocotools"
+version = "0.0.0"
+description = "uv env for the pycocotools runner subprocess (ADR-0017)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# pycocotools is the reference oracle (see root pyproject.toml comment on
+# the same pin). The bench runner mirrors tests/python/parity/harness.py:
+# _run_pycocotools so timing comparisons live on the same code path the
+# parity suite already validates.
+dependencies = [
+    "vernier-bench",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+    "pycocotools==2.0.11",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# vernier-bench is pure Python — editable lets harness source edits show
+# up in the runner subprocess without a re-sync.
+vernier-bench = { path = "../..", editable = true }

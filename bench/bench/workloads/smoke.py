@@ -1,9 +1,7 @@
-"""Smoke workload — points at the perfect-match parity fixture.
+"""Smoke workload — points at the perfect-match-segm parity fixture.
 
-This intentionally couples to ``tests/python/parity/fixtures/`` because the
-smoke workload is dev-only: it exists so the harness's own tests have a
-known-good (gt, dt) pair without round-tripping through the network or
-the val2017 cache. Real workloads land in M4 under
+The ``_segm`` variant carries polygons so it can serve bbox, segm, and
+boundary cells from a single fixture. Real workloads land in M4 under
 ``~/.cache/vernier-bench/``.
 """
 
@@ -13,5 +11,5 @@ from pathlib import Path
 
 
 def paths(repo_root: Path) -> tuple[Path, Path]:
-    base = repo_root / "tests" / "python" / "parity" / "fixtures" / "perfect_match"
+    base = repo_root / "tests" / "python" / "parity" / "fixtures" / "perfect_match_segm"
     return base / "gt.json", base / "dt.json"

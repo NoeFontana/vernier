@@ -21,5 +21,10 @@ dependencies = [
 package = false
 
 [tool.uv.sources]
+# vernier itself is a maturin/PyO3 build — editable installs need
+# `pip install -e` magic that uv can do but the venv pays a per-import
+# stub-loader cost. Keep it non-editable; ``just bench-sync`` rebuilds.
 vernier = { path = "../../..", editable = false }
-vernier-bench = { path = "../..", editable = false }
+# vernier-bench is pure Python — editable lets harness source edits show
+# up in the runner subprocess without a re-sync.
+vernier-bench = { path = "../..", editable = true }

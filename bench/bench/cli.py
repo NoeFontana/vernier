@@ -1,32 +1,25 @@
 """``vernier-bench`` command-line entry point.
 
-M1: a single ``run`` subcommand that exercises one (impl, workload, iou)
-cell. M5 adds ``--mode`` defaults; M6 adds ``compare`` and ``report``.
+``run`` fans out across the impls supported for the requested
+(workload, iou) cell. Skipped cells are silent for ``--impl all`` and
+loud for an explicit ``--impl <name>``.
 """
 
 from __future__ import annotations
 
 import sys
-from pathlib import Path
+from typing import cast, get_args
 
 import click
 
+from bench.harness.matrix import ALL_IMPLS, IMPL_IOU_SUPPORT, impls_for_iou
 from bench.harness.orchestrate import RunSpec
 from bench.harness.orchestrate import run as run_spec
+from bench.harness.paths import BENCH_ROOT, REPO_ROOT
+from bench.harness.schema import IouType
 from bench.workloads import resolve
 
-# These are the only impls a runner exists for. ``--impl all`` expands to
-# this list filtered by the (workload, iou) matrix in M2.
-SUPPORTED_IMPLS = ("vernier",)
-
-
-def _bench_root() -> Path:
-    # ``bench/bench/cli.py`` -> ``bench/``
-    return Path(__file__).resolve().parent.parent
-
-
-def _repo_root() -> Path:
-    return _bench_root().parent
+_IOU_CHOICES: tuple[str, ...] = get_args(IouType)
 
 
 @click.group()
@@ -37,22 +30,22 @@ def main() -> None:
 @main.command("run")
 @click.option(
     "--impl",
-    type=click.Choice(["vernier", "all"]),
+    type=click.Choice(["all", *ALL_IMPLS]),
     default="vernier",
     show_default=True,
-    help="Which implementation(s) to run. M1 supports vernier only.",
+    help="Implementation to run, or 'all' to fan out across the (impl, iou) matrix.",
 )
 @click.option(
     "--workload",
     type=str,
     default="smoke",
     show_default=True,
-    help="Workload identifier. M1 only knows 'smoke'.",
+    help="Workload identifier. M1/M2 only knows 'smoke'.",
 )
 @click.option(
     "--iou",
     "iou_type",
-    type=click.Choice(["bbox", "segm", "keypoints", "boundary"]),
+    type=click.Choice(_IOU_CHOICES),
     default="bbox",
     show_default=True,
 )
@@ -61,25 +54,38 @@ def main() -> None:
     type=click.Choice(["dev"]),
     default="dev",
     show_default=True,
-    help="Run mode. M1 supports dev only; release/profile land in M5.",
+    help="Run mode. M1/M2 supports dev only; release/profile land in M5.",
 )
 @click.option("--seed", "run_seed", type=int, default=0, show_default=True)
-def run_cmd(
-    impl: str, workload: str, iou_type: str, mode: str, run_seed: int
-) -> None:
-    impls = list(SUPPORTED_IMPLS) if impl == "all" else [impl]
+def run_cmd(impl: str, workload: str, iou_type: str, mode: str, run_seed: int) -> None:
+    workload_obj = resolve(workload, REPO_ROOT)
+    iou = cast(IouType, iou_type)
 
-    bench_root = _bench_root()
-    repo_root = _repo_root()
-    workload_obj = resolve(workload, repo_root)
+    if iou not in workload_obj.supported_iou_types:
+        supported = ", ".join(sorted(workload_obj.supported_iou_types))
+        raise click.ClickException(
+            f"workload {workload!r} does not support --iou {iou_type}; supported: {supported}"
+        )
+
+    if impl == "all":
+        impls = impls_for_iou(iou)
+        if not impls:
+            raise click.ClickException(f"no impl in the matrix supports --iou {iou_type}")
+    else:
+        if iou not in IMPL_IOU_SUPPORT[impl]:
+            supported = ", ".join(sorted(IMPL_IOU_SUPPORT[impl]))
+            raise click.ClickException(
+                f"impl {impl!r} does not support --iou {iou_type}; supported: {supported}"
+            )
+        impls = [impl]
 
     for impl_name in impls:
         spec = RunSpec(
-            bench_root=bench_root,
-            repo_root=repo_root,
+            bench_root=BENCH_ROOT,
+            repo_root=REPO_ROOT,
             impl=impl_name,
             workload_id=workload_obj.workload_id,
-            iou_type=iou_type,
+            iou_type=iou,
             gt_path=workload_obj.gt_path,
             dt_path=workload_obj.dt_path,
             mode=mode,
