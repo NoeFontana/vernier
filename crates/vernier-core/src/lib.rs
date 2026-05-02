@@ -40,15 +40,15 @@ pub use dataset::{
 pub use error::EvalError;
 pub use evaluate::{
     evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints, evaluate_segm,
-    evaluate_with, AreaRange, EvalGrid, EvalImageMeta, EvalKernel, EvaluateParams,
-    OwnedEvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
+    evaluate_segm_cached, evaluate_with, AreaRange, EvalGrid, EvalImageMeta, EvalKernel,
+    EvaluateParams, OwnedEvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
 };
 pub use matching::{match_image, MatchResult};
 pub use parity::{iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, PARITY_EPS};
 pub use segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
 pub use similarity::{
-    BboxAnn, BboxIou, BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmIou,
-    Similarity, COCO_PERSON_SIGMAS,
+    BboxAnn, BboxIou, BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmGtCache,
+    SegmIou, Similarity, COCO_PERSON_SIGMAS,
 };
 pub use stream::{
     EvalGridMeta, MemoryBudget, ParsedDetections, PerImageEvalStore, StreamingEvaluator,

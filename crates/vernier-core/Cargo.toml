@@ -37,3 +37,7 @@ harness = false
 [[bench]]
 name = "boundary_iou"
 harness = false
+
+[[bench]]
+name = "segm_iou"
+harness = false

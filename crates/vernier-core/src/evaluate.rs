@@ -82,9 +82,8 @@ use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
 use crate::segmentation::Segmentation;
 use crate::similarity::{
-    boundary_iou_compute, BboxAnn, BboxIou, BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity,
-    SegmAnn, SegmIou,
-    Similarity,
+    boundary_iou_compute, segm_iou_compute, BboxAnn, BboxIou, BoundaryGtCache, BoundaryIou, OksAnn,
+    OksSimilarity, SegmAnn, SegmComputeScratch, SegmGtCache, SegmIou, Similarity,
 };
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -810,7 +809,90 @@ pub fn evaluate_segm(
     params: EvaluateParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<EvalGrid, EvalError> {
-    evaluate_with(gt, dt, params, parity_mode, &SegmIou)
+    evaluate_with(gt, dt, params, parity_mode, &segm_kernel(None))
+}
+
+/// Cached variant of [`evaluate_segm`]: reuses GT bbox + area across
+/// calls via a caller-owned [`SegmGtCache`].
+///
+/// Use this when the same GT dataset is evaluated repeatedly against
+/// changing detections — e.g. validation passes inside a training
+/// loop. The first call populates the cache; each subsequent call
+/// skips the `Rle::bbox` and `Rle::area` walks on the GT side. DT-side
+/// derivations are always fresh (predictions change per call).
+///
+/// The cache is keyed by GT [`crate::dataset::CocoAnnotation::id`].
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_segm_cached(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    cache: &SegmGtCache,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with(gt, dt, params, parity_mode, &segm_kernel(Some(cache)))
+}
+
+fn segm_kernel(gt_cache: Option<&SegmGtCache>) -> SegmIouCached<'_> {
+    SegmIouCached {
+        scratch: Mutex::new(SegmComputeScratch::new()),
+        gt_cache,
+    }
+}
+
+/// Internal kernel used by [`evaluate_segm`] and
+/// [`evaluate_segm_cached`]: same semantics as [`SegmIou`] but threads
+/// a single [`SegmComputeScratch`] across every `compute` call (so the
+/// dataset-wide pass amortizes per-cell `Vec` allocations across the
+/// ~36 k anns of a val2017 pass) and optionally consults a
+/// [`SegmGtCache`] for cross-call GT bbox+area reuse. Held by
+/// [`Mutex`] to satisfy `Similarity: Send + Sync`; the lock is
+/// uncontended in single-threaded use.
+struct SegmIouCached<'a> {
+    scratch: Mutex<SegmComputeScratch>,
+    gt_cache: Option<&'a SegmGtCache>,
+}
+
+impl Similarity for SegmIouCached<'_> {
+    type Annotation = SegmAnn;
+
+    fn compute(
+        &self,
+        gts: &[SegmAnn],
+        dts: &[SegmAnn],
+        out: &mut ArrayViewMut2<'_, f64>,
+    ) -> Result<(), EvalError> {
+        let mut scratch = self
+            .scratch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        segm_iou_compute(gts, dts, out, &mut scratch, self.gt_cache)
+    }
+}
+
+impl EvalKernel for SegmIouCached<'_> {
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        build_segm_gt_anns(gt_anns, indices, image)
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        image: &ImageMeta,
+        parity_mode: ParityMode,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+    }
 }
 
 /// Run the per-image boundary-IoU evaluation pass (ADR-0010). Thin
@@ -2226,6 +2308,97 @@ mod tests {
             evaluate_boundary(&gt, &dts_a, params.borrow(), ParityMode::Strict, 0.02).unwrap();
         let baseline_b =
             evaluate_boundary(&gt, &dts_b, params.borrow(), ParityMode::Strict, 0.02).unwrap();
+        for (lhs, rhs) in boundary_grid_cells(&cached_a)
+            .iter()
+            .zip(boundary_grid_cells(&baseline_a).iter())
+        {
+            assert_eq!(lhs.to_bits(), rhs.to_bits());
+        }
+        for (lhs, rhs) in boundary_grid_cells(&cached_b)
+            .iter()
+            .zip(boundary_grid_cells(&baseline_b).iter())
+        {
+            assert_eq!(lhs.to_bits(), rhs.to_bits());
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // SegmGtCache (mirrors the BoundaryGtCache suite above; the segm
+    // fixture is built on the same pieces but lives here so the
+    // boundary tests stay focused on band-specific behaviour).
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn segm_cached_matches_uncached_bit_exact() {
+        let (gt, dts, _, params) = boundary_cache_fixture();
+        let p = params.borrow();
+        let baseline = evaluate_segm(&gt, &dts, p, ParityMode::Strict).unwrap();
+        let cache = SegmGtCache::new();
+        let cached_first = evaluate_segm_cached(&gt, &dts, p, ParityMode::Strict, &cache).unwrap();
+        let cached_second = evaluate_segm_cached(&gt, &dts, p, ParityMode::Strict, &cache).unwrap();
+
+        let baseline_scores = boundary_grid_cells(&baseline);
+        let first_scores = boundary_grid_cells(&cached_first);
+        let second_scores = boundary_grid_cells(&cached_second);
+        assert_eq!(baseline_scores.len(), first_scores.len());
+        for (b, c) in baseline_scores.iter().zip(first_scores.iter()) {
+            assert_eq!(b.to_bits(), c.to_bits());
+        }
+        for (b, c) in baseline_scores.iter().zip(second_scores.iter()) {
+            assert_eq!(b.to_bits(), c.to_bits());
+        }
+    }
+
+    #[test]
+    fn segm_cache_populates_lazily_per_evaluated_cell() {
+        // Same lazy-load contract as the boundary cache: only GTs
+        // that participate in an evaluated `(image, category)` cell
+        // — i.e. one with at least one DT — get cached. The
+        // boundary fixture has 3 GTs but only 2 such cells under
+        // `use_cats: true`.
+        let (gt, dts, _, params) = boundary_cache_fixture();
+        let cache = SegmGtCache::new();
+        assert!(cache.is_empty());
+        evaluate_segm_cached(&gt, &dts, params.borrow(), ParityMode::Strict, &cache).unwrap();
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn segm_cache_clear_resets_state() {
+        let (gt, dts, _, params) = boundary_cache_fixture();
+        let cache = SegmGtCache::new();
+        evaluate_segm_cached(&gt, &dts, params.borrow(), ParityMode::Strict, &cache).unwrap();
+        assert!(!cache.is_empty());
+        cache.clear();
+        assert!(cache.is_empty());
+        let after = evaluate_segm_cached(&gt, &dts, params.borrow(), ParityMode::Strict, &cache)
+            .unwrap();
+        let baseline = evaluate_segm(&gt, &dts, params.borrow(), ParityMode::Strict).unwrap();
+        for (a, b) in boundary_grid_cells(&after)
+            .iter()
+            .zip(boundary_grid_cells(&baseline).iter())
+        {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
+
+    #[test]
+    fn segm_cache_survives_changing_dt() {
+        // Training-loop pattern: same GT, fresh DT each call. Cache
+        // size must stay constant across DT swaps (the cache only
+        // holds GT entries) and parity vs uncached must hold for
+        // both DT sets.
+        let (gt, dts_a, dts_b, params) = boundary_cache_fixture();
+        let cache = SegmGtCache::new();
+        let cached_a =
+            evaluate_segm_cached(&gt, &dts_a, params.borrow(), ParityMode::Strict, &cache).unwrap();
+        let len_after_a = cache.len();
+        let cached_b =
+            evaluate_segm_cached(&gt, &dts_b, params.borrow(), ParityMode::Strict, &cache).unwrap();
+        assert_eq!(cache.len(), len_after_a);
+
+        let baseline_a = evaluate_segm(&gt, &dts_a, params.borrow(), ParityMode::Strict).unwrap();
+        let baseline_b = evaluate_segm(&gt, &dts_b, params.borrow(), ParityMode::Strict).unwrap();
         for (lhs, rhs) in boundary_grid_cells(&cached_a)
             .iter()
             .zip(boundary_grid_cells(&baseline_a).iter())
