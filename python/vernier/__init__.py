@@ -16,15 +16,20 @@ from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._core import (
     BackgroundEvaluator,
+    Dataset,
     MemoryBudgetWarning,
     OutOfBudgetError,
     QueueFullError,
     StreamingEvaluator,
     Summary,
     evaluate_bbox_summary,
+    evaluate_bbox_summary_with_dataset,
     evaluate_boundary_summary,
+    evaluate_boundary_summary_with_dataset,
     evaluate_keypoints_summary,
+    evaluate_keypoints_summary_with_dataset,
     evaluate_segm_summary,
+    evaluate_segm_summary_with_dataset,
     version,
 )
 
@@ -33,6 +38,7 @@ __all__ = [
     "Bbox",
     "Boundary",
     "COCOeval",
+    "Dataset",
     "Evaluator",
     "IouKind",
     "Keypoints",
@@ -191,14 +197,18 @@ class Evaluator:
             kwargs["use_cats"] = use_cats
         return replace(self, **kwargs)
 
-    def evaluate(self, gt: bytes, dt: bytes) -> Summary:
+    def evaluate(self, gt: bytes | Dataset, dt: bytes) -> Summary:
         """Run the evaluation pipeline against a GT/DT JSON pair.
 
-        ``gt`` and ``dt`` are the raw COCO JSON payloads as bytes (the
-        same shapes pycocotools' ``COCO(...)`` and ``COCO.loadRes(...)``
-        consume).
+        ``dt`` is the raw COCO JSON payload as bytes (the same shape
+        pycocotools' ``COCO.loadRes(...)`` consumes). ``gt`` is either
+        the GT JSON bytes (parse-and-discard, identical to prior
+        behavior) or a :class:`Dataset` handle (parsed-once, with the
+        cache reused across calls — see ADR-0020).
         """
         max_dets_list = self._resolve_max_dets()
+        if isinstance(gt, Dataset):
+            return self._evaluate_with_dataset(gt, dt, max_dets_list)
         match self.iou:
             case Bbox():
                 return evaluate_bbox_summary(gt, dt, self.parity_mode, max_dets_list, self.use_cats)
@@ -209,19 +219,52 @@ class Evaluator:
                     gt, dt, self.parity_mode, max_dets_list, self.use_cats, r
                 )
             case Keypoints(sigmas=s):
-                # PyO3's `extract::<Vec<f64>>` accepts iterables; converting
-                # tuple -> list at the boundary is the conservative shape
-                # (some PyO3 minor versions vary on tuple iteration).
                 return evaluate_keypoints_summary(
                     gt,
                     dt,
                     self.parity_mode,
                     max_dets_list,
                     self.use_cats,
-                    {cat: list(sigs) for cat, sigs in s.items()},
+                    _normalize_sigmas(s),
                 )
             case _:
                 _reject_unknown_iou(self.iou)
+
+    def _evaluate_with_dataset(
+        self, gt: Dataset, dt: bytes, max_dets_list: list[int]
+    ) -> Summary:
+        match self.iou:
+            case Bbox():
+                return evaluate_bbox_summary_with_dataset(
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats
+                )
+            case Segm():
+                return evaluate_segm_summary_with_dataset(
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats
+                )
+            case Boundary(dilation_ratio=r):
+                return evaluate_boundary_summary_with_dataset(
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r
+                )
+            case Keypoints(sigmas=s):
+                return evaluate_keypoints_summary_with_dataset(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    _normalize_sigmas(s),
+                )
+            case _:
+                _reject_unknown_iou(self.iou)
+
+
+def _normalize_sigmas(
+    sigmas: Mapping[int, tuple[float, ...]],
+) -> dict[int, list[float]]:
+    # PyO3's `extract::<Vec<f64>>` accepts iterables, but tuple iteration
+    # has varied across minor versions; convert to list at the boundary.
+    return {cat: list(sigs) for cat, sigs in sigmas.items()}
 
 
 def _reject_unknown_iou(iou: object) -> NoReturn:
