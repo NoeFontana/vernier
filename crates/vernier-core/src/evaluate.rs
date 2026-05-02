@@ -70,7 +70,7 @@
 //!   than silently routed through the first-entry-decides dispatch
 //!   pycocotools follows at `coco.py:330-363`.
 
-use ndarray::{Array2, ArrayView2};
+use ndarray::{Array2, ArrayView2, ArrayViewMut2};
 
 use crate::accumulate::PerImageEval;
 use crate::dataset::{
@@ -82,9 +82,13 @@ use crate::matching::{match_image, MatchResult};
 use crate::parity::{argsort_score_desc, ParityMode};
 use crate::segmentation::Segmentation;
 use crate::similarity::{
-    BboxAnn, BboxIou, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmIou, Similarity,
+    boundary_iou_compute, BboxAnn, BboxIou, BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity,
+    SegmAnn, SegmIou,
+    Similarity,
 };
 use std::collections::HashMap;
+use std::sync::Mutex;
+use vernier_mask::ops::ErodeScratch;
 use vernier_mask::Rle;
 
 /// Sentinel `category_id` emitted on every cell when `use_cats=false`.
@@ -489,6 +493,7 @@ fn build_segm_gt_anns(
             Ok(SegmAnn {
                 rle: seg.to_rle(image.height, image.width)?,
                 is_crowd: ann.is_crowd,
+                ann_id: ann.id.0,
             })
         })
         .collect()
@@ -529,6 +534,7 @@ fn build_segm_dt_anns(
             Ok(SegmAnn {
                 rle,
                 is_crowd: false,
+                ann_id: dt.id.0,
             })
         })
         .collect()
@@ -828,7 +834,108 @@ pub fn evaluate_boundary(
     parity_mode: ParityMode,
     dilation_ratio: f64,
 ) -> Result<EvalGrid, EvalError> {
-    evaluate_with(gt, dt, params, parity_mode, &BoundaryIou { dilation_ratio })
+    evaluate_with(gt, dt, params, parity_mode, &kernel(dilation_ratio, None))
+}
+
+/// Cached variant of [`evaluate_boundary`]: reuses GT bands across
+/// calls via a caller-owned [`BoundaryGtCache`].
+///
+/// Use this when the same GT dataset is evaluated repeatedly against
+/// changing detections — e.g. validation passes inside a training
+/// loop. The first call populates the cache; each subsequent call
+/// skips GT band derivation. DT bands are always derived fresh
+/// (predictions change per call).
+///
+/// The cache is keyed by GT [`crate::dataset::CocoAnnotation::id`].
+/// If `dilation_ratio` differs from the previous call's, the cache
+/// is cleared and re-populated — the bands depend on the ratio.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_boundary_cached(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    dilation_ratio: f64,
+    cache: &BoundaryGtCache,
+) -> Result<EvalGrid, EvalError> {
+    cache.align_ratio(dilation_ratio);
+    evaluate_with(
+        gt,
+        dt,
+        params,
+        parity_mode,
+        &kernel(dilation_ratio, Some(cache)),
+    )
+}
+
+fn kernel(dilation_ratio: f64, gt_cache: Option<&BoundaryGtCache>) -> BoundaryIouCached<'_> {
+    BoundaryIouCached {
+        dilation_ratio,
+        scratch: Mutex::new(ErodeScratch::new()),
+        gt_cache,
+    }
+}
+
+/// Internal kernel used by [`evaluate_boundary`] and
+/// [`evaluate_boundary_cached`]: same semantics as [`BoundaryIou`] but
+/// threads a single [`ErodeScratch`] across every `compute` call (so
+/// the dataset-wide pass amortizes per-mask scratch allocations) and
+/// optionally consults a [`BoundaryGtCache`] for cross-call GT band
+/// reuse. Held by [`Mutex`] to satisfy `Similarity: Send + Sync`;
+/// the lock is uncontended in single-threaded use.
+struct BoundaryIouCached<'a> {
+    dilation_ratio: f64,
+    scratch: Mutex<ErodeScratch>,
+    gt_cache: Option<&'a BoundaryGtCache>,
+}
+
+impl Similarity for BoundaryIouCached<'_> {
+    type Annotation = SegmAnn;
+
+    fn compute(
+        &self,
+        gts: &[SegmAnn],
+        dts: &[SegmAnn],
+        out: &mut ArrayViewMut2<'_, f64>,
+    ) -> Result<(), EvalError> {
+        let mut scratch = self
+            .scratch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        boundary_iou_compute(
+            self.dilation_ratio,
+            gts,
+            dts,
+            out,
+            &mut scratch,
+            self.gt_cache,
+        )
+    }
+}
+
+impl EvalKernel for BoundaryIouCached<'_> {
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        build_segm_gt_anns(gt_anns, indices, image)
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        image: &ImageMeta,
+        parity_mode: ParityMode,
+    ) -> Result<Vec<SegmAnn>, EvalError> {
+        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+    }
 }
 
 /// Run the per-image OKS (`iouType="keypoints"`) evaluation pass per
@@ -1907,6 +2014,230 @@ mod tests {
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
         assert!(all.dt_matched.iter().all(|&m| !m));
+    }
+
+    /// Two-image, two-category fixture exercised by the cache tests
+    /// below. Returns gt + two distinct DT sets so a "second eval" is
+    /// genuinely the same GT against fresh DTs (the training-loop
+    /// validation pattern the cache is for).
+    fn boundary_cache_fixture() -> (
+        CocoDataset,
+        CocoDetections,
+        CocoDetections,
+        OwnedEvaluateParams,
+    ) {
+        let images = vec![img(1, 100, 100), img(2, 100, 100)];
+        let cats = vec![cat(1, "thing"), cat(2, "other")];
+        let anns = vec![
+            ann_with_segm(
+                10,
+                1,
+                1,
+                (10.0, 10.0, 20.0, 20.0),
+                square_polygon(10.0, 10.0, 20.0),
+            ),
+            ann_with_segm(
+                11,
+                1,
+                2,
+                (50.0, 50.0, 15.0, 15.0),
+                square_polygon(50.0, 50.0, 15.0),
+            ),
+            ann_with_segm(
+                12,
+                2,
+                1,
+                (5.0, 5.0, 25.0, 25.0),
+                square_polygon(5.0, 5.0, 25.0),
+            ),
+        ];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts_a = CocoDetections::from_inputs(vec![
+            dt_input_with_segm(
+                1,
+                1,
+                0.9,
+                (10.0, 10.0, 20.0, 20.0),
+                square_polygon(10.0, 10.0, 20.0),
+            ),
+            dt_input_with_segm(
+                2,
+                1,
+                0.8,
+                (5.0, 5.0, 25.0, 25.0),
+                square_polygon(5.0, 5.0, 25.0),
+            ),
+        ])
+        .unwrap();
+        // dts_b shifts both predictions a little so the grid changes
+        // but GT bands don't: this is the regime the cache is for.
+        let dts_b = CocoDetections::from_inputs(vec![
+            dt_input_with_segm(
+                1,
+                1,
+                0.7,
+                (12.0, 12.0, 20.0, 20.0),
+                square_polygon(12.0, 12.0, 20.0),
+            ),
+            dt_input_with_segm(
+                2,
+                1,
+                0.6,
+                (8.0, 8.0, 25.0, 25.0),
+                square_polygon(8.0, 8.0, 25.0),
+            ),
+        ])
+        .unwrap();
+        let params = OwnedEvaluateParams {
+            iou_thresholds: iou_thresholds().to_vec(),
+            area_ranges: AreaRange::coco_default().to_vec(),
+            max_dets_per_image: 100,
+            use_cats: true,
+        };
+        (gt, dts_a, dts_b, params)
+    }
+
+    fn boundary_grid_cells(grid: &EvalGrid) -> Vec<f64> {
+        grid.eval_imgs
+            .iter()
+            .filter_map(|c| c.as_ref())
+            .flat_map(|c| c.dt_scores.iter().copied())
+            .collect()
+    }
+
+    #[test]
+    fn boundary_cached_matches_uncached_bit_exact() {
+        // Same-GT, same-DT call via the cached entry point must
+        // produce a grid bit-equal to the uncached entry point — the
+        // cache is a memoization, never a semantic shift.
+        let (gt, dts, _, params) = boundary_cache_fixture();
+        let p = params.borrow();
+        let baseline = evaluate_boundary(&gt, &dts, p, ParityMode::Strict, 0.02).unwrap();
+        let cache = BoundaryGtCache::new();
+        let cached_first =
+            evaluate_boundary_cached(&gt, &dts, p, ParityMode::Strict, 0.02, &cache).unwrap();
+        let cached_second =
+            evaluate_boundary_cached(&gt, &dts, p, ParityMode::Strict, 0.02, &cache).unwrap();
+
+        let baseline_scores = boundary_grid_cells(&baseline);
+        let first_scores = boundary_grid_cells(&cached_first);
+        let second_scores = boundary_grid_cells(&cached_second);
+        assert_eq!(baseline_scores.len(), first_scores.len());
+        for (b, c) in baseline_scores.iter().zip(first_scores.iter()) {
+            assert_eq!(b.to_bits(), c.to_bits());
+        }
+        for (b, c) in baseline_scores.iter().zip(second_scores.iter()) {
+            assert_eq!(b.to_bits(), c.to_bits());
+        }
+    }
+
+    #[test]
+    fn boundary_cache_populates_lazily_per_evaluated_cell() {
+        // The cache fills as bands are derived, which only happens on
+        // (image, category) cells that have a non-empty DT side. The
+        // fixture has 3 GTs but only 2 ever participate under
+        // `use_cats: true`: GT 11 (cat 2) has no matching DT, so its
+        // band is never computed. Pinning the count documents the
+        // lazy-load contract — entries we never need stay out of the
+        // cache, keeping memory proportional to actual work.
+        let (gt, dts, _, params) = boundary_cache_fixture();
+        let cache = BoundaryGtCache::new();
+        assert!(cache.is_empty());
+        evaluate_boundary_cached(&gt, &dts, params.borrow(), ParityMode::Strict, 0.02, &cache)
+            .unwrap();
+        assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn boundary_cache_invalidates_on_ratio_change() {
+        // Bands depend on dilation_ratio; reusing entries computed at
+        // ratio R₁ when the call is at ratio R₂ would silently return
+        // wrong numerics. The cache must drop+repopulate.
+        let (gt, dts, _, params) = boundary_cache_fixture();
+        let cache = BoundaryGtCache::new();
+        evaluate_boundary_cached(&gt, &dts, params.borrow(), ParityMode::Strict, 0.02, &cache)
+            .unwrap();
+        let after_first = cache.len();
+        evaluate_boundary_cached(&gt, &dts, params.borrow(), ParityMode::Strict, 0.05, &cache)
+            .unwrap();
+        // Same GT count, but every entry was re-derived at the new
+        // ratio: parity below proves the entries reflect R=0.05, not
+        // stale R=0.02 data.
+        assert_eq!(cache.len(), after_first);
+        let fresh =
+            evaluate_boundary(&gt, &dts, params.borrow(), ParityMode::Strict, 0.05).unwrap();
+        let cached =
+            evaluate_boundary_cached(&gt, &dts, params.borrow(), ParityMode::Strict, 0.05, &cache)
+                .unwrap();
+        let fresh_scores = boundary_grid_cells(&fresh);
+        let cached_scores = boundary_grid_cells(&cached);
+        for (f, c) in fresh_scores.iter().zip(cached_scores.iter()) {
+            assert_eq!(f.to_bits(), c.to_bits());
+        }
+    }
+
+    #[test]
+    fn boundary_cache_clear_resets_state() {
+        let (gt, dts, _, params) = boundary_cache_fixture();
+        let cache = BoundaryGtCache::new();
+        evaluate_boundary_cached(&gt, &dts, params.borrow(), ParityMode::Strict, 0.02, &cache)
+            .unwrap();
+        assert!(!cache.is_empty());
+        cache.clear();
+        assert!(cache.is_empty());
+        // Post-clear the next call must repopulate from scratch and
+        // still produce the right answer.
+        let after = evaluate_boundary_cached(
+            &gt,
+            &dts,
+            params.borrow(),
+            ParityMode::Strict,
+            0.02,
+            &cache,
+        )
+        .unwrap();
+        let baseline =
+            evaluate_boundary(&gt, &dts, params.borrow(), ParityMode::Strict, 0.02).unwrap();
+        let after_scores = boundary_grid_cells(&after);
+        let baseline_scores = boundary_grid_cells(&baseline);
+        for (a, b) in after_scores.iter().zip(baseline_scores.iter()) {
+            assert_eq!(a.to_bits(), b.to_bits());
+        }
+    }
+
+    #[test]
+    fn boundary_cache_survives_changing_dt() {
+        // The training-loop pattern: same GT, fresh DT each call.
+        // Cache size must stay constant across DT swaps (the cache
+        // only ever holds GT bands), and parity vs uncached must
+        // hold for both DT sets.
+        let (gt, dts_a, dts_b, params) = boundary_cache_fixture();
+        let cache = BoundaryGtCache::new();
+        let cached_a =
+            evaluate_boundary_cached(&gt, &dts_a, params.borrow(), ParityMode::Strict, 0.02, &cache)
+                .unwrap();
+        let len_after_a = cache.len();
+        let cached_b =
+            evaluate_boundary_cached(&gt, &dts_b, params.borrow(), ParityMode::Strict, 0.02, &cache)
+                .unwrap();
+        assert_eq!(cache.len(), len_after_a);
+
+        let baseline_a =
+            evaluate_boundary(&gt, &dts_a, params.borrow(), ParityMode::Strict, 0.02).unwrap();
+        let baseline_b =
+            evaluate_boundary(&gt, &dts_b, params.borrow(), ParityMode::Strict, 0.02).unwrap();
+        for (lhs, rhs) in boundary_grid_cells(&cached_a)
+            .iter()
+            .zip(boundary_grid_cells(&baseline_a).iter())
+        {
+            assert_eq!(lhs.to_bits(), rhs.to_bits());
+        }
+        for (lhs, rhs) in boundary_grid_cells(&cached_b)
+            .iter()
+            .zip(boundary_grid_cells(&baseline_b).iter())
+        {
+            assert_eq!(lhs.to_bits(), rhs.to_bits());
+        }
     }
 
     // ---------------------------------------------------------------

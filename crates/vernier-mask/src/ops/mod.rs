@@ -13,8 +13,8 @@
 pub mod boundary;
 pub mod erode;
 
-pub use boundary::boundary_band;
-pub use erode::erode_chebyshev_ball;
+pub use boundary::{boundary_band, boundary_band_into};
+pub use erode::{erode_chebyshev_ball, erode_chebyshev_ball_into, ErodeScratch};
 
 use crate::error::{MalformedRleReason, MaskError};
 use crate::rle::Rle;

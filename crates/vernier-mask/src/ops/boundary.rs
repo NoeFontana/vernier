@@ -19,7 +19,7 @@
 //!   subset invariant ever broke.
 
 use crate::error::MaskError;
-use crate::ops::erode::erode_chebyshev_ball;
+use crate::ops::erode::{erode_raster_into_scratch, ErodeScratch};
 use crate::rle::Rle;
 
 /// Computes the boundary band of an RLE binary mask: the set of
@@ -31,19 +31,36 @@ use crate::rle::Rle;
 /// quirk **P2** the band of an empty (no-foreground) mask is itself
 /// empty.
 pub fn boundary_band(rle: &Rle, dilation_ratio: f64) -> Result<Rle, MaskError> {
+    let mut scratch = ErodeScratch::new();
+    boundary_band_into(rle, dilation_ratio, &mut scratch)
+}
+
+/// `_into` variant of [`boundary_band`] reusing a caller-owned
+/// [`ErodeScratch`]. Same semantics, but skips the intermediate
+/// eroded-RLE encode/decode roundtrip by XORing the mask with the
+/// eroded raster in place — the boundary-IoU dataset-wide pass on
+/// val2017 amortizes the per-mask allocations across ~36k calls.
+pub fn boundary_band_into(
+    rle: &Rle,
+    dilation_ratio: f64,
+    scratch: &mut ErodeScratch,
+) -> Result<Rle, MaskError> {
     if rle.h == 0 || rle.w == 0 {
         return Ok(rle.clone());
     }
     let radius = dilation_pixels(rle.h, rle.w, dilation_ratio);
-    let eroded = erode_chebyshev_ball(rle, radius)?;
-    let mut band = rle.to_raster_bytes();
-    let eroded_raster = eroded.to_raster_bytes();
+    let h = rle.h as usize;
+    let w = rle.w as usize;
+    let d = radius as usize;
+    rle.to_raster_bytes_into(&mut scratch.raster);
+    erode_raster_into_scratch(scratch, h, w, d);
     // N5: mask AND NOT eroded == mask XOR eroded under the eroded ⊆ mask
-    // invariant (asserted by the proptest in erode.rs).
-    for (m, &e) in band.iter_mut().zip(&eroded_raster) {
+    // invariant (asserted by the proptest in erode.rs). XOR in place so
+    // we don't need a separate band buffer.
+    for (m, &e) in scratch.raster.iter_mut().zip(&scratch.eroded) {
         *m ^= e;
     }
-    Rle::from_raster_bytes(&band, rle.h, rle.w)
+    Rle::from_raster_bytes(&scratch.raster, rle.h, rle.w)
 }
 
 /// Quirks **M2** + **M3**: pixel dilation distance for a `(h, w)`

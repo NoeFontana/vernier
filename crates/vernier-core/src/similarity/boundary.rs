@@ -41,8 +41,11 @@
 //!   so the `min` is never taken against a boundary-band term whose
 //!   crowd-side semantics are undefined.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, MutexGuard};
+
 use ndarray::ArrayViewMut2;
-use vernier_mask::ops::boundary_band;
+use vernier_mask::ops::{boundary_band_into, ErodeScratch};
 use vernier_mask::Rle;
 
 use super::bbox::{BboxAnn, BboxIou};
@@ -50,6 +53,81 @@ use super::segm::{to_bbox_ann, SegmAnn};
 use super::Similarity;
 use crate::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
 use crate::error::EvalError;
+
+/// Cross-call cache of GT boundary bands for the boundary IoU
+/// kernel.
+///
+/// In a training loop, validation passes call `evaluate_boundary`
+/// repeatedly against the same GT but a fresh DT each epoch. GT
+/// band derivation is the dominant per-annotation cost in the
+/// boundary kernel (see `docs/engineering/benchmarking/`), and a
+/// cache amortises it across calls. Pass an instance to
+/// [`crate::evaluate_boundary_cached`] and reuse it across calls.
+///
+/// Keyed by GT annotation id ([`SegmAnn::ann_id`], populated from
+/// `CocoAnnotation::id` at the dataset boundary). Invalidated
+/// wholesale when [`crate::evaluate_boundary_cached`] is invoked at
+/// a different `dilation_ratio` than the entries were computed at —
+/// ratio is a static configuration knob in practice, so per-call
+/// invalidation is the simplest invariant.
+///
+/// Threadsafe via an internal [`Mutex`] (the kernel needs `Sync`).
+/// Single-threaded use is uncontended.
+#[derive(Default)]
+pub struct BoundaryGtCache {
+    inner: Mutex<CacheInner>,
+}
+
+#[derive(Default)]
+struct CacheInner {
+    bands: HashMap<i64, (Rle, u64)>,
+    /// `None` until the first [`crate::evaluate_boundary_cached`]
+    /// call populates entries. Subsequent calls compare and clear on
+    /// mismatch.
+    ratio: Option<f64>,
+}
+
+impl BoundaryGtCache {
+    /// Constructs an empty cache. Equivalent to [`Self::default`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of GT annotation bands currently held.
+    pub fn len(&self) -> usize {
+        self.lock().bands.len()
+    }
+
+    /// Returns `true` if no GT bands are currently cached.
+    pub fn is_empty(&self) -> bool {
+        self.lock().bands.is_empty()
+    }
+
+    /// Drops all cached bands. Useful when the GT dataset changes
+    /// mid-loop so stale `(ann_id, band)` pairs don't pollute the
+    /// next call.
+    pub fn clear(&self) {
+        let mut inner = self.lock();
+        inner.bands.clear();
+        inner.ratio = None;
+    }
+
+    /// On entry to a cached evaluate, ensure the cached entries
+    /// agree with `ratio`. If a different ratio populated the cache
+    /// previously, drop those entries — they would yield wrong
+    /// boundary bands at the new ratio.
+    pub(crate) fn align_ratio(&self, ratio: f64) {
+        let mut inner = self.lock();
+        if inner.ratio != Some(ratio) {
+            inner.bands.clear();
+            inner.ratio = Some(ratio);
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, CacheInner> {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
 
 /// Boundary IoU [`Similarity`] impl. Carries its `dilation_ratio`
 /// configuration; the matching engine reads only the [`Similarity`]
@@ -84,126 +162,183 @@ impl Similarity for BoundaryIou {
         dts: &[SegmAnn],
         out: &mut ArrayViewMut2<'_, f64>,
     ) -> Result<(), EvalError> {
-        if out.nrows() != gts.len() || out.ncols() != dts.len() {
+        let mut scratch = ErodeScratch::new();
+        boundary_iou_compute(self.dilation_ratio, gts, dts, out, &mut scratch, None)
+    }
+}
+
+/// Scratch-aware boundary-IoU compute. Same semantics as
+/// [`BoundaryIou::compute`] but reuses a caller-owned [`ErodeScratch`]
+/// across band derivations — letting the dataset-wide path
+/// (`evaluate_boundary` via the private `BoundaryIouCached` kernel)
+/// amortize per-mask scratch allocations across the ~36k anns of a
+/// val2017 pass.
+///
+/// When `gt_cache` is `Some`, GT bands are looked up by
+/// [`SegmAnn::ann_id`]; misses fall through to a fresh derivation and
+/// populate the cache. The cache must already be aligned to
+/// `dilation_ratio` (callers go through
+/// [`crate::evaluate_boundary_cached`], which calls
+/// [`BoundaryGtCache::align_ratio`] once per evaluate).
+pub(crate) fn boundary_iou_compute(
+    dilation_ratio: f64,
+    gts: &[SegmAnn],
+    dts: &[SegmAnn],
+    out: &mut ArrayViewMut2<'_, f64>,
+    scratch: &mut ErodeScratch,
+    gt_cache: Option<&BoundaryGtCache>,
+) -> Result<(), EvalError> {
+    if out.nrows() != gts.len() || out.ncols() != dts.len() {
+        return Err(EvalError::DimensionMismatch {
+            detail: format!(
+                "boundary IoU output is {}x{}, expected {}x{}",
+                out.nrows(),
+                out.ncols(),
+                gts.len(),
+                dts.len()
+            ),
+        });
+    }
+    if gts.is_empty() || dts.is_empty() {
+        return Ok(());
+    }
+
+    let (h, w) = (gts[0].rle.h, gts[0].rle.w);
+    for r in gts.iter().chain(dts.iter()).map(|a| &a.rle) {
+        if r.h != h || r.w != w {
             return Err(EvalError::DimensionMismatch {
                 detail: format!(
-                    "boundary IoU output is {}x{}, expected {}x{}",
-                    out.nrows(),
-                    out.ncols(),
-                    gts.len(),
-                    dts.len()
+                    "boundary IoU expects all RLEs at [{h}, {w}]; got [{}, {}]",
+                    r.h, r.w
                 ),
             });
         }
-        if gts.is_empty() || dts.is_empty() {
-            return Ok(());
-        }
-
-        let (h, w) = (gts[0].rle.h, gts[0].rle.w);
-        for r in gts.iter().chain(dts.iter()).map(|a| &a.rle) {
-            if r.h != h || r.w != w {
-                return Err(EvalError::DimensionMismatch {
-                    detail: format!(
-                        "boundary IoU expects all RLEs at [{h}, {w}]; got [{}, {}]",
-                        r.h, r.w
-                    ),
-                });
-            }
-        }
-
-        // I1 prefilter: bbox IoU on the tight RLE bboxes. Cells whose
-        // bbox IoU is 0 stay zero; non-zero cells get overwritten with
-        // the boundary IoU below. BboxIou honors the same E1 crowd
-        // asymmetry, so the gate is correct on crowd rows too.
-        let g_bbox: Vec<BboxAnn> = gts
-            .iter()
-            .map(|g| to_bbox_ann(&g.rle, g.is_crowd))
-            .collect();
-        let d_bbox: Vec<BboxAnn> = dts.iter().map(|d| to_bbox_ann(&d.rle, false)).collect();
-        BboxIou.compute(&g_bbox, &d_bbox, out)?;
-
-        // O1/O2: skip B(g) for crowd GTs — the boundary fold is
-        // suppressed on crowd rows, so computing the band is wasted
-        // work proportional to the (often large) crowd-mask area.
-        // An empty placeholder keeps Vec indices aligned with `gts`
-        // and is never read past the crowd guard below.
-        // TODO(ADR-0010 §"Performance baseline"): parallelise both
-        // g_band and d_band precomputation via rayon when total count
-        // exceeds ~16. Sequential ships first.
-        let crowd_placeholder = Rle {
-            h,
-            w,
-            counts: vec![],
-        };
-        let g_band: Vec<Rle> = gts
-            .iter()
-            .map(|g| {
-                if g.is_crowd {
-                    Ok(crowd_placeholder.clone())
-                } else {
-                    boundary_band(&g.rle, self.dilation_ratio)
-                }
-            })
-            .collect::<Result<_, _>>()?;
-        let d_band: Vec<Rle> = dts
-            .iter()
-            .map(|d| boundary_band(&d.rle, self.dilation_ratio))
-            .collect::<Result<_, _>>()?;
-
-        let g_mask_area: Vec<u64> = gts.iter().map(|g| g.rle.area()).collect();
-        let d_mask_area: Vec<u64> = dts.iter().map(|d| d.rle.area()).collect();
-        let g_bound_area: Vec<u64> = g_band.iter().map(Rle::area).collect();
-        let d_bound_area: Vec<u64> = d_band.iter().map(Rle::area).collect();
-
-        for g in 0..gts.len() {
-            let crowd = gts[g].is_crowd;
-            for d in 0..dts.len() {
-                if out[[g, d]] <= 0.0 {
-                    continue;
-                }
-                let inter_mask = gts[g].rle.intersect_area(&dts[d].rle)?;
-                let mask_denom = if crowd {
-                    d_mask_area[d]
-                } else {
-                    g_mask_area[g] + d_mask_area[d] - inter_mask
-                };
-                let mask_iou = if mask_denom > 0 && inter_mask > 0 {
-                    (inter_mask as f64) / (mask_denom as f64)
-                } else {
-                    0.0
-                };
-
-                // Folding `min` against the crowd-side band term would
-                // invent semantics the spec does not define (O1/O2),
-                // and we skipped its precomputation above.
-                if crowd {
-                    out[[g, d]] = mask_iou;
-                    continue;
-                }
-
-                let inter_bound = g_band[g].intersect_area(&d_band[d])?;
-                let bound_denom = g_bound_area[g] + d_bound_area[d] - inter_bound;
-                let bound_iou = if bound_denom > 0 && inter_bound > 0 {
-                    (inter_bound as f64) / (bound_denom as f64)
-                } else {
-                    0.0
-                };
-
-                out[[g, d]] = mask_iou.min(bound_iou);
-            }
-        }
-
-        Ok(())
     }
+
+    // I1 prefilter: bbox IoU on the tight RLE bboxes. Cells whose
+    // bbox IoU is 0 stay zero; non-zero cells get overwritten with
+    // the boundary IoU below. BboxIou honors the same E1 crowd
+    // asymmetry, so the gate is correct on crowd rows too.
+    let g_bbox: Vec<BboxAnn> = gts
+        .iter()
+        .map(|g| to_bbox_ann(&g.rle, g.is_crowd))
+        .collect();
+    let d_bbox: Vec<BboxAnn> = dts.iter().map(|d| to_bbox_ann(&d.rle, false)).collect();
+    BboxIou.compute(&g_bbox, &d_bbox, out)?;
+
+    // O1/O2: skip B(g) for crowd GTs — the boundary fold is
+    // suppressed on crowd rows, so computing the band is wasted
+    // work proportional to the (often large) crowd-mask area.
+    // An empty placeholder keeps Vec indices aligned with `gts`
+    // and is never read past the crowd guard below.
+    let crowd_placeholder = Rle {
+        h,
+        w,
+        counts: vec![],
+    };
+    let g_band: Vec<(Rle, u64)> = gts
+        .iter()
+        .map(|g| {
+            if g.is_crowd {
+                Ok((crowd_placeholder.clone(), 0))
+            } else {
+                derive_gt_band(g, dilation_ratio, scratch, gt_cache)
+            }
+        })
+        .collect::<Result<_, _>>()?;
+    let d_band: Vec<(Rle, u64)> = dts
+        .iter()
+        .map(|d| {
+            let band = boundary_band_into(&d.rle, dilation_ratio, scratch)?;
+            let area = band.area();
+            Ok((band, area))
+        })
+        .collect::<Result<_, EvalError>>()?;
+
+    let g_mask_area: Vec<u64> = gts.iter().map(|g| g.rle.area()).collect();
+    let d_mask_area: Vec<u64> = dts.iter().map(|d| d.rle.area()).collect();
+
+    for g in 0..gts.len() {
+        let crowd = gts[g].is_crowd;
+        for d in 0..dts.len() {
+            if out[[g, d]] <= 0.0 {
+                continue;
+            }
+            let inter_mask = gts[g].rle.intersect_area(&dts[d].rle)?;
+            let mask_denom = if crowd {
+                d_mask_area[d]
+            } else {
+                g_mask_area[g] + d_mask_area[d] - inter_mask
+            };
+            let mask_iou = if mask_denom > 0 && inter_mask > 0 {
+                (inter_mask as f64) / (mask_denom as f64)
+            } else {
+                0.0
+            };
+
+            // Folding `min` against the crowd-side band term would
+            // invent semantics the spec does not define (O1/O2),
+            // and we skipped its precomputation above.
+            if crowd {
+                out[[g, d]] = mask_iou;
+                continue;
+            }
+
+            let inter_bound = g_band[g].0.intersect_area(&d_band[d].0)?;
+            let bound_denom = g_band[g].1 + d_band[d].1 - inter_bound;
+            let bound_iou = if bound_denom > 0 && inter_bound > 0 {
+                (inter_bound as f64) / (bound_denom as f64)
+            } else {
+                0.0
+            };
+
+            out[[g, d]] = mask_iou.min(bound_iou);
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve one GT annotation's `(band, area)`. With a cache, hit-or-
+/// derive on `ann_id`; without, derive directly. The cache lock is
+/// held across the (slow) erosion call: `BoundaryIouCached` already
+/// serialises kernel calls via its `Mutex<ErodeScratch>`, so dropping
+/// the cache lock around erosion would not let any sibling thread
+/// make progress — keeping the lock held simplifies the hit/miss
+/// handling and removes a wasted second `lock()` on miss.
+fn derive_gt_band(
+    ann: &SegmAnn,
+    ratio: f64,
+    scratch: &mut ErodeScratch,
+    cache: Option<&BoundaryGtCache>,
+) -> Result<(Rle, u64), EvalError> {
+    let Some(cache) = cache else {
+        let band = boundary_band_into(&ann.rle, ratio, scratch)?;
+        let area = band.area();
+        return Ok((band, area));
+    };
+    let mut inner = cache.lock();
+    if let Some((rle, area)) = inner.bands.get(&ann.ann_id) {
+        return Ok((rle.clone(), *area));
+    }
+    let band = boundary_band_into(&ann.rle, ratio, scratch)?;
+    let area = band.area();
+    inner.bands.insert(ann.ann_id, (band.clone(), area));
+    Ok((band, area))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ndarray::Array2;
+    use vernier_mask::ops::boundary_band;
 
     fn ann(rle: Rle, is_crowd: bool) -> SegmAnn {
-        SegmAnn { rle, is_crowd }
+        SegmAnn {
+            rle,
+            is_crowd,
+            ann_id: 0,
+        }
     }
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {

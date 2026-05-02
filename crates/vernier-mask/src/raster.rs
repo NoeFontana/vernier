@@ -80,14 +80,28 @@ impl Rle {
     /// length of the returned vector reflects the actual sum of
     /// counts; for a well-formed RLE this equals `h * w`.
     pub fn to_raster_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity((self.h as usize).saturating_mul(self.w as usize));
+        self.to_raster_bytes_into(&mut out);
+        out
+    }
+
+    /// Decodes the RLE into a caller-owned byte buffer, reusing its
+    /// capacity. The buffer is `clear()`-ed first, then grown to
+    /// `h * w`. Same semantics as [`Self::to_raster_bytes`] otherwise.
+    ///
+    /// Hot-path callers (the boundary-band kernel decodes ~36 k masks
+    /// per `evaluate_boundary` on val2017) can hold a single
+    /// `Vec<u8>` and pass it on every call to amortize the per-mask
+    /// allocation cost.
+    pub fn to_raster_bytes_into(&self, buf: &mut Vec<u8>) {
+        buf.clear();
         let total = (self.h as usize).saturating_mul(self.w as usize);
-        let mut out = Vec::with_capacity(total);
+        buf.reserve(total);
         let mut v: u8 = 0;
         for &len in &self.counts {
-            out.resize(out.len() + len as usize, v);
+            buf.resize(buf.len() + len as usize, v);
             v ^= 1;
         }
-        out
     }
 }
 
