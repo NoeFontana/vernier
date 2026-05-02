@@ -148,11 +148,12 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
     } = scratch;
 
     // 1. Pad to (h+2, w+2) column-major with a 1-pixel zero ring (N1).
-    //    Original (x, y) maps to padded (x+1, y+1).
+    //    Each source column is contiguous (column-major), so the per-x
+    //    body is a `copy_from_slice` between aligned `h`-byte slices.
     for x in 0..w {
-        for y in 0..h {
-            padded[(x + 1) * ph + (y + 1)] = raster[x * h + y];
-        }
+        let src_start = x * h;
+        let dst_start = (x + 1) * ph + 1;
+        padded[dst_start..dst_start + h].copy_from_slice(&raster[src_start..src_start + h]);
     }
 
     // 2. Row pass: column-major means x-stride = ph (non-contiguous),
@@ -181,9 +182,9 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
     // 4. Strip the pad: copy interior (1..=w) × (1..=h) back to (h, w)
     //    column-major (N2).
     for x in 0..w {
-        for y in 0..h {
-            eroded[x * h + y] = padded[(x + 1) * ph + (y + 1)];
-        }
+        let src_start = (x + 1) * ph + 1;
+        let dst_start = x * h;
+        eroded[dst_start..dst_start + h].copy_from_slice(&padded[src_start..src_start + h]);
     }
 }
 

@@ -276,6 +276,37 @@ vs `boundary-iou-api` 63.642 s: vernier is now **1.24× faster**
 matching the expectation that the fused path touches only the
 boundary kernel.
 
+### Post-fix #3 — fused-XOR scan + cache-friendly erode pad/strip
+
+The follow-up PR after #88 bundles two adjacent levers on the
+boundary band derivation hot path:
+
+1. `SegmentTable::push_from_rasters_xor`: fuses the in-place
+   `mask ^ eroded` step into the segment-emit scan. Instead of
+   walking the band raster after a separate XOR pass, the new
+   primitive reads the `(mask, eroded)` pair in 8-byte chunks,
+   skipping windows where `mask == eroded` (covers both pure
+   background `0=0` and pure interior `1=1` — the two regions that
+   dominate a COCO-shaped band).
+2. Per-column `copy_from_slice` in the erode pad/strip steps,
+   replacing the previous nested per-byte loops over the
+   non-contiguous column-major stride.
+
+`coco_val2017_perfect_segm` boundary, vernier (release, N=10, IQR ≤5%):
+
+| stage    | post-fix #2 median | post-fix #3 median |     Δ |
+| -------- | -----------------: | -----------------: | ----: |
+| total    |        51.444 s    |        40.510 s    | −21.3% |
+| evaluate |        51.360 s    |        40.427 s    | −21.3% |
+
+vs `boundary-iou-api` 63.642 s: vernier is now **1.57× faster**.
+Segm release median is **1.759 s**, bit-identical to the post-#87
+baseline — the fused path is boundary-only.
+
+Cumulatively over the 2026-05 push, `coco_val2017_perfect_segm`
+boundary went from 75.861 s (pre-fix) to 40.510 s (post-fix #3) —
+**1.87× faster** end-to-end, sustained across the IQR gate.
+
 ---
 
 ## Smoke fan-out — `smoke_perfect_match_segm` (parity smoke, not a perf claim)

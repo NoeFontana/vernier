@@ -49,7 +49,10 @@ pub fn boundary_band_into(
     if rle.h == 0 || rle.w == 0 {
         return Ok(rle.clone());
     }
-    xor_band_raster_into_scratch(rle, dilation_ratio, scratch);
+    erode_for_band(rle, dilation_ratio, scratch);
+    for (m, &e) in scratch.raster.iter_mut().zip(&scratch.eroded) {
+        *m ^= e;
+    }
     Rle::from_raster_bytes(&scratch.raster, rle.h, rle.w)
 }
 
@@ -76,28 +79,25 @@ pub fn boundary_band_segments_into(
         segments.push_segments(&[]);
         return Ok(0);
     }
-    xor_band_raster_into_scratch(rle, dilation_ratio, scratch);
-    Ok(segments.push_from_raster(&scratch.raster))
+    erode_for_band(rle, dilation_ratio, scratch);
+    Ok(segments.push_from_rasters_xor(&scratch.raster, &scratch.eroded))
 }
 
-/// Fills `scratch.raster` with the band raster: RLE → mask raster →
-/// erode → mask XOR eroded. Shared by [`boundary_band_into`] and
-/// [`boundary_band_segments_into`]; the only difference between the
-/// two public entry points is what they do with the resulting raster.
+/// Decodes `rle` to `scratch.raster` and writes the eroded raster to
+/// `scratch.eroded`. Shared by [`boundary_band_into`] (which still
+/// XORs in place to materialize the band raster) and
+/// [`boundary_band_segments_into`] (which streams the band on the fly
+/// via [`SegmentTable::push_from_rasters_xor`]).
 ///
 /// N5: `mask AND NOT eroded == mask XOR eroded` under the
 /// `eroded ⊆ mask` invariant (asserted by the proptest in `erode.rs`).
-/// XOR in place so we don't need a separate band buffer.
-fn xor_band_raster_into_scratch(rle: &Rle, dilation_ratio: f64, scratch: &mut ErodeScratch) {
+fn erode_for_band(rle: &Rle, dilation_ratio: f64, scratch: &mut ErodeScratch) {
     let radius = dilation_pixels(rle.h, rle.w, dilation_ratio);
     let h = rle.h as usize;
     let w = rle.w as usize;
     let d = radius as usize;
     rle.to_raster_bytes_into(&mut scratch.raster);
     erode_raster_into_scratch(scratch, h, w, d);
-    for (m, &e) in scratch.raster.iter_mut().zip(&scratch.eroded) {
-        *m ^= e;
-    }
 }
 
 /// Quirks **M2** + **M3**: pixel dilation distance for a `(h, w)`
