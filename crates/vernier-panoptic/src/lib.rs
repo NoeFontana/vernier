@@ -22,10 +22,19 @@
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod attribute;
+pub mod dataset;
 pub mod error;
+pub mod kernel;
 pub mod parity;
 
+pub use attribute::{attribute_image, PqStat};
+pub use dataset::{
+    CategoryId, CategoryMeta, ImageEntry, ImageId, PanopticDataset, PanopticPredictions,
+    SegmentInfo,
+};
 pub use error::PanopticError;
+pub use kernel::{pq_image, pq_image_with_id, PqImageReport, TpPair};
 pub use parity::{
     ParityMode, ORACLE_COMMIT_SHA, ORACLE_PILLOW_PIN, PANOPTIC_IOU_THRESHOLD, PANOPTIC_OFFSET,
     PANOPTIC_PARITY_EPS, PANOPTIC_VOID,
