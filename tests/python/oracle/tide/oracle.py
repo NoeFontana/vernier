@@ -966,7 +966,7 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
         img_id = ann["image_id"]
         if img_id not in by_image:
             continue
-        bbox = tuple(ann["bbox"])  # type: ignore[assignment]
+        bbox = tuple(ann["bbox"])
         if len(bbox) != 4:
             raise ValueError(f"GT ann {ann.get('id')} has bbox of len {len(bbox)} != 4")
         h, w = image_dims[img_id]
@@ -980,7 +980,7 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
             _GT(
                 image_id=img_id,
                 category_id=ann["category_id"],
-                bbox=bbox,  # type: ignore[arg-type]
+                bbox=bbox,
                 iscrowd=bool(ann.get("iscrowd", 0)),
                 ignore=bool(ann.get("ignore", 0)),
                 ann_id=ann.get("id", -1),
@@ -993,7 +993,7 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
         img_id = det["image_id"]
         if img_id not in by_image:
             continue
-        bbox = tuple(det["bbox"])  # type: ignore[assignment]
+        bbox = tuple(det["bbox"])
         if len(bbox) != 4:
             raise ValueError(f"DT #{d_idx} has bbox of len {len(bbox)} != 4")
         h, w = image_dims[img_id]
@@ -1007,7 +1007,7 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
             _DT(
                 image_id=img_id,
                 category_id=det["category_id"],
-                bbox=bbox,  # type: ignore[arg-type]
+                bbox=bbox,
                 score=float(det["score"]),
                 dt_idx=d_idx,
                 segmentation=list(seg),
