@@ -123,10 +123,19 @@ def _oracle_snapshot(
         annotation_set = list(zip(gt_anns, dt_anns, strict=True))
         pq_stat = pq_compute_single_core(0, annotation_set, str(gt_dir), str(dt_dir), cats_dict)
 
+    return pq_stat_to_snapshot(pq_stat, cats_dict)
+
+
+def pq_stat_to_snapshot(
+    pq_stat: Any, cats_dict: Mapping[int, Mapping[str, Any]]
+) -> PanopticSnapshot:
+    """Project a panopticapi `PQStat` into a `PanopticSnapshot`. Shared
+    by `_oracle_snapshot` (fixture-driven) and the val-smoke test
+    (real GT/DT). The three `pq_average` calls are independent —
+    the All bucket carries the full `per_class` row map."""
     all_d, per_class = pq_stat.pq_average(cats_dict, isthing=None)
     things_d, _ = pq_stat.pq_average(cats_dict, isthing=True)
     stuff_d, _ = pq_stat.pq_average(cats_dict, isthing=False)
-
     return PanopticSnapshot(
         pq=all_d["pq"],
         sq=all_d["sq"],
@@ -141,6 +150,33 @@ def _oracle_snapshot(
         rq_stuff=stuff_d["rq"],
         n_stuff=stuff_d["n"],
         per_class={int(k): dict(v) for k, v in per_class.items()},
+    )
+
+
+def summary_to_snapshot(summary: vernier.PanopticSummary) -> PanopticSnapshot:
+    """Project a `vernier.PanopticSummary` into a `PanopticSnapshot`.
+    Coerces the `Option<f64>` / `Option<usize>` bucket fields to
+    `0.0` / `0` for the empty-bucket case — panopticapi's
+    `pq_average` returns the same shape (its `n!=0` guard avoids
+    `ZeroDivisionError` only because the test fixtures keep both
+    buckets non-empty)."""
+    return PanopticSnapshot(
+        pq=summary.pq,
+        sq=summary.sq,
+        rq=summary.rq,
+        n=summary.n,
+        pq_things=summary.pq_things if summary.pq_things is not None else 0.0,
+        sq_things=summary.sq_things if summary.sq_things is not None else 0.0,
+        rq_things=summary.rq_things if summary.rq_things is not None else 0.0,
+        n_things=summary.n_things if summary.n_things is not None else 0,
+        pq_stuff=summary.pq_stuff if summary.pq_stuff is not None else 0.0,
+        sq_stuff=summary.sq_stuff if summary.sq_stuff is not None else 0.0,
+        rq_stuff=summary.rq_stuff if summary.rq_stuff is not None else 0.0,
+        n_stuff=summary.n_stuff if summary.n_stuff is not None else 0,
+        per_class={
+            int(cat): {"pq": row.pq, "sq": row.sq, "rq": row.rq}
+            for cat, row in summary.per_class().items()
+        },
     )
 
 
@@ -168,30 +204,7 @@ def _vernier_snapshot(
     summary = vernier.PanopticEvaluator(parity_mode=parity_mode, things_stuff_split=True).evaluate(
         gt, dt
     )
-
-    # vernier returns Some(0.0)/Some(0) when a bucket is empty under
-    # Corrected; panopticapi returns the same shape (NaN avoided by
-    # the n!=0 guard in pq_average). For the parity diff we coerce
-    # None to 0.0 / 0 since that's what the oracle would have
-    # returned for the same conditions.
-    return PanopticSnapshot(
-        pq=summary.pq,
-        sq=summary.sq,
-        rq=summary.rq,
-        n=summary.n,
-        pq_things=summary.pq_things if summary.pq_things is not None else 0.0,
-        sq_things=summary.sq_things if summary.sq_things is not None else 0.0,
-        rq_things=summary.rq_things if summary.rq_things is not None else 0.0,
-        n_things=summary.n_things if summary.n_things is not None else 0,
-        pq_stuff=summary.pq_stuff if summary.pq_stuff is not None else 0.0,
-        sq_stuff=summary.sq_stuff if summary.sq_stuff is not None else 0.0,
-        rq_stuff=summary.rq_stuff if summary.rq_stuff is not None else 0.0,
-        n_stuff=summary.n_stuff if summary.n_stuff is not None else 0,
-        per_class={
-            int(cat): {"pq": row.pq, "sq": row.sq, "rq": row.rq}
-            for cat, row in summary.per_class().items()
-        },
-    )
+    return summary_to_snapshot(summary)
 
 
 def snapshot(

@@ -88,18 +88,33 @@ pub fn attribute_image(
         s.n_tp += 1;
     }
 
-    // FN classification + crowd_labels_dict construction (V1, V2, V3).
-    // V3 strict: last-wins overwrite; corrected: HashMap<cat, Vec<gt_id>>.
-    let mut crowd_last: HashMap<CategoryId, u32> = HashMap::new();
-    let mut crowd_all: HashMap<CategoryId, Vec<u32>> = HashMap::new();
+    // V3 storage diverges by mode: strict keeps a single last-wins
+    // `gt_id` per category (panopticapi `crowd_labels_dict[cat] =
+    // gt_label`); corrected accumulates every same-category crowd
+    // and sums their overlaps. Picking the storage shape upfront
+    // skips the unused alternative.
+    enum CrowdMap {
+        Strict(HashMap<CategoryId, u32>),
+        Corrected(HashMap<CategoryId, Vec<u32>>),
+    }
+    let mut crowd: CrowdMap = match mode {
+        ParityMode::Strict => CrowdMap::Strict(HashMap::new()),
+        ParityMode::Corrected => CrowdMap::Corrected(HashMap::new()),
+    };
+
+    // FN classification + crowd_labels_dict population (V1, V2, V3).
     for &gt_id in &report.unmatched_gt {
         let Some(seg) = gt.segments.get(&gt_id) else {
             continue;
         };
         if seg.iscrowd {
             // V2: crowd GT is excluded from FN.
-            crowd_last.insert(seg.category_id, gt_id);
-            crowd_all.entry(seg.category_id).or_default().push(gt_id);
+            match &mut crowd {
+                CrowdMap::Strict(m) => {
+                    m.insert(seg.category_id, gt_id);
+                }
+                CrowdMap::Corrected(m) => m.entry(seg.category_id).or_default().push(gt_id),
+            }
             continue;
         }
         // V1: unmatched non-crowd GT → FN.
@@ -117,31 +132,18 @@ pub fn attribute_image(
             .get(&(PANOPTIC_VOID, dt_id))
             .copied()
             .unwrap_or(0) as u64;
-        let crowd_overlap: u64 = match mode {
-            ParityMode::Strict => crowd_last
+        let lookup = |gt_id: u32| -> u64 {
+            report
+                .intersections
+                .get(&(gt_id, dt_id))
+                .copied()
+                .unwrap_or(0) as u64
+        };
+        let crowd_overlap: u64 = match &crowd {
+            CrowdMap::Strict(m) => m.get(&seg.category_id).copied().map(lookup).unwrap_or(0),
+            CrowdMap::Corrected(m) => m
                 .get(&seg.category_id)
-                .map(|&gt_id| {
-                    report
-                        .intersections
-                        .get(&(gt_id, dt_id))
-                        .copied()
-                        .unwrap_or(0) as u64
-                })
-                .unwrap_or(0),
-            ParityMode::Corrected => crowd_all
-                .get(&seg.category_id)
-                .map(|gt_ids| {
-                    gt_ids
-                        .iter()
-                        .map(|&gt_id| {
-                            report
-                                .intersections
-                                .get(&(gt_id, dt_id))
-                                .copied()
-                                .unwrap_or(0) as u64
-                        })
-                        .sum::<u64>()
-                })
+                .map(|gt_ids| gt_ids.iter().copied().map(lookup).sum::<u64>())
                 .unwrap_or(0),
         };
         // V4: strict greater-than. Equality → not excluded → counts as FP.

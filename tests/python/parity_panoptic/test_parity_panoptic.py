@@ -35,7 +35,7 @@ pytestmark = pytest.mark.parity_panoptic
 def test_perfect_match_strict_bit_equal() -> None:
     """Sanity: a 1x10 fixture with two perfectly-matching segments
     bit-equals the oracle on every output field. This is the
-    end-to-end parity smoke that the rest of the rollout depends on."""
+    end-to-end parity smoke against the panopticapi oracle."""
     gt = {1: np.array([[1, 1, 1, 1, 1, 2, 2, 2, 2, 2]], dtype=np.uint32)}
     dt = {1: np.array([[10, 10, 10, 10, 10, 11, 11, 11, 11, 11]], dtype=np.uint32)}
     gt_segs = {

@@ -9,7 +9,7 @@
 //!
 //! This module owns the pure-Rust data shape and the structural
 //! validations that don't require I/O. The PNG-decode and JSON-parse
-//! glue lives in [`vernier-ffi::panoptic`] (lands in PR-4).
+//! glue lives in `vernier-ffi::panoptic`.
 
 use std::collections::{HashMap, HashSet};
 

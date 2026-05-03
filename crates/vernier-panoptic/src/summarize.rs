@@ -23,7 +23,7 @@ use crate::parity::ParityMode;
 
 /// Per-class PQ row. Strict superset of panopticapi's `{pq, sq, rq}`
 /// shape (quirk **W8**); the count fields are vernier-only and the
-/// FFI's `to_dict_strict()` shim drops them to match the upstream
+/// FFI's `to_dict(strict=True)` shim drops them to match the upstream
 /// dict shape exactly.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ClassPanopticStats {

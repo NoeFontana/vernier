@@ -1,10 +1,10 @@
 """Single source of truth for the COCO panoptic val2017 dev cache contract.
 
 Parallel to :mod:`coco_val_cache` (the COCO val2017 cache) and
-:mod:`lvis_val_cache` (the LVIS v1 val cache); the panoptic
-whole-dataset parity smoke (ADR-0025 PR-6) consumes the same
-idempotent fetch+verify flow against the COCO panoptic GT JSON +
-per-image PNG label maps.
+:mod:`lvis_val_cache` (the LVIS v1 val cache). The panoptic
+whole-dataset parity smoke (ADR-0025) consumes the same idempotent
+fetch+verify flow against the COCO panoptic GT JSON + per-image
+PNG label maps.
 
 Library entry points (all idempotent):
 
@@ -44,10 +44,10 @@ GT_PNG_DIRNAME = "panoptic_val2017"
 #: reproduces is keyed to this exact byte sequence.
 #:
 #: NOTE: This SHA is **a placeholder** until the first developer
-#: provisions the cache and publishes the verified hash; the cache
-#: will refuse to use any download whose SHA does not match the
-#: pinned value below. See PR-6 of the ADR-0025 rollout for the
-#: refresh procedure once the pin is verified.
+#: provisions the cache and publishes the verified hash. The cache
+#: refuses to use any download whose SHA does not match the pinned
+#: value below; the bootstrap-mode `_verify_sha` raises with the
+#: observed hash so the developer can paste it into this constant.
 GT_ZIP_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
 
 CACHE_ENV = "VERNIER_PANOPTIC_CACHE"
@@ -94,18 +94,17 @@ def _atomic_download(url: str, dest: Path) -> None:
 
 
 def _verify_sha(zip_path: Path) -> None:
-    if GT_ZIP_SHA256 == "0" * 64:
-        # Bootstrapping: print the observed SHA so a developer can
-        # paste it into this module to pin the artifact.
-        actual = file_sha256(zip_path)
-        print(
-            f"WARNING: panoptic GT zip SHA-256 is unpinned. "
-            f"Observed: {actual}\n"
-            f"Update GT_ZIP_SHA256 in tools/panoptic_val_cache/panoptic_val_cache/__init__.py "
-            f"to pin this artifact."
-        )
-        return
     actual = file_sha256(zip_path)
+    if GT_ZIP_SHA256 == "0" * 64:
+        zip_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"panoptic GT zip SHA-256 is unpinned (placeholder constant). "
+            f"Observed SHA-256: {actual}\n"
+            f"Bootstrap: paste this value into GT_ZIP_SHA256 in "
+            f"tools/panoptic_val_cache/panoptic_val_cache/__init__.py "
+            f"and rerun. The cache refuses any non-matching artifact "
+            f"once pinned (per the parity-contract reproducibility claim)."
+        )
     if actual != GT_ZIP_SHA256:
         zip_path.unlink(missing_ok=True)
         raise RuntimeError(

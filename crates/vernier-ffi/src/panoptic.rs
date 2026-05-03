@@ -4,8 +4,9 @@
 //! - [`PyPanopticDataset`] / [`PyPanopticPredictions`] — frozen
 //!   parsed-once handles (mirrors the [`crate::dataset::PyDataset`]
 //!   pattern). `from_arrays` builds a handle from a Python dict of
-//!   uint32 ndarrays + JSON-string segments_info; `from_files` reads
-//!   PNG paths + a JSON file (PR-4b — Python-side helper for now).
+//!   uint32 ndarrays + JSON-string segments_info. A `from_files`
+//!   variant (Rust-side `png` decode) is a documented follow-up;
+//!   users currently round-trip through Pillow + np.array.
 //! - [`PyPanopticSummary`] / [`PyClassPanopticStats`] — read-only
 //!   wrappers over the [`vernier_panoptic::PanopticSummary`] /
 //!   [`vernier_panoptic::ClassPanopticStats`] result rows.
@@ -391,26 +392,18 @@ impl PyPanopticSummary {
     fn to_dict<'py>(&self, py: Python<'py>, strict: bool) -> PyResult<Bound<'py, PyDict>> {
         let out = PyDict::new(py);
 
-        let bucket =
-            |label: &str, pq: f64, sq: f64, rq: f64, n: usize| -> PyResult<Bound<'py, PyDict>> {
-                let d = PyDict::new(py);
-                d.set_item("pq", pq)?;
-                d.set_item("sq", sq)?;
-                d.set_item("rq", rq)?;
-                d.set_item("n", n)?;
-                let _ = label;
-                Ok(d)
-            };
+        let bucket = |pq: f64, sq: f64, rq: f64, n: usize| -> PyResult<Bound<'py, PyDict>> {
+            let d = PyDict::new(py);
+            d.set_item("pq", pq)?;
+            d.set_item("sq", sq)?;
+            d.set_item("rq", rq)?;
+            d.set_item("n", n)?;
+            Ok(d)
+        };
 
         out.set_item(
             "All",
-            bucket(
-                "All",
-                self.inner.pq,
-                self.inner.sq,
-                self.inner.rq,
-                self.inner.n,
-            )?,
+            bucket(self.inner.pq, self.inner.sq, self.inner.rq, self.inner.n)?,
         )?;
         match (
             self.inner.pq_things,
@@ -419,7 +412,7 @@ impl PyPanopticSummary {
             self.inner.n_things,
         ) {
             (Some(p), Some(s), Some(r), Some(n)) => {
-                out.set_item("Things", bucket("Things", p, s, r, n)?)?;
+                out.set_item("Things", bucket(p, s, r, n)?)?;
             }
             _ => out.set_item("Things", py.None())?,
         }
@@ -430,7 +423,7 @@ impl PyPanopticSummary {
             self.inner.n_stuff,
         ) {
             (Some(p), Some(s), Some(r), Some(n)) => {
-                out.set_item("Stuff", bucket("Stuff", p, s, r, n)?)?;
+                out.set_item("Stuff", bucket(p, s, r, n)?)?;
             }
             _ => out.set_item("Stuff", py.None())?,
         }
@@ -478,8 +471,8 @@ pub(crate) fn evaluate_panoptic(
     things_stuff_split: bool,
 ) -> PyResult<PyPanopticSummary> {
     let mode = match parity_mode {
-        "strict" | "Strict" => ParityMode::Strict,
-        "corrected" | "Corrected" => ParityMode::Corrected,
+        "strict" => ParityMode::Strict,
+        "corrected" => ParityMode::Corrected,
         other => {
             return Err(PyValueError::new_err(format!(
                 "unknown panoptic parity_mode {other:?}; expected 'strict' or 'corrected'"

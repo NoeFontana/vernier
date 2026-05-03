@@ -1,4 +1,4 @@
-"""COCO panoptic val2017 whole-dataset parity smoke (ADR-0025 PR-6).
+"""COCO panoptic val2017 whole-dataset parity smoke (ADR-0025).
 
 Env-gated: requires :data:`VERNIER_PANOPTIC_GT_PATH` /
 :data:`VERNIER_PANOPTIC_GT_PNG_DIR` / :data:`VERNIER_PANOPTIC_DT_PATH`
@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import gc
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
@@ -30,14 +29,13 @@ from PIL import Image as PILImage
 
 import vernier
 
-from .harness import PanopticSnapshot, assert_snapshots_equal
+from .harness import (
+    PanopticSnapshot,
+    assert_snapshots_equal,
+    pq_stat_to_snapshot,
+    summary_to_snapshot,
+)
 from .panoptic_val_paths import require_artifacts, sample_image_count
-
-# Make the vendored panopticapi importable without going through pytest's
-# conftest discovery (this file is invoked directly by `pytest -m parity_panoptic_val`).
-_ORACLE_PATH = Path(__file__).parent / "oracle" / "panopticapi"
-if str(_ORACLE_PATH) not in sys.path:
-    sys.path.insert(0, str(_ORACLE_PATH))
 
 
 def _decode_png_to_uint32(path: Path) -> np.ndarray:
@@ -87,25 +85,7 @@ def _oracle_snapshot_full(
     cats_dict = {c["id"]: c for c in gt["categories"]}
     pq_stat = pq_compute_single_core(0, matched, str(gt_png_dir), str(dt_png_dir), cats_dict)
 
-    all_d, per_class = pq_stat.pq_average(cats_dict, isthing=None)
-    things_d, _ = pq_stat.pq_average(cats_dict, isthing=True)
-    stuff_d, _ = pq_stat.pq_average(cats_dict, isthing=False)
-
-    snap = PanopticSnapshot(
-        pq=all_d["pq"],
-        sq=all_d["sq"],
-        rq=all_d["rq"],
-        n=all_d["n"],
-        pq_things=things_d["pq"],
-        sq_things=things_d["sq"],
-        rq_things=things_d["rq"],
-        n_things=things_d["n"],
-        pq_stuff=stuff_d["pq"],
-        sq_stuff=stuff_d["sq"],
-        rq_stuff=stuff_d["rq"],
-        n_stuff=stuff_d["n"],
-        per_class={int(k): dict(v) for k, v in per_class.items()},
-    )
+    snap = pq_stat_to_snapshot(pq_stat, cats_dict)
     gt_anns = [m[0] for m in matched]
     dt_anns = [m[1] for m in matched]
     return snap, gt_anns, dt_anns, cats_dict
@@ -121,37 +101,17 @@ def _vernier_snapshot_full(
     """Run the vernier pipeline on the same (subsampled) val set."""
     gt_label_maps = _build_label_maps(gt_anns, gt_png_dir)
     dt_label_maps = _build_label_maps(dt_anns, dt_png_dir)
-
     gt_segs = {ann["image_id"]: ann["segments_info"] for ann in gt_anns}
     dt_segs = {ann["image_id"]: ann["segments_info"] for ann in dt_anns}
-    cats = list(cats_dict.values())
 
     gt_segs_bytes = json.dumps({str(k): v for k, v in gt_segs.items()}).encode()
     dt_segs_bytes = json.dumps({str(k): v for k, v in dt_segs.items()}).encode()
-    cats_bytes = json.dumps(cats).encode()
+    cats_bytes = json.dumps(list(cats_dict.values())).encode()
 
     gt = vernier.PanopticDataset.from_arrays(gt_label_maps, gt_segs_bytes, cats_bytes)
     dt = vernier.PanopticPredictions.from_arrays(dt_label_maps, dt_segs_bytes)
     summary = vernier.PanopticEvaluator(parity_mode="corrected").evaluate(gt, dt)
-
-    return PanopticSnapshot(
-        pq=summary.pq,
-        sq=summary.sq,
-        rq=summary.rq,
-        n=summary.n,
-        pq_things=summary.pq_things if summary.pq_things is not None else 0.0,
-        sq_things=summary.sq_things if summary.sq_things is not None else 0.0,
-        rq_things=summary.rq_things if summary.rq_things is not None else 0.0,
-        n_things=summary.n_things if summary.n_things is not None else 0,
-        pq_stuff=summary.pq_stuff if summary.pq_stuff is not None else 0.0,
-        sq_stuff=summary.sq_stuff if summary.sq_stuff is not None else 0.0,
-        rq_stuff=summary.rq_stuff if summary.rq_stuff is not None else 0.0,
-        n_stuff=summary.n_stuff if summary.n_stuff is not None else 0,
-        per_class={
-            int(cat): {"pq": row.pq, "sq": row.sq, "rq": row.rq}
-            for cat, row in summary.per_class().items()
-        },
-    )
+    return summary_to_snapshot(summary)
 
 
 @pytest.mark.parity_panoptic_val
@@ -164,10 +124,10 @@ def test_panoptic_val2017_strict_bit_equal() -> None:
     oracle, gt_anns, dt_anns, cats_dict = _oracle_snapshot_full(
         gt_json, gt_png_dir, dt_json, dt_png_dir, n_images
     )
-    # Defensive memory hygiene: the LVIS rollout's PR-6 memory peak
-    # was load-bearing on full val (22 GB dense grid); panoptic is
-    # structurally lighter (per-image PqStat fold) but keep the
-    # gc.collect to close the per-snapshot cycle before the second.
+    # Defensive: panoptic's per-image PqStat fold is structurally
+    # lighter than the LVIS dense `Vec<Option<PerImageEval>>` grid,
+    # but `gc.collect` between the two snapshots closes the oracle's
+    # PQStat ref cycle before the vernier label-maps allocate.
     gc.collect()
 
     vsnap = _vernier_snapshot_full(gt_anns, gt_png_dir, dt_anns, dt_png_dir, cats_dict)
