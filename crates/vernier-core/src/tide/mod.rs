@@ -62,28 +62,34 @@ use std::collections::HashMap;
 use crate::accumulate::{accumulate, sort_max_dets, AccumulateParams};
 use crate::dataset::{CocoDataset, CocoDetections};
 use crate::error::EvalError;
-use crate::evaluate::{evaluate_with_retention, EvaluateParams};
+use crate::evaluate::{evaluate_with_retention, EvalKernel, EvaluateParams};
 use crate::parity::ParityMode;
 use crate::similarity::BboxIou;
 
-/// End-to-end bbox TIDE error decomposition.
+/// End-to-end TIDE error decomposition over an arbitrary
+/// [`EvalKernel`].
 ///
-/// Per ADR-0021, this entry point:
+/// Per ADR-0021, this is the kernel-generic entry point: bbox / segm /
+/// boundary all delegate here with their own kernel instance. The
+/// algorithm is identical across kernels — only the IoU definition
+/// changes — so the per-kernel `error_decomposition_*` wrappers exist
+/// to pin a defensible kernel-name string into the [`TideConfig`] and
+/// keep the discriminated entry-point list short for FFI registration.
 ///
 /// 1. Runs [`evaluate_with_retention`] to produce the standard
 ///    [`crate::EvalGrid`] *and* the cross-class IoU side-pass output
 ///    in one call.
-/// 2. Computes baseline mAP via the standard accumulate + summarize
-///    pipeline (the AP@.50:.95@all@max=largest cell — the canonical
-///    pycocotools mAP definition).
+/// 2. Computes baseline mAP via the local [`compute_map`] helper
+///    (oracle-faithful semantics; intentionally not [`crate::summarize_with`]
+///    — see the helper's doc for the divergence).
 /// 3. Walks bin assignment ([`assign_bins`]) using the cross-class
 ///    storage for `iou_same` / `iou_cross`.
 /// 4. For each of the six TIDE bins, builds a corrected
 ///    `(CocoDataset, CocoDetections)` via [`apply_fix`], re-runs
-///    `evaluate_with` + accumulate + summarize, and records
-///    `delta_bin = corrected_map - baseline_map`. Bins with no
-///    DT/GT to correct are absent from the output map (the FFI layer
-///    fills missing keys with `0.0`).
+///    `evaluate_with` (with the same kernel) + the local mAP helper,
+///    and records `delta_bin = corrected_map - baseline_map`. Bins
+///    with no DT/GT to correct are absent from the output map (the
+///    FFI layer fills missing keys with `0.0`).
 /// 5. Runs the all-FP-removed sanity pass and records its delta.
 ///
 /// Eight `evaluate_with` passes total (one baseline + six bins + one
@@ -91,13 +97,19 @@ use crate::similarity::BboxIou;
 /// slower than the cell-rewrite-in-place optimization the ADR sketches
 /// for Week 5 but is correct-by-construction against the numpy oracle.
 ///
+/// `kernel_name` is recorded verbatim on [`TideConfig::kernel`]; the
+/// per-kernel wrappers below pin the canonical strings (`"bbox"`,
+/// `"segm"`, `"boundary"`).
+///
 /// # Errors
 ///
 /// Propagates [`EvalError`] from the underlying evaluation,
 /// accumulate, summarize, and rewrite calls.
-pub fn error_decomposition_bbox(
+pub fn error_decomposition_with<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
+    kernel: &K,
+    kernel_name: &str,
     params: TideParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<TideReport, EvalError> {
@@ -110,7 +122,7 @@ pub fn error_decomposition_bbox(
     };
 
     // 1. Baseline pass + cross-class side pass in one call.
-    let (grid, cross_class) = evaluate_with_retention(gt, dt, eval_params, parity_mode, &BboxIou)?;
+    let (grid, cross_class) = evaluate_with_retention(gt, dt, eval_params, parity_mode, kernel)?;
     let baseline_map = compute_map(&grid, params.iou_thresholds, params.max_dets_per_image)?;
 
     // 2. Bin assignment.
@@ -131,7 +143,16 @@ pub fn error_decomposition_bbox(
         if !bin_has_work(&assignment, bin) {
             continue;
         }
-        let delta = run_fix_pass(gt, dt, &assignment, fix, &params, parity_mode, baseline_map)?;
+        let delta = run_fix_pass(
+            gt,
+            dt,
+            kernel,
+            &assignment,
+            fix,
+            &params,
+            parity_mode,
+            baseline_map,
+        )?;
         delta_per_bin.insert(bin, delta);
     }
 
@@ -141,6 +162,7 @@ pub fn error_decomposition_bbox(
     let delta_all_fp = run_fix_pass(
         gt,
         dt,
+        kernel,
         &assignment,
         FixKind::AllFp,
         &params,
@@ -151,7 +173,7 @@ pub fn error_decomposition_bbox(
     let config = TideConfig {
         t_f: params.t_f,
         t_b: params.t_b,
-        kernel: "bbox".into(),
+        kernel: kernel_name.into(),
         cross_class_topk: None,
     };
     Ok(TideReport {
@@ -160,6 +182,25 @@ pub fn error_decomposition_bbox(
         delta_all_fp,
         config,
     })
+}
+
+/// End-to-end bbox TIDE error decomposition.
+///
+/// Thin wrapper over [`error_decomposition_with`] that pins the
+/// [`BboxIou`] kernel and the canonical `"bbox"` kernel-name string.
+/// See the generic entry point's doc for the full algorithm.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation,
+/// accumulate, summarize, and rewrite calls.
+pub fn error_decomposition_bbox(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: TideParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<TideReport, EvalError> {
+    error_decomposition_with(gt, dt, &BboxIou, "bbox", params, parity_mode)
 }
 
 fn bin_has_work(assignment: &BinAssignment, bin: TideErrorBin) -> bool {
@@ -173,9 +214,11 @@ fn bin_has_work(assignment: &BinAssignment, bin: TideErrorBin) -> bool {
     }
 }
 
-fn run_fix_pass(
+#[allow(clippy::too_many_arguments)]
+fn run_fix_pass<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
+    kernel: &K,
     assignment: &BinAssignment,
     fix: FixKind,
     params: &TideParams<'_>,
@@ -192,13 +235,14 @@ fn run_fix_pass(
     };
     // Re-evaluate. Use `evaluate_with` (not the retention variant) —
     // we only need the EvalGrid for the corrected mAP, not the cross-
-    // class side pass.
+    // class side pass. The kernel is whatever the caller passed in:
+    // bbox / segm / boundary all flow through this same pass.
     let grid = crate::evaluate::evaluate_with(
         &corrected_gt,
         &corrected_dt,
         eval_params,
         parity_mode,
-        &BboxIou,
+        kernel,
     )?;
     let corrected_map = compute_map(&grid, params.iou_thresholds, params.max_dets_per_image)?;
     Ok(corrected_map - baseline_map)

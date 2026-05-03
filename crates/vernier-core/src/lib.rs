@@ -67,8 +67,9 @@ pub use tables::{
     TablesConfig, TablesRequest,
 };
 pub use tide::{
-    apply_fix, assign_bins, compute_cross_class_ious, error_decomposition_bbox, BinAssignment,
-    DtBin, DtBinLabel, FixKind, TideConfig, TideErrorBin, TideParams, TideReport,
+    apply_fix, assign_bins, compute_cross_class_ious, error_decomposition_bbox,
+    error_decomposition_with, BinAssignment, DtBin, DtBinLabel, FixKind, TideConfig, TideErrorBin,
+    TideParams, TideReport,
 };
 
 /// Library version string. Useful for parity tracing in fixtures and for
