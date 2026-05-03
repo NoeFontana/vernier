@@ -78,5 +78,3 @@ def require_coco_val_root_with_images() -> Path:
             f"cache; see docs/engineering/coco-val-parity.md"
         )
     return cache
-
-

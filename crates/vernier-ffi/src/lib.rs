@@ -2386,6 +2386,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(tide::error_decomposition_bbox, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_segm, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_boundary, m)?)?;
+    m.add_function(wrap_pyfunction!(tide::fp_iou_histogram_bbox, m)?)?;
+    m.add_function(wrap_pyfunction!(tide::fp_iou_histogram_segm, m)?)?;
+    m.add_function(wrap_pyfunction!(tide::fp_iou_histogram_boundary, m)?)?;
     m.add_function(wrap_pyfunction!(confusion::confusion_matrix_bbox, m)?)?;
     m.add_function(wrap_pyfunction!(confusion::confusion_matrix_segm, m)?)?;
     m.add_function(wrap_pyfunction!(confusion::confusion_matrix_boundary, m)?)?;

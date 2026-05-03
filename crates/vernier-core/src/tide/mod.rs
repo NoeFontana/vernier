@@ -53,6 +53,7 @@ pub mod assignment;
 pub mod bins;
 pub mod confusion;
 pub mod cross_class;
+pub mod histogram;
 pub mod params;
 pub mod report;
 pub mod rewrite;
@@ -61,6 +62,10 @@ pub use assignment::{assign_bins, BinAssignment, DtBin, DtBinLabel};
 pub use bins::TideErrorBin;
 pub use confusion::{compute_confusion_matrix, ConfusionMatrixCounts};
 pub use cross_class::compute_cross_class_ious;
+pub use histogram::{
+    compute_fp_iou_histogram_bbox, compute_fp_iou_histogram_boundary,
+    compute_fp_iou_histogram_segm, compute_fp_iou_histogram_with, FpIouHistogram,
+};
 pub use params::TideParams;
 pub use report::{KernelMarker, TideConfig, TideReport};
 pub use rewrite::{apply_fix, FixKind};

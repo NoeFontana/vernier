@@ -26,12 +26,20 @@ from vernier._core import (
     error_decomposition_bbox,
     error_decomposition_boundary,
     error_decomposition_segm,
+    fp_iou_histogram_bbox,
+    fp_iou_histogram_boundary,
+    fp_iou_histogram_segm,
 )
 
 if TYPE_CHECKING:
+    import numpy as np
+
     # `_TideReportDict` is a TypedDict declared in the `.pyi` stub for
     # the FFI's return shape; the runtime extension does not actually
     # export the symbol, so it's available to the type-checker only.
+    from vernier._core import (
+        _FpIouHistogramDict as _FFIFpIouHistogramDict,  # pyright: ignore[reportPrivateUsage]
+    )
     from vernier._core import (
         _TideReportDict as _FFITideReportDict,  # pyright: ignore[reportPrivateUsage]
     )
@@ -404,3 +412,132 @@ def _reject_unknown_iou(iou: object) -> NoReturn:
         f"Bbox(), Segm(), or Boundary(...) — see vernier.IouKind. "
         f"Keypoints is deferred per ADR-0024."
     )
+
+
+@dataclass(frozen=True, slots=True)
+class FpIouHistogram:
+    """FP-IoU histogram for ADR-0022 `t_b` ratification.
+
+    For every detection that bin assignment classifies as a false
+    positive (Cls / Loc / Both / Dupe / Bkg — anything that's not TP
+    and not Ignore), :attr:`iou_same` and :attr:`iou_cross` carry the
+    best same-class and cross-class IoUs at the time of the bin pick.
+
+    Bin-as-Bkg fraction at a candidate ``t_b`` is::
+
+        max_iou = np.maximum(h.iou_same, h.iou_cross)
+        bkg_fraction = (max_iou < t_b).mean()
+
+    Sweeping `t_b` over a range and plotting ``bkg_fraction(t_b)``
+    surfaces the "valley" between genuine backgrounds (IoU≈0) and
+    near-misses; the right `t_b` sits in that valley.
+
+    See the analysis CLI at
+    ``tests/python/integration/real_models/tide/extract_fp_histogram.py``
+    for the recipe.
+    """
+
+    iou_same: np.ndarray
+    iou_cross: np.ndarray
+    kernel: KernelName
+    t_f: float
+    n_total_dts: int
+    n_fps: int
+
+    @classmethod
+    def _from_dict(cls, d: Mapping[str, Any]) -> FpIouHistogram:
+        return cls(
+            iou_same=d["iou_same"],
+            iou_cross=d["iou_cross"],
+            kernel=_kernel_name(d["kernel"]),
+            t_f=float(d["t_f"]),
+            n_total_dts=int(d["n_total_dts"]),
+            n_fps=int(d["n_fps"]),
+        )
+
+
+def fp_iou_histogram(
+    gt: bytes | Dataset,
+    dt: bytes,
+    *,
+    iou: object = None,
+    t_f: float | None = None,
+    max_dets_per_image: int = 100,
+    use_cats: bool = True,
+    parity_mode: ParityMode = "corrected",
+) -> FpIouHistogram:
+    """Extract per-FP `(iou_same, iou_cross)` for ADR-0022 ratification.
+
+    Sister entry point to :func:`error_decomposition`. Same dispatch
+    logic (kernel selection, parity mode, max-dets) but emits the raw
+    IoU pairs instead of the six-bin ΔmAP. Caller bins the values
+    Python-side to compute the bin-as-Bkg fraction at candidate `t_b`.
+
+    Args:
+        gt: GT JSON bytes (Dataset handle deferred, same as
+            :func:`error_decomposition`).
+        dt: Detection JSON bytes.
+        iou: Kernel selector — :class:`vernier.Bbox` (default),
+            :class:`vernier.Segm`, or :class:`vernier.Boundary`.
+            :class:`vernier.Keypoints` raises per ADR-0024.
+        t_f: Foreground threshold for identifying TP / Ignore.
+            Defaults to `0.5` (ADR-0022 standard); the `t_b` parameter
+            on :func:`error_decomposition` is *not* consumed here.
+        max_dets_per_image: Per-image detection cap; same default as
+            :func:`error_decomposition`.
+        use_cats: Per-class evaluation; same default.
+        parity_mode: Same as :func:`error_decomposition`.
+
+    Returns:
+        :class:`FpIouHistogram` carrying parallel `iou_same` /
+        `iou_cross` numpy arrays plus the metadata the report
+        consumer needs.
+    """
+    iou_kind = _resolve_iou(iou)
+    kernel = _kernel_for(iou_kind)
+    resolved_t_f, _ = _defaults_for(kernel)
+    if t_f is not None:
+        resolved_t_f = t_f
+
+    if isinstance(gt, Dataset):
+        raise NotImplementedError(
+            "vernier.fp_iou_histogram does not yet accept a Dataset handle; "
+            "pass GT JSON bytes for now. Mirrors error_decomposition's "
+            "0.5.x follow-up."
+        )
+
+    raw = _dispatch_histogram(
+        iou_kind,
+        gt,
+        dt,
+        parity_mode,
+        resolved_t_f,
+        max_dets_per_image,
+        use_cats,
+    )
+    return FpIouHistogram._from_dict(raw)  # pyright: ignore[reportPrivateUsage]
+
+
+def _dispatch_histogram(
+    iou_kind: object,
+    gt: bytes,
+    dt: bytes,
+    parity_mode: ParityMode,
+    t_f: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _FFIFpIouHistogramDict:
+    """Call the right ``vernier._core.fp_iou_histogram_*`` entry."""
+    from vernier import Bbox, Boundary, Segm
+
+    match iou_kind:
+        case Bbox():
+            return fp_iou_histogram_bbox(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
+        case Segm():
+            return fp_iou_histogram_segm(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
+        case Boundary(dilation_ratio=r):
+            return fp_iou_histogram_boundary(
+                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, r
+            )
+        case _:
+            _reject_unknown_iou(iou_kind)

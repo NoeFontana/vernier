@@ -45,7 +45,9 @@ use crate::tables::CrossClassIous;
 use super::params::TideParams;
 
 /// One detection's TIDE label at `t_f`, plus the rewrite-layer target
-/// (when the bin's correction needs one).
+/// (when the bin's correction needs one) and the IoU values that drove
+/// the bin pick (the FP-IoU histogram reads these for ADR-0022's
+/// `t_b` ratification).
 ///
 /// `target_gt_local_idx` indexes into the **per-image** GT list in
 /// dataset insertion order — the same axis [`CrossClassIous::gt_classes`]
@@ -54,6 +56,11 @@ use super::params::TideParams;
 /// - `Cls`  — index of the wrong-class GT to relabel onto.
 /// - `Loc`  — index of the same-class GT to snap the bbox to.
 /// - any other bin — meaningless (`-1`).
+///
+/// `iou_same` / `iou_cross` are the best same-class and cross-class
+/// IoUs computed during bin assignment. For TP / Ignore labels they're
+/// recorded as zeros (those DTs aren't on the FP path and the
+/// histogram filters them out).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DtBinLabel {
     /// The TIDE bin (or non-FP label).
@@ -61,6 +68,12 @@ pub struct DtBinLabel {
     /// Per-image local GT index used by the `Cls` / `Loc` corrections;
     /// `-1` for bins that need no target.
     pub target_gt_local_idx: i32,
+    /// Best same-class IoU at the time of bin pick. `0.0` for TP /
+    /// Ignore labels (not used on the FP path).
+    pub iou_same: f64,
+    /// Best cross-class IoU at the time of bin pick. `0.0` for TP /
+    /// Ignore labels.
+    pub iou_cross: f64,
 }
 
 /// Per-detection TIDE label, including the two non-FP labels.
@@ -258,6 +271,8 @@ fn assign_bins_for_image(
                 DtBinLabel {
                     bin: DtBin::Ignore,
                     target_gt_local_idx: -1,
+                    iou_same: 0.0,
+                    iou_cross: 0.0,
                 },
             );
             continue;
@@ -268,6 +283,8 @@ fn assign_bins_for_image(
                 DtBinLabel {
                     bin: DtBin::Tp,
                     target_gt_local_idx: -1,
+                    iou_same: 0.0,
+                    iou_cross: 0.0,
                 },
             );
             continue;
@@ -515,7 +532,8 @@ fn best_same_and_cross(
 }
 
 /// Apply the priority chain from `oracle.py:496-531`. Returns the bin
-/// label and the rewrite-layer target.
+/// label, the rewrite-layer target, and the iou_same / iou_cross values
+/// the histogram extractor reads (ADR-0022 t_b ratification).
 fn pick_bin(
     iou_same: f64,
     best_same_col: i32,
@@ -524,34 +542,23 @@ fn pick_bin(
     t_f: f64,
     t_b: f64,
 ) -> DtBinLabel {
-    if iou_same >= t_f {
-        return DtBinLabel {
-            bin: DtBin::Dupe,
-            // The rewrite drops Dupe DTs; target unused but recorded
-            // for symmetry with the oracle's _BinAttribution shape.
-            target_gt_local_idx: best_same_col,
-        };
-    }
-    if iou_cross >= t_f {
-        return DtBinLabel {
-            bin: DtBin::Cls,
-            target_gt_local_idx: best_cross_col,
-        };
-    }
-    if iou_same >= t_b && iou_same >= iou_cross {
-        return DtBinLabel {
-            bin: DtBin::Loc,
-            target_gt_local_idx: best_same_col,
-        };
-    }
-    if iou_cross >= t_b {
-        return DtBinLabel {
-            bin: DtBin::Both,
-            target_gt_local_idx: best_cross_col,
-        };
-    }
+    let (bin, target) = if iou_same >= t_f {
+        // The rewrite drops Dupe DTs; target unused but recorded
+        // for symmetry with the oracle's _BinAttribution shape.
+        (DtBin::Dupe, best_same_col)
+    } else if iou_cross >= t_f {
+        (DtBin::Cls, best_cross_col)
+    } else if iou_same >= t_b && iou_same >= iou_cross {
+        (DtBin::Loc, best_same_col)
+    } else if iou_cross >= t_b {
+        (DtBin::Both, best_cross_col)
+    } else {
+        (DtBin::Bkg, -1)
+    };
     DtBinLabel {
-        bin: DtBin::Bkg,
-        target_gt_local_idx: -1,
+        bin,
+        target_gt_local_idx: target,
+        iou_same,
+        iou_cross,
     }
 }
