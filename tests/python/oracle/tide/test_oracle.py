@@ -245,10 +245,67 @@ def test_with_ignore_does_not_bin_crowd_matched_dts() -> None:
     _assert_close(out["delta_all_fp_removed"], 0.5, "delta_all_fp_removed")
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["all_perfect", "all_bkg", "all_cls", "all_loc", "all_dupe", "with_ignore"],
-)
+def test_loc_vs_both_priority_loc_wins_when_same_class_gt_is_closer() -> None:
+    """Same- and cross-class GTs both in [t_b, t_f); same-class wins → Loc.
+
+    Per Bolya 2020 §3, the max-IoU GT's class determines the bin: if
+    the closest GT is same-class the error is Loc, if it's wrong-class
+    the error is Both. This fixture pins that priority — without the
+    rule, a `t_b ≤ iou_cross < t_f` check would unconditionally bin
+    as Both even when there's a closer same-class GT.
+
+    Math:
+        - 1 image, 2 GTs:
+            GT1 cat 1 at [0, 0, 100, 100], area 10000.
+            GT2 cat 2 at [10, 10, 50, 50], area 2500.
+        - 1 DT cat 1 at [30, 30, 50, 50], score 0.9 — DT spans
+          (30, 30) → (80, 80).
+            iou_same vs GT1 (cat 1, spans (0,0)→(100,100)):
+              inter = 50*50 = 2500. union = 10000+2500-2500 = 10000.
+              IoU = 0.25.
+            iou_cross vs GT2 (cat 2, spans (10,10)→(60,60)):
+              inter x = max(30,10)..min(80,60) = 30 wide.
+              inter y = same. inter = 900.
+              union = 2500+2500-900 = 4100. IoU ≈ 0.21951.
+          Both in [0.1, 0.5); iou_same > iou_cross → Loc.
+        - Baseline: DT IoU 0.25 < 0.5, unmatched at every threshold.
+            cat 1: tp=0, fp=1, AP = 0.
+            cat 2: 0 DTs, 1 positive GT, AP = 0.
+            mAP = 0.
+        - Loc fix snaps DT bbox to GT1 → IoU=1.0 → TP everywhere.
+            cat 1: 1 TP, AP = 1. cat 2: unchanged, AP = 0.
+            mAP = 0.5. delta_loc = 0.5.
+        - delta_both = 0 (no Both-binned DTs). With the priority bug,
+          this DT would have been binned as Both, yielding
+          delta_loc=0 and delta_both=0 — the delta_loc=0.5 assertion
+          is what discriminates the fix.
+        - delta_missed = 0 (marking GT1 and GT2 as ignore zeroes
+          every cell; n_pos_gt=0 returns -1 sentinel, all filtered,
+          mAP collapses to 0).
+        - delta_all_fp_removed = 0 (removing the lone FP leaves 0
+          detections; same loose-bound shape as `all_loc`).
+    """
+    gt, dt = _load("loc_vs_both_priority")
+    out = error_decomposition(gt, dt)
+    _assert_close(out["baseline_map"], 0.0, "baseline_map")
+    _assert_close(out["delta"]["loc"], 0.5, "delta[loc]")
+    for bin_name in ("cls", "both", "dupe", "bkg", "missed"):
+        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
+    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+
+
+_ALL_FIXTURES = [
+    "all_perfect",
+    "all_bkg",
+    "all_cls",
+    "all_loc",
+    "all_dupe",
+    "with_ignore",
+    "loc_vs_both_priority",
+]
+
+
+@pytest.mark.parametrize("name", _ALL_FIXTURES)
 def test_report_carries_resolved_config(name: str) -> None:
     """The report's `config` block carries the resolved thresholds.
 
@@ -260,10 +317,7 @@ def test_report_carries_resolved_config(name: str) -> None:
     assert out["config"] == {"t_f": 0.5, "t_b": 0.1, "kernel": "bbox"}
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["all_perfect", "all_bkg", "all_cls", "all_loc", "all_dupe", "with_ignore"],
-)
+@pytest.mark.parametrize("name", _ALL_FIXTURES)
 def test_report_shape(name: str) -> None:
     """Sanity-check the dict shape so downstream Rust matchers can rely on it."""
     gt, dt = _load(name)

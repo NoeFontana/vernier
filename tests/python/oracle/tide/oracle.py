@@ -37,9 +37,16 @@ Algorithm summary (canonical, per ADR-0021):
       2. Re-run AP accumulation across the full 10-IoU-threshold ladder.
       3. delta = mAP_fixed - mAP_baseline  (positive when the fix helps).
 
-Sanity bin: ``delta_all_fp_removed`` removes every FP detection (every
-detection not classified as TP at ``t_f``). It bounds the sum of the
-five FP bins.
+Sanity bin: ``delta_all_fp_removed`` is the exact ΔmAP from removing
+every FP detection (every detection not classified as TP at ``t_f``)
+in one pass. The naive expectation that
+``delta_all_fp_removed ≈ delta_cls + delta_loc + delta_both +
+delta_dupe + delta_bkg`` only holds when fixing one bin does not
+induce a different bin's degeneracy. The synthetic single-bin
+fixtures in this directory deliberately violate that — fixing the
+sole FP bin leaves zero detections and AP collapses — so the assertion
+on ``delta_all_fp_removed`` for those fixtures pins the *exact* value
+(not an inequality bound).
 """
 
 from __future__ import annotations
@@ -486,6 +493,13 @@ def _attribute_bins(
                     iou_same = float(ious[g_local])
                     best_same_local = g_local
 
+            # Bin priority follows Bolya 2020 §3: the max-IoU GT's class
+            # determines whether an "almost matched" detection is Loc
+            # (closest GT is same-class) or Both (closest GT is wrong-
+            # class). Concretely: if iou_same >= iou_cross, the DT was
+            # closer to a same-class GT and should report as Loc. Ties
+            # go to Loc (same-class wins) — consistent with the
+            # paper's view that Loc is the "less compound" error.
             if iou_same >= t_f:
                 # Dupe — same-class GT exists at >= t_f, but a higher-
                 # scoring DT must have taken it (otherwise this DT
@@ -501,16 +515,16 @@ def _attribute_bins(
                     cross_gt_local_idx=best_cross_local,
                 )
                 continue
+            if iou_same >= t_b and iou_same >= iou_cross:
+                attribution[d.dt_idx] = _BinAttribution(
+                    bin="loc",
+                    same_gt_local_idx=best_same_local,
+                )
+                continue
             if iou_cross >= t_b:
                 attribution[d.dt_idx] = _BinAttribution(
                     bin="both",
                     cross_gt_local_idx=best_cross_local,
-                )
-                continue
-            if iou_same >= t_b:
-                attribution[d.dt_idx] = _BinAttribution(
-                    bin="loc",
-                    same_gt_local_idx=best_same_local,
                 )
                 continue
             # Otherwise Bkg.
