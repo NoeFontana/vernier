@@ -41,6 +41,12 @@ test-py:
 test-parity:
     uv run pytest -m parity
 
+# Run LVIS parity tests against the vendored lvis-api reference oracle
+# (ADR-0026). The oracle lives at tests/python/parity_lvis/oracle/lvis_api/;
+# the parity harness is added in subsequent PRs of the LVIS rollout.
+test-parity-lvis:
+    uv run pytest -m parity_lvis
+
 # Run the COCO val2017 whole-dataset parity smoke.
 # Requires VERNIER_COCO_GT_PATH and VERNIER_COCO_DT_PATH to point at
 # the GT annotations and a detector predictions JSON. See

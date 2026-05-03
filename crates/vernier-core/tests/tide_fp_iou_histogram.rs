@@ -71,7 +71,10 @@ fn all_bkg_iou_same_is_zero_for_every_fp() {
     assert_eq!(h.iou_same.len(), h.n_fps);
     assert_eq!(h.iou_cross.len(), h.n_fps);
     for &v in &h.iou_same {
-        assert!(v < 0.1, "expected Bkg-binned DTs' iou_same < t_b=0.1, got {v}");
+        assert!(
+            v < 0.1,
+            "expected Bkg-binned DTs' iou_same < t_b=0.1, got {v}"
+        );
     }
 }
 

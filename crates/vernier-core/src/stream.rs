@@ -525,17 +525,15 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                 for k in 0..n_k {
                     for a in 0..n_a {
                         let flat = k * n_a * n_i + a * n_i + i;
-                        if let Some(meta) = grid
-                            .eval_imgs_meta
-                            .get_mut(flat)
-                            .and_then(Option::take)
+                        if let Some(meta) = grid.eval_imgs_meta.get_mut(flat).and_then(Option::take)
                         {
                             self.meta_cells.insert((k, a, i), meta);
                         }
                     }
                 }
             }
-            self.dets_seen.extend(detections.detections().iter().cloned());
+            self.dets_seen
+                .extend(detections.detections().iter().cloned());
         }
 
         let n_detections_accepted = detections.detections().len();
@@ -734,11 +732,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                 n_area_ranges: n_a,
                 n_images: n_i,
             };
-            let accumulated_kp = accumulate(
-                &synthetic_grid.eval_imgs,
-                accum_params_kp,
-                self.parity_mode,
-            )?;
+            let accumulated_kp =
+                accumulate(&synthetic_grid.eval_imgs, accum_params_kp, self.parity_mode)?;
             let plan = StatRequest::coco_keypoints_default();
             summarize_with(
                 &accumulated_kp,
