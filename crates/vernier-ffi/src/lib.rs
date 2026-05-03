@@ -51,6 +51,7 @@ use vernier_core::{
 mod background;
 mod confusion;
 mod dataset;
+mod panoptic;
 mod tables;
 mod tide;
 
@@ -2526,5 +2527,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m.py().get_type::<MemoryBudgetWarning>(),
     )?;
     m.add("__version__", vernier_core::VERSION)?;
+    panoptic::register(m)?;
     Ok(())
 }

@@ -1381,8 +1381,11 @@ dependencies = [
  "core_affinity",
  "numpy",
  "pyo3",
+ "serde",
+ "serde_json",
  "thread-priority",
  "vernier-core",
+ "vernier-panoptic",
 ]
 
 [[package]]
