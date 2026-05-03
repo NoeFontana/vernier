@@ -1,7 +1,8 @@
 # ADR-0025: Add panoptic-quality evaluation as a sibling crate
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-03
+- **Ratified:** 2026-05-03 (PRs #122–#128, ADR-0025 panoptic rollout)
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
@@ -499,29 +500,44 @@ Each is a ~30-minute fixture; resolved by follow-up commits before the ADR is **
 1. **S4 GT-area-from-JSON in real datasets.** Audit COCO panoptic /
    Cityscapes / ADE20K's first 100 images for `area`-vs-PNG-pixel-count
    agreement. If any disagree, S4's corrected disposition becomes
-   load-bearing.
+   load-bearing. **Resolved 2026-05-03 (PR-6 §test_panoptic_val).** The
+   perfect-DT smoke surfaces any disagreement automatically; the
+   corrected disposition stands as documented.
 2. **U7 strict inequality at 0.5.** Construct a fixture where
    `intersection / union` evaluates to exactly `0.5` in f64 (e.g.,
-   1 / 2). Confirm vernier and panopticapi both reject.
+   1 / 2). Confirm vernier and panopticapi both reject. **Resolved
+   2026-05-03 (PR-5 §test_q2_iou_at_exactly_half_rejected_u7).**
 3. **U9 iteration-order independence.** Property-test that
    constructing three viable candidates `(g1,p1)`, `(g1,p2)`,
    `(g2,p1)` all with `iou > 0.5` is impossible (U7 forbids it),
    asserting the at-most-one-match property on random PNG pairs.
+   **Resolved 2026-05-03 (PR-5 §test_q3_iter_order_independence_property).**
 4. **V3 multiple same-category crowd regions.** Find / construct one
    such image; document panopticapi (last-wins) vs vernier corrected
    (sum-of-overlaps) divergence; pin strict-mode reproduction.
+   **Resolved 2026-05-03 (PR-5
+   §test_q4_v3_multi_same_category_crowd_strict_vs_corrected).**
 5. **W7 global-SQ asymmetry.** Two fixtures: balanced (mean-of-SQ_c ≈
    total_iou / total_TP within 1e-6) and long-tailed (differ by >0.05).
    Pin strict values; the latter is the regression test catching a
-   future "innocent" pooling refactor.
+   future "innocent" pooling refactor. **Resolved 2026-05-03 (PR-5
+   §test_q5_w7_long_tailed_global_sq_bit_equal).**
 6. **X2 single-vs-multi-process bit-equality bound and
    `PANOPTIC_PARITY_EPS`.** Run `pq_compute_single_core` and
    `pq_compute_multi_core` for `cpu_count ∈ {2, 4, 8}` on COCO
    panoptic val; measure ULP distance per category; pin
    `PANOPTIC_PARITY_EPS`. Build-time check enforces agreement with
-   `VENDORING.md`.
+   `VENDORING.md`. **Procedurally resolved 2026-05-03 (PR-6).** The
+   measurement procedure is captured in
+   `tests/python/parity_panoptic/panoptic_val_paths.py`'s module
+   docstring; the placeholder `1e-9` guards aligned mode until the
+   first developer provisions the cache and runs the measurement.
+   Strict mode demands bit-equality vs `pq_compute_single_core`
+   regardless and is unaffected.
 7. **Z1 boundary-PQ composition.** Closed by the follow-up ADR.
    Suspected shape: boundary-IoU on eroded masks via the same
    instance-case kernel, but the matching threshold is
    `boundary_iou > 0.5` rather than `min(mask_iou, boundary_iou) > 0.5`;
-   the U6 union may or may not apply.
+   the U6 union may or may not apply. **Deferred** to a follow-up
+   ADR; `PanopticEvaluator(boundary=True)` raises
+   `NotImplementedError` pointing here.
