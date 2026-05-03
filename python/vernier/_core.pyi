@@ -214,3 +214,32 @@ def evaluate_keypoints_grid(
     use_cats: bool,
     sigmas: dict[int, list[float]],
 ) -> EvalGrid: ...
+
+class _TideDeltaDict(TypedDict):
+    cls: float
+    loc: float
+    both: float
+    dupe: float
+    bkg: float
+    missed: float
+
+class _TideConfigDict(TypedDict):
+    t_f: float
+    t_b: float
+    kernel: str
+
+class _TideReportDict(TypedDict):
+    baseline_map: float
+    delta: _TideDeltaDict
+    delta_all_fp_removed: float
+    config: _TideConfigDict
+
+def error_decomposition_bbox(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    t_f: float,
+    t_b: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _TideReportDict: ...
