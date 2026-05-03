@@ -71,9 +71,8 @@ def require_coco_val_root_with_images() -> Path:
 
     Distinct from :func:`require_perfect_dt_artifacts`: real-model
     harnesses need pixels (the ``val2017/`` image directory), not just
-    cached prediction JSONs. The fetcher script only downloads the GT
-    file — populating ``val2017/`` is the user's responsibility (the
-    image set is license-restricted).
+    cached prediction JSONs. ``./tools/fetch-coco-val.sh --with-images``
+    populates both in one shot.
     """
     cache = cache_dir()
     gt = cache / "instances_val2017.json"
@@ -81,7 +80,7 @@ def require_coco_val_root_with_images() -> Path:
     if not gt.is_file() or not images.is_dir():
         pytest.skip(
             f"real-model harness needs both {gt} and {images}/ — run "
-            f"./tools/fetch-coco-val.sh and ensure val2017/ images are "
-            f"present; see docs/engineering/coco-val-parity.md"
+            f"`./tools/fetch-coco-val.sh --with-images` to populate the "
+            f"cache; see docs/engineering/coco-val-parity.md"
         )
     return cache

@@ -29,8 +29,17 @@ segmentation) so the same package covers all three vernier kernels
 
 2. **Stage COCO val2017** at the cache root the existing parity
    harness uses (`VERNIER_COCO_CACHE` env var, defaulting to
-   `<repo>/.cache/coco-val2017/`). The harness needs both the GT
-   JSON *and* the image directory:
+   `<repo>/.cache/coco-val2017/`). The fetcher populates both the
+   GT JSON and the image directory in one shot:
+
+   ```bash
+   ./tools/fetch-coco-val.sh --with-images
+   ```
+
+   The image set is ~778 MB zipped, ~6.2 GB extracted. Same
+   canonical CDN as the GT, governed by the
+   [COCO terms of use](https://cocodataset.org/#termsofuse).
+   Resulting layout:
 
    ```
    <cache>/instances_val2017.json
@@ -38,10 +47,6 @@ segmentation) so the same package covers all three vernier kernels
    <cache>/val2017/000000000285.jpg
    ...
    ```
-
-   `tools/fetch-coco-val.sh` downloads the GT JSON; the val2017
-   image set is a separate fetch (license-restricted, not in the
-   fetcher script).
 
 ## Running the pytest harness
 
@@ -121,11 +126,13 @@ documented reason, that's a regression worth chasing.
 - **`SKIPPED [reason: real-model harness needs the real-models extra]`**
   — install the extra: `uv sync --extra real-models`.
 - **`SKIPPED [reason: real-model harness needs both <gt> and <images>/]`**
-  — populate the COCO val cache (see Prerequisites step 2).
+  — run `./tools/fetch-coco-val.sh --with-images` (Prerequisites
+  step 2).
 - **`FileNotFoundError: image referenced by GT JSON missing on disk`**
   — the GT JSON was downloaded but the val2017 image directory is
-  empty or partial. Verify `<cache>/val2017/` contains all 5000
-  images.
+  empty or partial. Re-run `./tools/fetch-coco-val.sh --with-images`;
+  the integrity check (probe + count) auto-detects partial
+  extractions and re-fetches.
 - **First run takes ~30 minutes** — that's inference. Subsequent
   runs hit the on-disk predictions cache and complete in seconds
   (TIDE is the only cost).
