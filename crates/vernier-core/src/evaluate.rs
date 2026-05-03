@@ -798,6 +798,42 @@ pub fn evaluate_with<K: EvalKernel>(
     })
 }
 
+/// Run the per-image evaluation pass *and* the cross-class IoU side
+/// pass (per ADR-0023) in a single call.
+///
+/// Returns the standard [`EvalGrid`] alongside a
+/// [`crate::tables::CrossClassIous`] populated by walking each image's
+/// un-class-filtered GT and DT lists through the same kernel
+/// [`evaluate_with`] uses internally. Future TIDE callers consume both
+/// outputs from one call so they do not pay the matching cost twice.
+///
+/// The matching engine is unchanged — the side pass is a separate
+/// kernel pass at the orchestrator level, preserving the ADR-0005
+/// invariant that matching is generic over the IoU matrix only. The
+/// side pass shares `params.max_dets_per_image` with the matching path
+/// so the DT row indexing across the two passes is consistent.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from either pass.
+pub fn evaluate_with_retention<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+) -> Result<(EvalGrid, crate::tables::CrossClassIous), EvalError> {
+    let grid = evaluate_with(gt, dt, params, parity_mode, kernel)?;
+    let cross_class = crate::tide::compute_cross_class_ious(
+        gt,
+        dt,
+        kernel,
+        parity_mode,
+        params.max_dets_per_image,
+    )?;
+    Ok((grid, cross_class))
+}
+
 /// Run the per-image bbox evaluation pass. Thin wrapper over
 /// [`evaluate_with`] with the [`BboxIou`] kernel.
 ///
@@ -1108,7 +1144,7 @@ fn gt_indices_for_cell(gt: &CocoDataset, image: ImageId, cat: Option<CategoryId>
     }
 }
 
-fn dt_top_indices_for_cell(
+pub(crate) fn dt_top_indices_for_cell(
     dt: &CocoDetections,
     image: ImageId,
     cat: Option<CategoryId>,
