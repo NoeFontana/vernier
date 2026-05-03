@@ -47,6 +47,13 @@ test-parity:
 test-parity-lvis:
     uv run pytest -m parity_lvis
 
+# Run the LVIS v1 val whole-dataset parity smoke. Requires
+# VERNIER_LVIS_GT_PATH and VERNIER_LVIS_DT_PATH to point at the GT
+# annotations and a detector predictions JSON. See
+# `python -m lvis_val_cache` for the canonical setup.
+test-parity-lvis-val:
+    uv run pytest -m parity_lvis_val -v
+
 # Run the COCO val2017 whole-dataset parity smoke.
 # Requires VERNIER_COCO_GT_PATH and VERNIER_COCO_DT_PATH to point at
 # the GT annotations and a detector predictions JSON. See

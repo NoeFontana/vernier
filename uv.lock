@@ -2709,6 +2709,7 @@ dev = [
     { name = "pytest-benchmark" },
     { name = "ruff" },
     { name = "vernier-coco-val-cache" },
+    { name = "vernier-lvis-val-cache" },
 ]
 
 [package.metadata]
@@ -2734,9 +2735,15 @@ dev = [
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "ruff", specifier = ">=0.15" },
     { name = "vernier-coco-val-cache", editable = "tools/coco_val_cache" },
+    { name = "vernier-lvis-val-cache", editable = "tools/lvis_val_cache" },
 ]
 
 [[package]]
 name = "vernier-coco-val-cache"
 version = "0.0.0"
 source = { editable = "tools/coco_val_cache" }
+
+[[package]]
+name = "vernier-lvis-val-cache"
+version = "0.0.0"
+source = { editable = "tools/lvis_val_cache" }
