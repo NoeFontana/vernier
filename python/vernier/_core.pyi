@@ -222,6 +222,14 @@ def evaluate_bbox_grid(
     use_cats: bool,
     retain_iou: bool = ...,
 ) -> EvalGrid: ...
+def evaluate_bbox_grid_with_dataset(
+    gt: Dataset,
+    dt_json: bytes,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    retain_iou: bool = ...,
+) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
     dt_json: bytes,
