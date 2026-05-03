@@ -963,6 +963,76 @@ impl CocoDetections {
     pub fn indices_for_image(&self, image: ImageId) -> &[usize] {
         self.by_image.get(&image).map_or(&[][..], Vec::as_slice)
     }
+
+    /// LVIS per-image top-`max_dets` trim (quirk **AC2** of ADR-0026).
+    ///
+    /// Mirrors `LVISResults.limit_dets_per_image` at
+    /// `lvis/results.py:73-84`: groups detections by `image_id`,
+    /// sorts each group by score descending (stable — quirk
+    /// **AC4**), and keeps the top `max_dets` across **all
+    /// categories combined**. The cross-class consequence (quirk
+    /// **AC3**): 250 cat-A + 350 cat-B detections on one image trim
+    /// to **300 total**, not 250 + min(350, 300).
+    ///
+    /// `max_dets < 0` (or `i64::MIN`) disables the trim entirely
+    /// (quirk **AC5**, mirroring the `if max_dets >= 0` guard at
+    /// `results.py:39-40`). `max_dets == 0` keeps zero detections —
+    /// edge case the upstream allows but isn't useful in practice.
+    ///
+    /// The output preserves DT ids and per-detection fields verbatim;
+    /// only the membership of the flat detections vector and the
+    /// per-cell index maps change. The original [`CocoDetections`] is
+    /// untouched (the inner `Arc<Vec<CocoDetection>>` is *not* shared
+    /// with the result — the trim copies the surviving entries into a
+    /// fresh allocation).
+    ///
+    /// Within each image's group, ties on `score` resolve in input
+    /// order: Rust's `slice::sort_by` is stable, matching Python's
+    /// `sorted(_, reverse=True)` Timsort behavior. The fact that the
+    /// matching path's `argsort_score_desc` is *also* stable
+    /// (`np.argsort(-scores, kind="mergesort")`, AC4) is a separate
+    /// invariant — vernier's parity claim covers both sites.
+    pub fn lvis_trim(&self, max_dets: i64) -> CocoDetections {
+        if max_dets < 0 {
+            // AC5: negative cap disables the trim. Cheap clone — the
+            // detections `Arc` is shared, only the index maps allocate.
+            return self.clone();
+        }
+        let cap = max_dets as usize;
+        let mut by_image_groups: HashMap<ImageId, Vec<usize>> = HashMap::new();
+        for (idx, dt) in self.detections.iter().enumerate() {
+            by_image_groups.entry(dt.image_id).or_default().push(idx);
+        }
+        // Iterate images in id-ascending order so the output's flat
+        // detections vector is deterministic — the LVIS oracle's
+        // `LVISResults.dataset['annotations']` is a dict-iteration
+        // order (image insertion order), which Python's `dict` keeps
+        // stable since 3.7. Rebuilding the order from id-ascending
+        // here matches the shape vernier's later FFI consumers
+        // expect; the per-image trim itself is order-invariant.
+        let mut image_ids: Vec<ImageId> = by_image_groups.keys().copied().collect();
+        image_ids.sort_unstable_by_key(|i| i.0);
+
+        let mut out: Vec<CocoDetection> =
+            Vec::with_capacity(self.detections.len().min(cap * image_ids.len().max(1)));
+        for image_id in image_ids {
+            let mut group = by_image_groups.remove(&image_id).unwrap_or_default();
+            // Stable sort by score descending. `partial_cmp` returns
+            // `None` only on NaN; `from_inputs` rejects NaN scores
+            // upstream (quirk **AD3** corrected), so `Equal` is the
+            // only fallback we need to consider.
+            group.sort_by(|&a, &b| {
+                self.detections[b]
+                    .score
+                    .partial_cmp(&self.detections[a].score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            for &idx in group.iter().take(cap) {
+                out.push(self.detections[idx].clone());
+            }
+        }
+        CocoDetections::from_records(out)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1683,6 +1753,183 @@ mod tests {
             serde_json::to_string(&Frequency::Frequent).unwrap(),
             "\"f\""
         );
+    }
+
+    // -- AC2/AC3/AC4/AC5: lvis_trim per-image top-K ---------------------------
+
+    #[test]
+    fn ac2_q1_trims_500_single_category_to_300() {
+        // ADR-0026 appendix Q1: 500 single-category detections on one
+        // image must trim to exactly 300, dropping the lowest-score
+        // 200. Score-descending order is preserved.
+        let dts = CocoDetections::from_inputs(
+            (0..500)
+                .map(|i| {
+                    let score = 1.0 - (i as f64) / 1000.0; // 1.0, 0.999, …, 0.501
+                    dt_input(1, 1, score, (0.0, 0.0, 1.0, 1.0))
+                })
+                .collect(),
+        )
+        .unwrap();
+        let trimmed = dts.lvis_trim(300);
+        assert_eq!(trimmed.detections().len(), 300);
+        // Scores must be descending and start at 1.0.
+        let scores: Vec<f64> = trimmed.detections().iter().map(|d| d.score).collect();
+        for w in scores.windows(2) {
+            assert!(
+                w[0] >= w[1],
+                "lvis_trim must preserve score-descending order"
+            );
+        }
+        assert!((scores[0] - 1.0).abs() < 1e-12);
+        // The lowest score in the trimmed set is the 300th input
+        // (1.0 - 299/1000 = 0.701).
+        assert!((scores[299] - 0.701).abs() < 1e-12);
+    }
+
+    #[test]
+    fn ac3_q2_cross_class_crowding_keeps_300_total_across_classes() {
+        // ADR-0026 appendix Q2: 250 cat-A + 350 cat-B detections on
+        // one image trim to **300 total** (top-300 across both
+        // classes by score combined), not 250 + min(350, 300) = 550.
+        // Score layouts are interleaved so the trim has to actually
+        // sort across classes — a per-class trim would leave cat-A
+        // intact and only trim cat-B.
+        let mut inputs = Vec::with_capacity(600);
+        for i in 0..250 {
+            // cat 1 scores: 0.5, 0.498, …, 0.002 (250 values)
+            let score = 0.5 - (i as f64) * 0.002;
+            inputs.push(dt_input(1, 1, score, (0.0, 0.0, 1.0, 1.0)));
+        }
+        for i in 0..350 {
+            // cat 2 scores: 1.0, 0.998, …, 0.302 (350 values).
+            // The top 300 across both classes are all cat-2 (every
+            // cat-2 score >= 0.302 > every cat-1 score 0.5 only at
+            // its top, so cross-class trim keeps cat-2 dominant).
+            // Actually score 0.302 < 0.5 so cat-1 top entries
+            // survive — see assertion below.
+            let score = 1.0 - (i as f64) * 0.002;
+            inputs.push(dt_input(1, 2, score, (0.0, 0.0, 1.0, 1.0)));
+        }
+        let dts = CocoDetections::from_inputs(inputs).unwrap();
+        let trimmed = dts.lvis_trim(300);
+        // AC3: top-300 total — not per-class.
+        assert_eq!(trimmed.detections().len(), 300);
+        // Counts per category in the trim — cat-2 has higher overall
+        // scores so most of the trim is cat-2; cat-1's top entries
+        // (score 0.5 ≥ 0.302) also make the cut.
+        let n_cat1 = trimmed
+            .detections()
+            .iter()
+            .filter(|d| d.category_id == CategoryId(1))
+            .count();
+        let n_cat2 = trimmed
+            .detections()
+            .iter()
+            .filter(|d| d.category_id == CategoryId(2))
+            .count();
+        // cat-2 scores >= 0.5 are i in 0..=250; cat-1 scores >= 0.302
+        // are i in 0..=99. The exact mix is determined by the sort
+        // of all 600 scores; what we assert is the cross-class total.
+        assert_eq!(n_cat1 + n_cat2, 300);
+        // Sanity: neither class is fully empty (otherwise the trim
+        // would have collapsed to per-class).
+        assert!(n_cat1 > 0, "cat 1 must keep at least its top-score entries");
+        assert!(n_cat2 > 0, "cat 2 must keep its high-score entries");
+    }
+
+    #[test]
+    fn ac5_negative_max_dets_disables_trim() {
+        // `max_dets < 0` is the upstream `if max_dets >= 0` guard
+        // disabled. `lvis_trim(-1)` must return every input
+        // detection unchanged.
+        let dts = CocoDetections::from_inputs(
+            (0..50)
+                .map(|i| dt_input(1, 1, i as f64 / 100.0, (0.0, 0.0, 1.0, 1.0)))
+                .collect(),
+        )
+        .unwrap();
+        let trimmed = dts.lvis_trim(-1);
+        assert_eq!(trimmed.detections().len(), 50);
+        // No reordering — the AC5 path doesn't even sort.
+        for (i, dt) in trimmed.detections().iter().enumerate() {
+            assert!((dt.score - (i as f64 / 100.0)).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn ac5_max_dets_at_capacity_is_no_op() {
+        // `max_dets >= n_dts` keeps every detection — but resorts
+        // them score-descending. (We don't assert order preservation
+        // because the trim is allowed to reorder; the contract is
+        // count + membership.)
+        let dts = CocoDetections::from_inputs(
+            (0..10)
+                .map(|i| dt_input(1, 1, i as f64 / 10.0, (0.0, 0.0, 1.0, 1.0)))
+                .collect(),
+        )
+        .unwrap();
+        let trimmed = dts.lvis_trim(100);
+        assert_eq!(trimmed.detections().len(), 10);
+    }
+
+    #[test]
+    fn ac4_stable_sort_preserves_input_order_for_score_ties() {
+        // Two detections with the exact same score — the trim must
+        // keep them in input order. Python's `sorted(_,
+        // reverse=True)` uses Timsort (stable); Rust's `slice::sort_by`
+        // is also stable. This test pins the cross-language
+        // invariant.
+        let mut a = dt_input(1, 1, 0.5, (0.0, 0.0, 1.0, 1.0));
+        a.id = Some(AnnId(100));
+        let mut b = dt_input(1, 1, 0.5, (1.0, 0.0, 1.0, 1.0));
+        b.id = Some(AnnId(200));
+        let dts = CocoDetections::from_inputs(vec![a, b]).unwrap();
+        let trimmed = dts.lvis_trim(2);
+        let ids: Vec<AnnId> = trimmed.detections().iter().map(|d| d.id).collect();
+        assert_eq!(
+            ids,
+            vec![AnnId(100), AnnId(200)],
+            "AC4: stable sort must preserve input order on score ties"
+        );
+    }
+
+    #[test]
+    fn lvis_trim_groups_by_image_id() {
+        // 3 images, each with 5 detections; trim to 2 per image.
+        // Verify the group boundaries are honored: image 1 gets its
+        // top-2 cat-1 entries, image 2 gets its top-2 cat-2 entries,
+        // etc.
+        let mut inputs = Vec::with_capacity(15);
+        for img in 1..=3i64 {
+            for i in 0..5 {
+                let score = 1.0 - (img as f64) * 0.01 - (i as f64) * 0.001;
+                inputs.push(dt_input(img, img, score, (0.0, 0.0, 1.0, 1.0)));
+            }
+        }
+        let dts = CocoDetections::from_inputs(inputs).unwrap();
+        let trimmed = dts.lvis_trim(2);
+        assert_eq!(trimmed.detections().len(), 6);
+        // 2 per image:
+        for img in 1..=3i64 {
+            let n = trimmed
+                .detections()
+                .iter()
+                .filter(|d| d.image_id == ImageId(img))
+                .count();
+            assert_eq!(n, 2, "image {img} must trim to 2");
+        }
+    }
+
+    #[test]
+    fn lvis_trim_zero_max_dets_keeps_nothing() {
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 1.0, 1.0)),
+            dt_input(1, 1, 0.5, (0.0, 0.0, 1.0, 1.0)),
+        ])
+        .unwrap();
+        let trimmed = dts.lvis_trim(0);
+        assert!(trimmed.detections().is_empty());
     }
 
     #[test]
