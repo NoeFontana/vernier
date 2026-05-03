@@ -48,7 +48,7 @@ explicit.
 | ----------------------- | ------------------------------------------------------ | ------------- | ----------------- |
 | **COCOAPI**             | © 2014 Piotr Dollar and Tsung-Yi Lin                   | BSD-2-Clause  | **Yes** — `boundary_iou/coco_instance_api/{coco,cocoeval}.py` are derivatives of pycocotools. |
 | **LVIS API**            | © 2019 Agrim Gupta and Ross Girshick                   | BSD-2-Clause  | No — upstream's `lvis_instance_api/` is skipped (LVIS dropped from Phase 2 per ADR-0010). Notice preserved per clause 2. |
-| **PANOPTICAPI**         | © 2018 Alexander Kirillov                              | BSD-2-Clause  | No — upstream's `coco_panoptic_api/` is skipped (panoptic out of scope). Notice preserved per clause 2. |
+| **PANOPTICAPI**         | © 2018 Alexander Kirillov                              | BSD-2-Clause  | **Yes** — vendored at [`tests/python/parity_panoptic/oracle/panopticapi/`](tests/python/parity_panoptic/oracle/panopticapi/) (ADR-0025) for the panoptic-quality parity oracle. The boundary-iou-api LICENSE preserves this notice independently. |
 | **Cityscapes Dataset**  | Daimler AG, MPI Informatics, TU Darmstadt              | Custom (non-commercial; see LICENSE) | No — upstream's `cityscapes_*_api/` subtrees are skipped. Notice preserved per clause 2. |
 
 The Cityscapes notice carries a non-commercial restriction. Because
@@ -57,6 +57,24 @@ does not propagate to vernier's MIT/Apache-2.0 dual license; the
 notice is preserved as documentation only. If a future ADR proposes
 vendoring any Cityscapes subtree, that ADR has to address the
 licensing implications first.
+
+## panopticapi
+
+- **Role:** bit-exact parity oracle for panoptic-quality (PQ)
+  evaluation (ADR-0025). Consumed only by
+  `tests/python/parity_panoptic/`; not imported by `python/vernier/`
+  or any code that ships in the wheel.
+- **Path:** [`tests/python/parity_panoptic/oracle/panopticapi/`](tests/python/parity_panoptic/oracle/panopticapi/)
+- **Upstream:** <https://github.com/cocodataset/panopticapi>
+- **Pinned commit:** `7bb4655548f98f3fedc07bf37e9040a992b054b0` (2021-06-17)
+- **Primary license:** BSD-2-Clause. Copyright © 2018 Alexander Kirillov.
+- **License text:** [`tests/python/parity_panoptic/oracle/panopticapi/LICENSE`](tests/python/parity_panoptic/oracle/panopticapi/LICENSE)
+  (renamed from upstream `license.txt` for tooling discoverability;
+  contents byte-equal — see `VENDORING.md` byte-equality table).
+- **Vendoring details:** [`tests/python/parity_panoptic/oracle/VENDORING.md`](tests/python/parity_panoptic/oracle/VENDORING.md)
+- **Runtime dep:** `Pillow==11.1.0` (oracle imports `PIL.Image` at
+  module load; pin mirrored by `ORACLE_PILLOW_PIN` in
+  [`crates/vernier-panoptic/src/parity.rs`](crates/vernier-panoptic/src/parity.rs)).
 
 ## pycocotools
 
