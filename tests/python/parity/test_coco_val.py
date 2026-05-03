@@ -36,7 +36,6 @@ from ..coco_val_paths import (
 )
 from .harness import IouType, assert_snapshots_equal, snapshot
 
-
 # All tests in this file run against the full COCO val2017 dataset
 # (~5k images, ~36k anns) when the cache is populated, so each call
 # spends 20-40 seconds in pycocotools-vs-vernier compute. Mark slow so

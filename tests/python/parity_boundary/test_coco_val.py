@@ -21,7 +21,6 @@ import pytest
 from ..coco_val_paths import DT_SEGM_ENV, GT_ENV, require_env_path, require_perfect_dt_artifacts
 from .e2e_harness import assert_snapshots_equal, snapshot
 
-
 # Whole-dataset runs through the cv2-based oracle pipeline; each test
 # is multi-minute when the cache is populated. Mark slow.
 pytestmark = [pytest.mark.parity_boundary, pytest.mark.coco_val, pytest.mark.slow]

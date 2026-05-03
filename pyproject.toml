@@ -42,6 +42,14 @@ viz = ["plotly>=6.0"]
 # are *not* declared here because they are optional alternatives the
 # user picks themselves.
 tables = ["polars>=1.0"]
+# Real-model validation harness (TIDE Week 5). rfdetr is the source of
+# RFDETRNano (bbox) + RFDETRSegNano (segm) used by
+# tests/python/integration/real_models/tide/. Pinned exact: this is the
+# "non-parity sanity-check" vendoring flavor — see
+# docs/engineering/vendoring.md and THIRD_PARTY_NOTICES.md. Pulled in
+# explicitly via `uv sync --extra real-models`; the @pytest.mark.real_models
+# tests skip cleanly when rfdetr is absent.
+real-models = ["rfdetr==1.6.5.post0", "platformdirs>=4"]
 
 [project.urls]
 Homepage = "https://github.com/NoeFontana/vernier"
@@ -146,6 +154,11 @@ exclude = [
     "tests/python/parity_boundary/oracle/boundary_iou_api",
     # ADR-0017 bench harness — typed independently from its own pyproject.
     "bench",
+    # Real-model validation harness — depends on the `real-models` extra
+    # (rfdetr / supervision / torch) which is not in the default sync.
+    # Same philosophy as the bench exclude: opt-in heavy code that we
+    # don't gate `just lint` on. Linted by ruff (style) but not typed.
+    "tests/python/integration/real_models",
 ]
 strict = ["python/vernier"]
 pythonVersion = "3.10"
@@ -173,4 +186,5 @@ markers = [
     "parity: parity tests against the pycocotools reference oracle",
     "parity_boundary: parity tests against the bowenc0221/boundary-iou-api reference oracle",
     "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
+    "real_models: real-model validation harness (rfdetr) — heavy, opt-in only, skipped unless the real-models extra is installed and VERNIER_COCO_CACHE points at val2017 GT + images",
 ]

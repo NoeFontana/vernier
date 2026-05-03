@@ -131,13 +131,9 @@ def confusion_matrix(
 
     match iou:
         case Bbox():
-            result = confusion_matrix_bbox(
-                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats
-            )
+            result = confusion_matrix_bbox(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
         case Segm():
-            result = confusion_matrix_segm(
-                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats
-            )
+            result = confusion_matrix_segm(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
         case Boundary(dilation_ratio=r):
             result = confusion_matrix_boundary(
                 gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, r
