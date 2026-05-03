@@ -45,6 +45,19 @@
 //! - **B7** (`strict`): unmatched DTs whose area is out of range get
 //!   `dt_ignore=true` so they do not contribute to the precision/recall
 //!   curve in this area cell.
+//! - **AA3** (`strict`, ADR-0026): when the dataset carries LVIS
+//!   federated metadata and the current `(image, category)` cell is in
+//!   `not_exhaustive_category_ids[image]`, every unmatched DT in the
+//!   cell has its `dt_ignore` set to `true`. Mirrors lvis-api
+//!   `eval.py:269-278`'s OR into the area-bucket `dt_ig_mask`. The
+//!   matching engine is unchanged: the flag piggybacks on the same
+//!   `dt_ignore` field B7 already drives.
+//! - **AA4** (`strict`, ADR-0026): on a federated dataset and with
+//!   `use_cats=true`, a cell `(image I, category C)` is evaluated only
+//!   when `C ∈ pos[I] ∪ neg[I]`. Cells with no GT (so `C ∉ pos[I]`)
+//!   and no `neg` listing produce no `eval_imgs` entry — the existing
+//!   `Option<PerImageEval>` distinction (`None` vs an empty cell) is
+//!   the same one lvis-api's `eval.py:336` filter relies on.
 //! - **L4** (`aligned`): `use_cats=false` collapses every category onto
 //!   a single virtual `k=0` bucket, with `category_id` carried through
 //!   matching as a no-op.
@@ -718,6 +731,17 @@ pub fn evaluate_with<K: EvalKernel>(
             None
         };
 
+    // ADR-0026 federated metadata is consumed only when `use_cats=true`;
+    // LVIS evaluation is per-category by construction. With
+    // `use_cats=false` the federated maps are intentionally ignored
+    // and the eval falls back to COCO semantics (the L4 `k=0` collapse
+    // never carries federated state).
+    let (federated_neg, federated_nel) = if params.use_cats && gt.is_federated() {
+        (gt.neg_category_ids(), gt.not_exhaustive_category_ids())
+    } else {
+        (None, None)
+    };
+
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
         let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
@@ -727,6 +751,24 @@ pub fn evaluate_with<K: EvalKernel>(
             let dt_indices = dt_top_indices_for_cell(dt, image_id, *cat, params.max_dets_per_image);
             if gt_indices.is_empty() && dt_indices.is_empty() {
                 continue;
+            }
+
+            // AA4 cell-skip and AA3 not_exhaustive flag. `cat.is_some()`
+            // is implied by `federated_neg.is_some()` (we filtered
+            // on `use_cats=true` above) but we re-check defensively so
+            // the unwrap on `cat` is local and obvious.
+            let mut not_exhaustive_for_cell = false;
+            if let (Some(c), Some(neg_map), Some(nel_map)) =
+                (cat.as_ref(), federated_neg, federated_nel)
+            {
+                let in_neg = neg_map.get(&image_id).is_some_and(|s| s.contains(c));
+                // pos[I] is derived from GTs at load: `C ∈ pos[I]`
+                // exactly when `gt_indices` is non-empty for this
+                // cell. Skip when the cell is outside `pos ∪ neg`.
+                if gt_indices.is_empty() && !in_neg {
+                    continue;
+                }
+                not_exhaustive_for_cell = nel_map.get(&image_id).is_some_and(|s| s.contains(c));
             }
 
             // Area-invariant per-cell buffers — built once, reused
@@ -769,6 +811,7 @@ pub fn evaluate_with<K: EvalKernel>(
                 dt_scores: &dt_scores,
                 dt_ids: &dt_ids,
                 iou: iou.view(),
+                not_exhaustive: not_exhaustive_for_cell,
             };
             for (a, area) in params.area_ranges.iter().enumerate() {
                 let (cell, meta) =
@@ -1178,6 +1221,11 @@ struct CellBuffers<'a> {
     dt_scores: &'a [f64],
     dt_ids: &'a [i64],
     iou: ArrayView2<'a, f64>,
+    /// LVIS federated AA3: when `true`, the entire `(image, category)`
+    /// cell is in `not_exhaustive_category_ids[image]`, so every
+    /// unmatched DT in the cell gets `dt_ignore = true` (mirrors
+    /// lvis-api `eval.py:278`). `false` outside LVIS evaluation.
+    not_exhaustive: bool,
 }
 
 fn evaluate_cell(
@@ -1234,7 +1282,10 @@ fn evaluate_cell(
                 dt_matches_id[(t, d)] = gt_ids_sorted[m as usize];
             }
             // B7: unmatched AND out-of-area → ignore.
-            if !matched && !dt_in_range_sorted[d] {
+            // AA3 (LVIS): unmatched in a not_exhaustive cell → ignore.
+            // Both branches share the same `dt_ignore` field; the
+            // matching engine never sees the LVIS-specific flag.
+            if !matched && (!dt_in_range_sorted[d] || buf.not_exhaustive) {
                 dt_ignore[(t, d)] = true;
             }
         }
@@ -2891,5 +2942,323 @@ mod tests {
             }
             other => panic!("expected InvalidAnnotation, got {other:?}"),
         }
+    }
+
+    // -- ADR-0026: federated cell-skip and dt_ignore extension ---------------
+
+    /// Build an LVIS-style GT dataset directly: a `CocoDataset` whose
+    /// federated metadata sets are populated. Mirrors what
+    /// `from_lvis_json_bytes` produces, but lets tests pin the maps
+    /// without round-tripping through JSON.
+    fn lvis_dataset(
+        images: &[ImageMeta],
+        annotations: &[CocoAnnotation],
+        categories: &[CategoryMeta],
+        neg: &[(i64, Vec<i64>)],
+        nel: &[(i64, Vec<i64>)],
+        freq: &[(i64, crate::Frequency)],
+    ) -> CocoDataset {
+        // Build LVIS JSON bytes through the public loader so the
+        // resulting dataset uses the same code path the FFI exercises.
+        // (Constructing through `from_parts` would leave the federated
+        // fields `None`.)
+        let images_json: Vec<serde_json::Value> = images
+            .iter()
+            .map(|im| {
+                let neg_for: Vec<i64> = neg
+                    .iter()
+                    .find(|(id, _)| *id == im.id.0)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                let nel_for: Vec<i64> = nel
+                    .iter()
+                    .find(|(id, _)| *id == im.id.0)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default();
+                serde_json::json!({
+                    "id": im.id.0,
+                    "width": im.width,
+                    "height": im.height,
+                    "neg_category_ids": neg_for,
+                    "not_exhaustive_category_ids": nel_for,
+                })
+            })
+            .collect();
+        let cats_json: Vec<serde_json::Value> = categories
+            .iter()
+            .map(|c| {
+                let f = freq
+                    .iter()
+                    .find(|(id, _)| *id == c.id.0)
+                    .map(|(_, f)| match f {
+                        crate::Frequency::Rare => "r",
+                        crate::Frequency::Common => "c",
+                        crate::Frequency::Frequent => "f",
+                    })
+                    .expect("test fixture must include frequency for every category");
+                serde_json::json!({
+                    "id": c.id.0,
+                    "name": c.name,
+                    "frequency": f,
+                })
+            })
+            .collect();
+        let anns_json = serde_json::to_value(annotations).unwrap();
+        let payload = serde_json::json!({
+            "images": images_json,
+            "annotations": anns_json,
+            "categories": cats_json,
+        });
+        let bytes = serde_json::to_vec(&payload).unwrap();
+        CocoDataset::from_lvis_json_bytes(&bytes).unwrap()
+    }
+
+    #[test]
+    fn aa4_skips_cells_outside_pos_union_neg() {
+        // Two images, two categories. Image 1 has GTs of cat 1 only;
+        // image 2 has GTs of cat 2 only. Neither image lists anything
+        // in `neg`. The DT set predicts cat 2 on image 1 (a category
+        // for which image 1 has no GT and no neg listing) — the
+        // federated cell-skip MUST drop the resulting (image 1,
+        // cat 2) cell entirely. Without AA4 the DT counts as a FP and
+        // tanks AP.
+        let images = vec![img(1, 100, 100), img(2, 100, 100)];
+        let cats = vec![cat(1, "a"), cat(2, "b")];
+        let anns = vec![
+            ann(1, 1, 1, (0.0, 0.0, 10.0, 10.0)),
+            ann(2, 2, 2, (0.0, 0.0, 10.0, 10.0)),
+        ];
+        let gt_lvis = lvis_dataset(
+            &images,
+            &anns,
+            &cats,
+            &[(1, vec![]), (2, vec![])],
+            &[(1, vec![]), (2, vec![])],
+            &[
+                (1, crate::Frequency::Frequent),
+                (2, crate::Frequency::Frequent),
+            ],
+        );
+        let gt_coco = CocoDataset::from_parts(images, anns, cats).unwrap();
+        // DT: a "stray" cat 2 prediction on image 1 — federated wants
+        // it dropped, COCO will score it as a FP.
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),
+            dt_input(1, 2, 0.7, (50.0, 50.0, 10.0, 10.0)),
+            dt_input(2, 2, 0.9, (0.0, 0.0, 10.0, 10.0)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let grid_lvis = evaluate_bbox(&gt_lvis, &dts, params, ParityMode::Strict).unwrap();
+        let grid_coco = evaluate_bbox(&gt_coco, &dts, params, ParityMode::Strict).unwrap();
+
+        // Cell layout: K=[cat 1, cat 2], A=[all], I=[image 1, image 2].
+        // (image 1, cat 2) sits at k=1, a=0, i=0 — federated dataset
+        // skips it (None), COCO dataset evaluates it (Some).
+        let lvis_cell = grid_lvis.cell(1, 0, 0);
+        let coco_cell = grid_coco.cell(1, 0, 0);
+        assert!(lvis_cell.is_none(), "AA4: federated cell must be skipped");
+        assert!(
+            coco_cell.is_some(),
+            "control: COCO dataset must evaluate the same cell"
+        );
+        // The (image 1, cat 1) cell is unaffected — federated and
+        // COCO must agree there because cat 1 ∈ pos[1].
+        assert_eq!(
+            grid_lvis.cell(0, 0, 0).map(|c| c.dt_scores.len()),
+            grid_coco.cell(0, 0, 0).map(|c| c.dt_scores.len()),
+        );
+    }
+
+    #[test]
+    fn aa4_keeps_neg_cells_with_no_gts() {
+        // Same shape as the previous test, but image 1 lists cat 2 in
+        // its `neg` set: the cell now stays (so we score recall on a
+        // verified-absent category) and unmatched DTs become FPs.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "a"), cat(2, "b")];
+        let anns = vec![ann(1, 1, 1, (0.0, 0.0, 10.0, 10.0))];
+        let gt = lvis_dataset(
+            &images,
+            &anns,
+            &cats,
+            &[(1, vec![2])], // cat 2 ∈ neg[1]
+            &[(1, vec![])],
+            &[
+                (1, crate::Frequency::Frequent),
+                (2, crate::Frequency::Frequent),
+            ],
+        );
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),
+            dt_input(1, 2, 0.7, (50.0, 50.0, 10.0, 10.0)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let cell = grid
+            .cell(1, 0, 0)
+            .expect("cat 2 ∈ neg[1] must produce an evaluated cell");
+        // The cell has no GTs and one DT; the DT is an unmatched FP
+        // (not ignored, because the cell is not in `not_exhaustive`).
+        assert_eq!(cell.dt_scores.len(), 1);
+        assert!(cell.dt_ignore.iter().all(|&ig| !ig));
+    }
+
+    #[test]
+    fn aa3_dt_ignore_extension_in_not_exhaustive_cell() {
+        // Image 1 has GTs of cat 1 and lists cat 1 in its
+        // `not_exhaustive` set. The DT set has two predictions for
+        // cat 1: one matches the GT (TP), the other is unmatched.
+        // Quirk **AA3** says the unmatched DT must have
+        // `dt_ignore = true`; the matched DT keeps `dt_ignore =
+        // false`.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "a")];
+        let anns = vec![ann(1, 1, 1, (0.0, 0.0, 10.0, 10.0))];
+        let gt = lvis_dataset(
+            &images,
+            &anns,
+            &cats,
+            &[(1, vec![])],
+            &[(1, vec![1])], // cat 1 ∈ not_exhaustive[1]
+            &[(1, crate::Frequency::Frequent)],
+        );
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),   // TP
+            dt_input(1, 1, 0.7, (50.0, 50.0, 10.0, 10.0)), // unmatched FP candidate
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let cell = grid.cell(0, 0, 0).expect("cell must evaluate");
+        let n_t = cell.dt_ignore.shape()[0];
+        // sorted-DT order is descending by score: [TP, FP]. TP must
+        // never be `dt_ignore = true` (B6 only flips ignore on
+        // *unmatched* DTs); FP must be `true` for every IoU
+        // threshold.
+        for t in 0..n_t {
+            assert!(!cell.dt_ignore[(t, 0)], "TP should not be dt_ignore");
+            assert!(
+                cell.dt_ignore[(t, 1)],
+                "AA3: unmatched DT in not_exhaustive cell must be dt_ignore"
+            );
+        }
+    }
+
+    #[test]
+    fn aa3_dt_ignore_only_unmatched() {
+        // Mirror of the previous test but with `not_exhaustive` empty:
+        // the same DT pair must produce `dt_ignore = false` on both
+        // entries (the unmatched DT is now a real FP).
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "a")];
+        let anns = vec![ann(1, 1, 1, (0.0, 0.0, 10.0, 10.0))];
+        let gt = lvis_dataset(
+            &images,
+            &anns,
+            &cats,
+            &[(1, vec![])],
+            &[(1, vec![])],
+            &[(1, crate::Frequency::Frequent)],
+        );
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),
+            dt_input(1, 1, 0.7, (50.0, 50.0, 10.0, 10.0)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let cell = grid.cell(0, 0, 0).expect("cell must evaluate");
+        assert!(cell.dt_ignore.iter().all(|&ig| !ig));
+    }
+
+    #[test]
+    fn federated_dataset_with_use_cats_false_falls_back_to_coco() {
+        // Federated logic requires `use_cats=true`. With `use_cats=false`
+        // the L4 collapse merges every category into one bucket; we
+        // explicitly skip the federated checks so a misconfigured
+        // caller still sees deterministic COCO-grade output.
+        let images = vec![img(1, 100, 100), img(2, 100, 100)];
+        let cats = vec![cat(1, "a"), cat(2, "b")];
+        let anns = vec![
+            ann(1, 1, 1, (0.0, 0.0, 10.0, 10.0)),
+            ann(2, 2, 2, (0.0, 0.0, 10.0, 10.0)),
+        ];
+        let gt = lvis_dataset(
+            &images,
+            &anns,
+            &cats,
+            &[(1, vec![]), (2, vec![])],
+            &[(1, vec![]), (2, vec![])],
+            &[
+                (1, crate::Frequency::Frequent),
+                (2, crate::Frequency::Frequent),
+            ],
+        );
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),
+            dt_input(1, 2, 0.7, (50.0, 50.0, 10.0, 10.0)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: false,
+            retain_iou: false,
+        };
+        // No panic, no skipped cell — the K-axis is collapsed to one
+        // sentinel category so AA4 cannot apply.
+        let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        assert_eq!(grid.n_categories, 1);
+        // (k=0, a=0, i=0) is the only image-1 cell; it must contain
+        // both DTs (cat 1 and cat 2 collapsed onto k=0).
+        let cell = grid.cell(0, 0, 0).expect("collapsed cell must evaluate");
+        assert_eq!(cell.dt_scores.len(), 2);
+    }
+
+    #[test]
+    fn coco_dataset_unaffected_by_federated_machinery() {
+        // The federated branches must be no-ops when
+        // `is_federated()` is false. Pin this with a regression check
+        // against the perfect_match_grid fixture: the cell shape
+        // must be byte-identical to what the function returned
+        // before the AA3/AA4 patch.
+        let g = perfect_match_grid();
+        // 1 category, 4 area ranges, 1 image. (k=0, a=0, i=0) holds
+        // the all-area cell with both DTs matched.
+        let cell = g.cell(0, 0, 0).expect("perfect_match cell must exist");
+        assert_eq!(cell.dt_scores.len(), 2);
+        assert!(cell.dt_ignore.iter().all(|&ig| !ig));
     }
 }

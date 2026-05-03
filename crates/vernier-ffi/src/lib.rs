@@ -462,6 +462,51 @@ fn evaluate_grid_impl(
     })
 }
 
+/// Same as [`evaluate_grid_impl`] but accepts a parsed-once
+/// [`PyDataset`] (ADR-0020) — required when the GT carries LVIS
+/// federated metadata that the JSON-bytes path would discard
+/// (ADR-0026, the orchestrator's `gt.is_federated()` gate fires
+/// only on a dataset built via `Dataset.from_lvis_json`).
+#[allow(clippy::too_many_arguments)]
+fn evaluate_grid_with_dataset_impl(
+    py: Python<'_>,
+    iou_type: EvalIouType,
+    gt: &PyDataset,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    retain_iou: bool,
+) -> PyResult<PyEvalGrid> {
+    let parity = parse_parity_mode(parity_mode)?;
+    let snapshot = gt.snapshot();
+    let dt_bytes = dt_json.as_bytes().to_vec();
+    let area: Vec<AreaRange> = area_ranges_for(&iou_type);
+    let grid = py.detach(move || -> PyResult<EvalGrid> {
+        let dt = parse_dt(&dt_bytes)?;
+        let caches = snapshot.caches();
+        iou_type
+            .run_cached(
+                &snapshot.gt,
+                &dt,
+                EvaluateParams {
+                    iou_thresholds: iou_thresholds(),
+                    area_ranges: &area,
+                    max_dets_per_image,
+                    use_cats,
+                    retain_iou,
+                },
+                parity,
+                caches,
+            )
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
+    Ok(PyEvalGrid {
+        inner: grid,
+        parity,
+    })
+}
+
 /// Per-kernel area-range default. Keypoints uses the 3-bucket kp grid
 /// (quirk **D5** strict, ADR-0012); every other kernel uses the
 /// 4-bucket detection grid.
@@ -493,6 +538,34 @@ fn evaluate_bbox_grid(
         py,
         EvalIouType::Bbox,
         gt_json,
+        dt_json,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+        retain_iou,
+    )
+}
+
+/// Bbox per-image evaluation pass against a parsed-once
+/// [`Dataset`]. The federated form is the entry point the LVIS
+/// parity harness consumes: the JSON-bytes [`evaluate_bbox_grid`]
+/// strips ADR-0026 federated metadata at GT load, so the
+/// orchestrator's AA3/AA4 branches never fire on that path.
+#[pyfunction]
+#[pyo3(signature = (gt, dt_json, parity_mode, max_dets_per_image, use_cats, retain_iou=false))]
+fn evaluate_bbox_grid_with_dataset(
+    py: Python<'_>,
+    gt: &PyDataset,
+    dt_json: &Bound<'_, PyBytes>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    retain_iou: bool,
+) -> PyResult<PyEvalGrid> {
+    evaluate_grid_with_dataset_impl(
+        py,
+        EvalIouType::Bbox,
+        gt,
         dt_json,
         parity_mode,
         max_dets_per_image,
@@ -2354,6 +2427,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_bbox_grid_with_dataset, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_boundary_summary, m)?)?;
