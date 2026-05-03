@@ -114,10 +114,16 @@ dev = [
     # and tools/fetch-coco-val.sh; bench has its own copy of the dep
     # since bench resolves against its own pyproject.
     "vernier-coco-val-cache",
+    # Same shape, LVIS v1 val flavor (ADR-0026 PR-6). Single source of
+    # truth for the URL + SHA256 of `lvis_v1_val.json`; consumed by
+    # `tests/python/parity_lvis/lvis_val_paths.py` and the
+    # `python -m lvis_val_cache` CLI.
+    "vernier-lvis-val-cache",
 ]
 
 [tool.uv.sources]
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
+vernier-lvis-val-cache = { path = "tools/lvis_val_cache", editable = true }
 
 # ---------------------------------------------------------------------------
 # Ruff: lint + format
@@ -207,6 +213,7 @@ markers = [
     "parity: parity tests against the pycocotools reference oracle",
     "parity_boundary: parity tests against the bowenc0221/boundary-iou-api reference oracle",
     "parity_lvis: parity tests against the lvis-dataset/lvis-api reference oracle (ADR-0026)",
+    "parity_lvis_val: LVIS v1 val whole-dataset parity smoke (skipped unless VERNIER_LVIS_*_PATH env vars point at real files)",
     "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
     "real_models: real-model validation harness (rfdetr) — heavy, opt-in only, skipped unless the real-models extra is installed and VERNIER_COCO_CACHE points at val2017 GT + images",
 ]
