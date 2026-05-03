@@ -27,6 +27,7 @@ pub mod dataset;
 pub mod error;
 pub mod kernel;
 pub mod parity;
+pub mod summarize;
 
 pub use attribute::{attribute_image, PqStat};
 pub use dataset::{
@@ -39,6 +40,7 @@ pub use parity::{
     ParityMode, ORACLE_COMMIT_SHA, ORACLE_PILLOW_PIN, PANOPTIC_IOU_THRESHOLD, PANOPTIC_OFFSET,
     PANOPTIC_PARITY_EPS, PANOPTIC_VOID,
 };
+pub use summarize::{evaluate, ClassPanopticStats, PanopticSummary};
 
 /// Library version string. Useful for parity tracing in fixtures and
 /// for debugging mismatches between Rust and Python sides of the FFI
