@@ -25,7 +25,7 @@
 /// vernier exposes this as a constant rather than an implicit
 /// per-dataset sentinel: per ADR-0026 decision driver F2, users supply
 /// `max_dets=(300,)` to the `Evaluator` explicitly when evaluating LVIS
-/// data. The migration guide lands in PR-7.
+/// data. See `docs/explanation/lvis-migration.md`.
 pub const LVIS_DEFAULT_MAX_DETS: usize = 300;
 
 /// Default Chebyshev-ball dilation ratio for boundary IoU on LVIS. The
@@ -51,11 +51,6 @@ pub const LVIS_BOUNDARY_DILATION_RATIO_DEFAULT: f64 = 0.008;
 /// [`crate::boundary_parity::BOUNDARY_PARITY_EPS`]; pinned here so the
 /// LVIS parity harness has a single knob to tune as the oracle
 /// stabilises.
-///
-/// ADR-0026 appendix open question 6 originally gated this value
-/// pending pycocotools-pin compatibility resolution; that question is
-/// now resolved (see [`ORACLE_PYCOCOTOOLS_PIN`] doc) and the value is
-/// fixed at the boundary-IoU magnitude.
 pub const LVIS_PARITY_EPS: f64 = 1e-9;
 
 /// Pinned PyPI release of the vendored `lvis-dataset/lvis-api`
@@ -118,9 +113,7 @@ mod tests {
     #[test]
     fn parity_eps_matches_boundary_magnitude() {
         // Same magnitude as the boundary-IoU oracle's aligned-mode
-        // tolerance. ADR-0026 appendix open question 6 originally gated
-        // this; resolved at vendor time (lvis 0.5.3 declares no
-        // pycocotools constraint).
+        // tolerance.
         assert_eq!(LVIS_PARITY_EPS, 1e-9);
     }
 

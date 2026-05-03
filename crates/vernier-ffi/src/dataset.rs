@@ -19,8 +19,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyFrozenSet, PyTuple};
 
 use vernier_core::{
-    BoundaryGtCache, CategoryId, CocoDataset, EvalDataset, EvalError, Frequency, ImageId,
-    SegmGtCache,
+    BoundaryGtCache, CategoryId, CocoDataset, EvalDataset, EvalError, ImageId, SegmGtCache,
 };
 
 use crate::parse_gt;
@@ -168,7 +167,7 @@ impl PyDataset {
         };
         let dict = PyDict::new(py);
         for (cat_id, freq) in map {
-            dict.set_item(cat_id.0, frequency_to_str(*freq))?;
+            dict.set_item(cat_id.0, freq.as_letter())?;
         }
         Ok(Some(dict))
     }
@@ -176,7 +175,7 @@ impl PyDataset {
     /// `True` when this dataset carries LVIS federated metadata —
     /// equivalent to `pos_category_ids is not None`. Cheap shortcut
     /// for orchestration code that gates behaviour on the federated
-    /// flag (PR-3).
+    /// flag.
     #[getter]
     fn is_federated(&self) -> bool {
         self.inner.is_federated()
@@ -243,14 +242,6 @@ fn federated_image_map_to_dict<'py>(
         dict.set_item(image_id.0, frozen)?;
     }
     Ok(Some(dict))
-}
-
-fn frequency_to_str(f: Frequency) -> &'static str {
-    match f {
-        Frequency::Rare => "r",
-        Frequency::Common => "c",
-        Frequency::Frequent => "f",
-    }
 }
 
 /// Map an [`EvalError`] from the LVIS loader to a Python `ValueError`
