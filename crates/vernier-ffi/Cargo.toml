@@ -28,6 +28,10 @@ test-poison = []
 
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.0.1" }
+# Panoptic-quality evaluation crate (ADR-0025). Sibling to vernier-core;
+# the FFI layer wires both through `_core` while keeping their kernels
+# independent.
+vernier-panoptic = { path = "../vernier-panoptic", version = "0.0.1" }
 pyo3.workspace = true
 numpy.workspace = true
 # Arrow columnar buffers for ADR-0019 result tables. Subset is
@@ -37,6 +41,13 @@ arrow-array.workspace = true
 arrow-buffer.workspace = true
 arrow-data.workspace = true
 arrow-schema.workspace = true
+# Serde for parsing panoptic segments_info / categories JSON at the
+# FFI boundary (ADR-0025). Already pulled in transitively via
+# `vernier-core`'s public types; declared explicitly here so the
+# `panoptic` module can deserialize without relying on an indirect
+# re-export.
+serde = { workspace = true }
+serde_json = { workspace = true }
 # FFI-internal scheduling deps for the background evaluator (ADR-0014).
 # Both are best-effort and crate-local; do NOT promote to
 # `[workspace.dependencies]` (only one consumer).

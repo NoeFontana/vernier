@@ -18,9 +18,13 @@ from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._confusion import confusion_matrix
 from vernier._core import (
     BackgroundEvaluator,
+    ClassPanopticStats,
     Dataset,
     MemoryBudgetWarning,
     OutOfBudgetError,
+    PanopticDataset,
+    PanopticPredictions,
+    PanopticSummary,
     QueueFullError,
     StreamingEvaluator,
     Summary,
@@ -32,6 +36,7 @@ from vernier._core import (
     evaluate_boundary_summary_with_dataset,
     evaluate_keypoints_summary,
     evaluate_keypoints_summary_with_dataset,
+    evaluate_panoptic,
     evaluate_segm_grid,
     evaluate_segm_summary,
     evaluate_segm_summary_with_dataset,
@@ -55,6 +60,7 @@ __all__ = [
     "Bbox",
     "Boundary",
     "COCOeval",
+    "ClassPanopticStats",
     "Dataset",
     "EvalResult",
     "Evaluator",
@@ -64,6 +70,10 @@ __all__ = [
     "Keypoints",
     "MemoryBudgetWarning",
     "OutOfBudgetError",
+    "PanopticDataset",
+    "PanopticEvaluator",
+    "PanopticPredictions",
+    "PanopticSummary",
     "ParityMode",
     "QueueFullError",
     "Segm",
@@ -450,3 +460,56 @@ def _reject_unknown_iou(iou: object) -> NoReturn:
         f"unsupported iou kernel {iou!r}; expected Bbox(), Segm(), "
         f"Boundary(...), or Keypoints(...) — see vernier.IouKind"
     )
+
+
+@dataclass(frozen=True, slots=True)
+class PanopticEvaluator:
+    """Panoptic-quality (PQ) evaluator (ADR-0025).
+
+    Sibling to :class:`Evaluator`. Per category, ``PQ_c`` is computed
+    directly as ``iou_c / (TP_c + 0.5*FP_c + 0.5*FN_c)`` (panopticapi
+    form, quirk **W1**) — algebraically equal to ``SQ_c * RQ_c`` but
+    f64 non-associative, so the direct form is what holds bit-equality.
+    Global ``PQ`` / ``SQ`` / ``RQ`` are unweighted means over the
+    present-categories subset (W2, W3, W7); things / stuff buckets are
+    independent unweighted means over their subsets (W4).
+
+    Defaults match panopticapi's ``pq_compute`` shape, except for
+    ``parity_mode``, which defaults to ``"corrected"`` (the ADR-0002
+    recommendation for net-new users); migrating users wanting
+    bit-exact panopticapi behavior should set ``parity_mode="strict"``.
+
+    ``boundary=True`` raises :class:`NotImplementedError`. Boundary PQ
+    is deferred to a follow-up ADR (ADR-0025 §"explicitly does not
+    decide" Q3 / Z1). The composition rule in the bowenc0221 fork is
+    not the instance-case ``min(mask_iou, boundary_iou)`` and resolving
+    it requires its own pass.
+    """
+
+    parity_mode: ParityMode = "corrected"
+    things_stuff_split: bool = True
+    boundary: bool = False
+
+    def __post_init__(self) -> None:
+        if self.boundary:
+            raise NotImplementedError(
+                "boundary panoptic-quality is deferred to a follow-up ADR "
+                "(ADR-0025 §'explicitly does not decide' Q3 / Z1). "
+                "The composition rule in the bowenc0221 fork is not the "
+                "instance-case min(mask_iou, boundary_iou) and resolving it "
+                "requires its own pass."
+            )
+
+    def evaluate(
+        self,
+        gt: PanopticDataset,
+        dt: PanopticPredictions,
+    ) -> PanopticSummary:
+        """Run the panoptic-quality evaluation.
+
+        ``gt`` and ``dt`` must have been built via
+        :meth:`PanopticDataset.from_arrays` /
+        :meth:`PanopticPredictions.from_arrays` (file-loading helpers
+        ship in a follow-up).
+        """
+        return evaluate_panoptic(gt, dt, self.parity_mode, self.things_stuff_split)
