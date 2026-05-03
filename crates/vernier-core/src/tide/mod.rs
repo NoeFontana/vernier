@@ -55,7 +55,7 @@ pub use assignment::{assign_bins, BinAssignment, DtBin, DtBinLabel};
 pub use bins::TideErrorBin;
 pub use cross_class::compute_cross_class_ious;
 pub use params::TideParams;
-pub use report::{TideConfig, TideReport};
+pub use report::{KernelMarker, TideConfig, TideReport};
 pub use rewrite::{apply_fix, FixKind};
 
 use std::collections::HashMap;
@@ -98,9 +98,9 @@ use crate::similarity::{BboxIou, BoundaryIou, SegmIou};
 /// slower than the cell-rewrite-in-place optimization the ADR sketches
 /// for Week 5 but is correct-by-construction against the numpy oracle.
 ///
-/// `kernel_name` is recorded verbatim on [`TideConfig::kernel`]; the
-/// per-kernel wrappers below pin the canonical strings (`"bbox"`,
-/// `"segm"`, `"boundary"`).
+/// `kernel_marker` is recorded verbatim on [`TideConfig::kernel`]; the
+/// per-kernel wrappers below pin the canonical [`KernelMarker`] variant
+/// alongside the concrete kernel implementor.
 ///
 /// # Errors
 ///
@@ -110,7 +110,7 @@ pub fn error_decomposition_with<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
     kernel: &K,
-    kernel_name: &str,
+    kernel_marker: KernelMarker,
     params: TideParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<TideReport, EvalError> {
@@ -174,7 +174,7 @@ pub fn error_decomposition_with<K: EvalKernel>(
     let config = TideConfig {
         t_f: params.t_f,
         t_b: params.t_b,
-        kernel: kernel_name.into(),
+        kernel: kernel_marker,
         cross_class_topk: None,
     };
     Ok(TideReport {
@@ -201,7 +201,7 @@ pub fn error_decomposition_bbox(
     params: TideParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<TideReport, EvalError> {
-    error_decomposition_with(gt, dt, &BboxIou, "bbox", params, parity_mode)
+    error_decomposition_with(gt, dt, &BboxIou, KernelMarker::Bbox, params, parity_mode)
 }
 
 /// End-to-end segm TIDE error decomposition.
@@ -220,7 +220,7 @@ pub fn error_decomposition_segm(
     params: TideParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<TideReport, EvalError> {
-    error_decomposition_with(gt, dt, &SegmIou, "segm", params, parity_mode)
+    error_decomposition_with(gt, dt, &SegmIou, KernelMarker::Segm, params, parity_mode)
 }
 
 /// End-to-end boundary-segm TIDE error decomposition.
@@ -256,7 +256,7 @@ pub fn error_decomposition_boundary(
     dilation_ratio: f64,
 ) -> Result<TideReport, EvalError> {
     let kernel = BoundaryIou { dilation_ratio };
-    error_decomposition_with(gt, dt, &kernel, "boundary", params, parity_mode)
+    error_decomposition_with(gt, dt, &kernel, KernelMarker::Boundary, params, parity_mode)
 }
 
 fn bin_has_work(assignment: &BinAssignment, bin: TideErrorBin) -> bool {

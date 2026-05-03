@@ -38,9 +38,57 @@ use pyo3::types::{PyBytes, PyDict};
 
 use vernier_core::evaluate::AreaRange;
 use vernier_core::tide::{self, TideErrorBin, TideParams, TideReport};
-use vernier_core::{iou_thresholds, recall_thresholds};
+use vernier_core::{iou_thresholds, recall_thresholds, CocoDataset, CocoDetections, EvalError, ParityMode};
 
 use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
+
+/// Common per-call plumbing for the three TIDE kernel entry points:
+/// parse parity mode, copy JSON bytes off the GIL, run the kernel-
+/// specific orchestrator inside `py.detach`, and materialize the
+/// report dict. `kernel_call` carries the kernel-specific dispatch
+/// (and any extra knobs like `dilation_ratio`) closed over by the
+/// per-kernel wrappers below.
+#[allow(clippy::too_many_arguments)]
+fn run_tide_pass<'py, F>(
+    py: Python<'py>,
+    gt_bytes: &Bound<'py, PyBytes>,
+    dt_bytes: &Bound<'py, PyBytes>,
+    parity_mode: &str,
+    t_f: f64,
+    t_b: f64,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    kernel_call: F,
+) -> PyResult<Bound<'py, PyDict>>
+where
+    F: FnOnce(&CocoDataset, &CocoDetections, TideParams<'_>, ParityMode)
+            -> Result<TideReport, EvalError>
+        + Send,
+{
+    let parity = parse_parity_mode(parity_mode)?;
+    // Copy the JSON bytes off the GIL-tied PyBytes borrow so the parse
+    // and the eight-pass orchestration can run inside `py.detach`.
+    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let dt_bytes = dt_bytes.as_bytes().to_vec();
+
+    let report = py.detach(move || -> PyResult<TideReport> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        let area_ranges = AreaRange::coco_default();
+        let params = TideParams {
+            t_f,
+            t_b,
+            max_dets_per_image,
+            use_cats,
+            iou_thresholds: iou_thresholds(),
+            recall_thresholds: recall_thresholds(),
+            area_ranges: &area_ranges,
+        };
+        kernel_call(&gt, &dt, params, parity).map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
+
+    report_to_dict(py, &report)
+}
 
 /// TIDE error decomposition for the bbox kernel (ADR-0021).
 ///
@@ -66,30 +114,17 @@ pub(crate) fn error_decomposition_bbox<'py>(
     max_dets_per_image: usize,
     use_cats: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let parity = parse_parity_mode(parity_mode)?;
-    // Copy the JSON bytes off the GIL-tied PyBytes borrow so the parse
-    // and the eight-pass orchestration can run inside `py.detach`.
-    let gt_bytes = gt_bytes.as_bytes().to_vec();
-    let dt_bytes = dt_bytes.as_bytes().to_vec();
-
-    let report = py.detach(move || -> PyResult<TideReport> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = parse_dt(&dt_bytes)?;
-        let area_ranges = AreaRange::coco_default();
-        let params = TideParams {
-            t_f,
-            t_b,
-            max_dets_per_image,
-            use_cats,
-            iou_thresholds: iou_thresholds(),
-            recall_thresholds: recall_thresholds(),
-            area_ranges: &area_ranges,
-        };
-        tide::error_decomposition_bbox(&gt, &dt, params, parity)
-            .map_err(|e| PyValueError::new_err(format!("{e}")))
-    })?;
-
-    report_to_dict(py, &report)
+    run_tide_pass(
+        py,
+        gt_bytes,
+        dt_bytes,
+        parity_mode,
+        t_f,
+        t_b,
+        max_dets_per_image,
+        use_cats,
+        tide::error_decomposition_bbox,
+    )
 }
 
 /// TIDE error decomposition for the segm kernel (ADR-0021, Week 3).
@@ -121,28 +156,17 @@ pub(crate) fn error_decomposition_segm<'py>(
     max_dets_per_image: usize,
     use_cats: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let parity = parse_parity_mode(parity_mode)?;
-    let gt_bytes = gt_bytes.as_bytes().to_vec();
-    let dt_bytes = dt_bytes.as_bytes().to_vec();
-
-    let report = py.detach(move || -> PyResult<TideReport> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = parse_dt(&dt_bytes)?;
-        let area_ranges = AreaRange::coco_default();
-        let params = TideParams {
-            t_f,
-            t_b,
-            max_dets_per_image,
-            use_cats,
-            iou_thresholds: iou_thresholds(),
-            recall_thresholds: recall_thresholds(),
-            area_ranges: &area_ranges,
-        };
-        tide::error_decomposition_segm(&gt, &dt, params, parity)
-            .map_err(|e| PyValueError::new_err(format!("{e}")))
-    })?;
-
-    report_to_dict(py, &report)
+    run_tide_pass(
+        py,
+        gt_bytes,
+        dt_bytes,
+        parity_mode,
+        t_f,
+        t_b,
+        max_dets_per_image,
+        use_cats,
+        tide::error_decomposition_segm,
+    )
 }
 
 /// TIDE error decomposition for the boundary-segm kernel (ADR-0010 +
@@ -172,29 +196,20 @@ pub(crate) fn error_decomposition_boundary<'py>(
     use_cats: bool,
     dilation_ratio: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let parity = parse_parity_mode(parity_mode)?;
     validate_dilation_ratio(dilation_ratio)?;
-    let gt_bytes = gt_bytes.as_bytes().to_vec();
-    let dt_bytes = dt_bytes.as_bytes().to_vec();
-
-    let report = py.detach(move || -> PyResult<TideReport> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = parse_dt(&dt_bytes)?;
-        let area_ranges = AreaRange::coco_default();
-        let params = TideParams {
-            t_f,
-            t_b,
-            max_dets_per_image,
-            use_cats,
-            iou_thresholds: iou_thresholds(),
-            recall_thresholds: recall_thresholds(),
-            area_ranges: &area_ranges,
-        };
-        tide::error_decomposition_boundary(&gt, &dt, params, parity, dilation_ratio)
-            .map_err(|e| PyValueError::new_err(format!("{e}")))
-    })?;
-
-    report_to_dict(py, &report)
+    run_tide_pass(
+        py,
+        gt_bytes,
+        dt_bytes,
+        parity_mode,
+        t_f,
+        t_b,
+        max_dets_per_image,
+        use_cats,
+        move |gt, dt, params, parity| {
+            tide::error_decomposition_boundary(gt, dt, params, parity, dilation_ratio)
+        },
+    )
 }
 
 /// Materialize a [`TideReport`] into the Python dict shape pinned in the
@@ -217,7 +232,7 @@ fn report_to_dict<'py>(py: Python<'py>, report: &TideReport) -> PyResult<Bound<'
     let config = PyDict::new(py);
     config.set_item("t_f", report.config.t_f)?;
     config.set_item("t_b", report.config.t_b)?;
-    config.set_item("kernel", &report.config.kernel)?;
+    config.set_item("kernel", report.config.kernel.as_str())?;
 
     let out = PyDict::new(py);
     out.set_item("baseline_map", report.baseline_map)?;

@@ -15,13 +15,48 @@ use std::collections::HashMap;
 
 use crate::tide::bins::TideErrorBin;
 
+/// Closed set of kernels TIDE supports today (ADR-0021/0022).
+///
+/// Recorded on every [`TideConfig`] so reports self-describe their
+/// kernel without leaking the concrete [`crate::similarity::Similarity`]
+/// implementor type. The `as_str` projection gives the canonical
+/// lowercase identifier the FFI surface and the numpy oracle both use
+/// (`"bbox"` / `"segm"` / `"boundary"`); pin this representation so a
+/// screenshot of `config.kernel` survives the round-trip through any
+/// downstream tooling.
+///
+/// Keypoints (OKS) is intentionally absent per ADR-0024.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum KernelMarker {
+    /// Bounding-box IoU (ADR-0008).
+    Bbox,
+    /// Segmentation-mask IoU (ADR-0009).
+    Segm,
+    /// Boundary IoU (ADR-0010); pair the marker with the call's
+    /// `dilation_ratio` if you need to cross-reference the kernel
+    /// configuration end-to-end.
+    Boundary,
+}
+
+impl KernelMarker {
+    /// Canonical lowercase name; pinned so it stays bit-stable across
+    /// the FFI dict surface and the oracle's `config.kernel` field.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Bbox => "bbox",
+            Self::Segm => "segm",
+            Self::Boundary => "boundary",
+        }
+    }
+}
+
 /// Resolved TIDE configuration for one call.
 ///
 /// Per ADR-0022, the `(t_f, t_b)` thresholds are per-kernel and the
 /// resolved values land here so every report self-describes. The
-/// kernel marker (a string identifier — e.g. `"bbox"`, `"segm"`,
-/// `"boundary"`) lets downstream tooling group reports across kernels
-/// without reaching into the kernel type itself.
+/// [`KernelMarker`] tags the kernel a downstream consumer can group on
+/// without reaching into the concrete `Similarity` implementor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TideConfig {
     /// Foreground / match threshold: at-or-above is a TP, unmatched
@@ -31,11 +66,9 @@ pub struct TideConfig {
     /// Background threshold: IoU `< t_b` against every GT means
     /// "background". Per-kernel default per ADR-0022.
     pub t_b: f64,
-    /// Identifier of the kernel this config was resolved for — e.g.
-    /// `"bbox"`, `"segm"`, `"boundary"`. Free-form by design; the
-    /// rewrite-layer entry point that produces this report names its
-    /// own kernel.
-    pub kernel: String,
+    /// Kernel this config was resolved for. Closed set per
+    /// ADR-0021/0024 (no keypoints).
+    pub kernel: KernelMarker,
     /// Optional cap on per-detection cross-class IoU storage (per
     /// ADR-0023, the `cross_class_topk` knob). `None` = full
     /// materialize, the default.
