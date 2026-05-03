@@ -2711,6 +2711,7 @@ dev = [
     { name = "ruff" },
     { name = "vernier-coco-val-cache" },
     { name = "vernier-lvis-val-cache" },
+    { name = "vernier-panoptic-val-cache" },
 ]
 
 [package.metadata]
@@ -2738,6 +2739,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15" },
     { name = "vernier-coco-val-cache", editable = "tools/coco_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "tools/lvis_val_cache" },
+    { name = "vernier-panoptic-val-cache", editable = "tools/panoptic_val_cache" },
 ]
 
 [[package]]
@@ -2749,3 +2751,8 @@ source = { editable = "tools/coco_val_cache" }
 name = "vernier-lvis-val-cache"
 version = "0.0.0"
 source = { editable = "tools/lvis_val_cache" }
+
+[[package]]
+name = "vernier-panoptic-val-cache"
+version = "0.0.0"
+source = { editable = "tools/panoptic_val_cache" }
