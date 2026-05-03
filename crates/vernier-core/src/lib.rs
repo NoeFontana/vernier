@@ -66,7 +66,10 @@ pub use tables::{
     PerClassTable, PerDetectionTable, PerImageTable, PerPairTable, RetainedIous, Tables,
     TablesConfig, TablesRequest,
 };
-pub use tide::{compute_cross_class_ious, TideConfig, TideErrorBin, TideReport};
+pub use tide::{
+    apply_fix, assign_bins, compute_cross_class_ious, error_decomposition_bbox, BinAssignment,
+    DtBin, DtBinLabel, FixKind, TideConfig, TideErrorBin, TideParams, TideReport,
+};
 
 /// Library version string. Useful for parity tracing in fixtures and for
 /// debugging mismatches between Rust and Python sides of the FFI boundary.
