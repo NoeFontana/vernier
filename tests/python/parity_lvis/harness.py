@@ -36,10 +36,17 @@ ImplName = Literal["vernier", "lvis_api"]
 class LvisSnapshot:
     """Output of one parity run.
 
-    The harness in PR-3 only diffs ``eval_imgs`` (per-cell match
-    payload) and ``precision`` (the ``(T, R, K, A)`` tensor at
-    `max_dets=300`). PR-4 will extend this with a ``stats`` field for
-    the 13-entry summary plan.
+    Diffs three layers, every one strict-mode bit-equal:
+
+    - ``eval_imgs``: the per-(category, area, image) cell payload
+      (`Option<PerImageEval>` shape).
+    - ``precision``: the raw `(T, R, K, A)` tensor at
+      `max_dets=300` — the input to every entry in
+      ``stats``. AF5: no M-axis.
+    - ``stats``: an ordered ``dict[str, float]`` of the 13 LVIS
+      summary entries (AF1, AF4). The keys mirror lvis-api's
+      ``LVISEval.results`` keys exactly so a single
+      ``assert_array_equal`` pins the whole shape.
     """
 
     eval_imgs: list[dict[str, Any] | None]
@@ -50,9 +57,14 @@ class LvisSnapshot:
 
     precision: NDArray[np.float64]
     """Shape ``(T, R, K, A)`` precision tensor — no M-axis (AF5).
-    The accumulator at ``max_dets=300`` produces this directly; we
-    pin it here so a regression on the K-axis filter (PR-4) is
-    visible *before* the summary collapse."""
+    Pinned here so a regression on the K-axis filter is visible
+    *before* the summary collapse."""
+
+    stats: dict[str, float]
+    """13-entry LVIS plan output, ordered as
+    ``[AP, AP50, AP75, APs, APm, APl, APr, APc, APf, AR@300,
+    ARs@300, ARm@300, ARl@300]``. Keys are the lvis-api shape so the
+    diff is direct."""
 
 
 def _vernier_snapshot(
@@ -104,7 +116,43 @@ def _vernier_snapshot(
             f"vernier precision M-axis must be 1 at max_dets={max_dets}; got {precision.shape}"
         )
         precision = precision[..., 0]
-    return LvisSnapshot(eval_imgs=norm, precision=precision)
+    summary = accum.summarize_lvis(gt_dataset, [max_dets])
+    stats = _vernier_summary_stats(summary, max_dets)
+    return LvisSnapshot(eval_imgs=norm, precision=precision, stats=stats)
+
+
+# Mirrors lvis-api `LVISEval.results` key order. The plan layout is
+# pinned in `crates/vernier-core/src/summarize.rs::lvis_default`; if
+# that order ever drifts, this list (and the parity diff) catches it.
+_LVIS_STATS_KEYS_TEMPLATE: tuple[str, ...] = (
+    "AP",
+    "AP50",
+    "AP75",
+    "APs",
+    "APm",
+    "APl",
+    "APr",
+    "APc",
+    "APf",
+    "AR@{max_dets}",
+    "ARs@{max_dets}",
+    "ARm@{max_dets}",
+    "ARl@{max_dets}",
+)
+
+
+def _stats_keys(max_dets: int) -> tuple[str, ...]:
+    return tuple(k.format(max_dets=max_dets) for k in _LVIS_STATS_KEYS_TEMPLATE)
+
+
+def _vernier_summary_stats(summary: Any, max_dets: int) -> dict[str, float]:
+    keys = _stats_keys(max_dets)
+    values = [float(line) for line in summary.stats]
+    if len(values) != len(keys):
+        raise AssertionError(
+            f"vernier lvis_default returned {len(values)} stats; expected {len(keys)} (AF1)"
+        )
+    return dict(zip(keys, values, strict=True))
 
 
 def _lvis_snapshot(
@@ -158,7 +206,20 @@ def _lvis_snapshot(
     # ev.eval["precision"] is `(T, R, K, A)` — no M-axis (AF5), so
     # the shape lines up with vernier's drop above.
     precision = np.asarray(ev.eval["precision"], dtype=np.float64)
-    return LvisSnapshot(eval_imgs=norm, precision=precision)
+    # `LVISEval.summarize` writes `self.results` as an OrderedDict.
+    # Run it before harvesting; print suppression is the migration
+    # guide's job (the oracle's `print_results` is the upstream
+    # surface — we never call it here).
+    ev.summarize()
+    keys = _stats_keys(max_dets)
+    stats: dict[str, float] = {}
+    for k in keys:
+        if k not in ev.results:
+            raise AssertionError(
+                f"lvis-api results is missing key {k!r}; present keys: {sorted(ev.results.keys())}"
+            )
+        stats[k] = float(ev.results[k])
+    return LvisSnapshot(eval_imgs=norm, precision=precision, stats=stats)
 
 
 def snapshot(
@@ -209,6 +270,18 @@ def assert_snapshots_equal(
     np.testing.assert_allclose(
         a.precision, b.precision, rtol=rtol, atol=atol, err_msg="precision tensor differs"
     )
+    if a.stats.keys() != b.stats.keys():
+        raise AssertionError(
+            f"stats keys differ: vernier={sorted(a.stats.keys())} lvis_api={sorted(b.stats.keys())}"
+        )
+    for key in a.stats:
+        np.testing.assert_allclose(
+            a.stats[key],
+            b.stats[key],
+            rtol=rtol,
+            atol=atol,
+            err_msg=f"stats[{key!r}] differs",
+        )
 
 
 def fixture_bytes(fixture_name: str) -> tuple[bytes, bytes]:
