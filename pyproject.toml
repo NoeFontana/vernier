@@ -125,11 +125,17 @@ dev = [
     # ORACLE_PILLOW_PIN in crates/vernier-panoptic/src/parity.rs; both
     # update atomically. Bumping is ADR-level.
     "Pillow==12.2.0",
+    # COCO panoptic val2017 cache (ADR-0025 PR-6). Single source of
+    # truth for the URL + SHA256 of the panoptic GT zip; consumed by
+    # `tests/python/parity_panoptic/test_panoptic_val.py` and the
+    # `python -m panoptic_val_cache` CLI.
+    "vernier-panoptic-val-cache",
 ]
 
 [tool.uv.sources]
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "tools/lvis_val_cache", editable = true }
+vernier-panoptic-val-cache = { path = "tools/panoptic_val_cache", editable = true }
 
 # ---------------------------------------------------------------------------
 # Ruff: lint + format
