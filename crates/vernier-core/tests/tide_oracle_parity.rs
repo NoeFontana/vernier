@@ -248,7 +248,7 @@ fn config_carries_resolved_thresholds() {
     let r = run_tide("all_perfect");
     assert_eq!(r.config.t_f, 0.5);
     assert_eq!(r.config.t_b, 0.1);
-    assert_eq!(r.config.kernel, "bbox");
+    assert_eq!(r.config.kernel, vernier_core::KernelMarker::Bbox);
     assert!(r.config.cross_class_topk.is_none());
 }
 
@@ -324,6 +324,6 @@ fn segm_config_carries_resolved_thresholds() {
     let r = run_tide_segm("segm_all_perfect");
     assert_eq!(r.config.t_f, 0.5);
     assert_eq!(r.config.t_b, 0.1);
-    assert_eq!(r.config.kernel, "segm");
+    assert_eq!(r.config.kernel, vernier_core::KernelMarker::Segm);
     assert!(r.config.cross_class_topk.is_none());
 }
