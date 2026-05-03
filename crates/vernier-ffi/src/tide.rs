@@ -33,7 +33,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
-use vernier_core::tide::{self, TideErrorBin, TideReport};
+use vernier_core::evaluate::AreaRange;
+use vernier_core::tide::{self, TideErrorBin, TideParams, TideReport};
+use vernier_core::{iou_thresholds, recall_thresholds};
 
 use crate::{parse_dt, parse_gt, parse_parity_mode};
 
@@ -70,7 +72,17 @@ pub(crate) fn error_decomposition_bbox<'py>(
     let report = py.detach(move || -> PyResult<TideReport> {
         let gt = parse_gt(&gt_bytes)?;
         let dt = parse_dt(&dt_bytes)?;
-        tide::error_decomposition_bbox(&gt, &dt, parity, t_f, t_b, max_dets_per_image, use_cats)
+        let area_ranges = AreaRange::coco_default();
+        let params = TideParams {
+            t_f,
+            t_b,
+            max_dets_per_image,
+            use_cats,
+            iou_thresholds: iou_thresholds(),
+            recall_thresholds: recall_thresholds(),
+            area_ranges: &area_ranges,
+        };
+        tide::error_decomposition_bbox(&gt, &dt, params, parity)
             .map_err(|e| PyValueError::new_err(format!("{e}")))
     })?;
 
