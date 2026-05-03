@@ -252,3 +252,13 @@ def error_decomposition_segm(
     max_dets_per_image: int,
     use_cats: bool,
 ) -> _TideReportDict: ...
+def error_decomposition_boundary(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    t_f: float,
+    t_b: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+    dilation_ratio: float,
+) -> _TideReportDict: ...

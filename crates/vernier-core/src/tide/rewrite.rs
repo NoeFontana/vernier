@@ -19,12 +19,12 @@
 //!   the relabeled DT into the new cell. Geometry (`bbox` +
 //!   `segmentation`) stays untouched — the matching pipeline now sees
 //!   the same masks under a different category.
-//! - **Loc** — for each Loc-binned DT, snap **all** of its geometry
-//!   (`bbox` and `segmentation`) onto the same-class target GT's so
-//!   IoU=1.0 at every threshold under the active kernel. The
-//!   bbox-and-segm replacement is in lockstep so the bbox kernel sees
-//!   `target.bbox` and the segm kernel sees `target.segmentation` —
-//!   either kernel computes IoU=1.0 against the matched GT.
+//! - **Loc** — for each Loc-binned DT, snap **both** `bbox` and
+//!   `segmentation` onto the same-class target GT's so IoU=1.0 at
+//!   every threshold under any kernel that consumes either field.
+//!   Bbox-only kernels read the bbox; segm / boundary read the
+//!   segmentation; both must move together for the fix to register as
+//!   a TP under each.
 //! - **Both / Dupe / Bkg** — drop the DT.
 //! - **Missed** — set `ignore=true` on the missed GTs (oracle uses
 //!   `ignore`; vernier's GT type carries `ignore_flag: Option<bool>`,
@@ -45,7 +45,8 @@ use super::assignment::{BinAssignment, DtBin};
 pub enum FixKind {
     /// Cls — relabel each Cls-binned DT to the wrong-class GT's class.
     Cls,
-    /// Loc — snap each Loc-binned DT's bbox to its same-class target.
+    /// Loc — snap each Loc-binned DT's geometry (bbox + segmentation)
+    /// to its same-class target.
     Loc,
     /// Both — drop the DT.
     Both,
@@ -153,11 +154,11 @@ pub fn apply_fix(
                 });
             }
             // LOC: snap Loc-binned DT's geometry (bbox AND segmentation)
-            // to the same-class target GT. Bbox-only replacement is
-            // sufficient for the bbox kernel but the segm kernel
-            // computes IoU on the rasterized mask, so the segmentation
-            // has to be swapped in lockstep — see this module's per-bin
-            // recipe doc and `oracle.py::_apply_fix` ("loc" branch).
+            // to the same-class target GT. Bbox replacement is sufficient
+            // for the bbox kernel but segm / boundary kernels compute
+            // IoU on the rasterized mask, so segmentation must move in
+            // lockstep — see this module's per-bin recipe doc and
+            // `oracle.py::_apply_fix` ("loc" branch).
             (FixKind::Loc, Some(lbl)) if lbl.bin == DtBin::Loc => {
                 let target = resolve_target(lbl.target_gt_local_idx)?;
                 new_dts.push(DetectionInput {

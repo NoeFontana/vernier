@@ -1,11 +1,9 @@
-//! TIDE error decomposition FFI bindings.
-//!
-//! Wraps [`vernier_core::tide::error_decomposition_bbox`] and
-//! [`vernier_core::tide::error_decomposition_segm`] and exposes them to
-//! Python as `vernier._core.error_decomposition_bbox` /
-//! `vernier._core.error_decomposition_segm`. By policy, this module
-//! contains only data conversion — the eight-pass orchestration and the
-//! cell-rewrite layer live in [`vernier_core::tide`].
+//! Wraps the kernel-specific entry points in [`vernier_core::tide`] and
+//! exposes them to Python: `error_decomposition_bbox`,
+//! `error_decomposition_segm`, `error_decomposition_boundary`. By
+//! policy, this module contains only data conversion — the eight-pass
+//! orchestration and the cell-rewrite layer live in
+//! [`vernier_core::tide`].
 //!
 //! ## Output shape
 //!
@@ -21,9 +19,12 @@
 //!         "dupe": float, "bkg": float, "missed": float,
 //!     },
 //!     "delta_all_fp_removed": float,
-//!     "config": {"t_f": float, "t_b": float, "kernel": "bbox" | "segm"},
+//!     "config": {"t_f": float, "t_b": float, "kernel": str},
 //! }
 //! ```
+//!
+//! The `config.kernel` string is `"bbox"` / `"segm"` / `"boundary"` for
+//! the corresponding kernel-specific entry points.
 //!
 //! [`vernier_core::tide::report::TideReport`] stores `delta_per_bin` as a
 //! sparse `HashMap` (per its docstring, bins not populated by the rewrite
@@ -39,7 +40,7 @@ use vernier_core::evaluate::AreaRange;
 use vernier_core::tide::{self, TideErrorBin, TideParams, TideReport};
 use vernier_core::{iou_thresholds, recall_thresholds};
 
-use crate::{parse_dt, parse_gt, parse_parity_mode};
+use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
 
 /// TIDE error decomposition for the bbox kernel (ADR-0021).
 ///
@@ -138,6 +139,58 @@ pub(crate) fn error_decomposition_segm<'py>(
             area_ranges: &area_ranges,
         };
         tide::error_decomposition_segm(&gt, &dt, params, parity)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
+
+    report_to_dict(py, &report)
+}
+
+/// TIDE error decomposition for the boundary-segm kernel (ADR-0010 +
+/// ADR-0021).
+///
+/// Same shape as [`error_decomposition_bbox`] except `dilation_ratio`
+/// pins the boundary band thickness (ADR-0010 default `0.02` for COCO,
+/// `0.008` for LVIS) and the report's `kernel` field reads
+/// `"boundary"`. ADR-0022 pins the boundary defaults at `t_f = 0.5`,
+/// `t_b = 0.05` (tentative; see the ADR's "Decision gate (boundary
+/// default)" section for the empirical-anchoring follow-up plan).
+///
+/// Both `gt_bytes` and `dt_bytes` must carry `segmentation` fields —
+/// the same constraint `evaluate_boundary_summary` enforces; polygon
+/// and RLE shapes both work.
+#[pyfunction]
+#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats, dilation_ratio))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn error_decomposition_boundary<'py>(
+    py: Python<'py>,
+    gt_bytes: &Bound<'py, PyBytes>,
+    dt_bytes: &Bound<'py, PyBytes>,
+    parity_mode: &str,
+    t_f: f64,
+    t_b: f64,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    dilation_ratio: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let parity = parse_parity_mode(parity_mode)?;
+    validate_dilation_ratio(dilation_ratio)?;
+    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let dt_bytes = dt_bytes.as_bytes().to_vec();
+
+    let report = py.detach(move || -> PyResult<TideReport> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        let area_ranges = AreaRange::coco_default();
+        let params = TideParams {
+            t_f,
+            t_b,
+            max_dets_per_image,
+            use_cats,
+            iou_thresholds: iou_thresholds(),
+            recall_thresholds: recall_thresholds(),
+            area_ranges: &area_ranges,
+        };
+        tide::error_decomposition_boundary(&gt, &dt, params, parity, dilation_ratio)
             .map_err(|e| PyValueError::new_err(format!("{e}")))
     })?;
 

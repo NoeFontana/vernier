@@ -6,7 +6,8 @@ vernier imports. Correctness is pinned by hand-computed assertions on
 small synthetic fixtures (see `test_oracle.py`).
 
 Scope (Week 3):
-    - bbox IoU and segm IoU (axis-aligned-rectangle polygon rasterization)
+    - bbox IoU, segm IoU, boundary IoU (axis-aligned-rectangle polygon
+      rasterization for segm/boundary)
     - mode="single": one ``t_f`` for bin assignment
 
 Algorithm summary (canonical, per ADR-0021):
@@ -251,6 +252,145 @@ def segm_iou(gts: Sequence[Any], dts: Sequence[Any]) -> np.ndarray:
             if union > 0.0 and inter > 0.0:
                 out[d_idx, g_idx] = inter / union
             # else leave at 0.0 (matches the Rust kernel's denom-guard).
+    return out
+
+
+def _rasterize_bbox(bbox: np.ndarray, h: int, w: int) -> np.ndarray:
+    """Rasterize an axis-aligned ``[x, y, w, h]`` bbox onto an ``(h, w)`` grid.
+
+    Returns a boolean mask of shape ``(h, w)`` where pixels strictly inside
+    the rectangle are ``True``. Vertex coords are floored to int and clipped
+    into ``[0, w] x [0, h]`` — the same convention `Rle::from_polygon`
+    follows for axis-aligned vertices, which keeps the pixel set bit-equal
+    between this oracle and the Rust mask codec for integer-aligned
+    rectangles. Empty (zero-width or zero-height) rectangles produce
+    all-zero masks.
+    """
+    x_min = max(0, int(bbox[0]))
+    y_min = max(0, int(bbox[1]))
+    x_max = min(w, int(bbox[0]) + int(bbox[2]))
+    y_max = min(h, int(bbox[1]) + int(bbox[3]))
+    mask = np.zeros((h, w), dtype=bool)
+    if x_max > x_min and y_max > y_min:
+        mask[y_min:y_max, x_min:x_max] = True
+    return mask
+
+
+def _erode_chebyshev(mask: np.ndarray, radius: int) -> np.ndarray:
+    """Iterative 3x3 binary erosion applied ``radius`` times.
+
+    Equivalent on integer binary input to a single Chebyshev-ball erosion
+    of radius ``radius`` (the implementation choice is irrelevant; the
+    output is bit-equal to a `(2r+1)x(2r+1)` all-ones structuring element
+    erosion). The 3x3 inner loop matches the spec's BORDER_CONSTANT-with-
+    fill-1 semantics: reads outside the once-padded image count as ``1``,
+    so only the explicit zero pad ring contributes zeros to the min. See
+    ADR-0010 §A2 and `tests/python/parity_boundary/numpy_reference.py`
+    for the canonical statement.
+
+    No SciPy import — keeps this oracle self-contained against a stdlib +
+    numpy floor. ~30 lines of numpy, runs in microseconds on the small
+    fixtures these tests use.
+    """
+    h, w = mask.shape
+    # Pad by 1 with constant 0 — this is the explicit zero ring that
+    # makes border-touching foreground pixels count as boundary.
+    padded = np.pad(mask.astype(np.uint8), 1, mode="constant", constant_values=0)
+    eroded = padded
+    for _ in range(radius):
+        out = eroded.copy()
+        # Vertical 3x1 min: out[i] := min(out[i], a[i-1], a[i+1]).
+        out[1:, :] = np.minimum(out[1:, :], eroded[:-1, :])
+        out[:-1, :] = np.minimum(out[:-1, :], eroded[1:, :])
+        # Horizontal 1x3 min on the result of the vertical pass.
+        tmp = out.copy()
+        out[:, 1:] = np.minimum(out[:, 1:], tmp[:, :-1])
+        out[:, :-1] = np.minimum(out[:, :-1], tmp[:, 1:])
+        eroded = out
+    # Strip the pad to recover the (h, w) eroded mask.
+    return eroded[1 : h + 1, 1 : w + 1].astype(bool)
+
+
+def _boundary_band(mask: np.ndarray, dilation_ratio: float) -> np.ndarray:
+    """Boundary band of a binary mask per ADR-0010 §A2.
+
+    Band thickness in pixels is ``round(dilation_ratio * sqrt(H^2 + W^2))``
+    with half-to-even rounding (Python's builtin ``round``), clamped to
+    ``d >= 1``. The band is ``M & ~erode(M, d)``.
+    """
+    h, w = mask.shape
+    diag = np.sqrt(float(h * h + w * w))
+    d = round(dilation_ratio * diag)
+    if d < 1:
+        d = 1
+    eroded = _erode_chebyshev(mask, d)
+    return mask & ~eroded
+
+
+def boundary_iou(
+    gts: Sequence[Any],
+    dts: Sequence[Any],
+    *,
+    dilation_ratio: float = 0.02,
+    image_hw: tuple[int, int],
+) -> np.ndarray:
+    """Pairwise boundary IoU between GT and DT bbox-record annotations.
+
+    Per ADR-0010 the metric is ``min(mask_iou, boundary_iou)`` where the
+    boundary IoU is computed on the dilated-then-eroded boundary band of
+    each mask. Band thickness in pixels is
+    ``round(dilation_ratio * sqrt(H^2 + W^2))``.
+
+    The oracle restricts inputs to **axis-aligned bboxes** that are
+    rasterized as solid rectangles on a fixed-size canvas; the canvas is
+    supplied via ``image_hw`` so the same fixtures can be replayed
+    against the Rust kernel which rasterizes from the COCO
+    ``segmentation`` polygon at the image's declared ``(height, width)``.
+    Use :func:`functools.partial` to bake ``image_hw`` and
+    ``dilation_ratio`` into a callable matching :data:`SimilarityFn`.
+
+    Args:
+        gts: sequence of annotation records carrying a ``bbox``
+            attribute (``[x, y, w, h]``).
+        dts: sequence of detection records with the same surface.
+        dilation_ratio: ADR-0010 dilation ratio (default 0.02 for COCO).
+        image_hw: ``(H, W)`` of the rasterization canvas. Required.
+
+    Returns:
+        shape ``(D, G)`` IoU matrix.
+    """
+    if not gts or not dts:
+        return np.zeros((len(dts), len(gts)), dtype=np.float64)
+    h, w = int(image_hw[0]), int(image_hw[1])
+
+    gt_bboxes = [np.asarray(g.bbox, dtype=np.float64) for g in gts]
+    dt_bboxes = [np.asarray(d.bbox, dtype=np.float64) for d in dts]
+    gt_masks = [_rasterize_bbox(b, h, w) for b in gt_bboxes]
+    dt_masks = [_rasterize_bbox(b, h, w) for b in dt_bboxes]
+    gt_bands = [_boundary_band(m, dilation_ratio) for m in gt_masks]
+    dt_bands = [_boundary_band(m, dilation_ratio) for m in dt_masks]
+    gt_areas = np.array([int(m.sum()) for m in gt_masks], dtype=np.int64)
+    dt_areas = np.array([int(m.sum()) for m in dt_masks], dtype=np.int64)
+    gt_band_areas = np.array([int(b.sum()) for b in gt_bands], dtype=np.int64)
+    dt_band_areas = np.array([int(b.sum()) for b in dt_bands], dtype=np.int64)
+
+    out = np.zeros((len(dts), len(gts)), dtype=np.float64)
+    for d_idx in range(len(dts)):
+        d_mask = dt_masks[d_idx]
+        d_band = dt_bands[d_idx]
+        for g_idx in range(len(gts)):
+            g_mask = gt_masks[g_idx]
+            g_band = gt_bands[g_idx]
+            inter_mask = int(np.logical_and(d_mask, g_mask).sum())
+            mask_denom = int(gt_areas[g_idx]) + int(dt_areas[d_idx]) - inter_mask
+            mask_iou = (inter_mask / mask_denom) if (mask_denom > 0 and inter_mask > 0) else 0.0
+            inter_bound = int(np.logical_and(d_band, g_band).sum())
+            band_denom = int(gt_band_areas[g_idx]) + int(dt_band_areas[d_idx]) - inter_bound
+            band_iou = (inter_bound / band_denom) if (band_denom > 0 and inter_bound > 0) else 0.0
+            # min() composition per ADR-0010. Crowd asymmetry (E1/O1/O2)
+            # is intentionally not modelled here — the boundary fixtures
+            # below avoid crowd GTs to keep the hand-math clean.
+            out[d_idx, g_idx] = min(mask_iou, band_iou)
     return out
 
 
@@ -821,9 +961,7 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
         img["id"]: (int(img.get("height", 0)), int(img.get("width", 0)))
         for img in gt.get("images", [])
     }
-    by_image: dict[int, _Image] = {
-        img_id: _Image(image_id=img_id) for img_id in image_dims
-    }
+    by_image: dict[int, _Image] = {img_id: _Image(image_id=img_id) for img_id in image_dims}
     for ann in gt.get("annotations", []):
         img_id = ann["image_id"]
         if img_id not in by_image:
@@ -890,8 +1028,9 @@ def error_decomposition(
     t_b: float = 0.1,
     max_dets_per_image: int = 100,
     use_cats: bool = True,
+    kernel_name: str = "bbox",
 ) -> dict[str, Any]:
-    """TIDE error decomposition (single-mode, bbox kernel only).
+    """TIDE error decomposition (single-mode).
 
     Args:
         gt: COCO-format ground truth dict with keys ``images``,
@@ -900,23 +1039,32 @@ def error_decomposition(
             ``category_id``, ``bbox`` in xywh, ``score``; for the segm
             kernel each entry also has ``segmentation``).
         similarity_fn: pairwise IoU kernel ``(gts, dts) -> (D, G)`` IoU
-            matrix. Defaults to :func:`bbox_iou`; pass :func:`segm_iou`
-            for the segm kernel.
-        t_f: foreground / match threshold (≥ ⇒ TP).
-        t_b: background threshold (< ⇒ Bkg).
+            matrix. Defaults to :func:`bbox_iou`. Pass :func:`segm_iou`
+            for the segm kernel; pass :func:`functools.partial` of
+            :func:`boundary_iou` to bake the kernel's per-call
+            parameters (``dilation_ratio`` and ``image_hw``) into a
+            callable matching :data:`SimilarityFn`.
+        t_f: foreground / match threshold (≥ ⇒ TP). Per ADR-0022 the
+            default is `0.5` for every kernel.
+        t_b: background threshold (< ⇒ Bkg). Per ADR-0022 the bbox /
+            segm defaults are `0.1`; the boundary default is `0.05`
+            (caller must pass it explicitly because we cannot dispatch
+            on kernel here).
         max_dets_per_image: per-image DT cap (score-desc), matching
             pycocotools' max-dets semantics.
         use_cats: if False, all categories are merged into one bucket
             (mirrors pycocotools' ``useCats=False``); cross-class
             attribution is degenerate (no other classes exist) and the
             Cls / Both bins are always empty.
+        kernel_name: string recorded verbatim in
+            ``out["config"]["kernel"]`` so the report carries
+            reproducibility per ADR-0022 — the oracle does not
+            inspect the kernel itself, so the caller pins the name
+            alongside the ``similarity_fn`` they passed.
 
     Returns:
         ``{"baseline_map": ..., "delta": {...}, "delta_all_fp_removed": ...,
-           "config": {"t_f": ..., "t_b": ..., "kernel": ...}}``.
-        ``config.kernel`` is `"segm"` when ``similarity_fn is segm_iou``
-        and `"bbox"` otherwise — caller-overridden similarity functions
-        get the bbox label as a fallback.
+           "config": {"t_f": ..., "t_b": ..., "kernel": kernel_name}}``.
     """
     images, cat_ids = _normalise(gt, dt)
     baseline = _compute_map(
@@ -956,7 +1104,6 @@ def error_decomposition(
         max_dets_per_image=max_dets_per_image,
     )
 
-    kernel_name = "segm" if similarity_fn is segm_iou else "bbox"
     return {
         "baseline_map": baseline,
         "delta": deltas,

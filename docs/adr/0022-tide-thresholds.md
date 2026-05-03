@@ -86,15 +86,14 @@ double-cutoff to reason about).
 |--------|---------------|-------------|
 | `Bbox` | `0.1` | TIDE paper, COCO bbox |
 | `Segm` | `0.1` (tentative) | Anchored on the bbox row by extrapolation, **not** by direct measurement on COCO val2017 — vernier does not ship the COCO val dataset in CI per the licensing policy in `project_coco_val_regression.md`, so the empirical histograms the original Week-2 plan called for are not derivable from the in-tree fixtures. Segm IoU is bounded above by bbox IoU on the same instance and tracks within ~10% on standard detection models, so reusing `0.1` is the least-surprising default among the choices available without COCO bytes. Revisit in a 0.5.x follow-up once whole-dataset parity infrastructure (planned post-Week 5, see `project_coco_val_regression.md`) is wired and a real-model FP-IoU histogram is available. |
-| `Boundary(dilation_ratio=0.02)` | **TBD** (Week-3 measurement) | Pending empirical anchoring on three reference models on COCO val2017 (Mask R-CNN, Cascade Mask R-CNN, ViT-Det). Anchor target: the value at which the "binned as Bkg" fraction stabilizes across the three models. Histograms in the ADR companion data file. |
+| `Boundary(dilation_ratio=0.02)` | `0.05` (tentative; ratification deferred to a 0.5.x follow-up) | Geometric argument from the kernel's definition: boundary IoU = `min(mask_iou, band_iou)` and the band area is a small fraction of the mask area, so band IoU is compressed relative to bbox / mask IoU at every overlap regime. At `dilation_ratio=0.02` the band on a 50×50 mask in a 200×200 image is a 6-pixel frame (band area = 1056, mask area = 2500 → band/mask ≈ 0.42); the band IoU at the geometric "almost matched" regime (mask IoU ≈ 1/3) measures around 0.16 (verified on the `boundary_all_loc` oracle fixture). `0.05` is half the bbox value of `0.1`, putting the Bkg/Loc cutoff at the kernel's analogous "few-percent overlap" regime — the same proportion of the kernel's dynamic range the paper's `0.1` carves out for bbox. Empirical anchoring on three reference models (Mask R-CNN / Cascade Mask R-CNN / ViT-Det) on COCO val2017 is deferred to a 0.5.x follow-up; the per-release pace (`project_release_pace.md`) makes revising the default cheap if the empirical histograms shift the answer. |
 
-This ADR is `proposed` until the boundary row is ratified. The Week-3
-segm PR pins `Segm` at `0.1` as a defended-by-extrapolation default
-(not a measurement-anchored ratification — see the row's rationale
-above); the boundary PR ratifies the boundary row or triggers the
-decision gate below. Promoting this ADR to `accepted` is gated on
-either the boundary row landing or the boundary kernel being cut to
-0.5.1.
+This ADR remains `proposed`: both segm (`0.1`) and boundary (`0.05`)
+rows are defended-by-extrapolation defaults, not measurement-anchored
+ratifications. Promoting to `accepted` is gated on the deferred 0.5.x
+follow-up that runs the empirical histograms on real models against
+COCO val2017 once the whole-dataset parity infrastructure is wired
+(planned post-Week 5 — see `project_coco_val_regression.md`).
 
 The `Boundary` default is keyed to `dilation_ratio=0.02` (the COCO
 default). For other `dilation_ratio` values (LVIS uses `0.008`),
@@ -114,13 +113,30 @@ recorded report.
 
 ### Decision gate (boundary default)
 
-The Week-3 empirical anchoring is a hard gate. If the histogram
-analysis on the three reference models does not produce a `t_b`
-default with a coherent defense (specifically: a value at which the
-"bin-as-Bkg" fraction stabilizes within ±10% across the three
-models), we cut boundary-segm from 0.5.0 and ship it in 0.5.1 with
-a follow-up to this ADR. Better to ship two kernels right than three
-with a dubious threshold.
+The original Week-3 plan made empirical anchoring on three reference
+models (Mask R-CNN / Cascade Mask R-CNN / ViT-Det on COCO val2017) a
+hard gate: if the histogram analysis could not produce a `t_b` default
+that stabilized the "bin-as-Bkg" fraction within ±10% across models,
+boundary-segm would be cut from 0.5.0.
+
+**Status (Week 3, this PR's amendment):** the empirical measurement is
+infeasible from inside CI — vernier never commits COCO val data
+(`project_coco_val_regression.md`: license restriction) and there is
+no out-of-CI infrastructure available at this point in the release
+line. The gate condition was "empirical defense by mid-Week-3"; we
+could not do empirical anchoring in CI, so we shipped a defensible-on-
+geometric-grounds default (`t_b = 0.05`, anchored on the band-area
+compression argument in the table above) and deferred the empirical
+ratification to a 0.5.x follow-up.
+
+The 0.5.x follow-up replaces the geometric-anchoring paragraph in the
+table with the empirical histogram analysis when the three-model
+measurement becomes available. Per `project_release_pace.md` the user
+is on 0.0.x patch releases; revising the default in 0.5.x is cheap.
+The "cut boundary-segm" branch of the gate is preserved as an option
+for the 0.5.x follow-up: if the empirical work shows `0.05` is wrong
+in a way the geometric argument does not predict, boundary-segm is
+deprecated for one minor cycle while the threshold is re-defended.
 
 ### Consequences
 

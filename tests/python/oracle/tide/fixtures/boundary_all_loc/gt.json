@@ -1,0 +1,19 @@
+{
+  "images": [
+    {"id": 1, "width": 200, "height": 200, "file_name": "img1.png"}
+  ],
+  "annotations": [
+    {
+      "id": 1,
+      "image_id": 1,
+      "category_id": 1,
+      "bbox": [50, 50, 50, 50],
+      "area": 2500,
+      "iscrowd": 0,
+      "segmentation": [[50, 50, 100, 50, 100, 100, 50, 100]]
+    }
+  ],
+  "categories": [
+    {"id": 1, "name": "alpha", "supercategory": "thing"}
+  ]
+}
