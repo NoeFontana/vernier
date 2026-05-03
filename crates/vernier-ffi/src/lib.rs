@@ -50,6 +50,7 @@ use vernier_core::{
 mod background;
 mod dataset;
 mod tables;
+mod tide;
 
 use dataset::{DatasetCaches, PyDataset};
 
@@ -2371,6 +2372,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         tables::per_pair_to_arrow_pycapsule,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(tide::error_decomposition_bbox, m)?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
