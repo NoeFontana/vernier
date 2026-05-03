@@ -351,6 +351,20 @@ pub enum Frequency {
     Frequent,
 }
 
+impl Frequency {
+    /// LVIS single-letter form (`"r"` / `"c"` / `"f"`). Mirrors the
+    /// `serde(rename = ...)` tags on the variants — same canonical
+    /// form the JSON schema uses, available without going through
+    /// serde for places (FFI, log lines) that just need the string.
+    pub const fn as_letter(self) -> &'static str {
+        match self {
+            Self::Rare => "r",
+            Self::Common => "c",
+            Self::Frequent => "f",
+        }
+    }
+}
+
 /// On-disk LVIS image record. Carries the COCO image fields plus the
 /// LVIS-specific federated lists. The `pos_category_ids` set is
 /// **derived** from GT annotations at load (quirk **AA1**) and is not
@@ -403,6 +417,31 @@ struct LvisJson {
     categories: Vec<LvisCategoryRaw>,
 }
 
+/// LVIS federated metadata bundle (ADR-0026). Carried as a single
+/// `Option` on [`CocoDataset`] because the four fields are all
+/// populated together by [`CocoDataset::from_lvis_json_bytes`] and
+/// all `None` after the COCO loader path. Storing one optional
+/// struct (rather than four separate `Option<...>` fields) reflects
+/// the all-or-none semantics and lets the orchestrator gate
+/// federated branches on a single `is_some()` check.
+#[derive(Debug, Clone)]
+pub struct FederatedMetadata {
+    /// Per-image positive-category set, derived from GT annotations
+    /// at load (quirk **AA1**, not a JSON field).
+    pub pos_category_ids: HashMap<ImageId, HashSet<CategoryId>>,
+    /// Per-image negative-category set, read verbatim from the JSON
+    /// (quirk **AA2**).
+    pub neg_category_ids: HashMap<ImageId, HashSet<CategoryId>>,
+    /// Per-image not-exhaustive-category set, read verbatim from the
+    /// JSON (quirk **AA3**).
+    pub not_exhaustive_category_ids: HashMap<ImageId, HashSet<CategoryId>>,
+    /// Per-category frequency tag (quirk **AB1**). Required on every
+    /// category by `from_lvis_json_bytes`; missing entries raise
+    /// [`EvalError::MissingFrequency`] at load (quirk **AB6**
+    /// corrected).
+    pub category_frequency: HashMap<CategoryId, Frequency>,
+}
+
 /// COCO ground-truth dataset.
 ///
 /// Storage is a single `Arc<Vec<CocoAnnotation>>` plus per-image and
@@ -414,17 +453,10 @@ struct LvisJson {
 ///
 /// ## LVIS federated metadata (ADR-0026)
 ///
-/// Optional per-image positive / negative / not-exhaustive category
-/// sets and per-category frequency tags. Populated only by
-/// [`CocoDataset::from_lvis_json_bytes`]; the COCO loader leaves them
-/// all `None`. Their absence is the COCO default — the orchestrator
-/// reading these fields treats `None` as "not provided" and falls
-/// back to COCO semantics on those cells (quirks **AA1**–**AA7**,
-/// **AB1**, **AG1**).
-///
-/// The semantics are inert at the dataset layer: storing the maps
-/// neither matches nor accumulates differently. PR-3 of the ADR-0026
-/// rollout adds the orchestrator branches that read them.
+/// `federated` is `Some` exactly when the dataset was loaded via
+/// [`CocoDataset::from_lvis_json_bytes`]. The orchestrator's
+/// federated branches gate on `federated.is_some()`; absence is the
+/// COCO default, where the matching engine runs unchanged.
 #[derive(Debug, Clone)]
 pub struct CocoDataset {
     images: Arc<Vec<ImageMeta>>,
@@ -433,10 +465,7 @@ pub struct CocoDataset {
     by_image: HashMap<ImageId, Vec<usize>>,
     by_category: HashMap<CategoryId, Vec<usize>>,
     by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>>,
-    pos_category_ids: Option<HashMap<ImageId, HashSet<CategoryId>>>,
-    neg_category_ids: Option<HashMap<ImageId, HashSet<CategoryId>>>,
-    not_exhaustive_category_ids: Option<HashMap<ImageId, HashSet<CategoryId>>>,
-    category_frequency: Option<HashMap<CategoryId, Frequency>>,
+    federated: Option<FederatedMetadata>,
 }
 
 impl CocoDataset {
@@ -496,10 +525,7 @@ impl CocoDataset {
             by_image,
             by_category,
             by_image_cat,
-            pos_category_ids: None,
-            neg_category_ids: None,
-            not_exhaustive_category_ids: None,
-            category_frequency: None,
+            federated: None,
         })
     }
 
@@ -662,48 +688,56 @@ impl CocoDataset {
             }
         }
 
-        dataset.pos_category_ids = Some(pos);
-        dataset.neg_category_ids = Some(neg);
-        dataset.not_exhaustive_category_ids = Some(nel);
-        dataset.category_frequency = Some(category_frequency);
+        dataset.federated = Some(FederatedMetadata {
+            pos_category_ids: pos,
+            neg_category_ids: neg,
+            not_exhaustive_category_ids: nel,
+            category_frequency,
+        });
         Ok(dataset)
     }
 
+    /// LVIS federated metadata bundle. `Some` only when the dataset
+    /// was built by [`Self::from_lvis_json_bytes`]; the orchestrator's
+    /// AA3/AA4 branches gate on this.
+    pub fn federated(&self) -> Option<&FederatedMetadata> {
+        self.federated.as_ref()
+    }
+
     /// Per-image positive-category set, derived from GTs at load time
-    /// (quirk **AA1**). `Some` only when the dataset was built by
-    /// [`Self::from_lvis_json_bytes`].
+    /// (quirk **AA1**). `Some` only when the dataset is federated.
     pub fn pos_category_ids(&self) -> Option<&HashMap<ImageId, HashSet<CategoryId>>> {
-        self.pos_category_ids.as_ref()
+        self.federated.as_ref().map(|f| &f.pos_category_ids)
     }
 
     /// Per-image negative-category set, read verbatim from the LVIS
-    /// JSON (quirk **AA2**). `Some` only when the dataset was built
-    /// by [`Self::from_lvis_json_bytes`].
+    /// JSON (quirk **AA2**). `Some` only when the dataset is federated.
     pub fn neg_category_ids(&self) -> Option<&HashMap<ImageId, HashSet<CategoryId>>> {
-        self.neg_category_ids.as_ref()
+        self.federated.as_ref().map(|f| &f.neg_category_ids)
     }
 
     /// Per-image not-exhaustive-category set, read verbatim from the
-    /// LVIS JSON (quirk **AA3**). `Some` only when the dataset was
-    /// built by [`Self::from_lvis_json_bytes`].
+    /// LVIS JSON (quirk **AA3**). `Some` only when the dataset is
+    /// federated.
     pub fn not_exhaustive_category_ids(&self) -> Option<&HashMap<ImageId, HashSet<CategoryId>>> {
-        self.not_exhaustive_category_ids.as_ref()
+        self.federated
+            .as_ref()
+            .map(|f| &f.not_exhaustive_category_ids)
     }
 
     /// Per-category frequency tag, read verbatim from the LVIS JSON
-    /// (quirk **AB1**). `Some` only when the dataset was built by
-    /// [`Self::from_lvis_json_bytes`]; missing-on-some-categories
-    /// inputs are rejected at load (quirk **AB6**).
+    /// (quirk **AB1**). `Some` only when the dataset is federated;
+    /// missing-on-some-categories inputs are rejected at load
+    /// (quirk **AB6**).
     pub fn category_frequency(&self) -> Option<&HashMap<CategoryId, Frequency>> {
-        self.category_frequency.as_ref()
+        self.federated.as_ref().map(|f| &f.category_frequency)
     }
 
     /// `true` when the dataset carries LVIS federated metadata.
-    /// Equivalent to `self.pos_category_ids().is_some()`; used by the
-    /// orchestrator (PR-3) to gate the cell-skip and `dt_ignore`
-    /// branches.
+    /// Cheap shortcut for orchestration code that gates behaviour on
+    /// the federated flag.
     pub fn is_federated(&self) -> bool {
-        self.pos_category_ids.is_some()
+        self.federated.is_some()
     }
 
     /// Round-trips the dataset to the on-disk JSON shape, preserving
@@ -1013,8 +1047,17 @@ impl CocoDetections {
         let mut image_ids: Vec<ImageId> = by_image_groups.keys().copied().collect();
         image_ids.sort_unstable_by_key(|i| i.0);
 
-        let mut out: Vec<CocoDetection> =
-            Vec::with_capacity(self.detections.len().min(cap * image_ids.len().max(1)));
+        // Tight upper bound on the post-trim count: input length is
+        // always an upper bound on the result, and `cap * n_images`
+        // only beats it when the input is dense enough to hit the
+        // cap on every image. Take the smaller of the two so we
+        // never over-allocate by a factor of 5x on typical evals
+        // (most images carry far fewer than `max_dets` detections).
+        let upper_bound = self
+            .detections
+            .len()
+            .min(cap.saturating_mul(image_ids.len()));
+        let mut out: Vec<CocoDetection> = Vec::with_capacity(upper_bound);
         for image_id in image_ids {
             let mut group = by_image_groups.remove(&image_id).unwrap_or_default();
             // Stable sort by score descending. `partial_cmp` returns

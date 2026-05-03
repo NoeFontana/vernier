@@ -99,7 +99,7 @@ use crate::similarity::{
     BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmComputeScratch, SegmGtCache,
     SegmIou, Similarity,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use vernier_mask::Rle;
 
@@ -735,12 +735,23 @@ pub fn evaluate_with<K: EvalKernel>(
     // LVIS evaluation is per-category by construction. With
     // `use_cats=false` the federated maps are intentionally ignored
     // and the eval falls back to COCO semantics (the L4 `k=0` collapse
-    // never carries federated state).
-    let (federated_neg, federated_nel) = if params.use_cats && gt.is_federated() {
-        (gt.neg_category_ids(), gt.not_exhaustive_category_ids())
-    } else {
-        (None, None)
-    };
+    // never carries federated state). Pre-resolve the per-image
+    // (neg, not_exhaustive) set references once — the inner cell
+    // loop hits this `n_k` times per image, and the HashMap lookups
+    // dominate runtime on long-tail datasets (1203 cats * 19809 images
+    // = ~24M redundant probes on full LVIS val).
+    let federated_per_image: Vec<Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>> =
+        match (params.use_cats, gt.federated()) {
+            (true, Some(fed)) => images
+                .iter()
+                .map(|im| {
+                    let neg = fed.neg_category_ids.get(&im.id)?;
+                    let nel = fed.not_exhaustive_category_ids.get(&im.id)?;
+                    Some((neg, nel))
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
 
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
@@ -753,22 +764,19 @@ pub fn evaluate_with<K: EvalKernel>(
                 continue;
             }
 
-            // AA4 cell-skip and AA3 not_exhaustive flag. `cat.is_some()`
-            // is implied by `federated_neg.is_some()` (we filtered
-            // on `use_cats=true` above) but we re-check defensively so
-            // the unwrap on `cat` is local and obvious.
+            // AA4 cell-skip and AA3 `not_exhaustive` flag. The outer
+            // resolution of `federated_per_image` ensures every entry
+            // is `Some` exactly when federated semantics apply to
+            // this cell.
             let mut not_exhaustive_for_cell = false;
-            if let (Some(c), Some(neg_map), Some(nel_map)) =
-                (cat.as_ref(), federated_neg, federated_nel)
-            {
-                let in_neg = neg_map.get(&image_id).is_some_and(|s| s.contains(c));
+            if let (Some(c), Some(Some((neg_set, nel_set)))) = (cat, federated_per_image.get(i)) {
                 // pos[I] is derived from GTs at load: `C ∈ pos[I]`
                 // exactly when `gt_indices` is non-empty for this
                 // cell. Skip when the cell is outside `pos ∪ neg`.
-                if gt_indices.is_empty() && !in_neg {
+                if gt_indices.is_empty() && !neg_set.contains(c) {
                     continue;
                 }
-                not_exhaustive_for_cell = nel_map.get(&image_id).is_some_and(|s| s.contains(c));
+                not_exhaustive_for_cell = nel_set.contains(c);
             }
 
             // Area-invariant per-cell buffers — built once, reused

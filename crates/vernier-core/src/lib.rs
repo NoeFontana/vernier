@@ -38,8 +38,8 @@ pub use boundary_parity::{
 pub use breakdown::{Breakdown, Bucket};
 pub use dataset::{
     AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
-    CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, Frequency, ImageId,
-    ImageMeta,
+    CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, FederatedMetadata,
+    Frequency, ImageId, ImageMeta,
 };
 pub use error::EvalError;
 pub use evaluate::{
