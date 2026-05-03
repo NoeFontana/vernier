@@ -13,15 +13,40 @@ against the oracle's outputs on the same fixtures within `1e-9`
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from .oracle import bbox_iou, error_decomposition, segm_iou
+from .oracle import bbox_iou, boundary_iou, error_decomposition, segm_iou
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+# Per ADR-0022 the boundary `t_b` default is `0.05` at
+# `dilation_ratio=0.02` (a tentative default with the empirical
+# ratification deferred to a 0.5.x follow-up; see ADR-0022's "Decision
+# gate (boundary default)" section). The boundary fixtures are pinned
+# at this value so the row in the ADR and the assertion in this file
+# move together.
+_BOUNDARY_T_B = 0.05
+_BOUNDARY_DILATION_RATIO = 0.02
+# Every boundary fixture below uses a 200x200 canvas: the diag-derived
+# erosion radius is ``round(0.02 * sqrt(80000)) = 6``, which is large
+# enough that the band is a non-trivial 6-pixel frame on a 50x50 mask
+# (band area = 50^2 - 38^2 = 1056) — comfortably past the d=1 clamp.
+_BOUNDARY_IMAGE_HW = (200, 200)
+
+
+def _boundary_sim() -> Any:
+    """Build the boundary similarity_fn baked at the fixture canvas."""
+    return functools.partial(
+        boundary_iou,
+        dilation_ratio=_BOUNDARY_DILATION_RATIO,
+        image_hw=_BOUNDARY_IMAGE_HW,
+    )
+
 
 # Hand-computed assertions are authored to ~10 decimal places of float
 # precision. The 1e-6 tolerance is the ADR-0021 oracle-stability budget
@@ -378,6 +403,129 @@ def test_segm_all_cls_isolates_cls_bin() -> None:
     _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
 
 
+def test_boundary_all_perfect_baseline_one_and_no_deltas() -> None:
+    """Identical GT / DT masks under the boundary kernel; nothing to bin.
+
+    Math:
+        - 200x200 image; ``d = round(0.02 * sqrt(80000)) = 6``.
+        - GT cat 1 at ``[50, 50, 50, 50]`` and GT cat 2 at
+          ``[120, 120, 50, 50]``; DTs identical to each GT, score 0.9.
+        - For each pair: mask_iou = 1 (identical 50x50 rectangles),
+          band_iou = 1 (identical 6-pixel frames). ``min = 1`` ≥ t_f →
+          TP at every threshold. Per-cat AP = 1.0 across the 10-IoU
+          ladder; mAP = 1.0.
+        - Every bin is empty. All deltas = 0.
+    """
+    gt, dt = _load("boundary_all_perfect")
+    out = error_decomposition(
+        gt,
+        dt,
+        _boundary_sim(),
+        t_f=0.5,
+        t_b=_BOUNDARY_T_B,
+        kernel_name="boundary",
+    )
+    _assert_close(out["baseline_map"], 1.0, "baseline_map")
+    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
+        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
+    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+
+
+def test_boundary_all_loc_isolates_loc_bin() -> None:
+    """Same-class boundary IoU lands in ``[t_b, t_f) = [0.05, 0.5)`` → Loc.
+
+    Math (200x200 canvas, dilation_ratio=0.02 → d=6):
+        - 1 GT cat 1 at ``[50, 50, 50, 50]``; rasterized mask covers
+          ``x ∈ [50, 100), y ∈ [50, 100)`` (area 2500). Eroded interior
+          covers ``x ∈ [56, 94), y ∈ [56, 94)`` (area 38*38 = 1444).
+          Band area = 2500 - 1444 = 1056.
+        - 1 DT cat 1 at ``[75, 50, 50, 50]`` (shifted +25 in x). Mask
+          covers ``x ∈ [75, 125), y ∈ [50, 100)`` (area 2500). Eroded
+          interior covers ``x ∈ [81, 119), y ∈ [56, 94)`` (area 1444).
+          Band area = 1056.
+        - **Mask IoU.** Mask intersection = ``x ∈ [75, 100) * y ∈ [50, 100) = 25 * 50 = 1250``.
+          Mask union = 2500 + 2500 - 1250 = 3750. Mask IoU = 1250/3750 = 1/3.
+        - **Band intersection.** Inclusion-exclusion on the mask
+          intersection:
+            - GT interior pixels inside the mask intersection:
+              ``x ∈ [75, 94) * y ∈ [56, 94) = 19 * 38 = 722``.
+            - DT interior pixels inside the mask intersection:
+              ``x ∈ [81, 100) * y ∈ [56, 94) = 19 * 38 = 722``.
+            - Both interiors at once (subtracted twice, add back):
+              ``x ∈ [81, 94) * y ∈ [56, 94) = 13 * 38 = 494``.
+            - Band intersection = 1250 - 722 - 722 + 494 = 300.
+          Band union = 1056 + 1056 - 300 = 1812. Band IoU = 300/1812
+          ≈ 0.16556.
+        - **Boundary IoU = min(mask, band) ≈ 0.16556** ∈ [0.05, 0.5)
+          → Loc bin. ``iou_same`` is the only IoU (no other classes),
+          so ``iou_same >= t_b and iou_same >= iou_cross`` succeeds and
+          attribution is Loc.
+        - Baseline: at every IoU threshold ≥ 0.5, the DT's IoU 0.166 is
+          below; unmatched. tp=0, fp=1, AP = 0. mAP = 0.
+        - Loc fix snaps DT segmentation to GT's → identical masks →
+          IoU = 1.0 → TP at every threshold → AP = 1.0 → mAP = 1.0.
+          delta_loc = 1.0.
+        - Other bins empty. delta_all_fp_removed = 0 (removing the lone
+          FP leaves 0 detections; same loose-bound shape as the bbox
+          ``all_loc`` fixture).
+    """
+    gt, dt = _load("boundary_all_loc")
+    out = error_decomposition(
+        gt,
+        dt,
+        _boundary_sim(),
+        t_f=0.5,
+        t_b=_BOUNDARY_T_B,
+        kernel_name="boundary",
+    )
+    _assert_close(out["baseline_map"], 0.0, "baseline_map")
+    _assert_close(out["delta"]["loc"], 1.0, "delta[loc]")
+    for bin_name in ("cls", "both", "dupe", "bkg", "missed"):
+        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
+    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+
+
+def test_boundary_all_cls_isolates_cls_bin() -> None:
+    """DT geometry matches a wrong-class GT exactly → Cls.
+
+    Math (200x200, d=6):
+        - 2 GTs: GT1 cat 1 at ``[50, 50, 50, 50]``; GT2 cat 2 at
+          ``[120, 120, 50, 50]``. Both rectangles disjoint (no mask
+          overlap, no band overlap).
+        - 2 DTs:
+            DT1: cat 2 at ``[50, 50, 50, 50]`` (GT1 geometry, wrong
+                 class). Boundary IoU vs GT1 = 1.0 (identical masks),
+                 vs GT2 = 0 (disjoint). iou_same (cat 2) = 0,
+                 iou_cross (cat 1) = 1.0 ≥ t_f → Cls.
+            DT2: cat 1 at ``[120, 120, 50, 50]`` — symmetric. Cls.
+        - Baseline:
+            cat 1: GT1 + DT2. DT2 IoU=0 with GT1 → unmatched. AP = 0.
+            cat 2: symmetric. AP = 0.
+            mAP = 0.
+        - Cls fix relabels each DT to its cross-class GT's category:
+            cat 1 has 1 TP (DT1 relabelled), AP = 1.0.
+            cat 2 has 1 TP (DT2 relabelled), AP = 1.0.
+            mAP = 1.0. delta_cls = 1.0.
+        - Other bins empty. delta_all_fp_removed = 0 (removing the two
+          FPs leaves 0 detections; same loose-bound shape as the bbox
+          ``all_cls`` fixture).
+    """
+    gt, dt = _load("boundary_all_cls")
+    out = error_decomposition(
+        gt,
+        dt,
+        _boundary_sim(),
+        t_f=0.5,
+        t_b=_BOUNDARY_T_B,
+        kernel_name="boundary",
+    )
+    _assert_close(out["baseline_map"], 0.0, "baseline_map")
+    _assert_close(out["delta"]["cls"], 1.0, "delta[cls]")
+    for bin_name in ("loc", "both", "dupe", "bkg", "missed"):
+        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
+    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+
+
 _ALL_FIXTURES = [
     "all_perfect",
     "all_bkg",
@@ -392,6 +540,12 @@ _SEGM_FIXTURES = [
     "segm_all_perfect",
     "segm_all_loc",
     "segm_all_cls",
+]
+
+_BOUNDARY_FIXTURES = [
+    "boundary_all_perfect",
+    "boundary_all_loc",
+    "boundary_all_cls",
 ]
 
 
@@ -409,9 +563,9 @@ def test_report_carries_resolved_config(name: str) -> None:
 
 @pytest.mark.parametrize("name", _SEGM_FIXTURES)
 def test_segm_report_carries_resolved_config(name: str) -> None:
-    """Segm kernel: `config.kernel` is `"segm"` when `segm_iou` is passed."""
+    """Segm kernel: `config.kernel` is `"segm"` when caller pins it via kwarg."""
     gt, dt = _load(name)
-    out = error_decomposition(gt, dt, segm_iou, t_f=0.5, t_b=0.1)
+    out = error_decomposition(gt, dt, segm_iou, t_f=0.5, t_b=0.1, kernel_name="segm")
     assert out["config"] == {"t_f": 0.5, "t_b": 0.1, "kernel": "segm"}
 
 
@@ -439,3 +593,20 @@ def test_report_shape(name: str) -> None:
     for v in out["delta"].values():
         assert isinstance(v, float)
     assert isinstance(out["delta_all_fp_removed"], float)
+
+
+@pytest.mark.parametrize("name", _BOUNDARY_FIXTURES)
+def test_boundary_report_carries_resolved_config(name: str) -> None:
+    """The boundary kernel report carries ``kernel = "boundary"`` and the
+    ADR-0022 boundary defaults (``t_f=0.5``, ``t_b=0.05``).
+    """
+    gt, dt = _load(name)
+    out = error_decomposition(
+        gt,
+        dt,
+        _boundary_sim(),
+        t_f=0.5,
+        t_b=_BOUNDARY_T_B,
+        kernel_name="boundary",
+    )
+    assert out["config"] == {"t_f": 0.5, "t_b": _BOUNDARY_T_B, "kernel": "boundary"}

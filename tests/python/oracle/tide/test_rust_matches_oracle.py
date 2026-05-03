@@ -4,26 +4,38 @@ Per ADR-0021 the numpy oracle in `oracle.py` is the executable spec; the
 Rust implementation in `vernier_core::tide::error_decomposition_*` is
 correct iff `|delta_rust - delta_oracle| < 1e-9` per bin per fixture.
 
-This test runs the Rust FFI (`vernier._core.error_decomposition_bbox`
-and `error_decomposition_segm`) against the oracle on every Week-1 +
-Week-3 fixture and asserts the parity contract on `baseline_map`, every
-per-bin delta, and the all-FPs-removed sanity total. The `1e-9`
-tolerance is the ADR-0021 contract; loosening it silently masks a Rust
-bug — STOP and report instead.
+This file covers all three kernels:
+
+- **bbox** (Week 2) — `error_decomposition_bbox` against the seven
+  bbox fixtures.
+- **segm** (Week 3) — `error_decomposition_segm` against the three
+  segm fixtures.
+- **boundary** (Week 3) — `error_decomposition_boundary` against the
+  three boundary fixtures with `dilation_ratio = 0.02` (ADR-0010 COCO
+  default) and `t_b = 0.05` (ADR-0022 boundary default, tentative —
+  see the ADR's "Decision gate" section).
+
+The `1e-9` tolerance is the ADR-0021 contract; loosening it silently
+masks a Rust bug — STOP and report instead.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from .oracle import error_decomposition, segm_iou
+from .oracle import boundary_iou, error_decomposition, segm_iou
 
 _core = pytest.importorskip("vernier._core")
-for _required in ("error_decomposition_bbox", "error_decomposition_segm"):
+for _required in (
+    "error_decomposition_bbox",
+    "error_decomposition_segm",
+    "error_decomposition_boundary",
+):
     if not hasattr(_core, _required):
         pytest.skip(
             f"vernier._core.{_required} not yet built into the wheel. "
@@ -53,6 +65,19 @@ _SEGM_FIXTURES = [
     "segm_all_loc",
     "segm_all_cls",
 ]
+
+# Boundary fixtures — see `test_oracle.py` for the matching docstring
+# assertions. Each fixture's image is 200x200 so the boundary band
+# radius (d = round(0.02 * sqrt(80000)) = 6) is large enough that the
+# band is a non-trivial 6-pixel frame.
+_BOUNDARY_FIXTURES = [
+    "boundary_all_perfect",
+    "boundary_all_loc",
+    "boundary_all_cls",
+]
+_BOUNDARY_DILATION_RATIO = 0.02
+_BOUNDARY_T_B = 0.05  # ADR-0022 boundary default.
+_BOUNDARY_IMAGE_HW = (200, 200)
 
 
 def _load(name: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -184,3 +209,93 @@ def test_rust_segm_report_carries_resolved_config(name: str) -> None:
     assert config["kernel"] == "segm", f"{name}: kernel"
     assert config["t_f"] == pytest.approx(0.5), f"{name}: t_f"
     assert config["t_b"] == pytest.approx(0.1), f"{name}: t_b"
+
+
+@pytest.mark.skipif(
+    not hasattr(_core, "error_decomposition_boundary"),
+    reason="vernier._core.error_decomposition_boundary not yet built into the wheel "
+    "(Week-3 Rust PR). Rebuild with `just develop` after that lands.",
+)
+@pytest.mark.parametrize("name", _BOUNDARY_FIXTURES)
+def test_rust_matches_oracle_boundary(name: str) -> None:
+    """Boundary FFI bin-deltas agree with the numpy oracle within 1e-9.
+
+    Both implementations rasterize axis-aligned-rectangle polygons onto
+    the fixture's declared image grid (200x200) and run the ADR-0010
+    boundary kernel at `dilation_ratio = 0.02`. The Rust path goes
+    through `vernier_mask`'s polygon rasterizer + van Herk separable
+    erosion; the oracle uses numpy slicing + iterative 3x3 erosion.
+    Both produce the same Chebyshev-ball erosion on integer-aligned
+    rectangles, so the IoU values should match bit-for-bit (and
+    therefore every per-bin ΔmAP within 1e-9).
+    """
+    gt_dict, dt_list = _load(name)
+    gt_bytes = json.dumps(gt_dict).encode()
+    dt_bytes = json.dumps(dt_list).encode()
+
+    sim = functools.partial(
+        boundary_iou,
+        dilation_ratio=_BOUNDARY_DILATION_RATIO,
+        image_hw=_BOUNDARY_IMAGE_HW,
+    )
+    oracle_out = error_decomposition(
+        gt_dict,
+        dt_list,
+        sim,
+        t_f=0.5,
+        t_b=_BOUNDARY_T_B,
+        kernel_name="boundary",
+    )
+    rust_out = _core.error_decomposition_boundary(
+        gt_bytes,
+        dt_bytes,
+        "strict",
+        0.5,
+        _BOUNDARY_T_B,
+        100,
+        True,
+        _BOUNDARY_DILATION_RATIO,
+    )
+
+    _assert_close(rust_out["baseline_map"], oracle_out["baseline_map"], f"{name}: baseline_map")
+    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
+        _assert_close(
+            rust_out["delta"][bin_name],
+            oracle_out["delta"][bin_name],
+            f"{name}: delta[{bin_name}]",
+        )
+    _assert_close(
+        rust_out["delta_all_fp_removed"],
+        oracle_out["delta_all_fp_removed"],
+        f"{name}: delta_all_fp_removed",
+    )
+
+
+@pytest.mark.skipif(
+    not hasattr(_core, "error_decomposition_boundary"),
+    reason="vernier._core.error_decomposition_boundary not yet built into the wheel.",
+)
+@pytest.mark.parametrize("name", _BOUNDARY_FIXTURES)
+def test_rust_boundary_report_carries_resolved_config(name: str) -> None:
+    """ADR-0022: the boundary report records ``kernel = "boundary"`` and the
+    `(t_f, t_b)` it was called with.
+    """
+    gt_dict, dt_list = _load(name)
+    gt_bytes = json.dumps(gt_dict).encode()
+    dt_bytes = json.dumps(dt_list).encode()
+
+    rust_out = _core.error_decomposition_boundary(
+        gt_bytes,
+        dt_bytes,
+        "strict",
+        0.5,
+        _BOUNDARY_T_B,
+        100,
+        True,
+        _BOUNDARY_DILATION_RATIO,
+    )
+
+    config = rust_out["config"]
+    assert config["kernel"] == "boundary", f"{name}: kernel"
+    assert config["t_f"] == pytest.approx(0.5), f"{name}: t_f"
+    assert config["t_b"] == pytest.approx(_BOUNDARY_T_B), f"{name}: t_b"

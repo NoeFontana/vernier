@@ -966,12 +966,22 @@ fn summarize_grid(
     }
 }
 
-fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
+/// Reject non-positive / non-finite `dilation_ratio` values at the FFI
+/// boundary so the boundary kernel never sees a value its band-radius
+/// math (`round(ratio * sqrt(h^2 + w^2))`) would silently degenerate
+/// on. Used by every boundary entry point (`evaluate_boundary_*`,
+/// `tide::error_decomposition_boundary`).
+pub(crate) fn validate_dilation_ratio(dilation_ratio: f64) -> PyResult<()> {
     if !dilation_ratio.is_finite() || dilation_ratio <= 0.0 {
         return Err(PyValueError::new_err(format!(
             "dilation_ratio must be a positive finite float, got {dilation_ratio}"
         )));
     }
+    Ok(())
+}
+
+fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
+    validate_dilation_ratio(dilation_ratio)?;
     Ok(EvalIouType::Boundary { dilation_ratio })
 }
 
@@ -2374,6 +2384,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_bbox, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_segm, m)?)?;
+    m.add_function(wrap_pyfunction!(tide::error_decomposition_boundary, m)?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
