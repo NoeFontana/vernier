@@ -9,15 +9,20 @@ from __future__ import annotations
 
 import argparse
 import contextlib
-import hashlib
 import io
 from pathlib import Path
 from typing import Any, get_args
 
 import numpy as np
+from coco_val_cache import file_sha256
 
 from bench.harness.schema import BenchWarning, IouType, RunnerRepOutput, StageTimings
 from bench.harness.timing import StageTable
+
+# Re-exported so existing imports `from bench.runners._protocol import file_sha256`
+# keep working unchanged. The implementation now lives in the canonical
+# coco_val_cache package — single owner across bench, parity tests, and tools.
+__all__ = ["file_sha256", "parse_runner_args", "stat_names", "write_outputs"]
 
 BBOX_STAT_NAMES: tuple[str, ...] = (
     "AP",
@@ -60,11 +65,6 @@ def parse_runner_args() -> argparse.Namespace:
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--tensor-output", type=Path, required=True)
     return p.parse_args()
-
-
-def file_sha256(path: Path) -> str:
-    with path.open("rb") as f:
-        return hashlib.file_digest(f, "sha256").hexdigest()
 
 
 def write_outputs(

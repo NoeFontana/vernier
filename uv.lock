@@ -2648,6 +2648,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-benchmark" },
     { name = "ruff" },
+    { name = "vernier-coco-val-cache" },
 ]
 
 [package.metadata]
@@ -2671,4 +2672,10 @@ dev = [
     { name = "pytest", specifier = ">=9" },
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "ruff", specifier = ">=0.15" },
+    { name = "vernier-coco-val-cache", editable = "tools/coco_val_cache" },
 ]
+
+[[package]]
+name = "vernier-coco-val-cache"
+version = "0.0.0"
+source = { editable = "tools/coco_val_cache" }

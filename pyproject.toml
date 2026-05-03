@@ -99,7 +99,16 @@ dev = [
     # `tables` extra for end users; mirrored here so tests can rely on
     # it without conditional skips.
     "polars>=1.0",
+    # Single source of truth for the COCO val2017 dev cache contract
+    # (URL, SHA256, filename, fetch flow). Path source declared below
+    # in [tool.uv.sources]. Consumed by tests/python/coco_val_paths.py
+    # and tools/fetch-coco-val.sh; bench has its own copy of the dep
+    # since bench resolves against its own pyproject.
+    "vernier-coco-val-cache",
 ]
+
+[tool.uv.sources]
+vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
 
 # ---------------------------------------------------------------------------
 # Ruff: lint + format

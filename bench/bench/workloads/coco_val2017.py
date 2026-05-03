@@ -1,9 +1,13 @@
 """COCO val2017 GT — download, sha256-verify, cache locally.
 
-Constants mirror ``tools/fetch-coco-val.sh`` (the parity-test cache).
-The bench harness owns its own cache at ``~/.cache/vernier-bench/`` so
+Constants and the fetch+verify flow live in the canonical
+:mod:`coco_val_cache` package (a `[tool.uv.sources]` path dep at
+``tools/coco_val_cache/``). This module provides the bench-cache-rooted
+wrapper: bench keeps its own cache at ``~/.cache/vernier-bench/`` so
 ``just test-coco-val`` and ``vernier-bench run`` can't fight over the
-same file. ``VERNIER_COCO_GT_PATH`` (the convention from
+same file, but the canonical pin of "what file lives there" is shared.
+
+``VERNIER_COCO_GT_PATH`` (the convention from
 ``docs/engineering/coco-val-parity.md``) is honoured as a preverified
 fallback so users who already populated the parity cache don't pay the
 download twice.
@@ -12,70 +16,44 @@ download twice.
 from __future__ import annotations
 
 import os
-import shutil
-import urllib.request
-import zipfile
 from pathlib import Path
 
-from bench.harness.paths import bench_cache_root
-from bench.runners._protocol import file_sha256
+from coco_val_cache import GT_FILENAME, GT_SHA256, ensure_gt, file_sha256
 
-ANNOTATIONS_URL = "http://images.cocodataset.org/annotations/annotations_trainval2017.zip"
-GT_FILENAME = "instances_val2017.json"
-EXPECTED_SHA256 = "e8c7f7908f1d7278341fae127d0da654f102f11bd7b21d8aeefa635b8c810b6f"
+from bench.harness.paths import bench_cache_root
+
+# Re-exported for callers that imported it from this module historically
+# (e.g. the network-gated bench test suite).
+EXPECTED_SHA256 = GT_SHA256
 
 
 def gt_path() -> Path:
     """Return a verified path to the COCO val2017 GT JSON.
 
-    Raises ``RuntimeError`` on sha256 mismatch after download.
+    Honors ``VERNIER_COCO_GT_PATH`` first (so users with a populated
+    parity cache don't pay the download twice), then falls back to the
+    bench cache. Raises ``RuntimeError`` on a sha256 mismatch.
     """
     env_override = os.environ.get("VERNIER_COCO_GT_PATH")
     if env_override:
         candidate = Path(env_override)
-        if candidate.exists() and file_sha256(candidate) == EXPECTED_SHA256:
+        if candidate.exists() and file_sha256(candidate) == GT_SHA256:
             return candidate
 
-    cache_dir = bench_cache_root() / "coco_val2017"
-    gt = cache_dir / GT_FILENAME
-    if gt.exists() and file_sha256(gt) == EXPECTED_SHA256:
-        return gt
-
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    gt.unlink(missing_ok=True)
-
-    zip_path = cache_dir / "annotations_trainval2017.zip"
-    try:
-        with urllib.request.urlopen(ANNOTATIONS_URL) as response, zip_path.open("wb") as f:
-            shutil.copyfileobj(response, f)
-        with (
-            zipfile.ZipFile(zip_path) as z,
-            z.open(f"annotations/{GT_FILENAME}") as src,
-            gt.open("wb") as dst,
-        ):
-            shutil.copyfileobj(src, dst)
-    finally:
-        zip_path.unlink(missing_ok=True)
-
-    actual = file_sha256(gt)
-    if actual != EXPECTED_SHA256:
-        gt.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"COCO val2017 GT sha256 mismatch: expected {EXPECTED_SHA256}, got {actual}"
-        )
-    return gt
+    return ensure_gt(cache=bench_cache_root() / "coco_val2017")
 
 
 def perfect_dt_segm_path() -> Path:
     """Locate ``perfect_dt_segm.json`` (perfect-match DT with segmentation).
 
-    The file is generated locally by ``tools/make-perfect-dt.py`` (called
-    from ``tools/fetch-coco-val.sh``); it isn't downloaded, so there's no
-    sha256 to pin. We accept ``VERNIER_COCO_DT_SEGM_PATH`` (the parity
-    convention) and fall back to the parity cache at
-    ``<repo>/.cache/coco-val2017/perfect_dt_segm.json``. Raises if neither
-    is present so the harness's "missing workload input" error surfaces
-    early instead of inside a runner subprocess.
+    The file is generated locally by the canonical
+    :mod:`coco_val_cache` (which subprocesses
+    ``tools/make-perfect-dt.py``); it isn't downloaded, so there's no
+    sha256 to pin. Accepts ``VERNIER_COCO_DT_SEGM_PATH`` (the parity
+    convention) and falls back to the parity cache at
+    ``<repo>/.cache/coco-val2017/perfect_dt_segm.json``. Raises if
+    neither is present so the harness's "missing workload input"
+    error surfaces early instead of inside a runner subprocess.
     """
     env_override = os.environ.get("VERNIER_COCO_DT_SEGM_PATH")
     if env_override:
@@ -90,5 +68,8 @@ def perfect_dt_segm_path() -> Path:
 
     raise RuntimeError(
         "perfect_dt_segm.json not found; set VERNIER_COCO_DT_SEGM_PATH or "
-        "run tools/fetch-coco-val.sh to populate <repo>/.cache/coco-val2017/."
+        "run ./tools/fetch-coco-val.sh to populate <repo>/.cache/coco-val2017/."
     )
+
+
+__all__ = ["EXPECTED_SHA256", "GT_FILENAME", "gt_path", "perfect_dt_segm_path"]

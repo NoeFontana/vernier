@@ -540,6 +540,7 @@ dependencies = [
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "polars" },
     { name = "pydantic" },
+    { name = "vernier-coco-val-cache" },
 ]
 
 [package.dev-dependencies]
@@ -555,6 +556,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "polars", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "vernier-coco-val-cache", editable = "../tools/coco_val_cache" },
 ]
 
 [package.metadata.requires-dev]
@@ -563,3 +565,8 @@ dev = [
     { name = "pytest", specifier = ">=9" },
     { name = "ruff", specifier = ">=0.15" },
 ]
+
+[[package]]
+name = "vernier-coco-val-cache"
+version = "0.0.0"
+source = { editable = "../tools/coco_val_cache" }

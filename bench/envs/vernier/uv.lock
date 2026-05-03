@@ -375,20 +375,25 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
+    { name = "platformdirs", marker = "extra == 'real-models'", specifier = ">=4" },
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=6.0" },
+    { name = "polars", marker = "extra == 'tables'", specifier = ">=1.0" },
+    { name = "rfdetr", marker = "extra == 'real-models'", specifier = "==1.6.5.post0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4" },
 ]
-provides-extras = ["torch", "viz"]
+provides-extras = ["torch", "viz", "tables", "real-models"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "maturin", specifier = ">=1.13,<2.0" },
     { name = "opencv-python", specifier = "==4.10.0.84" },
+    { name = "polars", specifier = ">=1.0" },
     { name = "pycocotools", specifier = "==2.0.11" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "pytest", specifier = ">=9" },
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "ruff", specifier = ">=0.15" },
+    { name = "vernier-coco-val-cache", editable = "../../../tools/coco_val_cache" },
 ]
 
 [[package]]
@@ -401,6 +406,7 @@ dependencies = [
     { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "polars" },
     { name = "pydantic" },
+    { name = "vernier-coco-val-cache" },
 ]
 
 [package.metadata]
@@ -409,6 +415,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "polars", specifier = ">=1.0" },
     { name = "pydantic", specifier = ">=2.0" },
+    { name = "vernier-coco-val-cache", editable = "../../../tools/coco_val_cache" },
 ]
 
 [package.metadata.requires-dev]
@@ -437,3 +444,8 @@ requires-dist = [
     { name = "vernier", directory = "../../../" },
     { name = "vernier-bench", editable = "../../" },
 ]
+
+[[package]]
+name = "vernier-coco-val-cache"
+version = "0.0.0"
+source = { editable = "../../../tools/coco_val_cache" }

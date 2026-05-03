@@ -12,7 +12,13 @@ dependencies = [
     "numpy>=2.0",
     "polars>=1.0",
     "pydantic>=2.0",
+    # Single source of truth for the COCO val2017 dev cache contract
+    # (URL, SHA256, filename, fetch flow). Path source below.
+    "vernier-coco-val-cache",
 ]
+
+[tool.uv.sources]
+vernier-coco-val-cache = { path = "../tools/coco_val_cache", editable = true }
 
 [project.scripts]
 vernier-bench = "bench.cli:main"
