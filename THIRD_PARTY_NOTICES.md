@@ -107,4 +107,35 @@ licensing implications first.
   numerical behavior is the upstream's, not pycocotools'. Treated
   as a comparator, not an oracle.
 
+## rfdetr
+
+- **Role:** real-model source for the TIDE validation harness
+  (Week 5 of the 0.x.x TIDE track). The bundled `RFDETRNano` (bbox)
+  and `RFDETRSegNano` (instance segmentation) checkpoints generate
+  COCO-format predictions on `val2017`; vernier's
+  `error_decomposition` is then exercised against those predictions
+  to confirm bin assignments behave coherently on real data. This is
+  the "non-parity sanity-check" vendoring flavor anticipated in
+  [`docs/engineering/vendoring.md`](docs/engineering/vendoring.md):
+  not a parity oracle, not a comparator, just a load-bearing input
+  for the validation harness.
+- **Vendoring flavor:** pinned-package env. The pin is the artifact;
+  no source tree lives in our repo.
+- **Pin site:** root [`pyproject.toml`](pyproject.toml) under the
+  `real-models` optional-dependency group — `rfdetr==1.6.5.post0`,
+  consumed by `tests/python/integration/real_models/tide/`. The
+  harness is gated on `@pytest.mark.real_models` and on the rfdetr
+  import succeeding, so it skips cleanly when the extra is not
+  installed.
+- **Lockfile:** [`uv.lock`](uv.lock) (root). Refreshing the pin
+  also rewrites the lockfile in the same commit.
+- **Upstream:** <https://github.com/roboflow/rf-detr>
+  (Python package: <https://pypi.org/project/rfdetr/>).
+- **License:** Apache-2.0. Copyright © Roboflow, Inc.
+- **Notes:** rfdetr's `.predict()` returns a `supervision.Detections`
+  object; the harness adapts it to COCO JSON before passing the bytes
+  through `vernier.error_decomposition`. The COCO category-id mapping
+  is derived from the GT JSON at runtime (instances_val2017.json
+  carries the canonical sparse 1..90 ids), not hard-coded.
+
 <!-- Future vendored references append here, same shape. -->

@@ -63,3 +63,25 @@ def require_perfect_dt_artifacts(dt_filename: str) -> tuple[Path, Path]:
             "see docs/engineering/coco-val-parity.md"
         )
     return gt, dt
+
+
+def require_coco_val_root_with_images() -> Path:
+    """Locate the val2017 cache containing both GT JSON *and* images,
+    or skip the test.
+
+    Distinct from :func:`require_perfect_dt_artifacts`: real-model
+    harnesses need pixels (the ``val2017/`` image directory), not just
+    cached prediction JSONs. The fetcher script only downloads the GT
+    file — populating ``val2017/`` is the user's responsibility (the
+    image set is license-restricted).
+    """
+    cache = cache_dir()
+    gt = cache / "instances_val2017.json"
+    images = cache / "val2017"
+    if not gt.is_file() or not images.is_dir():
+        pytest.skip(
+            f"real-model harness needs both {gt} and {images}/ — run "
+            f"./tools/fetch-coco-val.sh and ensure val2017/ images are "
+            f"present; see docs/engineering/coco-val-parity.md"
+        )
+    return cache
