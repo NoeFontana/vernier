@@ -54,6 +54,19 @@ test-parity-lvis:
 test-parity-lvis-val:
     uv run pytest -m parity_lvis_val -v
 
+# Run panoptic parity tests against the vendored panopticapi reference
+# oracle (ADR-0025). The oracle lives at
+# tests/python/parity_panoptic/oracle/panopticapi/.
+test-parity-panoptic:
+    uv run pytest -m parity_panoptic
+
+# Run the COCO panoptic val2017 whole-dataset parity smoke. Requires
+# VERNIER_PANOPTIC_GT_PATH, VERNIER_PANOPTIC_GT_PNG_DIR,
+# VERNIER_PANOPTIC_DT_PATH, and VERNIER_PANOPTIC_DT_PNG_DIR. See
+# `python -m panoptic_val_cache` for the canonical setup.
+test-parity-panoptic-val:
+    uv run pytest -m parity_panoptic_val -v
+
 # Run the COCO val2017 whole-dataset parity smoke.
 # Requires VERNIER_COCO_GT_PATH and VERNIER_COCO_DT_PATH to point at
 # the GT annotations and a detector predictions JSON. See
