@@ -1,0 +1,14 @@
+[project]
+name = "vernier-coco-val-cache"
+version = "0.0.0"
+description = "Single source of truth for the COCO val2017 dev cache contract."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["coco_val_cache"]

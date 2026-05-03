@@ -31,7 +31,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, Literal
 
-from tests.python.coco_val_paths import cache_dir as _coco_cache_dir
+from coco_val_cache import cache_root as _coco_cache_dir
 
 import vernier
 from vernier import Bbox, Boundary, Segm
