@@ -14,10 +14,14 @@
 
 use std::sync::Arc;
 
+use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::PyBytes;
+use pyo3::types::{PyBytes, PyDict, PyFrozenSet, PyTuple};
 
-use vernier_core::{BoundaryGtCache, CocoDataset, EvalDataset, SegmGtCache};
+use vernier_core::{
+    BoundaryGtCache, CategoryId, CocoDataset, EvalDataset, EvalError, Frequency, ImageId,
+    SegmGtCache,
+};
 
 use crate::parse_gt;
 
@@ -99,6 +103,78 @@ impl PyDataset {
         })
     }
 
+    /// Parses an LVIS v1 ground-truth JSON payload into a reusable
+    /// [`Dataset`] handle. The handle exposes the federated metadata
+    /// (`pos_category_ids`, `neg_category_ids`,
+    /// `not_exhaustive_category_ids`, `category_frequency`) the
+    /// orchestrator reads to apply LVIS evaluation semantics
+    /// (ADR-0026).
+    ///
+    /// Raises `ValueError` on malformed JSON, on the disjointness
+    /// violations of quirk **AA7** (a category in both `not_exhaustive`
+    /// and `neg`, or a `neg` category that has GT on the same image),
+    /// or on missing `frequency` tags (quirk **AB6**).
+    #[staticmethod]
+    fn from_lvis_json(gt_json: &Bound<'_, PyBytes>) -> PyResult<Self> {
+        let gt =
+            CocoDataset::from_lvis_json_bytes(gt_json.as_bytes()).map_err(lvis_error_to_pyerr)?;
+        Ok(Self {
+            inner: Arc::new(gt),
+            boundary_cache: Arc::new(BoundaryGtCache::new()),
+            segm_cache: Arc::new(SegmGtCache::new()),
+        })
+    }
+
+    /// Per-image positive-category set (quirk **AA1**, derived from
+    /// GTs at load). `None` when this dataset was loaded via
+    /// [`Self::from_json`] (COCO path) rather than
+    /// [`Self::from_lvis_json`].
+    #[getter]
+    fn pos_category_ids<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        federated_image_map_to_dict(py, self.inner.pos_category_ids())
+    }
+
+    /// Per-image negative-category set (quirk **AA2**). `None` when
+    /// this dataset is not federated.
+    #[getter]
+    fn neg_category_ids<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        federated_image_map_to_dict(py, self.inner.neg_category_ids())
+    }
+
+    /// Per-image not-exhaustive-category set (quirk **AA3**). `None`
+    /// when this dataset is not federated.
+    #[getter]
+    fn not_exhaustive_category_ids<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        federated_image_map_to_dict(py, self.inner.not_exhaustive_category_ids())
+    }
+
+    /// Per-category frequency tag as the LVIS single-letter form
+    /// (`"r"` / `"c"` / `"f"`; quirk **AB1**). `None` when this
+    /// dataset is not federated.
+    #[getter]
+    fn category_frequency<'py>(&self, py: Python<'py>) -> PyResult<Option<Bound<'py, PyDict>>> {
+        let Some(map) = self.inner.category_frequency() else {
+            return Ok(None);
+        };
+        let dict = PyDict::new(py);
+        for (cat_id, freq) in map {
+            dict.set_item(cat_id.0, frequency_to_str(*freq))?;
+        }
+        Ok(Some(dict))
+    }
+
+    /// `True` when this dataset carries LVIS federated metadata —
+    /// equivalent to `pos_category_ids is not None`. Cheap shortcut
+    /// for orchestration code that gates behaviour on the federated
+    /// flag (PR-3).
+    #[getter]
+    fn is_federated(&self) -> bool {
+        self.inner.is_federated()
+    }
+
     /// Number of GT annotations carried by the dataset.
     #[getter]
     fn num_annotations(&self) -> usize {
@@ -126,11 +202,68 @@ impl PyDataset {
     }
 
     fn __repr__(&self) -> String {
+        let federated = if self.inner.is_federated() {
+            ", federated=True"
+        } else {
+            ""
+        };
         format!(
-            "Dataset(images={}, annotations={}, categories={})",
+            "Dataset(images={}, annotations={}, categories={}{federated})",
             self.inner.images().len(),
             self.inner.annotations().len(),
             self.inner.categories().len(),
         )
+    }
+}
+
+/// Convert an `Option<&HashMap<ImageId, HashSet<CategoryId>>>` (the
+/// shape of `pos` / `neg` / `not_exhaustive` on the dataset) to an
+/// optional Python `dict[int, frozenset[int]]`. Returns `None`
+/// (Python `None`) when the map is absent — the caller treats this
+/// as "dataset is COCO-flat, not federated".
+fn federated_image_map_to_dict<'py>(
+    py: Python<'py>,
+    map: Option<&std::collections::HashMap<ImageId, std::collections::HashSet<CategoryId>>>,
+) -> PyResult<Option<Bound<'py, PyDict>>> {
+    let Some(map) = map else {
+        return Ok(None);
+    };
+    let dict = PyDict::new(py);
+    for (image_id, cats) in map {
+        let ids: Vec<i64> = cats.iter().map(|c| c.0).collect();
+        let py_ids = PyTuple::new(py, ids)?;
+        let frozen = PyFrozenSet::new(py, py_ids.iter())?;
+        dict.set_item(image_id.0, frozen)?;
+    }
+    Ok(Some(dict))
+}
+
+fn frequency_to_str(f: Frequency) -> &'static str {
+    match f {
+        Frequency::Rare => "r",
+        Frequency::Common => "c",
+        Frequency::Frequent => "f",
+    }
+}
+
+/// Map an [`EvalError`] from the LVIS loader to a Python `ValueError`
+/// with a structured message. The plain `EvalError -> PyValueError`
+/// shim used by other paths discards the structured fields; for the
+/// LVIS variants we keep the field information explicit so users (and
+/// the migration guide) can lift it programmatically.
+fn lvis_error_to_pyerr(e: EvalError) -> PyErr {
+    match e {
+        EvalError::LvisFederatedConflict {
+            image_id,
+            category_id,
+            detail,
+        } => PyValueError::new_err(format!(
+            "lvis federated conflict on image_id={image_id}, category_id={category_id}: {detail}"
+        )),
+        EvalError::MissingFrequency { category_ids } => PyValueError::new_err(format!(
+            "lvis dataset is missing `frequency` on {} categories: {category_ids:?}",
+            category_ids.len()
+        )),
+        other => PyValueError::new_err(format!("{other}")),
     }
 }

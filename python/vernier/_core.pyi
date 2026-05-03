@@ -1,8 +1,15 @@
+from collections.abc import Mapping
 from typing import Any, Literal, TypeAlias, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
+
+#: LVIS category-frequency tier as a single-letter string (ADR-0026
+#: AB1). The `Dataset.category_frequency` accessor returns these
+#: values; the user-facing `vernier.Frequency` enum maps to and from
+#: them.
+LvisFrequencyLiteral: TypeAlias = Literal["r", "c", "f"]
 
 __version__: str
 
@@ -169,12 +176,24 @@ class Accumulated:
 class Dataset:
     @staticmethod
     def from_json(gt_json: bytes) -> Dataset: ...
+    @staticmethod
+    def from_lvis_json(gt_json: bytes) -> Dataset: ...
     @property
     def num_annotations(self) -> int: ...
     @property
     def num_images(self) -> int: ...
     @property
     def num_categories(self) -> int: ...
+    @property
+    def is_federated(self) -> bool: ...
+    @property
+    def pos_category_ids(self) -> Mapping[int, frozenset[int]] | None: ...
+    @property
+    def neg_category_ids(self) -> Mapping[int, frozenset[int]] | None: ...
+    @property
+    def not_exhaustive_category_ids(self) -> Mapping[int, frozenset[int]] | None: ...
+    @property
+    def category_frequency(self) -> Mapping[int, LvisFrequencyLiteral] | None: ...
     def clear_cache(self) -> None: ...
 
 class ArrowRecordBatch:
