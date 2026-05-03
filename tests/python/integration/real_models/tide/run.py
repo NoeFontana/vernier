@@ -23,101 +23,22 @@ machine takes ~30 minutes for SegNano on CPU.
 
 from __future__ import annotations
 
-import argparse
-import json
 import sys
 import time
 from collections.abc import Sequence
-from pathlib import Path
-from typing import Any, Literal
-
-from coco_val_cache import cache_root as _coco_cache_dir
+from typing import Any
 
 import vernier
-from vernier import Bbox, Boundary, Segm
 from vernier._tide import KernelName
 
-from ._rfdetr_predict import (
+from ._cli_common import (
+    KERNEL_FACTORIES,
     ModelName,
-    cache_filename,
-    predict_coco_val,
-    predictions_cache_root,
+    emit,
+    load_predictions,
+    make_arg_parser,
+    resolve_cells,
 )
-
-ModelArg = Literal["nano", "segnano", "both"]
-KernelArg = Literal["bbox", "segm", "boundary", "all"]
-
-_MODEL_KERNELS: dict[ModelName, frozenset[KernelName]] = {
-    "nano": frozenset({"bbox"}),
-    "segnano": frozenset({"bbox", "segm", "boundary"}),
-}
-
-_KERNEL_FACTORIES: dict[KernelName, Any] = {
-    "bbox": Bbox,
-    "segm": Segm,
-    "boundary": lambda: Boundary(dilation_ratio=0.02),
-}
-
-
-def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="rf-detr TIDE validation run on COCO val2017",
-    )
-    parser.add_argument(
-        "--model",
-        choices=("nano", "segnano", "both"),
-        default="both",
-        help="rf-detr model class to run (default: both)",
-    )
-    parser.add_argument(
-        "--kernel",
-        choices=("bbox", "segm", "boundary", "all"),
-        default="all",
-        help="vernier kernel to decompose against (default: all compatible)",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help="path to write the JSON report (default: stdout)",
-    )
-    return parser.parse_args(argv)
-
-
-def _resolve_cells(
-    model_arg: ModelArg, kernel_arg: KernelArg
-) -> list[tuple[ModelName, KernelName]]:
-    """Expand the ``--model`` x ``--kernel`` cross product into compatible pairs.
-
-    A request like ``--model nano --kernel boundary`` yields nothing
-    (nano has no masks); we surface that as an empty cell list so the
-    caller can exit cleanly with a useful error.
-    """
-    models: tuple[ModelName, ...] = ("nano", "segnano") if model_arg == "both" else (model_arg,)
-    kernels: tuple[KernelName, ...] = (
-        ("bbox", "segm", "boundary") if kernel_arg == "all" else (kernel_arg,)
-    )
-    return [(m, k) for m in models for k in kernels if k in _MODEL_KERNELS[m]]
-
-
-def _coco_val_root() -> Path:
-    """Locate the val2017 cache; abort cleanly if it's not populated.
-
-    Mirrors :func:`tests.python.coco_val_paths.require_coco_val_root_with_images`
-    but raises :class:`SystemExit` instead of calling ``pytest.skip``,
-    since this is a CLI not a test fixture.
-    """
-    root = _coco_cache_dir()
-    gt = root / "instances_val2017.json"
-    images = root / "val2017"
-    if not gt.is_file() or not images.is_dir():
-        raise SystemExit(
-            f"COCO val2017 not found at {root}: need both "
-            f"instances_val2017.json and val2017/ images. "
-            f"Run `./tools/fetch-coco-val.sh --with-images` to populate "
-            f"the cache. Override the path with VERNIER_COCO_CACHE."
-        )
-    return root
 
 
 def _peak_rss_mb() -> float:
@@ -142,7 +63,7 @@ def _run_cell(
     gt_bytes: bytes,
     predictions: bytes,
 ) -> dict[str, Any]:
-    iou = _KERNEL_FACTORIES[kernel_name]()
+    iou = KERNEL_FACTORIES[kernel_name]()
     t0 = time.perf_counter()
     report = vernier.error_decomposition(gt_bytes, predictions, iou=iou)
     elapsed = time.perf_counter() - t0
@@ -185,8 +106,12 @@ def _print_summary(cells: list[dict[str, Any]]) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parse_args(argv)
-    cells = _resolve_cells(args.model, args.kernel)
+    parser = make_arg_parser(
+        "rf-detr TIDE validation run on COCO val2017",
+        kernel_help="vernier kernel to decompose against (default: all compatible)",
+    )
+    args = parser.parse_args(argv)
+    cells = resolve_cells(args.model, args.kernel)
     if not cells:
         print(
             f"no compatible (model, kernel) pairs for --model={args.model} --kernel={args.kernel}",
@@ -194,44 +119,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
 
-    coco_root = _coco_val_root()
-    gt_bytes = (coco_root / "instances_val2017.json").read_bytes()
-    gt_dict = json.loads(gt_bytes)
-    image_dir = coco_root / "val2017"
-    cache_root = predictions_cache_root()
-
-    predictions_by_model: dict[ModelName, bytes] = {}
-    for model_name in {m for m, _ in cells}:
-        print(f"[{model_name}] loading or generating predictions...", file=sys.stderr)
-        predictions_by_model[model_name] = predict_coco_val(
-            model_name=model_name,
-            gt=gt_dict,
-            image_dir=image_dir,
-            cache_path=cache_root / cache_filename(model_name),
-        )
+    gt_bytes, predictions = load_predictions(cells)
 
     results: list[dict[str, Any]] = []
     for model_name, kernel_name in cells:
         print(f"[{model_name}/{kernel_name}] running TIDE...", file=sys.stderr)
-        results.append(
-            _run_cell(
-                model_name,
-                kernel_name,
-                gt_bytes,
-                predictions_by_model[model_name],
-            )
-        )
+        results.append(_run_cell(model_name, kernel_name, gt_bytes, predictions[model_name]))
 
-    payload = {
-        "rfdetr_version": "1.6.5.post0",
-        "dataset": "coco-val2017",
-        "cells": results,
-    }
-    rendered = json.dumps(payload, indent=2)
-    if args.output is not None:
-        args.output.write_text(rendered)
-    else:
-        print(rendered)
+    emit(
+        {
+            "rfdetr_version": "1.6.5.post0",
+            "dataset": "coco-val2017",
+            "cells": results,
+        },
+        args.output,
+    )
     _print_summary(results)
     return 0
 

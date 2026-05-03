@@ -32,12 +32,14 @@
 //! are simply absent). The FFI fills the six known bin keys with `0.0` on
 //! absence so the dict shape stays stable for downstream consumers.
 
+use numpy::IntoPyArray;
+use numpy::ndarray::Array1;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use vernier_core::evaluate::AreaRange;
-use vernier_core::tide::{self, TideErrorBin, TideParams, TideReport};
+use vernier_core::tide::{self, FpIouHistogram, TideErrorBin, TideParams, TideReport};
 use vernier_core::{iou_thresholds, recall_thresholds, CocoDataset, CocoDetections, EvalError, ParityMode};
 
 use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
@@ -210,6 +212,159 @@ pub(crate) fn error_decomposition_boundary<'py>(
             tide::error_decomposition_boundary(gt, dt, params, parity, dilation_ratio)
         },
     )
+}
+
+/// Common per-call plumbing for the FP-IoU histogram entry points
+/// (ADR-0022 `t_b` ratification machinery). Mirrors [`run_tide_pass`]'s
+/// shape — parse parity, copy bytes off the GIL, run the kernel-
+/// specific histogram extractor inside `py.detach`, materialize a
+/// dict.
+#[allow(clippy::too_many_arguments)]
+fn run_fp_histogram_pass<'py, F>(
+    py: Python<'py>,
+    gt_bytes: &Bound<'py, PyBytes>,
+    dt_bytes: &Bound<'py, PyBytes>,
+    parity_mode: &str,
+    t_f: f64,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    kernel_call: F,
+) -> PyResult<Bound<'py, PyDict>>
+where
+    F: FnOnce(&CocoDataset, &CocoDetections, TideParams<'_>, ParityMode)
+            -> Result<FpIouHistogram, EvalError>
+        + Send,
+{
+    let parity = parse_parity_mode(parity_mode)?;
+    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let dt_bytes = dt_bytes.as_bytes().to_vec();
+
+    let mut histogram = py.detach(move || -> PyResult<FpIouHistogram> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        let area_ranges = AreaRange::coco_default();
+        // `t_b` rides along on TideParams but the histogram extractor
+        // ignores it (Bkg cutoff is decided Python-side from the
+        // emitted IoUs); 0.0 keeps the field defined without
+        // implying anything.
+        let params = TideParams {
+            t_f,
+            t_b: 0.0,
+            max_dets_per_image,
+            use_cats,
+            iou_thresholds: iou_thresholds(),
+            recall_thresholds: recall_thresholds(),
+            area_ranges: &area_ranges,
+        };
+        kernel_call(&gt, &dt, params, parity).map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
+
+    histogram_to_dict(py, &mut histogram)
+}
+
+/// FP-IoU histogram for the bbox kernel (ADR-0022).
+///
+/// Returns a dict with parallel `iou_same` / `iou_cross` numpy arrays
+/// (one entry per FP detection — Cls / Loc / Both / Dupe / Bkg, but
+/// not TP and not Ignore), the kernel marker, the `t_f` used to
+/// identify TP / Ignore, the total surviving DT count, and the FP
+/// count. Caller computes the bin-as-Bkg fraction at candidate `t_b`
+/// values from this output (the `t_b` parameter on `error_decomposition_*`
+/// is not consumed here).
+#[pyfunction]
+#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
+pub(crate) fn fp_iou_histogram_bbox<'py>(
+    py: Python<'py>,
+    gt_bytes: &Bound<'py, PyBytes>,
+    dt_bytes: &Bound<'py, PyBytes>,
+    parity_mode: &str,
+    t_f: f64,
+    max_dets_per_image: usize,
+    use_cats: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    run_fp_histogram_pass(
+        py,
+        gt_bytes,
+        dt_bytes,
+        parity_mode,
+        t_f,
+        max_dets_per_image,
+        use_cats,
+        tide::compute_fp_iou_histogram_bbox,
+    )
+}
+
+/// FP-IoU histogram for the segm kernel.
+#[pyfunction]
+#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
+pub(crate) fn fp_iou_histogram_segm<'py>(
+    py: Python<'py>,
+    gt_bytes: &Bound<'py, PyBytes>,
+    dt_bytes: &Bound<'py, PyBytes>,
+    parity_mode: &str,
+    t_f: f64,
+    max_dets_per_image: usize,
+    use_cats: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    run_fp_histogram_pass(
+        py,
+        gt_bytes,
+        dt_bytes,
+        parity_mode,
+        t_f,
+        max_dets_per_image,
+        use_cats,
+        tide::compute_fp_iou_histogram_segm,
+    )
+}
+
+/// FP-IoU histogram for the boundary-segm kernel. `dilation_ratio`
+/// configures the band thickness (ADR-0010 default `0.02` for COCO).
+#[pyfunction]
+#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats, dilation_ratio))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn fp_iou_histogram_boundary<'py>(
+    py: Python<'py>,
+    gt_bytes: &Bound<'py, PyBytes>,
+    dt_bytes: &Bound<'py, PyBytes>,
+    parity_mode: &str,
+    t_f: f64,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    dilation_ratio: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    validate_dilation_ratio(dilation_ratio)?;
+    run_fp_histogram_pass(
+        py,
+        gt_bytes,
+        dt_bytes,
+        parity_mode,
+        t_f,
+        max_dets_per_image,
+        use_cats,
+        move |gt, dt, params, parity| {
+            tide::compute_fp_iou_histogram_boundary(gt, dt, params, parity, dilation_ratio)
+        },
+    )
+}
+
+fn histogram_to_dict<'py>(
+    py: Python<'py>,
+    h: &mut FpIouHistogram,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new(py);
+    // Transfer ownership of the Rust Vecs into the numpy buffers
+    // (`into_pyarray` is zero-copy; `to_pyarray` would copy). On COCO
+    // val with ~100K FPs this saves 1.6 MB × 2 of allocation per call.
+    let iou_same = Array1::from(std::mem::take(&mut h.iou_same)).into_pyarray(py);
+    let iou_cross = Array1::from(std::mem::take(&mut h.iou_cross)).into_pyarray(py);
+    out.set_item("iou_same", iou_same)?;
+    out.set_item("iou_cross", iou_cross)?;
+    out.set_item("kernel", h.kernel.as_str())?;
+    out.set_item("t_f", h.t_f)?;
+    out.set_item("n_total_dts", h.n_total_dts)?;
+    out.set_item("n_fps", h.n_fps)?;
+    Ok(out)
 }
 
 /// Materialize a [`TideReport`] into the Python dict shape pinned in the

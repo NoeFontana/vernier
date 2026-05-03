@@ -40,7 +40,13 @@ from vernier._core import (
     per_pair_to_arrow_pycapsule,
     version,
 )
-from vernier._tide import TideConfig, TideReport, error_decomposition
+from vernier._tide import (
+    FpIouHistogram,
+    TideConfig,
+    TideReport,
+    error_decomposition,
+    fp_iou_histogram,
+)
 from vernier._types import EvalResult, TableName, TablesConfig, normalize_tables_arg
 
 __all__ = [
@@ -51,6 +57,7 @@ __all__ = [
     "Dataset",
     "EvalResult",
     "Evaluator",
+    "FpIouHistogram",
     "IouKind",
     "Keypoints",
     "MemoryBudgetWarning",
@@ -67,6 +74,7 @@ __all__ = [
     "__version__",
     "confusion_matrix",
     "error_decomposition",
+    "fp_iou_histogram",
     "version",
 ]
 

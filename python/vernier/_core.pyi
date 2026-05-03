@@ -324,6 +324,40 @@ def error_decomposition_boundary(
     dilation_ratio: float,
 ) -> _TideReportDict: ...
 
+class _FpIouHistogramDict(TypedDict):
+    iou_same: NDArray[np.float64]
+    iou_cross: NDArray[np.float64]
+    kernel: str
+    t_f: float
+    n_total_dts: int
+    n_fps: int
+
+def fp_iou_histogram_bbox(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    t_f: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _FpIouHistogramDict: ...
+def fp_iou_histogram_segm(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    t_f: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _FpIouHistogramDict: ...
+def fp_iou_histogram_boundary(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    t_f: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+    dilation_ratio: float,
+) -> _FpIouHistogramDict: ...
+
 class _ConfusionMatrixDict(TypedDict):
     gt_class: list[str]
     dt_class: list[str]
