@@ -28,6 +28,11 @@
 //!   [`crate::tables::CrossClassIous`] storage from a dataset and
 //!   detection list. The storage type itself lives next to
 //!   [`crate::tables::RetainedIous`] in [`crate::tables`].
+//! - [`confusion`] — sibling capability
+//!   [`confusion::compute_confusion_matrix`] that consumes the same
+//!   cross-class side-pass output to count `(gt_class, dt_class)`
+//!   pairs across the dataset. Funded by the same pass as
+//!   [`error_decomposition_with`] — one walk, two consumers.
 //! - [`params`] — [`params::TideParams`], the inputs bundle for
 //!   [`error_decomposition_bbox`].
 //! - [`assignment`] — bin-assignment driver
@@ -46,6 +51,7 @@
 
 pub mod assignment;
 pub mod bins;
+pub mod confusion;
 pub mod cross_class;
 pub mod params;
 pub mod report;
@@ -53,6 +59,7 @@ pub mod rewrite;
 
 pub use assignment::{assign_bins, BinAssignment, DtBin, DtBinLabel};
 pub use bins::TideErrorBin;
+pub use confusion::{compute_confusion_matrix, ConfusionMatrixCounts};
 pub use cross_class::compute_cross_class_ious;
 pub use params::TideParams;
 pub use report::{KernelMarker, TideConfig, TideReport};

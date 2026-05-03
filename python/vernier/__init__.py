@@ -14,6 +14,7 @@ from typing import Final, Literal, NoReturn, overload
 
 from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
+from vernier._confusion import confusion_matrix
 from vernier._core import (
     BackgroundEvaluator,
     Dataset,
@@ -64,6 +65,7 @@ __all__ = [
     "TideConfig",
     "TideReport",
     "__version__",
+    "confusion_matrix",
     "error_decomposition",
     "version",
 ]

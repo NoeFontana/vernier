@@ -262,3 +262,36 @@ def error_decomposition_boundary(
     use_cats: bool,
     dilation_ratio: float,
 ) -> _TideReportDict: ...
+
+class _ConfusionMatrixDict(TypedDict):
+    gt_class: list[str]
+    dt_class: list[str]
+    count: list[int]
+    iou_threshold: float
+    kernel: str
+
+def confusion_matrix_bbox(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    iou_threshold: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _ConfusionMatrixDict: ...
+def confusion_matrix_segm(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    iou_threshold: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _ConfusionMatrixDict: ...
+def confusion_matrix_boundary(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    iou_threshold: float,
+    max_dets_per_image: int,
+    use_cats: bool,
+    dilation_ratio: float,
+) -> _ConfusionMatrixDict: ...
