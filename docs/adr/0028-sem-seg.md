@@ -443,7 +443,7 @@ their respective dataset presets.
   bit-equality oracles. The corresponding presets get
   *aligned*-mode parity claims, not strict.
 - **Quirks survey.** New file
-  `docs/engineering/semantic-segmentation-quirks.md`
+  `docs/engineering/sem-seg-quirks.md`
   enumerating the choice points across the three oracles:
   ignore-label semantics, ID remapping, NaN handling for
   classes absent from GT, the
@@ -812,8 +812,11 @@ long-form). Out of scope for this ADR; covered in ADR-0019's
   crate. Architectural precedent; this ADR follows the
   same pattern with one asymmetry (`vernier-semantic`
   depends on `vernier-core`; `vernier-panoptic` does not).
-- `docs/engineering/semantic-segmentation-quirks.md` — the
-  quirks survey ratified by this ADR.
+- ADR-0029 — Namespace restructure. Resolves the B4
+  deferral from this ADR's "Considered options"; the
+  semantic surface lands at `vernier.semantic.Evaluator`.
+- `docs/engineering/sem-seg-quirks.md` — the quirks survey
+  ratified by this ADR.
 - `tests/python/parity_semantic/oracle/VENDORING.md` — to
   be created alongside the implementation; pins
   mmsegmentation, cityscapesScripts, and Pascal/ADE20K
