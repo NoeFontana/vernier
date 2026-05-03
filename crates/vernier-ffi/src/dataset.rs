@@ -114,6 +114,13 @@ impl PyDataset {
     /// violations of quirk **AA7** (a category in both `not_exhaustive`
     /// and `neg`, or a `neg` category that has GT on the same image),
     /// or on missing `frequency` tags (quirk **AB6**).
+    ///
+    /// Migration guide for users coming from `lvis-api`:
+    /// `docs/explanation/lvis-migration.md`. Lead with the silent-
+    /// federated-semantics gotcha — loading LVIS-shaped JSON via
+    /// `Dataset.from_json` (the COCO loader) silently drops the
+    /// federated extras and produces systematically lower AP under
+    /// COCO semantics.
     #[staticmethod]
     fn from_lvis_json(gt_json: &Bound<'_, PyBytes>) -> PyResult<Self> {
         let gt =

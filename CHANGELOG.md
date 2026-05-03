@@ -7,6 +7,31 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+### Added
+
+- **LVIS federated evaluation** (ADR-0026) — long-tail benchmark
+  support landed as modules in `vernier-core`. `Dataset.from_lvis_json`
+  loads per-image `pos`/`neg`/`not_exhaustive_category_ids` and
+  per-category `frequency`; the orchestrator's federated cell-skip
+  (AA4) + `dt_ignore` extension (AA3) flow above the locked spine
+  (ADR-0005, `matching.rs` and `accumulate.rs` unchanged).
+  `Accumulated.summarize_lvis(dataset)` returns the canonical 13-entry
+  plan (`AP`, `AP50`, `AP75`, `APs/m/l`, `APr/c/f`, `AR@300`,
+  `ARs/m/l@300`); `CategoryFilter::{All, Frequency, ByIds}` is the
+  K-axis subset selector behind it. `CocoDetections::lvis_trim`
+  reproduces `LVISResults.limit_dets_per_image` (per-image top-K
+  across all categories, AC2). `Frequency` enum (`r`/`c`/`f`) is the
+  Python-facing tag.
+- **LVIS parity oracle** — `lvis==0.5.3` vendored at
+  `tests/python/parity_lvis/oracle/lvis_api/`; pinned constants in
+  `crates/vernier-core/src/lvis_parity.rs`. Strict-mode bit-equality
+  on the 13-entry summary against `LVISEval` is verified by
+  `just test-parity-lvis-val`.
+- **Migration guide** — `docs/explanation/lvis-migration.md` covers
+  the silent-federated-semantics gotcha, the AF6 sentinel
+  cross-reference (LVIS `-1` vs panoptic `0` vs uninitialized `nan`),
+  and the explicit `max_dets=300` requirement.
+
 ## [0.0.1] — 2026-04-30
 
 First release with code. The placeholder 0.0.0 reservations on
