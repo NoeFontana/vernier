@@ -527,6 +527,18 @@ fn evaluate_grid_with_dataset_impl(
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     let grid = py.detach(move || -> PyResult<EvalGrid> {
         let dt = parse_dt(&dt_bytes)?;
+        // ADR-0026 AC2: federated datasets trim DTs at input time
+        // (mirrors `LVISResults.limit_dets_per_image` at construction).
+        // The trim is a no-op when fewer than `max_dets_per_image`
+        // DTs land on any single image, and is disabled with a
+        // negative cap (AC5).
+        let dt = if snapshot.gt.is_federated() {
+            #[allow(clippy::cast_possible_wrap)]
+            let cap = max_dets_per_image as i64;
+            dt.lvis_trim(cap)
+        } else {
+            dt
+        };
         let caches = snapshot.caches();
         iou_type
             .run_cached(
