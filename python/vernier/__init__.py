@@ -39,6 +39,7 @@ from vernier._core import (
     per_pair_to_arrow_pycapsule,
     version,
 )
+from vernier._tide import TideConfig, TideReport, error_decomposition
 from vernier._types import EvalResult, TableName, TablesConfig, normalize_tables_arg
 
 __all__ = [
@@ -60,7 +61,10 @@ __all__ = [
     "Summary",
     "TableName",
     "TablesConfig",
+    "TideConfig",
+    "TideReport",
     "__version__",
+    "error_decomposition",
     "version",
 ]
 
@@ -345,19 +349,13 @@ class Evaluator:
         dataset = Dataset.from_json(gt)
 
         per_image_batch = (
-            per_image_to_arrow_pycapsule(grid, dataset)
-            if "per_image" in requested
-            else None
+            per_image_to_arrow_pycapsule(grid, dataset) if "per_image" in requested else None
         )
         per_class_batch = (
-            per_class_to_arrow_pycapsule(grid, accum, dataset)
-            if "per_class" in requested
-            else None
+            per_class_to_arrow_pycapsule(grid, accum, dataset) if "per_class" in requested else None
         )
         per_detection_batch = (
-            per_detection_to_arrow_pycapsule(
-                grid, dt, tables_config.per_detection_with_geometry
-            )
+            per_detection_to_arrow_pycapsule(grid, dt, tables_config.per_detection_with_geometry)
             if "per_detection" in requested
             else None
         )
