@@ -1,0 +1,4 @@
+[
+  {"image_id": 1, "category_id": 1, "bbox": [0, 0, 80, 50], "score": 0.9,
+   "segmentation": [[0, 0, 80, 0, 80, 50, 0, 50]]}
+]

@@ -24,8 +24,8 @@
 use std::path::PathBuf;
 
 use vernier_core::{
-    error_decomposition_bbox, iou_thresholds, recall_thresholds, AreaRange, CocoDataset,
-    CocoDetections, ParityMode, TideErrorBin, TideParams,
+    error_decomposition_bbox, error_decomposition_segm, iou_thresholds, recall_thresholds,
+    AreaRange, CocoDataset, CocoDetections, ParityMode, TideErrorBin, TideParams,
 };
 
 const PARITY_TOL: f64 = 1e-9;
@@ -66,6 +66,27 @@ fn run_tide(name: &str) -> vernier_core::TideReport {
     };
     error_decomposition_bbox(&gt, &dt, params, ParityMode::Strict)
         .unwrap_or_else(|e| panic!("error_decomposition_bbox failed on fixture {name}: {e}"))
+}
+
+/// Run the segm TIDE wrapper on a fixture. Mirrors [`run_tide`] but
+/// pins the [`vernier_core::similarity::SegmIou`] kernel via the
+/// `error_decomposition_segm` entry point. Fixtures need to carry
+/// `segmentation` on every GT (and either `segmentation` or — under
+/// strict parity, via the J2 path — a bbox-only DT entry).
+fn run_tide_segm(name: &str) -> vernier_core::TideReport {
+    let (gt, dt) = load_fixture(name);
+    let area_ranges = AreaRange::coco_default();
+    let params = TideParams {
+        t_f: 0.5,
+        t_b: 0.1,
+        max_dets_per_image: 100,
+        use_cats: true,
+        iou_thresholds: iou_thresholds(),
+        recall_thresholds: recall_thresholds(),
+        area_ranges: &area_ranges,
+    };
+    error_decomposition_segm(&gt, &dt, params, ParityMode::Strict)
+        .unwrap_or_else(|e| panic!("error_decomposition_segm failed on fixture {name}: {e}"))
 }
 
 fn delta_or_zero(report: &vernier_core::TideReport, bin: TideErrorBin) -> f64 {
@@ -228,5 +249,81 @@ fn config_carries_resolved_thresholds() {
     assert_eq!(r.config.t_f, 0.5);
     assert_eq!(r.config.t_b, 0.1);
     assert_eq!(r.config.kernel, "bbox");
+    assert!(r.config.cross_class_topk.is_none());
+}
+
+// -- segm kernel parity tests (Week 3) -----------------------------------
+//
+// Each segm fixture's expected ΔmAP is derived in the matching
+// `tests/python/oracle/tide/test_oracle.py::test_segm_*` docstring. The
+// rectangle polygons used in the segm fixtures rasterize to exactly the
+// same pixel set as the bbox covers — both `Rle::from_polygon`
+// (Rust side) and `_rasterize_polygon_axis_aligned` (oracle side) take
+// integer-aligned vertex coords and emit identical masks — so the IoU
+// values feeding the matching engine match the bbox case bit-for-bit.
+
+#[test]
+fn segm_all_perfect_baseline_one_no_deltas() {
+    // From `test_oracle.py::test_segm_all_perfect_baseline_one_and_no_deltas`:
+    // baseline = 1.0, every delta = 0.
+    let r = run_tide_segm("segm_all_perfect");
+    assert_close(r.baseline_map, 1.0, "baseline_map");
+    for bin in [
+        TideErrorBin::Cls,
+        TideErrorBin::Loc,
+        TideErrorBin::Both,
+        TideErrorBin::Dupe,
+        TideErrorBin::Bkg,
+        TideErrorBin::Missed,
+    ] {
+        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
+    }
+    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+}
+
+#[test]
+fn segm_all_loc_isolates_loc_bin() {
+    // From `test_oracle.py::test_segm_all_loc_isolates_loc_bin`:
+    // baseline = 0, delta_loc = 1.0, others = 0, delta_all_fp = 0.
+    let r = run_tide_segm("segm_all_loc");
+    assert_close(r.baseline_map, 0.0, "baseline_map");
+    assert_close(delta_or_zero(&r, TideErrorBin::Loc), 1.0, "delta[loc]");
+    for bin in [
+        TideErrorBin::Cls,
+        TideErrorBin::Both,
+        TideErrorBin::Dupe,
+        TideErrorBin::Bkg,
+        TideErrorBin::Missed,
+    ] {
+        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
+    }
+    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+}
+
+#[test]
+fn segm_all_cls_isolates_cls_bin() {
+    // From `test_oracle.py::test_segm_all_cls_isolates_cls_bin`:
+    // baseline = 0, delta_cls = 1.0, others = 0, delta_all_fp = 0.
+    let r = run_tide_segm("segm_all_cls");
+    assert_close(r.baseline_map, 0.0, "baseline_map");
+    assert_close(delta_or_zero(&r, TideErrorBin::Cls), 1.0, "delta[cls]");
+    for bin in [
+        TideErrorBin::Loc,
+        TideErrorBin::Both,
+        TideErrorBin::Dupe,
+        TideErrorBin::Bkg,
+        TideErrorBin::Missed,
+    ] {
+        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
+    }
+    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+}
+
+#[test]
+fn segm_config_carries_resolved_thresholds() {
+    let r = run_tide_segm("segm_all_perfect");
+    assert_eq!(r.config.t_f, 0.5);
+    assert_eq!(r.config.t_b, 0.1);
+    assert_eq!(r.config.kernel, "segm");
     assert!(r.config.cross_class_topk.is_none());
 }

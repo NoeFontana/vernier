@@ -40,8 +40,9 @@
 //!
 //! ## Status
 //!
-//! Bbox TIDE end-to-end (Week 2). Segm / boundary kernels and the
-//! `mode="per_threshold"` variant are out of scope for this PR.
+//! Bbox TIDE end-to-end (Week 2) plus segm TIDE end-to-end (Week 3).
+//! Boundary kernel and the `mode="per_threshold"` variant remain out
+//! of scope for this PR.
 
 pub mod assignment;
 pub mod bins;
@@ -64,7 +65,7 @@ use crate::dataset::{CocoDataset, CocoDetections};
 use crate::error::EvalError;
 use crate::evaluate::{evaluate_with_retention, EvalKernel, EvaluateParams};
 use crate::parity::ParityMode;
-use crate::similarity::BboxIou;
+use crate::similarity::{BboxIou, SegmIou};
 
 /// End-to-end TIDE error decomposition over an arbitrary
 /// [`EvalKernel`].
@@ -201,6 +202,25 @@ pub fn error_decomposition_bbox(
     parity_mode: ParityMode,
 ) -> Result<TideReport, EvalError> {
     error_decomposition_with(gt, dt, &BboxIou, "bbox", params, parity_mode)
+}
+
+/// End-to-end segm TIDE error decomposition.
+///
+/// Thin wrapper over [`error_decomposition_with`] that pins the
+/// [`SegmIou`] kernel and the canonical `"segm"` kernel-name string.
+/// See the generic entry point's doc for the full algorithm.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation,
+/// accumulate, summarize, and rewrite calls.
+pub fn error_decomposition_segm(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: TideParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<TideReport, EvalError> {
+    error_decomposition_with(gt, dt, &SegmIou, "segm", params, parity_mode)
 }
 
 fn bin_has_work(assignment: &BinAssignment, bin: TideErrorBin) -> bool {

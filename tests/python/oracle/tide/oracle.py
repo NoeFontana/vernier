@@ -5,8 +5,8 @@ implementation is validated against. It is pure numpy / Python with no
 vernier imports. Correctness is pinned by hand-computed assertions on
 small synthetic fixtures (see `test_oracle.py`).
 
-Scope (Week 1):
-    - bbox IoU only
+Scope (Week 3):
+    - bbox IoU and segm IoU (axis-aligned-rectangle polygon rasterization)
     - mode="single": one ``t_f`` for bin assignment
 
 Algorithm summary (canonical, per ADR-0021):
@@ -51,14 +51,28 @@ on ``delta_all_fp_removed`` for those fixtures pins the *exact* value
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 import numpy as np
 
-SimilarityFn: TypeAlias = Callable[[np.ndarray, np.ndarray], np.ndarray]
-"""Pairwise IoU kernel: ``(gts, dts) -> (D, G)`` IoU matrix."""
+SimilarityFn: TypeAlias = Callable[[Sequence[Any], Sequence[Any]], np.ndarray]
+"""Pairwise IoU kernel: ``(gts, dts) -> (D, G)`` IoU matrix.
+
+Both kernels in this module — :func:`bbox_iou` and :func:`segm_iou` — accept
+homogeneous sequences of annotation records (the internal `_GT` / `_DT`
+dataclasses share the public attribute surface kernels read). Each kernel
+reads only the attributes it needs:
+
+- :func:`bbox_iou` reads ``bbox``;
+- :func:`segm_iou` reads ``segmentation`` plus ``image_height`` /
+  ``image_width`` (carried on each annotation by :func:`_normalise`).
+
+The returned matrix is ``(D, G)`` (one row per detection, one column per
+GT) — the orientation :func:`_greedy_match` and the bin-assignment loop
+expect.
+"""
 
 # Canonical 10-point COCO IoU ladder, built via numpy linspace to match
 # pycocotools (and vernier-core) bit-for-bit.
@@ -77,30 +91,32 @@ _IOU_BOUNDARY_EPS: float = 1e-10
 # ---------------------------------------------------------------------------
 
 
-def bbox_iou(gts: np.ndarray, dts: np.ndarray) -> np.ndarray:
-    """Pairwise IoU between GT and DT bbox arrays in COCO ``[x, y, w, h]``.
+def bbox_iou(gts: Sequence[Any], dts: Sequence[Any]) -> np.ndarray:
+    """Pairwise IoU between GT and DT bboxes in COCO ``[x, y, w, h]``.
 
     Args:
-        gts: shape ``(G, 4)``.
-        dts: shape ``(D, 4)``.
+        gts: sequence of annotation records carrying a ``bbox`` attribute.
+        dts: sequence of detection records carrying a ``bbox`` attribute.
 
     Returns:
         shape ``(D, G)`` IoU matrix in row-major order
         (one row per detection, one column per GT) — the orientation
         the bin-assignment loop expects.
     """
-    if gts.size == 0 or dts.size == 0:
-        return np.zeros((dts.shape[0], gts.shape[0]), dtype=np.float64)
-    gt_x1 = gts[:, 0]
-    gt_y1 = gts[:, 1]
-    gt_x2 = gts[:, 0] + gts[:, 2]
-    gt_y2 = gts[:, 1] + gts[:, 3]
-    gt_area = gts[:, 2] * gts[:, 3]
-    dt_x1 = dts[:, 0]
-    dt_y1 = dts[:, 1]
-    dt_x2 = dts[:, 0] + dts[:, 2]
-    dt_y2 = dts[:, 1] + dts[:, 3]
-    dt_area = dts[:, 2] * dts[:, 3]
+    if not gts or not dts:
+        return np.zeros((len(dts), len(gts)), dtype=np.float64)
+    gt_arr = np.array([g.bbox for g in gts], dtype=np.float64).reshape(-1, 4)
+    dt_arr = np.array([d.bbox for d in dts], dtype=np.float64).reshape(-1, 4)
+    gt_x1 = gt_arr[:, 0]
+    gt_y1 = gt_arr[:, 1]
+    gt_x2 = gt_arr[:, 0] + gt_arr[:, 2]
+    gt_y2 = gt_arr[:, 1] + gt_arr[:, 3]
+    gt_area = gt_arr[:, 2] * gt_arr[:, 3]
+    dt_x1 = dt_arr[:, 0]
+    dt_y1 = dt_arr[:, 1]
+    dt_x2 = dt_arr[:, 0] + dt_arr[:, 2]
+    dt_y2 = dt_arr[:, 1] + dt_arr[:, 3]
+    dt_area = dt_arr[:, 2] * dt_arr[:, 3]
     # Broadcast (D, 1) vs (1, G).
     inter_x1 = np.maximum(dt_x1[:, None], gt_x1[None, :])
     inter_y1 = np.maximum(dt_y1[:, None], gt_y1[None, :])
@@ -114,6 +130,130 @@ def bbox_iou(gts: np.ndarray, dts: np.ndarray) -> np.ndarray:
     return out.astype(np.float64, copy=False)
 
 
+def _rasterize_polygon_axis_aligned(
+    polygon: Sequence[float],
+    h: int,
+    w: int,
+) -> np.ndarray:
+    """Rasterize an axis-aligned-rectangle polygon onto an ``(h, w)`` grid.
+
+    The oracle restricts segm fixtures to **axis-aligned rectangles** so the
+    rasterization step is hand-checkable: a polygon ``[x0, y0, x1, y0,
+    x1, y1, x0, y1]`` (any 4-vertex rectangle with two distinct ``x`` and
+    two distinct ``y`` values) becomes the ``[x_min:x_max, y_min:y_max]``
+    slice of a boolean grid. Vertex coords are clipped into ``[0, w] x
+    [0, h]`` and floored to int — the same in-bounds-then-floor convention
+    `Rle::from_polygon` follows for axis-aligned vertices, which keeps the
+    pixel set bit-equal between this oracle and the Rust mask codec for
+    integer-aligned rectangles.
+
+    Raises:
+        ValueError: if the polygon is not a 4-vertex axis-aligned
+            rectangle (covers most non-fixture inputs the harness might
+            accidentally pass through).
+    """
+    pts = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
+    if pts.shape[0] != 4:
+        raise ValueError(
+            f"oracle segm_iou supports 4-vertex axis-aligned-rectangle polygons; "
+            f"got {pts.shape[0]} vertices"
+        )
+    xs = sorted({float(x) for x in pts[:, 0]})
+    ys = sorted({float(y) for y in pts[:, 1]})
+    if len(xs) != 2 or len(ys) != 2:
+        raise ValueError(
+            "oracle segm_iou polygons must be axis-aligned (two distinct "
+            f"xs and ys); got xs={xs}, ys={ys}"
+        )
+    x_min = max(0, int(xs[0]))
+    x_max = min(w, int(xs[1]))
+    y_min = max(0, int(ys[0]))
+    y_max = min(h, int(ys[1]))
+    mask = np.zeros((h, w), dtype=bool)
+    if x_max > x_min and y_max > y_min:
+        mask[y_min:y_max, x_min:x_max] = True
+    return mask
+
+
+def _rasterize_segmentation(
+    segmentation: Sequence[Sequence[float]],
+    h: int,
+    w: int,
+) -> np.ndarray:
+    """Union-rasterize a list of axis-aligned-rectangle polygons.
+
+    COCO's polygon segmentation is a list of polygons; the rendered mask
+    is their pixel-wise union. Multi-polygon GTs are uncommon for the
+    hand-computed fixtures here but the union semantics mirror
+    `Rle::from_polygons` so a future fixture exercising a two-rectangle
+    GT does not need a special path.
+    """
+    mask = np.zeros((h, w), dtype=bool)
+    for poly in segmentation:
+        mask |= _rasterize_polygon_axis_aligned(poly, h, w)
+    return mask
+
+
+def segm_iou(gts: Sequence[Any], dts: Sequence[Any]) -> np.ndarray:
+    """Pairwise segm IoU between GT and DT polygon-mask annotations.
+
+    Implementation choice (per ADR-0021's "easy to hand-compute" criterion):
+    the oracle rasterizes each annotation's COCO polygon onto a small
+    boolean grid and computes intersection-over-union from the binary masks
+    via numpy. The polygon rasterizer is restricted to **axis-aligned
+    rectangles** — every fixture GT/DT segmentation is a single rectangle
+    polygon ``[x0, y0, x1, y0, x1, y1, x0, y1]`` rasterized as
+    ``mask[y0:y1, x0:x1] = True``. This keeps the rasterized pixel set
+    hand-derivable by reading the polygon vertices and matches
+    `Rle::from_polygon` bit-for-bit on integer-aligned rectangles, which
+    is the only shape the parity test asks of either implementation.
+
+    The alternative (RLE decode) was rejected for the oracle because the
+    fixtures emit polygons through the FFI's J2-strict path; rasterizing
+    on the oracle side mirrors what `Rle::from_polygons` does on the Rust
+    side without forcing the fixture authors to hand-encode RLE counts.
+
+    Args:
+        gts: sequence of annotation records carrying ``segmentation``
+            (list of polygons), ``image_height``, and ``image_width``
+            attributes.
+        dts: sequence of detection records with the same surface.
+
+    Returns:
+        shape ``(D, G)`` IoU matrix.
+    """
+    if not gts or not dts:
+        return np.zeros((len(dts), len(gts)), dtype=np.float64)
+
+    # Every annotation in this call must agree on (h, w) — quirk H2's
+    # `corrected` disposition. The oracle inherits the same constraint
+    # because mismatched-size masks aren't comparable. Take the first
+    # GT's (h, w) as authoritative and check the rest.
+    h = int(gts[0].image_height)
+    w = int(gts[0].image_width)
+    for ann in (*gts, *dts):
+        if int(ann.image_height) != h or int(ann.image_width) != w:
+            raise ValueError(
+                f"segm_iou expects all annotations at (h, w) = ({h}, {w}); "
+                f"got ({ann.image_height}, {ann.image_width})"
+            )
+
+    gt_masks = [_rasterize_segmentation(g.segmentation, h, w) for g in gts]
+    dt_masks = [_rasterize_segmentation(d.segmentation, h, w) for d in dts]
+    gt_areas = np.array([m.sum() for m in gt_masks], dtype=np.float64)
+    dt_areas = np.array([m.sum() for m in dt_masks], dtype=np.float64)
+
+    out = np.zeros((len(dts), len(gts)), dtype=np.float64)
+    for d_idx, d_mask in enumerate(dt_masks):
+        for g_idx, g_mask in enumerate(gt_masks):
+            inter = float(np.logical_and(d_mask, g_mask).sum())
+            union = float(gt_areas[g_idx] + dt_areas[d_idx] - inter)
+            if union > 0.0 and inter > 0.0:
+                out[d_idx, g_idx] = inter / union
+            # else leave at 0.0 (matches the Rust kernel's denom-guard).
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Internal cell representation.
 # ---------------------------------------------------------------------------
@@ -121,7 +261,13 @@ def bbox_iou(gts: np.ndarray, dts: np.ndarray) -> np.ndarray:
 
 @dataclass
 class _GT:
-    """Internal ground-truth annotation, normalised from the COCO dict."""
+    """Internal ground-truth annotation, normalised from the COCO dict.
+
+    Carries both ``bbox`` (used by :func:`bbox_iou`) and ``segmentation``
+    + ``image_height`` / ``image_width`` (used by :func:`segm_iou`); each
+    kernel reads only the attributes it needs. ``segmentation`` defaults
+    to an empty list when absent so bbox-only fixtures still load cleanly.
+    """
 
     image_id: int
     category_id: int
@@ -129,17 +275,28 @@ class _GT:
     iscrowd: bool  # COCO crowd flag → ignore in matching
     ignore: bool  # explicit `ignore` flag on the COCO annotation
     ann_id: int  # original COCO annotation id (for stable identity)
+    segmentation: list[list[float]] = field(default_factory=list)
+    image_height: int = 0
+    image_width: int = 0
 
 
 @dataclass
 class _DT:
-    """Internal detection, normalised from the COCO list dict."""
+    """Internal detection, normalised from the COCO list dict.
+
+    Mirrors :class:`_GT`'s public attribute surface (``bbox``,
+    ``segmentation``, ``image_height``, ``image_width``) so the same
+    similarity-function callable can consume either.
+    """
 
     image_id: int
     category_id: int
     bbox: tuple[float, float, float, float]
     score: float
     dt_idx: int  # stable per-call index across the input list
+    segmentation: list[list[float]] = field(default_factory=list)
+    image_height: int = 0
+    image_width: int = 0
 
 
 @dataclass
@@ -341,10 +498,8 @@ def _compute_map(
                 n_pos_gt += int((~gt_ignore).sum()) if gt_ignore.size else 0
                 if not dts_sorted:
                     continue
-                gt_boxes = np.array([g.bbox for g in gts], dtype=np.float64).reshape(-1, 4)
-                dt_boxes = np.array([d.bbox for d in dts_sorted], dtype=np.float64).reshape(-1, 4)
                 dt_scores = np.array([d.score for d in dts_sorted], dtype=np.float64)
-                iou = similarity_fn(gt_boxes, dt_boxes)
+                iou = similarity_fn(gts, dts_sorted)
                 dt_matched, dt_ignore, _ = _greedy_match(iou, dt_scores, gt_ignore, float(t_iou))
                 for d_idx, d in enumerate(dts_sorted):
                     dt_records.append((d.score, bool(dt_matched[d_idx]), bool(dt_ignore[d_idx])))
@@ -434,10 +589,8 @@ def _attribute_bins(
                 continue
             gts_k = [img.gts[i] for i in gt_local_idx]
             gt_ignore_k = np.array([g.iscrowd or g.ignore for g in gts_k], dtype=bool)
-            gt_boxes = np.array([g.bbox for g in gts_k], dtype=np.float64).reshape(-1, 4)
-            dt_boxes = np.array([d.bbox for d in dt_subset], dtype=np.float64).reshape(-1, 4)
             dt_scores = np.array([d.score for d in dt_subset], dtype=np.float64)
-            iou_same = similarity_fn(gt_boxes, dt_boxes)
+            iou_same = similarity_fn(gts_k, dt_subset)
             dt_matched, dt_ignore, gt_matched_by_local = _greedy_match(
                 iou_same, dt_scores, gt_ignore_k, t_f
             )
@@ -457,11 +610,6 @@ def _attribute_bins(
         #   accounted for ignore.
         # iou_cross = best IoU vs different-class same-image GTs.
         # For use_cats=False, iou_cross is always 0 (no other classes).
-        gt_boxes_all = (
-            np.array([g.bbox for g in img.gts], dtype=np.float64).reshape(-1, 4)
-            if img.gts
-            else np.zeros((0, 4))
-        )
         for d in dts_sorted:
             if per_dt_ignore_at_tf.get(d.dt_idx, False):
                 attribution[d.dt_idx] = _BinAttribution(bin="ignore")
@@ -469,10 +617,10 @@ def _attribute_bins(
             if per_dt_matched_at_tf.get(d.dt_idx, False):
                 attribution[d.dt_idx] = _BinAttribution(bin="tp")
                 continue
-            # FP: compute iou_same / iou_cross.
-            dt_box = np.array([d.bbox], dtype=np.float64)
+            # FP: compute iou_same / iou_cross by passing the full per-image
+            # GT list (the kernel handles the (D=1, G=N) shape uniformly).
             ious = (
-                similarity_fn(gt_boxes_all, dt_box)[0]  # (G,)
+                similarity_fn(img.gts, [d])[0]  # (G,)
                 if img.gts
                 else np.zeros(0)
             )
@@ -585,6 +733,9 @@ def _apply_fix(
                         iscrowd=g.iscrowd,
                         ignore=True,
                         ann_id=g.ann_id,
+                        segmentation=g.segmentation,
+                        image_height=g.image_height,
+                        image_width=g.image_width,
                     )
                 )
             else:
@@ -606,7 +757,10 @@ def _apply_fix(
                 continue
             # bin matches the fix.
             if bin_to_fix == "cls":
-                # Relabel to the wrong-class GT's category.
+                # Relabel to the wrong-class GT's category. Geometry
+                # (bbox + segmentation) is unchanged, so the segm kernel
+                # sees the same masks; only the (image, category) cell
+                # the DT lives in changes.
                 tgt_g = img.gts[attr.cross_gt_local_idx]
                 new_dts.append(
                     _DT(
@@ -615,11 +769,16 @@ def _apply_fix(
                         bbox=d.bbox,
                         score=d.score,
                         dt_idx=d.dt_idx,
+                        segmentation=d.segmentation,
+                        image_height=d.image_height,
+                        image_width=d.image_width,
                     )
                 )
             elif bin_to_fix == "loc":
-                # Snap DT bbox to the same-class GT bbox. IoU becomes 1.0
-                # at every threshold — the DT now matches.
+                # Snap DT geometry to the same-class GT's geometry — both
+                # bbox AND segmentation are replaced so segm IoU also
+                # becomes 1.0 at every threshold (matching the bbox-fix
+                # semantics for the segm kernel).
                 tgt_g = img.gts[attr.same_gt_local_idx]
                 new_dts.append(
                     _DT(
@@ -628,6 +787,9 @@ def _apply_fix(
                         bbox=tgt_g.bbox,
                         score=d.score,
                         dt_idx=d.dt_idx,
+                        segmentation=tgt_g.segmentation,
+                        image_height=d.image_height,
+                        image_width=d.image_width,
                     )
                 )
             else:
@@ -644,10 +806,23 @@ def _apply_fix(
 
 
 def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Image], list[int]]:
-    """Convert COCO-format inputs into per-image grouped internal records."""
+    """Convert COCO-format inputs into per-image grouped internal records.
+
+    The image-dimensions table is materialized once and propagated onto
+    every annotation so the segm kernel can rasterize without a second
+    look-up. Polygon segmentations are passed through verbatim (lists of
+    flat coordinate lists per COCO); RLE / compressed-RLE segmentations
+    are intentionally not supported here — every segm fixture uses
+    polygons because the rasterizer (:func:`_rasterize_polygon_axis_aligned`)
+    is restricted to axis-aligned rectangles for hand-computability.
+    """
     cat_ids = sorted({c["id"] for c in gt.get("categories", [])})
+    image_dims: dict[int, tuple[int, int]] = {
+        img["id"]: (int(img.get("height", 0)), int(img.get("width", 0)))
+        for img in gt.get("images", [])
+    }
     by_image: dict[int, _Image] = {
-        img["id"]: _Image(image_id=img["id"]) for img in gt.get("images", [])
+        img_id: _Image(image_id=img_id) for img_id in image_dims
     }
     for ann in gt.get("annotations", []):
         img_id = ann["image_id"]
@@ -656,6 +831,13 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
         bbox = tuple(ann["bbox"])  # type: ignore[assignment]
         if len(bbox) != 4:
             raise ValueError(f"GT ann {ann.get('id')} has bbox of len {len(bbox)} != 4")
+        h, w = image_dims[img_id]
+        seg = ann.get("segmentation") or []
+        if isinstance(seg, dict):
+            raise ValueError(
+                f"GT ann {ann.get('id')}: oracle segm path supports polygon "
+                "segmentation only; got an RLE dict. See `segm_iou` docstring."
+            )
         by_image[img_id].gts.append(
             _GT(
                 image_id=img_id,
@@ -664,6 +846,9 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
                 iscrowd=bool(ann.get("iscrowd", 0)),
                 ignore=bool(ann.get("ignore", 0)),
                 ann_id=ann.get("id", -1),
+                segmentation=list(seg),
+                image_height=h,
+                image_width=w,
             )
         )
     for d_idx, det in enumerate(dt):
@@ -673,6 +858,13 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
         bbox = tuple(det["bbox"])  # type: ignore[assignment]
         if len(bbox) != 4:
             raise ValueError(f"DT #{d_idx} has bbox of len {len(bbox)} != 4")
+        h, w = image_dims[img_id]
+        seg = det.get("segmentation") or []
+        if isinstance(seg, dict):
+            raise ValueError(
+                f"DT #{d_idx}: oracle segm path supports polygon segmentation "
+                "only; got an RLE dict. See `segm_iou` docstring."
+            )
         by_image[img_id].dts.append(
             _DT(
                 image_id=img_id,
@@ -680,6 +872,9 @@ def _normalise(gt: dict[str, Any], dt: list[dict[str, Any]]) -> tuple[list[_Imag
                 bbox=bbox,  # type: ignore[arg-type]
                 score=float(det["score"]),
                 dt_idx=d_idx,
+                segmentation=list(seg),
+                image_height=h,
+                image_width=w,
             )
         )
     images = [by_image[img_id] for img_id in sorted(by_image.keys())]
@@ -702,10 +897,11 @@ def error_decomposition(
         gt: COCO-format ground truth dict with keys ``images``,
             ``annotations``, ``categories``.
         dt: COCO-format detection list (each entry has ``image_id``,
-            ``category_id``, ``bbox`` in xywh, ``score``).
+            ``category_id``, ``bbox`` in xywh, ``score``; for the segm
+            kernel each entry also has ``segmentation``).
         similarity_fn: pairwise IoU kernel ``(gts, dts) -> (D, G)`` IoU
-            matrix. Defaults to `bbox_iou`. The Week-3 segm/boundary
-            lift will accept the corresponding mask kernels here.
+            matrix. Defaults to :func:`bbox_iou`; pass :func:`segm_iou`
+            for the segm kernel.
         t_f: foreground / match threshold (≥ ⇒ TP).
         t_b: background threshold (< ⇒ Bkg).
         max_dets_per_image: per-image DT cap (score-desc), matching
@@ -717,7 +913,10 @@ def error_decomposition(
 
     Returns:
         ``{"baseline_map": ..., "delta": {...}, "delta_all_fp_removed": ...,
-           "config": {"t_f": ..., "t_b": ..., "kernel": "bbox"}}``.
+           "config": {"t_f": ..., "t_b": ..., "kernel": ...}}``.
+        ``config.kernel`` is `"segm"` when ``similarity_fn is segm_iou``
+        and `"bbox"` otherwise — caller-overridden similarity functions
+        get the bbox label as a fallback.
     """
     images, cat_ids = _normalise(gt, dt)
     baseline = _compute_map(
@@ -757,9 +956,10 @@ def error_decomposition(
         max_dets_per_image=max_dets_per_image,
     )
 
+    kernel_name = "segm" if similarity_fn is segm_iou else "bbox"
     return {
         "baseline_map": baseline,
         "delta": deltas,
         "delta_all_fp_removed": fixed_all_fp_map - baseline,
-        "config": {"t_f": t_f, "t_b": t_b, "kernel": "bbox"},
+        "config": {"t_f": t_f, "t_b": t_b, "kernel": kernel_name},
     }

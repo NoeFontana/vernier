@@ -1,13 +1,15 @@
 //! TIDE error decomposition FFI bindings.
 //!
-//! Wraps [`vernier_core::tide::error_decomposition_bbox`] and exposes it
-//! to Python as `vernier._core.error_decomposition_bbox`. By policy, this
-//! module contains only data conversion — the eight-pass orchestration
-//! and the cell-rewrite layer live in [`vernier_core::tide`].
+//! Wraps [`vernier_core::tide::error_decomposition_bbox`] and
+//! [`vernier_core::tide::error_decomposition_segm`] and exposes them to
+//! Python as `vernier._core.error_decomposition_bbox` /
+//! `vernier._core.error_decomposition_segm`. By policy, this module
+//! contains only data conversion — the eight-pass orchestration and the
+//! cell-rewrite layer live in [`vernier_core::tide`].
 //!
 //! ## Output shape
 //!
-//! The Python return is a `dict` with the exact shape the numpy oracle in
+//! Both kernels return a `dict` with the exact shape the numpy oracle in
 //! `tests/python/oracle/tide/oracle.py` produces, so the parity test can
 //! compare bin-for-bin without any field renames:
 //!
@@ -19,7 +21,7 @@
 //!         "dupe": float, "bkg": float, "missed": float,
 //!     },
 //!     "delta_all_fp_removed": float,
-//!     "config": {"t_f": float, "t_b": float, "kernel": "bbox"},
+//!     "config": {"t_f": float, "t_b": float, "kernel": "bbox" | "segm"},
 //! }
 //! ```
 //!
@@ -83,6 +85,59 @@ pub(crate) fn error_decomposition_bbox<'py>(
             area_ranges: &area_ranges,
         };
         tide::error_decomposition_bbox(&gt, &dt, params, parity)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
+
+    report_to_dict(py, &report)
+}
+
+/// TIDE error decomposition for the segm kernel (ADR-0021, Week 3).
+///
+/// Same signature as [`error_decomposition_bbox`] above; the only
+/// per-call difference is the kernel — `gt_bytes` / `dt_bytes` must
+/// carry COCO `segmentation` fields under `iouType="segm"` semantics
+/// (polygon or RLE; the J2-strict path synthesizes a rectangle polygon
+/// from a DT bbox when the DT lacks a `segmentation` field, matching
+/// pycocotools).
+///
+/// ADR-0022 currently defaults segm `t_b` to `0.1` (anchored on the bbox
+/// row pending real-world measurement on COCO val2017 — see the ADR for
+/// the open caveat). Callers who want a different value pass it
+/// explicitly.
+///
+/// Returns the report dict described in the module docstring (with
+/// `config.kernel = "segm"`).
+#[pyfunction]
+#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn error_decomposition_segm<'py>(
+    py: Python<'py>,
+    gt_bytes: &Bound<'py, PyBytes>,
+    dt_bytes: &Bound<'py, PyBytes>,
+    parity_mode: &str,
+    t_f: f64,
+    t_b: f64,
+    max_dets_per_image: usize,
+    use_cats: bool,
+) -> PyResult<Bound<'py, PyDict>> {
+    let parity = parse_parity_mode(parity_mode)?;
+    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let dt_bytes = dt_bytes.as_bytes().to_vec();
+
+    let report = py.detach(move || -> PyResult<TideReport> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = parse_dt(&dt_bytes)?;
+        let area_ranges = AreaRange::coco_default();
+        let params = TideParams {
+            t_f,
+            t_b,
+            max_dets_per_image,
+            use_cats,
+            iou_thresholds: iou_thresholds(),
+            recall_thresholds: recall_thresholds(),
+            area_ranges: &area_ranges,
+        };
+        tide::error_decomposition_segm(&gt, &dt, params, parity)
             .map_err(|e| PyValueError::new_err(format!("{e}")))
     })?;
 
