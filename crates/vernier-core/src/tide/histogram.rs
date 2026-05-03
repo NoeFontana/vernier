@@ -153,12 +153,5 @@ pub fn compute_fp_iou_histogram_boundary(
     dilation_ratio: f64,
 ) -> Result<FpIouHistogram, EvalError> {
     let kernel = BoundaryIou { dilation_ratio };
-    compute_fp_iou_histogram_with(
-        gt,
-        dt,
-        &kernel,
-        KernelMarker::Boundary,
-        params,
-        parity_mode,
-    )
+    compute_fp_iou_histogram_with(gt, dt, &kernel, KernelMarker::Boundary, params, parity_mode)
 }

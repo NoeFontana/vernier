@@ -94,6 +94,15 @@ dev = [
     # ORACLE_OPENCV_PIN in crates/vernier-core/src/boundary_parity.rs; both
     # update atomically. Bumping is ADR-level (see ADR-0010 §"Oracle (E2 + E3)").
     "opencv-python==4.10.0.84",
+    # LVIS reference oracle (ADR-0026). Vendored verbatim under
+    # tests/python/parity_lvis/oracle/lvis_api/ at the same SHA, but
+    # `pip install lvis==0.5.3` is the canonical way users obtain the
+    # package — pinning it here pulls in the matplotlib/numpy
+    # transitive deps the vendored tree imports at module load.
+    # Pin mirrored by ORACLE_LVIS_VERSION in
+    # crates/vernier-core/src/lvis_parity.rs; both update atomically.
+    # Bumping is ADR-level (see ADR-0026 §"Parity strategy").
+    "lvis==0.5.3",
     # Result tables consumer (ADR-0019). polars validates the Arrow
     # PyCapsule round-trip in tests/python/tables/. Available to the
     # `tables` extra for end users; mirrored here so tests can rely on
@@ -127,6 +136,7 @@ extend-exclude = [
     "target",
     ".venv",
     "tests/python/parity_boundary/oracle/boundary_iou_api",
+    "tests/python/parity_lvis/oracle/lvis_api",
     "bench",
 ]
 
@@ -161,6 +171,7 @@ exclude = [
     ".venv",
     # Verbatim vendored upstream — see VENDORING.md alongside.
     "tests/python/parity_boundary/oracle/boundary_iou_api",
+    "tests/python/parity_lvis/oracle/lvis_api",
     # ADR-0017 bench harness — typed independently from its own pyproject.
     "bench",
     # Real-model validation harness — depends on the `real-models` extra
@@ -189,11 +200,13 @@ norecursedirs = [
     ".venv",
     "target",
     "tests/python/parity_boundary/oracle/boundary_iou_api",
+    "tests/python/parity_lvis/oracle/lvis_api",
 ]
 markers = [
     "slow: marks tests as slow (skip with -m 'not slow')",
     "parity: parity tests against the pycocotools reference oracle",
     "parity_boundary: parity tests against the bowenc0221/boundary-iou-api reference oracle",
+    "parity_lvis: parity tests against the lvis-dataset/lvis-api reference oracle (ADR-0026)",
     "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
     "real_models: real-model validation harness (rfdetr) — heavy, opt-in only, skipped unless the real-models extra is installed and VERNIER_COCO_CACHE points at val2017 GT + images",
 ]

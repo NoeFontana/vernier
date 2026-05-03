@@ -2367,22 +2367,13 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         evaluate_keypoints_summary_with_dataset,
         m
     )?)?;
-    m.add_function(wrap_pyfunction!(
-        tables::per_class_to_arrow_pycapsule,
-        m
-    )?)?;
-    m.add_function(wrap_pyfunction!(
-        tables::per_image_to_arrow_pycapsule,
-        m
-    )?)?;
+    m.add_function(wrap_pyfunction!(tables::per_class_to_arrow_pycapsule, m)?)?;
+    m.add_function(wrap_pyfunction!(tables::per_image_to_arrow_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(
         tables::per_detection_to_arrow_pycapsule,
         m
     )?)?;
-    m.add_function(wrap_pyfunction!(
-        tables::per_pair_to_arrow_pycapsule,
-        m
-    )?)?;
+    m.add_function(wrap_pyfunction!(tables::per_pair_to_arrow_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_bbox, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_segm, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_boundary, m)?)?;

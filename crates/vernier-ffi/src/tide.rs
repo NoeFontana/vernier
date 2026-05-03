@@ -32,15 +32,17 @@
 //! are simply absent). The FFI fills the six known bin keys with `0.0` on
 //! absence so the dict shape stays stable for downstream consumers.
 
-use numpy::IntoPyArray;
 use numpy::ndarray::Array1;
+use numpy::IntoPyArray;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use vernier_core::evaluate::AreaRange;
 use vernier_core::tide::{self, FpIouHistogram, TideErrorBin, TideParams, TideReport};
-use vernier_core::{iou_thresholds, recall_thresholds, CocoDataset, CocoDetections, EvalError, ParityMode};
+use vernier_core::{
+    iou_thresholds, recall_thresholds, CocoDataset, CocoDetections, EvalError, ParityMode,
+};
 
 use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
 
@@ -63,8 +65,12 @@ fn run_tide_pass<'py, F>(
     kernel_call: F,
 ) -> PyResult<Bound<'py, PyDict>>
 where
-    F: FnOnce(&CocoDataset, &CocoDetections, TideParams<'_>, ParityMode)
-            -> Result<TideReport, EvalError>
+    F: FnOnce(
+            &CocoDataset,
+            &CocoDetections,
+            TideParams<'_>,
+            ParityMode,
+        ) -> Result<TideReport, EvalError>
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
@@ -231,8 +237,12 @@ fn run_fp_histogram_pass<'py, F>(
     kernel_call: F,
 ) -> PyResult<Bound<'py, PyDict>>
 where
-    F: FnOnce(&CocoDataset, &CocoDetections, TideParams<'_>, ParityMode)
-            -> Result<FpIouHistogram, EvalError>
+    F: FnOnce(
+            &CocoDataset,
+            &CocoDetections,
+            TideParams<'_>,
+            ParityMode,
+        ) -> Result<FpIouHistogram, EvalError>
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
@@ -348,10 +358,7 @@ pub(crate) fn fp_iou_histogram_boundary<'py>(
     )
 }
 
-fn histogram_to_dict<'py>(
-    py: Python<'py>,
-    h: &mut FpIouHistogram,
-) -> PyResult<Bound<'py, PyDict>> {
+fn histogram_to_dict<'py>(py: Python<'py>, h: &mut FpIouHistogram) -> PyResult<Bound<'py, PyDict>> {
     let out = PyDict::new(py);
     // Transfer ownership of the Rust Vecs into the numpy buffers
     // (`into_pyarray` is zero-copy; `to_pyarray` would copy). On COCO

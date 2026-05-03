@@ -296,9 +296,8 @@ fn per_detection_record_batch(
         .collect();
     let keys_arr = Int32Array::from(keys);
     let values_arr: ArrayRef = Arc::new(StringArray::from(MatchStatus::DICT_VALUES.to_vec()));
-    let match_status: ArrayRef = Arc::new(DictionaryArray::<Int32Type>::try_new(
-        keys_arr, values_arr,
-    )?);
+    let match_status: ArrayRef =
+        Arc::new(DictionaryArray::<Int32Type>::try_new(keys_arr, values_arr)?);
 
     let matched_gt_id: ArrayRef = Arc::new(Int64Array::from_iter(
         table.matched_gt_id_at_50.iter().copied(),
@@ -344,7 +343,11 @@ fn per_detection_schema(with_geometry: bool) -> Schema {
     ];
     if with_geometry {
         let item = Arc::new(Field::new("item", DataType::Float64, false));
-        fields.push(Field::new("bbox_xywh", DataType::FixedSizeList(item, 4), false));
+        fields.push(Field::new(
+            "bbox_xywh",
+            DataType::FixedSizeList(item, 4),
+            false,
+        ));
     }
     Schema::new(fields)
 }
@@ -369,13 +372,15 @@ pub(crate) fn per_pair_to_arrow_pycapsule(
     };
     let table = py
         .detach(move || -> Result<PerPairTable, EvalError> {
-            let retained = inner_grid.retained_ious.as_ref().ok_or_else(|| {
-                EvalError::InvalidConfig {
-                    detail: "per_pair requires the upstream grid to have been built with \
+            let retained =
+                inner_grid
+                    .retained_ious
+                    .as_ref()
+                    .ok_or_else(|| EvalError::InvalidConfig {
+                        detail: "per_pair requires the upstream grid to have been built with \
                              retain_iou=True"
-                        .into(),
-                }
-            })?;
+                            .into(),
+                    })?;
             build_per_pair(inner_grid, retained, &cfg)
         })
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;

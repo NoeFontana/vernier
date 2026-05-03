@@ -21,6 +21,7 @@ pub mod breakdown;
 pub mod dataset;
 pub mod error;
 pub mod evaluate;
+pub mod lvis_parity;
 pub mod matching;
 pub mod parity;
 pub mod segmentation;
@@ -44,6 +45,10 @@ pub use evaluate::{
     evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints, evaluate_segm,
     evaluate_segm_cached, evaluate_with, evaluate_with_retention, AreaRange, EvalGrid,
     EvalImageMeta, EvalKernel, EvaluateParams, OwnedEvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
+};
+pub use lvis_parity::{
+    LVIS_BOUNDARY_DILATION_RATIO_DEFAULT, LVIS_DEFAULT_MAX_DETS, LVIS_PARITY_EPS,
+    ORACLE_LVIS_COMMIT_SHA, ORACLE_LVIS_VERSION, ORACLE_PYCOCOTOOLS_PIN,
 };
 pub use matching::{match_image, MatchResult};
 pub use parity::{iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, PARITY_EPS};

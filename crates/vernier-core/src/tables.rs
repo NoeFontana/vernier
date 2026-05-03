@@ -247,7 +247,11 @@ pub fn build_per_class(
     }
     if n_m != max_dets.len() {
         return Err(EvalError::DimensionMismatch {
-            detail: format!("precision M-axis {} != max_dets len {}", n_m, max_dets.len()),
+            detail: format!(
+                "precision M-axis {} != max_dets len {}",
+                n_m,
+                max_dets.len()
+            ),
         });
     }
     if r_shape[0] != n_t || r_shape[1] != n_k || r_shape[2] != n_a || r_shape[3] != n_m {
@@ -442,7 +446,10 @@ fn find_max_dets_index(max_dets: &[usize], target: usize) -> Result<usize, EvalE
 ///
 /// Out-of-range `area_index_all` (typically `0` for the COCO
 /// detection grid) yields an all-zero support struct.
-pub fn aggregate_per_class_support(grid: &crate::EvalGrid, area_index_all: usize) -> PerClassSupport {
+pub fn aggregate_per_class_support(
+    grid: &crate::EvalGrid,
+    area_index_all: usize,
+) -> PerClassSupport {
     let mut support = PerClassSupport::zeros(grid.n_categories);
     if area_index_all >= grid.n_area_ranges {
         return support;
@@ -460,9 +467,7 @@ pub fn aggregate_per_class_support(grid: &crate::EvalGrid, area_index_all: usize
                         .try_into()
                         .unwrap_or(u32::MAX),
                 );
-                n_dt = n_dt.saturating_add(
-                    cell.dt_scores.len().try_into().unwrap_or(u32::MAX),
-                );
+                n_dt = n_dt.saturating_add(cell.dt_scores.len().try_into().unwrap_or(u32::MAX));
             }
         }
         support.n_gt[k] = n_gt;
@@ -987,7 +992,9 @@ pub fn build_per_detection(
                 let det = det_index.get(&dt_id);
                 area.push(det.map(|d| d.area).unwrap_or(f64::NAN));
                 if with_geometry {
-                    let b = det.map(|d| d.bbox).unwrap_or_else(|| Bbox::from([f64::NAN; 4]));
+                    let b = det
+                        .map(|d| d.bbox)
+                        .unwrap_or_else(|| Bbox::from([f64::NAN; 4]));
                     bbox_xywh.push([b.x, b.y, b.w, b.h]);
                 }
 
@@ -1572,8 +1579,7 @@ mod tests {
             retained_ious: None,
         };
         let dataset = dataset_with_two_categories();
-        let err =
-            build_per_image(&grid, &dataset, crate::parity::iou_thresholds()).unwrap_err();
+        let err = build_per_image(&grid, &dataset, crate::parity::iou_thresholds()).unwrap_err();
         assert!(matches!(err, EvalError::DimensionMismatch { .. }));
     }
 
@@ -1699,14 +1705,10 @@ mod tests {
             n_area_ranges: grid_off.n_area_ranges,
             n_images: grid_off.n_images,
         };
-        let acc_off =
-            crate::accumulate(&grid_off.eval_imgs, p, ParityMode::Corrected).unwrap();
-        let acc_on =
-            crate::accumulate(&grid_on.eval_imgs, p, ParityMode::Corrected).unwrap();
-        let sum_off =
-            crate::summarize_detection(&acc_off, iou_thresholds(), &max_dets).unwrap();
-        let sum_on =
-            crate::summarize_detection(&acc_on, iou_thresholds(), &max_dets).unwrap();
+        let acc_off = crate::accumulate(&grid_off.eval_imgs, p, ParityMode::Corrected).unwrap();
+        let acc_on = crate::accumulate(&grid_on.eval_imgs, p, ParityMode::Corrected).unwrap();
+        let sum_off = crate::summarize_detection(&acc_off, iou_thresholds(), &max_dets).unwrap();
+        let sum_on = crate::summarize_detection(&acc_on, iou_thresholds(), &max_dets).unwrap();
         for (a, b) in sum_off.stats().iter().zip(sum_on.stats().iter()) {
             assert_eq!(a.to_bits(), b.to_bits(), "stat drift: off={a} on={b}");
         }
@@ -1777,7 +1779,10 @@ mod tests {
         .unwrap_err();
         let msg = format!("{err}");
         assert!(matches!(err, EvalError::InvalidConfig { .. }));
-        assert!(msg.contains("retain_iou"), "error must name retain_iou: {msg}");
+        assert!(
+            msg.contains("retain_iou"),
+            "error must name retain_iou: {msg}"
+        );
     }
 
     #[test]
@@ -1787,8 +1792,7 @@ mod tests {
         // 3rd push. The check happens before the column grows past
         // the cap (per ADR landmine #4).
         let mut store = RetainedIous::new();
-        let iou = ndarray::Array2::<f64>::from_shape_vec((2, 2), vec![0.5, 0.6, 0.7, 0.8])
-            .unwrap();
+        let iou = ndarray::Array2::<f64>::from_shape_vec((2, 2), vec![0.5, 0.6, 0.7, 0.8]).unwrap();
         store.insert(0, 0, iou);
         let grid = EvalGrid {
             eval_imgs: vec![None],
@@ -1813,7 +1817,13 @@ mod tests {
             ..TablesConfig::default()
         };
         let err = build_per_pair(&grid, &store, &cfg).unwrap_err();
-        assert!(matches!(err, EvalError::PerPairOverflow { observed: 3, cap: 2 }));
+        assert!(matches!(
+            err,
+            EvalError::PerPairOverflow {
+                observed: 3,
+                cap: 2
+            }
+        ));
     }
 
     #[test]
@@ -1821,8 +1831,7 @@ mod tests {
         // Same matrix as the overflow test but with floor=0.65 — keeps
         // [0.7, 0.8] pairs only.
         let mut store = RetainedIous::new();
-        let iou = ndarray::Array2::<f64>::from_shape_vec((2, 2), vec![0.5, 0.6, 0.7, 0.8])
-            .unwrap();
+        let iou = ndarray::Array2::<f64>::from_shape_vec((2, 2), vec![0.5, 0.6, 0.7, 0.8]).unwrap();
         store.insert(0, 0, iou);
         let grid = EvalGrid {
             eval_imgs: vec![None],
