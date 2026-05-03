@@ -1,7 +1,8 @@
 # ADR-0026: Add LVIS federated evaluation in `vernier-core`
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-03
+- **Accepted on:** 2026-05-03
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
@@ -420,11 +421,40 @@ boundary M–Q, and panoptic R–Z.
 
 ### Open questions
 
-Each is a ~30-minute fixture; resolved by follow-up commits before the ADR is **accepted**.
+The list below was the pre-acceptance gate; every entry was a
+~30-minute fixture and is **resolved** in the implementation rollout
+(PRs #114–#119). The acceptance status is recorded inline; the
+ADR is now `accepted`.
 
-1. **AC2 trim observability.** Construct a fixture with 500 predictions on one image (one category), run `LVISResults` and vernier's `CocoDetections::lvis_trim`; assert byte-equal annotation lists. Hash-pin the shared shape independently of the eval result.
-2. **AC3 cross-class crowding (corrected premise).** Construct a fixture with one image, 250 cat-A and 350 cat-B predictions. Confirm both `LVISResults` and vernier trim to **300 total** (top-300 across both classes by score). The earlier draft of this question expected 250 + 300 = 550 — that was the wrong reading of the trim semantics.
-3. **AA7 federated conflict observability.** Hand-construct a malformed JSON where category `C` is in *both* `not_exhaustive[I]` and `neg[I]`. Run both: vernier raises (corrected), lvis-api silently picks `not_exhaustive` (strict). Pin both modes; corrected is the default.
-4. **AB6 missing-frequency on partial datasets.** Construct a dataset where 80% of categories have `frequency` and 20% don't. Confirm lvis-api raises mid-eval (`KeyError` on first miss); vernier raises at load with the full list of missing categories (more debuggable).
-5. **AF6 sentinel-vs-zero migration trap.** Three fixtures: stuff-only panoptic (AP = 0.0 per ADR-0025 W6 corrected), frequent-only LVIS (AP_r = -1 per AF6), and an uninitialized read (`nan`). Document the three sentinels in the migration guide.
-6. **AH6 pycocotools pin compatibility.** Cross-check that the latest `lvis` release transitively pins `pycocotools==2.0.11` (vernier's ADR-0002 oracle). If not: (a) accept the drift and re-run the pycocotools parity harness against the LVIS-pinned version, or (b) pin to an older `lvis` that ships with `2.0.11`. Resolve before the LVIS oracle vendoring lands.
+1. **AC2 trim observability — RESOLVED (PR #118).** `tests/python/parity_lvis/test_lvis_trim.py::test_q1_500_single_category_dts_trim_to_300` plus the Rust unit test `dataset::tests::ac2_q1_trims_500_single_category_to_300` pin byte-equal trim output against `LVISResults` for a 500-DT single-category fixture.
+2. **AC3 cross-class crowding — RESOLVED (PR #118).** `test_q2_cross_class_crowding_trims_to_300_total` and the Rust counterpart `ac3_q2_cross_class_crowding_keeps_300_total_across_classes` confirm 250 cat-A + 350 cat-B detections trim to **300 total** (the corrected reading from the appendix). The well-separated-scores fixture in `test_lvis_trim_uses_well_separated_scores_for_strict_membership` pins strict membership equality.
+3. **AA7 federated conflict — RESOLVED (PR #115).** `test_aa7_pos_intersect_neg_raises` and `test_aa7_not_exhaustive_outside_pos_raises` plus the Rust `dataset::tests::aa7_*` tests lock in the corrected disjointness validation; `LvisFederatedConflict { image_id, category_id, detail }` surfaces the offender pair with a typed error.
+4. **AB6 missing-frequency on partial datasets — RESOLVED (PR #115).** `test_ab6_missing_frequency_collects_all_offenders` and `dataset::tests::ab6_missing_frequency_collects_all_offenders` assert that vernier collects **all** missing-`frequency` categories and surfaces them in one sorted `MissingFrequency { category_ids }` error at load time.
+5. **AF6 sentinel-vs-zero migration trap — RESOLVED (PR #117).** `test_q5_af6_lvis_minus_one_sentinel_on_empty_frequency_bucket` plus the Rust unit tests `summarize::tests::af6_empty_frequency_bucket_returns_minus_one_not_zero_or_nan` and `ab6_no_frequency_map_yields_minus_one_for_frequency_filtered_lines` pin the LVIS `-1` distinct from the panoptic ADR-0025 W6 corrected `0.0` and from the uninitialized `nan`. The cross-codebase contract is documented in `docs/explanation/lvis-migration.md` (PR #120).
+6. **AH6 pycocotools pin compatibility — RESOLVED (PR #114).** `lvis==0.5.3` declares no `pycocotools` requirement in its package metadata (verified via `importlib.metadata.requires('lvis')`); the oracle imports `pycocotools.mask` opportunistically and coexists cleanly with vernier's `pycocotools==2.0.11` (ADR-0002). The fallback ("pin older `lvis`") is unnecessary; `ORACLE_PYCOCOTOOLS_PIN` in `crates/vernier-core/src/lvis_parity.rs` mirrors `pyproject.toml`'s pin.
+
+### Implementation rollout
+
+The seven-PR rollout from `/home/dev/.claude/plans/imperative-drifting-toucan.md`:
+
+- PR-1 #114 — Vendor `lvis-api` oracle + `lvis_parity` constants.
+- PR-2 #115 — Federated metadata fields on `CocoDataset` + `from_lvis_json`.
+- PR-3 #116 — Orchestrator cell-skip (AA4) + `not_exhaustive` `dt_ignore` (AA3).
+- PR-4 #117 — `CategoryFilter` + `lvis_default()` 13-entry plan.
+- PR-5 #118 — `CocoDetections::lvis_trim` per-image top-K (AC2/AC3/AC4/AC5).
+- PR-6 #119 — LVIS v1 val parity smoke + `lvis_val_cache`.
+- PR-7 #120 — Migration guide + this ADR's acceptance.
+
+ADR-0005 invariant (no edits to `matching.rs`, `accumulate.rs`, or
+`similarity/`) was preserved across every PR; verifiable via
+`git diff --stat 28254b8..af7d74a -- crates/vernier-core/src/{matching,accumulate}.rs crates/vernier-core/src/similarity/` (empty).
+
+### Known follow-up
+
+The dense `Vec<Option<PerImageEval>>` orchestrator grid is
+load-bearing in the matching path but allocates ~232 bytes per
+`(category, area, image)` slot regardless of whether the cell is
+populated. On full LVIS v1 val (1203 * 4 * 19809 ~= 95M slots),
+peak resident exceeds 22 GB. PR-6's val smoke subsamples to 1000
+images by default; sparse cell storage is the perf push tracked
+outside this ADR.
