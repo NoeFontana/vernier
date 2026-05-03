@@ -17,11 +17,13 @@
 //!   property side-effect on the evaluator.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::ops::Range;
 
 use ndarray::Axis;
 
 use crate::accumulate::Accumulated;
+use crate::dataset::{CategoryId, Frequency};
 use crate::error::EvalError;
 
 /// Tolerance for matching a user-supplied IoU threshold to a value in
@@ -170,6 +172,46 @@ pub enum MaxDetSelector {
     Value(usize),
 }
 
+/// K-axis subset selector (ADR-0026 D2). Filters which categories
+/// contribute to a [`StatRequest`]'s mean.
+///
+/// Frequency buckets are *not* a [`crate::Breakdown`] axis — they
+/// are a category-subset selector, the K-axis equivalent of an area
+/// bucket. The discriminated form keeps frequency-keyed (LVIS) and
+/// id-keyed (per-supercategory, ablation subsets) intents cleanly
+/// separated; the resolution to a list of K indices happens at
+/// summarize time once the K-axis ordering is known.
+///
+/// Only [`CategoryFilter::All`] is supported by the standard
+/// [`summarize_with`] entry point; the [`Frequency`] and
+/// [`ByIds`](Self::ByIds) variants require the K-axis context (the
+/// list of `CategoryId`s in axis order, plus the per-category
+/// frequency map for [`Frequency`](Self::Frequency)) and route through
+/// [`summarize_with_lvis`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CategoryFilter {
+    /// No filter — every category contributes (the COCO default).
+    All,
+    /// Include only categories whose [`Frequency`] tag matches. Quirk
+    /// **AB3**: empty after the [`-1`-sentinel](mean_slice) drop yields
+    /// `-1.0`, not `0.0` or `nan` (lvis-api's `eval.py:441-442`).
+    Frequency(Frequency),
+    /// Explicit subset: include only categories whose id is in the
+    /// list. Sorted ascending for stable membership tests; duplicates
+    /// are ignored.
+    ByIds(Vec<CategoryId>),
+}
+
+impl CategoryFilter {
+    /// `true` if this filter requires the K-axis context (frequency
+    /// map or id ordering) — i.e., everything except [`Self::All`].
+    /// Used by [`summarize_with`] to reject filters it cannot
+    /// resolve.
+    pub fn needs_lvis_context(&self) -> bool {
+        !matches!(self, Self::All)
+    }
+}
+
 /// One line of a summary plan — describes a single mean to compute.
 #[derive(Debug, Clone)]
 pub struct StatRequest {
@@ -184,12 +226,16 @@ pub struct StatRequest {
     pub area: AreaRng,
     /// How to pick the M-axis entry.
     pub max_dets: MaxDetSelector,
+    /// K-axis subset (ADR-0026 D2). Defaults to
+    /// [`CategoryFilter::All`] for COCO-shape plans; LVIS plans use
+    /// [`CategoryFilter::Frequency`] for the AP_r/c/f buckets.
+    pub category_filter: CategoryFilter,
 }
 
 impl StatRequest {
     /// Convenience constructor. `const`-callable so [`coco_detection_default`]
     /// and downstream user-defined plans can be assembled in `const`
-    /// contexts.
+    /// contexts. Defaults `category_filter` to [`CategoryFilter::All`].
     ///
     /// [`coco_detection_default`]: Self::coco_detection_default
     pub const fn new(
@@ -203,6 +249,28 @@ impl StatRequest {
             iou_threshold,
             area,
             max_dets,
+            category_filter: CategoryFilter::All,
+        }
+    }
+
+    /// Construct with a non-default [`CategoryFilter`] in one shot.
+    /// `const`-callable for the [`Frequency`](CategoryFilter::Frequency)
+    /// and [`All`](CategoryFilter::All) variants;
+    /// [`ByIds`](CategoryFilter::ByIds) carries a heap-allocated
+    /// `Vec<CategoryId>` and is constructed at runtime.
+    pub const fn new_with_filter(
+        metric: Metric,
+        iou_threshold: Option<f64>,
+        area: AreaRng,
+        max_dets: MaxDetSelector,
+        category_filter: CategoryFilter,
+    ) -> Self {
+        Self {
+            metric,
+            iou_threshold,
+            area,
+            max_dets,
+            category_filter,
         }
     }
 
@@ -226,6 +294,67 @@ impl StatRequest {
             Self::new(AverageRecall, None, AreaRng::SMALL, Largest),
             Self::new(AverageRecall, None, AreaRng::MEDIUM, Largest),
             Self::new(AverageRecall, None, AreaRng::LARGE, Largest),
+        ]
+    }
+
+    /// The canonical 13-entry LVIS detection plan (ADR-0026 AF1, AF4),
+    /// in the LVIS `print_results` order:
+    ///
+    /// `[AP, AP50, AP75, APs, APm, APl, APr, APc, APf,
+    ///   AR@300, ARs@300, ARm@300, ARl@300]`
+    ///
+    /// Differences from [`Self::coco_detection_default`]:
+    ///
+    /// - **9 AP entries vs 6.** Three additional rows (APr/APc/APf)
+    ///   filter the K-axis by [`Frequency`] tag. `lvis-api` reports
+    ///   them as separate entries, not `Breakdown` axes (ADR-0016
+    ///   `f64`-keyed type doesn't fit categorical tags).
+    /// - **4 AR entries vs 6.** No `AR@1` / `AR@10` / `AR@100` —
+    ///   LVIS reports recall at `max_dets=300` only (AF4). The
+    ///   `Largest` selector resolves to whatever the user passes;
+    ///   pair the plan with `max_dets=[300]` for parity with
+    ///   `LVISEval`.
+    ///
+    /// `Frequency`-filtered entries route through
+    /// [`summarize_with_lvis`]; calling [`summarize_with`] on this
+    /// plan returns [`EvalError::InvalidConfig`] (the plain entry
+    /// point has no K-axis context).
+    pub const fn lvis_default() -> [Self; 13] {
+        use CategoryFilter::{All as AllK, Frequency as FreqK};
+        use MaxDetSelector::Largest;
+        use Metric::{AveragePrecision, AverageRecall};
+        [
+            Self::new_with_filter(AveragePrecision, None, AreaRng::ALL, Largest, AllK),
+            Self::new_with_filter(AveragePrecision, Some(0.5), AreaRng::ALL, Largest, AllK),
+            Self::new_with_filter(AveragePrecision, Some(0.75), AreaRng::ALL, Largest, AllK),
+            Self::new_with_filter(AveragePrecision, None, AreaRng::SMALL, Largest, AllK),
+            Self::new_with_filter(AveragePrecision, None, AreaRng::MEDIUM, Largest, AllK),
+            Self::new_with_filter(AveragePrecision, None, AreaRng::LARGE, Largest, AllK),
+            Self::new_with_filter(
+                AveragePrecision,
+                None,
+                AreaRng::ALL,
+                Largest,
+                FreqK(Frequency::Rare),
+            ),
+            Self::new_with_filter(
+                AveragePrecision,
+                None,
+                AreaRng::ALL,
+                Largest,
+                FreqK(Frequency::Common),
+            ),
+            Self::new_with_filter(
+                AveragePrecision,
+                None,
+                AreaRng::ALL,
+                Largest,
+                FreqK(Frequency::Frequent),
+            ),
+            Self::new_with_filter(AverageRecall, None, AreaRng::ALL, Largest, AllK),
+            Self::new_with_filter(AverageRecall, None, AreaRng::SMALL, Largest, AllK),
+            Self::new_with_filter(AverageRecall, None, AreaRng::MEDIUM, Largest, AllK),
+            Self::new_with_filter(AverageRecall, None, AreaRng::LARGE, Largest, AllK),
         ]
     }
 
@@ -320,6 +449,67 @@ pub fn summarize_with(
     iou_thresholds: &[f64],
     max_dets: &[usize],
 ) -> Result<Summary, EvalError> {
+    summarize_dispatch(accum, plan, iou_thresholds, max_dets, None)
+}
+
+/// LVIS variant of [`summarize_with`] that resolves
+/// [`CategoryFilter::Frequency`] / [`CategoryFilter::ByIds`] against
+/// the K-axis context (ADR-0026 D2).
+///
+/// `category_ids` lists the dataset's categories in K-axis order
+/// (id-ascending — the same ordering the orchestrator at
+/// `evaluate.rs:701-707` uses). `category_frequency` is the
+/// per-category tag from the LVIS JSON (quirk **AB1**); pass `None`
+/// to opt out of frequency-based filtering, in which case any
+/// [`CategoryFilter::Frequency`] entry yields `-1.0` (the AP-undefined
+/// sentinel — quirk **AB6**, also the migration-guide's note for
+/// COCO datasets that don't carry frequency tags).
+///
+/// # Errors
+///
+/// Same error surface as [`summarize_with`], plus
+/// [`EvalError::InvalidConfig`] when `category_ids.len()` does not
+/// match the K-axis size of `accum.precision`.
+pub fn summarize_with_lvis(
+    accum: &Accumulated,
+    plan: &[StatRequest],
+    iou_thresholds: &[f64],
+    max_dets: &[usize],
+    category_ids: &[CategoryId],
+    category_frequency: Option<&HashMap<CategoryId, Frequency>>,
+) -> Result<Summary, EvalError> {
+    let n_k = accum.precision.shape()[2];
+    if category_ids.len() != n_k {
+        return Err(EvalError::InvalidConfig {
+            detail: format!(
+                "category_ids len {} != precision K-axis {n_k}",
+                category_ids.len()
+            ),
+        });
+    }
+    let ctx = LvisCtx {
+        category_ids,
+        category_frequency,
+    };
+    summarize_dispatch(accum, plan, iou_thresholds, max_dets, Some(&ctx))
+}
+
+/// Internal context bundle for the LVIS K-axis resolution. Carrying it
+/// as an `Option` lets [`summarize_with`] and [`summarize_with_lvis`]
+/// share the body without exposing a fifth public parameter on the
+/// COCO path.
+struct LvisCtx<'a> {
+    category_ids: &'a [CategoryId],
+    category_frequency: Option<&'a HashMap<CategoryId, Frequency>>,
+}
+
+fn summarize_dispatch(
+    accum: &Accumulated,
+    plan: &[StatRequest],
+    iou_thresholds: &[f64],
+    max_dets: &[usize],
+    lvis: Option<&LvisCtx<'_>>,
+) -> Result<Summary, EvalError> {
     let p_shape = accum.precision.shape();
     let r_shape = accum.recall.shape();
     let n_t = p_shape[0];
@@ -353,8 +543,9 @@ pub fn summarize_with(
     // request fails early without wasting evaluation work, and the
     // compute pass below stays infallible.
     let n_a = p_shape[3];
+    let n_k = p_shape[2];
     let m_max = max_dets.len() - 1;
-    let resolved: Vec<(usize, Range<usize>)> = plan
+    let resolved: Vec<(usize, Range<usize>, Option<Vec<bool>>)> = plan
         .iter()
         .map(|req| {
             if req.area.index >= n_a {
@@ -387,15 +578,23 @@ pub fn summarize_with(
                     t..(t + 1)
                 }
             };
-            Ok((m_idx, t_range))
+            let k_mask = resolve_category_filter(&req.category_filter, n_k, lvis)?;
+            Ok((m_idx, t_range, k_mask))
         })
         .collect::<Result<Vec<_>, EvalError>>()?;
 
     let lines = plan
         .iter()
         .zip(resolved)
-        .map(|(req, (m_idx, t_range))| {
-            let value = mean_slice(accum, req.metric, t_range, req.area.index, m_idx);
+        .map(|(req, (m_idx, t_range, k_mask))| {
+            let value = mean_slice(
+                accum,
+                req.metric,
+                t_range,
+                req.area.index,
+                m_idx,
+                k_mask.as_deref(),
+            );
             StatLine {
                 metric: req.metric,
                 iou_threshold: req.iou_threshold,
@@ -409,54 +608,137 @@ pub fn summarize_with(
     Ok(Summary { lines })
 }
 
+/// Resolve a [`CategoryFilter`] to a K-axis bool mask of length `n_k`.
+/// Returns `None` for [`CategoryFilter::All`] (the no-op — equivalent
+/// to a mask of all `true`s), and `Some(mask)` for the filtered
+/// variants.
+///
+/// Errors when a non-`All` filter is encountered without an LVIS
+/// context (the standard [`summarize_with`] entry point — its error
+/// message points users at [`summarize_with_lvis`]).
+fn resolve_category_filter(
+    filter: &CategoryFilter,
+    n_k: usize,
+    lvis: Option<&LvisCtx<'_>>,
+) -> Result<Option<Vec<bool>>, EvalError> {
+    match filter {
+        CategoryFilter::All => Ok(None),
+        CategoryFilter::Frequency(target) => {
+            let Some(ctx) = lvis else {
+                return Err(EvalError::InvalidConfig {
+                    detail: "CategoryFilter::Frequency requires summarize_with_lvis".to_string(),
+                });
+            };
+            let Some(freq_map) = ctx.category_frequency else {
+                // AB6 migration-guide note: dataset has no frequency
+                // tags. AP_r/c/f can't be computed; the request
+                // resolves to "no K passes", which mean_slice maps
+                // to the `-1` sentinel.
+                return Ok(Some(vec![false; n_k]));
+            };
+            Ok(Some(
+                ctx.category_ids
+                    .iter()
+                    .map(|cid| freq_map.get(cid).is_some_and(|f| f == target))
+                    .collect(),
+            ))
+        }
+        CategoryFilter::ByIds(ids) => {
+            let Some(ctx) = lvis else {
+                return Err(EvalError::InvalidConfig {
+                    detail: "CategoryFilter::ByIds requires summarize_with_lvis".to_string(),
+                });
+            };
+            let allow: std::collections::HashSet<&CategoryId> = ids.iter().collect();
+            Ok(Some(
+                ctx.category_ids
+                    .iter()
+                    .map(|cid| allow.contains(cid))
+                    .collect(),
+            ))
+        }
+    }
+}
+
 /// Mean of an `Accumulated` slice, filtering out the `-1` sentinel
-/// (quirks **C5/L6**). Returns `-1.0` if every cell in the slice is
-/// the sentinel (mirrors pycocotools' `if len(s[s>-1])==0: -1`).
+/// (quirks **C5/L6**) and optionally masking out K-axis indices that
+/// the request's [`CategoryFilter`] excludes (ADR-0026 D2). Returns
+/// `-1.0` if every surviving cell is the sentinel (mirrors
+/// pycocotools' `if len(s[s>-1])==0: -1`; quirk **AF6**: stays at
+/// `-1`, never collapses to `0` or `nan`).
 ///
 /// The sum is computed via numpy-compatible pairwise summation
 /// ([`pairwise_sum`]) so the result is bit-identical to
-/// `np.mean(s[s>-1])` for the same input ordering.
+/// `np.mean(s[s>-1])` for the same input ordering. The K-axis mask
+/// is applied **before** the sentinel drop and the mean — matching
+/// lvis-api `eval.py:444`'s `s[s>-1]` shape on a frequency-filtered
+/// slice.
 ///
-/// Infallible: callers must validate `t_range`, `area_idx`, and `m_idx`
-/// against the `Accumulated`'s shape upfront (see [`summarize_with`]).
+/// `k_mask`: `None` is the COCO no-op (every K passes); `Some(mask)`
+/// includes only K-axis indices where `mask[k] == true`. The mask
+/// length must equal the K-axis size; the caller (resolved in
+/// [`resolve_category_filter`]) guarantees this.
+///
+/// Infallible: callers must validate `t_range`, `area_idx`, and
+/// `m_idx` against the `Accumulated`'s shape upfront (see
+/// [`summarize_with`]).
 fn mean_slice(
     accum: &Accumulated,
     metric: Metric,
     t_range: Range<usize>,
     area_idx: usize,
     m_idx: usize,
+    k_mask: Option<&[bool]>,
 ) -> f64 {
     let t_count = t_range.len();
+    let n_k = accum.precision.shape()[2];
     let cap = match metric {
-        Metric::AveragePrecision => {
-            t_count * accum.precision.shape()[1] * accum.precision.shape()[2]
-        }
-        Metric::AverageRecall => t_count * accum.recall.shape()[1],
+        Metric::AveragePrecision => t_count * accum.precision.shape()[1] * n_k,
+        Metric::AverageRecall => t_count * n_k,
     };
     let mut filtered: Vec<f64> = Vec::with_capacity(cap);
-    let mut push = |v: f64| {
+    let push_if = |filtered: &mut Vec<f64>, v: f64| {
         if v > -1.0 {
             filtered.push(v);
         }
     };
     for t in t_range {
         match metric {
-            Metric::AveragePrecision => accum
-                .precision
-                .index_axis(Axis(0), t)
-                .index_axis(Axis(2), area_idx)
-                .index_axis(Axis(2), m_idx)
-                .iter()
-                .copied()
-                .for_each(&mut push),
-            Metric::AverageRecall => accum
-                .recall
-                .index_axis(Axis(0), t)
-                .index_axis(Axis(1), area_idx)
-                .index_axis(Axis(1), m_idx)
-                .iter()
-                .copied()
-                .for_each(&mut push),
+            Metric::AveragePrecision => {
+                // Slice T → (R, K, A, M); pick A and M → (R, K). The
+                // intermediate axis-views have to live in `let`
+                // bindings so the final `(R, K)` view borrows them
+                // long enough to index — the chained-call form
+                // dropped the inner views before `plane` was used.
+                let p_t = accum.precision.index_axis(Axis(0), t);
+                let p_ta = p_t.index_axis(Axis(2), area_idx);
+                let plane = p_ta.index_axis(Axis(2), m_idx);
+                // Walking R-major preserves the same sum order numpy
+                // uses on a `(R, K)` slice — the K-mask filter just
+                // skips columns the user opted out of.
+                let n_r = plane.shape()[0];
+                for r in 0..n_r {
+                    for k in 0..n_k {
+                        if k_mask.is_some_and(|m| !m[k]) {
+                            continue;
+                        }
+                        push_if(&mut filtered, plane[(r, k)]);
+                    }
+                }
+            }
+            Metric::AverageRecall => {
+                // recall is (T, K, A, M); slice T → (K, A, M); pick A
+                // and M → (K,). One value per K.
+                let r_t = accum.recall.index_axis(Axis(0), t);
+                let r_ta = r_t.index_axis(Axis(1), area_idx);
+                let plane = r_ta.index_axis(Axis(1), m_idx);
+                for k in 0..n_k {
+                    if k_mask.is_some_and(|m| !m[k]) {
+                        continue;
+                    }
+                    push_if(&mut filtered, plane[k]);
+                }
+            }
         }
     }
     if filtered.is_empty() {
@@ -824,5 +1106,265 @@ mod tests {
         assert_eq!(pairwise_sum(&v), 10.0);
         assert_eq!(pairwise_sum(&[]), 0.0);
         assert_eq!(pairwise_sum(&[42.0]), 42.0);
+    }
+
+    // -- ADR-0026: lvis_default plan and CategoryFilter dispatch --------------
+
+    /// Synthesize a `(T, R, K, A, M)` precision tensor + matching
+    /// recall and counts for unit-testing the K-axis filter. The
+    /// shape parameters mirror lvis-api's typical run: T=10, R=101,
+    /// A=4, M=1.
+    fn fake_accumulated(n_k: usize, precision_per_k: &[f64], recall_per_k: &[f64]) -> Accumulated {
+        const N_T: usize = 10;
+        const N_R: usize = 101;
+        const N_A: usize = 4;
+        const N_M: usize = 1;
+        assert_eq!(precision_per_k.len(), n_k);
+        assert_eq!(recall_per_k.len(), n_k);
+        let mut precision = Array5::<f64>::from_elem((N_T, N_R, n_k, N_A, N_M), 0.0);
+        let mut recall = Array4::<f64>::from_elem((N_T, n_k, N_A, N_M), 0.0);
+        for k in 0..n_k {
+            // Fill every cell on the K-axis with the same constant so
+            // mean(s[s>-1]) trivially equals that constant; sentinels
+            // (`-1`) on whole-K rows fall through to the AF6 path.
+            for t in 0..N_T {
+                for r in 0..N_R {
+                    for a in 0..N_A {
+                        for m in 0..N_M {
+                            precision[(t, r, k, a, m)] = precision_per_k[k];
+                        }
+                    }
+                }
+                for a in 0..N_A {
+                    for m in 0..N_M {
+                        recall[(t, k, a, m)] = recall_per_k[k];
+                    }
+                }
+            }
+        }
+        Accumulated {
+            precision,
+            recall,
+            scores: Array5::<f64>::from_elem((N_T, N_R, n_k, N_A, N_M), 0.0),
+        }
+    }
+
+    #[test]
+    fn lvis_default_has_13_entries_in_canonical_order() {
+        let plan = StatRequest::lvis_default();
+        assert_eq!(plan.len(), 13, "AF1: 9 AP + 4 AR");
+        // First 6 are AP across the COCO area buckets (no freq filter).
+        for (i, req) in plan.iter().take(6).enumerate() {
+            assert_eq!(req.metric, Metric::AveragePrecision, "row {i}");
+            assert_eq!(req.category_filter, CategoryFilter::All, "row {i}");
+        }
+        // Rows 6/7/8: APr/APc/APf — ALL area, frequency filter set.
+        for (i, expected) in [Frequency::Rare, Frequency::Common, Frequency::Frequent]
+            .iter()
+            .enumerate()
+        {
+            let req = &plan[6 + i];
+            assert_eq!(req.metric, Metric::AveragePrecision);
+            assert_eq!(req.area.index, AreaRng::ALL.index);
+            assert_eq!(
+                req.category_filter,
+                CategoryFilter::Frequency(*expected),
+                "row {}: AP{}",
+                6 + i,
+                expected_letter(*expected),
+            );
+        }
+        // Rows 9..13: AR@300 across all four area buckets, no freq filter.
+        for (i, area_idx) in [
+            AreaRng::ALL.index,
+            AreaRng::SMALL.index,
+            AreaRng::MEDIUM.index,
+            AreaRng::LARGE.index,
+        ]
+        .iter()
+        .enumerate()
+        {
+            let req = &plan[9 + i];
+            assert_eq!(req.metric, Metric::AverageRecall);
+            assert_eq!(req.area.index, *area_idx);
+            assert_eq!(req.category_filter, CategoryFilter::All);
+            assert_eq!(req.max_dets, MaxDetSelector::Largest);
+        }
+    }
+
+    fn expected_letter(f: Frequency) -> char {
+        match f {
+            Frequency::Rare => 'r',
+            Frequency::Common => 'c',
+            Frequency::Frequent => 'f',
+        }
+    }
+
+    #[test]
+    fn summarize_with_rejects_frequency_filter_on_coco_path() {
+        // The plain `summarize_with` entry point has no K-axis context;
+        // a Frequency-filtered plan must surface an InvalidConfig that
+        // points the caller at summarize_with_lvis.
+        let accum = fake_accumulated(3, &[1.0, 1.0, 1.0], &[1.0, 1.0, 1.0]);
+        let plan = StatRequest::lvis_default();
+        let err = summarize_with(&accum, &plan, iou_thresholds(), &[300]).unwrap_err();
+        match err {
+            EvalError::InvalidConfig { detail } => {
+                assert!(detail.contains("summarize_with_lvis"), "msg: {detail}");
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn summarize_with_lvis_routes_frequency_buckets_correctly() {
+        // 3 categories: cat 1 = Frequent (precision 0.6), cat 2 =
+        // Common (0.4), cat 3 = Rare (0.2). AP_r/c/f must equal each
+        // bucket's per-K precision; AP overall = (0.6+0.4+0.2)/3.
+        let accum = fake_accumulated(3, &[0.6, 0.4, 0.2], &[0.6, 0.4, 0.2]);
+        let cat_ids = [CategoryId(1), CategoryId(2), CategoryId(3)];
+        let mut freq_map = HashMap::new();
+        freq_map.insert(CategoryId(1), Frequency::Frequent);
+        freq_map.insert(CategoryId(2), Frequency::Common);
+        freq_map.insert(CategoryId(3), Frequency::Rare);
+
+        let plan = StatRequest::lvis_default();
+        let summary = summarize_with_lvis(
+            &accum,
+            &plan,
+            iou_thresholds(),
+            &[300],
+            &cat_ids,
+            Some(&freq_map),
+        )
+        .unwrap();
+
+        // Index 6/7/8 → APr/APc/APf.
+        let apr = summary.lines[6].value;
+        let apc = summary.lines[7].value;
+        let apf = summary.lines[8].value;
+        assert!((apr - 0.2).abs() < 1e-12, "APr expected 0.2, got {apr}");
+        assert!((apc - 0.4).abs() < 1e-12, "APc expected 0.4, got {apc}");
+        assert!((apf - 0.6).abs() < 1e-12, "APf expected 0.6, got {apf}");
+        // Index 0 → AP overall.
+        let ap = summary.lines[0].value;
+        let expected = (0.6 + 0.4 + 0.2) / 3.0;
+        assert!((ap - expected).abs() < 1e-12, "AP overall: {ap}");
+    }
+
+    #[test]
+    fn ab3_filters_minus_one_sentinels_before_mean() {
+        // Mix two categories: one with positive precision, one with
+        // the `-1` sentinel (a category that produced no eval_imgs
+        // entries). The AP overall must equal the positive value
+        // alone — the sentinel falls out of the mean.
+        let accum = fake_accumulated(2, &[-1.0, 0.5], &[-1.0, 0.5]);
+        let cat_ids = [CategoryId(1), CategoryId(2)];
+        let mut freq_map = HashMap::new();
+        freq_map.insert(CategoryId(1), Frequency::Rare);
+        freq_map.insert(CategoryId(2), Frequency::Frequent);
+        let summary = summarize_with_lvis(
+            &accum,
+            &StatRequest::lvis_default(),
+            iou_thresholds(),
+            &[300],
+            &cat_ids,
+            Some(&freq_map),
+        )
+        .unwrap();
+        // AP overall: only cat 2 contributes (cat 1 is `-1`).
+        assert!((summary.lines[0].value - 0.5).abs() < 1e-12);
+        // APr: cat 1 is the only Rare category — and it's `-1`, so
+        // the bucket is empty after filtering. AF6: returns `-1.0`.
+        assert_eq!(summary.lines[6].value, -1.0, "APr empty bucket → -1");
+        // APf: cat 2 is the only Frequent category, value 0.5.
+        assert!((summary.lines[8].value - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn af6_empty_frequency_bucket_returns_minus_one_not_zero_or_nan() {
+        // Three Frequent categories, no Rare or Common. APr and APc
+        // must both surface the `-1` sentinel, distinct from the
+        // panoptic ADR-0025 W6 corrected behavior (returns `0.0`)
+        // and from numpy's `nan` on an unfiltered empty mean.
+        let accum = fake_accumulated(3, &[0.7, 0.8, 0.9], &[0.7, 0.8, 0.9]);
+        let cat_ids = [CategoryId(1), CategoryId(2), CategoryId(3)];
+        let mut freq_map = HashMap::new();
+        freq_map.insert(CategoryId(1), Frequency::Frequent);
+        freq_map.insert(CategoryId(2), Frequency::Frequent);
+        freq_map.insert(CategoryId(3), Frequency::Frequent);
+        let summary = summarize_with_lvis(
+            &accum,
+            &StatRequest::lvis_default(),
+            iou_thresholds(),
+            &[300],
+            &cat_ids,
+            Some(&freq_map),
+        )
+        .unwrap();
+        // AP overall: mean of 0.7/0.8/0.9 = 0.8.
+        assert!((summary.lines[0].value - 0.8).abs() < 1e-12);
+        // APr / APc: empty K filter → -1.0 (not 0.0, not nan).
+        assert_eq!(summary.lines[6].value, -1.0, "APr");
+        assert_eq!(summary.lines[7].value, -1.0, "APc");
+        assert!(!summary.lines[6].value.is_nan(), "AF6: never nan");
+        assert!(summary.lines[6].value != 0.0, "AF6: never 0.0");
+    }
+
+    #[test]
+    fn ab6_no_frequency_map_yields_minus_one_for_frequency_filtered_lines() {
+        // The dataset doesn't carry frequency tags (the COCO loader
+        // path on an LVIS-shaped JSON, or a programmatically built
+        // dataset). Frequency-filtered entries gracefully surface
+        // the `-1` sentinel — quirk **AB6** corrected (no panic).
+        let accum = fake_accumulated(2, &[0.5, 0.5], &[0.5, 0.5]);
+        let cat_ids = [CategoryId(1), CategoryId(2)];
+        let summary = summarize_with_lvis(
+            &accum,
+            &StatRequest::lvis_default(),
+            iou_thresholds(),
+            &[300],
+            &cat_ids,
+            None,
+        )
+        .unwrap();
+        assert!((summary.lines[0].value - 0.5).abs() < 1e-12, "AP overall");
+        assert_eq!(summary.lines[6].value, -1.0, "APr without freq map");
+        assert_eq!(summary.lines[7].value, -1.0, "APc without freq map");
+        assert_eq!(summary.lines[8].value, -1.0, "APf without freq map");
+    }
+
+    #[test]
+    fn category_filter_by_ids_subsets_correctly() {
+        // ByIds filter: include only cat 2 → AP equals cat 2's
+        // per-K precision regardless of the other categories.
+        let accum = fake_accumulated(3, &[0.1, 0.5, 0.9], &[0.1, 0.5, 0.9]);
+        let cat_ids = [CategoryId(1), CategoryId(2), CategoryId(3)];
+        let plan = vec![StatRequest::new_with_filter(
+            Metric::AveragePrecision,
+            None,
+            AreaRng::ALL,
+            MaxDetSelector::Largest,
+            CategoryFilter::ByIds(vec![CategoryId(2)]),
+        )];
+        let summary =
+            summarize_with_lvis(&accum, &plan, iou_thresholds(), &[300], &cat_ids, None).unwrap();
+        assert!((summary.lines[0].value - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn category_axis_size_mismatch_is_typed_error() {
+        let accum = fake_accumulated(2, &[0.5, 0.5], &[0.5, 0.5]);
+        let cat_ids = [CategoryId(1), CategoryId(2), CategoryId(3)]; // wrong length
+        let err = summarize_with_lvis(
+            &accum,
+            &StatRequest::lvis_default(),
+            iou_thresholds(),
+            &[300],
+            &cat_ids,
+            None,
+        )
+        .unwrap_err();
+        assert!(matches!(err, EvalError::InvalidConfig { .. }));
     }
 }

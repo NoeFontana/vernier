@@ -41,10 +41,11 @@ use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 use vernier_core::{
     accumulate, evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints,
     evaluate_segm, evaluate_segm_cached, iou_thresholds, recall_thresholds, sort_max_dets,
-    summarize_detection, summarize_with, AccumulateParams, Accumulated, AreaRange, BboxIou,
-    BoundaryIou, CocoDataset, CocoDetections, EvalError, EvalGrid, EvalImageMeta, EvaluateParams,
-    MemoryBudget, OksSimilarity, OwnedEvaluateParams, ParityMode, ParsedDetections, PerImageEval,
-    SegmIou, StatRequest, StreamingEvaluator, Summary, UpdateReport,
+    summarize_detection, summarize_with, summarize_with_lvis, AccumulateParams, Accumulated,
+    AreaRange, BboxIou, BoundaryIou, CocoDataset, CocoDetections, EvalDataset, EvalError, EvalGrid,
+    EvalImageMeta, EvaluateParams, MemoryBudget, OksSimilarity, OwnedEvaluateParams, ParityMode,
+    ParsedDetections, PerImageEval, SegmIou, StatRequest, StreamingEvaluator, Summary,
+    UpdateReport,
 };
 
 mod background;
@@ -286,6 +287,48 @@ impl PyAccumulated {
                 SummarizePlan::Keypoints => {
                     summarize_with(acc, &StatRequest::coco_keypoints_default(), iou_thr, &dets)
                 }
+            })
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok(PySummary { inner: summary })
+    }
+
+    /// Summarize this accumulator with the canonical LVIS 13-entry
+    /// plan (ADR-0026 AF1, AF4). Routes the K-axis Frequency filter
+    /// through the dataset's federated metadata
+    /// (`category_frequency`); a non-federated `Dataset` yields `-1`
+    /// on every `AP_r`/`AP_c`/`AP_f` entry (quirk **AB6**) and
+    /// vernier-rate AP/AR on the others.
+    ///
+    /// `max_dets` defaults to the ladder this accumulator was built
+    /// with; pass `[300]` (or pair with an `evaluate_*_grid` call
+    /// using `max_dets_per_image=300`) for byte-identity with
+    /// `LVISEval`.
+    #[pyo3(signature = (gt, max_dets=None))]
+    fn summarize_lvis(
+        &self,
+        py: Python<'_>,
+        gt: &PyDataset,
+        max_dets: Option<Vec<usize>>,
+    ) -> PyResult<PySummary> {
+        let mut dets = max_dets.unwrap_or_else(|| self.max_dets.clone());
+        require_nonempty_max_dets(&dets)?;
+        sort_max_dets(&mut dets);
+        let acc = &self.inner;
+        let iou_thr = iou_thresholds();
+        let dataset = gt.dataset_ref();
+        let summary = py
+            .detach(move || -> Result<vernier_core::Summary, EvalError> {
+                let mut category_ids: Vec<vernier_core::CategoryId> =
+                    dataset.categories().iter().map(|c| c.id).collect();
+                category_ids.sort_unstable_by_key(|c| c.0);
+                summarize_with_lvis(
+                    acc,
+                    &StatRequest::lvis_default(),
+                    iou_thr,
+                    &dets,
+                    &category_ids,
+                    dataset.category_frequency(),
+                )
             })
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Ok(PySummary { inner: summary })

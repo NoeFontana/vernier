@@ -63,8 +63,8 @@ pub use stream::{
     UpdateReport,
 };
 pub use summarize::{
-    summarize_detection, summarize_with, AreaRng, MaxDetSelector, Metric, StatLine, StatRequest,
-    Summary,
+    summarize_detection, summarize_with, summarize_with_lvis, AreaRng, CategoryFilter,
+    MaxDetSelector, Metric, StatLine, StatRequest, Summary,
 };
 pub use tables::{
     aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,

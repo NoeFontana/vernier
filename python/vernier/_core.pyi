@@ -172,6 +172,11 @@ class Accumulated:
         *,
         plan: Literal["detection", "keypoints"] | None = ...,
     ) -> Summary: ...
+    def summarize_lvis(
+        self,
+        gt: Dataset,
+        max_dets: list[int] | None = ...,
+    ) -> Summary: ...
 
 class Dataset:
     @staticmethod
