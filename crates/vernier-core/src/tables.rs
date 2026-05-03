@@ -727,6 +727,95 @@ impl RetainedIous {
     }
 }
 
+/// Per-image cross-class IoU matrices and the parallel category-index
+/// vectors that label each row/column.
+///
+/// Per ADR-0023, this is the side-pass output the TIDE Cls/Both bin
+/// assignment and the confusion-matrix capability both consume:
+/// IoU(DT_class_A, GT_class_B) for every `(A, B)` pair on a given
+/// image, materialized once per call.
+///
+/// Keyed by `image_idx` — the position of the image in the
+/// id-ascending ordering used by [`crate::evaluate_with`]. For each
+/// populated image:
+///
+/// - `inner[i]` is the dense `(D_total, G_total)` IoU matrix produced
+///   by the kernel on the un-class-filtered per-image lists.
+/// - `dt_classes[i]` carries the category index per row, in the same
+///   order as the matrix's row axis.
+/// - `gt_classes[i]` carries the category index per column.
+///
+/// The "category index" is the position of the category in the
+/// deterministic id-ascending category ordering [`crate::evaluate_with`]
+/// uses for its `K` axis — the same indexing the rest of the spine
+/// reasons in. It is *not* the COCO category id.
+///
+/// Distinct from [`RetainedIous`]: that store carries same-class IoU
+/// keyed `(category_index, image_index)` for the result-tables
+/// product, whereas this store carries the cross-class matrix keyed
+/// purely by image. The two have different consumers and different
+/// keying; they are deliberately not unified (per ADR-0023).
+///
+/// Images with no GTs and no DTs are absent from the maps.
+#[derive(Debug, Clone, Default)]
+pub struct CrossClassIous {
+    inner: HashMap<usize, Array2<f64>>,
+    dt_classes: HashMap<usize, Vec<usize>>,
+    gt_classes: HashMap<usize, Vec<usize>>,
+}
+
+impl CrossClassIous {
+    /// Construct an empty store.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Number of images with retained cross-class data.
+    pub fn len(&self) -> usize {
+        self.inner.len()
+    }
+
+    /// True when no images are retained.
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+
+    /// Insert (or overwrite) the cross-class IoU matrix and the
+    /// parallel category-index vectors for `image_idx`.
+    ///
+    /// `iou.shape() == (dt_classes.len(), gt_classes.len())` is
+    /// expected by every accessor; callers that violate this will
+    /// observe inconsistent reads but no panic.
+    pub(crate) fn insert(
+        &mut self,
+        image_idx: usize,
+        iou: Array2<f64>,
+        dt_classes: Vec<usize>,
+        gt_classes: Vec<usize>,
+    ) {
+        self.inner.insert(image_idx, iou);
+        self.dt_classes.insert(image_idx, dt_classes);
+        self.gt_classes.insert(image_idx, gt_classes);
+    }
+
+    /// Borrow the cross-class IoU matrix for `image_idx`, if present.
+    /// Rows index DTs (in the [`Self::dt_classes`] order); columns
+    /// index GTs (in the [`Self::gt_classes`] order).
+    pub fn get(&self, image_idx: usize) -> Option<ArrayView2<'_, f64>> {
+        self.inner.get(&image_idx).map(|m| m.view())
+    }
+
+    /// Borrow the per-row DT category indices for `image_idx`.
+    pub fn dt_classes(&self, image_idx: usize) -> Option<&[usize]> {
+        self.dt_classes.get(&image_idx).map(Vec::as_slice)
+    }
+
+    /// Borrow the per-column GT category indices for `image_idx`.
+    pub fn gt_classes(&self, image_idx: usize) -> Option<&[usize]> {
+        self.gt_classes.get(&image_idx).map(Vec::as_slice)
+    }
+}
+
 /// Match status for a detection at a given IoU threshold.
 ///
 /// Arrow-encoded as `dictionary<utf8>` with entries pinned to

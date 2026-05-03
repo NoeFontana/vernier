@@ -28,6 +28,7 @@ pub mod similarity;
 pub mod stream;
 pub mod summarize;
 pub mod tables;
+pub mod tide;
 
 pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, PerImageEval};
 pub use boundary_parity::{
@@ -41,8 +42,8 @@ pub use dataset::{
 pub use error::EvalError;
 pub use evaluate::{
     evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints, evaluate_segm,
-    evaluate_segm_cached, evaluate_with, AreaRange, EvalGrid, EvalImageMeta, EvalKernel,
-    EvaluateParams, OwnedEvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
+    evaluate_segm_cached, evaluate_with, evaluate_with_retention, AreaRange, EvalGrid,
+    EvalImageMeta, EvalKernel, EvaluateParams, OwnedEvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
 };
 pub use matching::{match_image, MatchResult};
 pub use parity::{iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, PARITY_EPS};
@@ -61,10 +62,11 @@ pub use summarize::{
 };
 pub use tables::{
     aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
-    build_per_pair, build_tables, BboxColumns, MatchStatus, PerClassSupport, PerClassTable,
-    PerDetectionTable, PerImageTable, PerPairTable, RetainedIous, Tables, TablesConfig,
-    TablesRequest,
+    build_per_pair, build_tables, BboxColumns, CrossClassIous, MatchStatus, PerClassSupport,
+    PerClassTable, PerDetectionTable, PerImageTable, PerPairTable, RetainedIous, Tables,
+    TablesConfig, TablesRequest,
 };
+pub use tide::{compute_cross_class_ious, TideConfig, TideErrorBin, TideReport};
 
 /// Library version string. Useful for parity tracing in fixtures and for
 /// debugging mismatches between Rust and Python sides of the FFI boundary.
