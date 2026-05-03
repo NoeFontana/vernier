@@ -44,6 +44,8 @@ Decision Records). To propose a new ADR:
 | 0025 | Add panoptic-quality evaluation as a sibling crate | accepted |
 | 0026 | Add LVIS federated evaluation in `vernier-core` | accepted |
 | 0027 | Documentation framework — Diátaxis on `mkdocs-material`, code-tested, gated in CI | accepted |
+| 0028 | Add semantic segmentation evaluation as a `vernier-semantic` sibling crate | proposed |
+| 0029 | Restructure public Python API into per-paradigm submodules | proposed |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
