@@ -51,6 +51,22 @@ Default cache dir: `<repo>/.cache/coco-val2017/` (gitignored).
    script (`e8c7f790…b6f`) so a corrupted or substituted download
    fails loudly.
 
+   For inference harnesses that also need pixels (e.g. the
+   real-model TIDE validation in
+   `tests/python/integration/real_models/tide/`), pass
+   `--with-images`:
+
+   ```bash
+   ./tools/fetch-coco-val.sh --with-images
+   ```
+
+   This adds `val2017.zip` to the same canonical-CDN download
+   (~778 MB zipped, ~6.2 GB extracted) and unpacks it into
+   `<cache>/val2017/`. Image bytes aren't SHA-pinned (their bytes
+   don't affect parity claims; only the GT's do); the integrity
+   check is the canonical 5000-image count after extraction.
+   Skipping the flag keeps the parity smoke's footprint small.
+
 2. **Provide a detector predictions JSON.** Two paths:
 
    - **Synthetic 'perfect' DT (smoke).** `fetch-coco-val.sh` calls

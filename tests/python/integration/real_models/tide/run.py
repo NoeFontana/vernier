@@ -114,8 +114,8 @@ def _coco_val_root() -> Path:
         raise SystemExit(
             f"COCO val2017 not found at {root}: need both "
             f"instances_val2017.json and val2017/ images. "
-            f"Run ./tools/fetch-coco-val.sh and place val2017/ images "
-            f"alongside the GT JSON. Override the path with VERNIER_COCO_CACHE."
+            f"Run `./tools/fetch-coco-val.sh --with-images` to populate "
+            f"the cache. Override the path with VERNIER_COCO_CACHE."
         )
     return root
 
