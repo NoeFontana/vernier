@@ -69,12 +69,13 @@ pub const PANOPTIC_IOU_THRESHOLD: f64 = 0.5;
 /// at `proc_id=0` and demands bit-equality (eps unused there).
 ///
 /// Placeholder value `1e-9` matches the magnitude of the LVIS and
-/// boundary-IoU eps constants. Final value pinned by ADR-0025 open
-/// question 6 in PR-6 of the rollout, by measuring max ULP distance
-/// between `pq_compute_single_core` and `pq_compute_multi_core` for
-/// `cpu_count ∈ {2, 4, 8}` on COCO panoptic val. When that lands, both
-/// this constant and `VENDORING.md` update atomically; the unit test
-/// below catches drift.
+/// boundary-IoU eps constants. Final value pinned by measuring max
+/// ULP distance between `pq_compute_single_core` and
+/// `pq_compute_multi_core` for `cpu_count ∈ {2, 4, 8}` on COCO
+/// panoptic val (procedure documented in
+/// `tests/python/parity_panoptic/panoptic_val_paths.py`). When that
+/// measurement lands, both this constant and `VENDORING.md` update
+/// atomically; the unit test below catches drift.
 pub const PANOPTIC_PARITY_EPS: f64 = 1e-9;
 
 /// Frozen commit SHA of the vendored `cocodataset/panopticapi`
@@ -132,11 +133,11 @@ mod tests {
 
     #[test]
     fn parity_eps_matches_placeholder_magnitude() {
-        // Placeholder until PR-6 of the ADR-0025 rollout pins the
-        // val-measured value. Same magnitude as the boundary-IoU and
-        // LVIS aligned-mode tolerances. PR-6 will replace this exact
-        // bit-pattern check with the measured ULP ceiling on COCO
-        // panoptic val.
+        // Same magnitude as the boundary-IoU and LVIS aligned-mode
+        // tolerances. The val-measured ULP ceiling on COCO panoptic
+        // val replaces this exact bit-pattern check once the
+        // measurement procedure in
+        // `tests/python/parity_panoptic/panoptic_val_paths.py` runs.
         assert_eq!(PANOPTIC_PARITY_EPS, 1e-9);
     }
 

@@ -37,6 +37,13 @@ Decision Records). To propose a new ADR:
 | 0018 | Calibration metrics for modern detection architectures   | proposed |
 | 0019 | Result tables — opt-in, Arrow-backed, zero-overhead by default | proposed |
 | 0020 | Parsed-once `Dataset` handle as the GT-side derivation cache | proposed |
+| 0021 | TIDE error decomposition — NumPy oracle as the correctness model | proposed |
+| 0022 | TIDE thresholds and per-kernel defaults | proposed |
+| 0023 | Cross-class IoU as an orchestrator-level side pass | proposed |
+| 0024 | TIDE on keypoints (OKS) — deferred | proposed |
+| 0025 | Add panoptic-quality evaluation as a sibling crate | accepted |
+| 0026 | Add LVIS federated evaluation in `vernier-core` | accepted |
+| 0027 | Documentation framework — Diátaxis on `mkdocs-material`, code-tested, gated in CI | accepted |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand

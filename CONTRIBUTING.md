@@ -50,6 +50,15 @@ CI runs the same gates; running them locally first saves a round trip.
 - **Python:** `ruff format` defaults, `pyright` strict on `python/vernier/`.
 - **Commits:** conventional commits style is encouraged but not enforced.
 
+## Documentation
+
+The docs site is built with mkdocs-material and gated in CI (ADR-0027).
+
+- **Every PR that changes a public Python symbol updates the docstring in the same commit.** Auto-generated reference (`mkdocstrings`) keeps the rendered API reference true to code; the reviewer's job is to bounce PRs that skip this step.
+- Run `just build-docs` and `just lint-docs` before opening a PR that touches `docs/` or `python/vernier/` — those mirror the CI gates.
+- Run `just serve-docs` for live-reload local preview at `http://127.0.0.1:8000`.
+- Migration guides live in `docs/migrate/`; Diátaxis quadrant pages in `tutorials/`, `how-to/`, `reference/`, `explanation/`.
+
 ## License
 
 By contributing, you agree that your contributions will be dual-licensed

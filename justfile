@@ -98,6 +98,22 @@ fmt:
     uv run ruff check --fix .
 
 # ---------------------------------------------------------------------------
+# Docs
+# ---------------------------------------------------------------------------
+
+# Build the docs site into site/ (strict — mirrors CI check).
+build-docs:
+    uv run --group docs mkdocs build --strict
+
+# Serve docs with live-reload at http://127.0.0.1:8000.
+serve-docs:
+    uv run --group docs mkdocs serve
+
+# Spell-check user-facing docs (excludes adr/ and engineering/ internal dirs).
+lint-docs:
+    uv run --group docs codespell docs/ --skip "docs/adr,docs/engineering"
+
+# ---------------------------------------------------------------------------
 # Benchmarks
 # ---------------------------------------------------------------------------
 

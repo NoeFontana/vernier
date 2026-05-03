@@ -22,7 +22,7 @@
 //! FP / FN attribution lives in [`crate::attribute`]; this module
 //! emits a [`PqImageReport`] consumed there.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::dataset::{CategoryId, ImageEntry, ImageId};
 use crate::error::PanopticError;
@@ -80,13 +80,6 @@ pub struct TpPair {
 /// because doing so on every call would walk the label map twice on
 /// the hot path.
 pub fn pq_image(gt: &ImageEntry, dt: &ImageEntry) -> Result<PqImageReport, PanopticError> {
-    if gt.height != dt.height || gt.width != dt.width {
-        return Err(PanopticError::ShapeMismatch {
-            image_id: 0,
-            gt_shape: (gt.height, gt.width),
-            dt_shape: (dt.height, dt.width),
-        });
-    }
     pq_image_with_id(0, gt, dt)
 }
 
@@ -108,21 +101,22 @@ pub fn pq_image_with_id(
 
     let intersections = build_intersection_histogram(&gt.label_map, &dt.label_map);
 
-    let mut sorted: Vec<((u32, u32), u32)> = intersections.iter().map(|(&k, &v)| (k, v)).collect();
-    sorted.sort_unstable_by_key(|&(k, _)| k);
-
+    // U9 makes the matching loop's iteration order irrelevant for
+    // the TP set: once a `(gt, pred)` pair clears `iou > 0.5`, both
+    // sides go to `*_matched` and no other candidate can re-match
+    // either. Iterate the histogram directly; sort `tp_pairs` at the
+    // end so the downstream summary fold is deterministic across
+    // hashmap rehashes.
     let mut tp_pairs: Vec<TpPair> = Vec::new();
-    let mut gt_matched: std::collections::HashSet<u32> = std::collections::HashSet::new();
-    let mut dt_matched: std::collections::HashSet<u32> = std::collections::HashSet::new();
+    let mut gt_matched: HashSet<u32> = HashSet::new();
+    let mut dt_matched: HashSet<u32> = HashSet::new();
 
-    for ((gt_id, dt_id), intersection) in sorted {
-        let gt_seg = match gt.segments.get(&gt_id) {
-            Some(s) => s,
-            None => continue, // U2: catches gt_id == VOID
+    for (&(gt_id, dt_id), &intersection) in &intersections {
+        let Some(gt_seg) = gt.segments.get(&gt_id) else {
+            continue; // U2: catches gt_id == VOID
         };
-        let dt_seg = match dt.segments.get(&dt_id) {
-            Some(s) => s,
-            None => continue, // U3: dt_id == VOID is impossible if S1 was enforced
+        let Some(dt_seg) = dt.segments.get(&dt_id) else {
+            continue; // U3: dt_id == VOID is impossible if S1 was enforced
         };
         if gt_seg.iscrowd {
             continue; // U4: crowd GT cannot be a TP
@@ -154,10 +148,12 @@ pub fn pq_image_with_id(
         }
     }
 
-    // Sort unmatched ids so the downstream FP/FN attribution
-    // (crowd_labels_dict last-wins under V3 strict, FP enumeration
-    // order) is deterministic. Without this the HashMap iteration
-    // order leaks into strict-mode reproduction.
+    // Pin determinism on the outputs (not the matching loop, which
+    // is order-independent by U9). The downstream FP/FN attribution
+    // walks `unmatched_gt` to build the V3 last-wins / sum-of-overlaps
+    // crowd map; sorted ids make strict-mode reproduction stable
+    // across hashmap rehashes.
+    tp_pairs.sort_unstable_by_key(|p| (p.gt_id, p.dt_id));
     let mut unmatched_gt: Vec<u32> = gt
         .segments
         .keys()
@@ -193,7 +189,12 @@ pub fn pq_image_with_id(
 /// reaching here.
 fn build_intersection_histogram(gt: &[u32], dt: &[u32]) -> HashMap<(u32, u32), u32> {
     debug_assert_eq!(gt.len(), dt.len());
-    let mut out: HashMap<(u32, u32), u32> = HashMap::with_capacity(gt.len() / 16 + 16);
+    // Histograms are bounded by `len(gt_segments) * len(dt_segments)`
+    // not pixel count; typical panoptic images carry a few dozen
+    // unique `(gt, dt)` pairs. A small fixed seed avoids reserving
+    // hundreds of KB of buckets per image (the prior `H*W/16`
+    // heuristic over-allocated by ~2 orders of magnitude).
+    let mut out: HashMap<(u32, u32), u32> = HashMap::with_capacity(128);
     for (g, d) in gt.iter().zip(dt.iter()) {
         *out.entry((*g, *d)).or_insert(0) += 1;
     }

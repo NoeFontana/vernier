@@ -1,0 +1,68 @@
+site_name: vernier
+site_url: https://noefontana.github.io/vernier/
+repo_url: https://github.com/NoeFontana/vernier
+repo_name: NoeFontana/vernier
+strict: true
+
+docs_dir: docs
+
+# adr/ and engineering/ are in-tree internal references; not user-facing.
+# README.md is also excluded — docs/index.md is the landing page.
+exclude_docs: |
+  adr/**
+  engineering/**
+  README.md
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - toc.integrate
+    - content.code.copy
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [python]
+          options:
+            show_source: false
+            docstring_style: google
+  - redirects:
+      redirect_maps:
+        explanation/lvis-migration.md: migrate/from-lvis-api.md
+  - mike:
+      alias_type: symlink
+      canonical_version: stable
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - tutorials/README.md
+      - Debugging with TIDE: tutorials/debugging-with-tide.md
+  - Migrate:
+      - migrate/README.md
+      - From lvis-api: migrate/from-lvis-api.md
+  - How-to:
+      - how-to/README.md
+      - Evaluate with the CLI: how-to/cli-eval.md
+      - Inspect result tables: how-to/result-tables.md
+  - Reference:
+      - reference/README.md
+      - CLI output schema: reference/cli-output-schema.md
+      - COCO summary stats: reference/coco-summary-stats.md
+  - Explanation:
+      - explanation/README.md
+      - TIDE and its limits: explanation/tide-and-its-limits.md
+      - Why no per-image AP: explanation/why-no-per-image-ap.md

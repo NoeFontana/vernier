@@ -39,7 +39,7 @@ get a misleading "below zero" bar for missing buckets. The
 [migration trap fixture in `parity_lvis/test_parity_lvis.py`][q5] pins
 this behavior.
 
-[q5]: ../../tests/python/parity_lvis/test_parity_lvis.py
+[q5]: https://github.com/NoeFontana/vernier/blob/main/tests/python/parity_lvis/test_parity_lvis.py
 
 ## Federated metadata is silent
 

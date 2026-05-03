@@ -72,7 +72,7 @@ licensing implications first.
   (renamed from upstream `license.txt` for tooling discoverability;
   contents byte-equal — see `VENDORING.md` byte-equality table).
 - **Vendoring details:** [`tests/python/parity_panoptic/oracle/VENDORING.md`](tests/python/parity_panoptic/oracle/VENDORING.md)
-- **Runtime dep:** `Pillow==11.1.0` (oracle imports `PIL.Image` at
+- **Runtime dep:** `Pillow==12.2.0` (oracle imports `PIL.Image` at
   module load; pin mirrored by `ORACLE_PILLOW_PIN` in
   [`crates/vernier-panoptic/src/parity.rs`](crates/vernier-panoptic/src/parity.rs)).
 

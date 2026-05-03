@@ -125,6 +125,10 @@ the rest.
 Steady-state once the bootstrap above is done.
 
 ```sh
+# 0. Verify the benchmarks page is current.
+#    If any bench numbers changed since the last release, re-render
+#    docs/benchmarks.md from the ADR-0017 harness JSON before proceeding.
+
 # 1. Open a release PR.
 git switch -c chore/release-X.Y.Z
 # Bump these five strings to X.Y.Z:
@@ -153,6 +157,13 @@ gh run watch --exit-status
 # 4. Smoke-verify the published artifacts.
 pip install --no-cache-dir vernier==X.Y.Z
 cargo install --version X.Y.Z vernier-cli  # or `cargo add vernier-core` in a scratch crate
+
+# 5. Tag the docs version (minor releases only; patch releases overwrite
+#    within the minor and need no version-selector entry).
+#    For a minor bump (X.Y.0): deploy a new versioned URL.
+uv run --group docs mike deploy --push --update-aliases X.Y stable
+#    For a patch release (X.Y.Z, Z > 0): overwrite the existing minor's docs.
+uv run --group docs mike deploy --push X.Y
 ```
 
 > **No manual approval gate.** Tag push goes straight through to

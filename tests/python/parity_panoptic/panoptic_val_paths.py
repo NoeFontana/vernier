@@ -1,9 +1,8 @@
 """Shared env-var contract + cache layout for the COCO panoptic val2017 parity smoke.
 
-Mirrors :mod:`coco_val_paths` and :mod:`lvis_val_paths` for the
-panoptic rollout (ADR-0025 PR-6). The smoke gates on
-``VERNIER_PANOPTIC_GT_PATH`` / ``VERNIER_PANOPTIC_GT_PNG_DIR`` /
-``VERNIER_PANOPTIC_DT_PATH`` / ``VERNIER_PANOPTIC_DT_PNG_DIR`` and
+Mirrors :mod:`coco_val_paths` and :mod:`lvis_val_paths`. The smoke
+gates on ``VERNIER_PANOPTIC_GT_PATH`` / ``VERNIER_PANOPTIC_GT_PNG_DIR``
+/ ``VERNIER_PANOPTIC_DT_PATH`` / ``VERNIER_PANOPTIC_DT_PNG_DIR`` and
 falls through to the canonical :mod:`panoptic_val_cache` cache when
 all four are unset.
 
@@ -27,11 +26,11 @@ Q6 closure procedure (multi-process tolerance pinning, ``PANOPTIC_PARITY_EPS``):
    "Parity tolerance" section of
    ``tests/python/parity_panoptic/oracle/VENDORING.md`` atomically.
 
-Steps 2-4 of the procedure are scripted as
-``tools/panoptic_val_cache.py --measure-eps`` (lands in a follow-up
-PR; the val data is the load-bearing input). Until that lands, the
-placeholder ``1e-9`` is what guards aligned-mode comparisons; strict
-mode demands bit-equality vs ``pq_compute_single_core`` regardless.
+Steps 2-4 of the procedure can be scripted later
+(``tools/panoptic_val_cache.py --measure-eps`` is a documented
+follow-up). Until then, the placeholder ``1e-9`` guards
+aligned-mode comparisons; strict mode demands bit-equality vs
+``pq_compute_single_core`` regardless.
 """
 
 from __future__ import annotations

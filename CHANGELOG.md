@@ -9,6 +9,38 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **Panoptic-quality (PQ) evaluation** (ADR-0025) — new sibling
+  workspace crate `vernier-panoptic`, parallel to `vernier-core`,
+  for the third leg of COCO evaluation
+  (Kirillov et al. 2019, arXiv:1801.00868). Surface:
+  `PanopticEvaluator(parity_mode='corrected', things_stuff_split=True)`
+  with `.evaluate(gt: PanopticDataset, dt: PanopticPredictions)`
+  returning a `PanopticSummary` (global PQ/SQ/RQ + things/stuff
+  buckets + per-class rows). `PanopticDataset.from_arrays` and
+  `PanopticPredictions.from_arrays` accept dicts of uint32 label
+  maps + JSON segments_info; both run S1/S7/S11 validation and
+  S3 PNG-marginal area recompute on the DT side. Single-threaded
+  per ADR-0006 + X1 corrected disposition (bypasses panopticapi's
+  multiprocessing pool entirely). `PanopticEvaluator(boundary=True)`
+  raises `NotImplementedError` pointing at the Q3/Z1 follow-up
+  ADR. ADR-0005 invariant preserved: zero edits to
+  `crates/vernier-core/`; the firewall is structural (the new
+  crate has no edge to vernier-core).
+- **Panoptic parity oracle** — `cocodataset/panopticapi` vendored at
+  SHA `7bb4655548f98f3fedc07bf37e9040a992b054b0` under
+  `tests/python/parity_panoptic/oracle/panopticapi/`; pinned
+  constants in `crates/vernier-panoptic/src/parity.rs`. Strict-mode
+  bit-equality on the All/Things/Stuff + per-class shape is verified
+  against `pq_compute_single_core(proc_id=0)` by `just
+  test-parity-panoptic`. The multi-process pool is bypassed
+  intentionally (X1 corrected; multi-process traces match under
+  `Aligned` only, with `PANOPTIC_PARITY_EPS` placeholder
+  `1e-9` until Q6 val measurement lands).
+- **Migration guide** — `docs/explanation/panoptic-migration.md`
+  covers the API mapping (`pq_compute` -> `PanopticEvaluator`),
+  things/stuff semantics, sentinel divergence (panoptic `0.0` vs
+  LVIS `-1.0`), single-vs-multi-process tolerance gotcha, and the
+  boundary-PQ deferral.
 - **LVIS federated evaluation** (ADR-0026) — long-tail benchmark
   support landed as modules in `vernier-core`. `Dataset.from_lvis_json`
   loads per-image `pos`/`neg`/`not_exhaustive_category_ids` and

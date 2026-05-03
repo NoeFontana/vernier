@@ -1,7 +1,7 @@
 # vernier-panoptic-val-cache
 
 Single source of truth for the COCO panoptic val2017 dev cache
-contract (ADR-0025 PR-6). Mirrors `vernier-coco-val-cache` /
+contract (ADR-0025). Mirrors `vernier-coco-val-cache` /
 `vernier-lvis-val-cache` shape so the panoptic whole-dataset parity
 smoke (`just test-parity-panoptic-val`) has the same idempotent
 fetch+verify flow.

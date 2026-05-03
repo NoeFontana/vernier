@@ -131,6 +131,13 @@ dev = [
     # `python -m panoptic_val_cache` CLI.
     "vernier-panoptic-val-cache",
 ]
+docs = [
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.25",
+    "mike>=2.1",
+    "mkdocs-redirects>=1.2",
+    "codespell>=2.3",
+]
 
 [tool.uv.sources]
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }

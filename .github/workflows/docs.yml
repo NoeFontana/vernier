@@ -1,0 +1,50 @@
+name: Docs
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - "python/vernier/**"
+      - "mkdocs.yml"
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "python/vernier/**"
+      - "mkdocs.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: mkdocs build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Install docs deps
+        run: uv sync --group docs --no-install-project
+      - name: Build (strict)
+        run: uv run --group docs mkdocs build --strict
+
+  spell:
+    name: codespell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v6
+      - name: Install docs deps
+        run: uv sync --group docs --no-install-project
+      - name: Spell-check user-facing docs
+        # adr/ and engineering/ use domain notation and excluded from the site
+        run: uv run --group docs codespell docs/ --skip "docs/adr,docs/engineering"
+
+  # TODO(lychee): add a link-checking job once lychee is wired up.
+  # External links should run on a weekly schedule to avoid flakiness on PR
+  # timescales. Internal links are covered by mkdocs build --strict above.
+  # Suggested action: lycheeverse/lychee-action@v2
