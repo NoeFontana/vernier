@@ -19,11 +19,6 @@ from coco_val_cache import file_sha256
 from bench.harness.schema import BenchWarning, IouType, RunnerRepOutput, StageTimings
 from bench.harness.timing import StageTable
 
-# Re-exported so existing imports `from bench.runners._protocol import file_sha256`
-# keep working unchanged. The implementation now lives in the canonical
-# coco_val_cache package — single owner across bench, parity tests, and tools.
-__all__ = ["file_sha256", "parse_runner_args", "stat_names", "write_outputs"]
-
 BBOX_STAT_NAMES: tuple[str, ...] = (
     "AP",
     "AP50",

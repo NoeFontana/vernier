@@ -44,7 +44,7 @@ from bench.harness.stats import (
     aggregate_reps,
     iqr_gate,
 )
-from bench.runners._protocol import file_sha256
+from coco_val_cache import file_sha256
 
 # (n_warmup, n_measurement) per ADR-0017 §"Run modes".
 MODE_REPS: dict[Mode, tuple[int, int]] = {

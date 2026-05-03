@@ -215,7 +215,7 @@ def test_unknown_iou_kind_raises_type_error() -> None:
     """A garbage ``iou`` argument raises :class:`TypeError`, not a panic."""
     gt_bytes, dt_bytes = _load("all_perfect")
     with pytest.raises(TypeError, match="unsupported iou kernel"):
-        error_decomposition(gt_bytes, dt_bytes, iou="bbox")  # type: ignore[arg-type]
+        error_decomposition(gt_bytes, dt_bytes, iou="bbox")
 
 
 def test_public_symbols_exported() -> None:

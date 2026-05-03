@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from bench.runners._protocol import file_sha256
+from coco_val_cache import file_sha256
 from bench.workloads import coco_val2017
 
 _GATE = "VERNIER_BENCH_DOWNLOAD_TESTS"
