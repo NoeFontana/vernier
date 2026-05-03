@@ -73,7 +73,7 @@ The `sigmas.json` file is a JSON object keyed by category id (as a string), with
 }
 ```
 
-Categories absent from `sigmas.json` fall back to the COCO-person 17-keypoint defaults pinned at [`crates/vernier-core/src/similarity/oks.rs`](../../crates/vernier-core/src/similarity/oks.rs) as `COCO_PERSON_SIGMAS`. The list length per category must equal one third of the `keypoints` annotation length for that category; mismatches surface as a typed error with exit code 1. `--sigmas` is kind-coupled to `--iou-type keypoints` — passing it with any other IoU type is rejected at parse time with exit code 2. ADR-0012 §"Decision outcome" pins the per-category sigma map as the F1-corrected disposition.
+Categories absent from `sigmas.json` fall back to the COCO-person 17-keypoint defaults pinned at [`crates/vernier-core/src/similarity/oks.rs`](https://github.com/NoeFontana/vernier/blob/main/crates/vernier-core/src/similarity/oks.rs) as `COCO_PERSON_SIGMAS`. The list length per category must equal one third of the `keypoints` annotation length for that category; mismatches surface as a typed error with exit code 1. `--sigmas` is kind-coupled to `--iou-type keypoints` — passing it with any other IoU type is rejected at parse time with exit code 2. ADR-0012 §"Decision outcome" pins the per-category sigma map as the F1-corrected disposition.
 
 ## Suppress stderr progress messages
 

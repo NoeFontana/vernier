@@ -1,6 +1,6 @@
 # COCO 12-stat detection summary
 
-vernier's [`summarize_detection`](../../crates/vernier-core/src/summarize.rs) reproduces the twelve numbers that `pycocotools.cocoeval.COCOeval.summarize` writes into `eval.stats` for the `bbox` and `segm` IoU types. This page is the canonical mapping from each stat index to the slice of the accumulator's output tensors that produces it.
+vernier's [`summarize_detection`](https://github.com/NoeFontana/vernier/blob/main/crates/vernier-core/src/summarize.rs) reproduces the twelve numbers that `pycocotools.cocoeval.COCOeval.summarize` writes into `eval.stats` for the `bbox` and `segm` IoU types. This page is the canonical mapping from each stat index to the slice of the accumulator's output tensors that produces it.
 
 The accumulator's output is two tensors:
 
