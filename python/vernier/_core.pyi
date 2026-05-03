@@ -1,4 +1,4 @@
-from typing import Any, Literal, TypedDict
+from typing import Any, Literal, TypeAlias, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -12,6 +12,14 @@ class _UpdateReportDict(TypedDict):
     memory_used_bytes: int
     soft_warn_triggered: bool
 
+_TablesResult: TypeAlias = tuple[
+    Summary,
+    ArrowRecordBatch | None,  # per_image
+    ArrowRecordBatch | None,  # per_class
+    ArrowRecordBatch | None,  # per_detection
+    ArrowRecordBatch | None,  # per_pair
+]
+
 class StreamingEvaluator:
     def __init__(
         self,
@@ -24,10 +32,33 @@ class StreamingEvaluator:
         memory_budget_bytes: int | None = ...,
         dilation_ratio: float = ...,
         sigmas: dict[int, list[float]] | None = ...,
+        retain_iou: bool = ...,
     ) -> None: ...
     def update(self, detections: bytes) -> _UpdateReportDict: ...
     def snapshot(self, *, running: bool = ...) -> Summary: ...
+    def snapshot_with_tables(
+        self,
+        *,
+        per_image: bool = ...,
+        per_class: bool = ...,
+        per_detection: bool = ...,
+        per_pair: bool = ...,
+        per_pair_iou_floor: float = ...,
+        per_pair_max_rows: int = ...,
+        per_detection_with_geometry: bool = ...,
+    ) -> _TablesResult: ...
     def finalize(self) -> Summary: ...
+    def finalize_with_tables(
+        self,
+        *,
+        per_image: bool = ...,
+        per_class: bool = ...,
+        per_detection: bool = ...,
+        per_pair: bool = ...,
+        per_pair_iou_floor: float = ...,
+        per_pair_max_rows: int = ...,
+        per_detection_with_geometry: bool = ...,
+    ) -> _TablesResult: ...
     @property
     def images_seen(self) -> int: ...
     @property
@@ -66,10 +97,33 @@ class BackgroundEvaluator:
         worker_affinity: int | None = ...,
         worker_nice: int = ...,
         shutdown_timeout_seconds: float = ...,
+        retain_iou: bool = ...,
     ) -> None: ...
     def submit(self, detections: bytes, *, timeout: float | None = ...) -> None: ...
     def snapshot(self, *, peek: bool = ...) -> Summary: ...
+    def snapshot_with_tables(
+        self,
+        *,
+        per_image: bool = ...,
+        per_class: bool = ...,
+        per_detection: bool = ...,
+        per_pair: bool = ...,
+        per_pair_iou_floor: float = ...,
+        per_pair_max_rows: int = ...,
+        per_detection_with_geometry: bool = ...,
+    ) -> _TablesResult: ...
     def finalize(self) -> Summary: ...
+    def finalize_with_tables(
+        self,
+        *,
+        per_image: bool = ...,
+        per_class: bool = ...,
+        per_detection: bool = ...,
+        per_pair: bool = ...,
+        per_pair_iou_floor: float = ...,
+        per_pair_max_rows: int = ...,
+        per_detection_with_geometry: bool = ...,
+    ) -> _TablesResult: ...
     def __enter__(self) -> Self: ...
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
     @property
@@ -123,6 +177,9 @@ class Dataset:
     def num_categories(self) -> int: ...
     def clear_cache(self) -> None: ...
 
+class ArrowRecordBatch:
+    def __arrow_c_array__(self, requested_schema: object | None = ...) -> tuple[object, object]: ...
+
 def version() -> str: ...
 def evaluate_bbox_summary(
     gt_json: bytes,
@@ -144,6 +201,7 @@ def evaluate_bbox_grid(
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
+    retain_iou: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
@@ -165,6 +223,7 @@ def evaluate_segm_grid(
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
+    retain_iou: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
     gt_json: bytes,
@@ -189,6 +248,7 @@ def evaluate_boundary_grid(
     max_dets_per_image: int,
     use_cats: bool,
     dilation_ratio: float,
+    retain_iou: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
     gt_json: bytes,
@@ -213,6 +273,7 @@ def evaluate_keypoints_grid(
     max_dets_per_image: int,
     use_cats: bool,
     sigmas: dict[int, list[float]],
+    retain_iou: bool = ...,
 ) -> EvalGrid: ...
 
 class _TideDeltaDict(TypedDict):
@@ -295,3 +356,22 @@ def confusion_matrix_boundary(
     use_cats: bool,
     dilation_ratio: float,
 ) -> _ConfusionMatrixDict: ...
+def per_class_to_arrow_pycapsule(
+    grid: EvalGrid,
+    accum: Accumulated,
+    dataset: Dataset,
+) -> ArrowRecordBatch: ...
+def per_image_to_arrow_pycapsule(
+    grid: EvalGrid,
+    dataset: Dataset,
+) -> ArrowRecordBatch: ...
+def per_detection_to_arrow_pycapsule(
+    grid: EvalGrid,
+    dt_json: bytes,
+    with_geometry: bool = ...,
+) -> ArrowRecordBatch: ...
+def per_pair_to_arrow_pycapsule(
+    grid: EvalGrid,
+    iou_floor: float = ...,
+    max_rows: int = ...,
+) -> ArrowRecordBatch: ...

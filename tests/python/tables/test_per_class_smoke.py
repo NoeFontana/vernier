@@ -18,9 +18,13 @@ import json
 
 import pytest
 
-import vernier
 from vernier import Dataset, Evaluator
-from vernier._core import per_class_to_arrow_pycapsule
+from vernier._core import (
+    Accumulated,
+    EvalGrid,
+    evaluate_bbox_grid,
+    per_class_to_arrow_pycapsule,
+)
 
 # Two perfectly-overlapping detections on a single image, two
 # categories. Mirrors the shape of tests/python/test_evaluator.py's
@@ -62,15 +66,14 @@ _DT = json.dumps(
 ).encode()
 
 
-def _build_grid_and_accum() -> tuple[object, object, Dataset]:
+def _build_grid_and_accum() -> tuple[EvalGrid, Accumulated, Dataset]:
     """Build the FFI primitives the table entry point consumes.
 
-    Return type is `object` for the grid and accumulator because they
-    are FFI-internal types deliberately not re-exported on
-    ``vernier`` — callers don't construct them directly today, and the
-    public API will hide them behind ``EvalResult`` in Week 2.2.
+    The grid and accumulator are FFI-internal types deliberately not
+    re-exported on ``vernier`` — callers don't construct them directly
+    today, and the public API hides them behind ``EvalResult``.
     """
-    grid = vernier._core.evaluate_bbox_grid(_GT, _DT, "corrected", 100, True)
+    grid = evaluate_bbox_grid(_GT, _DT, "corrected", 100, True)
     accum = grid.accumulate([1, 10, 100])
     dataset = Dataset.from_json(_GT)
     return grid, accum, dataset
