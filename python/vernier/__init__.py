@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from typing import Final, Literal, NoReturn, overload
 
 from vernier._compat import ParityMode
@@ -58,6 +59,7 @@ __all__ = [
     "EvalResult",
     "Evaluator",
     "FpIouHistogram",
+    "Frequency",
     "IouKind",
     "Keypoints",
     "MemoryBudgetWarning",
@@ -77,6 +79,28 @@ __all__ = [
     "fp_iou_histogram",
     "version",
 ]
+
+
+class Frequency(str, Enum):
+    """LVIS category-frequency tier (ADR-0026, quirk **AB1**).
+
+    Boundaries (matching ``lvis-api/lvis/eval.py:537-541``):
+
+    - :attr:`Frequency.RARE` (``"r"``): ``< 10`` train images.
+    - :attr:`Frequency.COMMON` (``"c"``): ``[10, 100)`` train images.
+    - :attr:`Frequency.FREQUENT` (``"f"``): ``≥ 100`` train images.
+
+    The values are the single-letter strings the LVIS JSON schema
+    uses, so the enum round-trips through JSON without a custom
+    converter and equates with the raw strings :attr:`Dataset.category_frequency`
+    returns. The ``(str, Enum)`` MRO is the Python 3.10-compatible
+    spelling of ``StrEnum`` (added in 3.11).
+    """
+
+    RARE = "r"
+    COMMON = "c"
+    FREQUENT = "f"
+
 
 __version__: str = version()
 

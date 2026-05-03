@@ -106,4 +106,39 @@ pub enum EvalError {
         /// default) configured.
         cap: usize,
     },
+
+    /// LVIS federated metadata violates the disjointness invariant
+    /// for one `(image, category)` cell: the category appears in both
+    /// `not_exhaustive_category_ids` and `neg_category_ids` (or is
+    /// listed in `neg_category_ids` while a GT of that category exists,
+    /// which would put it implicitly in `pos`). Quirk **AA7** of
+    /// ADR-0026, dispositioned `corrected`: lvis-api silently picks
+    /// `not_exhaustive` on overlap; vernier rejects at load.
+    #[error("lvis federated conflict on image_id={image_id}, category_id={category_id}: {detail}")]
+    LvisFederatedConflict {
+        /// Offending image id.
+        image_id: i64,
+        /// Offending category id.
+        category_id: i64,
+        /// Free-form detail string identifying which constraint failed
+        /// (e.g., `"category in both not_exhaustive and neg"`).
+        detail: &'static str,
+    },
+
+    /// LVIS dataset is missing the `frequency` field on one or more
+    /// categories. Quirk **AB6** of ADR-0026, dispositioned `corrected`:
+    /// lvis-api raises `KeyError` mid-eval on the first miss; vernier
+    /// raises at load with the full list of offending categories so
+    /// the failure is debuggable in one shot.
+    ///
+    /// The `category_ids` list is sorted ascending for stable error
+    /// messages.
+    #[error(
+        "lvis dataset is missing `frequency` on {} categories: {category_ids:?}",
+        category_ids.len()
+    )]
+    MissingFrequency {
+        /// Sorted list of category ids that lacked a `frequency` value.
+        category_ids: Vec<i64>,
+    },
 }

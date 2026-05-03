@@ -319,6 +319,90 @@ pub struct CocoJson {
     pub categories: Vec<CategoryMeta>,
 }
 
+/// LVIS category-frequency tier (quirk **AB1** of ADR-0026).
+///
+/// Each LVIS category is tagged at dataset publication with one of
+/// three buckets, keyed by how many *training* images contain at least
+/// one annotation of that category:
+///
+/// - [`Frequency::Rare`]: `< 10` train images
+/// - [`Frequency::Common`]: `[10, 100)` train images
+/// - [`Frequency::Frequent`]: `≥ 100` train images
+///
+/// The boundaries are pinned by the upstream eval code at
+/// `lvis/eval.py:537-541`; the LVIS paper's prose ("1-10 / 11-100 /
+/// `>100`") is loose — a 10-image category is `Common`, not `Rare`.
+/// The `frequency` field is precomputed at dataset publication;
+/// vernier reads it as-is and never derives it from `image_count`
+/// (quirk **AB2**).
+///
+/// Serializes to/from the single-letter form (`"r"` / `"c"` / `"f"`)
+/// the LVIS JSON schema uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum Frequency {
+    /// `< 10` train images.
+    #[serde(rename = "r")]
+    Rare,
+    /// `[10, 100)` train images.
+    #[serde(rename = "c")]
+    Common,
+    /// `≥ 100` train images.
+    #[serde(rename = "f")]
+    Frequent,
+}
+
+/// On-disk LVIS image record. Carries the COCO image fields plus the
+/// LVIS-specific federated lists. The `pos_category_ids` set is
+/// **derived** from GT annotations at load (quirk **AA1**) and is not
+/// a JSON field — only `neg` and `not_exhaustive` are explicit.
+#[derive(Debug, Clone, Deserialize)]
+struct LvisImageRaw {
+    id: ImageId,
+    width: u32,
+    height: u32,
+    #[serde(default)]
+    file_name: Option<String>,
+    /// LVIS-only: categories verified absent from this image. `None`
+    /// in the wild means a malformed LVIS JSON; v1 spec requires the
+    /// field on every image (possibly empty).
+    #[serde(default)]
+    neg_category_ids: Option<Vec<CategoryId>>,
+    /// LVIS-only: categories whose annotations on this image are not
+    /// guaranteed exhaustive. Subset of `pos` by spec; consumed by
+    /// quirk **AA3** to extend `dt_ignore` on unmatched DTs in the
+    /// cell.
+    #[serde(default)]
+    not_exhaustive_category_ids: Option<Vec<CategoryId>>,
+}
+
+/// On-disk LVIS category record. Carries the COCO category fields
+/// plus the `frequency` tag (quirk **AB1**). `image_count` and
+/// `instance_count` are stored on the upstream JSON but **not read**
+/// by the eval code (quirk **AB2**); we drop them on load.
+#[derive(Debug, Clone, Deserialize)]
+struct LvisCategoryRaw {
+    id: CategoryId,
+    name: String,
+    #[serde(default)]
+    supercategory: Option<String>,
+    /// Required field on every LVIS v1 category. `None` here means the
+    /// JSON entry omitted it; collected and surfaced via
+    /// [`EvalError::MissingFrequency`] (quirk **AB6** corrected).
+    #[serde(default)]
+    frequency: Option<Frequency>,
+}
+
+/// On-disk shape of an LVIS v1 ground-truth JSON file. Structurally
+/// COCO JSON (quirk **AG1**) plus the federated extras on per-image
+/// and per-category records. Annotations are byte-identical between
+/// COCO and LVIS schemas, so [`CocoAnnotation`] is reused.
+#[derive(Debug, Clone, Deserialize)]
+struct LvisJson {
+    images: Vec<LvisImageRaw>,
+    annotations: Vec<CocoAnnotation>,
+    categories: Vec<LvisCategoryRaw>,
+}
+
 /// COCO ground-truth dataset.
 ///
 /// Storage is a single `Arc<Vec<CocoAnnotation>>` plus per-image and
@@ -327,6 +411,20 @@ pub struct CocoJson {
 /// future ADR depends on this); the index vectors are owned by the
 /// `CocoDataset` because they're cheap to rebuild and rebuild needs
 /// to happen exactly when the annotation set changes.
+///
+/// ## LVIS federated metadata (ADR-0026)
+///
+/// Optional per-image positive / negative / not-exhaustive category
+/// sets and per-category frequency tags. Populated only by
+/// [`CocoDataset::from_lvis_json_bytes`]; the COCO loader leaves them
+/// all `None`. Their absence is the COCO default — the orchestrator
+/// reading these fields treats `None` as "not provided" and falls
+/// back to COCO semantics on those cells (quirks **AA1**–**AA7**,
+/// **AB1**, **AG1**).
+///
+/// The semantics are inert at the dataset layer: storing the maps
+/// neither matches nor accumulates differently. PR-3 of the ADR-0026
+/// rollout adds the orchestrator branches that read them.
 #[derive(Debug, Clone)]
 pub struct CocoDataset {
     images: Arc<Vec<ImageMeta>>,
@@ -335,6 +433,10 @@ pub struct CocoDataset {
     by_image: HashMap<ImageId, Vec<usize>>,
     by_category: HashMap<CategoryId, Vec<usize>>,
     by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>>,
+    pos_category_ids: Option<HashMap<ImageId, HashSet<CategoryId>>>,
+    neg_category_ids: Option<HashMap<ImageId, HashSet<CategoryId>>>,
+    not_exhaustive_category_ids: Option<HashMap<ImageId, HashSet<CategoryId>>>,
+    category_frequency: Option<HashMap<CategoryId, Frequency>>,
 }
 
 impl CocoDataset {
@@ -394,12 +496,223 @@ impl CocoDataset {
             by_image,
             by_category,
             by_image_cat,
+            pos_category_ids: None,
+            neg_category_ids: None,
+            not_exhaustive_category_ids: None,
+            category_frequency: None,
         })
+    }
+
+    /// Loads an LVIS v1 ground-truth dataset from a JSON byte slice.
+    ///
+    /// LVIS JSON is structurally COCO JSON plus per-image
+    /// `neg_category_ids` / `not_exhaustive_category_ids` and
+    /// per-category `frequency` (quirk **AG1**). This loader reads the
+    /// extras into the federated metadata fields on the returned
+    /// dataset; the underlying `images` / `annotations` / `categories`
+    /// projections match what [`Self::from_json_bytes`] would produce
+    /// on the same JSON.
+    ///
+    /// ## Validation
+    ///
+    /// - **AA1.** `pos_category_ids[I]` is **derived** from GT
+    ///   annotations: `pos[I] = {ann.category_id for ann in
+    ///   annotations[I]}`. Not a JSON field. A category with zero
+    ///   annotations on `I` is *not* in `pos[I]`.
+    /// - **AA7 (corrected).** Disjointness invariants are enforced at
+    ///   load:
+    ///     - `pos[I] ∩ neg[I] = ∅` — a category with GT on an image
+    ///       cannot also be in `neg[I]`.
+    ///     - `not_exhaustive[I] ⊆ pos[I]` — by spec, not_exhaustive
+    ///       is a subset of pos.
+    ///     - `not_exhaustive[I] ∩ neg[I] = ∅` — equivalent restatement
+    ///       given the prior two.
+    ///
+    ///   The first violation surfaces as
+    ///   [`EvalError::LvisFederatedConflict`] with the offending
+    ///   `(image_id, category_id)`.
+    /// - **AB6 (corrected).** Every category must carry a `frequency`
+    ///   tag. Missing tags are collected across the full categories
+    ///   list and surfaced once via [`EvalError::MissingFrequency`]
+    ///   with a sorted id list — more debuggable than lvis-api's
+    ///   mid-eval `KeyError` on the first miss.
+    ///
+    /// Per-image `neg_category_ids` and `not_exhaustive_category_ids`
+    /// are optional in the JSON: an absent field is treated as an
+    /// empty set, which matches the LVIS v1 semantic ("no negatives /
+    /// nothing flagged non-exhaustive on this image").
+    pub fn from_lvis_json_bytes(bytes: &[u8]) -> Result<Self, EvalError> {
+        let raw: LvisJson = serde_json::from_slice(bytes)?;
+
+        let images: Vec<ImageMeta> = raw
+            .images
+            .iter()
+            .map(|im| ImageMeta {
+                id: im.id,
+                width: im.width,
+                height: im.height,
+                file_name: im.file_name.clone(),
+            })
+            .collect();
+        let categories: Vec<CategoryMeta> = raw
+            .categories
+            .iter()
+            .map(|c| CategoryMeta {
+                id: c.id,
+                name: c.name.clone(),
+                supercategory: c.supercategory.clone(),
+            })
+            .collect();
+
+        // AB6 (corrected): collect all categories missing `frequency`
+        // and raise once with the full list. Sorted ascending for
+        // stable error messages.
+        let mut missing_freq: Vec<i64> = raw
+            .categories
+            .iter()
+            .filter(|c| c.frequency.is_none())
+            .map(|c| c.id.0)
+            .collect();
+        if !missing_freq.is_empty() {
+            missing_freq.sort_unstable();
+            return Err(EvalError::MissingFrequency {
+                category_ids: missing_freq,
+            });
+        }
+        let category_frequency: HashMap<CategoryId, Frequency> = raw
+            .categories
+            .iter()
+            .filter_map(|c| c.frequency.map(|f| (c.id, f)))
+            .collect();
+
+        // Build the dataset spine via the existing constructor — that
+        // gives us the ref-integrity validation (J5 / AG1) for free.
+        let mut dataset = Self::from_parts(images, raw.annotations, categories)?;
+
+        // AA1: derive pos[I] from GTs. Defaults each image to an empty
+        // set so callers can ask without special-casing.
+        let mut pos: HashMap<ImageId, HashSet<CategoryId>> =
+            HashMap::with_capacity(raw.images.len());
+        for im in &raw.images {
+            pos.entry(im.id).or_default();
+        }
+        for ann in dataset.annotations.iter() {
+            pos.entry(ann.image_id).or_default().insert(ann.category_id);
+        }
+
+        // Project explicit `neg` / `not_exhaustive` fields onto sets;
+        // treat absent / empty as the empty set.
+        let mut neg: HashMap<ImageId, HashSet<CategoryId>> =
+            HashMap::with_capacity(raw.images.len());
+        let mut nel: HashMap<ImageId, HashSet<CategoryId>> =
+            HashMap::with_capacity(raw.images.len());
+        for im in &raw.images {
+            let neg_set: HashSet<CategoryId> = im
+                .neg_category_ids
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .copied()
+                .collect();
+            let nel_set: HashSet<CategoryId> = im
+                .not_exhaustive_category_ids
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .copied()
+                .collect();
+            neg.insert(im.id, neg_set);
+            nel.insert(im.id, nel_set);
+        }
+
+        // AA7 (corrected): disjointness validation.
+        for im in &raw.images {
+            let image_id = im.id;
+            let pos_i = pos.get(&image_id).map_or_else(HashSet::new, Clone::clone);
+            let neg_i = &neg[&image_id];
+            let nel_i = &nel[&image_id];
+
+            // pos ∩ neg: a category with GT on this image cannot also
+            // be in neg.
+            if let Some(c) = pos_i.intersection(neg_i).next().copied() {
+                return Err(EvalError::LvisFederatedConflict {
+                    image_id: image_id.0,
+                    category_id: c.0,
+                    detail: "category has GT on image but is also in neg_category_ids",
+                });
+            }
+            // not_exhaustive ⊆ pos: by spec.
+            if let Some(c) = nel_i.difference(&pos_i).next().copied() {
+                return Err(EvalError::LvisFederatedConflict {
+                    image_id: image_id.0,
+                    category_id: c.0,
+                    detail:
+                        "category in not_exhaustive_category_ids but not in pos (no GT on image)",
+                });
+            }
+            // not_exhaustive ∩ neg: implied by the first two but
+            // checked explicitly so a malformed JSON gets the most
+            // direct error.
+            if let Some(c) = nel_i.intersection(neg_i).next().copied() {
+                return Err(EvalError::LvisFederatedConflict {
+                    image_id: image_id.0,
+                    category_id: c.0,
+                    detail: "category in both not_exhaustive_category_ids and neg_category_ids",
+                });
+            }
+        }
+
+        dataset.pos_category_ids = Some(pos);
+        dataset.neg_category_ids = Some(neg);
+        dataset.not_exhaustive_category_ids = Some(nel);
+        dataset.category_frequency = Some(category_frequency);
+        Ok(dataset)
+    }
+
+    /// Per-image positive-category set, derived from GTs at load time
+    /// (quirk **AA1**). `Some` only when the dataset was built by
+    /// [`Self::from_lvis_json_bytes`].
+    pub fn pos_category_ids(&self) -> Option<&HashMap<ImageId, HashSet<CategoryId>>> {
+        self.pos_category_ids.as_ref()
+    }
+
+    /// Per-image negative-category set, read verbatim from the LVIS
+    /// JSON (quirk **AA2**). `Some` only when the dataset was built
+    /// by [`Self::from_lvis_json_bytes`].
+    pub fn neg_category_ids(&self) -> Option<&HashMap<ImageId, HashSet<CategoryId>>> {
+        self.neg_category_ids.as_ref()
+    }
+
+    /// Per-image not-exhaustive-category set, read verbatim from the
+    /// LVIS JSON (quirk **AA3**). `Some` only when the dataset was
+    /// built by [`Self::from_lvis_json_bytes`].
+    pub fn not_exhaustive_category_ids(&self) -> Option<&HashMap<ImageId, HashSet<CategoryId>>> {
+        self.not_exhaustive_category_ids.as_ref()
+    }
+
+    /// Per-category frequency tag, read verbatim from the LVIS JSON
+    /// (quirk **AB1**). `Some` only when the dataset was built by
+    /// [`Self::from_lvis_json_bytes`]; missing-on-some-categories
+    /// inputs are rejected at load (quirk **AB6**).
+    pub fn category_frequency(&self) -> Option<&HashMap<CategoryId, Frequency>> {
+        self.category_frequency.as_ref()
+    }
+
+    /// `true` when the dataset carries LVIS federated metadata.
+    /// Equivalent to `self.pos_category_ids().is_some()`; used by the
+    /// orchestrator (PR-3) to gate the cell-skip and `dt_ignore`
+    /// branches.
+    pub fn is_federated(&self) -> bool {
+        self.pos_category_ids.is_some()
     }
 
     /// Round-trips the dataset to the on-disk JSON shape, preserving
     /// every field vernier carries. Useful for fixture authoring and
     /// for debugging serde mismatches.
+    ///
+    /// LVIS federated metadata is **not** included in the output —
+    /// the round trip targets the COCO schema only. Callers needing
+    /// to round-trip LVIS JSON must use the source bytes directly.
     pub fn to_json_value(&self) -> CocoJson {
         CocoJson {
             images: (*self.images).clone(),
@@ -1174,5 +1487,220 @@ mod tests {
                 }
             }
         }
+    }
+
+    // -- ADR-0026: LVIS federated metadata loader -----------------------------
+
+    /// Minimal valid LVIS GT: 2 images, 2 categories with frequencies,
+    /// 1 GT on image 1 (cat 1) and 1 GT on image 2 (cat 2). Image 1
+    /// has cat 2 in `neg`, image 2 has cat 1 flagged not-exhaustive.
+    /// Used as the base fixture for the AA1 / AA7 / AB6 tests; the
+    /// negative tests mutate it to violate one constraint at a time.
+    const LVIS_MIN_VALID: &str = r#"{
+        "images": [
+            {"id": 1, "width": 100, "height": 100,
+             "neg_category_ids": [2], "not_exhaustive_category_ids": []},
+            {"id": 2, "width": 100, "height": 100,
+             "neg_category_ids": [], "not_exhaustive_category_ids": [2]}
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1,
+             "bbox": [0, 0, 10, 10], "area": 100, "iscrowd": 0},
+            {"id": 2, "image_id": 2, "category_id": 2,
+             "bbox": [0, 0, 20, 20], "area": 400, "iscrowd": 0}
+        ],
+        "categories": [
+            {"id": 1, "name": "a", "frequency": "f"},
+            {"id": 2, "name": "b", "frequency": "r"}
+        ]
+    }"#;
+
+    #[test]
+    fn lvis_loads_minimal_valid_dataset() {
+        let ds = CocoDataset::from_lvis_json_bytes(LVIS_MIN_VALID.as_bytes()).unwrap();
+        // Spine identical to a COCO load.
+        assert_eq!(ds.images().len(), 2);
+        assert_eq!(ds.categories().len(), 2);
+        assert_eq!(ds.annotations().len(), 2);
+        // Federated metadata populated.
+        assert!(ds.is_federated());
+        let pos = ds.pos_category_ids().unwrap();
+        let neg = ds.neg_category_ids().unwrap();
+        let nel = ds.not_exhaustive_category_ids().unwrap();
+        let freq = ds.category_frequency().unwrap();
+        // AA1: pos derived from GTs.
+        assert_eq!(pos[&ImageId(1)], HashSet::from([CategoryId(1)]));
+        assert_eq!(pos[&ImageId(2)], HashSet::from([CategoryId(2)]));
+        // AA2: neg read verbatim.
+        assert_eq!(neg[&ImageId(1)], HashSet::from([CategoryId(2)]));
+        assert_eq!(neg[&ImageId(2)], HashSet::new());
+        // AA3: not_exhaustive read verbatim.
+        assert_eq!(nel[&ImageId(1)], HashSet::new());
+        assert_eq!(nel[&ImageId(2)], HashSet::from([CategoryId(2)]));
+        // AB1: frequency tags.
+        assert_eq!(freq[&CategoryId(1)], Frequency::Frequent);
+        assert_eq!(freq[&CategoryId(2)], Frequency::Rare);
+    }
+
+    #[test]
+    fn aa1_pos_derived_from_gts_does_not_include_zero_ann_categories() {
+        // Cat 2 has a GT only on image 2; pos[image 1] must NOT
+        // contain cat 2 (it's only in neg there).
+        let ds = CocoDataset::from_lvis_json_bytes(LVIS_MIN_VALID.as_bytes()).unwrap();
+        let pos = ds.pos_category_ids().unwrap();
+        assert!(!pos[&ImageId(1)].contains(&CategoryId(2)));
+        assert!(!pos[&ImageId(2)].contains(&CategoryId(1)));
+    }
+
+    #[test]
+    fn from_json_bytes_leaves_federated_metadata_none() {
+        // The COCO loader on the same JSON shape ignores the LVIS
+        // extras and leaves federated metadata empty (the orchestrator
+        // then runs COCO semantics on the cells).
+        let ds = CocoDataset::from_json_bytes(LVIS_MIN_VALID.as_bytes()).unwrap();
+        assert!(!ds.is_federated());
+        assert!(ds.pos_category_ids().is_none());
+        assert!(ds.neg_category_ids().is_none());
+        assert!(ds.not_exhaustive_category_ids().is_none());
+        assert!(ds.category_frequency().is_none());
+    }
+
+    #[test]
+    fn aa7_pos_intersect_neg_rejected() {
+        // Cat 1 has a GT on image 1 → it's in pos[1]; the JSON also
+        // lists cat 1 in image 1's neg → conflict.
+        const BAD: &str = r#"{
+            "images": [
+                {"id": 1, "width": 10, "height": 10,
+                 "neg_category_ids": [1], "not_exhaustive_category_ids": []}
+            ],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "a", "frequency": "f"}]
+        }"#;
+        let err = CocoDataset::from_lvis_json_bytes(BAD.as_bytes()).unwrap_err();
+        match err {
+            EvalError::LvisFederatedConflict {
+                image_id,
+                category_id,
+                detail,
+            } => {
+                assert_eq!(image_id, 1);
+                assert_eq!(category_id, 1);
+                assert!(detail.contains("GT"));
+            }
+            other => panic!("expected LvisFederatedConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn aa7_not_exhaustive_outside_pos_rejected() {
+        // Image 1 lists cat 2 in not_exhaustive but has no GT of cat 2
+        // → not_exhaustive ⊄ pos.
+        const BAD: &str = r#"{
+            "images": [
+                {"id": 1, "width": 10, "height": 10,
+                 "neg_category_ids": [], "not_exhaustive_category_ids": [2]}
+            ],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [
+                {"id": 1, "name": "a", "frequency": "f"},
+                {"id": 2, "name": "b", "frequency": "r"}
+            ]
+        }"#;
+        let err = CocoDataset::from_lvis_json_bytes(BAD.as_bytes()).unwrap_err();
+        match err {
+            EvalError::LvisFederatedConflict {
+                image_id,
+                category_id,
+                detail,
+            } => {
+                assert_eq!(image_id, 1);
+                assert_eq!(category_id, 2);
+                assert!(detail.contains("not_exhaustive"));
+            }
+            other => panic!("expected LvisFederatedConflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ab6_missing_frequency_collects_all_offenders() {
+        // Two categories, neither has a frequency. The error must
+        // surface both ids in sorted order, not just the first miss.
+        const BAD: &str = r#"{
+            "images": [
+                {"id": 1, "width": 10, "height": 10,
+                 "neg_category_ids": [], "not_exhaustive_category_ids": []}
+            ],
+            "annotations": [],
+            "categories": [
+                {"id": 7, "name": "g"},
+                {"id": 3, "name": "c"}
+            ]
+        }"#;
+        let err = CocoDataset::from_lvis_json_bytes(BAD.as_bytes()).unwrap_err();
+        match err {
+            EvalError::MissingFrequency { category_ids } => {
+                assert_eq!(category_ids, vec![3, 7]);
+            }
+            other => panic!("expected MissingFrequency, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lvis_loader_treats_absent_neg_field_as_empty() {
+        // LVIS schema requires neg/not_exhaustive on every image, but a
+        // tolerant loader treats absence as empty (matches the LVIS v1
+        // semantic where a missing field → no negatives).
+        const TOLERANT: &str = r#"{
+            "images": [{"id": 1, "width": 10, "height": 10}],
+            "annotations": [],
+            "categories": [{"id": 1, "name": "a", "frequency": "c"}]
+        }"#;
+        let ds = CocoDataset::from_lvis_json_bytes(TOLERANT.as_bytes()).unwrap();
+        let neg = ds.neg_category_ids().unwrap();
+        let nel = ds.not_exhaustive_category_ids().unwrap();
+        assert!(neg[&ImageId(1)].is_empty());
+        assert!(nel[&ImageId(1)].is_empty());
+    }
+
+    #[test]
+    fn frequency_round_trips_serde() {
+        for f in [Frequency::Rare, Frequency::Common, Frequency::Frequent] {
+            let s = serde_json::to_string(&f).unwrap();
+            let back: Frequency = serde_json::from_str(&s).unwrap();
+            assert_eq!(f, back);
+        }
+        // Confirm the serde rename targets the LVIS single-letter form.
+        assert_eq!(serde_json::to_string(&Frequency::Rare).unwrap(), "\"r\"");
+        assert_eq!(serde_json::to_string(&Frequency::Common).unwrap(), "\"c\"");
+        assert_eq!(
+            serde_json::to_string(&Frequency::Frequent).unwrap(),
+            "\"f\""
+        );
+    }
+
+    #[test]
+    fn lvis_loader_inherits_invalid_annotation_validation() {
+        // Annotation references unknown image — the spine validation
+        // (J5 / AG1) must fire before AA7.
+        const BAD: &str = r#"{
+            "images": [
+                {"id": 1, "width": 10, "height": 10,
+                 "neg_category_ids": [], "not_exhaustive_category_ids": []}
+            ],
+            "annotations": [
+                {"id": 1, "image_id": 99, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "a", "frequency": "f"}]
+        }"#;
+        let err = CocoDataset::from_lvis_json_bytes(BAD.as_bytes()).unwrap_err();
+        assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
     }
 }
