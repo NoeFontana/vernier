@@ -1,0 +1,544 @@
+//! Per-category aggregation and the [`PanopticSummary`] public type.
+//!
+//! Folds the per-image [`PqStat`] outputs from [`crate::attribute`] into
+//! per-category [`ClassPanopticStats`], then applies the W1–W8 quirks
+//! to produce the final unweighted means + things/stuff buckets. The
+//! one place "innocent refactor" produces wrong numbers is W7 —
+//! global SQ is the **mean of per-category SQs**, *not*
+//! `total_iou / total_TP`. The two are not equal on long-tailed
+//! datasets.
+//!
+//! Strict-vs-corrected divergence in this module:
+//! - **W6 corrected** (default) returns zeros when the per-category
+//!   filter is empty; **strict** raises [`PanopticError::EmptyCategoryFilter`]
+//!   to match panopticapi's `ZeroDivisionError` shape.
+
+use std::collections::{BTreeMap, HashMap};
+
+use crate::attribute::{attribute_image, PqStat};
+use crate::dataset::{CategoryId, ImageEntry, ImageId, PanopticDataset, PanopticPredictions};
+use crate::error::PanopticError;
+use crate::kernel::pq_image_with_id;
+use crate::parity::ParityMode;
+
+/// Per-class PQ row. Strict superset of panopticapi's `{pq, sq, rq}`
+/// shape (quirk **W8**); the count fields are vernier-only and the
+/// FFI's `to_dict_strict()` shim drops them to match the upstream
+/// dict shape exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ClassPanopticStats {
+    /// Panoptic Quality. Computed directly via W1
+    /// `PQ_c = sum_iou_c / (TP_c + 0.5*FP_c + 0.5*FN_c)`, **not**
+    /// `SQ_c * RQ_c` — those are algebraically equal but f64
+    /// non-associative; bit-equality with panopticapi requires the
+    /// direct form.
+    pub pq: f64,
+    /// Segmentation Quality. `sum_iou_c / TP_c`, or `0.0` when
+    /// `TP_c == 0`.
+    pub sq: f64,
+    /// Recognition Quality. `TP_c / (TP_c + 0.5*FP_c + 0.5*FN_c)`,
+    /// or `0.0` when the denominator is zero.
+    pub rq: f64,
+    /// Raw TP count (vernier-only, not in panopticapi's per_class
+    /// output per W8).
+    pub n_tp: u64,
+    /// Raw FP count (vernier-only).
+    pub n_fp: u64,
+    /// Raw FN count (vernier-only).
+    pub n_fn: u64,
+}
+
+/// Top-level panoptic evaluation result.
+///
+/// `pq_things` / `pq_stuff` (and the SQ/RQ variants) are `None` when
+/// `things_stuff_split=false` was passed to [`evaluate`]. `n` /
+/// `n_things` / `n_stuff` carry the count of contributing categories
+/// per W5 — useful for diagnosing all-zero rows on long-tailed
+/// datasets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanopticSummary {
+    /// Global PQ — unweighted mean over the present-categories
+    /// subset (W3).
+    pub pq: f64,
+    /// Global SQ — unweighted mean of per-category SQs over the
+    /// present subset (W7; **not** pooled `total_iou / total_TP`).
+    pub sq: f64,
+    /// Global RQ — unweighted mean over the present subset.
+    pub rq: f64,
+    /// PQ over the things subset (W4); `None` when split is disabled.
+    pub pq_things: Option<f64>,
+    /// SQ over the things subset; `None` when split is disabled.
+    pub sq_things: Option<f64>,
+    /// RQ over the things subset; `None` when split is disabled.
+    pub rq_things: Option<f64>,
+    /// PQ over the stuff subset (W4); `None` when split is disabled.
+    pub pq_stuff: Option<f64>,
+    /// SQ over the stuff subset; `None` when split is disabled.
+    pub sq_stuff: Option<f64>,
+    /// RQ over the stuff subset; `None` when split is disabled.
+    pub rq_stuff: Option<f64>,
+    /// Per-category rows, keyed by COCO category id. `BTreeMap` for
+    /// deterministic iteration order — important when the FFI
+    /// serializes to a Python dict and the user round-trips it.
+    pub per_class: BTreeMap<CategoryId, ClassPanopticStats>,
+    /// Number of categories that contributed to the global mean (W5).
+    /// Equal to `per_class.iter().filter(|s| s.n_tp + s.n_fp + s.n_fn > 0).count()`.
+    pub n: usize,
+    /// Number of contributing things categories (`None` when split
+    /// is disabled).
+    pub n_things: Option<usize>,
+    /// Number of contributing stuff categories (`None` when split
+    /// is disabled).
+    pub n_stuff: Option<usize>,
+}
+
+/// Convert one accumulated [`PqStat`] into a [`ClassPanopticStats`]
+/// row. Quirk **W1** ratios; the per-image fold has already been
+/// done by `attribute_image` upstream.
+fn class_stats(stat: PqStat) -> ClassPanopticStats {
+    let tp = stat.n_tp as f64;
+    let fp = stat.n_fp as f64;
+    let fn_count = stat.n_fn as f64;
+    let denom = tp + 0.5 * (fp + fn_count);
+    let pq = if denom == 0.0 {
+        0.0
+    } else {
+        stat.sum_iou / denom
+    };
+    let sq = if stat.n_tp == 0 {
+        0.0
+    } else {
+        stat.sum_iou / tp
+    };
+    let rq = if denom == 0.0 { 0.0 } else { tp / denom };
+    ClassPanopticStats {
+        pq,
+        sq,
+        rq,
+        n_tp: stat.n_tp,
+        n_fp: stat.n_fp,
+        n_fn: stat.n_fn,
+    }
+}
+
+/// Unweighted mean over the W2-filtered subset (categories with
+/// `n_tp + n_fp + n_fn > 0`). Returns `(pq, sq, rq, n)`. Quirk **W6**
+/// wraps this: strict mode raises on `n == 0`, corrected returns zeros.
+fn average(rows: impl Iterator<Item = ClassPanopticStats>) -> (f64, f64, f64, usize) {
+    let mut pq_sum = 0.0;
+    let mut sq_sum = 0.0;
+    let mut rq_sum = 0.0;
+    let mut n = 0usize;
+    for r in rows {
+        if r.n_tp + r.n_fp + r.n_fn == 0 {
+            continue;
+        }
+        pq_sum += r.pq;
+        sq_sum += r.sq;
+        rq_sum += r.rq;
+        n += 1;
+    }
+    if n == 0 {
+        (0.0, 0.0, 0.0, 0)
+    } else {
+        let nf = n as f64;
+        (pq_sum / nf, sq_sum / nf, rq_sum / nf, n)
+    }
+}
+
+/// Apply quirk **W6** to the (possibly empty) average result. In
+/// `Strict` mode an empty filter raises; in `Corrected` mode the
+/// zero-tuple from [`average`] is returned as-is.
+fn finalize_average(
+    raw: (f64, f64, f64, usize),
+    mode: ParityMode,
+    context: &'static str,
+) -> Result<(f64, f64, f64, usize), PanopticError> {
+    let (pq, sq, rq, n) = raw;
+    if n == 0 && mode == ParityMode::Strict {
+        return Err(PanopticError::EmptyCategoryFilter { context });
+    }
+    Ok((pq, sq, rq, n))
+}
+
+/// Top-level panoptic evaluation orchestrator (single-threaded per
+/// ADR-0006 + quirk **X1** corrected: bypasses panopticapi's
+/// multiprocessing pool entirely).
+///
+/// Returns a [`PanopticSummary`] with global, things, and stuff
+/// buckets (the latter two `None` when `things_stuff_split=false`).
+///
+/// Predictions must cover every GT image (quirk **Y4**); a missing
+/// `image_id` raises [`PanopticError::MissingPredictionsForImage`].
+/// Pred-only images are silently ignored, mirroring upstream
+/// (quirk **Y5**, `evaluation.py:213-216`).
+pub fn evaluate(
+    gt: &PanopticDataset,
+    dt: &PanopticPredictions,
+    mode: ParityMode,
+    things_stuff_split: bool,
+) -> Result<PanopticSummary, PanopticError> {
+    // Per-image fold: kernel + attribute + sum into per-category accumulators.
+    let mut acc: HashMap<CategoryId, PqStat> = HashMap::new();
+    // Sort references in image-id order so the f64 summation across
+    // images is deterministic (matches panopticapi's annotation-list
+    // iteration which is JSON order). The downstream summation is
+    // non-associative, so non-determinism would leak into the
+    // strict-mode parity claim.
+    let mut sorted_gt: Vec<(&ImageId, &ImageEntry)> = gt.images.iter().collect();
+    sorted_gt.sort_unstable_by_key(|(id, _)| *id);
+    for (image_id, gt_entry) in sorted_gt {
+        let dt_entry =
+            dt.images
+                .get(image_id)
+                .ok_or(PanopticError::MissingPredictionsForImage {
+                    image_id: *image_id,
+                })?;
+        let report = pq_image_with_id(*image_id, gt_entry, dt_entry)?;
+        let per_image = attribute_image(gt_entry, dt_entry, &report, mode);
+        for (cat, stat) in per_image {
+            acc.entry(cat).or_default().add_assign(&stat);
+        }
+    }
+
+    // Per-class summary, sorted by category id (BTreeMap).
+    let per_class: BTreeMap<CategoryId, ClassPanopticStats> = acc
+        .into_iter()
+        .map(|(cat, stat)| (cat, class_stats(stat)))
+        .collect();
+
+    // Global means.
+    let (pq, sq, rq, n) = finalize_average(average(per_class.values().copied()), mode, "all")?;
+
+    // Things/stuff (W4).
+    let (pq_things, sq_things, rq_things, n_things, pq_stuff, sq_stuff, rq_stuff, n_stuff) =
+        if things_stuff_split {
+            let things =
+                average(per_class.iter().filter_map(|(cat, s)| {
+                    gt.categories.get(cat).filter(|m| m.isthing).map(|_| *s)
+                }));
+            let stuff =
+                average(per_class.iter().filter_map(|(cat, s)| {
+                    gt.categories.get(cat).filter(|m| !m.isthing).map(|_| *s)
+                }));
+            // Things/stuff buckets are independent; an empty things
+            // bucket on a stuff-only dataset is a real downstream
+            // surface and should not poison the all-bucket result.
+            // Strict mode still raises (matches panopticapi's
+            // zero-division).
+            let (pq_t, sq_t, rq_t, n_t) = finalize_average(things, mode, "things")?;
+            let (pq_s, sq_s, rq_s, n_s) = finalize_average(stuff, mode, "stuff")?;
+            (
+                Some(pq_t),
+                Some(sq_t),
+                Some(rq_t),
+                Some(n_t),
+                Some(pq_s),
+                Some(sq_s),
+                Some(rq_s),
+                Some(n_s),
+            )
+        } else {
+            (None, None, None, None, None, None, None, None)
+        };
+
+    Ok(PanopticSummary {
+        pq,
+        sq,
+        rq,
+        pq_things,
+        sq_things,
+        rq_things,
+        pq_stuff,
+        sq_stuff,
+        rq_stuff,
+        per_class,
+        n,
+        n_things,
+        n_stuff,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::{CategoryMeta, ImageEntry, SegmentInfo};
+    use std::collections::HashMap;
+
+    fn entry(
+        height: u32,
+        width: u32,
+        label_map: Vec<u32>,
+        segments: &[(u32, CategoryId, bool, u64)],
+    ) -> ImageEntry {
+        let mut map = HashMap::new();
+        for &(id, category_id, iscrowd, area) in segments {
+            map.insert(
+                id,
+                SegmentInfo {
+                    id,
+                    category_id,
+                    iscrowd,
+                    area,
+                },
+            );
+        }
+        ImageEntry {
+            height,
+            width,
+            label_map,
+            segments: map,
+        }
+    }
+
+    #[test]
+    fn class_stats_w1_direct_form() {
+        // 3 TP with sum_iou=2.4, 1 FP, 1 FN.
+        // denom = 3 + 0.5*1 + 0.5*1 = 4
+        // PQ = 2.4 / 4 = 0.6 (exact in f64)
+        // SQ = 2.4 / 3 (one ulp below 0.8 in f64; W1 demands the
+        //              direct form, so we don't post-round)
+        // RQ = 3 / 4 = 0.75 (exact)
+        let stat = PqStat {
+            sum_iou: 2.4,
+            n_tp: 3,
+            n_fp: 1,
+            n_fn: 1,
+        };
+        let row = class_stats(stat);
+        assert_eq!(row.pq, 0.6);
+        assert_eq!(row.sq, 2.4 / 3.0);
+        assert_eq!(row.rq, 0.75);
+        assert_eq!(row.n_tp, 3);
+        assert_eq!(row.n_fp, 1);
+        assert_eq!(row.n_fn, 1);
+    }
+
+    #[test]
+    fn class_stats_zero_tp_returns_zero_sq() {
+        // No TP, just FN. denom = 0.5, but SQ has its own zero guard.
+        let stat = PqStat {
+            sum_iou: 0.0,
+            n_tp: 0,
+            n_fp: 0,
+            n_fn: 1,
+        };
+        let row = class_stats(stat);
+        assert_eq!(row.pq, 0.0);
+        assert_eq!(row.sq, 0.0);
+        assert_eq!(row.rq, 0.0);
+    }
+
+    #[test]
+    fn average_excludes_zero_rows_w2() {
+        // Three categories: two real, one all-zero. Only the two
+        // real rows contribute to the mean.
+        let real_a = ClassPanopticStats {
+            pq: 0.6,
+            sq: 0.8,
+            rq: 0.75,
+            n_tp: 3,
+            n_fp: 1,
+            n_fn: 1,
+        };
+        let real_b = ClassPanopticStats {
+            pq: 0.4,
+            sq: 0.5,
+            rq: 0.8,
+            n_tp: 2,
+            n_fp: 1,
+            n_fn: 0,
+        };
+        let zero = ClassPanopticStats::default();
+        let (pq, sq, rq, n) = average([real_a, real_b, zero].into_iter());
+        assert_eq!(n, 2);
+        assert_eq!(pq, 0.5);
+        assert_eq!(sq, 0.65);
+        assert_eq!(rq, 0.775);
+    }
+
+    #[test]
+    fn aggregate_w7_mean_not_pooled() {
+        // W7 regression: global SQ is the unweighted *mean* of
+        // per-category SQs, not the pooled `total_iou / total_TP`.
+        // The two diverge on long-tailed data; this test pins the
+        // divergence so a future "innocent" refactor that swaps to
+        // pooling fails CI.
+        //
+        // Direct PqStat construction (no kernel pipeline) keeps this
+        // test focused on the aggregation arithmetic:
+        //   cat 100: sum_iou = 1.6, n_tp = 2  -> SQ_100 = 0.8
+        //   cat 200: sum_iou = 0.6, n_tp = 1  -> SQ_200 = 0.6
+        // mean(SQ_c) = (0.8 + 0.6) / 2 = 0.7
+        // pooled total_iou / total_TP = 2.2 / 3 ≈ 0.7333
+        let row_100 = class_stats(PqStat {
+            sum_iou: 1.6,
+            n_tp: 2,
+            n_fp: 0,
+            n_fn: 0,
+        });
+        let row_200 = class_stats(PqStat {
+            sum_iou: 0.6,
+            n_tp: 1,
+            n_fp: 0,
+            n_fn: 0,
+        });
+        let (_pq, sq, _rq, n) = average([row_100, row_200].into_iter());
+        assert_eq!(n, 2);
+        assert!((sq - 0.7).abs() < 1e-12);
+        // Confirm divergence from pooled: |mean - pooled| > 1%.
+        let pooled = 2.2_f64 / 3.0;
+        assert!((sq - pooled).abs() > 0.01);
+    }
+
+    #[test]
+    fn evaluate_pipeline_perfect_match_with_things_stuff_split() {
+        // 1x10 image, two GT segments perfectly covered by two DT
+        // segments. cat 100 is thing, cat 200 is stuff. Both pairs
+        // produce iou=1.0 → SQ=1.0, RQ=1.0, PQ=1.0 per class.
+        let gt = entry(
+            1,
+            10,
+            vec![1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+            &[(1, 100, false, 5), (2, 200, false, 5)],
+        );
+        let dt = entry(
+            1,
+            10,
+            vec![10, 10, 10, 10, 10, 11, 11, 11, 11, 11],
+            &[(10, 100, false, 5), (11, 200, false, 5)],
+        );
+
+        let mut gt_images = HashMap::new();
+        gt_images.insert(1i64, gt);
+        let mut categories = HashMap::new();
+        categories.insert(
+            100,
+            CategoryMeta {
+                id: 100,
+                isthing: true,
+            },
+        );
+        categories.insert(
+            200,
+            CategoryMeta {
+                id: 200,
+                isthing: false,
+            },
+        );
+        let gt_dataset = PanopticDataset::from_components(gt_images, categories);
+
+        let mut dt_images = HashMap::new();
+        dt_images.insert(1i64, dt);
+        let dt_predictions = PanopticPredictions::from_components(dt_images);
+
+        let summary = evaluate(&gt_dataset, &dt_predictions, ParityMode::Corrected, true).unwrap();
+
+        // Per-class: both are 1.0 across the board.
+        assert_eq!(summary.per_class[&100].pq, 1.0);
+        assert_eq!(summary.per_class[&100].sq, 1.0);
+        assert_eq!(summary.per_class[&100].rq, 1.0);
+        assert_eq!(summary.per_class[&200].pq, 1.0);
+        assert_eq!(summary.per_class[&200].sq, 1.0);
+        assert_eq!(summary.per_class[&200].rq, 1.0);
+
+        // Global + bucket means: all 1.0.
+        assert_eq!(summary.pq, 1.0);
+        assert_eq!(summary.sq, 1.0);
+        assert_eq!(summary.rq, 1.0);
+        assert_eq!(summary.pq_things, Some(1.0));
+        assert_eq!(summary.pq_stuff, Some(1.0));
+        assert_eq!(summary.n, 2);
+        assert_eq!(summary.n_things, Some(1));
+        assert_eq!(summary.n_stuff, Some(1));
+    }
+
+    #[test]
+    fn evaluate_pipeline_no_things_in_split() {
+        // Stuff-only dataset; things bucket should still be Some
+        // (returns 0.0, n_things=0) under Corrected.
+        let gt = entry(1, 4, vec![1, 1, 1, 1], &[(1, 200, false, 4)]);
+        let dt = entry(1, 4, vec![10, 10, 10, 10], &[(10, 200, false, 4)]);
+        let mut gt_images = HashMap::new();
+        gt_images.insert(1i64, gt);
+        let mut categories = HashMap::new();
+        categories.insert(
+            200,
+            CategoryMeta {
+                id: 200,
+                isthing: false,
+            },
+        );
+        let gt_dataset = PanopticDataset::from_components(gt_images, categories);
+
+        let mut dt_images = HashMap::new();
+        dt_images.insert(1i64, dt);
+        let dt_predictions = PanopticPredictions::from_components(dt_images);
+
+        let summary = evaluate(&gt_dataset, &dt_predictions, ParityMode::Corrected, true).unwrap();
+        // Things bucket is Some(0.0), n_things=0 (W6 corrected).
+        assert_eq!(summary.pq_things, Some(0.0));
+        assert_eq!(summary.n_things, Some(0));
+        // Stuff bucket has the cat 200 row.
+        assert_eq!(summary.pq_stuff, Some(1.0));
+        assert_eq!(summary.n_stuff, Some(1));
+    }
+
+    #[test]
+    fn empty_dataset_corrected_returns_zeros() {
+        let gt = PanopticDataset::from_components(HashMap::new(), HashMap::new());
+        let dt = PanopticPredictions::from_components(HashMap::new());
+        let summary = evaluate(&gt, &dt, ParityMode::Corrected, false).unwrap();
+        assert_eq!(summary.pq, 0.0);
+        assert_eq!(summary.sq, 0.0);
+        assert_eq!(summary.rq, 0.0);
+        assert_eq!(summary.n, 0);
+    }
+
+    #[test]
+    fn empty_dataset_strict_raises_w6() {
+        let gt = PanopticDataset::from_components(HashMap::new(), HashMap::new());
+        let dt = PanopticPredictions::from_components(HashMap::new());
+        let err = evaluate(&gt, &dt, ParityMode::Strict, false).unwrap_err();
+        match err {
+            PanopticError::EmptyCategoryFilter { context } => assert_eq!(context, "all"),
+            other => panic!("expected EmptyCategoryFilter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_pred_image_returns_typed_error() {
+        let gt_entry = entry(1, 1, vec![1], &[(1, 100, false, 1)]);
+        let mut images = HashMap::new();
+        images.insert(7i64, gt_entry);
+        let mut categories = HashMap::new();
+        categories.insert(
+            100,
+            CategoryMeta {
+                id: 100,
+                isthing: true,
+            },
+        );
+        let gt = PanopticDataset::from_components(images, categories);
+        let dt = PanopticPredictions::from_components(HashMap::new());
+
+        let err = evaluate(&gt, &dt, ParityMode::Corrected, false).unwrap_err();
+        match err {
+            PanopticError::MissingPredictionsForImage { image_id } => assert_eq!(image_id, 7),
+            other => panic!("expected MissingPredictionsForImage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pred_only_image_silently_ignored_y5() {
+        // GT has no images; DT has one. Y5: pred-only is silently
+        // ignored (no error). Result is the empty-dataset case.
+        let gt = PanopticDataset::from_components(HashMap::new(), HashMap::new());
+        let dt_entry = entry(1, 1, vec![10], &[(10, 100, false, 1)]);
+        let mut dt_images = HashMap::new();
+        dt_images.insert(1i64, dt_entry);
+        let dt = PanopticPredictions::from_components(dt_images);
+        let summary = evaluate(&gt, &dt, ParityMode::Corrected, false).unwrap();
+        assert_eq!(summary.n, 0);
+    }
+}

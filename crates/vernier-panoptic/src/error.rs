@@ -125,6 +125,19 @@ pub enum PanopticError {
         mode: &'static str,
     },
 
+    /// No category contributed to the requested aggregation bucket
+    /// (empty per-category filter — quirk **W6**, strict mode only).
+    /// panopticapi raises bare `ZeroDivisionError` from `pq / n` when
+    /// `n == 0` (`evaluation.py:73`); vernier surfaces this typed
+    /// variant so the caller can distinguish "all-zeros result" from
+    /// "kernel crashed". `Corrected` mode returns zeros instead.
+    #[error("empty panoptic category filter for {context}: no category contributed (W6 strict)")]
+    EmptyCategoryFilter {
+        /// Which aggregation bucket (`"all"`, `"things"`, `"stuff"`)
+        /// produced the empty filter.
+        context: &'static str,
+    },
+
     /// Malformed segments_info or category JSON.
     #[error(transparent)]
     Json(#[from] serde_json::Error),
