@@ -2373,6 +2373,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_bbox, m)?)?;
+    m.add_function(wrap_pyfunction!(tide::error_decomposition_segm, m)?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;

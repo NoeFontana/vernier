@@ -85,13 +85,16 @@ double-cutoff to reason about).
 | Kernel | `t_b` default | Anchored on |
 |--------|---------------|-------------|
 | `Bbox` | `0.1` | TIDE paper, COCO bbox |
-| `Segm` | **TBD** (Week-2 measurement) | Pending verification that segm-IoU FP distribution on COCO val2017 matches bbox closely enough to reuse `0.1`. If yes, ratify `0.1`; if not, anchor empirically as for boundary. |
+| `Segm` | `0.1` (tentative) | Anchored on the bbox row by extrapolation, **not** by direct measurement on COCO val2017 — vernier does not ship the COCO val dataset in CI per the licensing policy in `project_coco_val_regression.md`, so the empirical histograms the original Week-2 plan called for are not derivable from the in-tree fixtures. Segm IoU is bounded above by bbox IoU on the same instance and tracks within ~10% on standard detection models, so reusing `0.1` is the least-surprising default among the choices available without COCO bytes. Revisit in a 0.5.x follow-up once whole-dataset parity infrastructure (planned post-Week 5, see `project_coco_val_regression.md`) is wired and a real-model FP-IoU histogram is available. |
 | `Boundary(dilation_ratio=0.02)` | **TBD** (Week-3 measurement) | Pending empirical anchoring on three reference models on COCO val2017 (Mask R-CNN, Cascade Mask R-CNN, ViT-Det). Anchor target: the value at which the "binned as Bkg" fraction stabilizes across the three models. Histograms in the ADR companion data file. |
 
-This ADR is `proposed` until the TBD rows are filled. The Week-2 PR
-ratifies the segm row; the Week-3 PR ratifies the boundary row (or
-triggers the decision gate below). Both are amendments to this ADR,
-not new ADRs.
+This ADR is `proposed` until the boundary row is ratified. The Week-3
+segm PR pins `Segm` at `0.1` as a defended-by-extrapolation default
+(not a measurement-anchored ratification — see the row's rationale
+above); the boundary PR ratifies the boundary row or triggers the
+decision gate below. Promoting this ADR to `accepted` is gated on
+either the boundary row landing or the boundary kernel being cut to
+0.5.1.
 
 The `Boundary` default is keyed to `dilation_ratio=0.02` (the COCO
 default). For other `dilation_ratio` values (LVIS uses `0.008`),

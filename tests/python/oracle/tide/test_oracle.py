@@ -19,7 +19,7 @@ from typing import Any
 
 import pytest
 
-from .oracle import error_decomposition
+from .oracle import bbox_iou, error_decomposition, segm_iou
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -294,6 +294,90 @@ def test_loc_vs_both_priority_loc_wins_when_same_class_gt_is_closer() -> None:
     _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
 
 
+def test_segm_all_perfect_baseline_one_and_no_deltas() -> None:
+    """Segm kernel: every DT mask matches a GT mask; baseline=1, all deltas=0.
+
+    Math:
+        - Two GTs (cat 1 polygon [10,10,50,50], cat 2 polygon
+          [100,100,140,140]); each polygon is the axis-aligned rectangle
+          covering the same area as its bbox.
+        - Two DTs identical polygons / categories. The oracle's
+          :func:`segm_iou` rasterizes each polygon onto a 200x200 grid and
+          gets a 40x40 = 1600-pixel mask per annotation. Each DT
+          intersects 1600 pixels with its same-class GT and 0 with the
+          other → IoU = 1600 / 1600 = 1.0 against the same-class GT and
+          0.0 against the cross-class GT.
+        - mAP arithmetic mirrors `test_all_perfect_baseline_one_and_no_deltas`
+          exactly because the IoU values feeding the matching engine are
+          identical to the bbox case. baseline=1.0, every delta=0.
+    """
+    gt, dt = _load("segm_all_perfect")
+    out = error_decomposition(gt, dt, segm_iou)
+    _assert_close(out["baseline_map"], 1.0, "baseline_map")
+    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
+        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
+    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+
+
+def test_segm_all_loc_isolates_loc_bin() -> None:
+    """Segm kernel: every DT mask has same-class IoU in [t_b, t_f) → Loc.
+
+    Math:
+        - 1 GT cat 1 polygon [0,0,100,100] → mask is the [0:100, 0:100]
+          slice of the 200x200 grid; area = 10000 pixels.
+        - 1 DT cat 1 polygon [0,0,80,50] → mask is [0:50, 0:80] slice;
+          area = 4000 pixels.
+        - Intersection: the [0:50, 0:80] slice (DT is fully contained in
+          GT) = 4000 pixels.
+            union = 10000 + 4000 - 4000 = 10000.
+            IoU = 0.4.
+          In [0.1, 0.5) → Loc.
+        - Baseline mirrors `test_all_loc_isolates_loc_bin`: at every
+          IoU threshold ≥ 0.5 the DT is unmatched → AP = 0 → mAP = 0.
+        - Loc fix snaps DT polygon to the GT polygon (the oracle's
+          `_apply_fix` for "loc" replaces both bbox and segmentation),
+          so segm IoU becomes 1.0 → TP everywhere → AP = 1, mAP = 1.
+          delta_loc = 1.0.
+        - delta_all_fp_removed = 0 (removing the lone FP leaves 0
+          detections; same loose-bound shape as `all_loc`).
+    """
+    gt, dt = _load("segm_all_loc")
+    out = error_decomposition(gt, dt, segm_iou)
+    _assert_close(out["baseline_map"], 0.0, "baseline_map")
+    _assert_close(out["delta"]["loc"], 1.0, "delta[loc]")
+    for bin_name in ("cls", "both", "dupe", "bkg", "missed"):
+        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
+    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+
+
+def test_segm_all_cls_isolates_cls_bin() -> None:
+    """Segm kernel: every DT mask has wrong class but right geometry → Cls.
+
+    Math:
+        - 1 image, 2 GTs:
+            GT1 cat 1 polygon [10,10,50,50] (40x40 mask).
+            GT2 cat 2 polygon [100,100,140,140] (40x40 mask).
+        - 2 DTs:
+            DT1 cat 2 polygon [10,10,50,50] → IoU=1 with GT1 (wrong
+                class), 0 with GT2.
+            DT2 cat 1 polygon [100,100,140,140] → IoU=1 with GT2 (wrong
+                class), 0 with GT1.
+          Each DT: iou_same=0, iou_cross=1.0 ≥ t_f → Cls.
+        - Baseline / cls-fix arithmetic mirrors
+          `test_all_cls_isolates_cls_bin` exactly (same per-class IoU
+          values, same shape). baseline_map=0, delta_cls=1.0, others=0,
+          delta_all_fp_removed=0 (loose-bound shape, removing FPs leaves
+          zero detections).
+    """
+    gt, dt = _load("segm_all_cls")
+    out = error_decomposition(gt, dt, segm_iou)
+    _assert_close(out["baseline_map"], 0.0, "baseline_map")
+    _assert_close(out["delta"]["cls"], 1.0, "delta[cls]")
+    for bin_name in ("loc", "both", "dupe", "bkg", "missed"):
+        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
+    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+
+
 _ALL_FIXTURES = [
     "all_perfect",
     "all_bkg",
@@ -302,6 +386,12 @@ _ALL_FIXTURES = [
     "all_dupe",
     "with_ignore",
     "loc_vs_both_priority",
+]
+
+_SEGM_FIXTURES = [
+    "segm_all_perfect",
+    "segm_all_loc",
+    "segm_all_cls",
 ]
 
 
@@ -317,11 +407,20 @@ def test_report_carries_resolved_config(name: str) -> None:
     assert out["config"] == {"t_f": 0.5, "t_b": 0.1, "kernel": "bbox"}
 
 
-@pytest.mark.parametrize("name", _ALL_FIXTURES)
+@pytest.mark.parametrize("name", _SEGM_FIXTURES)
+def test_segm_report_carries_resolved_config(name: str) -> None:
+    """Segm kernel: `config.kernel` is `"segm"` when `segm_iou` is passed."""
+    gt, dt = _load(name)
+    out = error_decomposition(gt, dt, segm_iou, t_f=0.5, t_b=0.1)
+    assert out["config"] == {"t_f": 0.5, "t_b": 0.1, "kernel": "segm"}
+
+
+@pytest.mark.parametrize("name", _ALL_FIXTURES + _SEGM_FIXTURES)
 def test_report_shape(name: str) -> None:
     """Sanity-check the dict shape so downstream Rust matchers can rely on it."""
     gt, dt = _load(name)
-    out = error_decomposition(gt, dt)
+    kernel = segm_iou if name.startswith("segm_") else bbox_iou
+    out = error_decomposition(gt, dt, kernel)
     assert set(out.keys()) == {
         "baseline_map",
         "delta",

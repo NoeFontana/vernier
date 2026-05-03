@@ -16,9 +16,15 @@
 //!
 //! - **Cls** — for each Cls-binned DT, relabel its `category_id` to the
 //!   wrong-class GT's class. The matching pipeline naturally routes
-//!   the relabeled DT into the new cell.
-//! - **Loc** — for each Loc-binned DT, snap its bbox onto the same-
-//!   class target GT's bbox so IoU=1.0 at every threshold.
+//!   the relabeled DT into the new cell. Geometry (`bbox` +
+//!   `segmentation`) stays untouched — the matching pipeline now sees
+//!   the same masks under a different category.
+//! - **Loc** — for each Loc-binned DT, snap **all** of its geometry
+//!   (`bbox` and `segmentation`) onto the same-class target GT's so
+//!   IoU=1.0 at every threshold under the active kernel. The
+//!   bbox-and-segm replacement is in lockstep so the bbox kernel sees
+//!   `target.bbox` and the segm kernel sees `target.segmentation` —
+//!   either kernel computes IoU=1.0 against the matched GT.
 //! - **Both / Dupe / Bkg** — drop the DT.
 //! - **Missed** — set `ignore=true` on the missed GTs (oracle uses
 //!   `ignore`; vernier's GT type carries `ignore_flag: Option<bool>`,
@@ -146,7 +152,12 @@ pub fn apply_fix(
                     num_keypoints: det.num_keypoints,
                 });
             }
-            // LOC: snap Loc-binned DT's bbox to the same-class target GT.
+            // LOC: snap Loc-binned DT's geometry (bbox AND segmentation)
+            // to the same-class target GT. Bbox-only replacement is
+            // sufficient for the bbox kernel but the segm kernel
+            // computes IoU on the rasterized mask, so the segmentation
+            // has to be swapped in lockstep — see this module's per-bin
+            // recipe doc and `oracle.py::_apply_fix` ("loc" branch).
             (FixKind::Loc, Some(lbl)) if lbl.bin == DtBin::Loc => {
                 let target = resolve_target(lbl.target_gt_local_idx)?;
                 new_dts.push(DetectionInput {
@@ -155,7 +166,7 @@ pub fn apply_fix(
                     category_id: det.category_id,
                     score: det.score,
                     bbox: target.bbox,
-                    segmentation: det.segmentation.clone(),
+                    segmentation: target.segmentation.clone(),
                     keypoints: det.keypoints.clone(),
                     num_keypoints: det.num_keypoints,
                 });

@@ -1,20 +1,15 @@
 """Rust ↔ numpy-oracle parity for TIDE error decomposition.
 
 Per ADR-0021 the numpy oracle in `oracle.py` is the executable spec; the
-Rust implementation in `vernier_core::tide::error_decomposition_bbox` is
+Rust implementation in `vernier_core::tide::error_decomposition_*` is
 correct iff `|delta_rust - delta_oracle| < 1e-9` per bin per fixture.
 
-This test runs the Rust FFI (`vernier._core.error_decomposition_bbox`)
-and the oracle on the same seven Week-1 fixtures and asserts the parity
-contract on `baseline_map`, every per-bin delta, and the all-FPs-removed
-sanity total. The `1e-9` tolerance is the ADR-0021 contract; loosening it
-silently masks a Rust bug — STOP and report instead.
-
-Cross-agent dependency: this file imports
-`vernier._core.error_decomposition_bbox` which is added by a sibling PR
-(Agent A's Week-2 Rust implementation). Until that PR merges, the symbol
-is absent from the FFI module and these tests skip cleanly via the
-attribute check below.
+This test runs the Rust FFI (`vernier._core.error_decomposition_bbox`
+and `error_decomposition_segm`) against the oracle on every Week-1 +
+Week-3 fixture and asserts the parity contract on `baseline_map`, every
+per-bin delta, and the all-FPs-removed sanity total. The `1e-9`
+tolerance is the ADR-0021 contract; loosening it silently masks a Rust
+bug — STOP and report instead.
 """
 
 from __future__ import annotations
@@ -25,15 +20,16 @@ from typing import Any
 
 import pytest
 
-from .oracle import error_decomposition
+from .oracle import error_decomposition, segm_iou
 
 _core = pytest.importorskip("vernier._core")
-if not hasattr(_core, "error_decomposition_bbox"):
-    pytest.skip(
-        "vernier._core.error_decomposition_bbox not yet built into the wheel "
-        "(Agent A's Week-2 Rust PR). Rebase + `just develop` after that lands.",
-        allow_module_level=True,
-    )
+for _required in ("error_decomposition_bbox", "error_decomposition_segm"):
+    if not hasattr(_core, _required):
+        pytest.skip(
+            f"vernier._core.{_required} not yet built into the wheel. "
+            "Run `just develop` after pulling main.",
+            allow_module_level=True,
+        )
 
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -50,6 +46,12 @@ _ALL_FIXTURES = [
     "all_dupe",
     "with_ignore",
     "loc_vs_both_priority",
+]
+
+_SEGM_FIXTURES = [
+    "segm_all_perfect",
+    "segm_all_loc",
+    "segm_all_cls",
 ]
 
 
@@ -118,5 +120,67 @@ def test_rust_report_carries_resolved_config(name: str) -> None:
 
     config = rust_out["config"]
     assert config["kernel"] == "bbox", f"{name}: kernel"
+    assert config["t_f"] == pytest.approx(0.5), f"{name}: t_f"
+    assert config["t_b"] == pytest.approx(0.1), f"{name}: t_b"
+
+
+@pytest.mark.parametrize("name", _SEGM_FIXTURES)
+def test_rust_segm_matches_oracle(name: str) -> None:
+    """Segm Rust FFI bin-deltas agree with the numpy oracle within 1e-9.
+
+    Mirrors :func:`test_rust_matches_oracle` for the segm kernel: parses
+    the segm fixture, runs `vernier._core.error_decomposition_segm`,
+    runs the oracle's `error_decomposition` with `similarity_fn=segm_iou`,
+    and asserts every delta agrees within `1e-9`. Same ADR-0021 tolerance
+    contract as the bbox tests; loosening it masks a Rust bug.
+    """
+    gt_dict, dt_list = _load(name)
+    gt_bytes = json.dumps(gt_dict).encode()
+    dt_bytes = json.dumps(dt_list).encode()
+
+    oracle_out = error_decomposition(gt_dict, dt_list, segm_iou)
+    rust_out = _core.error_decomposition_segm(
+        gt_bytes,
+        dt_bytes,
+        "strict",
+        0.5,
+        0.1,
+        100,
+        True,
+    )
+
+    _assert_close(rust_out["baseline_map"], oracle_out["baseline_map"], f"{name}: baseline_map")
+    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
+        _assert_close(
+            rust_out["delta"][bin_name],
+            oracle_out["delta"][bin_name],
+            f"{name}: delta[{bin_name}]",
+        )
+    _assert_close(
+        rust_out["delta_all_fp_removed"],
+        oracle_out["delta_all_fp_removed"],
+        f"{name}: delta_all_fp_removed",
+    )
+
+
+@pytest.mark.parametrize("name", _SEGM_FIXTURES)
+def test_rust_segm_report_carries_resolved_config(name: str) -> None:
+    """ADR-0022: the segm report records `(t_f, t_b, kernel="segm")`."""
+    gt_dict, dt_list = _load(name)
+    gt_bytes = json.dumps(gt_dict).encode()
+    dt_bytes = json.dumps(dt_list).encode()
+
+    rust_out = _core.error_decomposition_segm(
+        gt_bytes,
+        dt_bytes,
+        "strict",
+        0.5,
+        0.1,
+        100,
+        True,
+    )
+
+    config = rust_out["config"]
+    assert config["kernel"] == "segm", f"{name}: kernel"
     assert config["t_f"] == pytest.approx(0.5), f"{name}: t_f"
     assert config["t_b"] == pytest.approx(0.1), f"{name}: t_b"
