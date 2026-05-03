@@ -1,0 +1,13 @@
+{
+  "images": [
+    {"id": 1, "width": 200, "height": 200, "file_name": "img1.png"}
+  ],
+  "annotations": [
+    {"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 100, 100], "area": 10000, "iscrowd": 0},
+    {"id": 2, "image_id": 1, "category_id": 2, "bbox": [10, 10, 50, 50], "area": 2500, "iscrowd": 0}
+  ],
+  "categories": [
+    {"id": 1, "name": "alpha", "supercategory": "thing"},
+    {"id": 2, "name": "beta", "supercategory": "thing"}
+  ]
+}
