@@ -26,6 +26,12 @@ with an ADR draft, not a PR. The lifecycle:
 For small, mechanical changes (typo fixes, dependency bumps, internal
 refactors with no API impact), skip the ADR and go straight to a PR.
 
+### Vendoring third-party code
+
+Adding a vendored reference (test-only) is an ADR-level decision. See
+[`docs/engineering/vendoring.md`](docs/engineering/vendoring.md) for
+the policy, layout convention, and the `VENDORING.md` template.
+
 ## Local checks before opening a PR
 
 ```bash

@@ -107,3 +107,11 @@ or the parity contract — start as an ADR draft.
 
 Dual-licensed under either of [Apache License, Version 2.0](LICENSE-APACHE)
 or [MIT license](LICENSE-MIT) at your option.
+
+## Third-party code
+
+vernier vendors a small number of test-only reference implementations
+to support parity testing. None of this code is included in published
+wheels or linked into the Rust binary. See
+[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the full
+inventory and license attributions.
