@@ -54,6 +54,8 @@ nav:
       - Debugging with TIDE: tutorials/debugging-with-tide.md
   - Migrate:
       - migrate/README.md
+      - From pycocotools: migrate/from-pycocotools.md
+      - From faster-coco-eval: migrate/from-faster-coco-eval.md
       - From lvis-api: migrate/from-lvis-api.md
       - From mmsegmentation: migrate/from-mmsegmentation.md
       - From panopticapi: migrate/from-panopticapi.md
