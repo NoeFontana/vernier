@@ -9,6 +9,22 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **Semantic-segmentation streaming evaluator** (ADR-0028 PR-B9
+  partial — streaming only; Breakdown / result-tables follow-ups
+  scoped to a future PR). New
+  `vernier_semantic::StreamingSemanticEvaluator` is a flat
+  `O(n_classes²)` accumulator over `ConfusionMatrix`: `update(image_id,
+  gt, dt)` folds via the same `accumulate_confusion` kernel the batch
+  path uses; `snapshot()` is constant-time relative to image count
+  (per ADR-0013, no fast-vs-running mode distinction needed). FFI
+  pyclass `vernier._core.StreamingSemanticEvaluator` is registered
+  on the module; the Python `Evaluator.stream(n_classes,
+  ignore_label=None)` factory returns a fresh streaming evaluator
+  carrying the parent's `parity_mode`. **Load-bearing invariant**
+  (pinned by `tests/python/test_semantic_streaming.py::test_streaming_finalize_bit_equals_batch_evaluate`):
+  streaming `finalize()` is bit-equal to batch `evaluate(...)` over
+  the same images on f64 outputs. 10 new Python tests + 7 new Rust
+  tests; total workspace 472 Rust + 376 Python tests pass.
 - **Semantic-segmentation Python wrapper + per-dataset presets**
   (ADR-0028 PR-B5) — new `vernier.semantic` submodule (per ADR-0029)
   exposing `Dataset` / `Predictions` / `Evaluator` frozen dataclasses
