@@ -1,7 +1,7 @@
 //! Pure-Rust core for vernier.
 //!
 //! This crate has **no Python dependencies** and is usable directly from Rust
-//! binaries, CLI tools, and embedded contexts (e.g., ROS2 nodes).
+//! binaries, CLI tools, and embedded contexts.
 //!
 //! By design, the public API of this crate is the source of truth for vernier's
 //! evaluation semantics. The [`vernier-ffi`] crate is a thin data-conversion

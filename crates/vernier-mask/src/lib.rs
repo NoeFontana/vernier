@@ -3,8 +3,7 @@
 //! Per ADR-0009, this crate is a pure-Rust leaf: no Python deps, no
 //! dependency on `vernier-core`. The mask data layer is reusable by
 //! any Rust project that needs to read or write COCO RLE masks
-//! (annotation tools, training-data loaders, perception nodes,
-//! custom evaluators).
+//! (annotation tools, training-data loaders, custom evaluators).
 //!
 //! The segm `Similarity` impl that consumes these primitives lives in
 //! `vernier-core::similarity::segm`; the matching engine, accumulator,

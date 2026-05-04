@@ -23,7 +23,7 @@ distinct surfaces:
 
 These have different audiences. The mask data layer is reusable by any
 Rust project that needs to read or write COCO masks (annotation tools,
-training-data loaders, custom evaluators, ROS perception nodes). The
+training-data loaders, custom evaluators). The
 segm `Similarity` impl is meaningful only to vernier's matching engine.
 
 We also have a registry constraint: `vernier-mask` was reserved on
