@@ -143,14 +143,11 @@ def _merge_binary_masks(
     n_classes, h, w = masks.shape
     out = np.full((h, w), unlabeled_class, dtype=np.uint32)
     any_set = masks.any(axis=0)
-    if merge == "argmax":
-        # argmax over channels; on binary input the first channel with
-        # value 1 wins (numpy argmax tiebreak — the lowest class id).
-        # For score input, the highest score wins.
-        chosen = masks.argmax(axis=0).astype(np.uint32, copy=False)
-    elif merge == "first":
-        # First channel with value 1 wins. Equivalent to argmax on
-        # binary input.
+    if merge in ("argmax", "first"):
+        # On binary input these collapse to the same operation: numpy's
+        # argmax tiebreak picks the lowest channel index, which is "the
+        # first channel with value 1". On score input (argmax only),
+        # the highest score wins.
         chosen = masks.argmax(axis=0).astype(np.uint32, copy=False)
     elif merge == "highest_class_id":
         # Reverse argmax: the highest channel index with value 1 wins.

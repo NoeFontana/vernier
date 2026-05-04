@@ -15,7 +15,30 @@
 //! survey determine which oracles a given variant is `strict` /
 //! `corrected` against.
 
+use std::fmt;
+
 use thiserror::Error;
+
+/// Which side of a `(gt, dt)` input pair an error refers to.
+///
+/// Used by [`SemanticError::DuplicateImageId`] for typed dispatch
+/// without stringly-typed `&'static str` fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DupSide {
+    /// Ground-truth side of the input pair.
+    Gt,
+    /// Detection / prediction side of the input pair.
+    Dt,
+}
+
+impl fmt::Display for DupSide {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Gt => f.write_str("gt"),
+            Self::Dt => f.write_str("dt"),
+        }
+    }
+}
 
 /// COCO image id. Mirrors [`vernier_panoptic::dataset::ImageId`] in
 /// width so the cross-crate FFI surface uses the same integer type.
@@ -114,9 +137,8 @@ pub enum SemanticError {
     DuplicateImageId {
         /// The repeated image id.
         image_id: ImageId,
-        /// `"gt"` or `"dt"` to disambiguate which side of the input
-        /// pair the duplicate appeared on.
-        side: &'static str,
+        /// Which side of the input pair the duplicate appeared on.
+        side: DupSide,
     },
 
     /// The dataset contains no images. cityscapesScripts errors with
