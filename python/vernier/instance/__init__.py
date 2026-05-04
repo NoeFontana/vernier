@@ -381,9 +381,7 @@ class Evaluator:
             per_class_to_arrow_pycapsule(grid, accum, dataset) if "per_class" in requested else None
         )
         per_detection_batch = (
-            per_detection_to_arrow_pycapsule(
-                grid, dt, tables_config.per_detection_with_geometry, self.cast_inputs
-            )
+            per_detection_to_arrow_pycapsule(grid, tables_config.per_detection_with_geometry)
             if "per_detection" in requested
             else None
         )

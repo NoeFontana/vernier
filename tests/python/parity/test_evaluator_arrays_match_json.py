@@ -124,8 +124,9 @@ def test_evaluator_array_dt_matches_json_with_dataset(
 
 @pytest.mark.parity
 def test_evaluator_array_dt_with_tables_per_detection() -> None:
-    """``tables=('per_detection',)`` reads dt twice (grid build + per_det
-    table). Both call sites must accept array-form input."""
+    """``tables=('per_detection',)`` reads dt once: the grid retains
+    the parsed `CocoDetections` for the per_detection builder, so the
+    array path doesn't pay a second DLPack walk + RLE-counts copy."""
     fixture = BBOX_FIXTURES[0]
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()

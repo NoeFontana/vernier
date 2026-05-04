@@ -451,9 +451,7 @@ def per_image_to_arrow_pycapsule(
 ) -> ArrowRecordBatch: ...
 def per_detection_to_arrow_pycapsule(
     grid: EvalGrid,
-    dt: DetectionsInput,
     with_geometry: bool = ...,
-    cast_inputs: bool = ...,
 ) -> ArrowRecordBatch: ...
 def per_pair_to_arrow_pycapsule(
     grid: EvalGrid,

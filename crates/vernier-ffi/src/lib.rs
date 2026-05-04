@@ -124,6 +124,13 @@ impl PySummary {
 struct PyEvalGrid {
     inner: EvalGrid,
     parity: ParityMode,
+    /// Detections that produced `inner.eval_imgs`, retained when the
+    /// grid was built with `retain_iou=true` so the per_detection table
+    /// builder can read them without re-parsing `dt`. `None` when
+    /// retention is off (per_image / per_class only); reading on the
+    /// wrong path raises a typed error from
+    /// [`per_detection_to_arrow_pycapsule`].
+    retained_dt: Option<CocoDetections>,
 }
 
 #[pymethods]
@@ -218,6 +225,13 @@ impl PyEvalGrid {
     /// Crate-internal borrow used by the result-tables FFI module.
     pub(crate) fn eval_grid_ref(&self) -> &EvalGrid {
         &self.inner
+    }
+
+    /// Detections retained at grid-construction time. `Some` when the
+    /// grid was built with `retain_iou=true` (which the per_detection
+    /// table requires); `None` otherwise.
+    pub(crate) fn retained_dt(&self) -> Option<&CocoDetections> {
+        self.retained_dt.as_ref()
     }
 }
 
@@ -487,27 +501,30 @@ fn evaluate_grid_impl(
     let gt_bytes = gt_json.as_bytes().to_vec();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
-    let grid = py.detach(move || -> PyResult<EvalGrid> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = realize_dt(dt_payload)?;
-        iou_type
-            .run(
-                &gt,
-                &dt,
-                EvaluateParams {
-                    iou_thresholds: iou_thresholds(),
-                    area_ranges: &area,
-                    max_dets_per_image,
-                    use_cats,
-                    retain_iou,
-                },
-                parity,
-            )
-            .map_err(|e| PyValueError::new_err(format!("{e}")))
-    })?;
+    let (grid, retained_dt) =
+        py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
+            let gt = parse_gt(&gt_bytes)?;
+            let dt = realize_dt(dt_payload)?;
+            let grid = iou_type
+                .run(
+                    &gt,
+                    &dt,
+                    EvaluateParams {
+                        iou_thresholds: iou_thresholds(),
+                        area_ranges: &area,
+                        max_dets_per_image,
+                        use_cats,
+                        retain_iou,
+                    },
+                    parity,
+                )
+                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            Ok((grid, retain_iou.then_some(dt)))
+        })?;
     Ok(PyEvalGrid {
         inner: grid,
         parity,
+        retained_dt,
     })
 }
 
@@ -532,40 +549,43 @@ fn evaluate_grid_with_dataset_impl(
     let snapshot = gt.snapshot();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
-    let grid = py.detach(move || -> PyResult<EvalGrid> {
-        let dt = realize_dt(dt_payload)?;
-        // ADR-0026 AC2: federated datasets trim DTs at input time
-        // (mirrors `LVISResults.limit_dets_per_image` at construction).
-        // The trim is a no-op when fewer than `max_dets_per_image`
-        // DTs land on any single image, and is disabled with a
-        // negative cap (AC5).
-        let dt = if snapshot.gt.is_federated() {
-            #[allow(clippy::cast_possible_wrap)]
-            let cap = max_dets_per_image as i64;
-            dt.lvis_trim(cap)
-        } else {
-            dt
-        };
-        let caches = snapshot.caches();
-        iou_type
-            .run_cached(
-                &snapshot.gt,
-                &dt,
-                EvaluateParams {
-                    iou_thresholds: iou_thresholds(),
-                    area_ranges: &area,
-                    max_dets_per_image,
-                    use_cats,
-                    retain_iou,
-                },
-                parity,
-                caches,
-            )
-            .map_err(|e| PyValueError::new_err(format!("{e}")))
-    })?;
+    let (grid, retained_dt) =
+        py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
+            let dt = realize_dt(dt_payload)?;
+            // ADR-0026 AC2: federated datasets trim DTs at input time
+            // (mirrors `LVISResults.limit_dets_per_image` at construction).
+            // The trim is a no-op when fewer than `max_dets_per_image`
+            // DTs land on any single image, and is disabled with a
+            // negative cap (AC5).
+            let dt = if snapshot.gt.is_federated() {
+                #[allow(clippy::cast_possible_wrap)]
+                let cap = max_dets_per_image as i64;
+                dt.lvis_trim(cap)
+            } else {
+                dt
+            };
+            let caches = snapshot.caches();
+            let grid = iou_type
+                .run_cached(
+                    &snapshot.gt,
+                    &dt,
+                    EvaluateParams {
+                        iou_thresholds: iou_thresholds(),
+                        area_ranges: &area,
+                        max_dets_per_image,
+                        use_cats,
+                        retain_iou,
+                    },
+                    parity,
+                    caches,
+                )
+                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            Ok((grid, retain_iou.then_some(dt)))
+        })?;
     Ok(PyEvalGrid {
         inner: grid,
         parity,
+        retained_dt,
     })
 }
 
