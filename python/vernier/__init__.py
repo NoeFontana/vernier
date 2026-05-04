@@ -5,7 +5,7 @@ submodules:
 
 - :mod:`vernier.instance` — bbox / segm / boundary / keypoints (AP fold).
 - :mod:`vernier.panoptic` — panoptic-quality (PQ).
-- :mod:`vernier.semantic` — semantic-segmentation mIoU (ADR-0028, planned).
+- :mod:`vernier.semantic` — semantic-segmentation mIoU (ADR-0028).
 
 The top-level :mod:`vernier` namespace keeps only the cross-paradigm
 shared types and the pycocotools migration shim. Anything imported from
@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from vernier import instance, panoptic
+from vernier import instance, panoptic, semantic
 from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._core import version
@@ -31,6 +31,7 @@ __all__ = [
     "instance",
     "panoptic",
     "patch_pycocotools",
+    "semantic",
     "version",
 ]
 
