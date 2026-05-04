@@ -34,7 +34,7 @@ use pyo3::types::{PyDict, PyDictMethods};
 
 use vernier_semantic::{
     accumulate_confusion, summarize, ClassSemanticStats, ConfusionMatrix, ParityMode,
-    SemanticError, SemanticSummary,
+    SemanticError, SemanticSummary, StreamingSemanticEvaluator,
 };
 
 /// Per-image label-map shape `(height, width, flat_pixels)`. Aliased
@@ -446,12 +446,120 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     Ok(PySemanticSummary { inner: summary })
 }
 
+/// Streaming semantic-segmentation evaluator (ADR-0028 §"Streaming").
+///
+/// Wraps [`vernier_semantic::StreamingSemanticEvaluator`] for the
+/// Python side. Construct, call `update(image_id, gt, dt)` per
+/// image, then `snapshot()` (non-consuming) or `finalize()`
+/// (consuming) to read the [`PySemanticSummary`].
+///
+/// Concurrency: this pyclass is **not** `frozen` because `update`
+/// mutates internal state. Single-threaded per evaluator; callers
+/// needing concurrent updates use a pool-of-evaluators pattern,
+/// mirroring the instance `BackgroundEvaluator`.
+#[pyclass(module = "vernier._core", name = "StreamingSemanticEvaluator")]
+pub(crate) struct PyStreamingSemanticEvaluator {
+    inner: StreamingSemanticEvaluator,
+}
+
+#[pymethods]
+impl PyStreamingSemanticEvaluator {
+    #[new]
+    #[pyo3(signature = (n_classes, parity_mode, *, ignore_label = None))]
+    fn new(n_classes: u32, parity_mode: &str, ignore_label: Option<u32>) -> PyResult<Self> {
+        if n_classes == 0 {
+            return Err(PyValueError::new_err(
+                "StreamingSemanticEvaluator requires n_classes >= 1",
+            ));
+        }
+        let mode = parse_parity_mode(parity_mode)?;
+        Ok(Self {
+            inner: StreamingSemanticEvaluator::new(n_classes, ignore_label, mode),
+        })
+    }
+
+    /// Number of `update` calls accepted so far.
+    #[getter]
+    fn n_images(&self) -> usize {
+        self.inner.n_images()
+    }
+
+    /// Number of evaluation classes.
+    #[getter]
+    fn n_classes(&self) -> u32 {
+        self.inner.n_classes()
+    }
+
+    /// Fold one image's `(gt, dt)` label-map pair into the running
+    /// confusion matrix. Drops the GIL via `py.detach` (ADR-0006)
+    /// for the duration of the kernel walk.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 requires `PyReadonlyArray2` by value as a pyfunction argument; \
+                  the borrow lives only for the call's duration"
+    )]
+    fn update<'py>(
+        &mut self,
+        py: Python<'py>,
+        image_id: i64,
+        gt: PyReadonlyArray2<'py, u32>,
+        dt: PyReadonlyArray2<'py, u32>,
+    ) -> PyResult<()> {
+        let gt_view = gt.as_array();
+        let dt_view = dt.as_array();
+        let gt_shape = gt_view.shape();
+        let dt_shape = dt_view.shape();
+        if gt_shape != dt_shape {
+            return Err(semantic_error_to_pyerr(&SemanticError::ShapeMismatch {
+                image_id,
+                gt_shape: (gt_shape[0] as u32, gt_shape[1] as u32),
+                dt_shape: (dt_shape[0] as u32, dt_shape[1] as u32),
+            }));
+        }
+        let gt_buf: Vec<u32> = gt_view.iter().copied().collect();
+        let dt_buf: Vec<u32> = dt_view.iter().copied().collect();
+        py.detach(move || self.inner.update(image_id, &gt_buf, &dt_buf))
+            .map_err(|e| semantic_error_to_pyerr(&e))?;
+        Ok(())
+    }
+
+    /// Compute the [`PySemanticSummary`] from the current state
+    /// without consuming the evaluator.
+    fn snapshot(&self, py: Python<'_>) -> PySemanticSummary {
+        let summary = py.detach(|| self.inner.snapshot());
+        PySemanticSummary { inner: summary }
+    }
+
+    /// Consume the evaluator's internal state and produce the final
+    /// [`PySemanticSummary`]. After this call the evaluator object
+    /// is in a reset state with the same shape but zero
+    /// accumulation; further `update` / `snapshot` calls operate on
+    /// the reset state. Users who want strict consume-once semantics
+    /// should drop the Python reference instead.
+    fn finalize(&mut self, py: Python<'_>) -> PySemanticSummary {
+        let placeholder =
+            StreamingSemanticEvaluator::new(self.inner.n_classes(), None, ParityMode::default());
+        let consumed = std::mem::replace(&mut self.inner, placeholder);
+        let summary = py.detach(move || consumed.finalize());
+        PySemanticSummary { inner: summary }
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StreamingSemanticEvaluator(n_classes={}, n_images={})",
+            self.inner.n_classes(),
+            self.inner.n_images(),
+        )
+    }
+}
+
 /// Register semantic FFI symbols on the `vernier._core` module. Called
 /// from the `_core` `#[pymodule]` factory in `lib.rs`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyConfusionMatrix>()?;
     m.add_class::<PyClassSemanticStats>()?;
     m.add_class::<PySemanticSummary>()?;
+    m.add_class::<PyStreamingSemanticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_arrays, m)?)?;
     Ok(())
 }

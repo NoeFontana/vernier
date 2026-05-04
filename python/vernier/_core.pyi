@@ -564,3 +564,24 @@ def evaluate_semantic_from_arrays(
     ignore_label: int | None = ...,
     label_remap: dict[int, int] | None = ...,
 ) -> SemanticSummary: ...
+
+class StreamingSemanticEvaluator:
+    def __init__(
+        self,
+        n_classes: int,
+        parity_mode: str,
+        *,
+        ignore_label: int | None = ...,
+    ) -> None: ...
+    @property
+    def n_images(self) -> int: ...
+    @property
+    def n_classes(self) -> int: ...
+    def update(
+        self,
+        image_id: int,
+        gt: NDArray[np.uint32],
+        dt: NDArray[np.uint32],
+    ) -> None: ...
+    def snapshot(self) -> SemanticSummary: ...
+    def finalize(self) -> SemanticSummary: ...

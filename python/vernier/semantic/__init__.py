@@ -41,6 +41,9 @@ from vernier._core import (
 from vernier._core import (
     SemanticSummary as Summary,
 )
+from vernier._core import (
+    StreamingSemanticEvaluator as StreamingEvaluator,
+)
 
 __all__ = [
     "ADE20K_IGNORE_LABEL",
@@ -55,6 +58,7 @@ __all__ = [
     "Evaluator",
     "ParityMode",
     "Predictions",
+    "StreamingEvaluator",
     "Summary",
 ]
 
@@ -378,4 +382,38 @@ class Evaluator:
             parity_mode=self.parity_mode,
             ignore_label=gt.ignore_label,
             label_remap=dict(self.label_remap) if self.label_remap is not None else None,
+        )
+
+    def stream(self, n_classes: int, ignore_label: int | None = None) -> StreamingEvaluator:
+        """Build a :class:`StreamingEvaluator` that shares this
+        evaluator's ``parity_mode``.
+
+        Streaming usage:
+
+        .. code-block:: python
+
+            ev = vernier.semantic.Evaluator(parity_mode="strict").stream(
+                n_classes=19, ignore_label=255,
+            )
+            for image_id, gt_arr, dt_arr in batches:
+                ev.update(image_id, gt_arr, dt_arr)
+            summary = ev.finalize()
+
+        ``label_remap`` does not propagate to streaming today —
+        callers needing remap on a streaming path apply it on the DT
+        arrays themselves before each ``update`` call. (The remap is
+        a per-pixel rewrite that lives more cleanly on the data
+        producer's side; the streaming surface stays minimal per
+        ADR-0028 §"Streaming".)
+        """
+        if self.label_remap is not None:
+            raise NotImplementedError(
+                "Evaluator.stream does not yet propagate label_remap; "
+                "apply the remap on the DT arrays before each update call. "
+                "Wire-up is scoped to a follow-up if a real consumer materializes."
+            )
+        return StreamingEvaluator(
+            n_classes,
+            self.parity_mode,
+            ignore_label=ignore_label,
         )

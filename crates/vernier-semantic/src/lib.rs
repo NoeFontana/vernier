@@ -41,6 +41,7 @@
 pub mod error;
 pub mod kernel;
 pub mod parity;
+pub mod stream;
 pub mod summarize;
 
 pub use error::SemanticError;
@@ -49,6 +50,7 @@ pub use parity::{
     ParityMode, ADE20K_IGNORE_LABEL, CITYSCAPES_IGNORE_LABEL, ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA,
     ORACLE_MMSEGMENTATION_COMMIT_SHA, PASCAL_VOC_IGNORE_LABEL, SEMANTIC_PARITY_EPS,
 };
+pub use stream::StreamingSemanticEvaluator;
 pub use summarize::{summarize, ClassSemanticStats, SemanticSummary};
 
 /// Library version string. Useful for parity tracing in fixtures and
