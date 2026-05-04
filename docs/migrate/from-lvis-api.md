@@ -13,10 +13,10 @@ anyone moving an existing LVIS evaluation pipeline onto vernier.
 | `LVISResults(lvis_gt, dt_path, max_dets=300)` | `dt_bytes` (the trim is automatic on federated datasets) |
 | `LVISEval(lvis_gt, lvis_dt, iou_type="bbox").run()` | `Evaluator(iou=Bbox(), max_dets=(300,)).evaluate(dataset, dt_bytes)` (bbox / segm / boundary) |
 | `lvis_eval.print_results()` | `summary.pretty_lines()` (returns list, no stdout) |
-| `lvis_eval.results["AP"]` | `summary.lines[0].value` |
+| `lvis_eval.results["AP"]` | `summary.stats[0]` |
 
 The 13-entry summary plan (`AP, AP50, AP75, APs, APm, APl, APr, APc,
-APf, AR@300, ARs@300, ARm@300, ARl@300`) lands on `summary.lines` in
+APf, AR@300, ARs@300, ARm@300, ARl@300`) lands on `summary.stats` in
 that order when `Dataset.from_lvis_json(...)` flips the dataset into
 federated mode. No extra summarize call is needed.
 
