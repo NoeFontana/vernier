@@ -9,6 +9,24 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **Semantic-segmentation kernel + summarize** (ADR-0028 PR-B3) —
+  `vernier_semantic::kernel::accumulate_confusion` per-image
+  histogram fold (one pass over flattened `(H, W)` slices into a
+  `u64` `(n_classes, n_classes)` matrix; ignore-label mask before
+  the bincount per quirk **AJ2**; out-of-range DT silent-skip per
+  **AI4** strict-MS path). `ConfusionMatrix` is a flat-`Vec<u64>`
+  row-major shape that doubles as the FFI `(N, N)` numpy-view
+  source. `vernier_semantic::summarize::summarize` derives the
+  seven headline outputs (mIoU, FWIoU, pixel accuracy, mean
+  accuracy, per-class IoU/accuracy/precision, plus the confusion
+  matrix as a first-class output per **AL8**). `parity_mode`
+  selects NaN vs. 0.0 for zero-support per-class entries (quirk
+  **AL2**); means skip zero-support classes regardless of mode
+  (**AL3**, mirroring panopticapi **W2** and LVIS **AB3**). 16
+  unit tests (kernel + summarize) on hand-computed fixtures, all
+  pass in `--release` and debug. No SIMD per ADR-0028 §"Numerical
+  layout" — the kernel is integer/memory-bandwidth bound. Dataset
+  constructors and FFI surface land in PR-B5 / PR-B4 respectively.
 - **Semantic-segmentation crate scaffold** (ADR-0028 PR-B2) — new
   workspace member `crates/vernier-semantic/` with `Cargo.toml` /
   `lib.rs` / `error.rs` / `parity.rs`. Re-exports
