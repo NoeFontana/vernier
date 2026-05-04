@@ -1,0 +1,35 @@
+[package]
+name = "vernier-semantic"
+description = "Semantic-segmentation evaluation for the vernier evaluation library (ADR-0028)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["evaluation", "semantic", "segmentation", "miou", "metrics"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Per ADR-0028 §"Workspace and dependency direction": vernier-semantic
+# depends on vernier-core for ParityMode (ADR-0002), the Breakdown axis
+# (ADR-0016), the streaming-evaluator interface (ADR-0013), and the
+# result-tables interface (ADR-0019). This is the first dep-edge
+# asymmetry vs vernier-panoptic ⊥ vernier-core; the ADR justifies it
+# as concrete reuse rather than philosophical isolation.
+vernier-core = { path = "../vernier-core", version = "0.0.1" }
+# PNG decode for the from_files / cityscapes() / ade20k() / pascal_voc()
+# preset paths (ADR-0028 axis C2): single-format decoder (~150 KB), no
+# umbrella `image` crate. Same dep vernier-panoptic uses; if ever a
+# second user materializes, factoring through a `vernier-image` leaf is
+# the right cleanup (ADR-0028 §"Workspace and dependency direction").
+png = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

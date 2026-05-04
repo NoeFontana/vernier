@@ -7,6 +7,22 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+### Added
+
+- **Semantic-segmentation crate scaffold** (ADR-0028 PR-B2) — new
+  workspace member `crates/vernier-semantic/` with `Cargo.toml` /
+  `lib.rs` / `error.rs` / `parity.rs`. Re-exports
+  `vernier_core::parity::ParityMode` per ADR-0028 §"Workspace and
+  dependency direction" — the first dep-edge asymmetry vs.
+  `vernier-panoptic ⊥ vernier-core`, justified by concrete reuse.
+  Pins the per-dataset ignore-label conventions
+  (`CITYSCAPES_IGNORE_LABEL=255`, `ADE20K_IGNORE_LABEL=0`,
+  `PASCAL_VOC_IGNORE_LABEL=255`), class counts, and
+  `SEMANTIC_PARITY_EPS` placeholder. `SemanticError` enum surfaces
+  the corrected-disposition rows (AI3, AI4, AI6, AM1, AJ5) at the
+  dataset-constructor boundary. The kernel, summarize, dataset, and
+  FFI surfaces land in subsequent PRs (PR-B3..PR-B5).
+
 ### Changed (BREAKING — pre-1.0)
 
 - **Per-paradigm namespace restructure** (ADR-0029) — the public

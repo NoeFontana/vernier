@@ -1409,6 +1409,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernier-semantic"
+version = "0.0.1"
+dependencies = [
+ "png",
+ "proptest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "vernier-core",
+]
+
+[[package]]
 name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
