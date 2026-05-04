@@ -26,12 +26,12 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods};
 use serde::Deserialize;
 
+use crate::numpy_utils::parse_uint32_label_maps;
 use vernier_panoptic::{
     evaluate, CategoryId, CategoryMeta, ClassPanopticStats, ImageEntry, ImageId, PanopticDataset,
     PanopticError, PanopticPredictions, PanopticSummary, ParityMode, SegmentInfo,
@@ -107,45 +107,6 @@ fn parse_categories(bytes: &[u8]) -> Result<HashMap<CategoryId, CategoryMeta>, P
 }
 
 // ---------------------------------------------------------------------------
-// Label-map extraction: `Bound<PyDict>` -> `HashMap<ImageId, LabelMap>`.
-// Each value must be a 2-D contiguous uint32 array (panoptic-encoded
-// segment ids, post-rgb2id). Shape is read from the array.
-// ---------------------------------------------------------------------------
-
-/// `(height, width, flat_pixels)` triple — the post-decode shape the
-/// kernel consumes. Aliased to keep [`parse_label_maps`]' return type
-/// readable.
-type LabelMap = (u32, u32, Vec<u32>);
-
-fn parse_label_maps<'py>(label_maps: &Bound<'py, PyDict>) -> PyResult<HashMap<ImageId, LabelMap>> {
-    let mut out: HashMap<ImageId, LabelMap> = HashMap::with_capacity(label_maps.len());
-    for (key, value) in label_maps.iter() {
-        let image_id: ImageId = key.extract().map_err(|e| {
-            PyValueError::new_err(format!(
-                "panoptic label_maps dict key must be an integer image id: {e}"
-            ))
-        })?;
-        let arr: PyReadonlyArray2<u32> = value.extract().map_err(|e| {
-            PyValueError::new_err(format!(
-                "panoptic label_maps[{image_id}] must be a 2-D uint32 ndarray: {e}"
-            ))
-        })?;
-        let view = arr.as_array();
-        let (h, w) = (view.shape()[0], view.shape()[1]);
-        if h > u32::MAX as usize || w > u32::MAX as usize {
-            return Err(PyValueError::new_err(format!(
-                "panoptic label_maps[{image_id}] shape ({h}, {w}) exceeds u32 bounds"
-            )));
-        }
-        // Materialize to a flat Vec<u32>. The kernel walks pixel pairs
-        // linearly; row-major flatten is a single allocation.
-        let buf: Vec<u32> = view.iter().copied().collect();
-        out.insert(image_id, (h as u32, w as u32, buf));
-    }
-    Ok(out)
-}
-
-// ---------------------------------------------------------------------------
 // pyclasses
 // ---------------------------------------------------------------------------
 
@@ -170,7 +131,7 @@ impl PyPanopticDataset {
         segments_info: &[u8],
         categories: &[u8],
     ) -> PyResult<Self> {
-        let mut maps = parse_label_maps(label_maps)?;
+        let mut maps = parse_uint32_label_maps(label_maps, "panoptic")?;
         let segs = parse_segments_map(segments_info).map_err(panoptic_error_to_pyerr)?;
         let cats = parse_categories(categories).map_err(panoptic_error_to_pyerr)?;
 
@@ -230,7 +191,7 @@ impl PyPanopticPredictions {
     /// ([`PanopticError::DuplicateSegmentId`]).
     #[staticmethod]
     fn from_arrays<'py>(label_maps: &Bound<'py, PyDict>, segments_info: &[u8]) -> PyResult<Self> {
-        let mut maps = parse_label_maps(label_maps)?;
+        let mut maps = parse_uint32_label_maps(label_maps, "panoptic")?;
         let segs = parse_segments_map(segments_info).map_err(panoptic_error_to_pyerr)?;
 
         let mut images: HashMap<ImageId, ImageEntry> = HashMap::with_capacity(maps.len());

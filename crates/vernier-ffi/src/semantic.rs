@@ -37,54 +37,7 @@ use vernier_semantic::{
     SemanticError, SemanticSummary, StreamingSemanticEvaluator,
 };
 
-/// Per-image label-map shape `(height, width, flat_pixels)`. Aliased
-/// to keep [`parse_label_maps`]' return type readable.
-type LabelMap = (u32, u32, Vec<u32>);
-
-/// Image id type. Mirrors [`vernier_semantic::error::ImageId`] (`i64`)
-/// so the FFI surface uses one integer width across the project.
-type ImageId = i64;
-
-fn parse_label_maps<'py>(
-    label_maps: &Bound<'py, PyDict>,
-    side: &'static str,
-) -> PyResult<HashMap<ImageId, LabelMap>> {
-    let mut out: HashMap<ImageId, LabelMap> = HashMap::with_capacity(label_maps.len());
-    for (key, value) in label_maps.iter() {
-        let image_id: ImageId = key.extract().map_err(|e| {
-            PyValueError::new_err(format!(
-                "semantic {side} label_maps dict key must be an integer image id: {e}"
-            ))
-        })?;
-        let arr: PyReadonlyArray2<u32> = value.extract().map_err(|e| {
-            PyValueError::new_err(format!(
-                "semantic {side} label_maps[{image_id}] must be a 2-D uint32 ndarray: {e}"
-            ))
-        })?;
-        let view = arr.as_array();
-        let (h, w) = (view.shape()[0], view.shape()[1]);
-        if h > u32::MAX as usize || w > u32::MAX as usize {
-            return Err(PyValueError::new_err(format!(
-                "semantic {side} label_maps[{image_id}] shape ({h}, {w}) exceeds u32 bounds"
-            )));
-        }
-        // Materialize to a flat Vec<u32>. The kernel walks pixel pairs
-        // linearly; row-major flatten is a single allocation.
-        let buf: Vec<u32> = view.iter().copied().collect();
-        if out.insert(image_id, (h as u32, w as u32, buf)).is_some() {
-            // PyDict can't have duplicate keys, but extracting via
-            // `iter()` over the dict could in principle surface the
-            // same key twice for non-canonical Python mappings. The
-            // typed variant on the Rust side is DuplicateImageId; the
-            // FFI surfaces it as PyValueError so the user's catch
-            // site is consistent across the whole semantic surface.
-            return Err(PyValueError::new_err(format!(
-                "semantic {side} label_maps has duplicate image_id={image_id}"
-            )));
-        }
-    }
-    Ok(out)
-}
+use crate::numpy_utils::{parse_uint32_label_maps, ImageId, LabelMap};
 
 fn parse_label_remap(remap: Option<&Bound<'_, PyDict>>) -> PyResult<Option<HashMap<u32, u32>>> {
     match remap {
@@ -374,8 +327,8 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
         ));
     }
     let mode = parse_parity_mode(parity_mode)?;
-    let mut gt_maps = parse_label_maps(gt_label_maps, "gt")?;
-    let mut dt_maps = parse_label_maps(dt_label_maps, "dt")?;
+    let mut gt_maps = parse_uint32_label_maps(gt_label_maps, "semantic gt")?;
+    let mut dt_maps = parse_uint32_label_maps(dt_label_maps, "semantic dt")?;
     let remap = parse_label_remap(label_remap)?;
 
     // Validate that every GT image has a matching DT image. Quirk

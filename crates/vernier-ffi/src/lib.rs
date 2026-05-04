@@ -51,6 +51,7 @@ use vernier_core::{
 mod background;
 mod confusion;
 mod dataset;
+mod numpy_utils;
 mod panoptic;
 mod semantic;
 mod tables;

@@ -44,7 +44,7 @@ pub mod parity;
 pub mod stream;
 pub mod summarize;
 
-pub use error::SemanticError;
+pub use error::{DupSide, SemanticError};
 pub use kernel::{accumulate_confusion, ConfusionMatrix};
 pub use parity::{
     ParityMode, ADE20K_IGNORE_LABEL, CITYSCAPES_IGNORE_LABEL, ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA,
