@@ -1,6 +1,6 @@
 # ADR-0028: Add semantic segmentation as a `vernier-semantic` sibling crate
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-03
 - **Deciders:** @NoeFontana
 - **Consulted:** —

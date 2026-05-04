@@ -5,9 +5,14 @@ quirks of the three semantic-segmentation oracles vernier reckons
 with: `mmsegmentation` (the de-facto research reference),
 `cityscapesScripts` (the dataset-author reference for Cityscapes),
 and the Pascal VOC / ADE20K reference scripts (treated as
-documentation oracles, see disposition table below). ADR-0028 is the
-venue where the disposition table below is ratified; ADR-0030
-extends the survey with boundary-mIoU rows.
+documentation oracles, see disposition table below).
+
+> **Status:** ratified by ADR-0028 on 2026-05-04. The
+> `(quirk_id, oracle) → mode` disposition cells below are the
+> contract `crates/vernier-semantic/src/parity.rs` and the
+> `tests/python/parity_semantic/` harness implement against. ADR-0030
+> will extend the survey with boundary-mIoU rows when that subsystem
+> ships.
 
 This survey is intentionally **independent of**
 `docs/engineering/pycocotools-quirks.md`,
