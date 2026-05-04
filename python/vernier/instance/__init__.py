@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from typing import Final, Literal, NoReturn, overload
 
+from vernier._array_types import RLE, Detections, DetectionsInput
 from vernier._compat import ParityMode
 from vernier._confusion import confusion_matrix
 from vernier._core import (
@@ -47,10 +48,13 @@ from vernier._tide import (
 from vernier._types import EvalResult, TableName, TablesConfig, normalize_tables_arg
 
 __all__ = [
+    "RLE",
     "BackgroundEvaluator",
     "Bbox",
     "Boundary",
     "Dataset",
+    "Detections",
+    "DetectionsInput",
     "EvalResult",
     "Evaluator",
     "FpIouHistogram",

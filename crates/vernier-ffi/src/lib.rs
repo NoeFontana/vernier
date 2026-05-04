@@ -48,9 +48,11 @@ use vernier_core::{
     UpdateReport,
 };
 
+mod array_ingest;
 mod background;
 mod confusion;
 mod dataset;
+mod dlpack;
 mod numpy_utils;
 mod panoptic;
 mod semantic;
@@ -1227,13 +1229,38 @@ fn finalized_error() -> EvalError {
     }
 }
 
+/// `warnings.warn(msg, W)` from Rust — used by the cast-promotion latch,
+/// the soft-budget crossing, and the worker-scheduling path.
+pub(crate) fn emit_warning<W: pyo3::type_object::PyTypeInfo>(
+    py: Python<'_>,
+    msg: &str,
+) -> PyResult<()> {
+    let warnings = py.import("warnings")?;
+    let warn_class = py.get_type::<W>();
+    warnings.getattr("warn")?.call1((msg, warn_class))?;
+    Ok(())
+}
+
 impl StreamingState {
-    fn update(&mut self, json_bytes: &[u8]) -> Result<UpdateReport, EvalError> {
+    /// Run an `update`. The JSON arm defers parsing to the kernel-typed
+    /// `from_json_bytes`; the array arm wraps a pre-parsed
+    /// [`CocoDetections`] (ADR-0030). One match dispatches both.
+    fn run_update(&mut self, payload: UpdatePayload) -> Result<UpdateReport, EvalError> {
+        macro_rules! dispatch {
+            ($ev:expr) => {
+                match payload {
+                    UpdatePayload::Bytes(b) => $ev.update(&b),
+                    UpdatePayload::Parsed(d) => {
+                        $ev.update_parsed(ParsedDetections::from_detections(d))
+                    }
+                }
+            };
+        }
         match self {
-            Self::Bbox(ev) => ev.update(json_bytes),
-            Self::Segm(ev) => ev.update(json_bytes),
-            Self::Boundary(ev) => ev.update(json_bytes),
-            Self::Keypoints(ev) => ev.update(json_bytes),
+            Self::Bbox(ev) => dispatch!(ev),
+            Self::Segm(ev) => dispatch!(ev),
+            Self::Boundary(ev) => dispatch!(ev),
+            Self::Keypoints(ev) => dispatch!(ev),
             Self::Finalized => Err(finalized_error()),
         }
     }
@@ -1415,6 +1442,32 @@ fn streaming_tables_result(
     ))
 }
 
+/// One kernel-input payload bound for the streaming evaluator. The JSON
+/// path defers parsing to `vernier_core`; the array path materializes a
+/// [`CocoDetections`] under the GIL so the GIL-released worker call only
+/// has to wrap and run match.
+enum UpdatePayload {
+    Bytes(Vec<u8>),
+    Parsed(CocoDetections),
+}
+
+/// Classify and materialize the Python `detections=` argument into an
+/// [`UpdatePayload`] ready to cross `py.detach`. Shared by the streaming
+/// `update` and background `submit` entry points.
+fn build_update_payload<'py>(
+    py: Python<'py>,
+    detections: &Bound<'py, PyAny>,
+    iou_type: array_ingest::ArrayIouType,
+    cast_state: &array_ingest::CastState,
+) -> PyResult<UpdatePayload> {
+    Ok(match array_ingest::DetectionsArg::extract(detections)? {
+        array_ingest::DetectionsArg::Bytes(b) => UpdatePayload::Bytes(b),
+        array_ingest::DetectionsArg::Dicts(dicts) => UpdatePayload::Parsed(
+            array_ingest::dicts_to_detections(py, &dicts, iou_type, cast_state)?,
+        ),
+    })
+}
+
 /// Streaming evaluator surface (ADR-0013). Single-writer per the runtime
 /// `owner_thread` check; mutable state guarded by an internal `Mutex` so
 /// the pyclass can stay non-frozen and accept `&self` on its methods.
@@ -1422,6 +1475,13 @@ fn streaming_tables_result(
 struct PyStreamingEvaluator {
     state: Mutex<StreamingState>,
     owner_thread: Mutex<Option<std::thread::ThreadId>>,
+    /// Cached at construction so `update` does not need to lock `state`
+    /// just to learn which fields each `Detections` dict requires.
+    array_iou_type: array_ingest::ArrayIouType,
+    /// `Some(latch)` when `cast_inputs=True` — the latch fires the
+    /// `UserWarning` at most once. `None` when the strict ADR-0004
+    /// boundary is enforced.
+    cast_state: array_ingest::CastState,
 }
 
 impl PyStreamingEvaluator {
@@ -1466,6 +1526,7 @@ impl PyStreamingEvaluator {
         dilation_ratio = 0.02,
         sigmas = None,
         retain_iou = false,
+        cast_inputs = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1478,6 +1539,7 @@ impl PyStreamingEvaluator {
         dilation_ratio: f64,
         sigmas: Option<&Bound<'_, PyDict>>,
         retain_iou: bool,
+        cast_inputs: bool,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -1502,7 +1564,7 @@ impl PyStreamingEvaluator {
         // matching `EvalIouType` solely to reuse `area_ranges_for`'s
         // detection-vs-keypoints fork; this keeps the area-bucket
         // selection logic in one place.
-        let state = match iou_type {
+        let (state, array_iou_type) = match iou_type {
             "bbox" => {
                 let area = area_ranges_for(&EvalIouType::Bbox);
                 let params = OwnedEvaluateParams {
@@ -1514,7 +1576,7 @@ impl PyStreamingEvaluator {
                 };
                 let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                StreamingState::Bbox(ev)
+                (StreamingState::Bbox(ev), array_ingest::ArrayIouType::Bbox)
             }
             "segm" => {
                 let area = area_ranges_for(&EvalIouType::Segm);
@@ -1527,7 +1589,7 @@ impl PyStreamingEvaluator {
                 };
                 let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                StreamingState::Segm(ev)
+                (StreamingState::Segm(ev), array_ingest::ArrayIouType::Segm)
             }
             "boundary" => {
                 let iou_kind = boundary_iou_type(dilation_ratio)?;
@@ -1542,7 +1604,10 @@ impl PyStreamingEvaluator {
                 let kernel = BoundaryIou { dilation_ratio };
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                StreamingState::Boundary(ev)
+                (
+                    StreamingState::Boundary(ev),
+                    array_ingest::ArrayIouType::Boundary,
+                )
             }
             "keypoints" => {
                 let parsed_sigmas = match sigmas {
@@ -1563,7 +1628,10 @@ impl PyStreamingEvaluator {
                 let kernel = OksSimilarity::new(parsed_sigmas);
                 let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                StreamingState::Keypoints(ev)
+                (
+                    StreamingState::Keypoints(ev),
+                    array_ingest::ArrayIouType::Keypoints,
+                )
             }
             other => {
                 return Err(PyValueError::new_err(format!(
@@ -1575,23 +1643,29 @@ impl PyStreamingEvaluator {
         Ok(Self {
             state: Mutex::new(state),
             owner_thread: Mutex::new(None),
+            array_iou_type,
+            cast_state: array_ingest::new_cast_state(cast_inputs),
         })
     }
 
-    /// Submit a batch of detections (loadRes-shaped JSON bytes). Returns
-    /// an `_UpdateReportDict` describing what was accepted plus the
-    /// post-update memory total. Single-writer: only the first calling
-    /// thread is permitted to call this method.
+    /// Submit a batch of detections. Accepts either loadRes-shaped JSON
+    /// `bytes` (legacy) or an ADR-0030 `Detections` dict / sequence of
+    /// `Detections` dicts (numpy/DLPack). Returns an `_UpdateReportDict`
+    /// describing what was accepted plus the post-update memory total.
+    /// Single-writer: only the first calling thread is permitted to call
+    /// this method.
     fn update<'py>(
         &self,
         py: Python<'py>,
-        detections: &Bound<'py, PyBytes>,
+        detections: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyDict>> {
         self.check_owner_thread()?;
-        // Take an owned copy of the bytes so we can drop the GIL for the
-        // (potentially expensive) update_parsed call below. Cloning the
-        // wire payload once is cheap relative to the parse + match work.
-        let bytes: Vec<u8> = detections.as_bytes().to_vec();
+        // Build the kernel-input payload before dropping the GIL: the
+        // array path borrows DLPack views to materialize `DetectionInput`s,
+        // which requires Python-side reads.
+        let parsed_payload =
+            build_update_payload(py, detections, self.array_iou_type, &self.cast_state)?;
+
         // Lock inside `py.detach` so the `MutexGuard` (which is `!Send`)
         // never crosses the closure boundary on Send-checking. The
         // `Mutex` itself is `Send + Sync`, so a borrow of it is fine to
@@ -1602,7 +1676,7 @@ impl PyStreamingEvaluator {
                 let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
                     detail: "StreamingEvaluator state mutex poisoned".into(),
                 })?;
-                let report = guard.update(&bytes)?;
+                let report = guard.run_update(parsed_payload)?;
                 let memory = guard.memory_used_bytes();
                 Ok::<(UpdateReport, usize), EvalError>((report, memory))
             })
@@ -1611,13 +1685,13 @@ impl PyStreamingEvaluator {
         // `report.soft_warn_triggered` is set by the core evaluator
         // exactly once per stream — no FFI-side latch needed.
         if report.soft_warn_triggered {
-            let warnings = py.import("warnings")?;
-            let warn_class = py.get_type::<MemoryBudgetWarning>();
-            let msg = format!(
-                "StreamingEvaluator memory usage crossed the soft-warn threshold ({} bytes used)",
-                memory_used_bytes
-            );
-            warnings.getattr("warn")?.call1((msg, warn_class))?;
+            emit_warning::<MemoryBudgetWarning>(
+                py,
+                &format!(
+                    "StreamingEvaluator memory usage crossed the soft-warn threshold \
+                     ({memory_used_bytes} bytes used)"
+                ),
+            )?;
         }
 
         let dict = PyDict::new(py);
@@ -1809,6 +1883,23 @@ enum BackgroundEvalState {
     Finalized,
 }
 
+/// Post a kernel-typed [`ParsedDetections`] to the worker, using either
+/// the blocking or bounded-wait sender depending on `timeout`. Lifted
+/// out of `BackgroundEvalState::submit` so the JSON and array paths can
+/// share the same backpressure logic.
+fn send_parsed<K: vernier_core::EvalKernel + Send + 'static>(
+    ev: &background::BackgroundEvaluator<K>,
+    parsed: ParsedDetections<K>,
+    timeout: Option<Duration>,
+) -> Result<(), background::SubmitError> {
+    match timeout {
+        None => ev
+            .submit_blocking(parsed)
+            .map_err(background::SubmitError::Eval),
+        Some(t) => ev.submit_timeout(parsed, t),
+    }
+}
+
 /// Build the `EvalError` returned for any operation attempted after
 /// `finalize()` on the background surface. Mirrors [`finalized_error`].
 fn background_finalized_error() -> EvalError {
@@ -1818,59 +1909,34 @@ fn background_finalized_error() -> EvalError {
 }
 
 impl BackgroundEvalState {
-    /// Parse the wire-format detection bytes for the active kernel and
-    /// post the resulting batch to the worker. `timeout` mirrors the
-    /// Python `timeout=` parameter on `submit()`:
+    /// Post a detection batch to the worker. The JSON arm parses to
+    /// [`ParsedDetections`] inside the kernel-typed branch; the array arm
+    /// wraps a pre-parsed [`CocoDetections`] (ADR-0030). `timeout`
+    /// mirrors the Python `timeout=` parameter on `submit()`:
     ///
     /// - `None` → block forever (`submit_blocking`)
     /// - `Some(Duration::ZERO)` → single non-blocking attempt
     /// - `Some(t > 0)` → bounded wait
-    fn submit(
+    fn submit_payload(
         &self,
-        bytes: &[u8],
+        payload: UpdatePayload,
         timeout: Option<Duration>,
     ) -> Result<(), background::SubmitError> {
+        macro_rules! dispatch {
+            ($ev:expr, $K:ty) => {{
+                let parsed = match payload {
+                    UpdatePayload::Bytes(b) => ParsedDetections::<$K>::from_json_bytes(&b)
+                        .map_err(background::SubmitError::Eval)?,
+                    UpdatePayload::Parsed(d) => ParsedDetections::<$K>::from_detections(d),
+                };
+                send_parsed($ev, parsed, timeout)
+            }};
+        }
         match self {
-            Self::Bbox(ev) => {
-                let parsed = ParsedDetections::<BboxIou>::from_json_bytes(bytes)
-                    .map_err(background::SubmitError::Eval)?;
-                match timeout {
-                    None => ev
-                        .submit_blocking(parsed)
-                        .map_err(background::SubmitError::Eval),
-                    Some(t) => ev.submit_timeout(parsed, t),
-                }
-            }
-            Self::Segm(ev) => {
-                let parsed = ParsedDetections::<SegmIou>::from_json_bytes(bytes)
-                    .map_err(background::SubmitError::Eval)?;
-                match timeout {
-                    None => ev
-                        .submit_blocking(parsed)
-                        .map_err(background::SubmitError::Eval),
-                    Some(t) => ev.submit_timeout(parsed, t),
-                }
-            }
-            Self::Boundary(ev) => {
-                let parsed = ParsedDetections::<BoundaryIou>::from_json_bytes(bytes)
-                    .map_err(background::SubmitError::Eval)?;
-                match timeout {
-                    None => ev
-                        .submit_blocking(parsed)
-                        .map_err(background::SubmitError::Eval),
-                    Some(t) => ev.submit_timeout(parsed, t),
-                }
-            }
-            Self::Keypoints(ev) => {
-                let parsed = ParsedDetections::<OksSimilarity>::from_json_bytes(bytes)
-                    .map_err(background::SubmitError::Eval)?;
-                match timeout {
-                    None => ev
-                        .submit_blocking(parsed)
-                        .map_err(background::SubmitError::Eval),
-                    Some(t) => ev.submit_timeout(parsed, t),
-                }
-            }
+            Self::Bbox(ev) => dispatch!(ev, BboxIou),
+            Self::Segm(ev) => dispatch!(ev, SegmIou),
+            Self::Boundary(ev) => dispatch!(ev, BoundaryIou),
+            Self::Keypoints(ev) => dispatch!(ev, OksSimilarity),
             Self::Finalized => Err(background::SubmitError::Eval(background_finalized_error())),
         }
     }
@@ -2040,6 +2106,10 @@ fn submit_error_to_pyerr(py: Python<'_>, e: background::SubmitError) -> PyErr {
 #[pyclass(module = "vernier._core", name = "BackgroundEvaluator")]
 struct PyBackgroundEvaluator {
     state: Mutex<BackgroundEvalState>,
+    /// Cached at construction; same role as on `PyStreamingEvaluator`.
+    array_iou_type: array_ingest::ArrayIouType,
+    /// `Some` when `cast_inputs=True`. See `PyStreamingEvaluator::cast_state`.
+    cast_state: array_ingest::CastState,
 }
 
 impl PyBackgroundEvaluator {
@@ -2068,6 +2138,7 @@ impl PyBackgroundEvaluator {
         worker_nice = 5,
         shutdown_timeout_seconds = 5.0,
         retain_iou = false,
+        cast_inputs = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2085,6 +2156,7 @@ impl PyBackgroundEvaluator {
         worker_nice: i32,
         shutdown_timeout_seconds: f64,
         retain_iou: bool,
+        cast_inputs: bool,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -2115,7 +2187,7 @@ impl PyBackgroundEvaluator {
             shutdown_timeout: Duration::from_secs_f64(shutdown_timeout_seconds),
         };
 
-        let state = match iou_type {
+        let (state, array_iou_type) = match iou_type {
             "bbox" => {
                 let area = area_ranges_for(&EvalIouType::Bbox);
                 let params = OwnedEvaluateParams {
@@ -2129,7 +2201,10 @@ impl PyBackgroundEvaluator {
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
-                BackgroundEvalState::Bbox(bg)
+                (
+                    BackgroundEvalState::Bbox(bg),
+                    array_ingest::ArrayIouType::Bbox,
+                )
             }
             "segm" => {
                 let area = area_ranges_for(&EvalIouType::Segm);
@@ -2144,7 +2219,10 @@ impl PyBackgroundEvaluator {
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
-                BackgroundEvalState::Segm(bg)
+                (
+                    BackgroundEvalState::Segm(bg),
+                    array_ingest::ArrayIouType::Segm,
+                )
             }
             "boundary" => {
                 let iou_kind = boundary_iou_type(dilation_ratio)?;
@@ -2161,7 +2239,10 @@ impl PyBackgroundEvaluator {
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
-                BackgroundEvalState::Boundary(bg)
+                (
+                    BackgroundEvalState::Boundary(bg),
+                    array_ingest::ArrayIouType::Boundary,
+                )
             }
             "keypoints" => {
                 let parsed_sigmas = match sigmas {
@@ -2184,7 +2265,10 @@ impl PyBackgroundEvaluator {
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
-                BackgroundEvalState::Keypoints(bg)
+                (
+                    BackgroundEvalState::Keypoints(bg),
+                    array_ingest::ArrayIouType::Keypoints,
+                )
             }
             other => {
                 return Err(PyValueError::new_err(format!(
@@ -2195,6 +2279,8 @@ impl PyBackgroundEvaluator {
 
         let this = Self {
             state: Mutex::new(state),
+            array_iou_type,
+            cast_state: array_ingest::new_cast_state(cast_inputs),
         };
 
         // Briefly poll for the worker's startup scheduling result. The
@@ -2221,17 +2307,16 @@ impl PyBackgroundEvaluator {
             // scheduling"): MemoryBudgetWarning is for soft-budget
             // crossings, not scheduling. Emit-once is implicit — the
             // worker only stamps the outcome once.
-            let warnings = py.import("warnings")?;
-            let warn_class = py.get_type::<PyUserWarning>();
-            let full_msg = format!("BackgroundEvaluator scheduling: {msg}");
-            warnings.getattr("warn")?.call1((full_msg, warn_class))?;
+            emit_warning::<PyUserWarning>(py, &format!("BackgroundEvaluator scheduling: {msg}"))?;
         }
 
         Ok(this)
     }
 
-    /// Submit a parsed-JSON detection batch to the worker. `timeout`
-    /// controls backpressure:
+    /// Submit a detection batch to the worker. Accepts either loadRes-
+    /// shaped JSON `bytes` (legacy) or an ADR-0030 `Detections` dict /
+    /// sequence of `Detections` dicts (numpy/DLPack). `timeout` controls
+    /// backpressure:
     ///
     /// - `None` (default) → block until a slot is free
     /// - `0.0` → single non-blocking attempt; raise `QueueFullError` if
@@ -2242,7 +2327,7 @@ impl PyBackgroundEvaluator {
     fn submit(
         &self,
         py: Python<'_>,
-        detections: &Bound<'_, PyBytes>,
+        detections: &Bound<'_, PyAny>,
         timeout: Option<f64>,
     ) -> PyResult<()> {
         let timeout_dur = match timeout {
@@ -2256,10 +2341,9 @@ impl PyBackgroundEvaluator {
                 Some(Duration::from_secs_f64(t))
             }
         };
-        // Copy bytes out under the GIL so the parse + send can run with
-        // the GIL released. The kernel-typed parse happens inside
-        // `BackgroundEvalState::submit` to keep the dispatch single-site.
-        let bytes: Vec<u8> = detections.as_bytes().to_vec();
+
+        let payload = build_update_payload(py, detections, self.array_iou_type, &self.cast_state)?;
+
         let state_mutex = &self.state;
         let result = py.detach(move || {
             let guard = state_mutex.lock().map_err(|_| {
@@ -2267,7 +2351,7 @@ impl PyBackgroundEvaluator {
                     detail: "BackgroundEvaluator state mutex poisoned".into(),
                 })
             })?;
-            guard.submit(&bytes, timeout_dur)
+            guard.submit_payload(payload, timeout_dur)
         });
         result.map_err(|e| submit_error_to_pyerr(py, e))
     }

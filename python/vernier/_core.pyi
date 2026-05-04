@@ -5,6 +5,10 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
+from vernier._array_types import RLE as RLE
+from vernier._array_types import Detections as Detections
+from vernier._array_types import DetectionsInput as DetectionsInput
+
 #: LVIS category-frequency tier as a single-letter string (ADR-0026
 #: AB1). The `Dataset.category_frequency` accessor returns these
 #: values; the user-facing `vernier.Frequency` enum maps to and from
@@ -40,8 +44,9 @@ class StreamingEvaluator:
         dilation_ratio: float = ...,
         sigmas: dict[int, list[float]] | None = ...,
         retain_iou: bool = ...,
+        cast_inputs: bool = ...,
     ) -> None: ...
-    def update(self, detections: bytes) -> _UpdateReportDict: ...
+    def update(self, detections: DetectionsInput) -> _UpdateReportDict: ...
     def snapshot(self, *, running: bool = ...) -> Summary: ...
     def snapshot_with_tables(
         self,
@@ -105,8 +110,9 @@ class BackgroundEvaluator:
         worker_nice: int = ...,
         shutdown_timeout_seconds: float = ...,
         retain_iou: bool = ...,
+        cast_inputs: bool = ...,
     ) -> None: ...
-    def submit(self, detections: bytes, *, timeout: float | None = ...) -> None: ...
+    def submit(self, detections: DetectionsInput, *, timeout: float | None = ...) -> None: ...
     def snapshot(self, *, peek: bool = ...) -> Summary: ...
     def snapshot_with_tables(
         self,
