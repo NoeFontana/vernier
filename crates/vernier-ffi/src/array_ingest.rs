@@ -12,8 +12,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PySequence};
 
 use vernier_core::{
-    Bbox, CategoryId, CocoDetections, DetectionInput, ImageId, Segmentation, SegmentationRle,
-    SegmentationRleCounts,
+    Bbox, CategoryId, DetectionInput, ImageId, Segmentation, SegmentationRle, SegmentationRleCounts,
 };
 
 use crate::dlpack;
@@ -375,14 +374,17 @@ fn resolve_ascontiguousarray(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
 // Multi-image dispatch
 // ---------------------------------------------------------------------------
 
-/// Convert per-image dict payloads into a single `CocoDetections`,
-/// matching what `from_json_bytes` produces for the same logical input.
-pub(crate) fn dicts_to_detections(
+/// Convert per-image dict payloads into a flat `Vec<DetectionInput>`.
+/// `CocoDetections::from_inputs` is intentionally **not** called here:
+/// the consumer (foreground evaluator, streaming/background dispatch)
+/// runs it inside its own `py.detach` block so the HashMap build runs
+/// without holding the GIL.
+pub(crate) fn dicts_to_inputs(
     py: Python<'_>,
     dicts: &[Bound<'_, PyDict>],
     iou_type: ArrayIouType,
     cast_state: &CastState,
-) -> PyResult<CocoDetections> {
+) -> PyResult<Vec<DetectionInput>> {
     let ascontig = match cast_state {
         Some(_) => Some(resolve_ascontiguousarray(py)?),
         None => None,
@@ -395,8 +397,7 @@ pub(crate) fn dicts_to_detections(
     for dict in dicts {
         all_inputs.extend(extract_inputs_one(dict, iou_type, &ctx)?);
     }
-    CocoDetections::from_inputs(all_inputs)
-        .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}")))
+    Ok(all_inputs)
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +407,7 @@ pub(crate) fn dicts_to_detections(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vernier_core::CocoDetections;
 
     /// `from_inputs` of array-derived records yields the same indices as
     /// `from_json_bytes` for the same logical detections. The new path is

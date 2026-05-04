@@ -42,10 +42,10 @@ use vernier_core::{
     accumulate, evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints,
     evaluate_segm, evaluate_segm_cached, iou_thresholds, recall_thresholds, sort_max_dets,
     summarize_detection, summarize_with, summarize_with_lvis, AccumulateParams, Accumulated,
-    AreaRange, BboxIou, BoundaryIou, CocoDataset, CocoDetections, EvalDataset, EvalError, EvalGrid,
-    EvalImageMeta, EvaluateParams, MemoryBudget, OksSimilarity, OwnedEvaluateParams, ParityMode,
-    ParsedDetections, PerImageEval, SegmIou, StatRequest, StreamingEvaluator, Summary,
-    UpdateReport,
+    AreaRange, BboxIou, BoundaryIou, CocoDataset, CocoDetections, DetectionInput, EvalDataset,
+    EvalError, EvalGrid, EvalImageMeta, EvaluateParams, MemoryBudget, OksSimilarity,
+    OwnedEvaluateParams, ParityMode, ParsedDetections, PerImageEval, SegmIou, StatRequest,
+    StreamingEvaluator, Summary, UpdateReport,
 };
 
 mod array_ingest;
@@ -1322,15 +1322,17 @@ pub(crate) fn emit_warning<W: pyo3::type_object::PyTypeInfo>(
 
 impl StreamingState {
     /// Run an `update`. The JSON arm defers parsing to the kernel-typed
-    /// `from_json_bytes`; the array arm wraps a pre-parsed
-    /// [`CocoDetections`] (ADR-0030). One match dispatches both.
+    /// `from_json_bytes`; the array arm calls `from_inputs` here so the
+    /// HashMap build runs without the GIL (we're already inside
+    /// `py.detach` on every call site).
     fn run_update(&mut self, payload: UpdatePayload) -> Result<UpdateReport, EvalError> {
         macro_rules! dispatch {
             ($ev:expr) => {
                 match payload {
                     UpdatePayload::Bytes(b) => $ev.update(&b),
-                    UpdatePayload::Parsed(d) => {
-                        $ev.update_parsed(ParsedDetections::from_detections(d))
+                    UpdatePayload::Inputs(inputs) => {
+                        let detections = CocoDetections::from_inputs(inputs)?;
+                        $ev.update_parsed(ParsedDetections::from_detections(detections))
                     }
                 }
             };
@@ -1522,12 +1524,14 @@ fn streaming_tables_result(
 }
 
 /// One kernel-input payload bound for the streaming evaluator. The JSON
-/// path defers parsing to `vernier_core`; the array path materializes a
-/// [`CocoDetections`] under the GIL so the GIL-released worker call only
-/// has to wrap and run match.
+/// path holds the JSON bytes; the array path holds a flat
+/// `Vec<DetectionInput>`. **Neither** variant carries a constructed
+/// [`CocoDetections`] — the `from_inputs` HashMap build is
+/// intentionally deferred to the consumer's `py.detach` block so it
+/// doesn't hold the GIL.
 pub(crate) enum UpdatePayload {
     Bytes(Vec<u8>),
-    Parsed(CocoDetections),
+    Inputs(Vec<DetectionInput>),
 }
 
 /// Classify and materialize the Python `detections=` argument into an
@@ -1542,19 +1546,21 @@ pub(crate) fn build_update_payload<'py>(
 ) -> PyResult<UpdatePayload> {
     Ok(match array_ingest::DetectionsArg::extract(detections)? {
         array_ingest::DetectionsArg::Bytes(b) => UpdatePayload::Bytes(b),
-        array_ingest::DetectionsArg::Dicts(dicts) => UpdatePayload::Parsed(
-            array_ingest::dicts_to_detections(py, &dicts, iou_type, cast_state)?,
+        array_ingest::DetectionsArg::Dicts(dicts) => UpdatePayload::Inputs(
+            array_ingest::dicts_to_inputs(py, &dicts, iou_type, cast_state)?,
         ),
     })
 }
 
 /// Realize a Send-safe [`UpdatePayload`] inside `py.detach` into the
-/// [`CocoDetections`] the foreground pipeline takes by reference. JSON
-/// bytes are parsed lazily here so the parse runs without the GIL.
+/// [`CocoDetections`] the foreground pipeline takes by reference.
+/// `Bytes` is parsed via `from_json_bytes`; `Inputs` runs `from_inputs`
+/// — both happen without the GIL.
 pub(crate) fn realize_dt(payload: UpdatePayload) -> PyResult<CocoDetections> {
     match payload {
         UpdatePayload::Bytes(b) => parse_dt(&b),
-        UpdatePayload::Parsed(d) => Ok(d),
+        UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs(inputs)
+            .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }
 }
 
@@ -2044,7 +2050,11 @@ impl BackgroundEvalState {
                 let parsed = match payload {
                     UpdatePayload::Bytes(b) => ParsedDetections::<$K>::from_json_bytes(&b)
                         .map_err(background::SubmitError::Eval)?,
-                    UpdatePayload::Parsed(d) => ParsedDetections::<$K>::from_detections(d),
+                    UpdatePayload::Inputs(inputs) => {
+                        let detections = CocoDetections::from_inputs(inputs)
+                            .map_err(background::SubmitError::Eval)?;
+                        ParsedDetections::<$K>::from_detections(detections)
+                    }
                 };
                 send_parsed($ev, parsed, timeout)
             }};
