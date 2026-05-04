@@ -7,11 +7,37 @@
 [![crates.io vernier-cli](https://img.shields.io/crates/v/vernier-cli.svg?label=crates.io%20%7C%20vernier-cli)](https://crates.io/crates/vernier-cli)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-> High-performance, parity-preserving COCO-style evaluation for object detection,
-> instance segmentation, and keypoints. Rust core, Python frontend, optional CLI.
+> High-performance, parity-preserving evaluation for object detection,
+> instance / panoptic / semantic segmentation, and keypoints. Rust core,
+> Python frontend, optional CLI.
 
 **Status:** early development. Public API is unstable and the project is
 pre-1.0. See `docs/adr/` for the design decisions that are shaping it.
+
+## Three evaluation paradigms
+
+vernier ships three sibling submodules — pick the one whose **input shape**
+matches your model's output:
+
+```python
+import vernier
+
+# Detections (bbox / segm / boundary / keypoints) with scores → AP fold
+vernier.instance.Evaluator()
+
+# RGB-encoded panoptic PNGs + segments_info JSON → PQ
+vernier.panoptic.Evaluator()
+
+# Single-channel class-id label maps → mIoU / FWIoU / pAcc / mAcc
+vernier.semantic.Evaluator()
+```
+
+The submodules are mutually exclusive (different data models, different
+matching rules, different parity oracles). See
+[Three paradigms: instance, panoptic, semantic][three-paradigms] for when to
+use which.
+
+[three-paradigms]: docs/explanation/three-paradigms.md
 
 ## Why vernier
 
