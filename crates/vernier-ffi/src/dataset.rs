@@ -42,10 +42,25 @@ pub(crate) struct PyDataset {
 /// clones bundled for the per-call hand-off to `py.detach`. Adding a
 /// future cache slot (OKS visibility, segm GT counts) means one extra
 /// field here, not another `run_pipeline_*` argument.
+#[derive(Clone)]
 pub(crate) struct DatasetSnapshot {
     pub(crate) gt: Arc<CocoDataset>,
     pub(crate) boundary_cache: Arc<BoundaryGtCache>,
     pub(crate) segm_cache: Arc<SegmGtCache>,
+}
+
+impl DatasetSnapshot {
+    /// Wrap a freshly parsed [`CocoDataset`] in a snapshot with empty
+    /// per-kernel caches. Used by `evaluate_*_grid` (the JSON-bytes
+    /// path) so the grid can later hand back a [`PyDataset`] without
+    /// re-parsing.
+    pub(crate) fn from_parsed(gt: CocoDataset) -> Self {
+        Self {
+            gt: Arc::new(gt),
+            boundary_cache: Arc::new(BoundaryGtCache::new()),
+            segm_cache: Arc::new(SegmGtCache::new()),
+        }
+    }
 }
 
 impl DatasetSnapshot {
@@ -85,6 +100,18 @@ impl PyDataset {
     /// the dataset into `py.detach` without re-parsing the JSON.
     pub(crate) fn dataset_ref(&self) -> Arc<vernier_core::CocoDataset> {
         Arc::clone(&self.inner)
+    }
+
+    /// Reconstruct a handle from a [`DatasetSnapshot`] (three `Arc`
+    /// clones; no parsing). Used by `PyEvalGrid::dataset` so the
+    /// `tables=` path doesn't re-parse GT JSON the grid already
+    /// produced.
+    pub(crate) fn from_snapshot(s: DatasetSnapshot) -> Self {
+        Self {
+            inner: s.gt,
+            boundary_cache: s.boundary_cache,
+            segm_cache: s.segm_cache,
+        }
     }
 }
 
