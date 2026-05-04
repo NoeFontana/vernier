@@ -50,6 +50,8 @@ nav:
   - Home: index.md
   - Tutorials:
       - tutorials/README.md
+      - Your first evaluation: tutorials/first-evaluation.md
+      - Logging AP during training: tutorials/training-loop.md
       - Debugging with TIDE: tutorials/debugging-with-tide.md
   - Migrate:
       - migrate/README.md
@@ -63,6 +65,9 @@ nav:
       - how-to/README.md
       - Evaluate with the CLI: how-to/cli-eval.md
       - Inspect result tables: how-to/result-tables.md
+      - Evaluate with boundary IoU: how-to/boundary-iou.md
+      - Evaluate keypoints with OKS: how-to/keypoints-oks.md
+      - Evaluate on a background thread: how-to/background-evaluator.md
   - Reference:
       - reference/README.md
       - CLI output schema: reference/cli-output-schema.md
