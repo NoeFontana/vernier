@@ -41,17 +41,25 @@ use which.
 
 ## Why vernier
 
-Existing COCO evaluation tooling presents a forced choice: the reference
-`pycocotools` is correct-by-definition but slow and unmaintained; faster
-reimplementations exist but each comes with its own drift from the reference.
-vernier aims to provide a single library that is:
+`pycocotools==2.0.11` is the reference for COCO evaluation and it is slow
+and unmaintained. Faster reimplementations exist, but each silently fixes
+some quirks and not others, leaving users to discover the divergences
+empirically. vernier takes a third path:
 
-- **Bitwise identical** to the pycocotools reference on the minimal API
-- **Fast** — Rust core, SIMD-friendly data layout, zero-copy on the hot path
-- **Honest about quirks** — extended API offers corrected definitions
-  alongside the reference, with the difference documented per-quirk
-- **Embeddable** — pure-Rust core usable from CLI, ROS2 nodes, or any other
-  Rust program without dragging Python along
+- **Auditable parity.** Every divergence from `pycocotools` is filed in a
+  quirks survey under one of three dispositions — `strict`, `aligned`, or
+  `corrected` ([ADR-0002][adr-0002]). Strict mode reproduces `pycocotools`
+  bit-for-bit; opt-in corrected fixes are itemized.
+- **Drop-in shim.** `vernier.patch_pycocotools()` swaps the `COCOeval`
+  symbol in place so existing pycocotools-based scripts switch with one
+  line ([ADR-0007][adr-0007]).
+- **Rust core.** The matching kernel is Rust with runtime SIMD dispatch;
+  the FFI layer is data conversion only. The CLI ships as a static binary,
+  so CI pipelines can call vernier without provisioning a Python
+  interpreter.
+
+[adr-0002]: docs/adr/0002-three-tier-parity-model.md
+[adr-0007]: docs/adr/0007-patch-pycocotools-policy.md
 
 ## Install
 
