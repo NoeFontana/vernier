@@ -52,6 +52,7 @@ mod background;
 mod confusion;
 mod dataset;
 mod panoptic;
+mod semantic;
 mod tables;
 mod tide;
 
@@ -2528,5 +2529,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?;
     m.add("__version__", vernier_core::VERSION)?;
     panoptic::register(m)?;
+    semantic::register(m)?;
     Ok(())
 }

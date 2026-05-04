@@ -1386,6 +1386,7 @@ dependencies = [
  "thread-priority",
  "vernier-core",
  "vernier-panoptic",
+ "vernier-semantic",
 ]
 
 [[package]]
