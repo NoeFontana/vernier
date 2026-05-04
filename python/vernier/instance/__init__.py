@@ -372,7 +372,9 @@ class Evaluator:
 
         accum = grid.accumulate(max_dets_list)
         summary = accum.summarize(max_dets_list)
-        dataset = Dataset.from_json(gt)
+        # `evaluate_*_grid` parsed `gt` once and retained the dataset on
+        # the grid; reuse instead of paying a second JSON parse.
+        dataset = grid.dataset()
 
         per_image_batch = (
             per_image_to_arrow_pycapsule(grid, dataset) if "per_image" in requested else None

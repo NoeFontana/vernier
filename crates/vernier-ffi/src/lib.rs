@@ -131,6 +131,10 @@ struct PyEvalGrid {
     /// wrong path raises a typed error from
     /// [`per_detection_to_arrow_pycapsule`].
     retained_dt: Option<CocoDetections>,
+    /// Dataset snapshot the grid was built against. Three `Arc` clones
+    /// of `(gt, boundary_cache, segm_cache)`; reused by [`Self::dataset`]
+    /// so the result-tables Python wrapper doesn't re-parse GT JSON.
+    retained_dataset: dataset::DatasetSnapshot,
 }
 
 #[pymethods]
@@ -151,6 +155,14 @@ impl PyEvalGrid {
     #[getter]
     fn n_images(&self) -> usize {
         self.inner.n_images
+    }
+
+    /// Dataset handle the grid was built against. Returns the snapshot
+    /// captured at construction time — no re-parsing. For result-table
+    /// builders (`per_image`, `per_class`) that previously had to call
+    /// `Dataset.from_json(gt)` again on the tables= path.
+    fn dataset(&self) -> dataset::PyDataset {
+        dataset::PyDataset::from_snapshot(self.retained_dataset.clone())
     }
 
     /// Flat `[k][a][i]` list of pycocotools-shaped per-cell dicts. Each
@@ -501,30 +513,35 @@ fn evaluate_grid_impl(
     let gt_bytes = gt_json.as_bytes().to_vec();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
-    let (grid, retained_dt) =
-        py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let gt = parse_gt(&gt_bytes)?;
-            let dt = realize_dt(dt_payload)?;
-            let grid = iou_type
-                .run(
-                    &gt,
-                    &dt,
-                    EvaluateParams {
-                        iou_thresholds: iou_thresholds(),
-                        area_ranges: &area,
-                        max_dets_per_image,
-                        use_cats,
-                        retain_iou,
-                    },
-                    parity,
-                )
-                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-            Ok((grid, retain_iou.then_some(dt)))
-        })?;
+    type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
+    let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
+        let gt = parse_gt(&gt_bytes)?;
+        let dt = realize_dt(dt_payload)?;
+        let grid = iou_type
+            .run(
+                &gt,
+                &dt,
+                EvaluateParams {
+                    iou_thresholds: iou_thresholds(),
+                    area_ranges: &area,
+                    max_dets_per_image,
+                    use_cats,
+                    retain_iou,
+                },
+                parity,
+            )
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+        Ok((
+            grid,
+            retain_iou.then_some(dt),
+            dataset::DatasetSnapshot::from_parsed(gt),
+        ))
+    })?;
     Ok(PyEvalGrid {
         inner: grid,
         parity,
         retained_dt,
+        retained_dataset,
     })
 }
 
@@ -547,6 +564,7 @@ fn evaluate_grid_with_dataset_impl(
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
     let snapshot = gt.snapshot();
+    let retained_dataset = snapshot.clone();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     let (grid, retained_dt) =
@@ -586,6 +604,7 @@ fn evaluate_grid_with_dataset_impl(
         inner: grid,
         parity,
         retained_dt,
+        retained_dataset,
     })
 }
 
