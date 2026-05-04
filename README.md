@@ -50,11 +50,13 @@ empirically. vernier takes a third path:
   quirks survey under one of three dispositions — `strict`, `aligned`, or
   `corrected` ([ADR-0002][adr-0002]). Strict mode reproduces `pycocotools`
   bit-for-bit; opt-in corrected fixes are itemized.
-- **One install, not five.** Bbox / segm / keypoints AP, boundary IoU,
-  panoptic PQ, semantic mIoU, and LVIS federated all live inside vernier;
-  the alternative is wiring `pycocotools`, `bowenc0221/boundary-iou-api`,
-  `panopticapi`, `lvis-api`, and `mmsegmentation` together and reconciling
-  their JSON conventions. Each has a per-paradigm migration guide under
+- **A unified evaluation toolkit.** Whether you need bbox / segm /
+  keypoints AP, boundary IoU, panoptic PQ, semantic mIoU, or LVIS
+  federated, it all lives inside vernier. Instead of wrestling with
+  fragmented dependencies like `pycocotools`, `boundary-iou-api`,
+  `panopticapi`, `lvis-api`, or `mmsegmentation` — and reconciling
+  their competing JSON conventions — you get one consistent interface.
+  Each has a per-paradigm migration guide under
   [`docs/migrate/`](docs/migrate/).
 - **Drop-in shim.** `vernier.patch_pycocotools()` swaps the `COCOeval`
   symbol in place so existing pycocotools-based scripts switch with one
