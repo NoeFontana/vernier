@@ -9,6 +9,27 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **Semantic-segmentation Python wrapper + per-dataset presets**
+  (ADR-0028 PR-B5) — new `vernier.semantic` submodule (per ADR-0029)
+  exposing `Dataset` / `Predictions` / `Evaluator` frozen dataclasses
+  plus `Summary` / `ClassSemanticStats` / `ConfusionMatrix`
+  re-exports of the FFI pyclasses (under their unprefixed names).
+  `Dataset.from_arrays` and `Predictions.from_arrays` accept any
+  unsigned-integer dtype and upcast to `uint32` at the FFI boundary.
+  `Dataset.from_files` / `Predictions.from_files` decode single-
+  channel PNG label maps via lazy-imported Pillow (raises a
+  structured `ImportError` if Pillow is missing); RGB-encoded panoptic
+  PNGs are rejected with a typed message pointing at
+  `vernier.panoptic.Dataset`. `Predictions.from_binary_masks`
+  implements the **AN2** per-class binary-mask merge with explicit
+  `merge ∈ {"argmax", "first", "highest_class_id"}` selector and
+  `unlabeled_class` parameter (quirks **AN3**, **AN4**). Per-dataset
+  presets `Dataset.cityscapes` / `ade20k` / `pascal_voc` bake the
+  canonical `(n_classes, ignore_label)` constants from
+  `vernier_semantic::parity::*`. 23 new Python tests cover the
+  wrapper round-trip, dtype upcast, ignore-label / label-remap
+  propagation, binary-mask merge rules, RGB rejection, and
+  end-to-end PNG decode + evaluate.
 - **Semantic-segmentation FFI surface** (ADR-0028 PR-B4) —
   `vernier._core.evaluate_semantic_from_arrays(gt_label_maps,
   dt_label_maps, n_classes, parity_mode, *, ignore_label=None,
