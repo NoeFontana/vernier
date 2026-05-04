@@ -42,6 +42,7 @@ plugins:
   - redirects:
       redirect_maps:
         explanation/lvis-migration.md: migrate/from-lvis-api.md
+        explanation/panoptic-migration.md: migrate/from-panopticapi.md
   - mike:
       alias_type: symlink
       canonical_version: stable
@@ -55,7 +56,7 @@ nav:
       - migrate/README.md
       - From lvis-api: migrate/from-lvis-api.md
       - From mmsegmentation: migrate/from-mmsegmentation.md
-      - From panopticapi: explanation/panoptic-migration.md
+      - From panopticapi: migrate/from-panopticapi.md
       - From flat-root imports (0.0.x → 0.1.x): migrate/from-flat-root.md
   - How-to:
       - how-to/README.md

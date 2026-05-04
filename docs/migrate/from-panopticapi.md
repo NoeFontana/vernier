@@ -8,17 +8,24 @@ vernier.
 
 ## TL;DR — what to change
 
+The public surface lives under `vernier.panoptic` (per ADR-0029):
+
+```python
+from vernier.panoptic import Dataset, Evaluator, Predictions
+```
+
 | `panopticapi` | vernier |
 |---|---|
-| `pq_compute(gt_json_path, dt_json_path, gt_folder, dt_folder)` | `PanopticEvaluator().evaluate(gt: PanopticDataset, dt: PanopticPredictions)` |
-| `Image.open(...)` + `rgb2id(...)` | `np.array(Image.open(...), dtype=np.uint32)` then pass to `PanopticDataset.from_arrays` (which post-decodes via `id = R + 256·G + 256²·B`) |
-| Result dict `{"All", "Things", "Stuff", "per_class"}` | `PanopticSummary` with field accessors; `summary.to_dict(strict=True)` for the panopticapi-shape dict |
-| Multiprocessing pool default (`pq_compute`) | `PanopticEvaluator` runs single-threaded (ADR-0006). Strict-mode parity is against `pq_compute_single_core(proc_id=0)` directly |
+| `pq_compute(gt_json_path, dt_json_path, gt_folder, dt_folder)` | `Evaluator().evaluate(gt: Dataset, dt: Predictions)` |
+| `Image.open(...)` + `rgb2id(...)` | `np.array(Image.open(...), dtype=np.uint32)` then pass to `Dataset.from_arrays` (which post-decodes via `id = R + 256·G + 256²·B`) |
+| Result dict `{"All", "Things", "Stuff", "per_class"}` | `Summary` dataclass with field accessors; `summary.to_dict(strict=True)` for the panopticapi-shape dict |
+| Multiprocessing pool default (`pq_compute`) | `vernier.panoptic.Evaluator` runs single-threaded (ADR-0006). Strict-mode parity is against `pq_compute_single_core(proc_id=0)` directly |
 
-`PanopticEvaluator` is **not** a variant of `Evaluator` — it's a
-sibling class because PQ does not share the AP fold (one-to-one
-matching on `IoU > 0.5`, no score gradient, no T/R/A/M axes). Choose
-the class that matches your metric.
+`vernier.panoptic.Evaluator` is **not** a variant of
+`vernier.instance.Evaluator` — it's a sibling class because PQ does
+not share the AP fold (one-to-one matching on `IoU > 0.5`, no score
+gradient, no T/R/A/M axes). Choose the submodule that matches your
+metric.
 
 ## Single-threaded vs multi-process
 
@@ -44,8 +51,8 @@ parity claim against the single-core path is the deterministic anchor.
 
 ## Boundary PQ raises `NotImplementedError`
 
-`PanopticEvaluator(boundary=True)` raises
-`NotImplementedError` pointing at the **Q3 / Z1** follow-up ADR. The
+`Evaluator(boundary=True)` raises `NotImplementedError` pointing at
+the **Q3 / Z1** follow-up ADR. The
 composition rule in the [`bowenc0221/boundary-iou-api`][bowen-fork]
 fork's panoptic path is *not* the instance-case
 `min(mask_iou, boundary_iou)` and resolving it requires its own pass.
@@ -75,13 +82,12 @@ average across the two without filtering first.
 panopticapi's report is `[("All", None), ("Things", True),
 ("Stuff", False)]` — three independent unweighted means over their
 isthing-filtered subsets (quirk **W4**). vernier surfaces them as
-`PanopticSummary.{pq, sq, rq}` for All and
+`Summary.{pq, sq, rq}` for All and
 `{pq, sq, rq}_{things, stuff}` for the buckets.
 
-`PanopticEvaluator(things_stuff_split=False)` skips the bucket
-computation; the `_things` / `_stuff` accessors return `None`. Use
-this when you don't care about the breakdown — the kernel work is
-the same.
+`Evaluator(things_stuff_split=False)` skips the bucket computation;
+the `_things` / `_stuff` accessors return `None`. Use this when you
+don't care about the breakdown — the kernel work is the same.
 
 Note: panopticapi's `cat_isthing = label_info['isthing'] == 1` check
 treats `isthing` as int. vernier accepts `True/False` or `1/0`
@@ -98,12 +104,13 @@ discarded by the kernel. Don't try to suppress FPs by setting
 ## Categories are GT-side only
 
 `pred['categories']` is silently ignored by panopticapi (quirk **S9**).
-vernier's `PanopticPredictions.from_arrays(...)` constructor
-intentionally takes **no** `categories` argument; predictions
-reference the GT's category taxonomy by id alone. A category id in
-predictions that's not in GT raises a typed
-`PanopticError` at the FFI boundary
-(corrected over panopticapi's bare `KeyError`).
+vernier's `Predictions.from_arrays(...)` constructor intentionally
+takes **no** `categories` argument; predictions reference the GT's
+category taxonomy by id alone. A category id in predictions that's
+not in GT raises a structured `ValueError` at the FFI boundary —
+the Rust-side `PanopticError` enum surfaces as `ValueError` with a
+typed message (corrected over panopticapi's bare `KeyError`, ADR-0025
+quirk **Y6**).
 
 ## Per-class output shape
 
