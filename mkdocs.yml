@@ -7,11 +7,13 @@ strict: true
 docs_dir: docs
 
 # adr/ and engineering/ are in-tree internal references; not user-facing.
-# README.md is also excluded — docs/index.md is the landing page.
+# /README.md (anchored) is the top-level docs/README.md; docs/index.md is the
+# landing page. Subdirectory READMEs (tutorials/README.md etc.) are the
+# section landing pages — must not be excluded.
 exclude_docs: |
   adr/**
   engineering/**
-  README.md
+  /README.md
 
 theme:
   name: material
