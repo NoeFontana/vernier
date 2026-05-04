@@ -32,6 +32,11 @@ vernier-core = { path = "../vernier-core", version = "0.0.1" }
 # the FFI layer wires both through `_core` while keeping their kernels
 # independent.
 vernier-panoptic = { path = "../vernier-panoptic", version = "0.0.1" }
+# Semantic-segmentation evaluation crate (ADR-0028). Sibling to
+# vernier-panoptic; depends on vernier-core for ParityMode reuse (the
+# documented first asymmetry vs. panoptic). The FFI layer is the only
+# place the three paradigms (instance / panoptic / semantic) meet.
+vernier-semantic = { path = "../vernier-semantic", version = "0.0.1" }
 pyo3.workspace = true
 numpy.workspace = true
 # Arrow columnar buffers for ADR-0019 result tables. Subset is

@@ -9,6 +9,24 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **Semantic-segmentation FFI surface** (ADR-0028 PR-B4) —
+  `vernier._core.evaluate_semantic_from_arrays(gt_label_maps,
+  dt_label_maps, n_classes, parity_mode, *, ignore_label=None,
+  label_remap=None)` is the load-bearing pyfunction that drives the
+  Rust kernel + summarize pass under `py.detach` (ADR-0006). Inputs
+  are dicts mapping image_id (int) → 2-D `numpy.ndarray` of dtype
+  `uint32`. New pyclasses `SemanticSummary`, `ClassSemanticStats`,
+  `ConfusionMatrix` expose the per-class and global metrics; the
+  confusion matrix is materialized as a 2-D `numpy.uint64` array
+  via `ConfusionMatrix.counts()` (ADR-0028 §F1 first-class output).
+  GT image-id ordering is sorted for deterministic accumulation
+  (quirk **AM5** aligned). `label_remap` is pre-applied to DT
+  buffers at the FFI boundary (quirk **AK2**) so the hot kernel
+  loop avoids per-pixel dict lookups. PNG-decode (`from_files`) and
+  binary-mask (`from_binary_masks`) variants land in PR-B5
+  alongside the per-dataset preset constructors that drive them.
+  14 Python smoke tests pass; full workspace 465 Rust + 343 Python
+  green.
 - **Semantic-segmentation kernel + summarize** (ADR-0028 PR-B3) —
   `vernier_semantic::kernel::accumulate_confusion` per-image
   histogram fold (one pass over flattened `(H, W)` slices into a
