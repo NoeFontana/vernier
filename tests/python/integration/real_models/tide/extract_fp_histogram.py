@@ -88,7 +88,7 @@ def _run_cell(
 ) -> dict[str, Any]:
     iou = KERNEL_FACTORIES[kernel_name]()
     t0 = time.perf_counter()
-    h = vernier.fp_iou_histogram(gt_bytes, predictions, iou=iou)
+    h = vernier.instance.fp_iou_histogram(gt_bytes, predictions, iou=iou)
     elapsed = time.perf_counter() - t0
     max_iou = np.maximum(h.iou_same, h.iou_cross)
     return {

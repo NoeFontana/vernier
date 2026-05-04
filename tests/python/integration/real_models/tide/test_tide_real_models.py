@@ -37,8 +37,8 @@ from collections.abc import Callable
 import pytest
 
 import vernier
-from vernier import Bbox, Boundary, Segm
 from vernier._tide import KernelName
+from vernier.instance import Bbox, Boundary, Segm
 
 from ._rfdetr_predict import ModelName
 
@@ -52,7 +52,7 @@ _KERNELS: dict[KernelName, object] = {
 }
 
 
-def _assert_report_coherent(report: vernier.TideReport) -> None:
+def _assert_report_coherent(report: vernier.instance.TideReport) -> None:
     """Structural sanity invariants for any TIDE report.
 
     Per ADR-0021's correctness model: each per-bin delta is the mAP gain
@@ -103,7 +103,7 @@ def test_tide_coherence_on_real_predictions(
     RFDETRSegNano covers segm + boundary, since boundary IoU is computed
     from the same masks segm already needs).
     """
-    report = vernier.error_decomposition(
+    report = vernier.instance.error_decomposition(
         coco_gt_bytes,
         predictions_for(model_name),
         iou=_KERNELS[kernel_name],
@@ -125,8 +125,8 @@ def test_tide_determinism_on_real_predictions(
     paths.
     """
     predictions = predictions_for("nano")
-    a = vernier.error_decomposition(coco_gt_bytes, predictions, iou=Bbox())
-    b = vernier.error_decomposition(coco_gt_bytes, predictions, iou=Bbox())
+    a = vernier.instance.error_decomposition(coco_gt_bytes, predictions, iou=Bbox())
+    b = vernier.instance.error_decomposition(coco_gt_bytes, predictions, iou=Bbox())
 
     assert a == b, (
         f"non-deterministic TIDE: report A and B differ.\n"

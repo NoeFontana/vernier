@@ -1,4 +1,4 @@
-"""End-to-end smoke tests for :func:`vernier.confusion_matrix` (ADR-0023).
+"""End-to-end smoke tests for :func:`vernier.instance.confusion_matrix` (ADR-0023).
 
 Hand-computed expected counts on the existing TIDE fixtures cover the
 three kernels (bbox / segm / boundary) plus the two unsupported kernel
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import vernier
-from vernier import Bbox, Boundary, Dataset, Keypoints, Segm
+from vernier.instance import Bbox, Boundary, Dataset, Keypoints, Segm
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "oracle" / "tide" / "fixtures"
 
@@ -38,7 +38,7 @@ def _to_dict(df: object) -> dict[tuple[str, str], int]:
 
 def test_confusion_matrix_bbox_all_perfect_diagonal():
     gt, dt = _load("all_perfect")
-    df = vernier.confusion_matrix(gt, dt, iou=Bbox())
+    df = vernier.instance.confusion_matrix(gt, dt, iou=Bbox())
 
     assert df.columns == ["gt_class", "dt_class", "count"]
     cells = _to_dict(df)
@@ -47,7 +47,7 @@ def test_confusion_matrix_bbox_all_perfect_diagonal():
 
 def test_confusion_matrix_bbox_all_cls_off_diagonal():
     gt, dt = _load("all_cls")
-    df = vernier.confusion_matrix(gt, dt, iou=Bbox())
+    df = vernier.instance.confusion_matrix(gt, dt, iou=Bbox())
 
     cells = _to_dict(df)
     assert cells == {("1", "2"): 1, ("2", "1"): 1}
@@ -59,7 +59,7 @@ def test_confusion_matrix_bbox_all_bkg_fp_row_with_diagonal_covers():
     # DTs claim the GTs (the score order doesn't matter — the side
     # pass argmax picks the highest-IoU GT regardless of score).
     gt, dt = _load("all_bkg")
-    df = vernier.confusion_matrix(gt, dt, iou=Bbox())
+    df = vernier.instance.confusion_matrix(gt, dt, iou=Bbox())
 
     cells = _to_dict(df)
     assert cells == {
@@ -72,7 +72,7 @@ def test_confusion_matrix_bbox_all_bkg_fp_row_with_diagonal_covers():
 
 def test_confusion_matrix_bbox_with_ignore_excludes_crowd_from_missed():
     gt, dt = _load("with_ignore")
-    df = vernier.confusion_matrix(gt, dt, iou=Bbox())
+    df = vernier.instance.confusion_matrix(gt, dt, iou=Bbox())
 
     cells = _to_dict(df)
     # One TP (the regular GT on image 2), one FP (background DT on
@@ -82,7 +82,7 @@ def test_confusion_matrix_bbox_with_ignore_excludes_crowd_from_missed():
 
 def test_confusion_matrix_segm_all_perfect_diagonal():
     gt, dt = _load("segm_all_perfect")
-    df = vernier.confusion_matrix(gt, dt, iou=Segm())
+    df = vernier.instance.confusion_matrix(gt, dt, iou=Segm())
 
     cells = _to_dict(df)
     assert cells == {("1", "1"): 1, ("2", "2"): 1}
@@ -92,7 +92,7 @@ def test_confusion_matrix_boundary_all_perfect_diagonal():
     gt, dt = _load("boundary_all_perfect")
     # Default dilation_ratio of 0.02 matches the COCO setup the fixture
     # was authored for.
-    df = vernier.confusion_matrix(gt, dt, iou=Boundary())
+    df = vernier.instance.confusion_matrix(gt, dt, iou=Boundary())
 
     cells = _to_dict(df)
     # The boundary fixture has a single-class GT (cat 1) with two
@@ -108,32 +108,32 @@ def test_confusion_matrix_boundary_all_perfect_diagonal():
 def test_confusion_matrix_keypoints_rejected_per_adr_0024():
     gt, dt = _load("all_perfect")
     with pytest.raises(NotImplementedError, match="ADR-0024"):
-        vernier.confusion_matrix(gt, dt, iou=Keypoints())
+        vernier.instance.confusion_matrix(gt, dt, iou=Keypoints())
 
 
 def test_confusion_matrix_dataset_handle_rejected():
     gt, dt = _load("all_perfect")
     handle = Dataset.from_json(gt)
     with pytest.raises(NotImplementedError, match="Dataset handles"):
-        vernier.confusion_matrix(handle, dt, iou=Bbox())
+        vernier.instance.confusion_matrix(handle, dt, iou=Bbox())
 
 
 def test_confusion_matrix_use_cats_false_rejected():
     gt, dt = _load("all_perfect")
     with pytest.raises(ValueError, match="use_cats=False"):
-        vernier.confusion_matrix(gt, dt, iou=Bbox(), use_cats=False)
+        vernier.instance.confusion_matrix(gt, dt, iou=Bbox(), use_cats=False)
 
 
 def test_confusion_matrix_t_f_out_of_range_rejected():
     gt, dt = _load("all_perfect")
     with pytest.raises(ValueError, match="iou_threshold"):
-        vernier.confusion_matrix(gt, dt, iou=Bbox(), t_f=1.5)
+        vernier.instance.confusion_matrix(gt, dt, iou=Bbox(), t_f=1.5)
 
 
 def test_confusion_matrix_default_iou_is_bbox():
     # Omitting the `iou` kwarg should default to Bbox(), exercising
     # the same path as iou=Bbox() above.
     gt, dt = _load("all_perfect")
-    df = vernier.confusion_matrix(gt, dt)
+    df = vernier.instance.confusion_matrix(gt, dt)
     cells = _to_dict(df)
     assert cells == {("1", "1"): 1, ("2", "2"): 1}

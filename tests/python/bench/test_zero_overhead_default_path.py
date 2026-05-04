@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from vernier import Evaluator
+from vernier.instance import Evaluator
 from vernier._core import evaluate_bbox_summary
 
 

@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from vernier import BackgroundEvaluator, Evaluator
+from vernier.instance import BackgroundEvaluator, Evaluator
 
 # Three images, two categories. Same fixture shape as
 # `test_streaming_tables.py` but with explicit `id` on every detection so

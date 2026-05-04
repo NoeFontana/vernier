@@ -7,6 +7,26 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+### Changed (BREAKING — pre-1.0)
+
+- **Per-paradigm namespace restructure** (ADR-0029) — the public
+  Python surface splits across submodules: AP-fold types live under
+  `vernier.instance` (`Evaluator`, `Bbox`, `Segm`, `Boundary`,
+  `Keypoints`, `IouKind`, `Summary`, `EvalResult`, `Dataset`,
+  `StreamingEvaluator`, `BackgroundEvaluator`, the TIDE / table /
+  confusion-matrix surface, and the FFI exception classes); panoptic
+  types live under `vernier.panoptic` (`Evaluator`, `Dataset`,
+  `Predictions`, `Summary`, `ClassPanopticStats` — note the dropped
+  `Panoptic` prefix on the unqualified type names). The cross-paradigm
+  shared types (`ParityMode`, `Frequency`) and the pycocotools
+  migration shim (`COCOeval`, `patch_pycocotools`) stay at the root.
+  Per ADR-0029 §B1, no flat-root re-exports for moved symbols —
+  `from vernier import Evaluator` raises `ImportError`. Migration:
+  `python tools/migrate_imports.py --tree path/to/your/code` rewrites
+  most call sites mechanically; the script ships in this release for
+  external 0.0.x users to replay and is expected to be deleted in a
+  follow-up patch.
+
 ### Added
 
 - **Panoptic-quality (PQ) evaluation** (ADR-0025) — new sibling

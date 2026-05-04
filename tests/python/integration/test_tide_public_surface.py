@@ -1,4 +1,4 @@
-"""End-to-end tests for the public ``vernier.error_decomposition`` surface.
+"""End-to-end tests for the public ``vernier.instance.error_decomposition`` surface.
 
 The Rust ↔ numpy-oracle parity contract is exercised in
 :mod:`tests.python.oracle.tide.test_rust_matches_oracle` (per ADR-0021).
@@ -18,7 +18,15 @@ from typing import Any
 import pytest
 
 import vernier
-from vernier import Bbox, Boundary, Dataset, Keypoints, Segm, TideReport, error_decomposition
+from vernier.instance import (
+    Bbox,
+    Boundary,
+    Dataset,
+    Keypoints,
+    Segm,
+    TideReport,
+    error_decomposition,
+)
 
 _core = pytest.importorskip("vernier._core")
 for _required in (
@@ -201,7 +209,7 @@ def test_dataset_handle_raises_not_implemented_forward_compat() -> None:
     """Passing a :class:`Dataset` handle raises with a clear follow-up note.
 
     The type signature accepts ``Dataset`` for forward-compat (mirrors
-    :meth:`vernier.Evaluator.evaluate`'s overload), but the TIDE FFI is
+    :meth:`vernier.instance.Evaluator.evaluate`'s overload), but the TIDE FFI is
     not yet wired through the parsed-once cache (ADR-0020). 0.5.x
     follow-up.
     """
@@ -219,13 +227,14 @@ def test_unknown_iou_kind_raises_type_error() -> None:
 
 
 def test_public_symbols_exported() -> None:
-    """``vernier.error_decomposition`` / ``TideReport`` / ``TideConfig``
-    are reachable from the top-level package and listed in ``__all__``.
+    """``vernier.instance.error_decomposition`` / ``TideReport`` / ``TideConfig``
+    are reachable from the instance submodule and listed in its ``__all__``
+    (per ADR-0029).
     """
-    assert "error_decomposition" in vernier.__all__
-    assert "TideReport" in vernier.__all__
-    assert "TideConfig" in vernier.__all__
-    assert callable(vernier.error_decomposition)
+    assert "error_decomposition" in vernier.instance.__all__
+    assert "TideReport" in vernier.instance.__all__
+    assert "TideConfig" in vernier.instance.__all__
+    assert callable(vernier.instance.error_decomposition)
 
 
 def test_report_dict_round_trip() -> None:
@@ -252,7 +261,7 @@ def test_report_dict_round_trip() -> None:
     assert report.baseline_map == pytest.approx(0.42)
     assert report.delta["loc"] == pytest.approx(0.02)
     assert report.delta_all_fp_removed == pytest.approx(0.15)
-    assert report.config == vernier.TideConfig(t_f=0.5, t_b=0.1, kernel="bbox")
+    assert report.config == vernier.instance.TideConfig(t_f=0.5, t_b=0.1, kernel="bbox")
 
 
 def test_report_from_dict_rejects_unexpected_kernel() -> None:

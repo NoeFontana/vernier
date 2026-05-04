@@ -16,8 +16,8 @@ import json
 
 import pytest
 
-from vernier import Evaluator, StreamingEvaluator
 from vernier._core import per_class_to_arrow_pycapsule, per_image_to_arrow_pycapsule  # noqa: F401
+from vernier.instance import Evaluator, StreamingEvaluator
 
 # Three images, two categories. Designed so per_image and per_class
 # both have a non-trivial mix of TPs/FPs/FNs.

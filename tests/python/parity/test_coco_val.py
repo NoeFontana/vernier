@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from vernier import Evaluator, Keypoints
+from vernier.instance import Evaluator, Keypoints
 
 from ..coco_val_paths import (
     DT_ENV,

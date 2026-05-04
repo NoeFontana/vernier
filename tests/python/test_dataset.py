@@ -1,4 +1,4 @@
-"""Tests for the parsed-once ``vernier.Dataset`` handle (ADR-0020).
+"""Tests for the parsed-once ``vernier.instance.Dataset`` handle (ADR-0020).
 
 The bytes-path and Dataset-path must produce bit-equal Summaries on
 every kernel; the Dataset-path additionally exposes the GT-side
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from vernier import Bbox, Boundary, Dataset, Evaluator, Keypoints, Segm, Summary
+from vernier.instance import Bbox, Boundary, Dataset, Evaluator, Keypoints, Segm, Summary
 
 # Reuses the well-tested perfect-match fixtures already defined for the
 # bytes-path Evaluator suite. Keeps coverage tight to the new surface.

@@ -20,9 +20,9 @@ import numpy as np
 import pytest
 from pycocotools.coco import COCO
 
-import vernier
 from vernier import COCOeval
 from vernier._compat import PycocotoolsCOCOeval
+from vernier.instance import Evaluator, Keypoints
 
 FIXTURES = Path(__file__).parent / "parity" / "fixtures"
 
@@ -256,7 +256,7 @@ def test_keypoints_shim_matches_evaluator_api(
     perfect_match_kp_coco: tuple[COCO, COCO],
 ) -> None:
     # The shim's keypoints path dispatches to the same Rust kernel as
-    # `vernier.Evaluator(iou=Keypoints())`; on a shared GT/DT pair the
+    # `vernier.instance.Evaluator(iou=Keypoints())`; on a shared GT/DT pair the
     # summary statistics agree element-wise.
     gt, dt = perfect_match_kp_coco
     shim = COCOeval(gt, dt, iouType="keypoints", parity_mode="strict")
@@ -266,9 +266,7 @@ def test_keypoints_shim_matches_evaluator_api(
 
     gt_bytes = json.dumps(_kp_gt_dict()).encode()
     dt_bytes = json.dumps(_kp_dt_list()).encode()
-    direct = vernier.Evaluator(iou=vernier.Keypoints(), parity_mode="strict").evaluate(
-        gt_bytes, dt_bytes
-    )
+    direct = Evaluator(iou=Keypoints(), parity_mode="strict").evaluate(gt_bytes, dt_bytes)
     np.testing.assert_array_equal(shim.stats, np.asarray(direct.stats, dtype=np.float64))
 
 

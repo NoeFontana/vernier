@@ -1,6 +1,6 @@
 """TIDE error-decomposition reference oracle (numpy).
 
-Per ADR-0021, this module is the spec the Rust `vernier.error_decomposition`
+Per ADR-0021, this module is the spec the Rust `vernier.instance.error_decomposition`
 implementation is validated against. It is pure numpy / Python with no
 vernier imports. Correctness is pinned by hand-computed assertions on
 small synthetic fixtures (see `test_oracle.py`).

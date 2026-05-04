@@ -108,9 +108,9 @@ def _vernier_snapshot_full(
     dt_segs_bytes = json.dumps({str(k): v for k, v in dt_segs.items()}).encode()
     cats_bytes = json.dumps(list(cats_dict.values())).encode()
 
-    gt = vernier.PanopticDataset.from_arrays(gt_label_maps, gt_segs_bytes, cats_bytes)
-    dt = vernier.PanopticPredictions.from_arrays(dt_label_maps, dt_segs_bytes)
-    summary = vernier.PanopticEvaluator(parity_mode="corrected").evaluate(gt, dt)
+    gt = vernier.panoptic.Dataset.from_arrays(gt_label_maps, gt_segs_bytes, cats_bytes)
+    dt = vernier.panoptic.Predictions.from_arrays(dt_label_maps, dt_segs_bytes)
+    summary = vernier.panoptic.Evaluator(parity_mode="corrected").evaluate(gt, dt)
     return summary_to_snapshot(summary)
 
 

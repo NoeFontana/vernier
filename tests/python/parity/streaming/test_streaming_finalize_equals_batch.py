@@ -19,7 +19,7 @@ from typing import Literal
 
 import pytest
 
-import vernier
+from vernier.instance import Bbox, Evaluator, IouKind, Segm, StreamingEvaluator
 
 from ..conftest import shard_dt_bytes
 from ..test_parity import BBOX_FIXTURES, SEGM_FIXTURES
@@ -42,11 +42,11 @@ _PARITY_CASES: list[tuple[str, IouType]] = [
 ]
 
 
-def _iou_kernel(iou_type: IouType) -> vernier.IouKind:
+def _iou_kernel(iou_type: IouType) -> IouKind:
     if iou_type == "bbox":
-        return vernier.Bbox()
+        return Bbox()
     if iou_type == "segm":
-        return vernier.Segm()
+        return Segm()
     raise AssertionError(f"unhandled iou_type: {iou_type}")
 
 
@@ -59,12 +59,12 @@ def test_streaming_finalize_equals_batch(fixture: str, iou_type: IouType, n_shar
     gt_bytes = gt_path.read_bytes()
     dt_bytes = dt_path.read_bytes()
 
-    batch_summary = vernier.Evaluator(iou=_iou_kernel(iou_type), parity_mode="strict").evaluate(
+    batch_summary = Evaluator(iou=_iou_kernel(iou_type), parity_mode="strict").evaluate(
         gt_bytes, dt_bytes
     )
 
     shards = shard_dt_bytes(dt_path, n_shards=n_shards, seed=0xC0C0)
-    ev = vernier.StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
+    ev = StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
     for shard in shards:
         ev.update(shard)
     stream_summary = ev.finalize()

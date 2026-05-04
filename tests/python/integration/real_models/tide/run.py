@@ -65,7 +65,7 @@ def _run_cell(
 ) -> dict[str, Any]:
     iou = KERNEL_FACTORIES[kernel_name]()
     t0 = time.perf_counter()
-    report = vernier.error_decomposition(gt_bytes, predictions, iou=iou)
+    report = vernier.instance.error_decomposition(gt_bytes, predictions, iou=iou)
     elapsed = time.perf_counter() - t0
 
     return {

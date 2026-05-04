@@ -167,7 +167,7 @@ def predict_coco_val(
     the bytes without instantiating a model (which would download
     weights). On a miss, instantiates the model lazily, runs inference,
     writes the cache, and returns the bytes. Either way the bytes are
-    in the same shape ``vernier.error_decomposition`` consumes.
+    in the same shape ``vernier.instance.error_decomposition`` consumes.
 
     ``threshold=0.05`` is deliberately permissive — TIDE rewards keeping
     low-confidence FPs visible (they populate the Bkg / Bkg+Cls bins);

@@ -18,13 +18,13 @@ import json
 
 import pytest
 
-from vernier import Dataset, Evaluator
 from vernier._core import (
     Accumulated,
     EvalGrid,
     evaluate_bbox_grid,
     per_class_to_arrow_pycapsule,
 )
+from vernier.instance import Dataset, Evaluator
 
 # Two perfectly-overlapping detections on a single image, two
 # categories. Mirrors the shape of tests/python/test_evaluator.py's

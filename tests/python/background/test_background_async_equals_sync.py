@@ -17,7 +17,7 @@ from typing import Literal
 
 import pytest
 
-import vernier
+from vernier.instance import BackgroundEvaluator, StreamingEvaluator
 
 from ..parity.conftest import shard_dt_bytes
 
@@ -49,12 +49,12 @@ def test_background_finalize_equals_streaming(
 
     shards = shard_dt_bytes(dt_path, n_shards=n_shards, seed=0xC0C0)
 
-    streaming_ev = vernier.StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
+    streaming_ev = StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
     for shard in shards:
         streaming_ev.update(shard)
     streaming_summary = streaming_ev.finalize()
 
-    bg_ev = vernier.BackgroundEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
+    bg_ev = BackgroundEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
     for shard in shards:
         bg_ev.submit(shard)
     bg_summary = bg_ev.finalize()

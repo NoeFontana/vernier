@@ -22,7 +22,7 @@ from vernier._core import (
 if TYPE_CHECKING:  # pragma: no cover - type-checker only
     import polars as pl
 
-    from vernier import IouKind
+    from vernier.instance import IouKind
 
 
 def confusion_matrix(
@@ -124,7 +124,7 @@ def confusion_matrix(
     # reaching back up at module-import time would spin a cycle.
     # Calling :func:`confusion_matrix` is what triggers the lookup; by
     # then `vernier` is fully initialized.
-    from vernier import Bbox, Boundary, Keypoints, Segm
+    from vernier.instance import Bbox, Boundary, Keypoints, Segm
 
     if iou is None:
         iou = Bbox()

@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from vernier import Evaluator, TablesConfig
+from vernier.instance import Evaluator, TablesConfig
 
 # Three images, two categories. Designed to produce TPs, FPs, and at
 # least one matched (DT, GT) pair so per_pair has rows to emit.

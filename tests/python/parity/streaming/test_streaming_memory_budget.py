@@ -21,7 +21,7 @@ import warnings
 
 import pytest
 
-import vernier
+from vernier.instance import MemoryBudgetWarning, OutOfBudgetError, StreamingEvaluator
 
 
 def _make_gt(n_images: int) -> bytes:
@@ -68,7 +68,7 @@ def test_out_of_budget_error_carries_structured_attributes() -> None:
     # cell per (k=1, a=4, i)). Budget of 2000 → first update fits; the
     # second update overflows.
     gt = _make_gt(n_images=8)
-    ev = vernier.StreamingEvaluator(gt, memory_budget_bytes=2000)
+    ev = StreamingEvaluator(gt, memory_budget_bytes=2000)
 
     # First update should succeed (~900 bytes).
     ev.update(_make_dt_batch(1))
@@ -80,7 +80,7 @@ def test_out_of_budget_error_carries_structured_attributes() -> None:
         for image_id in range(2, 9):
             ev.update(_make_dt_batch(image_id))
 
-    with pytest.raises(vernier.OutOfBudgetError) as exc_info:
+    with pytest.raises(OutOfBudgetError) as exc_info:
         submit_until_overflow()
 
     exc = exc_info.value
@@ -100,14 +100,14 @@ def test_memory_budget_warning_fires_exactly_once() -> None:
     #   - 11 batches -> 8976 bytes  (still over soft, under hard; no re-warn)
     #   - 12 batches -> 9792 bytes  (still under 10000; clean re-warn check).
     gt = _make_gt(n_images=20)
-    ev = vernier.StreamingEvaluator(gt, memory_budget_bytes=10000)
+    ev = StreamingEvaluator(gt, memory_budget_bytes=10000)
 
     with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", vernier.MemoryBudgetWarning)
+        warnings.simplefilter("always", MemoryBudgetWarning)
         for image_id in range(1, 11):
             ev.update(_make_dt_batch(image_id))
 
-    matches = [w for w in caught if issubclass(w.category, vernier.MemoryBudgetWarning)]
+    matches = [w for w in caught if issubclass(w.category, MemoryBudgetWarning)]
     assert len(matches) == 1, (
         f"expected exactly one MemoryBudgetWarning across the first 10 updates, "
         f"got {len(matches)}: {[str(w.message) for w in matches]}"
@@ -116,11 +116,11 @@ def test_memory_budget_warning_fires_exactly_once() -> None:
     # Subsequent updates that keep us over 80% must NOT re-warn — the
     # soft-warn is one-shot per evaluator.
     with warnings.catch_warnings(record=True) as caught_again:
-        warnings.simplefilter("always", vernier.MemoryBudgetWarning)
+        warnings.simplefilter("always", MemoryBudgetWarning)
         ev.update(_make_dt_batch(11))
         ev.update(_make_dt_batch(12))
 
-    matches_again = [w for w in caught_again if issubclass(w.category, vernier.MemoryBudgetWarning)]
+    matches_again = [w for w in caught_again if issubclass(w.category, MemoryBudgetWarning)]
     assert matches_again == [], (
         f"expected zero further warnings, got {len(matches_again)}: "
         f"{[str(w.message) for w in matches_again]}"

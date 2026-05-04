@@ -1,6 +1,6 @@
 # ADR-0029: Restructure the public API into per-paradigm submodules
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-03
 - **Deciders:** @NoeFontana
 - **Consulted:** —
@@ -223,32 +223,63 @@ library).
 The old flat-root names are removed. Users update their
 imports:
 
-| 0.0.x                           | 0.1.0                                |
-|---------------------------------|--------------------------------------|
-| `vernier.Evaluator`             | `vernier.instance.Evaluator`         |
-| `vernier.Bbox`                  | `vernier.instance.Bbox`              |
-| `vernier.Segm`                  | `vernier.instance.Segm`              |
-| `vernier.Boundary`              | `vernier.instance.Boundary`          |
-| `vernier.Keypoints`             | `vernier.instance.Keypoints`         |
-| `vernier.IouKind`               | `vernier.instance.IouKind`           |
-| `vernier.Summary`               | `vernier.instance.Summary`           |
-| `vernier.EvalResult`            | `vernier.instance.EvalResult`        |
-| `vernier.StreamingEvaluator`    | `vernier.instance.StreamingEvaluator`|
-| `vernier.BackgroundEvaluator`   | `vernier.instance.BackgroundEvaluator`|
-| `vernier.CocoDataset`           | `vernier.instance.CocoDataset`       |
-| `vernier.CocoDetections`        | `vernier.instance.CocoDetections`    |
-| `vernier.PanopticEvaluator`     | `vernier.panoptic.Evaluator`         |
-| `vernier.PanopticDataset`       | `vernier.panoptic.Dataset`           |
-| `vernier.PanopticPredictions`   | `vernier.panoptic.Predictions`       |
-| `vernier.PanopticSummary`       | `vernier.panoptic.Summary`           |
-| `vernier.SemanticEvaluator`     | `vernier.semantic.Evaluator`         |
-| `vernier.SemanticDataset`       | `vernier.semantic.Dataset`           |
-| `vernier.SemanticPredictions`   | `vernier.semantic.Predictions`       |
-| `vernier.SemanticSummary`       | `vernier.semantic.Summary`           |
-| `vernier.ConfusionMatrix`       | `vernier.semantic.ConfusionMatrix`   |
-| `vernier.ParityMode`            | `vernier.ParityMode` (unchanged)     |
-| `vernier.COCOeval`              | `vernier.COCOeval` (unchanged)       |
-| `vernier.patch_pycocotools`     | `vernier.patch_pycocotools`          |
+| Before                              | After                                  |
+|-------------------------------------|----------------------------------------|
+| `vernier.Evaluator`                 | `vernier.instance.Evaluator`           |
+| `vernier.Bbox`                      | `vernier.instance.Bbox`                |
+| `vernier.Segm`                      | `vernier.instance.Segm`                |
+| `vernier.Boundary`                  | `vernier.instance.Boundary`            |
+| `vernier.Keypoints`                 | `vernier.instance.Keypoints`           |
+| `vernier.IouKind`                   | `vernier.instance.IouKind`             |
+| `vernier.Summary`                   | `vernier.instance.Summary`             |
+| `vernier.EvalResult`                | `vernier.instance.EvalResult`          |
+| `vernier.TableName`                 | `vernier.instance.TableName`           |
+| `vernier.TablesConfig`              | `vernier.instance.TablesConfig`        |
+| `vernier.StreamingEvaluator`        | `vernier.instance.StreamingEvaluator`  |
+| `vernier.BackgroundEvaluator`       | `vernier.instance.BackgroundEvaluator` |
+| `vernier.Dataset`                   | `vernier.instance.Dataset`             |
+| `vernier.MemoryBudgetWarning`       | `vernier.instance.MemoryBudgetWarning` |
+| `vernier.OutOfBudgetError`          | `vernier.instance.OutOfBudgetError`    |
+| `vernier.QueueFullError`            | `vernier.instance.QueueFullError`      |
+| `vernier.confusion_matrix`          | `vernier.instance.confusion_matrix`    |
+| `vernier.error_decomposition`       | `vernier.instance.error_decomposition` |
+| `vernier.fp_iou_histogram`          | `vernier.instance.fp_iou_histogram`    |
+| `vernier.FpIouHistogram`            | `vernier.instance.FpIouHistogram`      |
+| `vernier.TideConfig`                | `vernier.instance.TideConfig`          |
+| `vernier.TideReport`                | `vernier.instance.TideReport`          |
+| `vernier.PanopticEvaluator`         | `vernier.panoptic.Evaluator`           |
+| `vernier.PanopticDataset`           | `vernier.panoptic.Dataset`             |
+| `vernier.PanopticPredictions`       | `vernier.panoptic.Predictions`         |
+| `vernier.PanopticSummary`           | `vernier.panoptic.Summary`             |
+| `vernier.ClassPanopticStats`        | `vernier.panoptic.ClassPanopticStats`  |
+| `vernier.ParityMode`                | `vernier.ParityMode` (unchanged)       |
+| `vernier.Frequency`                 | `vernier.Frequency` (unchanged, shared)|
+| `vernier.COCOeval`                  | `vernier.COCOeval` (unchanged)         |
+| `vernier.patch_pycocotools`         | `vernier.patch_pycocotools`            |
+
+Three deferrals shape the table:
+
+- **No semantic-* rows.** `SemanticEvaluator`, `SemanticDataset`,
+  `SemanticPredictions`, `SemanticSummary`, `ConfusionMatrix` land
+  in `vernier.semantic` *as the implementation does*, under
+  ADR-0028. Pre-listing them here would commit this ADR to types
+  that don't exist yet.
+- **`Dataset` → `CocoDataset` rename deferred.** The FFI pyclass
+  is named `Dataset` today; renaming the constructor is a separate
+  source-compatibility break, scoped to a follow-up 0.0.x patch.
+  This ADR moves the symbol as `Dataset` into `vernier.instance`.
+- **No aspirational shared-type exports.** `Breakdown`, `Bucket`,
+  `CategoryMeta`, `ImageId`, `CategoryId`, `CocoDetections`, and
+  `CategoryFilter` were considered for the root surface in earlier
+  drafts but are not currently Python-exposed types; surfacing them
+  preemptively violates KISS. They land at the root if and when a
+  consumer (e.g., ADR-0028's `Breakdown`-aware semantic mIoU)
+  needs them.
+
+The `python/vernier/summarize/` submodule sketched in the layout
+diagram above is similarly deferred: it is created when the first
+cross-paradigm helper needs a home (planned alongside ADR-0028's
+result-tables follow-up), not as an empty placeholder.
 
 Pre-1.0 freedom + the small flat-root population (we have no
 external users on 0.0.x making this a "real" breaking change
