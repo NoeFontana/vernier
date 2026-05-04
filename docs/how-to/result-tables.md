@@ -16,7 +16,7 @@ pip install 'vernier[tables]'
 ```
 
 ```python
-from vernier import Evaluator
+from vernier.instance import Evaluator
 
 with open("instances_val2017.json", "rb") as f:
     gt = f.read()
@@ -99,7 +99,7 @@ the image.
 ## Confusion-pair analysis (within-class)
 
 ```python
-from vernier import Evaluator, TablesConfig
+from vernier.instance import Evaluator, TablesConfig
 
 result = Evaluator().evaluate(
     gt, dt,
@@ -159,7 +159,7 @@ PyCapsule-aware consumer reads it zero-copy.
 ## Memory budget for `per_pair`
 
 ```python
-from vernier import Evaluator, TablesConfig
+from vernier.instance import Evaluator, TablesConfig
 
 result = Evaluator().evaluate(
     gt, dt,

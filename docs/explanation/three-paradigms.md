@@ -114,7 +114,7 @@ considers things (stuff isn't instance-segmentable).
   `vernier.semantic`).
 - [Migrating from `mmsegmentation`](../migrate/from-mmsegmentation.md)
   — semantic-side migration.
-- [Migrating from `panopticapi`](panoptic-migration.md) —
+- [Migrating from `panopticapi`](../migrate/from-panopticapi.md) —
   panoptic-side migration.
 - [Migrating from `lvis-api`](../migrate/from-lvis-api.md) —
   long-tail-instance migration.

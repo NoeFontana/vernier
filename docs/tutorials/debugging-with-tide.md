@@ -10,9 +10,9 @@ that shows up as `Bkg=+3.0, Loc=+0.5` is a different bug than one that
 shows up as `Loc=+3.5`, and the fix lives in a different layer of the
 pipeline. TIDE is what tells you which.
 
-This tutorial walks through `vernier.error_decomposition` end-to-end:
-the call shape, what each bin means, how to choose thresholds, and
-where TIDE stops being the right tool.
+This tutorial walks through `vernier.instance.error_decomposition`
+end-to-end: the call shape, what each bin means, how to choose
+thresholds, and where TIDE stops being the right tool.
 
 ## Quick start
 
@@ -25,7 +25,7 @@ the match threshold but high enough to clear the background cutoff.
 ```python
 from pathlib import Path
 
-from vernier import Bbox, error_decomposition
+from vernier.instance import Bbox, error_decomposition
 
 fixture = Path("tests/python/oracle/tide/fixtures/all_loc")
 gt_bytes = (fixture / "gt.json").read_bytes()
@@ -171,10 +171,10 @@ per model checkpoint, not once per training step.
 ## Sibling capability
 
 For the related "which classes get confused with which" question, see
-`vernier.confusion_matrix(...)`. Where TIDE answers "what kind of
-error", a confusion matrix answers "between which two labels". The two
-are complementary; a model with high `cls` ΔmAP in TIDE is a candidate
-for confusion-matrix inspection.
+`vernier.instance.confusion_matrix(...)`. Where TIDE answers "what
+kind of error", a confusion matrix answers "between which two labels".
+The two are complementary; a model with high `cls` ΔmAP in TIDE is a
+candidate for confusion-matrix inspection.
 
 ## See also
 

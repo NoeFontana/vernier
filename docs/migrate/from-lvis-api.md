@@ -16,10 +16,9 @@ anyone moving an existing LVIS evaluation pipeline onto vernier.
 | `lvis_eval.results["AP"]` | `summary.lines[0].value` |
 
 The 13-entry summary plan (`AP, AP50, AP75, APs, APm, APl, APr, APc,
-APf, AR@300, ARs@300, ARm@300, ARl@300`) is reproduced via
-`vernier.summarize.lvis_default()`. The granular path (FFI grid +
-`Accumulated.summarize_lvis`) is the canonical entry; the
-`Evaluator` integration is in progress.
+APf, AR@300, ARs@300, ARm@300, ARl@300`) lands on `summary.lines` in
+that order when `Dataset.from_lvis_json(...)` flips the dataset into
+federated mode. No extra summarize call is needed.
 
 ## Sentinels: `-1` vs `0` vs `nan`
 

@@ -16,7 +16,7 @@ pip install vernier
 
 ```python
 from pathlib import Path
-from vernier import Bbox, Evaluator, Dataset
+from vernier.instance import Bbox, Dataset, Evaluator
 
 gt_bytes = Path("instances_val2017.json").read_bytes()
 dt_bytes = Path("detections.json").read_bytes()
