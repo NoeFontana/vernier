@@ -54,6 +54,9 @@ nav:
   - Migrate:
       - migrate/README.md
       - From lvis-api: migrate/from-lvis-api.md
+      - From mmsegmentation: migrate/from-mmsegmentation.md
+      - From panopticapi: explanation/panoptic-migration.md
+      - From flat-root imports (0.0.x → 0.1.x): migrate/from-flat-root.md
   - How-to:
       - how-to/README.md
       - Evaluate with the CLI: how-to/cli-eval.md
@@ -64,5 +67,6 @@ nav:
       - COCO summary stats: reference/coco-summary-stats.md
   - Explanation:
       - explanation/README.md
+      - Three paradigms (instance/panoptic/semantic): explanation/three-paradigms.md
       - TIDE and its limits: explanation/tide-and-its-limits.md
       - Why no per-image AP: explanation/why-no-per-image-ap.md

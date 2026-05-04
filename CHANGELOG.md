@@ -9,6 +9,19 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **Semantic-segmentation user docs** (ADR-0028 PR-B10) — three new
+  pages in `docs/`: `migrate/from-mmsegmentation.md` (semantic-side
+  migration recipe with preset / streaming / NaN-vs-0.0 /
+  binary-mask coverage), `explanation/three-paradigms.md` (paradigm
+  picker — when to reach for instance vs panoptic vs semantic, why
+  they're sibling submodules rather than a single evaluator with a
+  knob), and `migrate/from-flat-root.md` (the ADR-0029 namespace
+  migration recipe with the symbol-relocation table and the
+  `tools/migrate_imports.py` replay command). README updated to
+  feature the three-paradigm surface in a top-level section
+  alongside the install commands; `mkdocs.yml` nav surfaces all
+  three new pages plus the previously-orphaned panoptic migration
+  guide.
 - **Semantic-segmentation streaming evaluator** (ADR-0028 PR-B9
   partial — streaming only; Breakdown / result-tables follow-ups
   scoped to a future PR). New
