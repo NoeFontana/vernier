@@ -485,8 +485,7 @@ fn evaluate_grid_impl(
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
     let gt_bytes = gt_json.as_bytes().to_vec();
-    let cast_state = array_ingest::new_cast_state(cast_inputs);
-    let dt_payload = build_update_payload(py, dt, array_iou_of(&iou_type), &cast_state)?;
+    let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     let grid = py.detach(move || -> PyResult<EvalGrid> {
         let gt = parse_gt(&gt_bytes)?;
@@ -531,8 +530,7 @@ fn evaluate_grid_with_dataset_impl(
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
     let snapshot = gt.snapshot();
-    let cast_state = array_ingest::new_cast_state(cast_inputs);
-    let dt_payload = build_update_payload(py, dt, array_iou_of(&iou_type), &cast_state)?;
+    let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     let grid = py.detach(move || -> PyResult<EvalGrid> {
         let dt = realize_dt(dt_payload)?;
@@ -734,9 +732,11 @@ fn evaluate_summary_impl(
     // ascending ladder.
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
+    // The `PyBytes` borrow is GIL-tied; copy so the JSON parse can run
+    // inside `py.detach`. One memcpy per call buys a wider GIL-drop
+    // window for multi-threaded callers.
     let gt_bytes = gt_json.as_bytes().to_vec();
-    let cast_state = array_ingest::new_cast_state(cast_inputs);
-    let dt_payload = build_update_payload(py, dt, array_iou_of(&iou_type), &cast_state)?;
+    let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
 
     let summary = py.detach(move || -> PyResult<Summary> {
         let gt = parse_gt(&gt_bytes)?;
@@ -997,8 +997,7 @@ fn evaluate_summary_with_dataset_impl(
     require_nonempty_max_dets(&max_dets)?;
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
-    let cast_state = array_ingest::new_cast_state(cast_inputs);
-    let dt_payload = build_update_payload(py, dt, array_iou_of(&iou_type), &cast_state)?;
+    let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let snapshot = dataset.snapshot();
     let summary = py.detach(move || -> PyResult<Summary> {
         let dt = realize_dt(dt_payload)?;
@@ -1522,13 +1521,29 @@ pub(crate) fn realize_dt(payload: UpdatePayload) -> PyResult<CocoDetections> {
 
 /// Lighter-weight discriminator over [`EvalIouType`] used by the
 /// array-ingest validator to decide which fields are required.
-fn array_iou_of(iou: &EvalIouType) -> array_ingest::ArrayIouType {
-    match iou {
-        EvalIouType::Bbox => array_ingest::ArrayIouType::Bbox,
-        EvalIouType::Segm => array_ingest::ArrayIouType::Segm,
-        EvalIouType::Boundary { .. } => array_ingest::ArrayIouType::Boundary,
-        EvalIouType::Keypoints { .. } => array_ingest::ArrayIouType::Keypoints,
+impl From<&EvalIouType> for array_ingest::ArrayIouType {
+    fn from(iou: &EvalIouType) -> Self {
+        match iou {
+            EvalIouType::Bbox => Self::Bbox,
+            EvalIouType::Segm => Self::Segm,
+            EvalIouType::Boundary { .. } => Self::Boundary,
+            EvalIouType::Keypoints { .. } => Self::Keypoints,
+        }
     }
+}
+
+/// Resolve the Python `dt=` argument for the foreground evaluators.
+/// Bundles cast-state construction with the shared
+/// [`build_update_payload`] dispatch so each `*_impl` doesn't repeat the
+/// two-line preamble.
+fn prepare_dt_payload<'py>(
+    py: Python<'py>,
+    dt: &Bound<'py, PyAny>,
+    iou_type: &EvalIouType,
+    cast_inputs: bool,
+) -> PyResult<UpdatePayload> {
+    let cast_state = array_ingest::new_cast_state(cast_inputs);
+    build_update_payload(py, dt, iou_type.into(), &cast_state)
 }
 
 /// Streaming evaluator surface (ADR-0013). Single-writer per the runtime

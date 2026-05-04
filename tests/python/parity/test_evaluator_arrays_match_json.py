@@ -35,27 +35,25 @@ FIXTURES = Path(__file__).parent / "fixtures"
 _SEGM_FIXTURES = [f for f in SEGM_FIXTURES if f != "heterogeneous_dt_segm"]
 
 
-def _kp_sigmas(
-    sigmas: Mapping[int, tuple[float, ...]] | None,
-) -> Mapping[int, tuple[float, ...]] | None:
-    return sigmas
-
-
-def _iou_kind_for(iou_type: IouType, sigmas: Mapping[int, tuple[float, ...]] | None):
-    if iou_type == "bbox":
-        return Bbox()
-    if iou_type == "segm":
-        return Segm()
-    if iou_type == "boundary":
-        return Boundary()
-    return Keypoints(sigmas=sigmas or {})
+def _iou_kind_for(
+    iou_type: IouType, sigmas: Mapping[int, tuple[float, ...]] | None
+) -> Bbox | Segm | Boundary | Keypoints:
+    match iou_type:
+        case "bbox":
+            return Bbox()
+        case "segm":
+            return Segm()
+        case "boundary":
+            return Boundary()
+        case "keypoints":
+            return Keypoints(sigmas=sigmas or {})
 
 
 _PARITY_CASES: list[tuple[str, IouType, Mapping[int, tuple[float, ...]] | None]] = [
     *((f, "bbox", None) for f in BBOX_FIXTURES),
     *((f, "segm", None) for f in _SEGM_FIXTURES),
     *((f, "boundary", None) for f in _SEGM_FIXTURES),
-    *((f, "keypoints", _kp_sigmas(sigmas)) for f, sigmas in KEYPOINTS_FIXTURES),
+    *((f, "keypoints", sigmas) for f, sigmas in KEYPOINTS_FIXTURES),
 ]
 
 
