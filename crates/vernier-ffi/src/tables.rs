@@ -21,8 +21,8 @@ use pyo3::types::{PyAny, PyCapsule};
 
 use vernier_core::{
     aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
-    build_per_pair, iou_thresholds, BboxColumns, CocoDetections, EvalError, MatchStatus,
-    PerClassTable, PerDetectionTable, PerImageTable, PerPairTable, TablesConfig,
+    build_per_pair, iou_thresholds, BboxColumns, EvalError, MatchStatus, PerClassTable,
+    PerDetectionTable, PerImageTable, PerPairTable, TablesConfig,
 };
 
 use crate::dataset::PyDataset;
@@ -247,32 +247,42 @@ fn per_image_record_batch(table: &PerImageTable) -> Result<RecordBatch, arrow_sc
 
 /// Build a [`PerDetectionTable`] and return it as an Arrow record batch
 /// wrapped for PyCapsule export.
+///
+/// `dt` accepts the same shapes as `Evaluator.evaluate`'s `dt` argument:
+/// loadRes-shaped JSON `bytes`, a single per-image `Detections` dict, or
+/// a sequence of `Detections` dicts (ADR-0030). The per-detection table
+/// only reads `image_id`/`category_id`/`score`/`bbox`, so the array path
+/// is validated against the bbox-shape (rles/keypoints, if present, are
+/// ignored — the kernel-specific validation already happened when the
+/// caller built the [`PyEvalGrid`]).
 #[pyfunction]
-#[pyo3(signature = (grid, dt_json, with_geometry=false))]
+#[pyo3(signature = (grid, dt, with_geometry=false, cast_inputs=false))]
 pub(crate) fn per_detection_to_arrow_pycapsule(
     py: Python<'_>,
     grid: &PyEvalGrid,
-    dt_json: &Bound<'_, pyo3::types::PyBytes>,
+    dt: &Bound<'_, pyo3::types::PyAny>,
     with_geometry: bool,
+    cast_inputs: bool,
 ) -> PyResult<ArrowRecordBatchPy> {
     let inner_grid = grid.eval_grid_ref();
-    let dt_bytes = dt_json.as_bytes().to_vec();
+    let cast_state = crate::array_ingest::new_cast_state(cast_inputs);
+    let dt_payload =
+        crate::build_update_payload(py, dt, crate::array_ingest::ArrayIouType::Bbox, &cast_state)?;
     let cfg = TablesConfig {
         per_detection_with_geometry: with_geometry,
         ..TablesConfig::default()
     };
-    let table = py
-        .detach(move || -> Result<PerDetectionTable, EvalError> {
-            let dets = CocoDetections::from_json_bytes(&dt_bytes)?;
-            build_per_detection(
-                inner_grid,
-                &dets,
-                iou_thresholds(),
-                inner_grid.retained_ious.as_ref(),
-                &cfg,
-            )
-        })
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let table = py.detach(move || -> PyResult<PerDetectionTable> {
+        let dets = crate::realize_dt(dt_payload)?;
+        build_per_detection(
+            inner_grid,
+            &dets,
+            iou_thresholds(),
+            inner_grid.retained_ious.as_ref(),
+            &cfg,
+        )
+        .map_err(|e| PyValueError::new_err(format!("{e}")))
+    })?;
     let batch = per_detection_record_batch(&table).map_err(|e| arrow_err(&e))?;
     Ok(wrap_batch(batch))
 }

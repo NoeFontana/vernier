@@ -1,7 +1,8 @@
 # How to submit detections as numpy arrays or DLPack tensors
 
-`StreamingEvaluator.update(...)` and `BackgroundEvaluator.submit(...)`
-accept detections in two forms (per ADR-0030):
+`Evaluator.evaluate(...)`, `StreamingEvaluator.update(...)`, and
+`BackgroundEvaluator.submit(...)` all accept detections in two forms
+(per ADR-0030):
 
 - **JSON bytes** (legacy) — the COCO `loadRes` shape. One parser path,
   one `bytes.to_vec()` per call. Right when detections come from disk
@@ -13,6 +14,31 @@ accept detections in two forms (per ADR-0030):
 The matching kernel, accumulate, snapshot/finalize lifecycle, and
 parity contract are identical across both ingest paths — they share
 every line of code from `CocoDetections::from_inputs` onward.
+
+## The one-shot foreground case
+
+`Evaluator.evaluate(...)` accepts the same array-form `Detections` as
+the streaming/background paths:
+
+```python
+from vernier.instance import Evaluator, Bbox
+
+ev = Evaluator(iou=Bbox())
+
+# JSON bytes (existing behavior)
+summary = ev.evaluate(gt_bytes, dt_bytes)
+
+# Array form (no JSON serialization)
+detections = [
+    {"image_id": i, "boxes": b, "scores": s, "labels": l}
+    for i, b, s, l in zip(image_ids, boxes_per_image, scores_per_image, labels_per_image)
+]
+summary = ev.evaluate(gt_bytes, detections)
+```
+
+The `cast_inputs=True` opt-in on the `Evaluator` dataclass mirrors the
+streaming/background flag — it silently promotes f32→f64 / i32→i64 once
+per call with a `UserWarning`.
 
 ## The training-loop case
 

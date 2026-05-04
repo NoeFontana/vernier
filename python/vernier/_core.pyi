@@ -213,105 +213,117 @@ class ArrowRecordBatch:
 def version() -> str: ...
 def evaluate_bbox_summary(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_bbox_summary_with_dataset(
     gt: Dataset,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_bbox_grid(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
     retain_iou: bool = ...,
+    cast_inputs: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_bbox_grid_with_dataset(
     gt: Dataset,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
     retain_iou: bool = ...,
+    cast_inputs: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_segm_summary_with_dataset(
     gt: Dataset,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_segm_grid(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
     retain_iou: bool = ...,
+    cast_inputs: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
     dilation_ratio: float,
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_boundary_summary_with_dataset(
     gt: Dataset,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
     dilation_ratio: float,
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_boundary_grid(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
     dilation_ratio: float,
     retain_iou: bool = ...,
+    cast_inputs: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
     sigmas: dict[int, list[float]],
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_keypoints_summary_with_dataset(
     gt: Dataset,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
     sigmas: dict[int, list[float]],
+    cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_keypoints_grid(
     gt_json: bytes,
-    dt_json: bytes,
+    dt: DetectionsInput,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
     sigmas: dict[int, list[float]],
-    retain_iou: bool = ...,
+    cast_inputs: bool = ...,
 ) -> EvalGrid: ...
 
 class _TideDeltaDict(TypedDict):
@@ -439,8 +451,9 @@ def per_image_to_arrow_pycapsule(
 ) -> ArrowRecordBatch: ...
 def per_detection_to_arrow_pycapsule(
     grid: EvalGrid,
-    dt_json: bytes,
+    dt: DetectionsInput,
     with_geometry: bool = ...,
+    cast_inputs: bool = ...,
 ) -> ArrowRecordBatch: ...
 def per_pair_to_arrow_pycapsule(
     grid: EvalGrid,

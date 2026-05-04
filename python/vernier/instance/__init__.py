@@ -173,12 +173,18 @@ class Evaluator:
     for the selected ``iou`` kernel" (ADR-0012). Resolution happens at
     dispatch via :data:`_KERNEL_MAX_DETS`; explicit values always win.
     The current three kernels all resolve to ``(1, 10, 100)``.
+
+    ``cast_inputs`` (ADR-0030) gates one-shot ``f32→f64`` / ``i32→i64``
+    promotion when array-form ``Detections`` are passed to
+    :meth:`evaluate`; off by default to preserve the strict ADR-0004
+    boundary. JSON-bytes detections ignore this flag.
     """
 
     iou: IouKind = field(default_factory=Bbox)
     parity_mode: ParityMode = "corrected"
     max_dets: tuple[int, ...] | None = None
     use_cats: bool = True
+    cast_inputs: bool = False
 
     def _resolve_max_dets(self) -> list[int]:
         """Materialize the effective ``max_dets`` ladder for this evaluator.
@@ -199,6 +205,7 @@ class Evaluator:
         parity_mode: ParityMode | None = None,
         max_dets: tuple[int, ...] | None | _UnsetType = _UNSET,
         use_cats: bool | None = None,
+        cast_inputs: bool | None = None,
     ) -> Evaluator:
         """Return a copy of this evaluator with the given fields overridden.
 
@@ -215,13 +222,15 @@ class Evaluator:
             kwargs["max_dets"] = max_dets
         if use_cats is not None:
             kwargs["use_cats"] = use_cats
+        if cast_inputs is not None:
+            kwargs["cast_inputs"] = cast_inputs
         return replace(self, **kwargs)
 
     @overload
     def evaluate(
         self,
         gt: bytes | Dataset,
-        dt: bytes,
+        dt: DetectionsInput,
         *,
         tables: None = None,
         tables_config: TablesConfig | None = None,
@@ -231,7 +240,7 @@ class Evaluator:
     def evaluate(
         self,
         gt: bytes | Dataset,
-        dt: bytes,
+        dt: DetectionsInput,
         *,
         tables: Literal["all"] | tuple[TableName, ...],
         tables_config: TablesConfig | None = None,
@@ -240,18 +249,22 @@ class Evaluator:
     def evaluate(
         self,
         gt: bytes | Dataset,
-        dt: bytes,
+        dt: DetectionsInput,
         *,
         tables: Literal["all"] | tuple[TableName, ...] | None = None,
         tables_config: TablesConfig | None = None,
     ) -> Summary | EvalResult:
-        """Run the evaluation pipeline against a GT/DT JSON pair.
+        """Run the evaluation pipeline against a GT/DT pair.
 
-        ``dt`` is the raw COCO JSON payload as bytes (the same shape
-        pycocotools' ``COCO.loadRes(...)`` consumes). ``gt`` is either
-        the GT JSON bytes (parse-and-discard, identical to prior
-        behavior) or a :class:`Dataset` handle (parsed-once, with the
-        cache reused across calls — see ADR-0020).
+        ``dt`` accepts the COCO ``loadRes``-shaped JSON payload as
+        ``bytes``, **or** the array-form ``Detections`` shapes
+        introduced by ADR-0030 (a single per-image dict or a sequence
+        of them). The array path skips JSON serialization end-to-end
+        and reads NumPy / DLPack buffers directly into the kernel.
+
+        ``gt`` is either the GT JSON bytes (parse-and-discard, identical
+        to prior behavior) or a :class:`Dataset` handle (parsed-once,
+        with the cache reused across calls — see ADR-0020).
 
         ``tables=`` is the opt-in keyword for result tables. Defaults
         to ``None``, returning :class:`Summary` (existing behavior,
@@ -268,12 +281,16 @@ class Evaluator:
             return self._evaluate_with_dataset(gt, dt, max_dets_list)
         match self.iou:
             case Bbox():
-                return evaluate_bbox_summary(gt, dt, self.parity_mode, max_dets_list, self.use_cats)
+                return evaluate_bbox_summary(
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
+                )
             case Segm():
-                return evaluate_segm_summary(gt, dt, self.parity_mode, max_dets_list, self.use_cats)
+                return evaluate_segm_summary(
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
+                )
             case Boundary(dilation_ratio=r):
                 return evaluate_boundary_summary(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r, self.cast_inputs
                 )
             case Keypoints(sigmas=s):
                 return evaluate_keypoints_summary(
@@ -283,6 +300,7 @@ class Evaluator:
                     max_dets_list,
                     self.use_cats,
                     _normalize_sigmas(s),
+                    self.cast_inputs,
                 )
             case _:
                 _reject_unknown_iou(self.iou)
@@ -290,7 +308,7 @@ class Evaluator:
     def _evaluate_with_tables(
         self,
         gt: bytes | Dataset,
-        dt: bytes,
+        dt: DetectionsInput,
         max_dets_list: list[int],
         tables: Literal["all"] | tuple[TableName, ...],
         tables_config: TablesConfig,
@@ -321,6 +339,7 @@ class Evaluator:
                     max_dets_list[-1],
                     self.use_cats,
                     need_retention,
+                    self.cast_inputs,
                 )
             case Segm():
                 grid = evaluate_segm_grid(
@@ -330,6 +349,7 @@ class Evaluator:
                     max_dets_list[-1],
                     self.use_cats,
                     need_retention,
+                    self.cast_inputs,
                 )
             case Boundary(dilation_ratio=r):
                 grid = evaluate_boundary_grid(
@@ -340,6 +360,7 @@ class Evaluator:
                     self.use_cats,
                     r,
                     need_retention,
+                    self.cast_inputs,
                 )
             case Keypoints():
                 raise NotImplementedError(
@@ -360,7 +381,9 @@ class Evaluator:
             per_class_to_arrow_pycapsule(grid, accum, dataset) if "per_class" in requested else None
         )
         per_detection_batch = (
-            per_detection_to_arrow_pycapsule(grid, dt, tables_config.per_detection_with_geometry)
+            per_detection_to_arrow_pycapsule(
+                grid, dt, tables_config.per_detection_with_geometry, self.cast_inputs
+            )
             if "per_detection" in requested
             else None
         )
@@ -381,19 +404,21 @@ class Evaluator:
             _per_pair_batch=per_pair_batch,
         )
 
-    def _evaluate_with_dataset(self, gt: Dataset, dt: bytes, max_dets_list: list[int]) -> Summary:
+    def _evaluate_with_dataset(
+        self, gt: Dataset, dt: DetectionsInput, max_dets_list: list[int]
+    ) -> Summary:
         match self.iou:
             case Bbox():
                 return evaluate_bbox_summary_with_dataset(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
                 )
             case Segm():
                 return evaluate_segm_summary_with_dataset(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
                 )
             case Boundary(dilation_ratio=r):
                 return evaluate_boundary_summary_with_dataset(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r
+                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r, self.cast_inputs
                 )
             case Keypoints(sigmas=s):
                 return evaluate_keypoints_summary_with_dataset(
@@ -403,6 +428,7 @@ class Evaluator:
                     max_dets_list,
                     self.use_cats,
                     _normalize_sigmas(s),
+                    self.cast_inputs,
                 )
             case _:
                 _reject_unknown_iou(self.iou)
