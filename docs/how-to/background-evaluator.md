@@ -31,10 +31,11 @@ The context-manager form drains the worker queue and joins the
 thread on exit. Without it, call `evaluator.finalize()` (which
 also drains and joins).
 
-- **`submit(bytes, *, timeout=None)`** enqueues a batch; returns
-  immediately on success or raises `QueueFullError` if the queue
-  is at capacity (default queue size is set at construction via
-  `queue_capacity=`).
+- **`submit(detections, *, timeout=None)`** enqueues a batch (either
+  loadRes-shaped JSON bytes or a `Detections` dict / sequence of
+  dicts — see [array ingest](array-ingest.md)); returns immediately on
+  success or raises `QueueFullError` if the queue is at capacity
+  (default queue size is set at construction via `queue_capacity=`).
 - **`snapshot(peek=True)`** returns the current Summary against
   everything consumed so far without blocking the worker;
   `peek=False` waits for outstanding batches to drain first.
