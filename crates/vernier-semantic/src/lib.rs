@@ -39,13 +39,17 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod error;
+pub mod kernel;
 pub mod parity;
+pub mod summarize;
 
 pub use error::SemanticError;
+pub use kernel::{accumulate_confusion, ConfusionMatrix};
 pub use parity::{
     ParityMode, ADE20K_IGNORE_LABEL, CITYSCAPES_IGNORE_LABEL, ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA,
     ORACLE_MMSEGMENTATION_COMMIT_SHA, PASCAL_VOC_IGNORE_LABEL, SEMANTIC_PARITY_EPS,
 };
+pub use summarize::{summarize, ClassSemanticStats, SemanticSummary};
 
 /// Library version string. Useful for parity tracing in fixtures and
 /// for debugging mismatches between Rust and Python sides of the FFI
