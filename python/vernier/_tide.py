@@ -298,7 +298,7 @@ def _resolve_iou(iou: object) -> object:
     ``vernier`` imports from ``vernier._tide`` and vice versa).
     """
     if iou is None:
-        from vernier import Bbox  # local import: see docstring.
+        from vernier.instance import Bbox  # local import: see docstring.
 
         return Bbox()
     return iou
@@ -311,7 +311,7 @@ def _kernel_for(iou_kind: object) -> KernelName:
     """
     # Local import: avoids a top-level circular import with
     # ``vernier.__init__`` which re-exports :func:`error_decomposition`.
-    from vernier import Bbox, Boundary, Keypoints, Segm
+    from vernier.instance import Bbox, Boundary, Keypoints, Segm
 
     match iou_kind:
         case Bbox():
@@ -343,7 +343,7 @@ def _dispatch(
     use_cats: bool,
 ) -> _FFITideReportDict:
     """Call the right ``vernier._core.error_decomposition_*`` entry."""
-    from vernier import Bbox, Boundary, Segm
+    from vernier.instance import Bbox, Boundary, Segm
 
     match iou_kind:
         case Bbox():
@@ -528,7 +528,7 @@ def _dispatch_histogram(
     use_cats: bool,
 ) -> _FFIFpIouHistogramDict:
     """Call the right ``vernier._core.fp_iou_histogram_*`` entry."""
-    from vernier import Bbox, Boundary, Segm
+    from vernier.instance import Bbox, Boundary, Segm
 
     match iou_kind:
         case Bbox():

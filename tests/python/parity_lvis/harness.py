@@ -24,10 +24,11 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
+from vernier._core import evaluate_bbox_grid_with_dataset
+
 # The oracle goes via the vendored tree (conftest patches `sys.path`);
 # vernier ships an FFI grid helper used by the candidate path.
-from vernier import Dataset
-from vernier._core import evaluate_bbox_grid_with_dataset
+from vernier.instance import Dataset
 
 ImplName = Literal["vernier", "lvis_api"]
 

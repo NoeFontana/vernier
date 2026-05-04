@@ -153,8 +153,8 @@ def pq_stat_to_snapshot(
     )
 
 
-def summary_to_snapshot(summary: vernier.PanopticSummary) -> PanopticSnapshot:
-    """Project a `vernier.PanopticSummary` into a `PanopticSnapshot`.
+def summary_to_snapshot(summary: vernier.panoptic.Summary) -> PanopticSnapshot:
+    """Project a `vernier.panoptic.Summary` into a `PanopticSnapshot`.
     Coerces the `Option<f64>` / `Option<usize>` bucket fields to
     `0.0` / `0` for the empty-bucket case — panopticapi's
     `pq_average` returns the same shape (its `n!=0` guard avoids
@@ -192,16 +192,16 @@ def _vernier_snapshot(
     dt_segs_bytes = json.dumps({str(k): list(v) for k, v in segments_dt.items()}).encode()
     cats_bytes = json.dumps([dict(c) for c in categories]).encode()
 
-    gt = vernier.PanopticDataset.from_arrays(
+    gt = vernier.panoptic.Dataset.from_arrays(
         {int(k): v for k, v in label_maps_gt.items()},
         gt_segs_bytes,
         cats_bytes,
     )
-    dt = vernier.PanopticPredictions.from_arrays(
+    dt = vernier.panoptic.Predictions.from_arrays(
         {int(k): v for k, v in label_maps_dt.items()},
         dt_segs_bytes,
     )
-    summary = vernier.PanopticEvaluator(parity_mode=parity_mode, things_stuff_split=True).evaluate(
+    summary = vernier.panoptic.Evaluator(parity_mode=parity_mode, things_stuff_split=True).evaluate(
         gt, dt
     )
     return summary_to_snapshot(summary)

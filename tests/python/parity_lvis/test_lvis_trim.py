@@ -107,8 +107,8 @@ def _vernier_total_dts_seen(gt_bytes: bytes, dt_bytes: bytes, max_dets: int) -> 
     # We need the raw FFI dict (which carries `dtIds`); the parity
     # harness's snapshot path strips that key. Build a fresh grid
     # here just for the dedupe.
-    from vernier import Dataset
     from vernier._core import evaluate_bbox_grid_with_dataset
+    from vernier.instance import Dataset
 
     gt_ds = Dataset.from_lvis_json(gt_bytes)
     grid = evaluate_bbox_grid_with_dataset(gt_ds, dt_bytes, "strict", max_dets, True)
@@ -222,8 +222,8 @@ def test_lvis_trim_uses_well_separated_scores_for_strict_membership() -> None:
         Path(gt_path).unlink(missing_ok=True)
         Path(dt_path).unlink(missing_ok=True)
 
-    from vernier import Dataset
     from vernier._core import evaluate_bbox_grid_with_dataset
+    from vernier.instance import Dataset
 
     gt_ds = Dataset.from_lvis_json(gt_b)
     grid = evaluate_bbox_grid_with_dataset(gt_ds, dt_b, "strict", 300, True)

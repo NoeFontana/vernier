@@ -1,4 +1,4 @@
-"""End-to-end tests for the Phase 1 ``vernier.Evaluator`` extended API.
+"""End-to-end tests for the Phase 1 ``vernier.instance.Evaluator`` extended API.
 
 The Rust core's algorithmic behavior is exercised by the Rust test
 suite. These tests verify that the FFI bridge wires the dataset →
@@ -13,7 +13,7 @@ import json
 import pytest
 
 import vernier
-from vernier import Bbox, Boundary, Evaluator, Keypoints, Segm, Summary
+from vernier.instance import Bbox, Boundary, Evaluator, Keypoints, Segm, Summary
 
 # Two perfectly-overlapping detections on a single image; expected stats
 # collapse to 1.0 across every populated bucket and -1.0 elsewhere
@@ -200,18 +200,21 @@ def test_with_options_max_dets_tuple_overrides() -> None:
 
 
 def test_module_exports_public_api() -> None:
+    """Per ADR-0029, the AP-fold types live under :mod:`vernier.instance`;
+    only the cross-paradigm shared types and the pycocotools shim sit at
+    the root."""
     for name in (
         "Bbox",
         "Boundary",
         "Evaluator",
         "IouKind",
         "Keypoints",
-        "ParityMode",
         "Segm",
         "Summary",
-        "version",
     ):
-        assert hasattr(vernier, name), f"missing public export: {name}"
+        assert hasattr(vernier.instance, name), f"missing instance export: {name}"
+    for name in ("COCOeval", "ParityMode", "patch_pycocotools", "version"):
+        assert hasattr(vernier, name), f"missing root export: {name}"
 
 
 # --- Keypoints (OKS / ADR-0012) -----------------------------------------------

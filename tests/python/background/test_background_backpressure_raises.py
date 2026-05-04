@@ -1,7 +1,7 @@
 """``submit(timeout=0.0)`` raises a structured ``QueueFullError`` on saturation.
 
 The ``timeout=0.0`` (try-send) backpressure mode is documented to raise
-``vernier.QueueFullError`` immediately if the channel has no space. The
+``vernier.instance.QueueFullError`` immediately if the channel has no space. The
 exception carries the configured ``queue_capacity`` and the request's
 ``timeout`` so callers can build retry policy on top.
 
@@ -25,13 +25,13 @@ def test_queue_full_raises_with_structured_attrs() -> None:
     gt = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
     # `worker_nice=19` (lowest priority) gives the calling thread a
     # better chance at filling the queue before the worker drains it.
-    ev = vernier.BackgroundEvaluator(gt, queue_capacity=1, worker_nice=19)
-    captured: vernier.QueueFullError | None = None
+    ev = vernier.instance.BackgroundEvaluator(gt, queue_capacity=1, worker_nice=19)
+    captured: vernier.instance.QueueFullError | None = None
     try:
         for _ in range(50):
             try:
                 ev.submit(b"[]", timeout=0.0)
-            except vernier.QueueFullError as e:
+            except vernier.instance.QueueFullError as e:
                 captured = e
                 break
     finally:

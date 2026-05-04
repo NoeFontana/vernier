@@ -26,7 +26,7 @@ def test_invalid_affinity_warns_once() -> None:
     gt = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        ev = vernier.BackgroundEvaluator(gt, worker_affinity=999_999, worker_nice=-20)
+        ev = vernier.instance.BackgroundEvaluator(gt, worker_affinity=999_999, worker_nice=-20)
         ev.finalize()
 
     sched = [w for w in caught if "scheduling" in str(w.message).lower()]

@@ -18,7 +18,7 @@ from typing import Literal
 
 import pytest
 
-import vernier
+from vernier.instance import Bbox, Evaluator, IouKind, Segm, StreamingEvaluator
 
 from ..conftest import shard_dt_bytes
 
@@ -41,11 +41,11 @@ _SNAPSHOT_CASES: list[tuple[str, IouType]] = [
 ]
 
 
-def _iou_kernel(iou_type: IouType) -> vernier.IouKind:
+def _iou_kernel(iou_type: IouType) -> IouKind:
     if iou_type == "bbox":
-        return vernier.Bbox()
+        return Bbox()
     if iou_type == "segm":
-        return vernier.Segm()
+        return Segm()
     raise AssertionError(f"unhandled iou_type: {iou_type}")
 
 
@@ -71,11 +71,11 @@ def test_streaming_snapshot_matches_batch_on_prefix(fixture: str, iou_type: IouT
     prefix_shards = shards[: max(1, len(shards) // 2)]
     prefix_dt = _concat_shards(prefix_shards)
 
-    batch_summary = vernier.Evaluator(iou=_iou_kernel(iou_type), parity_mode="strict").evaluate(
+    batch_summary = Evaluator(iou=_iou_kernel(iou_type), parity_mode="strict").evaluate(
         gt_bytes, prefix_dt
     )
 
-    ev = vernier.StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
+    ev = StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
     for s in prefix_shards:
         ev.update(s)
     snap = ev.snapshot()

@@ -1,4 +1,4 @@
-"""End-to-end tests for ``vernier.fp_iou_histogram``.
+"""End-to-end tests for ``vernier.instance.fp_iou_histogram``.
 
 The Rust ↔ surface contract is exercised in
 ``crates/vernier-core/tests/tide_fp_iou_histogram.rs`` (5 tests on
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 import vernier
-from vernier import Bbox, Boundary, Keypoints, Segm, fp_iou_histogram
+from vernier.instance import Bbox, Boundary, Keypoints, Segm, fp_iou_histogram
 
 _FIXTURES_ROOT = Path(__file__).resolve().parents[1] / "oracle" / "tide" / "fixtures"
 
@@ -85,13 +85,13 @@ def test_iou_arrays_are_numpy_float64() -> None:
 
 def test_dataset_handle_rejected() -> None:
     gt, dt = _load("all_perfect")
-    ds = vernier.Dataset.from_json(gt)
+    ds = vernier.instance.Dataset.from_json(gt)
     with pytest.raises(NotImplementedError, match="Dataset handle"):
         fp_iou_histogram(ds, dt, iou=Bbox())
 
 
 def test_public_symbols_exported() -> None:
-    """``vernier.fp_iou_histogram`` and ``vernier.FpIouHistogram`` are
-    on the public surface alongside ``error_decomposition``."""
-    assert vernier.fp_iou_histogram is fp_iou_histogram
-    assert hasattr(vernier, "FpIouHistogram")
+    """``vernier.instance.fp_iou_histogram`` and ``vernier.instance.FpIouHistogram`` are
+    on the public surface alongside ``error_decomposition`` (per ADR-0029)."""
+    assert vernier.instance.fp_iou_histogram is fp_iou_histogram
+    assert hasattr(vernier.instance, "FpIouHistogram")

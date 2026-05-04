@@ -12,7 +12,7 @@ from typing import Literal
 
 import pytest
 
-import vernier
+from vernier.instance import BackgroundEvaluator, StreamingEvaluator
 
 from ..parity.conftest import shard_dt_bytes
 from .conftest import drain_until_idle
@@ -42,12 +42,12 @@ def test_background_snapshot_matches_streaming_on_prefix(fixture: str, iou_type:
     shards = shard_dt_bytes(dt_path, n_shards=2, seed=0xBAB1)
     prefix_shards = shards[: max(1, len(shards) // 2)]
 
-    streaming_ev = vernier.StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
+    streaming_ev = StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
     for s in prefix_shards:
         streaming_ev.update(s)
     streaming_snap = streaming_ev.snapshot()
 
-    bg_ev = vernier.BackgroundEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
+    bg_ev = BackgroundEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
     for s in prefix_shards:
         bg_ev.submit(s)
     drain_until_idle(bg_ev)

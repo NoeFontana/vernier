@@ -19,8 +19,8 @@ from typing import Any, Literal
 
 from coco_val_cache import cache_root as _coco_cache_dir
 
-from vernier import Bbox, Boundary, Segm
 from vernier._tide import KernelName
+from vernier.instance import Bbox, Boundary, Segm
 
 from ._rfdetr_predict import (
     ModelName,

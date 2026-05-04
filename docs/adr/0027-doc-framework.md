@@ -262,7 +262,7 @@ Auto-generation everywhere it's mechanically possible:
 
 - **Python API** — mkdocstrings reads the existing pyright-checked
   docstrings in `python/vernier/`. No hand-written API reference.
-  Page structure mirrors the namespace structure from ADR-0028:
+  Page structure mirrors the namespace structure from ADR-0029:
   `reference/python-api/instance.md`, `panoptic.md`, `semantic.md`,
   `summarize.md`, plus the top-level shared types.
 - **CLI** — `vernier-cli` uses clap's derive macros; a build-time
@@ -442,7 +442,7 @@ at 100%, ~12 days plus review cycles. Followup items add another
   prevent the failure mode where docs and code drift; auto-
   generation handles 80% of reference at zero ongoing cost. The
   trust signals (parity contract, benchmarks page, ADR list) are
-  navigable. The framework scales to ADR-0028's per-paradigm
+  navigable. The framework scales to ADR-0029's per-paradigm
   namespace by mirroring the IA structure.
 - **Negative.** ~24 days of blocking effort before 0.1.0 ships;
   this is not free, and competes with the implementation work for
@@ -558,13 +558,12 @@ at 100%, ~12 days plus review cycles. Followup items add another
 - ADR-0026 — LVIS federated evaluation. Migration-from-lvis-
   api guide ships with the implementation; the LVIS quirks
   survey renders into the quirks browser.
-- Semantic segmentation (ADR TBD — not yet proposed). Migration-from-
-  mmsegmentation guide ships with the implementation; the
-  semantic-segmentation quirks survey renders into the quirks
-  browser.
-- Namespace restructure (ADR TBD — not yet proposed). The Python API
-  reference's page structure mirrors `vernier.instance` /
-  `vernier.panoptic` / `vernier.semantic`.
+- ADR-0028 — Semantic segmentation. Migration-from-mmsegmentation
+  guide ships with the implementation; the semantic-segmentation
+  quirks survey renders into the quirks browser.
+- ADR-0029 — Namespace restructure. The Python API reference's
+  page structure mirrors `vernier.instance` / `vernier.panoptic` /
+  `vernier.semantic`.
 - `docs/engineering/release-runbook.md` — gains two
   documentation-related steps per the §"Toolchain" and
   §"Versioning" subsections.

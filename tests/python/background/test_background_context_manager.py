@@ -1,4 +1,4 @@
-"""``with vernier.BackgroundEvaluator(...) as ev:`` cleans up on exit.
+"""``with vernier.instance.BackgroundEvaluator(...) as ev:`` cleans up on exit.
 
 The training-loop persona: ``with`` block, simulated trainer crash
 inside, evaluator must shut its worker down so we don't leak threads
@@ -19,7 +19,7 @@ FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
 def test_context_manager_cleans_up_worker() -> None:
     gt = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
     try:
-        with vernier.BackgroundEvaluator(gt) as ev:
+        with vernier.instance.BackgroundEvaluator(gt) as ev:
             ev.submit(b"[]")
             raise ValueError("simulated trainer crash")
     except ValueError:

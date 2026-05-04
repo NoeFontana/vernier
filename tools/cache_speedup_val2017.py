@@ -31,7 +31,7 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from vernier import Boundary, Dataset, Evaluator
+from vernier.instance import Boundary, Dataset, Evaluator
 
 
 def _gt_path() -> Path:
