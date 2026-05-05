@@ -155,6 +155,24 @@ pub enum PanopticError {
         /// Human-readable description of the failure.
         detail: String,
     },
+
+    /// The streaming evaluator already saw this `image_id` — calling
+    /// `update` twice with the same id would produce a partial that
+    /// the cross-rank partition rule would reject. Surfaced eagerly
+    /// so the offending caller hits the error at the duplicate site
+    /// rather than later at merge time.
+    #[error("duplicate image_id={image_id} in panoptic streaming evaluator")]
+    DuplicateImageId {
+        /// The repeated image id.
+        image_id: i64,
+    },
+
+    /// Distributed-eval partial wire format / merge policy rejected
+    /// the partial (ADR-0032). Wraps [`vernier_partial::PartialError`]
+    /// so the FFI layer can map back to the same Python exception
+    /// classes the instance and semantic paradigms use.
+    #[error("{0}")]
+    Partial(#[from] vernier_partial::PartialError),
 }
 
 #[cfg(test)]

@@ -26,12 +26,14 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyDictMethods};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
 use serde::Deserialize;
 
 use crate::numpy_utils::parse_uint32_label_maps;
+use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
     evaluate, CategoryId, CategoryMeta, ClassPanopticStats, ImageEntry, ImageId, PanopticDataset,
     PanopticError, PanopticPredictions, PanopticSummary, ParityMode, SegmentInfo,
@@ -127,13 +129,14 @@ impl PyPanopticDataset {
     /// `categories` are JSON byte strings.
     #[staticmethod]
     fn from_arrays<'py>(
+        py: Python<'py>,
         label_maps: &Bound<'py, PyDict>,
         segments_info: &[u8],
         categories: &[u8],
     ) -> PyResult<Self> {
         let mut maps = parse_uint32_label_maps(label_maps, "panoptic")?;
-        let segs = parse_segments_map(segments_info).map_err(panoptic_error_to_pyerr)?;
-        let cats = parse_categories(categories).map_err(panoptic_error_to_pyerr)?;
+        let segs = parse_segments_map(segments_info).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
 
         let mut images: HashMap<ImageId, ImageEntry> = HashMap::with_capacity(maps.len());
         for (image_id, segments) in segs {
@@ -143,7 +146,7 @@ impl PyPanopticDataset {
                 ))
             })?;
             let entry = ImageEntry::from_components(image_id, h, w, label_map, segments, "gt")
-                .map_err(panoptic_error_to_pyerr)?;
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
             images.insert(image_id, entry);
         }
 
@@ -190,9 +193,13 @@ impl PyPanopticPredictions {
     /// (quirk **S3**), and rejects duplicate ids
     /// ([`PanopticError::DuplicateSegmentId`]).
     #[staticmethod]
-    fn from_arrays<'py>(label_maps: &Bound<'py, PyDict>, segments_info: &[u8]) -> PyResult<Self> {
+    fn from_arrays<'py>(
+        py: Python<'py>,
+        label_maps: &Bound<'py, PyDict>,
+        segments_info: &[u8],
+    ) -> PyResult<Self> {
         let mut maps = parse_uint32_label_maps(label_maps, "panoptic")?;
-        let segs = parse_segments_map(segments_info).map_err(panoptic_error_to_pyerr)?;
+        let segs = parse_segments_map(segments_info).map_err(|e| panoptic_error_to_pyerr(py, e))?;
 
         let mut images: HashMap<ImageId, ImageEntry> = HashMap::with_capacity(maps.len());
         for (image_id, segments) in segs {
@@ -202,7 +209,7 @@ impl PyPanopticPredictions {
                 ))
             })?;
             let mut entry = ImageEntry::from_components(image_id, h, w, label_map, segments, "dt")
-                .map_err(panoptic_error_to_pyerr)?;
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
             // S3: pred area is always overwritten from the PNG. The
             // FFI is the canonical place to do this — kernel and
             // summarize rely on the area field being correct.
@@ -444,7 +451,7 @@ pub(crate) fn evaluate_panoptic(
     let dt_arc = Arc::clone(&dt.inner);
     let summary = py
         .detach(move || evaluate(&gt_arc, &dt_arc, mode, things_stuff_split))
-        .map_err(panoptic_error_to_pyerr)?;
+        .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     Ok(PyPanopticSummary { inner: summary })
 }
 
@@ -452,14 +459,24 @@ pub(crate) fn evaluate_panoptic(
 // Error mapping
 // ---------------------------------------------------------------------------
 
-/// Map a [`PanopticError`] to a Python `ValueError` with a structured
-/// message. Mirrors the LVIS pattern in
-/// `crates/vernier-ffi/src/dataset.rs:lvis_error_to_pyerr`: the
-/// upstream-style `EvalError -> PyValueError` shim discards the
-/// structured fields, so for the panoptic variants we keep them
-/// explicit in the message so users (and the parity harness) can
-/// lift them programmatically.
-fn panoptic_error_to_pyerr(e: PanopticError) -> PyErr {
+/// Map a [`PanopticError`] to a Python exception. The `Partial`
+/// variant routes through [`crate::partial_error_to_pyerr`] so the
+/// five distributed-eval exception classes are shared with the
+/// instance and semantic paradigms (`vernier.panoptic.PartialFormatMismatch
+/// is vernier.instance.PartialFormatMismatch`). Other variants
+/// surface as `PyValueError` with the structured fields embedded in
+/// the message body so the parity harness can lift them
+/// programmatically.
+fn panoptic_error_to_pyerr(py: Python<'_>, e: PanopticError) -> PyErr {
+    match e {
+        PanopticError::Partial(inner) => return crate::partial_error_to_pyerr(py, &inner),
+        PanopticError::DuplicateImageId { image_id } => {
+            return PyValueError::new_err(format!(
+                "duplicate panoptic image_id={image_id} in streaming evaluator"
+            ));
+        }
+        _ => {}
+    }
     match e {
         PanopticError::ShapeMismatch {
             image_id,
@@ -507,6 +524,260 @@ fn panoptic_error_to_pyerr(e: PanopticError) -> PyErr {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Streaming evaluator (ADR-0028 §"Streaming"; ADR-0032 distributed merge)
+// ---------------------------------------------------------------------------
+
+fn parse_panoptic_parity_mode(s: &str) -> PyResult<ParityMode> {
+    match s {
+        "strict" => Ok(ParityMode::Strict),
+        "corrected" => Ok(ParityMode::Corrected),
+        other => Err(PyValueError::new_err(format!(
+            "unknown panoptic parity_mode {other:?}; expected 'strict' or 'corrected'"
+        ))),
+    }
+}
+
+/// Build an [`ImageEntry`] from per-image FFI inputs: a 2-D uint32
+/// label map ndarray plus the JSON segments_info bytes for that one
+/// image. Centralizes the FFI boundary conversion that
+/// [`PyPanopticDataset::from_arrays`] does in bulk; the streaming
+/// evaluator's `update` path uses this to consume one image at a
+/// time.
+fn build_image_entry<'py>(
+    py: Python<'py>,
+    image_id: ImageId,
+    label_map: &PyReadonlyArray2<'py, u32>,
+    segments_info_bytes: &[u8],
+    side: &'static str,
+) -> PyResult<ImageEntry> {
+    let view = label_map.as_array();
+    let (h, w) = (view.shape()[0] as u32, view.shape()[1] as u32);
+    let buf: Vec<u32> = view.iter().copied().collect();
+    let segs: Vec<SegmentInfoJson> = serde_json::from_slice(segments_info_bytes).map_err(|e| {
+        panoptic_error_to_pyerr(
+            py,
+            PanopticError::InvalidInput {
+                detail: format!("segments_info JSON for image_id={image_id} is invalid: {e}"),
+            },
+        )
+    })?;
+    let segments: Vec<SegmentInfo> = segs
+        .into_iter()
+        .map(|s| SegmentInfo {
+            id: s.id,
+            category_id: s.category_id,
+            iscrowd: parse_iscrowd(&s.iscrowd),
+            area: s.area,
+        })
+        .collect();
+    ImageEntry::from_components(image_id, h, w, buf, segments, side)
+        .map_err(|e| panoptic_error_to_pyerr(py, e))
+}
+
+/// Streaming panoptic-quality evaluator (ADR-0032 PR-E).
+///
+/// Construct with the categories taxonomy, call `update(image_id,
+/// gt_label_map, gt_segments_info, dt_label_map, dt_segments_info)`
+/// per image, then `snapshot()` (non-consuming) or `finalize()`
+/// (consuming) to read the [`PyPanopticSummary`].
+///
+/// `retain_per_image_deltas=True` enables the strict-mode bit-
+/// equality property at merge time (ADR-0032 PR-E §"Determinism")
+/// at the cost of ~2× streaming memory.
+#[pyclass(module = "vernier._core", name = "StreamingPanopticEvaluator")]
+pub(crate) struct PyStreamingPanopticEvaluator {
+    inner: StreamingPanopticEvaluator,
+}
+
+#[pymethods]
+impl PyStreamingPanopticEvaluator {
+    #[new]
+    #[pyo3(signature = (
+        categories,
+        parity_mode,
+        *,
+        things_stuff_split = true,
+        retain_per_image_deltas = false,
+        rank_id = None,
+    ))]
+    fn new(
+        py: Python<'_>,
+        categories: &[u8],
+        parity_mode: &str,
+        things_stuff_split: bool,
+        retain_per_image_deltas: bool,
+        rank_id: Option<u32>,
+    ) -> PyResult<Self> {
+        let mode = parse_panoptic_parity_mode(parity_mode)?;
+        let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        let mut inner = StreamingPanopticEvaluator::new(
+            cats,
+            mode,
+            things_stuff_split,
+            retain_per_image_deltas,
+        );
+        if let Some(rid) = rank_id {
+            inner = inner
+                .with_rank(rid)
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        }
+        Ok(Self { inner })
+    }
+
+    /// Number of `update` calls accepted so far.
+    #[getter]
+    fn n_images(&self) -> usize {
+        self.inner.n_images()
+    }
+
+    /// Number of categories in the taxonomy.
+    #[getter]
+    fn n_categories(&self) -> usize {
+        self.inner.n_categories()
+    }
+
+    /// Fold one image's GT/DT pair into the running PqStat
+    /// accumulator. Drops the GIL via `py.detach` (ADR-0006) for the
+    /// duration of the kernel walk + attribute pass.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 requires `PyReadonlyArray2` by value as a pyfunction argument; \
+                  the borrow lives only for the call's duration"
+    )]
+    fn update<'py>(
+        &mut self,
+        py: Python<'py>,
+        image_id: i64,
+        gt_label_map: PyReadonlyArray2<'py, u32>,
+        gt_segments_info: &[u8],
+        dt_label_map: PyReadonlyArray2<'py, u32>,
+        dt_segments_info: &[u8],
+    ) -> PyResult<()> {
+        let gt_entry = build_image_entry(py, image_id, &gt_label_map, gt_segments_info, "gt")?;
+        let dt_entry = build_image_entry(py, image_id, &dt_label_map, dt_segments_info, "dt")?;
+        py.detach(move || self.inner.update(image_id, &gt_entry, &dt_entry))
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(())
+    }
+
+    /// Compute the [`PyPanopticSummary`] from the current state
+    /// without consuming the evaluator.
+    fn snapshot(&self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
+        let summary = py
+            .detach(|| self.inner.snapshot())
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyPanopticSummary { inner: summary })
+    }
+
+    /// Consume the evaluator's state and produce the final
+    /// [`PyPanopticSummary`]. After this call the evaluator is in a
+    /// reset state with the same categories taxonomy but zero
+    /// accumulation; callers wanting strict consume-once semantics
+    /// drop the Python reference.
+    fn finalize(&mut self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
+        let placeholder = StreamingPanopticEvaluator::new(
+            self.inner.categories().clone(),
+            ParityMode::default(),
+            false,
+            false,
+        );
+        let consumed = std::mem::replace(&mut self.inner, placeholder);
+        let summary = py
+            .detach(move || consumed.finalize())
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyPanopticSummary { inner: summary })
+    }
+
+    /// Serialize the current state to an opaque byte blob (ADR-0032).
+    /// Non-consuming. The body carries `per_image_deltas` iff
+    /// `retain_per_image_deltas=True` was set at construction.
+    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = py
+            .detach(|| self.inner.snapshot_to_partial())
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Consume the evaluator and produce a partial blob.
+    fn finalize_to_partial<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let placeholder = StreamingPanopticEvaluator::new(
+            self.inner.categories().clone(),
+            ParityMode::default(),
+            false,
+            false,
+        );
+        let consumed = std::mem::replace(&mut self.inner, placeholder);
+        let bytes = py
+            .detach(move || consumed.finalize_to_partial())
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Construct an evaluator equivalent to a batch run over the
+    /// union of all partials' submitted images (ADR-0032).
+    ///
+    /// All partials must share `categories`, `parity_mode`,
+    /// `things_stuff_split`, and `retain_per_image_deltas`. With
+    /// `retain_per_image_deltas=True`, strict-mode merge is bit-
+    /// equal to a batch run over the union (the per-image deltas
+    /// are re-sorted by `image_id` and re-summed in that order).
+    /// Without deltas, corrected-mode merge stays within the 4-ULP
+    /// envelope from ADR-0004.
+    #[classmethod]
+    #[pyo3(signature = (
+        categories,
+        partials,
+        parity_mode,
+        *,
+        things_stuff_split = true,
+        retain_per_image_deltas = false,
+    ))]
+    fn from_partials(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        categories: &[u8],
+        partials: &Bound<'_, pyo3::types::PyList>,
+        parity_mode: &str,
+        things_stuff_split: bool,
+        retain_per_image_deltas: bool,
+    ) -> PyResult<Self> {
+        let mode = parse_panoptic_parity_mode(parity_mode)?;
+        let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        let owned: Vec<Vec<u8>> = partials
+            .iter()
+            .map(|item| {
+                item.cast::<PyBytes>()
+                    .map_err(|_| {
+                        PyValueError::new_err("from_partials expects a list of bytes objects")
+                    })
+                    .map(|b| b.as_bytes().to_vec())
+            })
+            .collect::<PyResult<_>>()?;
+        let inner = py
+            .detach(move || {
+                let slices: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
+                StreamingPanopticEvaluator::from_partials(
+                    cats,
+                    mode,
+                    things_stuff_split,
+                    retain_per_image_deltas,
+                    &slices,
+                )
+            })
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(Self { inner })
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StreamingPanopticEvaluator(n_categories={}, n_images={})",
+            self.inner.n_categories(),
+            self.inner.n_images(),
+        )
+    }
+}
+
 /// Register panoptic FFI symbols on the `vernier._core` module. Called
 /// from the `_core` `#[pymodule]` factory in `lib.rs`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -514,6 +785,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPanopticPredictions>()?;
     m.add_class::<PyPanopticSummary>()?;
     m.add_class::<PyClassPanopticStats>()?;
+    m.add_class::<PyStreamingPanopticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic, m)?)?;
     Ok(())
 }

@@ -576,6 +576,43 @@ class PanopticPredictions:
     @property
     def num_images(self) -> int: ...
 
+class StreamingPanopticEvaluator:
+    def __init__(
+        self,
+        categories: bytes,
+        parity_mode: str,
+        *,
+        things_stuff_split: bool = ...,
+        retain_per_image_deltas: bool = ...,
+        rank_id: int | None = ...,
+    ) -> None: ...
+    @property
+    def n_images(self) -> int: ...
+    @property
+    def n_categories(self) -> int: ...
+    def update(
+        self,
+        image_id: int,
+        gt_label_map: NDArray[np.uint32],
+        gt_segments_info: bytes,
+        dt_label_map: NDArray[np.uint32],
+        dt_segments_info: bytes,
+    ) -> None: ...
+    def snapshot(self) -> PanopticSummary: ...
+    def finalize(self) -> PanopticSummary: ...
+    def to_partial(self) -> bytes: ...
+    def finalize_to_partial(self) -> bytes: ...
+    @classmethod
+    def from_partials(
+        cls,
+        categories: bytes,
+        partials: Sequence[bytes],
+        parity_mode: str,
+        *,
+        things_stuff_split: bool = ...,
+        retain_per_image_deltas: bool = ...,
+    ) -> StreamingPanopticEvaluator: ...
+
 def evaluate_panoptic(
     gt: PanopticDataset,
     dt: PanopticPredictions,

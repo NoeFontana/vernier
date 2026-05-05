@@ -23,6 +23,18 @@ serde_json = { workspace = true }
 # Declaring the edge up front per ADR-0009 leaf direction so the future
 # work does not require a cross-crate refactor.
 vernier-mask = { path = "../vernier-mask", version = "0.0.1" }
+# Shared partial wire envelope and merge policy (ADR-0032). Carries
+# magic + version + framing + the five typed errors used by every
+# paradigm. vernier-panoptic plugs its `WirePanopticBody` into the
+# same envelope without taking on `vernier-core`'s AP-fold surface.
+vernier-partial = { path = "../vernier-partial", version = "0.0.1" }
+# rkyv archives the `WirePanopticBody` for the partial wire format
+# (ADR-0032).
+rkyv.workspace = true
+# BLAKE3 fingerprints the categories taxonomy and `(parity_mode,
+# things_stuff_split, retain_per_image_deltas)` for cross-rank
+# validation in the partial envelope (ADR-0032).
+blake3.workspace = true
 # PNG decode for the from_files path. Single decoder pin (per ADR-0025
 # axis E2): ~150 KB, no umbrella `image` crate.
 png = { workspace = true }
