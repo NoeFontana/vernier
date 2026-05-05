@@ -1,46 +1,22 @@
-//! Distributed evaluation: partial wire format and merge orchestration.
+//! Instance-paradigm body for the partial wire format and merge
+//! orchestration (ADR-0031, generalized in ADR-0032).
 //!
-//! Per ADR-0031, every rank in a multi-process eval runs its own
-//! [`StreamingEvaluator`], serializes its post-`update` state to a
-//! byte blob via [`StreamingEvaluator::finalize_to_partial`] (or
-//! [`StreamingEvaluator::snapshot_to_partial`] mid-stream), then the
-//! head rank reconstructs an evaluator equivalent to a batch run over
-//! the union of all partials' submitted detections via
-//! [`StreamingEvaluator::from_partials`].
+//! Per ADR-0032, the wire envelope (magic, version, CRC, header
+//! fields, partition + rank-collision policy, the five typed errors)
+//! lives in the leaf crate [`vernier_partial`]. This module owns the
+//! *instance-paradigm* body — the per-`(k, a, i)` cells, meta_cells,
+//! retained_ious, and dets_seen produced by the AP fold — plus the
+//! pack/unpack helpers that translate between the spine's runtime
+//! state ([`PerImageEval`], [`EvalImageMeta`], …) and the rkyv
+//! archived form on the wire.
 //!
-//! This module is the wire format. It defines:
-//!
-//! - The [`RankId`] type alias and the wire-format constants
-//!   ([`MAGIC`], [`FORMAT_VERSION`]) that frame every blob.
-//! - Private wire-form shadow structs that mirror the spine state
-//!   ([`crate::PerImageEval`], [`crate::EvalImageMeta`], etc.) but
-//!   with `rkyv::Archive` / `rkyv::Serialize` / `rkyv::Deserialize`
-//!   derives. The spine types themselves stay free of rkyv per
-//!   ADR-0005 — conversion happens at the encode / decode boundary.
-//! - The [`encode`] / [`decode`] entry points and the cheapest-first
-//!   [`with_validated_partial`] pipeline that returns one of the
-//!   [`crate::EvalError::PartialFormatMismatch`] /
-//!   [`crate::EvalError::PartialDatasetMismatch`] /
-//!   [`crate::EvalError::PartialParamsMismatch`] variants on each
-//!   class of failure.
-//!
-//! ## Wire framing
-//!
-//! Every partial is laid out as:
-//!
-//! ```text
-//! [ 4 bytes : MAGIC = b"VRPS" ]
-//! [ 1 byte  : FORMAT_VERSION  ]
-//! [ N bytes : rkyv archive of WirePartial ]
-//! [ 4 bytes : CRC32(IEEE) over the preceding (5 + N) bytes ]
-//! ```
-//!
-//! Magic + version sit *outside* the rkyv archive on purpose: those
-//! checks are cheap and must succeed before we try to read the
-//! archive (which would fail with an opaque error on a stale-format
-//! payload otherwise). The CRC catches transport corruption and
-//! truncation that the rkyv archive validator would not catch
-//! cleanly.
+//! Encoding is one rkyv archive of [`WireInstanceBody`] handed to
+//! [`vernier_partial::encode`] alongside a header built via
+//! [`build_header`]. Decoding routes through
+//! [`vernier_partial::with_validated_envelope`] which validates
+//! framing + paradigm + dataset/params/parity hashes and then hands
+//! the body archive bytes to [`InstanceMergeAccumulator::ingest`]
+//! to fold into the merged state.
 //!
 //! ## Determinism
 //!
@@ -48,46 +24,32 @@
 //! `HashMap`s; their iteration order is not stable. The wire form
 //! sorts every collection by key before archiving so two encodings
 //! of equal state produce byte-identical blobs. This matters for
-//! [`StreamingEvaluator::checkpoint`] / [`crate::StreamingEvaluator::restore`]
-//! round-trip equality, and for cross-rank reproducibility under the
-//! strict-tier `(rank_id, local_position)` ordering reserved in
-//! ADR-0031.
+//! [`crate::StreamingEvaluator::checkpoint`] /
+//! [`crate::StreamingEvaluator::restore`] round-trip equality, and
+//! for cross-rank reproducibility under the strict-tier `(rank_id,
+//! local_position)` ordering reserved in ADR-0031.
 
 use std::collections::HashMap;
 
 use ndarray::Array2;
 use rkyv::rancor::Error as RkyvError;
+use vernier_partial::{
+    BaseMergeAccumulator, ParadigmKind, Partial, PartialError, PartialExpectation, ValidatedView,
+    WireEnvelopeHeader,
+};
 
 use crate::accumulate::PerImageEval;
 use crate::dataset::{AnnId, Bbox, CategoryId, CocoDataset, CocoDetection, ImageId};
 use crate::error::PartialFormatErrorKind;
-use crate::evaluate::{EvalImageMeta, EvalKernel, KernelKind, OwnedEvaluateParams};
+use crate::evaluate::{EvalImageMeta, EvalKernel, OwnedEvaluateParams};
 use crate::parity::ParityMode;
 use crate::segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
 use crate::tables::RetainedIous;
 use crate::EvalError;
 
-// ===========================================================================
-// Public surface
-// ===========================================================================
-
-/// Identifier for one rank in a multi-process eval. Strict-mode merge
-/// uses `(rank_id, local_position)` as the global stream-order
-/// tiebreak; corrected mode ignores it.
-pub type RankId = u32;
-
-/// Wire-format magic: ASCII `"VRPS"` (vernier partial state). Every
-/// valid partial starts with these four bytes.
-pub const MAGIC: [u8; 4] = *b"VRPS";
-
-/// Wire-format version. Bumped on any breaking change to the
-/// archived layout. Old versions are refused at decode with a typed
-/// [`PartialFormatErrorKind::WrongVersion`].
-pub const FORMAT_VERSION: u8 = 1;
-
-/// Minimum bytes a partial must carry to even attempt parsing:
-/// 4 magic + 1 version + 4 CRC.
-const MIN_PARTIAL_BYTES: usize = MAGIC.len() + 1 + 4;
+// Re-export `RankId` under its existing path so callers
+// (FFI, stream.rs) can keep using `crate::distributed::RankId`.
+pub use vernier_partial::RankId;
 
 // ===========================================================================
 // Wire-form shadow types
@@ -185,21 +147,17 @@ struct WireCocoDetection {
     num_keypoints: Option<u32>,
 }
 
+/// Instance-paradigm body (the per-`(k, a, i)` AP-fold cells). Slots
+/// into the partial wire format alongside the
+/// [`vernier_partial::WireEnvelopeHeader`] that frames it.
+///
+/// Fields are private — the encode + decode entry points
+/// ([`build_body`], [`InstanceMergeAccumulator::ingest`]) are the only
+/// supported access path, which keeps the wire-format invariants
+/// (sorted vec, packed array shapes) impossible to violate from
+/// outside this module.
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub(crate) struct WirePartialHeader {
-    parity_mode: u8,
-    kernel_kind: u8,
-    retain_iou: u8,
-    rank_id: Option<u32>,
-    n_categories: u32,
-    n_area_ranges: u32,
-    n_images: u32,
-    dataset_hash: [u8; 32],
-    params_hash: [u8; 32],
-}
-
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub(crate) struct WirePartialBody {
+pub(crate) struct WireInstanceBody {
     n_detections: u64,
     next_dt_id: i64,
     seen_images: Vec<i64>,
@@ -209,45 +167,25 @@ pub(crate) struct WirePartialBody {
     dets_seen: Option<Vec<WireCocoDetection>>,
 }
 
-#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-pub(crate) struct WirePartial {
-    pub(crate) header: WirePartialHeader,
-    pub(crate) body: WirePartialBody,
+impl Partial for WireInstanceBody {
+    const PARADIGM: ParadigmKind = ParadigmKind::Instance;
 }
 
 // ===========================================================================
-// Encoding side: spine -> wire
+// Parity mode encoding
 // ===========================================================================
+//
+// `ParityMode` is paradigm-defined; the wire envelope carries it as a
+// `u8` discriminant. Stable values (`Strict=0, Corrected=1`) are
+// load-bearing across the format-version boundary.
 
-const PARITY_STRICT: u8 = 0;
-const PARITY_CORRECTED: u8 = 1;
+pub(crate) const PARITY_STRICT: u8 = 0;
+pub(crate) const PARITY_CORRECTED: u8 = 1;
 
-const KERNEL_BBOX: u8 = 0;
-const KERNEL_SEGM: u8 = 1;
-const KERNEL_BOUNDARY: u8 = 2;
-const KERNEL_KEYPOINTS: u8 = 3;
-
-fn encode_parity_mode(m: ParityMode) -> u8 {
+pub(crate) fn encode_parity_mode(m: ParityMode) -> u8 {
     match m {
         ParityMode::Strict => PARITY_STRICT,
         ParityMode::Corrected => PARITY_CORRECTED,
-    }
-}
-
-fn decode_parity_mode(b: u8) -> Option<ParityMode> {
-    match b {
-        PARITY_STRICT => Some(ParityMode::Strict),
-        PARITY_CORRECTED => Some(ParityMode::Corrected),
-        _ => None,
-    }
-}
-
-fn encode_kernel_kind(k: KernelKind) -> u8 {
-    match k {
-        KernelKind::Bbox => KERNEL_BBOX,
-        KernelKind::Segm => KERNEL_SEGM,
-        KernelKind::Boundary => KERNEL_BOUNDARY,
-        KernelKind::Keypoints => KERNEL_KEYPOINTS,
     }
 }
 
@@ -272,11 +210,11 @@ fn unpack_array<W: Copy, E>(
     data: &[W],
     field: &'static str,
     convert: impl Fn(W) -> E,
-) -> Result<Array2<E>, EvalError> {
+) -> Result<Array2<E>, PartialError> {
     let rows = shape[0] as usize;
     let cols = shape[1] as usize;
     if data.len() != rows.saturating_mul(cols) {
-        return Err(EvalError::PartialFormatMismatch {
+        return Err(PartialError::Format {
             kind: PartialFormatErrorKind::RkyvDecode {
                 detail: format!(
                     "{field} shape {rows}x{cols} doesn't match data len {}",
@@ -286,7 +224,7 @@ fn unpack_array<W: Copy, E>(
         });
     }
     let owned: Vec<E> = data.iter().copied().map(convert).collect();
-    Array2::from_shape_vec((rows, cols), owned).map_err(|e| EvalError::PartialFormatMismatch {
+    Array2::from_shape_vec((rows, cols), owned).map_err(|e| PartialError::Format {
         kind: PartialFormatErrorKind::RkyvDecode {
             detail: format!("{field} from_shape_vec: {e}"),
         },
@@ -364,7 +302,7 @@ fn pack_coco_detection(d: &CocoDetection) -> WireCocoDetection {
 // Decoding side: archived view -> spine
 // ===========================================================================
 
-fn unpack_segmentation(archived: &ArchivedWireSegmentation) -> Result<Segmentation, EvalError> {
+fn unpack_segmentation(archived: &ArchivedWireSegmentation) -> Result<Segmentation, PartialError> {
     match archived {
         ArchivedWireSegmentation::Polygons(polys) => {
             let owned: Vec<Vec<f64>> = polys
@@ -390,7 +328,9 @@ fn unpack_segmentation(archived: &ArchivedWireSegmentation) -> Result<Segmentati
     }
 }
 
-fn unpack_coco_detection(archived: &ArchivedWireCocoDetection) -> Result<CocoDetection, EvalError> {
+fn unpack_coco_detection(
+    archived: &ArchivedWireCocoDetection,
+) -> Result<CocoDetection, PartialError> {
     let segmentation = match archived.segmentation.as_ref() {
         Some(s) => Some(unpack_segmentation(s)?),
         None => None,
@@ -418,7 +358,9 @@ fn unpack_coco_detection(archived: &ArchivedWireCocoDetection) -> Result<CocoDet
     })
 }
 
-fn unpack_per_image_eval(archived: &ArchivedWirePerImageEval) -> Result<PerImageEval, EvalError> {
+fn unpack_per_image_eval(
+    archived: &ArchivedWirePerImageEval,
+) -> Result<PerImageEval, PartialError> {
     let dt_scores: Vec<f64> = archived.dt_scores.iter().map(|v| v.to_native()).collect();
     let dt_matched_shape = [
         archived.dt_matched_shape[0].to_native(),
@@ -443,7 +385,7 @@ fn unpack_per_image_eval(archived: &ArchivedWirePerImageEval) -> Result<PerImage
 
 fn unpack_eval_image_meta(
     archived: &ArchivedWireEvalImageMeta,
-) -> Result<EvalImageMeta, EvalError> {
+) -> Result<EvalImageMeta, PartialError> {
     let dt_matches_shape = [
         archived.dt_matches_shape[0].to_native(),
         archived.dt_matches_shape[1].to_native(),
@@ -504,20 +446,34 @@ pub(crate) struct EncodeInput<'a, K: EvalKernel> {
     pub retain_iou: bool,
 }
 
-/// Serialize streaming evaluator state to a partial byte blob.
-pub(crate) fn encode<K: EvalKernel>(input: &EncodeInput<'_, K>) -> Result<Vec<u8>, EvalError> {
-    let header = WirePartialHeader {
+/// Build the paradigm-agnostic envelope header from instance-side
+/// evaluator state. The shape fingerprint slots are
+/// `(n_categories, n_area_ranges, n_images, retain_iou as u32)`.
+pub(crate) fn build_header<K: EvalKernel>(
+    input: &EncodeInput<'_, K>,
+) -> Result<WireEnvelopeHeader, EvalError> {
+    Ok(WireEnvelopeHeader {
+        paradigm_kind: ParadigmKind::Instance.as_u8(),
+        discriminator: input.kernel.kind().discriminator(),
         parity_mode: encode_parity_mode(input.parity_mode),
-        kernel_kind: encode_kernel_kind(input.kernel.kind()),
-        retain_iou: u8::from(input.retain_iou),
         rank_id: input.rank_id,
-        n_categories: input.n_categories,
-        n_area_ranges: input.n_area_ranges,
-        n_images: input.n_images,
         dataset_hash: input.dataset.dataset_hash(),
         params_hash: input.params.params_hash()?,
-    };
+        shape_fingerprint: [
+            input.n_categories,
+            input.n_area_ranges,
+            input.n_images,
+            u32::from(input.retain_iou),
+        ],
+    })
+}
 
+/// Lift the spine state in `input` into the rkyv-archivable
+/// [`WireInstanceBody`]. All collections are sorted by key so the
+/// archive bytes are deterministic — load-bearing for the round-trip
+/// equality property and for cross-rank reproducibility under the
+/// strict tier (ADR-0031 §"Determinism").
+pub(crate) fn build_body<K: EvalKernel>(input: &EncodeInput<'_, K>) -> WireInstanceBody {
     let mut sorted_images: Vec<i64> = input.seen_images.iter().copied().collect();
     sorted_images.sort_unstable();
 
@@ -561,7 +517,7 @@ pub(crate) fn encode<K: EvalKernel>(input: &EncodeInput<'_, K>) -> Result<Vec<u8
         .dets_seen
         .map(|slice| slice.iter().map(pack_coco_detection).collect());
 
-    let body = WirePartialBody {
+    WireInstanceBody {
         n_detections: input.n_detections,
         next_dt_id: input.next_dt_id,
         seen_images: sorted_images,
@@ -569,24 +525,20 @@ pub(crate) fn encode<K: EvalKernel>(input: &EncodeInput<'_, K>) -> Result<Vec<u8
         meta_cells,
         retained_ious,
         dets_seen,
-    };
+    }
+}
 
-    let partial = WirePartial { header, body };
-
-    let archive_bytes =
-        rkyv::to_bytes::<RkyvError>(&partial).map_err(|e| EvalError::PartialFormatMismatch {
+/// Serialize streaming evaluator state to a partial byte blob.
+pub(crate) fn encode<K: EvalKernel>(input: &EncodeInput<'_, K>) -> Result<Vec<u8>, EvalError> {
+    let header = build_header(input)?;
+    let body = build_body(input);
+    let body_archive =
+        rkyv::to_bytes::<RkyvError>(&body).map_err(|e| EvalError::PartialFormatMismatch {
             kind: PartialFormatErrorKind::RkyvDecode {
-                detail: format!("rkyv::to_bytes failed: {e}"),
+                detail: format!("rkyv::to_bytes(body) failed: {e}"),
             },
         })?;
-
-    let mut out = Vec::with_capacity(MAGIC.len() + 1 + archive_bytes.len() + 4);
-    out.extend_from_slice(&MAGIC);
-    out.push(FORMAT_VERSION);
-    out.extend_from_slice(&archive_bytes);
-    let crc = crc32fast::hash(&out);
-    out.extend_from_slice(&crc.to_le_bytes());
-    Ok(out)
+    Ok(vernier_partial::encode(&header, &body_archive)?)
 }
 
 fn retained_ious_to_wire(r: &RetainedIous) -> Vec<WireRetainedIousEntry> {
@@ -613,220 +565,68 @@ fn retained_ious_iter(r: &RetainedIous) -> impl Iterator<Item = (usize, usize, A
 }
 
 // ===========================================================================
-// Decode entry point (bytes -> archived view + validation)
-// ===========================================================================
-
-/// Validate framing (length, magic, version, CRC) and return the
-/// rkyv archive bytes (the payload between header and CRC footer).
-fn validate_framing(bytes: &[u8]) -> Result<&[u8], EvalError> {
-    if bytes.len() < MIN_PARTIAL_BYTES {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::TooShort {
-                observed: bytes.len(),
-                minimum: MIN_PARTIAL_BYTES,
-            },
-        });
-    }
-    let magic: [u8; 4] = bytes[..4]
-        .try_into()
-        .map_err(|_| EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::TooShort {
-                observed: bytes.len(),
-                minimum: MIN_PARTIAL_BYTES,
-            },
-        })?;
-    if magic != MAGIC {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::WrongMagic { found: magic },
-        });
-    }
-    let version = bytes[4];
-    if version != FORMAT_VERSION {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::WrongVersion {
-                expected: FORMAT_VERSION,
-                found: version,
-            },
-        });
-    }
-    let split = bytes.len() - 4;
-    let stored_crc = u32::from_le_bytes(bytes[split..].try_into().map_err(|_| {
-        EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::Crc,
-        }
-    })?);
-    let actual_crc = crc32fast::hash(&bytes[..split]);
-    if stored_crc != actual_crc {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::Crc,
-        });
-    }
-    Ok(&bytes[5..split])
-}
-
-/// Expectation passed to [`with_validated_partial`] so each
-/// header-field check can name its own specific error.
-pub(crate) struct PartialExpectation<'a> {
-    pub parity_mode: ParityMode,
-    pub kernel_kind: KernelKind,
-    pub retain_iou: bool,
-    pub n_categories: u32,
-    pub n_area_ranges: u32,
-    pub n_images: u32,
-    pub dataset_hash: [u8; 32],
-    pub params_hash: [u8; 32],
-    /// Used by callers that want to build error messages without
-    /// recomputing the live dataset's hash.
-    pub _phantom: std::marker::PhantomData<&'a ()>,
-}
-
-/// Validate a partial blob's framing + header fields against the
-/// receiving rank's live config and run a callback on the validated
-/// archived body.
-///
-/// Why callback-based: the rkyv archived view requires 8-byte
-/// alignment, but the input `&[u8]` slice (as produced by user
-/// transport) is not guaranteed to be aligned. We copy the archive
-/// bytes into an [`rkyv::util::AlignedVec`] before [`rkyv::access`]
-/// so the pointer reads inside the archive are well-aligned. The
-/// AlignedVec is the borrow source for the archived view, so the
-/// callback runs while it's still in scope.
-pub(crate) fn with_validated_partial<R>(
-    bytes: &[u8],
-    expected: &PartialExpectation<'_>,
-    body: impl FnOnce(&ArchivedWirePartial) -> Result<R, EvalError>,
-) -> Result<R, EvalError> {
-    let archive_bytes = validate_framing(bytes)?;
-    // 16-byte alignment covers every primitive rkyv writes on x86_64
-    // and aarch64. (rkyv defaults to 16 on these targets.)
-    let mut aligned: rkyv::util::AlignedVec<16> =
-        rkyv::util::AlignedVec::with_capacity(archive_bytes.len());
-    aligned.extend_from_slice(archive_bytes);
-    let archived = rkyv::access::<ArchivedWirePartial, RkyvError>(&aligned).map_err(|e| {
-        EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::RkyvDecode {
-                detail: format!("rkyv::access failed: {e}"),
-            },
-        }
-    })?;
-    validate_header_fields(archived, expected)?;
-    body(archived)
-}
-
-fn validate_header_fields(
-    archived: &ArchivedWirePartial,
-    expected: &PartialExpectation<'_>,
-) -> Result<(), EvalError> {
-    let h = &archived.header;
-    let kernel_kind = h.kernel_kind;
-    if kernel_kind != encode_kernel_kind(expected.kernel_kind) {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::KernelMismatch {
-                expected: encode_kernel_kind(expected.kernel_kind),
-                found: kernel_kind,
-            },
-        });
-    }
-    let parity_mode = h.parity_mode;
-    let parity = decode_parity_mode(parity_mode).ok_or(EvalError::PartialFormatMismatch {
-        kind: PartialFormatErrorKind::RkyvDecode {
-            detail: format!("unknown parity_mode discriminant: {parity_mode}"),
-        },
-    })?;
-    if parity != expected.parity_mode {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::ParityMismatch {
-                expected: expected.parity_mode,
-                found: parity,
-            },
-        });
-    }
-    let retain_iou = h.retain_iou != 0;
-    if retain_iou != expected.retain_iou {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::RetainIouMismatch {
-                expected: expected.retain_iou,
-                found: retain_iou,
-            },
-        });
-    }
-    let nc = h.n_categories.to_native();
-    let na = h.n_area_ranges.to_native();
-    let ni = h.n_images.to_native();
-    if nc != expected.n_categories || na != expected.n_area_ranges || ni != expected.n_images {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::GridMismatch {
-                detail: format!(
-                    "expected ({}/{}/{}), got ({nc}/{na}/{ni})",
-                    expected.n_categories, expected.n_area_ranges, expected.n_images
-                ),
-            },
-        });
-    }
-    let actual_dataset_hash: [u8; 32] = h.dataset_hash;
-    if actual_dataset_hash != expected.dataset_hash {
-        return Err(EvalError::PartialDatasetMismatch {
-            expected: expected.dataset_hash,
-            actual: actual_dataset_hash,
-        });
-    }
-    let actual_params_hash: [u8; 32] = h.params_hash;
-    if actual_params_hash != expected.params_hash {
-        return Err(EvalError::PartialParamsMismatch {
-            expected: expected.params_hash,
-            actual: actual_params_hash,
-        });
-    }
-    Ok(())
-}
-
-// ===========================================================================
 // Cross-partial walks: drain archived bodies into a merge accumulator
 // ===========================================================================
+//
+// Framing + header validation lives in `vernier_partial`; this section
+// owns just the instance-paradigm body fold. The merge entry point
+// for the streaming evaluator lifts each body's archived view via
+// [`vernier_partial::with_validated_envelope`] and hands it to
+// [`InstanceMergeAccumulator::ingest`].
 
-/// Sentinel `RankId` carried in [`EvalError::PartialPartitionOverlap`]
-/// when one of the colliding partials lacked a `rank_id`. Single-rank
-/// flows (no merge) leave `rank_id` unset; the partition check still
-/// runs in case the caller happens to merge two such partials, and
-/// this sentinel surfaces in the error message instead of a silent
-/// `0`. Real `rank_id`s should always be `< u32::MAX` in any DDP-shape
-/// deployment (`world_size` is far smaller).
-const UNRANKED_SENTINEL: RankId = u32::MAX;
+/// Build the [`PartialExpectation`] the receiving rank passes to
+/// [`vernier_partial::with_validated_envelope`] for instance partials.
+pub(crate) fn instance_expectation<K: EvalKernel>(
+    dataset: &CocoDataset,
+    kernel: &K,
+    params: &OwnedEvaluateParams,
+    parity_mode: ParityMode,
+    n_categories: u32,
+    n_area_ranges: u32,
+    n_images: u32,
+) -> Result<PartialExpectation, EvalError> {
+    Ok(PartialExpectation {
+        paradigm: ParadigmKind::Instance,
+        discriminator: kernel.kind().discriminator(),
+        parity_mode: encode_parity_mode(parity_mode),
+        dataset_hash: dataset.dataset_hash(),
+        params_hash: params.params_hash()?,
+        shape_fingerprint: [
+            n_categories,
+            n_area_ranges,
+            n_images,
+            u32::from(params.retain_iou),
+        ],
+        strict_mode: parity_mode == ParityMode::Strict,
+    })
+}
 
-/// Accumulator that [`StreamingEvaluator::from_partials`] folds into.
-/// Owns the merged state and accepts archived bodies one at a time.
-pub(crate) struct MergeAccumulator {
+/// Accumulator that [`crate::StreamingEvaluator::from_partials`] folds into.
+/// Owns the merged instance-paradigm state and embeds a
+/// [`BaseMergeAccumulator`] for the partition + rank-collision policy.
+pub(crate) struct InstanceMergeAccumulator {
+    /// Paradigm-agnostic policy state (image-id ownership, rank ids).
+    pub base: BaseMergeAccumulator,
     pub n_detections: usize,
     pub next_dt_id: i64,
-    /// Image-id → rank that ingested it. Used both for the
-    /// disjoint-partition check and as the source-of-truth for
-    /// `seen_images` (its keys are the union image set).
-    pub image_owner: HashMap<i64, RankId>,
-    /// Rank ids observed so far. Only populated in strict mode (the
-    /// distinctness invariant — ADR-0031 §"Axis C" C2 — is strict-
-    /// only); empty in corrected mode.
-    pub seen_rank_ids: std::collections::HashSet<RankId>,
     pub cells: HashMap<(usize, usize, usize), PerImageEval>,
     pub meta_cells: HashMap<(usize, usize, usize), EvalImageMeta>,
     pub retained_ious_map: HashMap<(usize, usize), Array2<f64>>,
     pub dets_seen: Vec<CocoDetection>,
     pub retain_iou: bool,
-    pub strict: bool,
 }
 
-impl MergeAccumulator {
+impl InstanceMergeAccumulator {
     pub(crate) fn new(strict: bool) -> Self {
         Self {
+            base: BaseMergeAccumulator::new(strict),
             n_detections: 0,
             next_dt_id: 1,
-            image_owner: HashMap::new(),
-            seen_rank_ids: std::collections::HashSet::new(),
             cells: HashMap::new(),
             meta_cells: HashMap::new(),
             retained_ious_map: HashMap::new(),
             dets_seen: Vec::new(),
             retain_iou: false,
-            strict,
         }
     }
 
@@ -834,46 +634,40 @@ impl MergeAccumulator {
         self.retain_iou = retain_iou;
     }
 
-    /// Drain one archived partial into this accumulator.
+    /// Drain one validated envelope view into this accumulator. The
+    /// view's `body_archive` slice is copied into an aligned buffer
+    /// then accessed as [`ArchivedWireInstanceBody`].
     ///
-    /// Returns errors for partition overlap (ADR-0031 D1) and strict-
-    /// mode rank collisions (D8).
-    pub(crate) fn ingest(&mut self, archived: &ArchivedWirePartial) -> Result<(), EvalError> {
-        // Strict-mode rank-id distinctness.
-        let rank_id = archived.header.rank_id.as_ref().map(|v| v.to_native());
-        if self.strict {
-            if let Some(rid) = rank_id {
-                if !self.seen_rank_ids.insert(rid) {
-                    return Err(EvalError::PartialRankCollision { rank_id: rid });
+    /// Returns errors for partition overlap (ADR-0031 D1) and
+    /// strict-mode rank collisions. The outer caller propagates via
+    /// `?` through the `From<PartialError> for EvalError` impl.
+    pub(crate) fn ingest(&mut self, view: &ValidatedView<'_>) -> Result<(), PartialError> {
+        let rank_id = vernier_partial::rank_id_from_archive(view.header);
+        self.base.ingest_rank_id(rank_id)?;
+
+        let mut aligned: rkyv::util::AlignedVec<16> =
+            rkyv::util::AlignedVec::with_capacity(view.body_archive.len());
+        aligned.extend_from_slice(view.body_archive);
+        let archived =
+            rkyv::access::<ArchivedWireInstanceBody, RkyvError>(&aligned).map_err(|e| {
+                PartialError::Format {
+                    kind: PartialFormatErrorKind::RkyvDecode {
+                        detail: format!("rkyv::access(body) failed: {e}"),
+                    },
                 }
-            }
-        }
+            })?;
 
-        // Image-id disjointness — the partition rule. Records every
-        // image_id with the rank that owns it; on collision, errors
-        // with both rank ids (UNRANKED_SENTINEL when a partial had
-        // no rank_id set).
-        let owner = rank_id.unwrap_or(UNRANKED_SENTINEL);
-        for img in archived.body.seen_images.iter() {
-            let id = img.to_native();
-            if let Some(&prev) = self.image_owner.get(&id) {
-                let (a, b) = (prev.min(owner), prev.max(owner));
-                return Err(EvalError::PartialPartitionOverlap {
-                    rank_a: a,
-                    rank_b: b,
-                    image_id: id,
-                });
-            }
-            self.image_owner.insert(id, owner);
-        }
+        // Image-id disjointness — the partition rule.
+        self.base
+            .ingest_image_ids(rank_id, archived.seen_images.iter().map(|v| v.to_native()))?;
 
-        self.n_detections += archived.body.n_detections.to_native() as usize;
-        let candidate_next = archived.body.next_dt_id.to_native();
+        self.n_detections += archived.n_detections.to_native() as usize;
+        let candidate_next = archived.next_dt_id.to_native();
         if candidate_next > self.next_dt_id {
             self.next_dt_id = candidate_next;
         }
 
-        for entry in archived.body.cells.iter() {
+        for entry in archived.cells.iter() {
             let key = &entry.0;
             let value = &entry.1;
             let triple = (
@@ -885,7 +679,7 @@ impl MergeAccumulator {
             self.cells.insert(triple, p);
         }
 
-        if let Some(metas) = archived.body.meta_cells.as_ref() {
+        if let Some(metas) = archived.meta_cells.as_ref() {
             for entry in metas.iter() {
                 let key = &entry.0;
                 let value = &entry.1;
@@ -899,7 +693,7 @@ impl MergeAccumulator {
             }
         }
 
-        if let Some(ious) = archived.body.retained_ious.as_ref() {
+        if let Some(ious) = archived.retained_ious.as_ref() {
             for entry in ious.iter() {
                 let shape = [entry.shape[0].to_native(), entry.shape[1].to_native()];
                 let arr = unpack_array(shape, entry.data.as_slice(), "retained_iou", |v| {
@@ -912,7 +706,7 @@ impl MergeAccumulator {
             }
         }
 
-        if let Some(dets) = archived.body.dets_seen.as_ref() {
+        if let Some(dets) = archived.dets_seen.as_ref() {
             for d in dets.iter() {
                 self.dets_seen.push(unpack_coco_detection(d)?);
             }
@@ -922,80 +716,48 @@ impl MergeAccumulator {
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn validate_framing_rejects_too_short() {
-        let bytes = b"VRP";
-        let err = validate_framing(bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            EvalError::PartialFormatMismatch {
-                kind: PartialFormatErrorKind::TooShort { .. }
-            }
-        ));
-    }
+    fn instance_body_round_trips_through_envelope() {
+        // Encode an empty body, ship it through the envelope, decode.
+        // Pins the contract that vernier-partial encodes any
+        // body-archive bytes opaquely and the instance-side decode
+        // reads them back identically.
+        let body = WireInstanceBody {
+            n_detections: 0,
+            next_dt_id: 1,
+            seen_images: vec![],
+            cells: vec![],
+            meta_cells: None,
+            retained_ious: None,
+            dets_seen: None,
+        };
+        let body_archive = rkyv::to_bytes::<RkyvError>(&body).unwrap();
+        let header = WireEnvelopeHeader {
+            paradigm_kind: ParadigmKind::Instance.as_u8(),
+            discriminator: 0,
+            parity_mode: PARITY_CORRECTED,
+            rank_id: None,
+            dataset_hash: [0xAB; 32],
+            params_hash: [0xCD; 32],
+            shape_fingerprint: [80, 4, 5000, 0],
+        };
+        let bytes = vernier_partial::encode(&header, &body_archive).unwrap();
 
-    #[test]
-    fn validate_framing_rejects_wrong_magic() {
-        let mut bytes = vec![0u8; MIN_PARTIAL_BYTES];
-        bytes[0..4].copy_from_slice(b"FAKE");
-        let err = validate_framing(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            EvalError::PartialFormatMismatch {
-                kind: PartialFormatErrorKind::WrongMagic { .. }
-            }
-        ));
-    }
-
-    #[test]
-    fn validate_framing_rejects_wrong_version() {
-        let mut bytes = vec![0u8; MIN_PARTIAL_BYTES];
-        bytes[0..4].copy_from_slice(&MAGIC);
-        bytes[4] = 99;
-        // CRC will also mismatch but version check is earlier.
-        let err = validate_framing(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            EvalError::PartialFormatMismatch {
-                kind: PartialFormatErrorKind::WrongVersion { .. }
-            }
-        ));
-    }
-
-    #[test]
-    fn validate_framing_rejects_bad_crc() {
-        let mut bytes = vec![0u8; MIN_PARTIAL_BYTES];
-        bytes[0..4].copy_from_slice(&MAGIC);
-        bytes[4] = FORMAT_VERSION;
-        // Last 4 bytes are a wrong CRC (zero).
-        let err = validate_framing(&bytes).unwrap_err();
-        assert!(matches!(
-            err,
-            EvalError::PartialFormatMismatch {
-                kind: PartialFormatErrorKind::Crc
-            }
-        ));
-    }
-
-    #[test]
-    fn validate_framing_accepts_round_trip() {
-        // Hand-build a valid framing around an empty payload.
-        let payload: &[u8] = &[];
-        let mut bytes = Vec::with_capacity(MIN_PARTIAL_BYTES);
-        bytes.extend_from_slice(&MAGIC);
-        bytes.push(FORMAT_VERSION);
-        bytes.extend_from_slice(payload);
-        let crc = crc32fast::hash(&bytes);
-        bytes.extend_from_slice(&crc.to_le_bytes());
-        let extracted = validate_framing(&bytes).unwrap();
-        assert!(extracted.is_empty());
+        let exp = PartialExpectation {
+            paradigm: ParadigmKind::Instance,
+            discriminator: 0,
+            parity_mode: PARITY_CORRECTED,
+            dataset_hash: [0xAB; 32],
+            params_hash: [0xCD; 32],
+            shape_fingerprint: [80, 4, 5000, 0],
+            strict_mode: false,
+        };
+        let mut acc = InstanceMergeAccumulator::new(false);
+        vernier_partial::with_validated_envelope(&bytes, &exp, |view| acc.ingest(&view)).unwrap();
+        assert_eq!(acc.n_detections, 0);
     }
 }

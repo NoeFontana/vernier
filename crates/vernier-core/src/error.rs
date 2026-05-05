@@ -7,8 +7,13 @@
 
 use thiserror::Error;
 use vernier_mask::MaskError;
+use vernier_partial::PartialError;
 
-use crate::parity::ParityMode;
+// Re-export the shared sub-discriminator under its existing path so
+// callers (FFI, tests) keep using `EvalError::PartialFormatMismatch
+// { kind: PartialFormatErrorKind }` unchanged after ADR-0032's move
+// of the framing logic into the leaf crate.
+pub use vernier_partial::PartialFormatErrorKind;
 
 /// Unified error type for evaluation paths.
 ///
@@ -209,105 +214,30 @@ pub enum EvalError {
     },
 }
 
-/// Sub-discriminator for [`EvalError::PartialFormatMismatch`]. Each
-/// variant names a specific structural check the partial failed; the
-/// validation order in [`crate::distributed::validate_partial`] is
-/// cheapest-first so the kind also indicates how far the validator
-/// got before tripping.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum PartialFormatErrorKind {
-    /// Length too short to contain even the header magic.
-    #[error("partial too short: observed {observed} bytes, minimum {minimum}")]
-    TooShort {
-        /// Length we observed.
-        observed: usize,
-        /// Minimum length required.
-        minimum: usize,
-    },
-    /// Magic-bytes prefix didn't match the expected `b"VRPS"` tag.
-    #[error("wrong magic bytes: expected \"VRPS\", got {found:02x?}")]
-    WrongMagic {
-        /// First four bytes we found.
-        found: [u8; 4],
-    },
-    /// `format_version` byte didn't match the receiving rank's.
-    #[error("wrong format_version: expected {expected}, got {found}")]
-    WrongVersion {
-        /// Expected (compiled-in) version.
-        expected: u8,
-        /// Found (in the partial).
-        found: u8,
-    },
-    /// CRC32 footer didn't match the body. Truncation, transport
-    /// corruption, or a hand-crafted payload.
-    #[error("crc32 footer mismatch")]
-    Crc,
-    /// Kernel discriminator didn't match — e.g., merging a bbox
-    /// partial against a segm evaluator.
-    #[error("kernel_kind mismatch: expected discriminant {expected}, got {found}")]
-    KernelMismatch {
-        /// Receiving rank's [`crate::KernelKind`] discriminant.
-        expected: u8,
-        /// Partial's declared discriminant.
-        found: u8,
-    },
-    /// Grid dimensions (`n_categories` / `n_area_ranges` / `n_images`)
-    /// didn't match. Means the partials were evaluated against a
-    /// dataset with a different category set or a different
-    /// `area_ranges` config.
-    #[error("grid mismatch: {detail}")]
-    GridMismatch {
-        /// Free-form detail string naming which axis mismatched.
-        detail: String,
-    },
-    /// `parity_mode` byte didn't match. Strict and corrected can't
-    /// merge — they accumulate different cells.
-    #[error("parity_mode mismatch: expected {expected:?}, got {found:?}")]
-    ParityMismatch {
-        /// Receiving rank's parity mode.
-        expected: ParityMode,
-        /// Partial's declared parity mode.
-        found: ParityMode,
-    },
-    /// `retain_iou` byte didn't match. The cells store layout
-    /// differs (meta_cells / retained_ious presence), so a merge
-    /// would lose data.
-    #[error("retain_iou mismatch: expected {expected}, got {found}")]
-    RetainIouMismatch {
-        /// Expected.
-        expected: bool,
-        /// Found.
-        found: bool,
-    },
-    /// rkyv archive validation (bytecheck) refused the body. The
-    /// payload is structurally invalid — pointer offsets out of
-    /// range, bad enum tag, etc.
-    #[error("rkyv archive validation failed: {detail}")]
-    RkyvDecode {
-        /// rkyv's diagnostic message.
-        detail: String,
-    },
-}
-
-impl PartialFormatErrorKind {
-    /// Stable snake_case identifier for this variant. The FFI
-    /// surfaces this string on the typed `PartialFormatMismatch.kind`
-    /// attribute so Python callers can match without parsing the
-    /// human-readable message.
-    ///
-    /// Adding a new variant requires a new tag here — the exhaustive
-    /// match makes it a compile error instead of a silent fallback.
-    pub fn tag(&self) -> &'static str {
-        match self {
-            Self::TooShort { .. } => "too_short",
-            Self::WrongMagic { .. } => "wrong_magic",
-            Self::WrongVersion { .. } => "wrong_version",
-            Self::Crc => "crc",
-            Self::KernelMismatch { .. } => "kernel_mismatch",
-            Self::GridMismatch { .. } => "grid_mismatch",
-            Self::ParityMismatch { .. } => "parity_mismatch",
-            Self::RetainIouMismatch { .. } => "retain_iou_mismatch",
-            Self::RkyvDecode { .. } => "rkyv_decode",
+/// Translate a leaf-crate [`PartialError`] into the equivalent
+/// [`EvalError`] variant. Centralizes the variant-name mapping
+/// (`Format` ↔ `PartialFormatMismatch` etc.) so call sites use `?` to
+/// propagate.
+impl From<PartialError> for EvalError {
+    fn from(err: PartialError) -> Self {
+        match err {
+            PartialError::Format { kind } => EvalError::PartialFormatMismatch { kind },
+            PartialError::DatasetMismatch { expected, actual } => {
+                EvalError::PartialDatasetMismatch { expected, actual }
+            }
+            PartialError::ParamsMismatch { expected, actual } => {
+                EvalError::PartialParamsMismatch { expected, actual }
+            }
+            PartialError::PartitionOverlap {
+                rank_a,
+                rank_b,
+                image_id,
+            } => EvalError::PartialPartitionOverlap {
+                rank_a,
+                rank_b,
+                image_id,
+            },
+            PartialError::RankCollision { rank_id } => EvalError::PartialRankCollision { rank_id },
         }
     }
 }

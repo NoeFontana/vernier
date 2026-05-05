@@ -6,6 +6,7 @@ members = [
     "crates/vernier-ffi",
     "crates/vernier-mask",
     "crates/vernier-panoptic",
+    "crates/vernier-partial",
     "crates/vernier-semantic",
 ]
 

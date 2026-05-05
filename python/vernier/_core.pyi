@@ -118,10 +118,10 @@ class PartialFormatMismatch(RuntimeError):
         "wrong_magic",
         "wrong_version",
         "crc",
+        "paradigm_mismatch",
         "kernel_mismatch",
         "grid_mismatch",
         "parity_mismatch",
-        "retain_iou_mismatch",
         "rkyv_decode",
     ]
 
