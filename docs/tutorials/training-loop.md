@@ -117,51 +117,136 @@ main thread, `BackgroundEvaluator` runs the same kernel on a worker
 thread; `submit(detections)` enqueues and returns immediately.
 Recipe: [`../how-to/background-evaluator.md`](../how-to/background-evaluator.md).
 
+## Multi-process training
+
+Per ADR-0031 (instance) and ADR-0032 (semantic + panoptic), every
+rank evaluates its own slice locally, gathers a small bytes payload
+via the user's transport (`torch.distributed.all_gather_object`,
+`mpi4py.comm.gather`, etc.), and the head rank reconstructs an
+evaluator equivalent to a batch run over the union of the partials.
+The same idiom works in all three paradigms:
+
+```python
+import torch.distributed as dist
+from vernier.instance import StreamingEvaluator
+
+ev = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=dist.get_rank())
+for batch in val_loader_for_this_rank:
+    ev.update(model(batch["images"]))
+
+partial = ev.finalize_to_partial()  # bytes
+gathered: list[bytes | None] = [None] * dist.get_world_size()
+dist.all_gather_object(gathered, partial)
+
+if dist.get_rank() == 0:
+    merged = StreamingEvaluator.from_partials(
+        gt_bytes, gathered, iou_type="bbox"
+    )
+    log_metrics(merged.finalize())
+```
+
+Three things to notice. First, vernier ships a bytes interface;
+`torch.distributed` is the user's problem (no `import torch`
+inside vernier and no torch-version pin to chase). Second,
+`rank_id` is the user's responsibility — vernier doesn't try to
+discover it. Third, `from_partials()` returns a
+`StreamingEvaluator`, not a `Summary`, so the same instance can
+be checkpointed via `finalize_to_partial` or queried for memory
+state; merge is a constructor, not a terminal operation.
+
+### Distributed semantic eval
+
+`vernier.semantic.StreamingEvaluator` ships the same surface. The
+headline difference: confusion-matrix sums are u64-additive, so
+strict-mode merge is **unconditionally bit-equal** to a batch run
+over the union — no `pytest.skip`, no tiebreak caveat:
+
+```python
+import torch.distributed as dist
+import vernier.semantic as sem
+
+ev = sem.StreamingEvaluator(
+    n_classes=19,                    # Cityscapes
+    parity_mode="strict",
+    rank_id=dist.get_rank(),
+)
+for batch in val_loader_for_this_rank:
+    for image_id, gt, dt in batch:
+        ev.update(image_id, gt, dt)
+
+partial = ev.finalize_to_partial()
+gathered: list[bytes | None] = [None] * dist.get_world_size()
+dist.all_gather_object(gathered, partial)
+
+if dist.get_rank() == 0:
+    merged = sem.StreamingEvaluator.from_partials(
+        n_classes=19, partials=gathered, parity_mode="strict",
+    )
+    log_metrics(merged.finalize())
+```
+
+### Distributed panoptic eval
+
+`vernier.panoptic.StreamingEvaluator` ships the same surface plus
+one additional knob — `retain_per_image_deltas` — that is the
+*flagship* determinism control. Default `False` keeps single-rank
+streaming memory lean (per-category PqStat fold only). Set it to
+`True` on every rank when you need strict-mode bit-equality across
+the merge boundary; the merge accumulator re-sorts per-image
+deltas by `image_id` and re-sums in batch order, recovering
+bit-equality despite f64 non-associativity:
+
+```python
+import torch.distributed as dist
+import vernier.panoptic as pq
+
+ev = pq.StreamingEvaluator(
+    categories_json,
+    parity_mode="strict",
+    retain_per_image_deltas=True,    # opt-in for deterministic CI gate
+    rank_id=dist.get_rank(),
+)
+for batch in val_loader_for_this_rank:
+    for image_id, gt_lm, gt_si, dt_lm, dt_si in batch:
+        ev.update(image_id, gt_lm, gt_si, dt_lm, dt_si)
+
+partial = ev.finalize_to_partial()
+gathered: list[bytes | None] = [None] * dist.get_world_size()
+dist.all_gather_object(gathered, partial)
+
+if dist.get_rank() == 0:
+    merged = pq.StreamingEvaluator.from_partials(
+        categories_json,
+        gathered,
+        "strict",
+        retain_per_image_deltas=True,
+    )
+    summary = merged.finalize()
+    log_metrics(pq=summary.pq, sq=summary.sq, rq=summary.rq)
+```
+
+Wire-size cost of `retain_per_image_deltas=True` is ~few hundred
+bytes per image per rank: ~100 KB at Cityscapes val (500 images),
+~1 MB at COCO panoptic val (5k images). Corrected mode without
+deltas stays within ADR-0004's 4-ULP envelope at zero memory cost.
+
+The five `Partial*` exception classes (`PartialFormatMismatch`,
+`PartialDatasetMismatch`, `PartialParamsMismatch`,
+`PartialPartitionOverlap`, `PartialRankCollision`) are
+**paradigm-shared** — `vernier.instance.PartialDatasetMismatch is
+vernier.semantic.PartialDatasetMismatch is
+vernier.panoptic.PartialDatasetMismatch` holds, so a single
+top-level handler catches the same condition across all three
+paradigms. See ADR-0032 for the full determinism contract and
+validation surface.
+
 ## What this tutorial does NOT cover
 
 - **Streaming Segm / Boundary / Keypoints.** The same
-  `StreamingEvaluator` accepts `iou_type="segm"` /
+  `vernier.instance.StreamingEvaluator` accepts `iou_type="segm"` /
   `iou_type="boundary"` / `iou_type="keypoints"` with the same
   call shape. Pass kernel-specific parameters via the constructor
   (`dilation_ratio=` for boundary, `sigmas=` for keypoints).
-- **Streaming PQ or mIoU.** `vernier.semantic` has its own
-  `StreamingEvaluator` (different class). The panoptic surface
-  does not stream today; ADR-0025 §"explicitly does not decide"
-  has the deferral.
-- **Multi-process training.** Per ADR-0031, every rank evaluates
-  its own slice locally, gathers a small bytes payload via the
-  user's transport (`torch.distributed.all_gather_object`,
-  `mpi4py.comm.gather`, etc.), and the head rank reconstructs an
-  evaluator equivalent to a batch run over the union of the
-  partials:
-
-  ```python
-  import torch.distributed as dist
-  from vernier.instance import StreamingEvaluator
-
-  ev = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=dist.get_rank())
-  for batch in val_loader_for_this_rank:
-      ev.update(model(batch["images"]))
-
-  partial = ev.finalize_to_partial()  # bytes
-  gathered: list[bytes | None] = [None] * dist.get_world_size()
-  dist.all_gather_object(gathered, partial)
-
-  if dist.get_rank() == 0:
-      merged = StreamingEvaluator.from_partials(
-          gt_bytes, gathered, iou_type="bbox"
-      )
-      log_metrics(merged.finalize())
-  ```
-
-  Three things to notice. First, vernier ships a bytes interface;
-  `torch.distributed` is the user's problem (no `import torch`
-  inside vernier and no torch-version pin to chase). Second,
-  `rank_id` is the user's responsibility — vernier doesn't try to
-  discover it. Third, `from_partials()` returns a
-  `StreamingEvaluator`, not a `Summary`, so the same instance can
-  be checkpointed via [`to_partial`] or queried for memory state;
-  merge is a constructor, not a terminal operation. See ADR-0031
-  for the determinism contract and the validation surface
-  (`PartialPartitionOverlap`, `PartialDatasetMismatch`,
-  `PartialParamsMismatch`, etc.).
+- **Boundary panoptic-quality.** `vernier.panoptic.Evaluator(boundary=True)`
+  raises `NotImplementedError` pending ADR-0025 §"explicitly does
+  not decide" Q3 / Z1 follow-up.
