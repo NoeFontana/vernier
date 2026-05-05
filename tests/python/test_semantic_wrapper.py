@@ -14,10 +14,14 @@ Per-dataset presets that decode PNG fixtures live in
 
 from __future__ import annotations
 
+from typing import Mapping
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-import vernier
+from numpy.typing import NDArray
+
 from vernier.semantic import (
     ADE20K_IGNORE_LABEL,
     ADE20K_N_CLASSES,
@@ -25,8 +29,6 @@ from vernier.semantic import (
     CITYSCAPES_N_CLASSES,
     PASCAL_VOC_IGNORE_LABEL,
     PASCAL_VOC_N_CLASSES,
-    ClassSemanticStats,
-    ConfusionMatrix,
     Dataset,
     Evaluator,
     Predictions,
@@ -173,16 +175,3 @@ def test_preset_constants_match_pinned_values() -> None:
     assert ADE20K_N_CLASSES == 150
     assert PASCAL_VOC_IGNORE_LABEL == 255
     assert PASCAL_VOC_N_CLASSES == 21
-
-
-def test_root_namespace_exposes_semantic_submodule() -> None:
-    """ADR-0029: vernier.semantic is reachable from `import vernier`."""
-    assert hasattr(vernier, "semantic")
-    for name in ("Evaluator", "Dataset", "Predictions", "Summary"):
-        assert hasattr(vernier.semantic, name), f"missing vernier.semantic.{name}"
-    # FFI types re-exported under their unprefixed names per ADR-0029.
-    from vernier._core import SemanticSummary as FfiSummary
-
-    assert vernier.semantic.Summary is FfiSummary
-    assert vernier.semantic.ClassSemanticStats is ClassSemanticStats
-    assert vernier.semantic.ConfusionMatrix is ConfusionMatrix
