@@ -107,6 +107,16 @@ pub(crate) enum WorkerMessage<K: EvalKernel + Send + 'static> {
         request: TablesRequest,
         config: TablesConfig,
     },
+    /// ADR-0031: serialize evaluator state to a partial blob without
+    /// consuming the evaluator. Worker stays alive on this path.
+    SnapshotToPartial {
+        reply: SyncSender<Result<Vec<u8>, EvalError>>,
+    },
+    /// ADR-0031: drain and serialize as a partial blob. Worker exits
+    /// after sending the reply.
+    FinalizeToPartial {
+        reply: SyncSender<Result<Vec<u8>, EvalError>>,
+    },
     /// Cooperative shutdown — the worker exits without finalizing.
     Shutdown,
     /// Test-only: panic the worker so the FFI panic-recovery path can
@@ -374,6 +384,54 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
         }
     }
 
+    /// ADR-0031: ask the worker to serialize its state as a partial
+    /// blob without consuming the evaluator. The worker stays alive
+    /// after replying.
+    pub(crate) fn snapshot_to_partial(&self) -> Result<Vec<u8>, EvalError> {
+        self.take_last_error()?;
+        let (reply_tx, reply_rx) = sync_channel::<Result<Vec<u8>, EvalError>>(1);
+        self.sender
+            .send(WorkerMessage::SnapshotToPartial { reply: reply_tx })
+            .map_err(|_| EvalError::InvalidConfig {
+                detail: "background worker is no longer accepting partial requests".to_string(),
+            })?;
+        match reply_rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(EvalError::InvalidConfig {
+                detail: "background worker dropped partial reply channel".to_string(),
+            }),
+        }
+    }
+
+    /// ADR-0031: drain the queue, serialize the evaluator's final
+    /// state as a partial blob, and join the worker. Consumes `self`.
+    pub(crate) fn finalize_to_partial(self) -> Result<Vec<u8>, EvalError> {
+        self.take_last_error()?;
+        let (reply_tx, reply_rx) = sync_channel::<Result<Vec<u8>, EvalError>>(1);
+        self.sender
+            .send(WorkerMessage::FinalizeToPartial { reply: reply_tx })
+            .map_err(|_| EvalError::InvalidConfig {
+                detail: "background worker is no longer accepting finalize requests".to_string(),
+            })?;
+        let blob = match reply_rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(EvalError::InvalidConfig {
+                detail: "background worker dropped finalize reply channel".to_string(),
+            }),
+        };
+        let join_result = match self.take_worker() {
+            Some(handle) => handle.join(),
+            None => return blob,
+        };
+        match join_result {
+            Ok(Ok(())) => blob,
+            Ok(Err(worker_err)) => Err(worker_err),
+            Err(payload) => Err(EvalError::InvalidConfig {
+                detail: format!("background worker panicked: {payload:?}"),
+            }),
+        }
+    }
+
     /// Drain the queue, finalize the evaluator, and join the worker.
     ///
     /// Consumes `self` — the wrapper is unusable afterwards. The FFI
@@ -626,6 +684,15 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
             }) => {
                 let s = evaluator.finalize_with_tables(request, &config);
                 let _ = reply.send(s);
+                return Ok(());
+            }
+            Ok(WorkerMessage::SnapshotToPartial { reply }) => {
+                let p = evaluator.snapshot_to_partial();
+                let _ = reply.send(p);
+            }
+            Ok(WorkerMessage::FinalizeToPartial { reply }) => {
+                let p = evaluator.finalize_to_partial();
+                let _ = reply.send(p);
                 return Ok(());
             }
             Ok(WorkerMessage::Shutdown) | Err(RecvError) => return Ok(()),

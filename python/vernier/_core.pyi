@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any, Literal, TypeAlias, TypedDict
 
 import numpy as np
@@ -45,6 +45,7 @@ class StreamingEvaluator:
         sigmas: dict[int, list[float]] | None = ...,
         retain_iou: bool = ...,
         cast_inputs: bool = ...,
+        rank_id: int | None = ...,
     ) -> None: ...
     def update(self, detections: DetectionsInput) -> _UpdateReportDict: ...
     def snapshot(self, *, running: bool = ...) -> Summary: ...
@@ -71,6 +72,24 @@ class StreamingEvaluator:
         per_pair_max_rows: int = ...,
         per_detection_with_geometry: bool = ...,
     ) -> _TablesResult: ...
+    def to_partial(self) -> bytes: ...
+    def finalize_to_partial(self) -> bytes: ...
+    @classmethod
+    def from_partials(
+        cls,
+        gt_json: bytes,
+        partials: Sequence[bytes],
+        *,
+        iou_type: Literal["bbox", "segm", "boundary", "keypoints"] = ...,
+        parity_mode: Literal["strict", "corrected"] = ...,
+        max_dets: list[int] = ...,
+        use_cats: bool = ...,
+        memory_budget_bytes: int | None = ...,
+        dilation_ratio: float = ...,
+        sigmas: dict[int, list[float]] | None = ...,
+        retain_iou: bool = ...,
+        cast_inputs: bool = ...,
+    ) -> Self: ...
     @property
     def images_seen(self) -> int: ...
     @property
@@ -93,6 +112,35 @@ class QueueFullError(RuntimeError):
 
 class MemoryBudgetWarning(UserWarning): ...
 
+class PartialFormatMismatch(RuntimeError):
+    kind: Literal[
+        "too_short",
+        "wrong_magic",
+        "wrong_version",
+        "crc",
+        "kernel_mismatch",
+        "grid_mismatch",
+        "parity_mismatch",
+        "retain_iou_mismatch",
+        "rkyv_decode",
+    ]
+
+class PartialDatasetMismatch(RuntimeError):
+    expected: bytes
+    actual: bytes
+
+class PartialParamsMismatch(RuntimeError):
+    expected: bytes
+    actual: bytes
+
+class PartialPartitionOverlap(RuntimeError):
+    rank_a: int
+    rank_b: int
+    image_id: int
+
+class PartialRankCollision(RuntimeError):
+    rank_id: int
+
 class BackgroundEvaluator:
     def __init__(
         self,
@@ -111,7 +159,10 @@ class BackgroundEvaluator:
         shutdown_timeout_seconds: float = ...,
         retain_iou: bool = ...,
         cast_inputs: bool = ...,
+        rank_id: int | None = ...,
     ) -> None: ...
+    def to_partial(self) -> bytes: ...
+    def finalize_to_partial(self) -> bytes: ...
     def submit(self, detections: DetectionsInput, *, timeout: float | None = ...) -> None: ...
     def snapshot(self, *, peek: bool = ...) -> Summary: ...
     def snapshot_with_tables(

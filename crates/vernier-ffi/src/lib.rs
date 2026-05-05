@@ -80,6 +80,40 @@ create_exception!(
     "Streaming evaluator's memory usage crossed the soft-warn threshold."
 );
 
+// ADR-0031 distributed-eval merge errors. Each carries typed
+// attributes so a CI gate can match on them directly without
+// parsing a string message.
+create_exception!(
+    vernier._core,
+    PartialFormatMismatch,
+    pyo3::exceptions::PyRuntimeError,
+    "Distributed-eval partial blob is structurally malformed (magic / version / CRC / kernel kind / parity / retain_iou / grid dimensions / rkyv archive).\n\nAttributes: kind (string discriminator)."
+);
+create_exception!(
+    vernier._core,
+    PartialDatasetMismatch,
+    pyo3::exceptions::PyRuntimeError,
+    "Distributed-eval partial was computed against a different dataset than the receiving evaluator.\n\nAttributes: expected (bytes), actual (bytes)."
+);
+create_exception!(
+    vernier._core,
+    PartialParamsMismatch,
+    pyo3::exceptions::PyRuntimeError,
+    "Distributed-eval partial was computed against different evaluation params than the receiving evaluator.\n\nAttributes: expected (bytes), actual (bytes)."
+);
+create_exception!(
+    vernier._core,
+    PartialPartitionOverlap,
+    pyo3::exceptions::PyRuntimeError,
+    "Two distributed-eval partials cover the same image_id (sampler bug).\n\nAttributes: rank_a, rank_b, image_id."
+);
+create_exception!(
+    vernier._core,
+    PartialRankCollision,
+    pyo3::exceptions::PyRuntimeError,
+    "Two strict-mode distributed-eval partials share a rank_id.\n\nAttributes: rank_id."
+);
+
 /// Returns the underlying `vernier-core` version string. Useful as a smoke
 /// test that the FFI bridge is wired up and the dynamic linker can find the
 /// extension module.
@@ -1280,6 +1314,75 @@ fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
         EvalError::NotImplemented { feature } => {
             PyNotImplementedError::new_err(feature.to_string())
         }
+        EvalError::PartialFormatMismatch { ref kind } => {
+            let exc = PartialFormatMismatch::new_err(format!("{e}"));
+            // The kind discriminant uses the variant name so callers
+            // can match without parsing the human-readable message.
+            let kind_str: &'static str = match kind {
+                vernier_core::PartialFormatErrorKind::TooShort { .. } => "too_short",
+                vernier_core::PartialFormatErrorKind::WrongMagic { .. } => "wrong_magic",
+                vernier_core::PartialFormatErrorKind::WrongVersion { .. } => "wrong_version",
+                vernier_core::PartialFormatErrorKind::Crc => "crc",
+                vernier_core::PartialFormatErrorKind::KernelMismatch { .. } => "kernel_mismatch",
+                vernier_core::PartialFormatErrorKind::GridMismatch { .. } => "grid_mismatch",
+                vernier_core::PartialFormatErrorKind::ParityMismatch { .. } => "parity_mismatch",
+                vernier_core::PartialFormatErrorKind::RetainIouMismatch { .. } => {
+                    "retain_iou_mismatch"
+                }
+                vernier_core::PartialFormatErrorKind::RkyvDecode { .. } => "rkyv_decode",
+            };
+            if let Err(err) = exc.value(py).setattr("kind", kind_str) {
+                return err;
+            }
+            exc
+        }
+        EvalError::PartialDatasetMismatch { expected, actual } => {
+            let exc = PartialDatasetMismatch::new_err(format!("{e}"));
+            let value = exc.value(py);
+            if let Err(err) = value.setattr("expected", PyBytes::new(py, &expected)) {
+                return err;
+            }
+            if let Err(err) = value.setattr("actual", PyBytes::new(py, &actual)) {
+                return err;
+            }
+            exc
+        }
+        EvalError::PartialParamsMismatch { expected, actual } => {
+            let exc = PartialParamsMismatch::new_err(format!("{e}"));
+            let value = exc.value(py);
+            if let Err(err) = value.setattr("expected", PyBytes::new(py, &expected)) {
+                return err;
+            }
+            if let Err(err) = value.setattr("actual", PyBytes::new(py, &actual)) {
+                return err;
+            }
+            exc
+        }
+        EvalError::PartialPartitionOverlap {
+            rank_a,
+            rank_b,
+            image_id,
+        } => {
+            let exc = PartialPartitionOverlap::new_err(format!("{e}"));
+            let value = exc.value(py);
+            if let Err(err) = value.setattr("rank_a", rank_a) {
+                return err;
+            }
+            if let Err(err) = value.setattr("rank_b", rank_b) {
+                return err;
+            }
+            if let Err(err) = value.setattr("image_id", image_id) {
+                return err;
+            }
+            exc
+        }
+        EvalError::PartialRankCollision { rank_id } => {
+            let exc = PartialRankCollision::new_err(format!("{e}"));
+            if let Err(err) = exc.value(py).setattr("rank_id", rank_id) {
+                return err;
+            }
+            exc
+        }
         other => PyValueError::new_err(format!("{other}")),
     }
 }
@@ -1424,6 +1527,31 @@ impl StreamingState {
             Self::Segm(ev) => ev.finalize_with_tables(request, config),
             Self::Boundary(ev) => ev.finalize_with_tables(request, config),
             Self::Keypoints(ev) => ev.finalize_with_tables(request, config),
+            Self::Finalized => Err(finalized_error()),
+        }
+    }
+
+    /// ADR-0031: serialize spine state to a partial blob without
+    /// consuming the evaluator.
+    fn snapshot_to_partial(&self) -> Result<Vec<u8>, EvalError> {
+        match self {
+            Self::Bbox(ev) => ev.snapshot_to_partial(),
+            Self::Segm(ev) => ev.snapshot_to_partial(),
+            Self::Boundary(ev) => ev.snapshot_to_partial(),
+            Self::Keypoints(ev) => ev.snapshot_to_partial(),
+            Self::Finalized => Err(finalized_error()),
+        }
+    }
+
+    /// ADR-0031: serialize spine state to a partial blob and consume
+    /// the evaluator (swap [`Self::Finalized`] in).
+    fn take_and_finalize_to_partial(&mut self) -> Result<Vec<u8>, EvalError> {
+        let prev = std::mem::replace(self, Self::Finalized);
+        match prev {
+            Self::Bbox(ev) => ev.finalize_to_partial(),
+            Self::Segm(ev) => ev.finalize_to_partial(),
+            Self::Boundary(ev) => ev.finalize_to_partial(),
+            Self::Keypoints(ev) => ev.finalize_to_partial(),
             Self::Finalized => Err(finalized_error()),
         }
     }
@@ -1650,6 +1778,7 @@ impl PyStreamingEvaluator {
         sigmas = None,
         retain_iou = false,
         cast_inputs = false,
+        rank_id = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1663,6 +1792,7 @@ impl PyStreamingEvaluator {
         sigmas: Option<&Bound<'_, PyDict>>,
         retain_iou: bool,
         cast_inputs: bool,
+        rank_id: Option<u32>,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -1697,8 +1827,13 @@ impl PyStreamingEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 (StreamingState::Bbox(ev), array_ingest::ArrayIouType::Bbox)
             }
             "segm" => {
@@ -1710,8 +1845,13 @@ impl PyStreamingEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 (StreamingState::Segm(ev), array_ingest::ArrayIouType::Segm)
             }
             "boundary" => {
@@ -1725,8 +1865,13 @@ impl PyStreamingEvaluator {
                     retain_iou,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
-                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 (
                     StreamingState::Boundary(ev),
                     array_ingest::ArrayIouType::Boundary,
@@ -1749,8 +1894,13 @@ impl PyStreamingEvaluator {
                     retain_iou,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
-                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 (
                     StreamingState::Keypoints(ev),
                     array_ingest::ArrayIouType::Keypoints,
@@ -1859,6 +2009,205 @@ impl PyStreamingEvaluator {
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PySummary { inner: summary })
+    }
+
+    /// ADR-0031: serialize the evaluator's spine state to an opaque
+    /// byte blob without consuming the evaluator. The bytes can be
+    /// gathered across ranks (e.g. via `torch.distributed.all_gather_object`)
+    /// and reconstructed via [`Self::from_partials`]. Equivalent to
+    /// [`Self::checkpoint`].
+    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let state_mutex = &self.state;
+        let blob = py
+            .detach(move || {
+                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "StreamingEvaluator state mutex poisoned".into(),
+                })?;
+                guard.snapshot_to_partial()
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
+    /// ADR-0031: consume the evaluator and serialize its final state
+    /// as a partial byte blob. Subsequent calls on this object raise
+    /// "already finalized".
+    fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let state_mutex = &self.state;
+        let blob = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "StreamingEvaluator state mutex poisoned".into(),
+                })?;
+                guard.take_and_finalize_to_partial()
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
+    /// ADR-0031: reconstruct an evaluator from N partial blobs
+    /// (typically one per rank in a multi-process eval).
+    ///
+    /// Validation is strict per the ADR's "Validation order": each
+    /// partial must agree on the receiving rank's `iou_type`,
+    /// `parity_mode`, `max_dets`, `use_cats`, `retain_iou`, dataset
+    /// hash, and params hash. In strict mode every partial must
+    /// declare a distinct `rank_id`. Image-id sets across partials
+    /// must be disjoint.
+    #[classmethod]
+    #[pyo3(signature = (
+        gt_json,
+        partials,
+        *,
+        iou_type = "bbox",
+        parity_mode = "corrected",
+        max_dets = vec![1, 10, 100],
+        use_cats = true,
+        memory_budget_bytes = None,
+        dilation_ratio = 0.02,
+        sigmas = None,
+        retain_iou = false,
+        cast_inputs = false,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn from_partials(
+        _cls: &Bound<'_, pyo3::types::PyType>,
+        py: Python<'_>,
+        gt_json: &Bound<'_, PyBytes>,
+        partials: &Bound<'_, pyo3::types::PyList>,
+        iou_type: &str,
+        parity_mode: &str,
+        max_dets: Vec<usize>,
+        use_cats: bool,
+        memory_budget_bytes: Option<usize>,
+        dilation_ratio: f64,
+        sigmas: Option<&Bound<'_, PyDict>>,
+        retain_iou: bool,
+        cast_inputs: bool,
+    ) -> PyResult<Self> {
+        let parity = parse_parity_mode(parity_mode)?;
+        require_nonempty_max_dets(&max_dets)?;
+        let mut max_dets = max_dets;
+        sort_max_dets(&mut max_dets);
+        let max_dets_per_image = max_dets.iter().copied().max().unwrap_or(100);
+        let budget = match memory_budget_bytes {
+            Some(b) => MemoryBudget {
+                bytes: b,
+                soft_warn_fraction: 0.80,
+            },
+            None => MemoryBudget::auto_default(),
+        };
+        let dataset = parse_gt(gt_json.as_bytes())?;
+        // Copy partial bytes off the GIL — we'll release it for the
+        // rkyv decode + cell-store fold. Each list entry must be
+        // bytes; we reject non-bytes inputs at the boundary.
+        let mut partial_buffers: Vec<Vec<u8>> = Vec::with_capacity(partials.len());
+        for entry in partials.iter() {
+            let b = entry.cast::<PyBytes>().map_err(|_| {
+                PyValueError::new_err("partials must be a sequence of bytes objects")
+            })?;
+            partial_buffers.push(b.as_bytes().to_vec());
+        }
+
+        let parsed_sigmas = match (iou_type, sigmas) {
+            ("keypoints", Some(d)) => parse_sigmas(d)?,
+            _ => HashMap::new(),
+        };
+        if iou_type == "boundary" {
+            // Validate dilation_ratio while we still hold the GIL so the
+            // typed PyValueError surfaces cleanly; the construction
+            // inside detach only needs the validated number.
+            boundary_iou_type(dilation_ratio)?;
+        }
+
+        let (state, array_iou_type) = py
+            .detach(move || -> Result<(StreamingState, array_ingest::ArrayIouType), EvalError> {
+                let partial_refs: Vec<&[u8]> =
+                    partial_buffers.iter().map(Vec::as_slice).collect();
+                match iou_type {
+                    "bbox" => {
+                        let area = area_ranges_for(&EvalIouType::Bbox);
+                        let params = OwnedEvaluateParams {
+                            iou_thresholds: iou_thresholds().to_vec(),
+                            area_ranges: area,
+                            max_dets_per_image,
+                            use_cats,
+                            retain_iou,
+                        };
+                        let ev = StreamingEvaluator::from_partials(
+                            dataset, BboxIou, params, parity, budget, &partial_refs,
+                        )?;
+                        Ok((StreamingState::Bbox(ev), array_ingest::ArrayIouType::Bbox))
+                    }
+                    "segm" => {
+                        let area = area_ranges_for(&EvalIouType::Segm);
+                        let params = OwnedEvaluateParams {
+                            iou_thresholds: iou_thresholds().to_vec(),
+                            area_ranges: area,
+                            max_dets_per_image,
+                            use_cats,
+                            retain_iou,
+                        };
+                        let ev = StreamingEvaluator::from_partials(
+                            dataset, SegmIou, params, parity, budget, &partial_refs,
+                        )?;
+                        Ok((StreamingState::Segm(ev), array_ingest::ArrayIouType::Segm))
+                    }
+                    "boundary" => {
+                        let iou_kind_dyn = EvalIouType::Boundary { dilation_ratio };
+                        let area = area_ranges_for(&iou_kind_dyn);
+                        let params = OwnedEvaluateParams {
+                            iou_thresholds: iou_thresholds().to_vec(),
+                            area_ranges: area,
+                            max_dets_per_image,
+                            use_cats,
+                            retain_iou,
+                        };
+                        let kernel = BoundaryIou { dilation_ratio };
+                        let ev = StreamingEvaluator::from_partials(
+                            dataset, kernel, params, parity, budget, &partial_refs,
+                        )?;
+                        Ok((
+                            StreamingState::Boundary(ev),
+                            array_ingest::ArrayIouType::Boundary,
+                        ))
+                    }
+                    "keypoints" => {
+                        let iou_kind_dyn = EvalIouType::Keypoints {
+                            sigmas: parsed_sigmas.clone(),
+                        };
+                        let area = area_ranges_for(&iou_kind_dyn);
+                        let params = OwnedEvaluateParams {
+                            iou_thresholds: iou_thresholds().to_vec(),
+                            area_ranges: area,
+                            max_dets_per_image,
+                            use_cats,
+                            retain_iou,
+                        };
+                        let kernel = OksSimilarity::new(parsed_sigmas);
+                        let ev = StreamingEvaluator::from_partials(
+                            dataset, kernel, params, parity, budget, &partial_refs,
+                        )?;
+                        Ok((
+                            StreamingState::Keypoints(ev),
+                            array_ingest::ArrayIouType::Keypoints,
+                        ))
+                    }
+                    _ => Err(EvalError::InvalidConfig {
+                        detail: format!(
+                            "invalid iou_type {iou_type:?}; expected 'bbox', 'segm', 'boundary', or 'keypoints'"
+                        ),
+                    }),
+                }
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+
+        Ok(Self {
+            state: Mutex::new(state),
+            owner_thread: Mutex::new(None),
+            array_iou_type,
+            cast_state: array_ingest::new_cast_state(cast_inputs),
+        })
     }
 
     /// Snapshot variant that builds the requested result tables
@@ -2118,6 +2467,27 @@ impl BackgroundEvalState {
         }
     }
 
+    fn snapshot_to_partial(&self) -> Result<Vec<u8>, EvalError> {
+        match self {
+            Self::Bbox(ev) => ev.snapshot_to_partial(),
+            Self::Segm(ev) => ev.snapshot_to_partial(),
+            Self::Boundary(ev) => ev.snapshot_to_partial(),
+            Self::Keypoints(ev) => ev.snapshot_to_partial(),
+            Self::Finalized => Err(background_finalized_error()),
+        }
+    }
+
+    fn take_and_finalize_to_partial(&mut self) -> Result<Vec<u8>, EvalError> {
+        let prev = std::mem::replace(self, Self::Finalized);
+        match prev {
+            Self::Bbox(ev) => ev.finalize_to_partial(),
+            Self::Segm(ev) => ev.finalize_to_partial(),
+            Self::Boundary(ev) => ev.finalize_to_partial(),
+            Self::Keypoints(ev) => ev.finalize_to_partial(),
+            Self::Finalized => Err(background_finalized_error()),
+        }
+    }
+
     fn take_scheduling_outcome(&self) -> Option<Result<(), String>> {
         match self {
             Self::Bbox(ev) => ev.take_scheduling_outcome(),
@@ -2266,6 +2636,7 @@ impl PyBackgroundEvaluator {
         shutdown_timeout_seconds = 5.0,
         retain_iou = false,
         cast_inputs = false,
+        rank_id = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2284,6 +2655,7 @@ impl PyBackgroundEvaluator {
         shutdown_timeout_seconds: f64,
         retain_iou: bool,
         cast_inputs: bool,
+        rank_id: Option<u32>,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -2324,8 +2696,13 @@ impl PyBackgroundEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
@@ -2342,8 +2719,13 @@ impl PyBackgroundEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
@@ -2362,8 +2744,13 @@ impl PyBackgroundEvaluator {
                     retain_iou,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
-                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
@@ -2388,8 +2775,13 @@ impl PyBackgroundEvaluator {
                     retain_iou,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
-                let ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
                     .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                if let Some(rid) = rank_id {
+                    ev = ev
+                        .with_rank(rid)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                }
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
@@ -2609,6 +3001,38 @@ impl PyBackgroundEvaluator {
         streaming_tables_result(summary, tables)
     }
 
+    /// ADR-0031: ask the worker to serialize its current state as a
+    /// partial blob. The worker stays alive after replying, so callers
+    /// can continue submitting batches and finalize later.
+    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let state_mutex = &self.state;
+        let blob = py
+            .detach(move || {
+                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })?;
+                guard.snapshot_to_partial()
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
+    /// ADR-0031: drain the queue, serialize the worker's final state
+    /// as a partial blob, and shut the worker down. Subsequent calls
+    /// raise "already finalized".
+    fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let state_mutex = &self.state;
+        let blob = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })?;
+                guard.take_and_finalize_to_partial()
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
     /// Context-manager entry. Returns `self` so `with ev as e:` binds
     /// the same instance the user constructed.
     fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
@@ -2738,6 +3162,26 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "MemoryBudgetWarning",
         m.py().get_type::<MemoryBudgetWarning>(),
+    )?;
+    m.add(
+        "PartialFormatMismatch",
+        m.py().get_type::<PartialFormatMismatch>(),
+    )?;
+    m.add(
+        "PartialDatasetMismatch",
+        m.py().get_type::<PartialDatasetMismatch>(),
+    )?;
+    m.add(
+        "PartialParamsMismatch",
+        m.py().get_type::<PartialParamsMismatch>(),
+    )?;
+    m.add(
+        "PartialPartitionOverlap",
+        m.py().get_type::<PartialPartitionOverlap>(),
+    )?;
+    m.add(
+        "PartialRankCollision",
+        m.py().get_type::<PartialRankCollision>(),
     )?;
     m.add("__version__", vernier_core::VERSION)?;
     panoptic::register(m)?;

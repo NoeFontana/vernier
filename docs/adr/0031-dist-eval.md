@@ -1,7 +1,7 @@
 # ADR-0031: Distributed evaluation — `from_partials` and the partial wire format
 
-- **Status:** proposed
-- **Date:** 2026-05-04
+- **Status:** accepted
+- **Date:** 2026-05-05
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
