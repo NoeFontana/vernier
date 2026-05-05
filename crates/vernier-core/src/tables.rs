@@ -730,6 +730,13 @@ impl RetainedIous {
     pub(crate) fn remove(&mut self, k: usize, i: usize) -> Option<Array2<f64>> {
         self.inner.remove(&(k, i))
     }
+
+    /// Iterate `(k, i, view)` triplets in arbitrary order. The
+    /// distributed-eval encoder (ADR-0031) walks this to materialize
+    /// the wire-format `retained_ious` section, then sorts.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, usize, ArrayView2<'_, f64>)> + '_ {
+        self.inner.iter().map(|(&(k, i), arr)| (k, i, arr.view()))
+    }
 }
 
 /// Per-image cross-class IoU matrices and the parallel category-index
