@@ -41,7 +41,7 @@ pub use dataset::{
     CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, FederatedMetadata,
     Frequency, ImageId, ImageMeta,
 };
-pub use error::EvalError;
+pub use error::{EvalError, PartialFormatErrorKind};
 pub use evaluate::{
     evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints, evaluate_segm,
     evaluate_segm_cached, evaluate_with, evaluate_with_retention, AreaRange, EvalGrid,
