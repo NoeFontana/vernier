@@ -31,16 +31,19 @@ ROOT_STAYS: tuple[str, ...] = (
     "version",
     "instance",
     "panoptic",
+    "semantic",
 )
 
 # Symbols that previously lived at ``vernier.X`` but have moved into the
-# instance/panoptic submodules per ADR-0029. None of them should resolve
-# at the root any more.
+# instance/panoptic/semantic submodules per ADR-0029. None of them should
+# resolve at the root any more.
 RELOCATED_NAMES: tuple[str, ...] = (
     "BackgroundEvaluator",
     "Bbox",
     "Boundary",
     "ClassPanopticStats",
+    "ClassSemanticStats",
+    "ConfusionMatrix",
     "Dataset",
     "EvalResult",
     "Evaluator",
@@ -55,7 +58,12 @@ RELOCATED_NAMES: tuple[str, ...] = (
     "PanopticSummary",
     "QueueFullError",
     "Segm",
+    "SemanticDataset",
+    "SemanticEvaluator",
+    "SemanticPredictions",
+    "SemanticSummary",
     "StreamingEvaluator",
+    "StreamingSemanticEvaluator",
     "Summary",
     "TableName",
     "TablesConfig",
@@ -70,7 +78,7 @@ INSTANCE_NAMES: tuple[str, ...] = (
     "BackgroundEvaluator",
     "Bbox",
     "Boundary",
-    "Dataset",
+    "CocoDataset",
     "EvalResult",
     "Evaluator",
     "FpIouHistogram",
@@ -99,6 +107,16 @@ PANOPTIC_NAMES: tuple[str, ...] = (
     "Summary",
 )
 
+SEMANTIC_NAMES: tuple[str, ...] = (
+    "ClassSemanticStats",
+    "ConfusionMatrix",
+    "Dataset",
+    "Evaluator",
+    "Predictions",
+    "StreamingEvaluator",
+    "Summary",
+)
+
 
 @pytest.mark.parametrize("name", ROOT_STAYS)
 def test_root_keeps_only_shared_and_shim(name: str) -> None:
@@ -110,7 +128,7 @@ def test_old_flat_root_names_are_gone(name: str) -> None:
     """Pre-1.0, B1 chosen: no re-exports for moved symbols."""
     assert not hasattr(vernier, name), (
         f"{name!r} should not resolve at the root after ADR-0029; "
-        f"use vernier.instance.{name} or vernier.panoptic.{name}"
+        "relocated to vernier.instance, vernier.panoptic, or vernier.semantic"
     )
 
 
@@ -122,6 +140,11 @@ def test_instance_submodule_exports(name: str) -> None:
 @pytest.mark.parametrize("name", PANOPTIC_NAMES)
 def test_panoptic_submodule_exports(name: str) -> None:
     assert hasattr(vernier.panoptic, name), f"missing vernier.panoptic.{name}"
+
+
+@pytest.mark.parametrize("name", SEMANTIC_NAMES)
+def test_semantic_submodule_exports(name: str) -> None:
+    assert hasattr(vernier.semantic, name), f"missing vernier.semantic.{name}"
 
 
 def test_iou_kind_discriminator_identity_preserved() -> None:

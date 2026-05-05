@@ -167,9 +167,9 @@ def test_evaluate_tables_with_dataset_handle_is_not_yet_supported() -> None:
     Week 2.5 (when streaming/background integration also lands).
     Document the limitation as a typed error so callers don't get a
     misleading low-level message."""
-    from vernier.instance import Dataset
+    from vernier.instance import CocoDataset
 
-    ds = Dataset.from_json(_GT)
+    ds = CocoDataset.from_json(_GT)
     with pytest.raises(NotImplementedError, match="bytes"):
         Evaluator().evaluate(ds, _DT, tables=("per_class",))
 

@@ -108,9 +108,9 @@ def _vernier_total_dts_seen(gt_bytes: bytes, dt_bytes: bytes, max_dets: int) -> 
     # harness's snapshot path strips that key. Build a fresh grid
     # here just for the dedupe.
     from vernier._core import evaluate_bbox_grid_with_dataset
-    from vernier.instance import Dataset
+    from vernier.instance import CocoDataset
 
-    gt_ds = Dataset.from_lvis_json(gt_bytes)
+    gt_ds = CocoDataset.from_lvis_json(gt_bytes)
     grid = evaluate_bbox_grid_with_dataset(gt_ds, dt_bytes, "strict", max_dets, True)
     seen_ids: set[int] = set()
     for cell in grid.eval_imgs():
@@ -223,9 +223,9 @@ def test_lvis_trim_uses_well_separated_scores_for_strict_membership() -> None:
         Path(dt_path).unlink(missing_ok=True)
 
     from vernier._core import evaluate_bbox_grid_with_dataset
-    from vernier.instance import Dataset
+    from vernier.instance import CocoDataset
 
-    gt_ds = Dataset.from_lvis_json(gt_b)
+    gt_ds = CocoDataset.from_lvis_json(gt_b)
     grid = evaluate_bbox_grid_with_dataset(gt_ds, dt_b, "strict", 300, True)
     vernier_by_id: dict[int, float] = {}
     for cell in grid.eval_imgs():

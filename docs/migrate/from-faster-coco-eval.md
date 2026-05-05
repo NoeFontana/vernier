@@ -10,7 +10,7 @@ and want vernier's auditable parity guarantees.
 
 ```python
 from vernier import COCOeval, patch_pycocotools          # shim path
-from vernier.instance import Bbox, Dataset, Evaluator    # native path
+from vernier.instance import Bbox, CocoDataset, Evaluator    # native path
 ```
 
 | `faster-coco-eval` | vernier |

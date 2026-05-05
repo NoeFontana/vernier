@@ -12,5 +12,3 @@ sentinel/quirk traps most likely to affect real workloads.
 - [From `panopticapi`](from-panopticapi.md) — panoptic-quality (PQ).
 - [From `lvis-api`](from-lvis-api.md) — long-tail / federated detection.
 - [From `mmsegmentation`](from-mmsegmentation.md) — semantic segmentation.
-- [From flat-root imports (0.0.x → 0.1.x)](from-flat-root.md) — internal
-  upgrade path for users on the pre-namespace API.

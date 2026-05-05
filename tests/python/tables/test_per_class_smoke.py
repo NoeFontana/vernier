@@ -24,7 +24,7 @@ from vernier._core import (
     evaluate_bbox_grid,
     per_class_to_arrow_pycapsule,
 )
-from vernier.instance import Dataset, Evaluator
+from vernier.instance import CocoDataset, Evaluator
 
 # Two perfectly-overlapping detections on a single image, two
 # categories. Mirrors the shape of tests/python/test_evaluator.py's
@@ -66,7 +66,7 @@ _DT = json.dumps(
 ).encode()
 
 
-def _build_grid_and_accum() -> tuple[EvalGrid, Accumulated, Dataset]:
+def _build_grid_and_accum() -> tuple[EvalGrid, Accumulated, CocoDataset]:
     """Build the FFI primitives the table entry point consumes.
 
     The grid and accumulator are FFI-internal types deliberately not
@@ -75,7 +75,7 @@ def _build_grid_and_accum() -> tuple[EvalGrid, Accumulated, Dataset]:
     """
     grid = evaluate_bbox_grid(_GT, _DT, "corrected", 100, True)
     accum = grid.accumulate([1, 10, 100])
-    dataset = Dataset.from_json(_GT)
+    dataset = CocoDataset.from_json(_GT)
     return grid, accum, dataset
 
 

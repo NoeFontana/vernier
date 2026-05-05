@@ -28,7 +28,7 @@ from vernier._core import evaluate_bbox_grid_with_dataset
 
 # The oracle goes via the vendored tree (conftest patches `sys.path`);
 # vernier ships an FFI grid helper used by the candidate path.
-from vernier.instance import Dataset
+from vernier.instance import CocoDataset
 
 ImplName = Literal["vernier", "lvis_api"]
 

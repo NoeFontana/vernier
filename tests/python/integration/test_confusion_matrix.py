@@ -2,7 +2,7 @@
 
 Hand-computed expected counts on the existing TIDE fixtures cover the
 three kernels (bbox / segm / boundary) plus the two unsupported kernel
-selectors (`Keypoints` and the `Dataset` handle, both rejected with
+selectors (`Keypoints` and the `CocoDataset` handle, both rejected with
 :class:`NotImplementedError`).
 
 The Rust integration test (`crates/vernier-core/tests/confusion_matrix.rs`)
@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 import vernier
-from vernier.instance import Bbox, Boundary, Dataset, Keypoints, Segm
+from vernier.instance import Bbox, Boundary, CocoDataset, Keypoints, Segm
 
 FIXTURE_ROOT = Path(__file__).parents[1] / "oracle" / "tide" / "fixtures"
 
@@ -113,8 +113,8 @@ def test_confusion_matrix_keypoints_rejected_per_adr_0024():
 
 def test_confusion_matrix_dataset_handle_rejected():
     gt, dt = _load("all_perfect")
-    handle = Dataset.from_json(gt)
-    with pytest.raises(NotImplementedError, match="Dataset handles"):
+    handle = CocoDataset.from_json(gt)
+    with pytest.raises(NotImplementedError, match="CocoDataset handles"):
         vernier.instance.confusion_matrix(handle, dt, iou=Bbox())
 
 

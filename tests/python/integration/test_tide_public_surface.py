@@ -5,7 +5,7 @@ The Rust ↔ numpy-oracle parity contract is exercised in
 This file's job is narrower: prove the Python wrapper in
 :mod:`vernier._tide` carries the FFI's numbers through verbatim, dispatches
 to the right kernel, resolves per-kernel ADR-0022 default thresholds, and
-rejects the deferred surfaces (Keypoints per ADR-0024 and ``Dataset``
+rejects the deferred surfaces (Keypoints per ADR-0024 and ``CocoDataset``
 handles per the 0.5.x follow-up note in the docstring).
 """
 
@@ -21,7 +21,7 @@ import vernier
 from vernier.instance import (
     Bbox,
     Boundary,
-    Dataset,
+    CocoDataset,
     Keypoints,
     Segm,
     TideReport,
@@ -206,16 +206,16 @@ def test_keypoints_iou_raises_not_implemented_per_adr_0024() -> None:
 
 
 def test_dataset_handle_raises_not_implemented_forward_compat() -> None:
-    """Passing a :class:`Dataset` handle raises with a clear follow-up note.
+    """Passing a :class:`CocoDataset` handle raises with a clear follow-up note.
 
-    The type signature accepts ``Dataset`` for forward-compat (mirrors
+    The type signature accepts ``CocoDataset`` for forward-compat (mirrors
     :meth:`vernier.instance.Evaluator.evaluate`'s overload), but the TIDE FFI is
     not yet wired through the parsed-once cache (ADR-0020). 0.5.x
     follow-up.
     """
     gt_bytes, dt_bytes = _load("all_perfect")
-    handle = Dataset.from_json(gt_bytes)
-    with pytest.raises(NotImplementedError, match="Dataset"):
+    handle = CocoDataset.from_json(gt_bytes)
+    with pytest.raises(NotImplementedError, match="CocoDataset"):
         error_decomposition(handle, dt_bytes, iou=Bbox())
 
 

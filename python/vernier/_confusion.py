@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 from vernier._compat import ParityMode
 from vernier._core import (
-    Dataset,
+    CocoDataset,
     confusion_matrix_bbox,
     confusion_matrix_boundary,
     confusion_matrix_segm,
@@ -26,7 +26,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker only
 
 
 def confusion_matrix(
-    gt: bytes | Dataset,
+    gt: bytes | CocoDataset,
     dt: bytes,
     *,
     iou: IouKind | None = None,
@@ -74,7 +74,7 @@ def confusion_matrix(
 
     Args:
         gt: Ground-truth COCO JSON payload as bytes (the same shape
-            ``pycocotools.COCO(...)`` consumes). The :class:`Dataset`
+            ``pycocotools.COCO(...)`` consumes). The :class:`CocoDataset`
             handle from ADR-0020 is not yet wired through this path —
             passing one raises :class:`NotImplementedError`.
         dt: Detection COCO JSON payload as bytes.
@@ -98,7 +98,7 @@ def confusion_matrix(
 
     Raises:
         NotImplementedError: ``iou=Keypoints(...)`` (ADR-0024) or
-            ``gt`` is a :class:`Dataset` handle (ADR-0020 forward-compat
+            ``gt`` is a :class:`CocoDataset` handle (ADR-0020 forward-compat
             marker not yet wired through).
         ValueError: ``t_f`` outside ``[0, 1]``, ``max_dets_per_image
             < 1``, or ``use_cats=False``.
@@ -111,12 +111,12 @@ def confusion_matrix(
         >>> df.filter(pl.col("gt_class") != pl.col("dt_class"))  # only mistakes
         >>> df.pivot(values="count", index="gt_class", on="dt_class")  # wide
     """
-    # Lazy: a Dataset handle on the gt= path needs FFI threading we
+    # Lazy: a CocoDataset handle on the gt= path needs FFI threading we
     # haven't done yet. Match the same forward-compat marker the
     # tables= path emits.
-    if isinstance(gt, Dataset):
+    if isinstance(gt, CocoDataset):
         raise NotImplementedError(
-            "confusion_matrix requires GT JSON bytes; Dataset handles are not "
+            "confusion_matrix requires GT JSON bytes; CocoDataset handles are not "
             "yet wired through the cross-class side pass"
         )
 

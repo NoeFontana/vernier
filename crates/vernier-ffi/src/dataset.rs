@@ -31,7 +31,7 @@ use crate::parse_gt;
 /// across `evaluate` calls reuses the GT-side derivations the cached
 /// kernels populate on first use (per ADR-0020). The handle is frozen
 /// — its identity *is* the cache key.
-#[pyclass(module = "vernier._core", name = "Dataset", frozen)]
+#[pyclass(module = "vernier._core", name = "CocoDataset", frozen)]
 pub(crate) struct PyDataset {
     inner: Arc<CocoDataset>,
     boundary_cache: Arc<BoundaryGtCache>,
@@ -241,7 +241,7 @@ impl PyDataset {
             ""
         };
         format!(
-            "Dataset(images={}, annotations={}, categories={}{federated})",
+            "CocoDataset(images={}, annotations={}, categories={}{federated})",
             self.inner.images().len(),
             self.inner.annotations().len(),
             self.inner.categories().len(),

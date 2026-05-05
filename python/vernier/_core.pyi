@@ -10,7 +10,7 @@ from vernier._array_types import Detections as Detections
 from vernier._array_types import DetectionsInput as DetectionsInput
 
 #: LVIS category-frequency tier as a single-letter string (ADR-0026
-#: AB1). The `Dataset.category_frequency` accessor returns these
+#: AB1). The `CocoDataset.category_frequency` accessor returns these
 #: values; the user-facing `vernier.Frequency` enum maps to and from
 #: them.
 LvisFrequencyLiteral: TypeAlias = Literal["r", "c", "f"]
@@ -162,7 +162,7 @@ class EvalGrid:
     def n_images(self) -> int: ...
     def eval_imgs(self) -> list[dict[str, Any] | None]: ...
     def accumulate(self, max_dets: list[int]) -> Accumulated: ...
-    def dataset(self) -> Dataset: ...
+    def dataset(self) -> CocoDataset: ...
 
 class Accumulated:
     @property
@@ -181,15 +181,15 @@ class Accumulated:
     ) -> Summary: ...
     def summarize_lvis(
         self,
-        gt: Dataset,
+        gt: CocoDataset,
         max_dets: list[int] | None = ...,
     ) -> Summary: ...
 
-class Dataset:
+class CocoDataset:
     @staticmethod
-    def from_json(gt_json: bytes) -> Dataset: ...
+    def from_json(gt_json: bytes) -> CocoDataset: ...
     @staticmethod
-    def from_lvis_json(gt_json: bytes) -> Dataset: ...
+    def from_lvis_json(gt_json: bytes) -> CocoDataset: ...
     @property
     def num_annotations(self) -> int: ...
     @property
@@ -221,7 +221,7 @@ def evaluate_bbox_summary(
     cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_bbox_summary_with_dataset(
-    gt: Dataset,
+    gt: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
@@ -238,7 +238,7 @@ def evaluate_bbox_grid(
     cast_inputs: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_bbox_grid_with_dataset(
-    gt: Dataset,
+    gt: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets_per_image: int,
@@ -255,7 +255,7 @@ def evaluate_segm_summary(
     cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_segm_summary_with_dataset(
-    gt: Dataset,
+    gt: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
@@ -281,7 +281,7 @@ def evaluate_boundary_summary(
     cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_boundary_summary_with_dataset(
-    gt: Dataset,
+    gt: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
@@ -309,7 +309,7 @@ def evaluate_keypoints_summary(
     cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_keypoints_summary_with_dataset(
-    gt: Dataset,
+    gt: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
@@ -444,11 +444,11 @@ def confusion_matrix_boundary(
 def per_class_to_arrow_pycapsule(
     grid: EvalGrid,
     accum: Accumulated,
-    dataset: Dataset,
+    dataset: CocoDataset,
 ) -> ArrowRecordBatch: ...
 def per_image_to_arrow_pycapsule(
     grid: EvalGrid,
-    dataset: Dataset,
+    dataset: CocoDataset,
 ) -> ArrowRecordBatch: ...
 def per_detection_to_arrow_pycapsule(
     grid: EvalGrid,

@@ -16,7 +16,7 @@ from vernier._compat import ParityMode
 from vernier._confusion import confusion_matrix
 from vernier._core import (
     BackgroundEvaluator,
-    Dataset,
+    CocoDataset,
     MemoryBudgetWarning,
     OutOfBudgetError,
     QueueFullError,
@@ -52,7 +52,7 @@ __all__ = [
     "BackgroundEvaluator",
     "Bbox",
     "Boundary",
-    "Dataset",
+    "CocoDataset",
     "Detections",
     "DetectionsInput",
     "EvalResult",
@@ -229,7 +229,7 @@ class Evaluator:
     @overload
     def evaluate(
         self,
-        gt: bytes | Dataset,
+        gt: bytes | CocoDataset,
         dt: DetectionsInput,
         *,
         tables: None = None,
@@ -239,7 +239,7 @@ class Evaluator:
     @overload
     def evaluate(
         self,
-        gt: bytes | Dataset,
+        gt: bytes | CocoDataset,
         dt: DetectionsInput,
         *,
         tables: Literal["all"] | tuple[TableName, ...],
@@ -248,7 +248,7 @@ class Evaluator:
 
     def evaluate(
         self,
-        gt: bytes | Dataset,
+        gt: bytes | CocoDataset,
         dt: DetectionsInput,
         *,
         tables: Literal["all"] | tuple[TableName, ...] | None = None,
@@ -263,7 +263,7 @@ class Evaluator:
         and reads NumPy / DLPack buffers directly into the kernel.
 
         ``gt`` is either the GT JSON bytes (parse-and-discard, identical
-        to prior behavior) or a :class:`Dataset` handle (parsed-once,
+        to prior behavior) or a :class:`CocoDataset` handle (parsed-once,
         with the cache reused across calls — see ADR-0020).
 
         ``tables=`` is the opt-in keyword for result tables. Defaults
@@ -277,7 +277,7 @@ class Evaluator:
             return self._evaluate_with_tables(
                 gt, dt, max_dets_list, tables, tables_config or TablesConfig()
             )
-        if isinstance(gt, Dataset):
+        if isinstance(gt, CocoDataset):
             return self._evaluate_with_dataset(gt, dt, max_dets_list)
         match self.iou:
             case Bbox():
@@ -307,7 +307,7 @@ class Evaluator:
 
     def _evaluate_with_tables(
         self,
-        gt: bytes | Dataset,
+        gt: bytes | CocoDataset,
         dt: DetectionsInput,
         max_dets_list: list[int],
         tables: Literal["all"] | tuple[TableName, ...],
@@ -318,11 +318,11 @@ class Evaluator:
         for the requested set."""
         requested = normalize_tables_arg(tables)
 
-        # The tables= path needs JSON bytes today; pre-parsed Dataset
+        # The tables= path needs JSON bytes today; pre-parsed CocoDataset
         # handles aren't threaded through yet.
-        if isinstance(gt, Dataset):
+        if isinstance(gt, CocoDataset):
             raise NotImplementedError(
-                "tables= path requires GT JSON bytes; Dataset handles are not "
+                "tables= path requires GT JSON bytes; CocoDataset handles are not "
                 "yet supported on this path"
             )
 
@@ -405,7 +405,7 @@ class Evaluator:
         )
 
     def _evaluate_with_dataset(
-        self, gt: Dataset, dt: DetectionsInput, max_dets_list: list[int]
+        self, gt: CocoDataset, dt: DetectionsInput, max_dets_list: list[int]
     ) -> Summary:
         match self.iou:
             case Bbox():

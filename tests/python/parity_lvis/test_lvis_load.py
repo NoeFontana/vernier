@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 
 from vernier import Frequency
-from vernier.instance import Dataset
+from vernier.instance import CocoDataset
 
 # A minimal valid LVIS GT: 2 images, 2 categories, 2 GTs. Image 1
 # has cat 1 (and lists cat 2 in `neg`); image 2 has cat 2 (and flags

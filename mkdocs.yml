@@ -71,7 +71,6 @@ nav:
       - From lvis-api: migrate/from-lvis-api.md
       - From mmsegmentation: migrate/from-mmsegmentation.md
       - From panopticapi: migrate/from-panopticapi.md
-      - From flat-root imports (0.0.x → 0.1.x): migrate/from-flat-root.md
   - How-to:
       - how-to/README.md
       - Evaluate with the CLI: how-to/cli-eval.md
