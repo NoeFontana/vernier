@@ -147,6 +147,48 @@ def test_semantic_submodule_exports(name: str) -> None:
     assert hasattr(vernier.semantic, name), f"missing vernier.semantic.{name}"
 
 
+def test_ffi_reexport_identities() -> None:
+    """Re-exported FFI types must preserve identity (ADR-0029)."""
+    # Instance re-exports
+    from vernier._core import (
+        BackgroundEvaluator as FfiBackground,
+        CocoDataset as FfiDataset,
+        StreamingEvaluator as FfiStreaming,
+        Summary as FfiSummary,
+    )
+
+    assert vernier.instance.BackgroundEvaluator is FfiBackground
+    assert vernier.instance.CocoDataset is FfiDataset
+    assert vernier.instance.StreamingEvaluator is FfiStreaming
+    assert vernier.instance.Summary is FfiSummary
+
+    # Panoptic re-exports
+    from vernier._core import (
+        ClassPanopticStats as FfiPanopticStats,
+        PanopticDataset as FfiPanopticDataset,
+        PanopticPredictions as FfiPanopticPredictions,
+        PanopticSummary as FfiPanopticSummary,
+    )
+
+    assert vernier.panoptic.ClassPanopticStats is FfiPanopticStats
+    assert vernier.panoptic.Dataset is FfiPanopticDataset
+    assert vernier.panoptic.Predictions is FfiPanopticPredictions
+    assert vernier.panoptic.Summary is FfiPanopticSummary
+
+    # Semantic re-exports
+    from vernier._core import (
+        ClassSemanticStats as FfiSemanticStats,
+        ConfusionMatrix as FfiConfusion,
+        SemanticSummary as FfiSemanticSummary,
+        StreamingSemanticEvaluator as FfiSemanticStreaming,
+    )
+
+    assert vernier.semantic.ClassSemanticStats is FfiSemanticStats
+    assert vernier.semantic.ConfusionMatrix is FfiConfusion
+    assert vernier.semantic.Summary is FfiSemanticSummary
+    assert vernier.semantic.StreamingEvaluator is FfiSemanticStreaming
+
+
 def test_iou_kind_discriminator_identity_preserved() -> None:
     """The Bbox / Segm / Boundary / Keypoints variants under the new
     namespace must still satisfy :data:`IouKind` and round-trip through
