@@ -1,0 +1,30 @@
+[package]
+name = "vernier-partial"
+description = "Shared wire envelope and partition policy for vernier's distributed-eval partials (ADR-0032)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror.workspace = true
+# Wire-format substrate. The header is rkyv-archived; each paradigm's
+# body slots in via the [`Partial`] trait so the encode + decode entry
+# points are paradigm-agnostic.
+rkyv.workspace = true
+# Wire footer. CRC32 (IEEE) catches transport corruption and truncation
+# that rkyv's archive validator does not catch cleanly.
+crc32fast.workspace = true
+# Re-exported as part of the public surface so paradigm crates can
+# build dataset / params hashes without taking blake3 directly.
+blake3.workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }

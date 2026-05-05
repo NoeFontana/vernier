@@ -926,60 +926,56 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         partials: &[&[u8]],
     ) -> Result<Self, EvalError> {
         let mut ev = Self::new(dataset, kernel, params, parity_mode, budget)?;
-        let expected = crate::distributed::PartialExpectation {
+        let expected = crate::distributed::instance_expectation(
+            &ev.dataset,
+            &ev.kernel,
+            &ev.params,
             parity_mode,
-            kernel_kind: ev.kernel.kind(),
-            retain_iou: ev.params.retain_iou,
-            n_categories: ev.grid_meta.n_categories as u32,
-            n_area_ranges: ev.grid_meta.n_area_ranges as u32,
-            n_images: ev.grid_meta.n_images as u32,
-            dataset_hash: ev.dataset.dataset_hash(),
-            params_hash: ev.params.params_hash()?,
-            _phantom: std::marker::PhantomData,
-        };
-        let mut acc = crate::distributed::MergeAccumulator::new(parity_mode == ParityMode::Strict);
+            ev.grid_meta.n_categories as u32,
+            ev.grid_meta.n_area_ranges as u32,
+            ev.grid_meta.n_images as u32,
+        )?;
+        let mut acc =
+            crate::distributed::InstanceMergeAccumulator::new(parity_mode == ParityMode::Strict);
         acc.set_retain_iou(ev.params.retain_iou);
         for bytes in partials {
-            crate::distributed::with_validated_partial(bytes, &expected, |archived| {
-                acc.ingest(archived)
-            })?;
+            vernier_partial::with_validated_envelope(bytes, &expected, |view| acc.ingest(&view))?;
         }
         ev.install_merged_state(acc)?;
         Ok(ev)
     }
 
-    /// Swap a freshly merged [`crate::distributed::MergeAccumulator`]
+    /// Swap a freshly merged [`crate::distributed::InstanceMergeAccumulator`]
     /// into this evaluator's spine state. Internal helper for
     /// [`Self::from_partials`].
     fn install_merged_state(
         &mut self,
-        acc: crate::distributed::MergeAccumulator,
+        acc: crate::distributed::InstanceMergeAccumulator,
     ) -> Result<(), EvalError> {
-        // Bind every load-bearing field by name (seen_rank_ids,
-        // retain_iou, strict are merge-internal bookkeeping that
-        // doesn't carry into the spine — assert here so a future
-        // field addition is a compile error rather than silent loss).
-        let crate::distributed::MergeAccumulator {
+        // Bind every load-bearing field by name (`base`, `retain_iou`
+        // are merge-internal bookkeeping that doesn't carry into the
+        // spine — destructure asserts a future field addition is a
+        // compile error rather than silent loss).
+        let crate::distributed::InstanceMergeAccumulator {
+            base,
             n_detections,
             next_dt_id,
-            image_owner,
-            seen_rank_ids: _,
             cells,
             meta_cells,
             retained_ious_map,
             dets_seen,
             retain_iou: _,
-            strict: _,
         } = acc;
         self.n_detections = n_detections;
         self.next_dt_id = next_dt_id;
-        // image_owner.keys() is the union image-id set; seen_image_indices
-        // is the parallel local-index set under the live grid_meta.
-        self.seen_image_indices = image_owner
-            .keys()
-            .filter_map(|id| self.grid_meta.image_id_to_idx.get(&ImageId(*id)).copied())
+        // base.image_ids() is the union image-id set;
+        // seen_image_indices is the parallel local-index set under
+        // the live grid_meta.
+        self.seen_image_indices = base
+            .image_ids()
+            .filter_map(|id| self.grid_meta.image_id_to_idx.get(&ImageId(id)).copied())
             .collect();
-        self.seen_images = image_owner.into_keys().collect();
+        self.seen_images = base.image_ids().collect();
         self.cells = PerImageEvalStore::from_map(cells);
         self.meta_cells = meta_cells;
         if self.params.retain_iou {

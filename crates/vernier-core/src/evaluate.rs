@@ -307,6 +307,21 @@ pub enum KernelKind {
     Keypoints,
 }
 
+impl KernelKind {
+    /// `u32` discriminator carried in the wire envelope header
+    /// (ADR-0032). Stable values: `Bbox=0, Segm=1, Boundary=2,
+    /// Keypoints=3` — the same values ADR-0031 wrote as a `u8`.
+    /// Adding new kernels appends; never reorder.
+    pub const fn discriminator(self) -> u32 {
+        match self {
+            Self::Bbox => 0,
+            Self::Segm => 1,
+            Self::Boundary => 2,
+            Self::Keypoints => 3,
+        }
+    }
+}
+
 /// Bridges a [`CocoDataset`] / [`CocoDetections`] cell to a kernel's
 /// annotation type.
 ///
