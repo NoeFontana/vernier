@@ -118,7 +118,10 @@ pub const AREA_UNBOUNDED: f64 = 1e10;
 /// `index` is the position on the `Accumulated` A-axis the resulting
 /// [`PerImageEval`] feeds into; matched at summarize time against
 /// [`crate::AreaRng::index`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug))]
 pub struct AreaRange {
     /// A-axis position. `0` is conventionally the `all` bucket, matching
     /// [`crate::AreaRng::ALL`].
@@ -231,7 +234,8 @@ pub struct EvaluateParams<'p> {
 /// points do. [`Self::borrow`] reconstructs an [`EvaluateParams`] view
 /// that reuses this struct's storage, so handing the owned form to the
 /// unchanged `evaluate_with` path is zero-cost.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+#[rkyv(derive(Debug))]
 pub struct OwnedEvaluateParams {
     /// IoU thresholds, length `T`.
     pub iou_thresholds: Vec<f64>,
@@ -255,6 +259,30 @@ impl OwnedEvaluateParams {
             use_cats: self.use_cats,
             retain_iou: self.retain_iou,
         }
+    }
+
+    /// 32-byte BLAKE3 fingerprint of these params. Stable for equal
+    /// values; carried in distributed-eval partial headers (ADR-0031)
+    /// so heterogeneous-config partials are refused at merge time.
+    ///
+    /// The archived rkyv form is deterministic per the field order
+    /// declared on this struct, so the hash is stable as long as the
+    /// struct shape is. Adding fields invalidates the hash — that is
+    /// what bumps the partial format version.
+    ///
+    /// # Errors
+    ///
+    /// [`EvalError::InvalidConfig`] if rkyv refuses to serialize the
+    /// archived form. In practice this can only happen for the same
+    /// reasons `to_bytes` itself fails (allocator OOM); we map it to
+    /// the existing variant rather than introducing a new one.
+    pub fn params_hash(&self) -> Result<[u8; 32], EvalError> {
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(self).map_err(|e| {
+            EvalError::InvalidConfig {
+                detail: format!("rkyv serialization of OwnedEvaluateParams failed: {e}"),
+            }
+        })?;
+        Ok(*blake3::hash(&bytes).as_bytes())
     }
 }
 
