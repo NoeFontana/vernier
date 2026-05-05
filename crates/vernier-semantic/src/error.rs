@@ -185,4 +185,11 @@ pub enum SemanticError {
         #[source]
         source: std::io::Error,
     },
+
+    /// Distributed-eval partial wire format / merge policy rejected
+    /// the partial (ADR-0032). Wraps [`vernier_partial::PartialError`]
+    /// so the FFI layer can map back to the same Python exception
+    /// classes the instance paradigm uses.
+    #[error("{0}")]
+    Partial(#[from] vernier_partial::PartialError),
 }

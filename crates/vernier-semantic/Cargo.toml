@@ -24,6 +24,18 @@ serde_json = { workspace = true }
 # asymmetry vs vernier-panoptic ⊥ vernier-core; the ADR justifies it
 # as concrete reuse rather than philosophical isolation.
 vernier-core = { path = "../vernier-core", version = "0.0.1" }
+# Shared partial wire envelope and merge policy (ADR-0032). Carries
+# magic + version + framing + the five typed errors used by every
+# paradigm. vernier-semantic plugs its `WireSemanticBody` into the
+# same envelope without leaning on additional `vernier-core` surface.
+vernier-partial = { path = "../vernier-partial", version = "0.0.1" }
+# rkyv archives the `WireSemanticBody` for the partial wire format
+# (ADR-0032). Direct dep even though `vernier-partial` transitively
+# pulls it — semantic's own body archive is its concern.
+rkyv.workspace = true
+# BLAKE3 fingerprints `(n_classes, ignore_label)` and `parity_mode`
+# for cross-rank validation in the partial wire envelope (ADR-0032).
+blake3.workspace = true
 # PNG decode for the from_files / cityscapes() / ade20k() / pascal_voc()
 # preset paths (ADR-0028 axis C2): single-format decoder (~150 KB), no
 # umbrella `image` crate. Same dep vernier-panoptic uses; if ever a
