@@ -921,6 +921,27 @@ fn hash_segmentation(h: &mut blake3::Hasher, seg: Option<&Segmentation>) {
     }
 }
 
+/// Walk a slice in id-sorted order, prefixed by a domain tag and the
+/// element count, hashing each element via `write`. The id projection
+/// (`key`) returns the i64 id; sort is by that key, unstable (ids are
+/// unique by construction). Avoids materializing a fresh sorted Vec
+/// of items by sorting an index permutation instead.
+fn hash_id_sorted<T>(
+    h: &mut blake3::Hasher,
+    tag: &[u8; 4],
+    items: &[T],
+    key: impl Fn(&T) -> i64,
+    write: impl Fn(&mut blake3::Hasher, &T),
+) {
+    h.update(tag);
+    let mut order: Vec<usize> = (0..items.len()).collect();
+    order.sort_unstable_by_key(|&i| key(&items[i]));
+    hash_u64(h, order.len() as u64);
+    for &i in &order {
+        write(h, &items[i]);
+    }
+}
+
 fn hash_image_meta(h: &mut blake3::Hasher, im: &ImageMeta) {
     let ImageMeta {
         id,
@@ -990,14 +1011,8 @@ fn hash_federated(h: &mut blake3::Hasher, fed: &FederatedMetadata) {
     hash_u64(h, freq_pairs.len() as u64);
     for (cid, freq) in freq_pairs {
         hash_i64(h, cid);
-        hash_u8(
-            h,
-            match freq {
-                Frequency::Rare => b'r',
-                Frequency::Common => b'c',
-                Frequency::Frequent => b'f',
-            },
-        );
+        // `as_letter` is a single ASCII char; one byte is enough.
+        hash_u8(h, freq.as_letter().as_bytes()[0]);
     }
 
     // pos / neg / not_exhaustive: each is HashMap<ImageId, HashSet<CategoryId>>.
@@ -1049,32 +1064,27 @@ impl CocoDataset {
         h.update(HASH_TAG_DATASET);
         hash_u8(&mut h, HASH_CANONICAL_VERSION);
 
-        // Images — sorted by id.
-        h.update(HASH_TAG_IMAGES);
-        let mut image_order: Vec<usize> = (0..self.images.len()).collect();
-        image_order.sort_by_key(|&i| self.images[i].id.0);
-        hash_u64(&mut h, image_order.len() as u64);
-        for &i in &image_order {
-            hash_image_meta(&mut h, &self.images[i]);
-        }
-
-        // Categories — sorted by id.
-        h.update(HASH_TAG_CATEGORIES);
-        let mut category_order: Vec<usize> = (0..self.categories.len()).collect();
-        category_order.sort_by_key(|&i| self.categories[i].id.0);
-        hash_u64(&mut h, category_order.len() as u64);
-        for &i in &category_order {
-            hash_category_meta(&mut h, &self.categories[i]);
-        }
-
-        // Annotations — sorted by id.
-        h.update(HASH_TAG_ANNOTATIONS);
-        let mut ann_order: Vec<usize> = (0..self.annotations.len()).collect();
-        ann_order.sort_by_key(|&i| self.annotations[i].id.0);
-        hash_u64(&mut h, ann_order.len() as u64);
-        for &i in &ann_order {
-            hash_coco_annotation(&mut h, &self.annotations[i]);
-        }
+        hash_id_sorted(
+            &mut h,
+            HASH_TAG_IMAGES,
+            &self.images,
+            |im| im.id.0,
+            hash_image_meta,
+        );
+        hash_id_sorted(
+            &mut h,
+            HASH_TAG_CATEGORIES,
+            &self.categories,
+            |c| c.id.0,
+            hash_category_meta,
+        );
+        hash_id_sorted(
+            &mut h,
+            HASH_TAG_ANNOTATIONS,
+            &self.annotations,
+            |a| a.id.0,
+            hash_coco_annotation,
+        );
 
         // Federated metadata, when present (LVIS path).
         match self.federated.as_ref() {
@@ -1814,6 +1824,33 @@ mod tests {
         })
     }
 
+    /// Minimal `CocoAnnotation` with the required ids set and every
+    /// optional field defaulted. Tests that only care about identity /
+    /// canonical-form invariance use this to skip the 10-field literal.
+    fn make_min_annotation(
+        id: AnnId,
+        image_id: ImageId,
+        category_id: CategoryId,
+    ) -> CocoAnnotation {
+        CocoAnnotation {
+            id,
+            image_id,
+            category_id,
+            area: 25.0,
+            is_crowd: false,
+            ignore_flag: None,
+            bbox: Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 5.0,
+                h: 5.0,
+            },
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+        }
+    }
+
     proptest! {
         #![proptest_config(ProptestConfig::with_cases(64))]
 
@@ -2421,18 +2458,7 @@ mod tests {
             let annotations: Vec<CocoAnnotation> = images
                 .iter()
                 .enumerate()
-                .map(|(i, im)| CocoAnnotation {
-                    id: AnnId((i as i64) + 1),
-                    image_id: im.id,
-                    category_id: cat_id,
-                    area: 25.0,
-                    is_crowd: false,
-                    ignore_flag: None,
-                    bbox: Bbox { x: 0.0, y: 0.0, w: 5.0, h: 5.0 },
-                    segmentation: None,
-                    keypoints: None,
-                    num_keypoints: None,
-                })
+                .map(|(i, im)| make_min_annotation(AnnId((i as i64) + 1), im.id, cat_id))
                 .collect();
             let mut shuffled = images.clone();
             shuffled.reverse();
