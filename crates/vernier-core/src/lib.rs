@@ -45,7 +45,8 @@ pub use error::EvalError;
 pub use evaluate::{
     evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints, evaluate_segm,
     evaluate_segm_cached, evaluate_with, evaluate_with_retention, AreaRange, EvalGrid,
-    EvalImageMeta, EvalKernel, EvaluateParams, OwnedEvaluateParams, COLLAPSED_CATEGORY_SENTINEL,
+    EvalImageMeta, EvalKernel, EvaluateParams, KernelKind, OwnedEvaluateParams,
+    COLLAPSED_CATEGORY_SENTINEL,
 };
 pub use lvis_parity::{
     LVIS_BOUNDARY_DILATION_RATIO_DEFAULT, LVIS_DEFAULT_MAX_DETS, LVIS_PARITY_EPS,
