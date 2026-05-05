@@ -158,9 +158,7 @@ pub enum EvalError {
     /// different GT than the receiving rank loaded — almost always a
     /// sampler / config bug; refusing protects the merge result from
     /// the head-rank's perspective. ADR-0031 §"Validation order" #6.
-    #[error(
-        "partial dataset_hash mismatch: expected {expected:02x?}, got {actual:02x?}"
-    )]
+    #[error("partial dataset_hash mismatch: expected {expected:02x?}, got {actual:02x?}")]
     PartialDatasetMismatch {
         /// Receiving rank's `dataset_hash` (what the partial was
         /// expected to be computed against).
@@ -174,9 +172,7 @@ pub enum EvalError {
     /// different `iou_thresholds` / `max_dets` / `use_cats` / etc. and
     /// the merged result would not equal a batch run. ADR-0031
     /// §"Validation order" #7.
-    #[error(
-        "partial params_hash mismatch: expected {expected:02x?}, got {actual:02x?}"
-    )]
+    #[error("partial params_hash mismatch: expected {expected:02x?}, got {actual:02x?}")]
     PartialParamsMismatch {
         /// Receiving rank's `params_hash`.
         expected: [u8; 32],
@@ -189,9 +185,7 @@ pub enum EvalError {
     /// `DistributedSampler` misconfiguration where two ranks evaluated
     /// the same image. The error names both rank ids and the colliding
     /// image so the user can fix their sampler.
-    #[error(
-        "partials cover image_id={image_id} on both rank {rank_a} and rank {rank_b}"
-    )]
+    #[error("partials cover image_id={image_id} on both rank {rank_a} and rank {rank_b}")]
     PartialPartitionOverlap {
         /// Lower rank id involved in the collision (sorted for
         /// determinism — `min(a, b)`).
@@ -294,10 +288,7 @@ impl std::fmt::Display for PartialFormatErrorKind {
                 )
             }
             Self::WrongMagic { found } => {
-                write!(
-                    f,
-                    "wrong magic bytes: expected \"VRPS\", got {found:02x?}"
-                )
+                write!(f, "wrong magic bytes: expected \"VRPS\", got {found:02x?}")
             }
             Self::WrongVersion { expected, found } => {
                 write!(f, "wrong format_version: expected {expected}, got {found}")
@@ -314,10 +305,7 @@ impl std::fmt::Display for PartialFormatErrorKind {
                 write!(f, "parity_mode mismatch: expected {expected}, got {found}")
             }
             Self::RetainIouMismatch { expected, found } => {
-                write!(
-                    f,
-                    "retain_iou mismatch: expected {expected}, got {found}"
-                )
+                write!(f, "retain_iou mismatch: expected {expected}, got {found}")
             }
             Self::RkyvDecode { detail } => write!(f, "rkyv archive validation failed: {detail}"),
         }
