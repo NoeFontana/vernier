@@ -19,6 +19,7 @@ pub mod accumulate;
 pub mod boundary_parity;
 pub mod breakdown;
 pub mod dataset;
+pub mod distributed;
 pub mod error;
 pub mod evaluate;
 pub mod lvis_parity;

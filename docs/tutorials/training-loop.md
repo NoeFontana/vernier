@@ -128,8 +128,40 @@ Recipe: [`../how-to/background-evaluator.md`](../how-to/background-evaluator.md)
   `StreamingEvaluator` (different class). The panoptic surface
   does not stream today; ADR-0025 §"explicitly does not decide"
   has the deferral.
-- **Multi-process training.** Running one
-  `StreamingEvaluator` per rank and reducing summaries at log time
-  is workable but bypasses kernel-level synchronization. The
-  intended pattern is rank-0 evaluation; the multi-rank story is
-  a roadmap item.
+- **Multi-process training.** Per ADR-0031, every rank evaluates
+  its own slice locally, gathers a small bytes payload via the
+  user's transport (`torch.distributed.all_gather_object`,
+  `mpi4py.comm.gather`, etc.), and the head rank reconstructs an
+  evaluator equivalent to a batch run over the union of the
+  partials:
+
+  ```python
+  import torch.distributed as dist
+  from vernier.instance import StreamingEvaluator
+
+  ev = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=dist.get_rank())
+  for batch in val_loader_for_this_rank:
+      ev.update(model(batch["images"]))
+
+  partial = ev.finalize_to_partial()  # bytes
+  gathered: list[bytes | None] = [None] * dist.get_world_size()
+  dist.all_gather_object(gathered, partial)
+
+  if dist.get_rank() == 0:
+      merged = StreamingEvaluator.from_partials(
+          gt_bytes, gathered, iou_type="bbox"
+      )
+      log_metrics(merged.finalize())
+  ```
+
+  Three things to notice. First, vernier ships a bytes interface;
+  `torch.distributed` is the user's problem (no `import torch`
+  inside vernier and no torch-version pin to chase). Second,
+  `rank_id` is the user's responsibility — vernier doesn't try to
+  discover it. Third, `from_partials()` returns a
+  `StreamingEvaluator`, not a `Summary`, so the same instance can
+  be checkpointed via [`to_partial`] or queried for memory state;
+  merge is a constructor, not a terminal operation. See ADR-0031
+  for the determinism contract and the validation surface
+  (`PartialPartitionOverlap`, `PartialDatasetMismatch`,
+  `PartialParamsMismatch`, etc.).

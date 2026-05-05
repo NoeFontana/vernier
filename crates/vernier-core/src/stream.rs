@@ -149,6 +149,20 @@ impl PerImageEvalStore {
         self.cells.insert((k, a, i), cell);
     }
 
+    /// Borrow the underlying `(k, a, i) -> PerImageEval` map. Used by
+    /// the distributed-eval encoder (ADR-0031) to walk cells in
+    /// canonical order.
+    pub(crate) fn as_map(&self) -> &HashMap<(usize, usize, usize), PerImageEval> {
+        &self.cells
+    }
+
+    /// Move-out variant of [`Self::as_map`] used by the
+    /// `from_partials` constructor to swap a freshly merged store
+    /// in.
+    pub(crate) fn from_map(cells: HashMap<(usize, usize, usize), PerImageEval>) -> Self {
+        Self { cells }
+    }
+
     /// Densify into the `[k * A * I + a * I + i]`-laid-out
     /// `Vec<Option<PerImageEval>>` that [`crate::accumulate`] consumes.
     /// Cloning is intentional — `accumulate` borrows the slice and the
@@ -276,6 +290,12 @@ pub struct StreamingEvaluator<K: EvalKernel> {
     /// `(score, stream_position)` tiebreak (ADR-0013 §Determinism); not
     /// yet consumed by the matching path.
     next_dt_id: i64,
+    /// Optional rank identifier for distributed-eval merge (ADR-0031).
+    /// `None` for single-rank usage. Set via [`Self::with_rank`] before
+    /// the first `update`. Carried in the partial header and used as
+    /// the strict-mode `(rank_id, local_position)` tiebreak when the
+    /// matching path consumes it.
+    rank_id: Option<crate::distributed::RankId>,
     bytes_cells_struct: usize,
     bytes_dt_scores: usize,
     bytes_match_flags: usize,
@@ -324,12 +344,37 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             gt_only_cells: None,
             n_detections: 0,
             next_dt_id: 1,
+            rank_id: None,
             bytes_cells_struct: 0,
             bytes_dt_scores: 0,
             bytes_match_flags: 0,
             budget,
             soft_warn_fired: false,
         })
+    }
+
+    /// Set this evaluator's rank identifier for distributed-eval merge
+    /// (ADR-0031). Builder shape: returns `Self`. Calling this after
+    /// the first [`Self::update`] is a programming error and returns
+    /// [`EvalError::InvalidConfig`] — rank identity is a
+    /// construction-time property, not a mid-run mutable parameter.
+    ///
+    /// # Errors
+    ///
+    /// [`EvalError::InvalidConfig`] when `n_detections > 0`.
+    pub fn with_rank(mut self, rank_id: crate::distributed::RankId) -> Result<Self, EvalError> {
+        if self.n_detections > 0 {
+            return Err(EvalError::InvalidConfig {
+                detail: "with_rank must be called before any update; rank identity is fixed at construction".into(),
+            });
+        }
+        self.rank_id = Some(rank_id);
+        Ok(self)
+    }
+
+    /// The rank id this evaluator was tagged with, if any.
+    pub fn rank_id(&self) -> Option<crate::distributed::RankId> {
+        self.rank_id
     }
 
     /// Number of distinct images with at least one accepted detection.
@@ -767,28 +812,181 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         Ok((summary, tables))
     }
 
-    /// Serialize evaluator state to an opaque byte blob suitable for
-    /// crash recovery (per ADR-0013).
+    /// Serialize the current evaluator state to an opaque byte blob
+    /// (ADR-0031 partial wire format). Non-consuming variant — the
+    /// evaluator stays usable for further `update` calls.
     ///
     /// # Errors
     ///
-    /// **v0**: always returns [`EvalError::NotImplemented`]. A future
-    /// ADR re-introduces a real implementation (rkyv-based).
-    pub fn checkpoint(&self) -> Result<Vec<u8>, EvalError> {
-        Err(EvalError::NotImplemented {
-            feature: "StreamingEvaluator::checkpoint",
-        })
+    /// [`EvalError::PartialFormatMismatch`] if rkyv archiving fails;
+    /// [`EvalError::InvalidConfig`] if params hashing fails.
+    pub fn snapshot_to_partial(&self) -> Result<Vec<u8>, EvalError> {
+        crate::distributed::encode(&self.encode_input())
     }
 
-    /// Restore an evaluator from a [`Self::checkpoint`] blob.
+    /// Consuming variant of [`Self::snapshot_to_partial`]. The
+    /// evaluator is dropped after the partial is produced — the
+    /// expected shape for the rank-local final state in a
+    /// distributed-eval gather (ADR-0031).
     ///
     /// # Errors
     ///
-    /// **v0**: always returns [`EvalError::NotImplemented`].
-    pub fn restore(_bytes: &[u8]) -> Result<Self, EvalError> {
-        Err(EvalError::NotImplemented {
-            feature: "StreamingEvaluator::restore",
-        })
+    /// Same as [`Self::snapshot_to_partial`].
+    pub fn finalize_to_partial(self) -> Result<Vec<u8>, EvalError> {
+        crate::distributed::encode(&self.encode_input())
+    }
+
+    fn encode_input(&self) -> crate::distributed::EncodeInput<'_, K> {
+        crate::distributed::EncodeInput {
+            dataset: &self.dataset,
+            kernel: &self.kernel,
+            params: &self.params,
+            parity_mode: self.parity_mode,
+            rank_id: self.rank_id,
+            n_categories: self.grid_meta.n_categories as u32,
+            n_area_ranges: self.grid_meta.n_area_ranges as u32,
+            n_images: self.grid_meta.n_images as u32,
+            n_detections: self.n_detections as u64,
+            next_dt_id: self.next_dt_id,
+            seen_images: &self.seen_images,
+            cells: self.cells.as_map(),
+            meta_cells: if self.params.retain_iou {
+                Some(&self.meta_cells)
+            } else {
+                None
+            },
+            retained_ious: self.retained_ious.as_ref(),
+            dets_seen: if self.params.retain_iou {
+                Some(self.dets_seen.as_slice())
+            } else {
+                None
+            },
+            retain_iou: self.params.retain_iou,
+        }
+    }
+
+    /// Equivalent to [`Self::snapshot_to_partial`]. Retained for
+    /// ADR-0013 API stability — the public surface ships under both
+    /// names so users tracking either ADR find the call they expect.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::snapshot_to_partial`].
+    pub fn checkpoint(&self) -> Result<Vec<u8>, EvalError> {
+        self.snapshot_to_partial()
+    }
+
+    /// Reconstruct an evaluator from a single
+    /// [`Self::checkpoint`] / [`Self::snapshot_to_partial`] blob.
+    /// Thin wrapper over [`Self::from_partials`] with a
+    /// single-element slice; preserves the ADR-0013 signature for
+    /// crash-recovery callers.
+    ///
+    /// # Errors
+    ///
+    /// All variants of [`Self::from_partials`].
+    pub fn restore(
+        dataset: CocoDataset,
+        kernel: K,
+        params: OwnedEvaluateParams,
+        parity_mode: ParityMode,
+        budget: MemoryBudget,
+        bytes: &[u8],
+    ) -> Result<Self, EvalError> {
+        Self::from_partials(dataset, kernel, params, parity_mode, budget, &[bytes])
+    }
+
+    /// Construct an evaluator equivalent to a batch run over the
+    /// union of all partials' submitted detections (ADR-0031).
+    ///
+    /// All partials must share `dataset_hash`, `params_hash`,
+    /// `parity_mode`, kernel kind, `retain_iou`, and grid dimensions.
+    /// In strict mode, every partial must declare a distinct
+    /// `rank_id`. Image-id sets across partials must be disjoint.
+    ///
+    /// # Errors
+    ///
+    /// - [`EvalError::PartialFormatMismatch`] on framing or rkyv
+    ///   validation failures (magic, version, CRC, kernel kind, grid
+    ///   dims, parity, retain_iou).
+    /// - [`EvalError::PartialDatasetMismatch`] on dataset_hash
+    ///   divergence.
+    /// - [`EvalError::PartialParamsMismatch`] on params_hash
+    ///   divergence.
+    /// - [`EvalError::PartialPartitionOverlap`] when two partials
+    ///   cover the same `image_id`.
+    /// - [`EvalError::PartialRankCollision`] when two strict-mode
+    ///   partials share a `rank_id`.
+    pub fn from_partials(
+        dataset: CocoDataset,
+        kernel: K,
+        params: OwnedEvaluateParams,
+        parity_mode: ParityMode,
+        budget: MemoryBudget,
+        partials: &[&[u8]],
+    ) -> Result<Self, EvalError> {
+        let mut ev = Self::new(dataset, kernel, params, parity_mode, budget)?;
+        let expected = crate::distributed::PartialExpectation {
+            parity_mode,
+            kernel_kind: ev.kernel.kind(),
+            retain_iou: ev.params.retain_iou,
+            n_categories: ev.grid_meta.n_categories as u32,
+            n_area_ranges: ev.grid_meta.n_area_ranges as u32,
+            n_images: ev.grid_meta.n_images as u32,
+            dataset_hash: ev.dataset.dataset_hash(),
+            params_hash: ev.params.params_hash()?,
+            _phantom: std::marker::PhantomData,
+        };
+        let mut acc = crate::distributed::MergeAccumulator::new(parity_mode == ParityMode::Strict);
+        acc.set_retain_iou(ev.params.retain_iou);
+        for bytes in partials {
+            crate::distributed::with_validated_partial(bytes, &expected, |archived| {
+                acc.ingest(archived)
+            })?;
+        }
+        ev.install_merged_state(acc)?;
+        Ok(ev)
+    }
+
+    /// Swap a freshly merged [`crate::distributed::MergeAccumulator`]
+    /// into this evaluator's spine state. Internal helper for
+    /// [`Self::from_partials`].
+    fn install_merged_state(
+        &mut self,
+        acc: crate::distributed::MergeAccumulator,
+    ) -> Result<(), EvalError> {
+        // Bind every load-bearing field by name (seen_rank_ids,
+        // retain_iou, strict are merge-internal bookkeeping that
+        // doesn't carry into the spine — assert here so a future
+        // field addition is a compile error rather than silent loss).
+        let crate::distributed::MergeAccumulator {
+            n_detections,
+            next_dt_id,
+            image_owner,
+            seen_rank_ids: _,
+            cells,
+            meta_cells,
+            retained_ious_map,
+            dets_seen,
+            retain_iou: _,
+            strict: _,
+        } = acc;
+        self.n_detections = n_detections;
+        self.next_dt_id = next_dt_id;
+        // image_owner.keys() is the union image-id set; seen_image_indices
+        // is the parallel local-index set under the live grid_meta.
+        self.seen_image_indices = image_owner
+            .keys()
+            .filter_map(|id| self.grid_meta.image_id_to_idx.get(&ImageId(*id)).copied())
+            .collect();
+        self.seen_images = image_owner.into_keys().collect();
+        self.cells = PerImageEvalStore::from_map(cells);
+        self.meta_cells = meta_cells;
+        if self.params.retain_iou {
+            self.retained_ious = Some(crate::tables::RetainedIous::from_map(retained_ious_map));
+        }
+        self.dets_seen = dets_seen;
+        Ok(())
     }
 
     /// Compute the GT-only `(K, A, I)` grid once and cache it. Subsequent
@@ -1163,21 +1361,317 @@ mod tests {
         assert_eq!(ev.memory_used_bytes(), 0);
     }
 
+    fn dt_json(image_id: i64, score: f64, bbox: (f64, f64, f64, f64)) -> Vec<u8> {
+        let body = format!(
+            r#"[{{"image_id":{image_id},"category_id":1,"score":{score},"bbox":[{},{},{},{}]}}]"#,
+            bbox.0, bbox.1, bbox.2, bbox.3
+        );
+        body.into_bytes()
+    }
+
     #[test]
-    fn checkpoint_and_restore_return_not_implemented() {
+    fn checkpoint_round_trip_yields_equal_summary() {
         let ds = tiny_dataset();
-        let ev = StreamingEvaluator::new(
+        let mut ev = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        ev.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
+        ev.update(&dt_json(2, 0.8, (50.0, 50.0, 10.0, 10.0)))
+            .unwrap();
+
+        let blob = ev.checkpoint().unwrap();
+        let summary_a = ev.finalize().unwrap();
+
+        let restored = StreamingEvaluator::<BboxIou>::restore(
             ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+            &blob,
+        )
+        .unwrap();
+        let summary_b = restored.finalize().unwrap();
+
+        assert_eq!(summary_a.stats(), summary_b.stats());
+    }
+
+    #[test]
+    fn from_partials_two_disjoint_partitions_equals_combined_stream() {
+        // Rank 0 sees image 1; rank 1 sees image 2. Merge should produce
+        // the same summary as a single evaluator that ate both images.
+        let ds = tiny_dataset();
+        let mut combined = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        combined
+            .update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0)))
+            .unwrap();
+        combined
+            .update(&dt_json(2, 0.8, (50.0, 50.0, 10.0, 10.0)))
+            .unwrap();
+        let combined_summary = combined.finalize().unwrap();
+
+        let mut rank0 = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap()
+        .with_rank(0)
+        .unwrap();
+        rank0
+            .update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0)))
+            .unwrap();
+        let p0 = rank0.finalize_to_partial().unwrap();
+
+        let mut rank1 = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap()
+        .with_rank(1)
+        .unwrap();
+        rank1
+            .update(&dt_json(2, 0.8, (50.0, 50.0, 10.0, 10.0)))
+            .unwrap();
+        let p1 = rank1.finalize_to_partial().unwrap();
+
+        let merged = StreamingEvaluator::<BboxIou>::from_partials(
+            ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+            &[&p0, &p1],
+        )
+        .unwrap();
+        let merged_summary = merged.finalize().unwrap();
+
+        assert_eq!(combined_summary.stats(), merged_summary.stats());
+    }
+
+    #[test]
+    fn from_partials_overlap_returns_partition_overlap_error() {
+        let ds = tiny_dataset();
+        let mut a = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap()
+        .with_rank(0)
+        .unwrap();
+        a.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
+        let pa = a.finalize_to_partial().unwrap();
+
+        // Both partials cover image 1 — the partition rule must reject.
+        let mut b = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap()
+        .with_rank(1)
+        .unwrap();
+        b.update(&dt_json(1, 0.7, (5.0, 5.0, 10.0, 10.0))).unwrap();
+        let pb = b.finalize_to_partial().unwrap();
+
+        let err = StreamingEvaluator::<BboxIou>::from_partials(
+            ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+            &[&pa, &pb],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            EvalError::PartialPartitionOverlap {
+                rank_a: 0,
+                rank_b: 1,
+                image_id: 1,
+            }
+        ));
+    }
+
+    #[test]
+    fn from_partials_strict_mode_rank_collision_rejected() {
+        let ds = tiny_dataset();
+        let mut a = StreamingEvaluator::new(
+            ds.clone(),
             BboxIou,
             default_params(),
             ParityMode::Strict,
             MemoryBudget::auto_default(),
         )
+        .unwrap()
+        .with_rank(7)
         .unwrap();
-        let err = ev.checkpoint().unwrap_err();
-        assert!(matches!(err, EvalError::NotImplemented { .. }));
-        let err = StreamingEvaluator::<BboxIou>::restore(&[]).unwrap_err();
-        assert!(matches!(err, EvalError::NotImplemented { .. }));
+        a.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
+        let pa = a.finalize_to_partial().unwrap();
+
+        let mut b = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Strict,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap()
+        .with_rank(7)
+        .unwrap();
+        b.update(&dt_json(2, 0.8, (50.0, 50.0, 10.0, 10.0)))
+            .unwrap();
+        let pb = b.finalize_to_partial().unwrap();
+
+        let err = StreamingEvaluator::<BboxIou>::from_partials(
+            ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Strict,
+            MemoryBudget::auto_default(),
+            &[&pa, &pb],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            EvalError::PartialRankCollision { rank_id: 7 }
+        ));
+    }
+
+    #[test]
+    fn from_partials_dataset_hash_mismatch_rejected() {
+        let ds_a = tiny_dataset();
+        // ds_b shifts the bbox of one annotation by 1 px → different hash.
+        let images = vec![img(1, 100, 100), img(2, 100, 100)];
+        let cats = vec![cat(1, "thing")];
+        let anns = vec![
+            ann(1, 1, 1, (1.0, 0.0, 10.0, 10.0)), // shifted from (0,0,10,10)
+            ann(2, 2, 1, (50.0, 50.0, 10.0, 10.0)),
+        ];
+        let ds_b = CocoDataset::from_parts(images, anns, cats).unwrap();
+        assert_ne!(ds_a.dataset_hash(), ds_b.dataset_hash());
+
+        let mut ev = StreamingEvaluator::new(
+            ds_a,
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        ev.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
+        let blob = ev.finalize_to_partial().unwrap();
+
+        let err = StreamingEvaluator::<BboxIou>::from_partials(
+            ds_b,
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+            &[&blob],
+        )
+        .unwrap_err();
+        assert!(matches!(err, EvalError::PartialDatasetMismatch { .. }));
+    }
+
+    #[test]
+    fn from_partials_params_hash_mismatch_rejected() {
+        let ds = tiny_dataset();
+        let mut ev = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        ev.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
+        let blob = ev.finalize_to_partial().unwrap();
+
+        let mut other_params = default_params();
+        other_params.max_dets_per_image = 50; // diverges from the default 100.
+
+        let err = StreamingEvaluator::<BboxIou>::from_partials(
+            ds,
+            BboxIou,
+            other_params,
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+            &[&blob],
+        )
+        .unwrap_err();
+        assert!(matches!(err, EvalError::PartialParamsMismatch { .. }));
+    }
+
+    #[test]
+    fn with_rank_after_update_is_rejected() {
+        let ds = tiny_dataset();
+        let mut ev = StreamingEvaluator::new(
+            ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        ev.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
+        let err = ev.with_rank(0).unwrap_err();
+        assert!(matches!(err, EvalError::InvalidConfig { .. }));
+    }
+
+    #[test]
+    fn corrupted_partial_returns_format_mismatch() {
+        let ds = tiny_dataset();
+        let mut ev = StreamingEvaluator::new(
+            ds.clone(),
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        ev.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
+        let mut blob = ev.finalize_to_partial().unwrap();
+        // Corrupt the magic bytes — earliest validation step.
+        blob[0] = b'X';
+
+        let err = StreamingEvaluator::<BboxIou>::from_partials(
+            ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Corrected,
+            MemoryBudget::auto_default(),
+            &[&blob],
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            EvalError::PartialFormatMismatch {
+                kind: crate::error::PartialFormatErrorKind::WrongMagic { .. }
+            }
+        ));
     }
 
     #[test]
