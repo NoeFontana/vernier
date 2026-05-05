@@ -85,6 +85,18 @@ arrow-schema = { version = "55", default-features = false, features = ["ffi"] }
 # PNG decoder used by `vernier-panoptic::dataset::from_files` (ADR-0025
 # axis E2). Single-format decoder (~150 KB), no umbrella `image` crate.
 png = "0.18"
+# Zero-copy archive format for the partial wire format (ADR-0031). The
+# default features include `bytecheck` so `rkyv::access` performs full
+# structural validation on deserialize — load-bearing for cross-process
+# input. We do not use `alloc`-only mode; std is fine here.
+rkyv = "0.8"
+# BLAKE3 hashing for the dataset and params fingerprints carried in the
+# partial header (ADR-0031). MIT/Apache, SIMD-accelerated.
+blake3 = "1"
+# CRC32 (IEEE) for the partial wire-format footer (ADR-0031). Catches
+# truncation and bit-flips that would slip past `rkyv`'s archive
+# validation; the two checks are complementary, not redundant.
+crc32fast = "1"
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit
