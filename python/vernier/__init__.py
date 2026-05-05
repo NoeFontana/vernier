@@ -48,7 +48,7 @@ class Frequency(str, Enum):
     The values are the single-letter strings the LVIS JSON schema
     uses, so the enum round-trips through JSON without a custom
     converter and equates with the raw strings
-    :attr:`vernier.instance.Dataset.category_frequency` returns. The
+    :attr:`vernier.instance.CocoDataset.category_frequency` returns. The
     ``(str, Enum)`` MRO is the Python 3.10-compatible spelling of
     ``StrEnum`` (added in 3.11).
     """

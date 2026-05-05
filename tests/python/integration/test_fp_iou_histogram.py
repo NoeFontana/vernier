@@ -85,7 +85,7 @@ def test_iou_arrays_are_numpy_float64() -> None:
 
 def test_dataset_handle_rejected() -> None:
     gt, dt = _load("all_perfect")
-    ds = vernier.instance.Dataset.from_json(gt)
+    ds = vernier.instance.CocoDataset.from_json(gt)
     with pytest.raises(NotImplementedError, match="Dataset handle"):
         fp_iou_histogram(ds, dt, iou=Bbox())
 

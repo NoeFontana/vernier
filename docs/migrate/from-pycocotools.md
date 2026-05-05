@@ -13,7 +13,7 @@ plus the pycocotools-shaped shim re-exported at the root:
 
 ```python
 from vernier import COCOeval, patch_pycocotools          # shim path
-from vernier.instance import Bbox, Dataset, Evaluator    # native path
+from vernier.instance import Bbox, CocoDataset, Evaluator    # native path
 ```
 
 | `pycocotools` | vernier (shim) | vernier (native) |
@@ -65,12 +65,12 @@ Native `Evaluator` form, end-to-end:
 
 ```python
 from pathlib import Path
-from vernier.instance import Bbox, Dataset, Evaluator
+from vernier.instance import Bbox, CocoDataset, Evaluator
 
 gt_bytes = Path("instances_val2017.json").read_bytes()
 dt_bytes = Path("detections.json").read_bytes()
 
-dataset = Dataset.from_json(gt_bytes)
+dataset = CocoDataset.from_json(gt_bytes)
 summary = Evaluator(iou=Bbox(), parity_mode="strict").evaluate(dataset, dt_bytes)
 
 print(summary.stats[0])              # AP, e.g. 0.347

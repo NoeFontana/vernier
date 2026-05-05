@@ -65,7 +65,7 @@ __all__ = [
 #: Three-tier parity mode (ADR-0002). The ``aligned`` disposition tier
 #: from the sem-seg quirks survey is output-equivalent to ``strict``
 #: under tolerance and is not a runtime-selectable mode (matches the
-#: existing convention from :mod:`vernier._compat.ParityMode`).
+#: existing convention from :mod:`vernier.ParityMode`).
 ParityMode = Literal["strict", "corrected"]
 
 #: Cityscapes ignore-label convention (255). Mirrors

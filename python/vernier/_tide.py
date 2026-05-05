@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 from vernier._compat import ParityMode
 from vernier._core import (
-    Dataset,
+    CocoDataset,
     error_decomposition_bbox,
     error_decomposition_boundary,
     error_decomposition_segm,
@@ -165,7 +165,7 @@ class TideReport:
 
 
 def error_decomposition(
-    gt: bytes | Dataset,
+    gt: bytes | CocoDataset,
     dt: bytes,
     *,
     iou: object = None,
@@ -188,10 +188,10 @@ def error_decomposition(
     ``gt`` is the GT JSON bytes (the same shape pycocotools'
     ``COCO`` constructor consumes). ``dt`` is the detections JSON
     bytes (the shape ``COCO.loadRes`` consumes). The
-    :class:`vernier.Dataset` parsed-once handle (ADR-0020) is accepted
+    :class:`vernier.CocoDataset` parsed-once handle (ADR-0020) is accepted
     in the type signature for forward-compat but raises
     :class:`NotImplementedError` today — the TIDE FFI is not yet wired
-    through the Dataset cache. Tracked as a 0.5.x follow-up.
+    through the CocoDataset cache. Tracked as a 0.5.x follow-up.
 
     ``iou`` selects the kernel: ``Bbox()`` (default), ``Segm()``, or
     ``Boundary(dilation_ratio=...)``. ``Keypoints(...)`` raises
@@ -257,14 +257,14 @@ def error_decomposition(
     if t_b is not None:
         resolved_t_b = t_b
 
-    if isinstance(gt, Dataset):
-        # ADR-0020 wired Dataset through Evaluator.evaluate but not yet
+    if isinstance(gt, CocoDataset):
+        # ADR-0020 wired CocoDataset through Evaluator.evaluate but not yet
         # through TIDE; the FFI surface is bytes-only today. Mirror the
         # NotImplementedError shape Evaluator._evaluate_with_tables
         # uses (__init__.py:296-300) so the boundary is consistent.
         raise NotImplementedError(
-            "vernier.error_decomposition does not yet accept a Dataset handle; "
-            "pass GT JSON bytes for now. Dataset support is a 0.5.x follow-up "
+            "vernier.error_decomposition does not yet accept a CocoDataset handle; "
+            "pass GT JSON bytes for now. CocoDataset support is a 0.5.x follow-up "
             "(the TIDE FFI is not yet wired through the parsed-once cache)."
         )
 
@@ -457,7 +457,7 @@ class FpIouHistogram:
 
 
 def fp_iou_histogram(
-    gt: bytes | Dataset,
+    gt: bytes | CocoDataset,
     dt: bytes,
     *,
     iou: object = None,
@@ -474,7 +474,7 @@ def fp_iou_histogram(
     Python-side to compute the bin-as-Bkg fraction at candidate `t_b`.
 
     Args:
-        gt: GT JSON bytes (Dataset handle deferred, same as
+        gt: GT JSON bytes (CocoDataset handle deferred, same as
             :func:`error_decomposition`).
         dt: Detection JSON bytes.
         iou: Kernel selector — :class:`vernier.Bbox` (default),
@@ -499,9 +499,9 @@ def fp_iou_histogram(
     if t_f is not None:
         resolved_t_f = t_f
 
-    if isinstance(gt, Dataset):
+    if isinstance(gt, CocoDataset):
         raise NotImplementedError(
-            "vernier.fp_iou_histogram does not yet accept a Dataset handle; "
+            "vernier.fp_iou_histogram does not yet accept a CocoDataset handle; "
             "pass GT JSON bytes for now. Mirrors error_decomposition's "
             "0.5.x follow-up."
         )

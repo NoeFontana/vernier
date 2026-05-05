@@ -3,7 +3,7 @@
 For each fixture, ``Evaluator.evaluate(...)`` with array-form ``Detections``
 must produce a byte-identical ``Summary.stats`` to the JSON-bytes path —
 both the no-tables and the ``tables=`` route, with and without a
-parsed-once ``Dataset``.
+parsed-once ``CocoDataset``.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import pytest
 from vernier.instance import (
     Bbox,
     Boundary,
-    Dataset,
+    CocoDataset,
     Evaluator,
     Keypoints,
     Segm,
@@ -106,7 +106,7 @@ def test_evaluator_array_dt_matches_json_with_dataset(
 
     iou = _iou_kind_for(iou_type, sigmas)
     ev = Evaluator(iou=iou, parity_mode="strict")
-    dataset = Dataset.from_json(gt_bytes)
+    dataset = CocoDataset.from_json(gt_bytes)
 
     s_json = ev.evaluate(dataset, dt_bytes)
 

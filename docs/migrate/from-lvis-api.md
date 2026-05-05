@@ -9,7 +9,7 @@ anyone moving an existing LVIS evaluation pipeline onto vernier.
 
 | `lvis-api` | vernier |
 |---|---|
-| `LVIS(gt_path)` | `Dataset.from_lvis_json(gt_bytes)` |
+| `LVIS(gt_path)` | `CocoDataset.from_lvis_json(gt_bytes)` |
 | `LVISResults(lvis_gt, dt_path, max_dets=300)` | `dt_bytes` (the trim is automatic on federated datasets) |
 | `LVISEval(lvis_gt, lvis_dt, iou_type="bbox").run()` | `Evaluator(iou=Bbox(), max_dets=(300,)).evaluate(dataset, dt_bytes)` (bbox / segm / boundary) |
 | `lvis_eval.print_results()` | `summary.pretty_lines()` (returns list, no stdout) |
@@ -17,7 +17,7 @@ anyone moving an existing LVIS evaluation pipeline onto vernier.
 
 The 13-entry summary plan (`AP, AP50, AP75, APs, APm, APl, APr, APc,
 APf, AR@300, ARs@300, ARm@300, ARl@300`) lands on `summary.stats` in
-that order when `Dataset.from_lvis_json(...)` flips the dataset into
+that order when `CocoDataset.from_lvis_json(...)` flips the dataset into
 federated mode. No extra summarize call is needed.
 
 ## Sentinels: `-1` vs `0` vs `nan`
@@ -42,11 +42,11 @@ this behavior.
 
 ## Federated metadata is silent
 
-`Dataset.from_json(bytes)` (the COCO loader) silently drops the LVIS
+`CocoDataset.from_json(bytes)` (the COCO loader) silently drops the LVIS
 extras (`neg_category_ids`, `not_exhaustive_category_ids`,
 `frequency`). The orchestrator then runs COCO semantics — every
 unmatched detection is a false positive, regardless of whether the
-image's GT was complete. Use `Dataset.from_lvis_json(bytes)` for
+image's GT was complete. Use `CocoDataset.from_lvis_json(bytes)` for
 LVIS data; the federated check at `evaluate.rs` only fires when
 `dataset.is_federated() is True`.
 
