@@ -955,25 +955,31 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         &mut self,
         acc: crate::distributed::MergeAccumulator,
     ) -> Result<(), EvalError> {
+        // Bind every load-bearing field by name (seen_rank_ids,
+        // retain_iou, strict are merge-internal bookkeeping that
+        // doesn't carry into the spine — assert here so a future
+        // field addition is a compile error rather than silent loss).
         let crate::distributed::MergeAccumulator {
             n_detections,
             next_dt_id,
-            seen_images,
+            image_owner,
+            seen_rank_ids: _,
             cells,
             meta_cells,
             retained_ious_map,
             dets_seen,
-            ..
+            retain_iou: _,
+            strict: _,
         } = acc;
         self.n_detections = n_detections;
         self.next_dt_id = next_dt_id;
-        // Recompute seen_image_indices from the live grid_meta — the
-        // partials only carry image_id, not the local index.
-        self.seen_image_indices = seen_images
-            .iter()
+        // image_owner.keys() is the union image-id set; seen_image_indices
+        // is the parallel local-index set under the live grid_meta.
+        self.seen_image_indices = image_owner
+            .keys()
             .filter_map(|id| self.grid_meta.image_id_to_idx.get(&ImageId(*id)).copied())
             .collect();
-        self.seen_images = seen_images;
+        self.seen_images = image_owner.into_keys().collect();
         self.cells = PerImageEvalStore::from_map(cells);
         self.meta_cells = meta_cells;
         if self.params.retain_iou {

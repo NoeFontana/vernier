@@ -31,6 +31,7 @@ from vernier.instance import (
     PartialFormatMismatch,
     PartialParamsMismatch,
     PartialPartitionOverlap,
+    PartialRankCollision,
     Segm,
     StreamingEvaluator,
 )
@@ -294,7 +295,27 @@ def test_kernel_mismatch_rejected() -> None:
 
 
 def test_strict_mode_rank_collision_rejected() -> None:
-    pytest.skip(_STRICT_TIEBREAK_SKIP)
+    # The detection (rank distinctness invariant) doesn't depend on
+    # the deferred (score, rank_id, local_position) tiebreak — only
+    # cross-rank ordering does. The error fires on the second ingest
+    # regardless of summary comparison, so this case is testable today.
+    fixture = "perfect_match"
+    gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
+    dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
+
+    a = StreamingEvaluator(gt_bytes, iou_type="bbox", parity_mode="strict", rank_id=7)
+    a.update(dt_bytes)
+    p_a = a.finalize_to_partial()
+
+    b = StreamingEvaluator(gt_bytes, iou_type="bbox", parity_mode="strict", rank_id=7)
+    b.update(dt_bytes)
+    p_b = b.finalize_to_partial()
+
+    with pytest.raises(PartialRankCollision) as exc_info:
+        StreamingEvaluator.from_partials(
+            gt_bytes, [p_a, p_b], iou_type="bbox", parity_mode="strict"
+        )
+    assert exc_info.value.rank_id == 7
 
 
 # ---------------------------------------------------------------------------

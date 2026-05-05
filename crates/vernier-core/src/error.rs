@@ -288,3 +288,26 @@ pub enum PartialFormatErrorKind {
         detail: String,
     },
 }
+
+impl PartialFormatErrorKind {
+    /// Stable snake_case identifier for this variant. The FFI
+    /// surfaces this string on the typed `PartialFormatMismatch.kind`
+    /// attribute so Python callers can match without parsing the
+    /// human-readable message.
+    ///
+    /// Adding a new variant requires a new tag here — the exhaustive
+    /// match makes it a compile error instead of a silent fallback.
+    pub fn tag(&self) -> &'static str {
+        match self {
+            Self::TooShort { .. } => "too_short",
+            Self::WrongMagic { .. } => "wrong_magic",
+            Self::WrongVersion { .. } => "wrong_version",
+            Self::Crc => "crc",
+            Self::KernelMismatch { .. } => "kernel_mismatch",
+            Self::GridMismatch { .. } => "grid_mismatch",
+            Self::ParityMismatch { .. } => "parity_mismatch",
+            Self::RetainIouMismatch { .. } => "retain_iou_mismatch",
+            Self::RkyvDecode { .. } => "rkyv_decode",
+        }
+    }
+}

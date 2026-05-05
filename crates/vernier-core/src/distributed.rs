@@ -97,6 +97,14 @@ const MIN_PARTIAL_BYTES: usize = MAGIC.len() + 1 + 4;
 // `HashMap` — so the archived bytes are deterministic. Array2 fields
 // flatten to `(shape: [u32; 2], data: Vec<T>)` so rkyv can archive
 // them without needing a `with` adapter on `ndarray`.
+//
+// **Field order on every `#[derive(rkyv::*)]` struct below is
+// wire-format load-bearing.** rkyv's archived layout follows the
+// declaration order; reordering or inserting a field changes the
+// byte layout and silently breaks compatibility with already-emitted
+// partials. Add new fields at the end and bump [`FORMAT_VERSION`]
+// when doing so. The receiver-side validator refuses mismatched
+// versions, but only if we remember to bump.
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 struct WireGridKey {
@@ -243,18 +251,28 @@ fn encode_kernel_kind(k: KernelKind) -> u8 {
     }
 }
 
-fn pack_bool_array(arr: &Array2<bool>) -> ([u32; 2], Vec<u8>) {
+/// Flatten an `Array2<E>` into a `(shape, Vec<W>)` pair via `convert`.
+/// `W` is the wire element type (`u8` for bools, `T` itself for
+/// numeric types). Used by every pack helper below.
+fn pack_array<E: Copy, W>(arr: &Array2<E>, convert: impl Fn(E) -> W) -> ([u32; 2], Vec<W>) {
     let (rows, cols) = arr.dim();
-    let shape = [rows as u32, cols as u32];
-    let data: Vec<u8> = arr.iter().map(|&b| u8::from(b)).collect();
-    (shape, data)
+    (
+        [rows as u32, cols as u32],
+        arr.iter().copied().map(convert).collect(),
+    )
 }
 
-fn unpack_bool_array(
+/// Inverse of [`pack_array`]: reconstruct `Array2<E>` from a wire
+/// `(shape, &[W])` pair. `convert` maps each wire element to the
+/// runtime element type. Returns the typed
+/// [`PartialFormatErrorKind::RkyvDecode`] on shape/data mismatch so
+/// the framing-validator's vocabulary is preserved.
+fn unpack_array<W: Copy, E>(
     shape: [u32; 2],
-    data: &[u8],
+    data: &[W],
     field: &'static str,
-) -> Result<Array2<bool>, EvalError> {
+    convert: impl Fn(W) -> E,
+) -> Result<Array2<E>, EvalError> {
     let rows = shape[0] as usize;
     let cols = shape[1] as usize;
     if data.len() != rows.saturating_mul(cols) {
@@ -267,51 +285,17 @@ fn unpack_bool_array(
             },
         });
     }
-    let bools: Vec<bool> = data.iter().map(|&v| v != 0).collect();
-    Array2::from_shape_vec((rows, cols), bools).map_err(|e| EvalError::PartialFormatMismatch {
+    let owned: Vec<E> = data.iter().copied().map(convert).collect();
+    Array2::from_shape_vec((rows, cols), owned).map_err(|e| EvalError::PartialFormatMismatch {
         kind: PartialFormatErrorKind::RkyvDecode {
             detail: format!("{field} from_shape_vec: {e}"),
         },
     })
-}
-
-fn pack_i64_array(arr: &Array2<i64>) -> ([u32; 2], Vec<i64>) {
-    let (rows, cols) = arr.dim();
-    ([rows as u32, cols as u32], arr.iter().copied().collect())
-}
-
-fn unpack_i64_array(
-    shape: [u32; 2],
-    data: Vec<i64>,
-    field: &'static str,
-) -> Result<Array2<i64>, EvalError> {
-    let rows = shape[0] as usize;
-    let cols = shape[1] as usize;
-    if data.len() != rows.saturating_mul(cols) {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::RkyvDecode {
-                detail: format!(
-                    "{field} shape {rows}x{cols} doesn't match data len {}",
-                    data.len()
-                ),
-            },
-        });
-    }
-    Array2::from_shape_vec((rows, cols), data).map_err(|e| EvalError::PartialFormatMismatch {
-        kind: PartialFormatErrorKind::RkyvDecode {
-            detail: format!("{field} from_shape_vec: {e}"),
-        },
-    })
-}
-
-fn pack_f64_array(arr: &Array2<f64>) -> ([u32; 2], Vec<f64>) {
-    let (rows, cols) = arr.dim();
-    ([rows as u32, cols as u32], arr.iter().copied().collect())
 }
 
 fn pack_per_image_eval(p: &PerImageEval) -> WirePerImageEval {
-    let (dt_matched_shape, dt_matched_data) = pack_bool_array(&p.dt_matched);
-    let (dt_ignore_shape, dt_ignore_data) = pack_bool_array(&p.dt_ignore);
+    let (dt_matched_shape, dt_matched_data) = pack_array(&p.dt_matched, u8::from);
+    let (dt_ignore_shape, dt_ignore_data) = pack_array(&p.dt_ignore, u8::from);
     WirePerImageEval {
         dt_scores: p.dt_scores.clone(),
         dt_matched_shape,
@@ -323,8 +307,8 @@ fn pack_per_image_eval(p: &PerImageEval) -> WirePerImageEval {
 }
 
 fn pack_eval_image_meta(m: &EvalImageMeta) -> WireEvalImageMeta {
-    let (dt_matches_shape, dt_matches_data) = pack_i64_array(&m.dt_matches);
-    let (gt_matches_shape, gt_matches_data) = pack_i64_array(&m.gt_matches);
+    let (dt_matches_shape, dt_matches_data) = pack_array(&m.dt_matches, |v| v);
+    let (gt_matches_shape, gt_matches_data) = pack_array(&m.gt_matches, |v| v);
     WireEvalImageMeta {
         image_id: m.image_id,
         category_id: m.category_id,
@@ -441,13 +425,13 @@ fn unpack_per_image_eval(archived: &ArchivedWirePerImageEval) -> Result<PerImage
         archived.dt_matched_shape[1].to_native(),
     ];
     let dt_matched_data: Vec<u8> = archived.dt_matched_data.iter().copied().collect();
-    let dt_matched = unpack_bool_array(dt_matched_shape, &dt_matched_data, "dt_matched")?;
+    let dt_matched = unpack_array(dt_matched_shape, &dt_matched_data, "dt_matched", |v| v != 0)?;
     let dt_ignore_shape = [
         archived.dt_ignore_shape[0].to_native(),
         archived.dt_ignore_shape[1].to_native(),
     ];
     let dt_ignore_data: Vec<u8> = archived.dt_ignore_data.iter().copied().collect();
-    let dt_ignore = unpack_bool_array(dt_ignore_shape, &dt_ignore_data, "dt_ignore")?;
+    let dt_ignore = unpack_array(dt_ignore_shape, &dt_ignore_data, "dt_ignore", |v| v != 0)?;
     let gt_ignore: Vec<bool> = archived.gt_ignore.iter().map(|&v| v != 0).collect();
     Ok(PerImageEval {
         dt_scores,
@@ -460,26 +444,26 @@ fn unpack_per_image_eval(archived: &ArchivedWirePerImageEval) -> Result<PerImage
 fn unpack_eval_image_meta(
     archived: &ArchivedWireEvalImageMeta,
 ) -> Result<EvalImageMeta, EvalError> {
-    let dt_matches_data: Vec<i64> = archived
-        .dt_matches_data
-        .iter()
-        .map(|v| v.to_native())
-        .collect();
     let dt_matches_shape = [
         archived.dt_matches_shape[0].to_native(),
         archived.dt_matches_shape[1].to_native(),
     ];
-    let dt_matches = unpack_i64_array(dt_matches_shape, dt_matches_data, "dt_matches")?;
-    let gt_matches_data: Vec<i64> = archived
-        .gt_matches_data
-        .iter()
-        .map(|v| v.to_native())
-        .collect();
+    let dt_matches = unpack_array(
+        dt_matches_shape,
+        archived.dt_matches_data.as_slice(),
+        "dt_matches",
+        |v| v.to_native(),
+    )?;
     let gt_matches_shape = [
         archived.gt_matches_shape[0].to_native(),
         archived.gt_matches_shape[1].to_native(),
     ];
-    let gt_matches = unpack_i64_array(gt_matches_shape, gt_matches_data, "gt_matches")?;
+    let gt_matches = unpack_array(
+        gt_matches_shape,
+        archived.gt_matches_data.as_slice(),
+        "gt_matches",
+        |v| v.to_native(),
+    )?;
     Ok(EvalImageMeta {
         image_id: archived.image_id.to_native(),
         category_id: archived.category_id.to_native(),
@@ -611,7 +595,7 @@ fn retained_ious_to_wire(r: &RetainedIous) -> Vec<WireRetainedIousEntry> {
     // We walk via the public iteration helper below.
     let mut out: Vec<WireRetainedIousEntry> = retained_ious_iter(r)
         .map(|(k, i, arr)| {
-            let (shape, data) = pack_f64_array(&arr);
+            let (shape, data) = pack_array(&arr, |v| v);
             WireRetainedIousEntry {
                 k: k as u32,
                 i: i as u32,
@@ -800,13 +784,27 @@ fn validate_header_fields(
 // Cross-partial walks: drain archived bodies into a merge accumulator
 // ===========================================================================
 
+/// Sentinel `RankId` carried in [`EvalError::PartialPartitionOverlap`]
+/// when one of the colliding partials lacked a `rank_id`. Single-rank
+/// flows (no merge) leave `rank_id` unset; the partition check still
+/// runs in case the caller happens to merge two such partials, and
+/// this sentinel surfaces in the error message instead of a silent
+/// `0`. Real `rank_id`s should always be `< u32::MAX` in any DDP-shape
+/// deployment (`world_size` is far smaller).
+const UNRANKED_SENTINEL: RankId = u32::MAX;
+
 /// Accumulator that [`StreamingEvaluator::from_partials`] folds into.
 /// Owns the merged state and accepts archived bodies one at a time.
 pub(crate) struct MergeAccumulator {
     pub n_detections: usize,
     pub next_dt_id: i64,
-    pub seen_images: std::collections::HashSet<i64>,
-    pub seen_image_to_rank: HashMap<i64, RankId>,
+    /// Image-id → rank that ingested it. Used both for the
+    /// disjoint-partition check and as the source-of-truth for
+    /// `seen_images` (its keys are the union image set).
+    pub image_owner: HashMap<i64, RankId>,
+    /// Rank ids observed so far. Only populated in strict mode (the
+    /// distinctness invariant — ADR-0031 §"Axis C" C2 — is strict-
+    /// only); empty in corrected mode.
     pub seen_rank_ids: std::collections::HashSet<RankId>,
     pub cells: HashMap<(usize, usize, usize), PerImageEval>,
     pub meta_cells: HashMap<(usize, usize, usize), EvalImageMeta>,
@@ -821,8 +819,7 @@ impl MergeAccumulator {
         Self {
             n_detections: 0,
             next_dt_id: 1,
-            seen_images: std::collections::HashSet::new(),
-            seen_image_to_rank: HashMap::new(),
+            image_owner: HashMap::new(),
             seen_rank_ids: std::collections::HashSet::new(),
             cells: HashMap::new(),
             meta_cells: HashMap::new(),
@@ -854,24 +851,20 @@ impl MergeAccumulator {
 
         // Image-id disjointness — the partition rule. Records every
         // image_id with the rank that owns it; on collision, errors
-        // with both rank ids.
+        // with both rank ids (UNRANKED_SENTINEL when a partial had
+        // no rank_id set).
+        let owner = rank_id.unwrap_or(UNRANKED_SENTINEL);
         for img in archived.body.seen_images.iter() {
             let id = img.to_native();
-            let owner = rank_id.unwrap_or(u32::MAX);
-            if let Some(&prev) = self.seen_image_to_rank.get(&id) {
-                let (a, b) = if prev <= owner {
-                    (prev, owner)
-                } else {
-                    (owner, prev)
-                };
+            if let Some(&prev) = self.image_owner.get(&id) {
+                let (a, b) = (prev.min(owner), prev.max(owner));
                 return Err(EvalError::PartialPartitionOverlap {
                     rank_a: a,
                     rank_b: b,
                     image_id: id,
                 });
             }
-            self.seen_image_to_rank.insert(id, owner);
-            self.seen_images.insert(id);
+            self.image_owner.insert(id, owner);
         }
 
         self.n_detections += archived.body.n_detections.to_native() as usize;
@@ -909,8 +902,9 @@ impl MergeAccumulator {
         if let Some(ious) = archived.body.retained_ious.as_ref() {
             for entry in ious.iter() {
                 let shape = [entry.shape[0].to_native(), entry.shape[1].to_native()];
-                let data: Vec<f64> = entry.data.iter().map(|v| v.to_native()).collect();
-                let arr = pack_f64_array_unpack(shape, data, "retained_iou")?;
+                let arr = unpack_array(shape, entry.data.as_slice(), "retained_iou", |v| {
+                    v.to_native()
+                })?;
                 self.retained_ious_map.insert(
                     (entry.k.to_native() as usize, entry.i.to_native() as usize),
                     arr,
@@ -926,30 +920,6 @@ impl MergeAccumulator {
 
         Ok(())
     }
-}
-
-fn pack_f64_array_unpack(
-    shape: [u32; 2],
-    data: Vec<f64>,
-    field: &'static str,
-) -> Result<Array2<f64>, EvalError> {
-    let rows = shape[0] as usize;
-    let cols = shape[1] as usize;
-    if data.len() != rows.saturating_mul(cols) {
-        return Err(EvalError::PartialFormatMismatch {
-            kind: PartialFormatErrorKind::RkyvDecode {
-                detail: format!(
-                    "{field} shape {rows}x{cols} doesn't match data len {}",
-                    data.len()
-                ),
-            },
-        });
-    }
-    Array2::from_shape_vec((rows, cols), data).map_err(|e| EvalError::PartialFormatMismatch {
-        kind: PartialFormatErrorKind::RkyvDecode {
-            detail: format!("{field} from_shape_vec: {e}"),
-        },
-    })
 }
 
 // ===========================================================================

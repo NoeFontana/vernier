@@ -1232,6 +1232,22 @@ fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
     Ok(EvalIouType::Boundary { dilation_ratio })
 }
 
+/// Tag a freshly-built [`StreamingEvaluator`] with `rank_id` when the
+/// caller provided one, leaving it untagged otherwise. ADR-0031: rank
+/// identity is a construction-time property; vernier never mutates it
+/// after the first `update`.
+fn maybe_tag_rank<K: vernier_core::EvalKernel>(
+    ev: StreamingEvaluator<K>,
+    rank_id: Option<u32>,
+) -> PyResult<StreamingEvaluator<K>> {
+    match rank_id {
+        Some(rid) => ev
+            .with_rank(rid)
+            .map_err(|e| PyValueError::new_err(format!("{e}"))),
+        None => Ok(ev),
+    }
+}
+
 fn require_nonempty_max_dets(max_dets: &[usize]) -> PyResult<()> {
     if max_dets.is_empty() {
         Err(PyValueError::new_err(
@@ -1316,22 +1332,11 @@ fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
         }
         EvalError::PartialFormatMismatch { ref kind } => {
             let exc = PartialFormatMismatch::new_err(format!("{e}"));
-            // The kind discriminant uses the variant name so callers
-            // can match without parsing the human-readable message.
-            let kind_str: &'static str = match kind {
-                vernier_core::PartialFormatErrorKind::TooShort { .. } => "too_short",
-                vernier_core::PartialFormatErrorKind::WrongMagic { .. } => "wrong_magic",
-                vernier_core::PartialFormatErrorKind::WrongVersion { .. } => "wrong_version",
-                vernier_core::PartialFormatErrorKind::Crc => "crc",
-                vernier_core::PartialFormatErrorKind::KernelMismatch { .. } => "kernel_mismatch",
-                vernier_core::PartialFormatErrorKind::GridMismatch { .. } => "grid_mismatch",
-                vernier_core::PartialFormatErrorKind::ParityMismatch { .. } => "parity_mismatch",
-                vernier_core::PartialFormatErrorKind::RetainIouMismatch { .. } => {
-                    "retain_iou_mismatch"
-                }
-                vernier_core::PartialFormatErrorKind::RkyvDecode { .. } => "rkyv_decode",
-            };
-            if let Err(err) = exc.value(py).setattr("kind", kind_str) {
+            // `kind.tag()` is the canonical snake_case discriminant;
+            // exhaustive over PartialFormatErrorKind so adding a
+            // variant fails compilation rather than silently falling
+            // through to a default tag.
+            if let Err(err) = exc.value(py).setattr("kind", kind.tag()) {
                 return err;
             }
             exc
@@ -1827,13 +1832,11 @@ impl PyStreamingEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let mut ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 (StreamingState::Bbox(ev), array_ingest::ArrayIouType::Bbox)
             }
             "segm" => {
@@ -1845,13 +1848,11 @@ impl PyStreamingEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let mut ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 (StreamingState::Segm(ev), array_ingest::ArrayIouType::Segm)
             }
             "boundary" => {
@@ -1865,13 +1866,11 @@ impl PyStreamingEvaluator {
                     retain_iou,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
-                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 (
                     StreamingState::Boundary(ev),
                     array_ingest::ArrayIouType::Boundary,
@@ -1894,13 +1893,11 @@ impl PyStreamingEvaluator {
                     retain_iou,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
-                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 (
                     StreamingState::Keypoints(ev),
                     array_ingest::ArrayIouType::Keypoints,
@@ -2113,12 +2110,12 @@ impl PyStreamingEvaluator {
             ("keypoints", Some(d)) => parse_sigmas(d)?,
             _ => HashMap::new(),
         };
-        if iou_type == "boundary" {
-            // Validate dilation_ratio while we still hold the GIL so the
-            // typed PyValueError surfaces cleanly; the construction
-            // inside detach only needs the validated number.
-            boundary_iou_type(dilation_ratio)?;
-        }
+        // Validate dilation_ratio eagerly under the GIL — the boundary
+        // arm uses it and the bbox/segm/keypoints arms ignore it, but
+        // an out-of-range value still indicates a caller bug and the
+        // typed PyValueError surfaces cleaner now than buried inside
+        // py.detach.
+        boundary_iou_type(dilation_ratio)?;
 
         let (state, array_iou_type) = py
             .detach(move || -> Result<(StreamingState, array_ingest::ArrayIouType), EvalError> {
@@ -2696,13 +2693,11 @@ impl PyBackgroundEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let mut ev = StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
@@ -2719,13 +2714,11 @@ impl PyBackgroundEvaluator {
                     use_cats,
                     retain_iou,
                 };
-                let mut ev = StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
@@ -2744,13 +2737,11 @@ impl PyBackgroundEvaluator {
                     retain_iou,
                 };
                 let kernel = BoundaryIou { dilation_ratio };
-                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
@@ -2775,13 +2766,11 @@ impl PyBackgroundEvaluator {
                     retain_iou,
                 };
                 let kernel = OksSimilarity::new(parsed_sigmas);
-                let mut ev = StreamingEvaluator::new(dataset, kernel, params, parity, budget)
-                    .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                if let Some(rid) = rank_id {
-                    ev = ev
-                        .with_rank(rid)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-                }
+                let ev = maybe_tag_rank(
+                    StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+                    rank_id,
+                )?;
                 let bg = background::BackgroundEvaluator::spawn(ev, config)
                     .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
