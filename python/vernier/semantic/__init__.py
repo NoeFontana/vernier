@@ -44,6 +44,18 @@ from vernier._core import (
 from vernier._core import (
     StreamingSemanticEvaluator as StreamingEvaluator,
 )
+
+# Re-export the five distributed-eval exception types under the
+# semantic namespace so callers catching `vernier.semantic.PartialFormatMismatch`
+# match the same class object as `vernier.instance.PartialFormatMismatch`
+# (ADR-0032: shared paradigm-agnostic error classes).
+from vernier._core import (
+    PartialDatasetMismatch,
+    PartialFormatMismatch,
+    PartialParamsMismatch,
+    PartialPartitionOverlap,
+    PartialRankCollision,
+)
 from vernier._types import ParityMode
 
 __all__ = [
@@ -58,6 +70,11 @@ __all__ = [
     "Dataset",
     "Evaluator",
     "ParityMode",
+    "PartialDatasetMismatch",
+    "PartialFormatMismatch",
+    "PartialParamsMismatch",
+    "PartialPartitionOverlap",
+    "PartialRankCollision",
     "Predictions",
     "StreamingEvaluator",
     "Summary",
@@ -376,7 +393,13 @@ class Evaluator:
             label_remap=dict(self.label_remap) if self.label_remap is not None else None,
         )
 
-    def stream(self, n_classes: int, ignore_label: int | None = None) -> StreamingEvaluator:
+    def stream(
+        self,
+        n_classes: int,
+        ignore_label: int | None = None,
+        *,
+        rank_id: int | None = None,
+    ) -> StreamingEvaluator:
         """Build a :class:`StreamingEvaluator` that shares this
         evaluator's ``parity_mode``.
 
@@ -390,6 +413,10 @@ class Evaluator:
             for image_id, gt_arr, dt_arr in batches:
                 ev.update(image_id, gt_arr, dt_arr)
             summary = ev.finalize()
+
+        ``rank_id``, when set, identifies this evaluator's rank in a
+        multi-process eval (ADR-0032). Required for strict-mode
+        cross-rank merge via :meth:`StreamingEvaluator.from_partials`.
 
         ``label_remap`` does not propagate to streaming today —
         callers needing remap on a streaming path apply it on the DT
@@ -408,4 +435,5 @@ class Evaluator:
             n_classes,
             self.parity_mode,
             ignore_label=ignore_label,
+            rank_id=rank_id,
         )

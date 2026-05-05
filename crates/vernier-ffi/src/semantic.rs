@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyDict, PyDictMethods};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
 
 use vernier_semantic::{
     accumulate_confusion, summarize, ClassSemanticStats, ConfusionMatrix, ParityMode,
@@ -278,13 +278,18 @@ impl PySemanticSummary {
     }
 }
 
-/// Map a [`SemanticError`] to a Python `ValueError` with a structured
-/// message. Mirrors
-/// [`crate::panoptic::panoptic_error_to_pyerr`](super::panoptic): the
-/// structured fields go into the message body so the parity harness
-/// can lift them programmatically.
-fn semantic_error_to_pyerr(e: &SemanticError) -> PyErr {
-    PyValueError::new_err(format!("{e}"))
+/// Map a [`SemanticError`] to a Python exception. The `Partial`
+/// variant routes through [`crate::partial_error_to_pyerr`] so the
+/// five distributed-eval exception classes are shared with the
+/// instance paradigm (`vernier.semantic.PartialFormatMismatch is
+/// vernier.instance.PartialFormatMismatch`). Other variants surface
+/// as `PyValueError` with the structured fields embedded in the
+/// message body for the parity harness to lift programmatically.
+fn semantic_error_to_pyerr(py: Python<'_>, e: &SemanticError) -> PyErr {
+    match e {
+        SemanticError::Partial(inner) => crate::partial_error_to_pyerr(py, inner),
+        other => PyValueError::new_err(format!("{other}")),
+    }
 }
 
 /// Run the full semantic-segmentation evaluation (kernel + summarize)
@@ -336,9 +341,12 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     // as a typed error.
     for image_id in gt_maps.keys() {
         if !dt_maps.contains_key(image_id) {
-            return Err(semantic_error_to_pyerr(&SemanticError::MissingPrediction {
-                image_id: *image_id,
-            }));
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::MissingPrediction {
+                    image_id: *image_id,
+                },
+            ));
         }
     }
 
@@ -352,7 +360,7 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     }
 
     if gt_maps.is_empty() {
-        return Err(semantic_error_to_pyerr(&SemanticError::EmptyDataset));
+        return Err(semantic_error_to_pyerr(py, &SemanticError::EmptyDataset));
     }
 
     // Build the iteration plan on the Python thread (the data we move
@@ -379,11 +387,14 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
             ))
         })?;
         if gt.0 != dt.0 || gt.1 != dt.1 {
-            return Err(semantic_error_to_pyerr(&SemanticError::ShapeMismatch {
-                image_id: *image_id,
-                gt_shape: (gt.0, gt.1),
-                dt_shape: (dt.0, dt.1),
-            }));
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::ShapeMismatch {
+                    image_id: *image_id,
+                    gt_shape: (gt.0, gt.1),
+                    dt_shape: (dt.0, dt.1),
+                },
+            ));
         }
         work.push((*image_id, gt, dt));
     }
@@ -418,17 +429,27 @@ pub(crate) struct PyStreamingSemanticEvaluator {
 #[pymethods]
 impl PyStreamingSemanticEvaluator {
     #[new]
-    #[pyo3(signature = (n_classes, parity_mode, *, ignore_label = None))]
-    fn new(n_classes: u32, parity_mode: &str, ignore_label: Option<u32>) -> PyResult<Self> {
+    #[pyo3(signature = (n_classes, parity_mode, *, ignore_label = None, rank_id = None))]
+    fn new(
+        py: Python<'_>,
+        n_classes: u32,
+        parity_mode: &str,
+        ignore_label: Option<u32>,
+        rank_id: Option<u32>,
+    ) -> PyResult<Self> {
         if n_classes == 0 {
             return Err(PyValueError::new_err(
                 "StreamingSemanticEvaluator requires n_classes >= 1",
             ));
         }
         let mode = parse_parity_mode(parity_mode)?;
-        Ok(Self {
-            inner: StreamingSemanticEvaluator::new(n_classes, ignore_label, mode),
-        })
+        let mut inner = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode);
+        if let Some(rid) = rank_id {
+            inner = inner
+                .with_rank(rid)
+                .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        }
+        Ok(Self { inner })
     }
 
     /// Number of `update` calls accepted so far.
@@ -463,16 +484,19 @@ impl PyStreamingSemanticEvaluator {
         let gt_shape = gt_view.shape();
         let dt_shape = dt_view.shape();
         if gt_shape != dt_shape {
-            return Err(semantic_error_to_pyerr(&SemanticError::ShapeMismatch {
-                image_id,
-                gt_shape: (gt_shape[0] as u32, gt_shape[1] as u32),
-                dt_shape: (dt_shape[0] as u32, dt_shape[1] as u32),
-            }));
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::ShapeMismatch {
+                    image_id,
+                    gt_shape: (gt_shape[0] as u32, gt_shape[1] as u32),
+                    dt_shape: (dt_shape[0] as u32, dt_shape[1] as u32),
+                },
+            ));
         }
         let gt_buf: Vec<u32> = gt_view.iter().copied().collect();
         let dt_buf: Vec<u32> = dt_view.iter().copied().collect();
         py.detach(move || self.inner.update(image_id, &gt_buf, &dt_buf))
-            .map_err(|e| semantic_error_to_pyerr(&e))?;
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
         Ok(())
     }
 
@@ -495,6 +519,69 @@ impl PyStreamingSemanticEvaluator {
         let consumed = std::mem::replace(&mut self.inner, placeholder);
         let summary = py.detach(move || consumed.finalize());
         PySemanticSummary { inner: summary }
+    }
+
+    /// Serialize the current state to an opaque byte blob (ADR-0032).
+    /// Non-consuming; the evaluator stays usable for further `update`
+    /// calls. Mirrors `vernier.instance.StreamingEvaluator.to_partial`.
+    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let bytes = py
+            .detach(|| self.inner.snapshot_to_partial())
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Consume the evaluator's internal state and produce a partial
+    /// blob (ADR-0032). The evaluator is reset (same shape, zero
+    /// accumulation) after this call; the consumed state is in the
+    /// returned bytes.
+    fn finalize_to_partial<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let placeholder =
+            StreamingSemanticEvaluator::new(self.inner.n_classes(), None, ParityMode::default());
+        let consumed = std::mem::replace(&mut self.inner, placeholder);
+        let bytes = py
+            .detach(move || consumed.finalize_to_partial())
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Ok(PyBytes::new(py, &bytes))
+    }
+
+    /// Construct an evaluator equivalent to a batch run over the
+    /// union of all partials' submitted images (ADR-0032). Confusion-
+    /// matrix sum is integer-additive — strict-mode merge is
+    /// unconditionally bit-equal to a batch run over the union.
+    #[classmethod]
+    #[pyo3(signature = (n_classes, partials, parity_mode, *, ignore_label = None))]
+    fn from_partials(
+        _cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        n_classes: u32,
+        partials: &Bound<'_, pyo3::types::PyList>,
+        parity_mode: &str,
+        ignore_label: Option<u32>,
+    ) -> PyResult<Self> {
+        if n_classes == 0 {
+            return Err(PyValueError::new_err(
+                "StreamingSemanticEvaluator requires n_classes >= 1",
+            ));
+        }
+        let mode = parse_parity_mode(parity_mode)?;
+        let owned: Vec<Vec<u8>> = partials
+            .iter()
+            .map(|item| {
+                item.cast::<PyBytes>()
+                    .map_err(|_| {
+                        PyValueError::new_err("from_partials expects a list of bytes objects")
+                    })
+                    .map(|b| b.as_bytes().to_vec())
+            })
+            .collect::<PyResult<_>>()?;
+        let inner = py
+            .detach(move || {
+                let slices: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
+                StreamingSemanticEvaluator::from_partials(n_classes, ignore_label, mode, &slices)
+            })
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Ok(Self { inner })
     }
 
     fn __repr__(&self) -> String {

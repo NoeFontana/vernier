@@ -21,6 +21,11 @@
 //!
 //! [instance streaming evaluator's]: vernier_core::stream::StreamingEvaluator
 
+use std::collections::HashSet;
+
+use vernier_partial::RankId;
+
+use crate::distributed::{encode, semantic_expectation, EncodeInput, SemanticMergeAccumulator};
 use crate::error::{ImageId, SemanticError};
 use crate::kernel::{accumulate_confusion, ConfusionMatrix};
 use crate::parity::ParityMode;
@@ -43,6 +48,14 @@ pub struct StreamingSemanticEvaluator {
     ignore_label: Option<u32>,
     parity_mode: ParityMode,
     n_images: usize,
+    /// Image ids passed to [`Self::update`]. Used by the partition-
+    /// disjointness check at merge time (ADR-0032). Memory cost is
+    /// 8 bytes per image; negligible at any realistic scale.
+    seen_images: HashSet<i64>,
+    /// Optional rank identifier carried in the partial wire header.
+    /// `None` for single-rank flows; `Some(_)` is required for
+    /// strict-mode merge across ranks.
+    rank_id: Option<RankId>,
 }
 
 impl StreamingSemanticEvaluator {
@@ -62,7 +75,28 @@ impl StreamingSemanticEvaluator {
             ignore_label,
             parity_mode,
             n_images: 0,
+            seen_images: HashSet::new(),
+            rank_id: None,
         }
+    }
+
+    /// Set the rank identifier carried in the partial wire header.
+    /// Required (non-`None`) for strict-mode cross-rank merge per
+    /// ADR-0032. Calling this after the first
+    /// [`update`](Self::update) is a programming error — the rank
+    /// id is a construction-time property.
+    pub fn with_rank(mut self, rank_id: RankId) -> Result<Self, SemanticError> {
+        if self.n_images > 0 {
+            return Err(SemanticError::Partial(
+                vernier_partial::PartialError::Format {
+                    kind: vernier_partial::PartialFormatErrorKind::RkyvDecode {
+                        detail: "with_rank must be called before the first update()".to_string(),
+                    },
+                },
+            ));
+        }
+        self.rank_id = Some(rank_id);
+        Ok(self)
     }
 
     /// Number of `update` calls accepted so far. Useful for progress
@@ -111,6 +145,7 @@ impl StreamingSemanticEvaluator {
         }
         accumulate_confusion(gt, dt, self.ignore_label, &mut self.confusion);
         self.n_images += 1;
+        self.seen_images.insert(image_id);
         Ok(())
     }
 
@@ -129,6 +164,59 @@ impl StreamingSemanticEvaluator {
     /// summary (no clone).
     pub fn finalize(self) -> SemanticSummary {
         summarize(self.confusion, self.parity_mode)
+    }
+
+    fn encode_input(&self) -> EncodeInput<'_> {
+        EncodeInput {
+            confusion: &self.confusion,
+            ignore_label: self.ignore_label,
+            parity_mode: self.parity_mode,
+            rank_id: self.rank_id,
+            n_images: self.n_images as u32,
+            seen_images: &self.seen_images,
+        }
+    }
+
+    /// Serialize the current evaluator state to an opaque byte blob
+    /// (ADR-0032). The evaluator stays usable for further `update`
+    /// calls; for the consuming form use [`Self::finalize_to_partial`].
+    pub fn snapshot_to_partial(&self) -> Result<Vec<u8>, SemanticError> {
+        Ok(encode(&self.encode_input())?)
+    }
+
+    /// Consuming variant of [`Self::snapshot_to_partial`] — the rank-
+    /// local final state in a distributed-eval gather (ADR-0032).
+    pub fn finalize_to_partial(self) -> Result<Vec<u8>, SemanticError> {
+        Ok(encode(&self.encode_input())?)
+    }
+
+    /// Construct an evaluator equivalent to a batch run over the
+    /// union of all partials' submitted images (ADR-0032).
+    ///
+    /// All partials must share `n_classes`, `ignore_label`,
+    /// `parity_mode`. In strict mode every partial must declare a
+    /// distinct `rank_id`. Image-id sets across partials must be
+    /// disjoint. Confusion matrices sum element-wise — strict-mode
+    /// merge is unconditionally bit-equal to a batch run over the
+    /// union (no `(score, rank_id, local_position)` tiebreak needed;
+    /// semantic doesn't fold detections by score).
+    pub fn from_partials(
+        n_classes: u32,
+        ignore_label: Option<u32>,
+        parity_mode: ParityMode,
+        partials: &[&[u8]],
+    ) -> Result<Self, SemanticError> {
+        let mut ev = Self::new(n_classes, ignore_label, parity_mode);
+        let strict = parity_mode == ParityMode::Strict;
+        let mut acc = SemanticMergeAccumulator::new(n_classes, strict);
+        let exp = semantic_expectation(n_classes, ignore_label, parity_mode);
+        for bytes in partials {
+            vernier_partial::with_validated_envelope(bytes, &exp, |view| acc.ingest(&view))?;
+        }
+        ev.confusion = acc.confusion;
+        ev.n_images = acc.n_images as usize;
+        ev.seen_images = acc.base.image_ids().collect();
+        Ok(ev)
     }
 }
 

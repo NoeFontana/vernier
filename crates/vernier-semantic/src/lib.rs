@@ -38,6 +38,7 @@
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+pub mod distributed;
 pub mod error;
 pub mod kernel;
 pub mod parity;

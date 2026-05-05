@@ -1573,6 +1573,7 @@ dependencies = [
  "thread-priority",
  "vernier-core",
  "vernier-panoptic",
+ "vernier-partial",
  "vernier-semantic",
 ]
 
@@ -1611,12 +1612,15 @@ dependencies = [
 name = "vernier-semantic"
 version = "0.0.1"
 dependencies = [
+ "blake3",
  "png",
  "proptest",
+ "rkyv",
  "serde",
  "serde_json",
  "thiserror",
  "vernier-core",
+ "vernier-partial",
 ]
 
 [[package]]

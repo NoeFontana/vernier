@@ -37,6 +37,11 @@ vernier-panoptic = { path = "../vernier-panoptic", version = "0.0.1" }
 # documented first asymmetry vs. panoptic). The FFI layer is the only
 # place the three paradigms (instance / panoptic / semantic) meet.
 vernier-semantic = { path = "../vernier-semantic", version = "0.0.1" }
+# Shared partial wire envelope (ADR-0032). The FFI re-uses the leaf
+# crate's typed errors directly so the five Python exception classes
+# (PartialFormatMismatch, PartialDatasetMismatch, etc.) map back to
+# the same shape regardless of which paradigm produced them.
+vernier-partial = { path = "../vernier-partial", version = "0.0.1" }
 pyo3.workspace = true
 numpy.workspace = true
 # Arrow columnar buffers for ADR-0019 result tables. Subset is

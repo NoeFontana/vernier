@@ -1331,65 +1331,117 @@ fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
             PyNotImplementedError::new_err(feature.to_string())
         }
         EvalError::PartialFormatMismatch { ref kind } => {
-            let exc = PartialFormatMismatch::new_err(format!("{e}"));
-            // `kind.tag()` is the canonical snake_case discriminant;
-            // exhaustive over PartialFormatErrorKind so adding a
-            // variant fails compilation rather than silently falling
-            // through to a default tag.
-            if let Err(err) = exc.value(py).setattr("kind", kind.tag()) {
-                return err;
-            }
-            exc
+            partial_format_to_pyerr(py, format!("{e}"), kind)
         }
         EvalError::PartialDatasetMismatch { expected, actual } => {
-            let exc = PartialDatasetMismatch::new_err(format!("{e}"));
-            let value = exc.value(py);
-            if let Err(err) = value.setattr("expected", PyBytes::new(py, &expected)) {
-                return err;
-            }
-            if let Err(err) = value.setattr("actual", PyBytes::new(py, &actual)) {
-                return err;
-            }
-            exc
+            partial_hash_mismatch_to_pyerr(py, format!("{e}"), &expected, &actual, true)
         }
         EvalError::PartialParamsMismatch { expected, actual } => {
-            let exc = PartialParamsMismatch::new_err(format!("{e}"));
-            let value = exc.value(py);
-            if let Err(err) = value.setattr("expected", PyBytes::new(py, &expected)) {
-                return err;
-            }
-            if let Err(err) = value.setattr("actual", PyBytes::new(py, &actual)) {
-                return err;
-            }
-            exc
+            partial_hash_mismatch_to_pyerr(py, format!("{e}"), &expected, &actual, false)
         }
         EvalError::PartialPartitionOverlap {
             rank_a,
             rank_b,
             image_id,
-        } => {
-            let exc = PartialPartitionOverlap::new_err(format!("{e}"));
-            let value = exc.value(py);
-            if let Err(err) = value.setattr("rank_a", rank_a) {
-                return err;
-            }
-            if let Err(err) = value.setattr("rank_b", rank_b) {
-                return err;
-            }
-            if let Err(err) = value.setattr("image_id", image_id) {
-                return err;
-            }
-            exc
-        }
+        } => partial_partition_overlap_to_pyerr(py, format!("{e}"), rank_a, rank_b, image_id),
         EvalError::PartialRankCollision { rank_id } => {
-            let exc = PartialRankCollision::new_err(format!("{e}"));
-            if let Err(err) = exc.value(py).setattr("rank_id", rank_id) {
-                return err;
-            }
-            exc
+            partial_rank_collision_to_pyerr(py, format!("{e}"), rank_id)
         }
         other => PyValueError::new_err(format!("{other}")),
     }
+}
+
+/// Map a leaf [`vernier_partial::PartialError`] to its Python
+/// exception class. Shared between [`eval_error_to_pyerr`] (instance)
+/// and [`crate::semantic::semantic_error_to_pyerr`] (semantic) so a
+/// caller can `try/except vernier.PartialFormatMismatch` regardless
+/// of which paradigm produced the error.
+pub(crate) fn partial_error_to_pyerr(py: Python<'_>, err: &vernier_partial::PartialError) -> PyErr {
+    use vernier_partial::PartialError;
+    let msg = format!("{err}");
+    match err {
+        PartialError::Format { kind } => partial_format_to_pyerr(py, msg, kind),
+        PartialError::DatasetMismatch { expected, actual } => {
+            partial_hash_mismatch_to_pyerr(py, msg, expected, actual, true)
+        }
+        PartialError::ParamsMismatch { expected, actual } => {
+            partial_hash_mismatch_to_pyerr(py, msg, expected, actual, false)
+        }
+        PartialError::PartitionOverlap {
+            rank_a,
+            rank_b,
+            image_id,
+        } => partial_partition_overlap_to_pyerr(py, msg, *rank_a, *rank_b, *image_id),
+        PartialError::RankCollision { rank_id } => {
+            partial_rank_collision_to_pyerr(py, msg, *rank_id)
+        }
+    }
+}
+
+fn partial_format_to_pyerr(
+    py: Python<'_>,
+    msg: String,
+    kind: &vernier_partial::PartialFormatErrorKind,
+) -> PyErr {
+    let exc = PartialFormatMismatch::new_err(msg);
+    // `kind.tag()` is the canonical snake_case discriminant;
+    // exhaustive over PartialFormatErrorKind so adding a variant
+    // fails compilation rather than silently falling through.
+    if let Err(err) = exc.value(py).setattr("kind", kind.tag()) {
+        return err;
+    }
+    exc
+}
+
+fn partial_hash_mismatch_to_pyerr(
+    py: Python<'_>,
+    msg: String,
+    expected: &[u8; 32],
+    actual: &[u8; 32],
+    is_dataset: bool,
+) -> PyErr {
+    let exc = if is_dataset {
+        PartialDatasetMismatch::new_err(msg)
+    } else {
+        PartialParamsMismatch::new_err(msg)
+    };
+    let value = exc.value(py);
+    if let Err(err) = value.setattr("expected", PyBytes::new(py, expected)) {
+        return err;
+    }
+    if let Err(err) = value.setattr("actual", PyBytes::new(py, actual)) {
+        return err;
+    }
+    exc
+}
+
+fn partial_partition_overlap_to_pyerr(
+    py: Python<'_>,
+    msg: String,
+    rank_a: u32,
+    rank_b: u32,
+    image_id: i64,
+) -> PyErr {
+    let exc = PartialPartitionOverlap::new_err(msg);
+    let value = exc.value(py);
+    if let Err(err) = value.setattr("rank_a", rank_a) {
+        return err;
+    }
+    if let Err(err) = value.setattr("rank_b", rank_b) {
+        return err;
+    }
+    if let Err(err) = value.setattr("image_id", image_id) {
+        return err;
+    }
+    exc
+}
+
+fn partial_rank_collision_to_pyerr(py: Python<'_>, msg: String, rank_id: u32) -> PyErr {
+    let exc = PartialRankCollision::new_err(msg);
+    if let Err(err) = exc.value(py).setattr("rank_id", rank_id) {
+        return err;
+    }
+    exc
 }
 
 /// Kernel-erased wrapper around a [`StreamingEvaluator<K>`].
