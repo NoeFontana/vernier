@@ -41,13 +41,13 @@
 //!   `iscrowd=1` are silently dropped, matching pycocotools' overwrite.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::EvalError;
 use crate::parity::ParityMode;
-use crate::segmentation::Segmentation;
+use crate::segmentation::{Segmentation, SegmentationRleCounts};
 
 /// Newtype for image ids. Sourced from the JSON `id` field; preserved
 /// verbatim. Crowd_region's image with `id = 1` becomes
@@ -466,6 +466,13 @@ pub struct CocoDataset {
     by_category: HashMap<CategoryId, Vec<usize>>,
     by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>>,
     federated: Option<FederatedMetadata>,
+    /// 32-byte BLAKE3 fingerprint of the dataset's canonical form.
+    /// Cached lazily on first call to [`Self::dataset_hash`]; carried
+    /// in distributed-eval partial headers (ADR-0031). Wrapped in
+    /// `Arc<OnceLock>` so cheap clones share the same cache, matching
+    /// the existing Arc-shared layout for `images` / `categories` /
+    /// `annotations`.
+    cached_hash: Arc<OnceLock<[u8; 32]>>,
 }
 
 impl CocoDataset {
@@ -526,6 +533,7 @@ impl CocoDataset {
             by_category,
             by_image_cat,
             federated: None,
+            cached_hash: Arc::new(OnceLock::new()),
         })
     }
 
@@ -787,6 +795,296 @@ impl CocoDataset {
         self.by_image_cat
             .get(&(image, cat))
             .map_or(&[][..], Vec::as_slice)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// dataset_hash — canonical-form fingerprint for ADR-0031 partials.
+//
+// The hash is the BLAKE3 digest of a deterministic byte stream built
+// from the dataset's images + categories + annotations + federated
+// metadata. Independent of input order: each section is sorted by id
+// before hashing. The canonical form is the load-bearing wire-format
+// invariant that makes "this partial was computed against the same GT
+// I have" a strict, refusable check; format_version bumps when the
+// canonical form changes (per ADR-0031 §"Wire format" backward-compat
+// rules).
+//
+// Domain separators (4-byte ASCII tags) precede each section so a
+// rearranged stream cannot collide with the canonical one.
+// ---------------------------------------------------------------------------
+
+/// Domain-separated section tag for the canonical-form stream.
+const HASH_TAG_DATASET: &[u8; 4] = b"DSET";
+const HASH_TAG_IMAGES: &[u8; 4] = b"IMGS";
+const HASH_TAG_CATEGORIES: &[u8; 4] = b"CATS";
+const HASH_TAG_ANNOTATIONS: &[u8; 4] = b"ANNS";
+const HASH_TAG_FEDERATED: &[u8; 4] = b"FEDM";
+
+/// Bumped when the canonical-form layout changes. Read into the
+/// stream once, before any section, so a v1 hash can never collide
+/// with a v2 hash even on identical underlying data.
+const HASH_CANONICAL_VERSION: u8 = 1;
+
+#[inline]
+fn hash_u8(h: &mut blake3::Hasher, v: u8) {
+    h.update(&[v]);
+}
+#[inline]
+fn hash_u32(h: &mut blake3::Hasher, v: u32) {
+    h.update(&v.to_le_bytes());
+}
+#[inline]
+fn hash_i64(h: &mut blake3::Hasher, v: i64) {
+    h.update(&v.to_le_bytes());
+}
+#[inline]
+fn hash_u64(h: &mut blake3::Hasher, v: u64) {
+    h.update(&v.to_le_bytes());
+}
+#[inline]
+fn hash_f64(h: &mut blake3::Hasher, v: f64) {
+    // Bit-exact representation; canonical for finite values. NaN
+    // payloads matter (two NaNs with different bits hash differently);
+    // the dataset loader rejects non-finite area / bbox / keypoints
+    // upstream so the surface here is f64s the user actually trusts.
+    h.update(&v.to_bits().to_le_bytes());
+}
+#[inline]
+fn hash_bool(h: &mut blake3::Hasher, v: bool) {
+    hash_u8(h, u8::from(v));
+}
+#[inline]
+fn hash_bytes(h: &mut blake3::Hasher, bytes: &[u8]) {
+    hash_u64(h, bytes.len() as u64);
+    h.update(bytes);
+}
+#[inline]
+fn hash_string(h: &mut blake3::Hasher, s: &str) {
+    hash_bytes(h, s.as_bytes());
+}
+#[inline]
+fn hash_opt_string(h: &mut blake3::Hasher, opt: Option<&str>) {
+    match opt {
+        None => hash_u8(h, 0),
+        Some(s) => {
+            hash_u8(h, 1);
+            hash_string(h, s);
+        }
+    }
+}
+#[inline]
+fn hash_opt_bool(h: &mut blake3::Hasher, opt: Option<bool>) {
+    match opt {
+        None => hash_u8(h, 0),
+        Some(b) => {
+            hash_u8(h, 1);
+            hash_bool(h, b);
+        }
+    }
+}
+#[inline]
+fn hash_opt_u32(h: &mut blake3::Hasher, opt: Option<u32>) {
+    match opt {
+        None => hash_u8(h, 0),
+        Some(v) => {
+            hash_u8(h, 1);
+            hash_u32(h, v);
+        }
+    }
+}
+
+fn hash_bbox(h: &mut blake3::Hasher, b: &Bbox) {
+    hash_f64(h, b.x);
+    hash_f64(h, b.y);
+    hash_f64(h, b.w);
+    hash_f64(h, b.h);
+}
+
+fn hash_segmentation(h: &mut blake3::Hasher, seg: Option<&Segmentation>) {
+    match seg {
+        None => hash_u8(h, 0),
+        Some(Segmentation::Polygons(polys)) => {
+            hash_u8(h, 1);
+            hash_u64(h, polys.len() as u64);
+            for poly in polys {
+                hash_u64(h, poly.len() as u64);
+                for &v in poly {
+                    hash_f64(h, v);
+                }
+            }
+        }
+        Some(Segmentation::Rle(rle)) => {
+            let [rh, rw] = rle.size;
+            match &rle.counts {
+                SegmentationRleCounts::Compressed(s) => {
+                    hash_u8(h, 2);
+                    hash_u32(h, rh);
+                    hash_u32(h, rw);
+                    hash_string(h, s);
+                }
+                SegmentationRleCounts::Uncompressed(counts) => {
+                    hash_u8(h, 3);
+                    hash_u32(h, rh);
+                    hash_u32(h, rw);
+                    hash_u64(h, counts.len() as u64);
+                    for &c in counts {
+                        hash_u32(h, c);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn hash_opt_keypoints(h: &mut blake3::Hasher, kps: Option<&[f64]>) {
+    match kps {
+        None => hash_u8(h, 0),
+        Some(kps) => {
+            hash_u8(h, 1);
+            hash_u64(h, kps.len() as u64);
+            for &v in kps {
+                hash_f64(h, v);
+            }
+        }
+    }
+}
+
+fn hash_image_meta(h: &mut blake3::Hasher, im: &ImageMeta) {
+    hash_i64(h, im.id.0);
+    hash_u32(h, im.width);
+    hash_u32(h, im.height);
+    hash_opt_string(h, im.file_name.as_deref());
+}
+
+fn hash_category_meta(h: &mut blake3::Hasher, c: &CategoryMeta) {
+    hash_i64(h, c.id.0);
+    hash_string(h, &c.name);
+    hash_opt_string(h, c.supercategory.as_deref());
+}
+
+fn hash_coco_annotation(h: &mut blake3::Hasher, a: &CocoAnnotation) {
+    hash_i64(h, a.id.0);
+    hash_i64(h, a.image_id.0);
+    hash_i64(h, a.category_id.0);
+    hash_f64(h, a.area);
+    hash_bool(h, a.is_crowd);
+    hash_opt_bool(h, a.ignore_flag);
+    hash_bbox(h, &a.bbox);
+    hash_segmentation(h, a.segmentation.as_ref());
+    hash_opt_keypoints(h, a.keypoints.as_deref());
+    hash_opt_u32(h, a.num_keypoints);
+}
+
+fn hash_federated(h: &mut blake3::Hasher, fed: &FederatedMetadata) {
+    h.update(HASH_TAG_FEDERATED);
+
+    // category_frequency: sort by category id, write (id, letter byte).
+    let mut freq_pairs: Vec<(i64, &Frequency)> = fed
+        .category_frequency
+        .iter()
+        .map(|(k, v)| (k.0, v))
+        .collect();
+    freq_pairs.sort_unstable_by_key(|(k, _)| *k);
+    hash_u64(h, freq_pairs.len() as u64);
+    for (cid, freq) in freq_pairs {
+        hash_i64(h, cid);
+        hash_u8(
+            h,
+            match freq {
+                Frequency::Rare => b'r',
+                Frequency::Common => b'c',
+                Frequency::Frequent => b'f',
+            },
+        );
+    }
+
+    // pos / neg / not_exhaustive: each is HashMap<ImageId, HashSet<CategoryId>>.
+    // Hash all three sections via the same canonical form: sort by image id,
+    // then for each image sort the category ids ascending and write count + ids.
+    type FedSection<'a> = (&'a [u8; 3], &'a HashMap<ImageId, HashSet<CategoryId>>);
+    let sections: [FedSection<'_>; 3] = [
+        (b"POS", &fed.pos_category_ids),
+        (b"NEG", &fed.neg_category_ids),
+        (b"NEX", &fed.not_exhaustive_category_ids),
+    ];
+    for (tag, map) in sections {
+        h.update(tag);
+        let mut entries: Vec<(i64, Vec<i64>)> = map
+            .iter()
+            .map(|(image_id, cats)| {
+                let mut cat_ids: Vec<i64> = cats.iter().map(|c| c.0).collect();
+                cat_ids.sort_unstable();
+                (image_id.0, cat_ids)
+            })
+            .collect();
+        entries.sort_unstable_by_key(|(image_id, _)| *image_id);
+        hash_u64(h, entries.len() as u64);
+        for (image_id, cat_ids) in entries {
+            hash_i64(h, image_id);
+            hash_u64(h, cat_ids.len() as u64);
+            for cid in cat_ids {
+                hash_i64(h, cid);
+            }
+        }
+    }
+}
+
+impl CocoDataset {
+    /// 32-byte BLAKE3 fingerprint of this dataset's canonical form.
+    /// Stable across input orderings: images, categories, annotations
+    /// are sorted by id before hashing. Lazily cached on first call;
+    /// shared across [`Clone`]s via the underlying `Arc<OnceLock>`.
+    ///
+    /// Carried in distributed-eval partial headers (ADR-0031); a
+    /// receiving rank refuses to merge partials whose `dataset_hash`
+    /// disagrees with its live dataset's.
+    pub fn dataset_hash(&self) -> [u8; 32] {
+        *self.cached_hash.get_or_init(|| self.compute_dataset_hash())
+    }
+
+    fn compute_dataset_hash(&self) -> [u8; 32] {
+        let mut h = blake3::Hasher::new();
+        h.update(HASH_TAG_DATASET);
+        hash_u8(&mut h, HASH_CANONICAL_VERSION);
+
+        // Images — sorted by id.
+        h.update(HASH_TAG_IMAGES);
+        let mut image_order: Vec<usize> = (0..self.images.len()).collect();
+        image_order.sort_by_key(|&i| self.images[i].id.0);
+        hash_u64(&mut h, image_order.len() as u64);
+        for &i in &image_order {
+            hash_image_meta(&mut h, &self.images[i]);
+        }
+
+        // Categories — sorted by id.
+        h.update(HASH_TAG_CATEGORIES);
+        let mut category_order: Vec<usize> = (0..self.categories.len()).collect();
+        category_order.sort_by_key(|&i| self.categories[i].id.0);
+        hash_u64(&mut h, category_order.len() as u64);
+        for &i in &category_order {
+            hash_category_meta(&mut h, &self.categories[i]);
+        }
+
+        // Annotations — sorted by id.
+        h.update(HASH_TAG_ANNOTATIONS);
+        let mut ann_order: Vec<usize> = (0..self.annotations.len()).collect();
+        ann_order.sort_by_key(|&i| self.annotations[i].id.0);
+        hash_u64(&mut h, ann_order.len() as u64);
+        for &i in &ann_order {
+            hash_coco_annotation(&mut h, &self.annotations[i]);
+        }
+
+        // Federated metadata, when present (LVIS path).
+        match self.federated.as_ref() {
+            None => hash_u8(&mut h, 0),
+            Some(fed) => {
+                hash_u8(&mut h, 1);
+                hash_federated(&mut h, fed);
+            }
+        }
+
+        *h.finalize().as_bytes()
     }
 }
 
@@ -1992,5 +2290,217 @@ mod tests {
         }"#;
         let err = CocoDataset::from_lvis_json_bytes(BAD.as_bytes()).unwrap_err();
         assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
+    }
+
+    // -----------------------------------------------------------------
+    // dataset_hash stability tests (ADR-0031)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn dataset_hash_is_stable_for_equal_inputs() {
+        let a = load_crowd_region();
+        let b = load_crowd_region();
+        assert_eq!(a.dataset_hash(), b.dataset_hash());
+    }
+
+    #[test]
+    fn dataset_hash_caches_via_arc_clone() {
+        // The cache is `Arc<OnceLock>` so a clone shares the slot. The
+        // first call on either side populates it; the second call on
+        // the clone should observe the cached value (i.e., equal).
+        let a = load_crowd_region();
+        let b = a.clone();
+        let h1 = a.dataset_hash();
+        let h2 = b.dataset_hash();
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn dataset_hash_invariant_to_image_order() {
+        // Two datasets that differ only in image declaration order
+        // must hash identically.
+        let order_a = r#"{
+            "images": [
+                {"id": 1, "width": 10, "height": 10},
+                {"id": 2, "width": 20, "height": 20}
+            ],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "x"}]
+        }"#;
+        let order_b = r#"{
+            "images": [
+                {"id": 2, "width": 20, "height": 20},
+                {"id": 1, "width": 10, "height": 10}
+            ],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "x"}]
+        }"#;
+        let a = CocoDataset::from_json_bytes(order_a.as_bytes()).unwrap();
+        let b = CocoDataset::from_json_bytes(order_b.as_bytes()).unwrap();
+        assert_eq!(a.dataset_hash(), b.dataset_hash());
+    }
+
+    #[test]
+    fn dataset_hash_invariant_to_annotation_order() {
+        let order_a = r#"{
+            "images": [{"id": 1, "width": 200, "height": 200}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0},
+                {"id": 2, "image_id": 1, "category_id": 1,
+                 "bbox": [10, 10, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "x"}]
+        }"#;
+        let order_b = r#"{
+            "images": [{"id": 1, "width": 200, "height": 200}],
+            "annotations": [
+                {"id": 2, "image_id": 1, "category_id": 1,
+                 "bbox": [10, 10, 5, 5], "area": 25, "iscrowd": 0},
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "x"}]
+        }"#;
+        let a = CocoDataset::from_json_bytes(order_a.as_bytes()).unwrap();
+        let b = CocoDataset::from_json_bytes(order_b.as_bytes()).unwrap();
+        assert_eq!(a.dataset_hash(), b.dataset_hash());
+    }
+
+    #[test]
+    fn dataset_hash_changes_when_bbox_changes_by_one_pixel() {
+        let base = r#"{
+            "images": [{"id": 1, "width": 200, "height": 200}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [10, 10, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "x"}]
+        }"#;
+        let shifted = r#"{
+            "images": [{"id": 1, "width": 200, "height": 200}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [11, 10, 5, 5], "area": 25, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "x"}]
+        }"#;
+        let a = CocoDataset::from_json_bytes(base.as_bytes()).unwrap();
+        let b = CocoDataset::from_json_bytes(shifted.as_bytes()).unwrap();
+        assert_ne!(a.dataset_hash(), b.dataset_hash());
+    }
+
+    proptest! {
+        #[test]
+        fn dataset_hash_invariant_under_id_shuffle(
+            ids in proptest::collection::vec(1i64..1000, 1..16),
+        ) {
+            // Construct two datasets whose images differ only in
+            // declaration order; assert hashes match.
+            let mut unique: Vec<i64> = ids;
+            unique.sort_unstable();
+            unique.dedup();
+            prop_assume!(!unique.is_empty());
+
+            let images_in: Vec<ImageMeta> = unique
+                .iter()
+                .map(|&id| ImageMeta {
+                    id: ImageId(id),
+                    width: 100,
+                    height: 100,
+                    file_name: None,
+                })
+                .collect();
+            let mut images_shuffled = images_in.clone();
+            images_shuffled.reverse();
+
+            let categories = vec![CategoryMeta {
+                id: CategoryId(1),
+                name: "x".to_string(),
+                supercategory: None,
+            }];
+            let annotations: Vec<CocoAnnotation> = unique
+                .iter()
+                .enumerate()
+                .map(|(i, &im_id)| CocoAnnotation {
+                    id: AnnId((i as i64) + 1),
+                    image_id: ImageId(im_id),
+                    category_id: CategoryId(1),
+                    area: 25.0,
+                    is_crowd: false,
+                    ignore_flag: None,
+                    bbox: Bbox { x: 0.0, y: 0.0, w: 5.0, h: 5.0 },
+                    segmentation: None,
+                    keypoints: None,
+                    num_keypoints: None,
+                })
+                .collect();
+
+            let a = CocoDataset::from_parts(
+                images_in,
+                annotations.clone(),
+                categories.clone(),
+            ).unwrap();
+            let b = CocoDataset::from_parts(
+                std::mem::take(&mut images_shuffled),
+                annotations,
+                categories,
+            ).unwrap();
+            prop_assert_eq!(a.dataset_hash(), b.dataset_hash());
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // params_hash stability tests (ADR-0031)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn params_hash_is_stable_for_equal_inputs() {
+        use crate::evaluate::OwnedEvaluateParams;
+        let a = OwnedEvaluateParams {
+            iou_thresholds: vec![0.5, 0.55, 0.6],
+            area_ranges: vec![],
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let b = a.clone();
+        assert_eq!(a.params_hash().unwrap(), b.params_hash().unwrap());
+    }
+
+    #[test]
+    fn params_hash_changes_when_thresholds_change() {
+        use crate::evaluate::OwnedEvaluateParams;
+        let a = OwnedEvaluateParams {
+            iou_thresholds: vec![0.5, 0.55, 0.6],
+            area_ranges: vec![],
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let mut b = a.clone();
+        b.iou_thresholds.push(0.65);
+        assert_ne!(a.params_hash().unwrap(), b.params_hash().unwrap());
+    }
+
+    #[test]
+    fn params_hash_changes_when_use_cats_toggles() {
+        use crate::evaluate::OwnedEvaluateParams;
+        let a = OwnedEvaluateParams {
+            iou_thresholds: vec![0.5],
+            area_ranges: vec![],
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let mut b = a.clone();
+        b.use_cats = false;
+        assert_ne!(a.params_hash().unwrap(), b.params_hash().unwrap());
     }
 }
