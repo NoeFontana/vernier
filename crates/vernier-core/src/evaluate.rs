@@ -258,6 +258,30 @@ impl OwnedEvaluateParams {
     }
 }
 
+/// Discriminator for the four kernel families on the IoU axis (per
+/// ADR-0012's iou-type taxonomy). Carried in distributed-eval partials
+/// (ADR-0031) so a head-rank reconstruction refuses to merge bbox and
+/// segm partials silently.
+///
+/// Variant order is **wire-format load-bearing**: the rkyv archived
+/// discriminant is keyed off it. Adding new kernels appends; never
+/// reorder, never remove. Use a new ADR + format-version bump if the
+/// space ever needs to change.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
+)]
+#[rkyv(derive(Debug, PartialEq, Eq))]
+pub enum KernelKind {
+    /// `BboxIou` — axis-aligned box IoU (the default).
+    Bbox,
+    /// `SegmIou` (and `SegmIouCached`) — RLE/polygon mask IoU.
+    Segm,
+    /// `BoundaryIou` (and `BoundaryIouCached`) — boundary-IoU per ADR-0017.
+    Boundary,
+    /// `OksSimilarity` — OKS-based keypoints similarity (ADR-0012).
+    Keypoints,
+}
+
 /// Bridges a [`CocoDataset`] / [`CocoDetections`] cell to a kernel's
 /// annotation type.
 ///
@@ -269,6 +293,12 @@ impl OwnedEvaluateParams {
 /// kernel can't (because [`Similarity`] is dataset-agnostic by design).
 /// `image` carries the `(h, w)` segm impls need for [`crate::Segmentation::to_rle`].
 pub trait EvalKernel: Similarity {
+    /// Discriminator carried in the distributed-eval wire format
+    /// (ADR-0031) so heterogeneous partials are refused at merge time.
+    /// Required (no default): every kernel must declare its kind.
+    fn kind(&self) -> KernelKind;
+
+
     /// Build the kernel's GT annotation slice for one `(image, category)`
     /// cell. `indices` selects from `gt_anns` in the order the cell
     /// matcher will see.
@@ -322,6 +352,10 @@ pub trait EvalKernel: Similarity {
 }
 
 impl EvalKernel for BboxIou {
+    fn kind(&self) -> KernelKind {
+        KernelKind::Bbox
+    }
+
     fn build_gt_anns(
         &self,
         gt_anns: &[CocoAnnotation],
@@ -356,6 +390,10 @@ impl EvalKernel for BboxIou {
 }
 
 impl EvalKernel for SegmIou {
+    fn kind(&self) -> KernelKind {
+        KernelKind::Segm
+    }
+
     fn build_gt_anns(
         &self,
         gt_anns: &[CocoAnnotation],
@@ -377,6 +415,10 @@ impl EvalKernel for SegmIou {
 }
 
 impl EvalKernel for BoundaryIou {
+    fn kind(&self) -> KernelKind {
+        KernelKind::Boundary
+    }
+
     fn build_gt_anns(
         &self,
         gt_anns: &[CocoAnnotation],
@@ -398,6 +440,11 @@ impl EvalKernel for BoundaryIou {
 }
 
 impl EvalKernel for OksSimilarity {
+    fn kind(&self) -> KernelKind {
+        KernelKind::Keypoints
+    }
+
+
     fn build_gt_anns(
         &self,
         gt_anns: &[CocoAnnotation],
@@ -992,6 +1039,10 @@ impl Similarity for SegmIouCached<'_> {
 }
 
 impl EvalKernel for SegmIouCached<'_> {
+    fn kind(&self) -> KernelKind {
+        KernelKind::Segm
+    }
+
     fn build_gt_anns(
         &self,
         gt_anns: &[CocoAnnotation],
@@ -1118,6 +1169,10 @@ impl Similarity for BoundaryIouCached<'_> {
 }
 
 impl EvalKernel for BoundaryIouCached<'_> {
+    fn kind(&self) -> KernelKind {
+        KernelKind::Boundary
+    }
+
     fn build_gt_anns(
         &self,
         gt_anns: &[CocoAnnotation],
