@@ -18,9 +18,9 @@ from __future__ import annotations
 from enum import Enum
 
 from vernier import instance, panoptic, semantic
-from vernier._compat import ParityMode
 from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._core import version
+from vernier._types import ParityMode
 from vernier.adapters import patch_pycocotools
 
 __all__ = [

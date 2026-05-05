@@ -12,7 +12,6 @@ from dataclasses import dataclass, field, replace
 from typing import Final, Literal, NoReturn, overload
 
 from vernier._array_types import RLE, Detections, DetectionsInput
-from vernier._compat import ParityMode
 from vernier._confusion import confusion_matrix
 from vernier._core import (
     BackgroundEvaluator,
@@ -45,7 +44,14 @@ from vernier._tide import (
     error_decomposition,
     fp_iou_histogram,
 )
-from vernier._types import EvalResult, TableName, TablesConfig, normalize_tables_arg
+from vernier._types import (
+    DEFAULT_DILATION_RATIO,
+    EvalResult,
+    ParityMode,
+    TableName,
+    TablesConfig,
+    normalize_tables_arg,
+)
 
 __all__ = [
     "RLE",
@@ -95,7 +101,7 @@ class Boundary:
     variant.
     """
 
-    dilation_ratio: float = 0.02
+    dilation_ratio: float = DEFAULT_DILATION_RATIO
 
 
 @dataclass(frozen=True, slots=True)

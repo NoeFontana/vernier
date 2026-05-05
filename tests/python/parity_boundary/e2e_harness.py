@@ -32,7 +32,7 @@ from boundary_iou.coco_instance_api.coco import COCO  # type: ignore[import-not-
 from boundary_iou.coco_instance_api.cocoeval import COCOeval  # type: ignore[import-not-found]
 
 import vernier._core as _vernier_core
-from vernier._compat import DEFAULT_DILATION_RATIO, PARITY_STRICT
+from vernier._types import DEFAULT_DILATION_RATIO, PARITY_STRICT
 
 Impl = Literal["oracle", "vernier"]
 
