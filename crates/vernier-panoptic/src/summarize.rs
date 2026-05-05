@@ -16,7 +16,9 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::attribute::{attribute_image, PqStat};
-use crate::dataset::{CategoryId, ImageEntry, ImageId, PanopticDataset, PanopticPredictions};
+use crate::dataset::{
+    CategoryId, CategoryMeta, ImageEntry, ImageId, PanopticDataset, PanopticPredictions,
+};
 use crate::error::PanopticError;
 use crate::kernel::pq_image_with_id;
 use crate::parity::ParityMode;
@@ -201,6 +203,24 @@ pub fn evaluate(
         }
     }
 
+    summarize_from_acc(acc, &gt.categories, mode, things_stuff_split)
+}
+
+/// Build a [`PanopticSummary`] from an already-aggregated per-category
+/// [`PqStat`] map. The streaming and distributed-merge paths land
+/// here after their own per-image fold (see
+/// [`crate::stream::StreamingPanopticEvaluator`] / [`crate::distributed`]).
+///
+/// `categories` supplies the things/stuff partition for the W4 split.
+/// `mode` controls W6 (strict raises on empty filter; corrected
+/// returns zeros). `things_stuff_split=false` returns `None` for the
+/// per-bucket fields.
+pub fn summarize_from_acc(
+    acc: HashMap<CategoryId, PqStat>,
+    categories: &HashMap<CategoryId, CategoryMeta>,
+    mode: ParityMode,
+    things_stuff_split: bool,
+) -> Result<PanopticSummary, PanopticError> {
     // Per-class summary, sorted by category id (BTreeMap).
     let per_class: BTreeMap<CategoryId, ClassPanopticStats> = acc
         .into_iter()
@@ -213,14 +233,16 @@ pub fn evaluate(
     // Things/stuff (W4).
     let (pq_things, sq_things, rq_things, n_things, pq_stuff, sq_stuff, rq_stuff, n_stuff) =
         if things_stuff_split {
-            let things =
-                average(per_class.iter().filter_map(|(cat, s)| {
-                    gt.categories.get(cat).filter(|m| m.isthing).map(|_| *s)
-                }));
-            let stuff =
-                average(per_class.iter().filter_map(|(cat, s)| {
-                    gt.categories.get(cat).filter(|m| !m.isthing).map(|_| *s)
-                }));
+            let things = average(
+                per_class
+                    .iter()
+                    .filter_map(|(cat, s)| categories.get(cat).filter(|m| m.isthing).map(|_| *s)),
+            );
+            let stuff = average(
+                per_class
+                    .iter()
+                    .filter_map(|(cat, s)| categories.get(cat).filter(|m| !m.isthing).map(|_| *s)),
+            );
             // Things/stuff buckets are independent; an empty things
             // bucket on a stuff-only dataset is a real downstream
             // surface and should not poison the all-bucket result.

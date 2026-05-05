@@ -24,9 +24,11 @@
 
 pub mod attribute;
 pub mod dataset;
+pub mod distributed;
 pub mod error;
 pub mod kernel;
 pub mod parity;
+pub mod stream;
 pub mod summarize;
 
 pub use attribute::{attribute_image, PqStat};

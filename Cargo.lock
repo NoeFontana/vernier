@@ -1589,12 +1589,15 @@ dependencies = [
 name = "vernier-panoptic"
 version = "0.0.1"
 dependencies = [
+ "blake3",
  "png",
  "proptest",
+ "rkyv",
  "serde",
  "serde_json",
  "thiserror",
  "vernier-mask",
+ "vernier-partial",
 ]
 
 [[package]]
