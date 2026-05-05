@@ -118,9 +118,7 @@ pub const AREA_UNBOUNDED: f64 = 1e10;
 /// `index` is the position on the `Accumulated` A-axis the resulting
 /// [`PerImageEval`] feeds into; matched at summarize time against
 /// [`crate::AreaRng::index`].
-#[derive(
-    Debug, Clone, Copy, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct AreaRange {
     /// A-axis position. `0` is conventionally the `all` bucket, matching
@@ -277,11 +275,10 @@ impl OwnedEvaluateParams {
     /// reasons `to_bytes` itself fails (allocator OOM); we map it to
     /// the existing variant rather than introducing a new one.
     pub fn params_hash(&self) -> Result<[u8; 32], EvalError> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(self).map_err(|e| {
-            EvalError::InvalidConfig {
+        let bytes =
+            rkyv::to_bytes::<rkyv::rancor::Error>(self).map_err(|e| EvalError::InvalidConfig {
                 detail: format!("rkyv serialization of OwnedEvaluateParams failed: {e}"),
-            }
-        })?;
+            })?;
         Ok(*blake3::hash(&bytes).as_bytes())
     }
 }
@@ -325,7 +322,6 @@ pub trait EvalKernel: Similarity {
     /// (ADR-0031) so heterogeneous partials are refused at merge time.
     /// Required (no default): every kernel must declare its kind.
     fn kind(&self) -> KernelKind;
-
 
     /// Build the kernel's GT annotation slice for one `(image, category)`
     /// cell. `indices` selects from `gt_anns` in the order the cell
@@ -471,7 +467,6 @@ impl EvalKernel for OksSimilarity {
     fn kind(&self) -> KernelKind {
         KernelKind::Keypoints
     }
-
 
     fn build_gt_anns(
         &self,
