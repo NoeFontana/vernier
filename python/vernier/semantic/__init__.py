@@ -44,6 +44,7 @@ from vernier._core import (
 from vernier._core import (
     StreamingSemanticEvaluator as StreamingEvaluator,
 )
+from vernier._types import ParityMode
 
 __all__ = [
     "ADE20K_IGNORE_LABEL",
@@ -61,12 +62,6 @@ __all__ = [
     "StreamingEvaluator",
     "Summary",
 ]
-
-#: Three-tier parity mode (ADR-0002). The ``aligned`` disposition tier
-#: from the sem-seg quirks survey is output-equivalent to ``strict``
-#: under tolerance and is not a runtime-selectable mode (matches the
-#: existing convention from :mod:`vernier.ParityMode`).
-ParityMode = Literal["strict", "corrected"]
 
 #: Cityscapes ignore-label convention (255). Mirrors
 #: ``vernier_semantic::parity::CITYSCAPES_IGNORE_LABEL``; pinned here

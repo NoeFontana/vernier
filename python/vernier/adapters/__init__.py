@@ -16,7 +16,8 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable, Generator
 
-from vernier._compat import ParityMode, PycocotoolsCOCOeval
+from vernier._compat import PycocotoolsCOCOeval
+from vernier._types import ParityMode
 
 # The original pycocotools class, captured on the first patch and
 # released only when the patch count returns to zero. Per ADR-0007

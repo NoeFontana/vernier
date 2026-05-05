@@ -18,9 +18,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Final, Literal
 
-from vernier._compat import ParityMode
+import numpy as np
 from vernier._core import (
     CocoDataset,
     error_decomposition_bbox,
@@ -30,6 +30,7 @@ from vernier._core import (
     fp_iou_histogram_boundary,
     fp_iou_histogram_segm,
 )
+from vernier._types import ParityMode
 
 if TYPE_CHECKING:
     import numpy as np

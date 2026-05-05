@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from vernier._compat import ParityMode
 from vernier._core import (
     ClassPanopticStats,
     evaluate_panoptic,
@@ -24,6 +23,7 @@ from vernier._core import (
 from vernier._core import (
     PanopticSummary as Summary,
 )
+from vernier._types import ParityMode
 
 __all__ = [
     "ClassPanopticStats",

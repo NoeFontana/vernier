@@ -13,7 +13,7 @@ from typing import Any
 import numpy as np
 import vernier
 import vernier._core as _vernier_core
-from vernier._compat import DEFAULT_DILATION_RATIO, PARITY_STRICT
+from vernier._types import DEFAULT_DILATION_RATIO, PARITY_STRICT
 
 from bench.harness.timing import StageTable
 from bench.runners._protocol import parse_runner_args, stat_names, write_outputs

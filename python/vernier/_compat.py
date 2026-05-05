@@ -34,19 +34,19 @@ from vernier._core import (
     evaluate_keypoints_grid,
     evaluate_segm_grid,
 )
+from vernier._types import (
+    DEFAULT_DILATION_RATIO,
+    PARITY_CORRECTED,
+    PARITY_STRICT,
+    ParityMode,
+)
 
-ParityMode = Literal["strict", "corrected"]
 IouType = Literal["bbox", "segm", "boundary", "keypoints"]
 
-PARITY_STRICT: Final[ParityMode] = "strict"
-PARITY_CORRECTED: Final[ParityMode] = "corrected"
 IOU_BBOX: Final[IouType] = "bbox"
 IOU_SEGM: Final[IouType] = "segm"
 IOU_BOUNDARY: Final[IouType] = "boundary"
 IOU_KEYPOINTS: Final[IouType] = "keypoints"
-# Mirrors `BoundaryIou::Default` in vernier-core (Cheng et al. 2021); the
-# bowenc0221 oracle uses the same value as its `COCOeval` default.
-DEFAULT_DILATION_RATIO: Final[float] = 0.02
 
 # Pycocotools' Params(iouType="bbox") defaults — mirrored verbatim so
 # parity mode "strict" reproduces the upstream constants bit-exactly.

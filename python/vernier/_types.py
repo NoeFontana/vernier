@@ -1,8 +1,12 @@
-"""Public types for the opt-in result-tables surface.
+"""Core public types and result-table surface.
 
-Holds :class:`EvalResult` (cached polars views over the locked-spine
-outputs) and :class:`TablesConfig` (knobs for the expensive tables).
-Lives in its own module so the lazy polars import stays contained:
+Holds :data:`ParityMode` (the three-tier parity selector) and its
+associated constants, as well as :class:`EvalResult` (cached polars
+views over the locked-spine outputs) and :class:`TablesConfig` (knobs
+for the expensive tables).
+
+Lives in its own module so core types are available to all submodules
+without circularity, and so the lazy polars import stays contained:
 ``import vernier`` does not pull in polars; first attribute access on
 :class:`EvalResult` is what triggers it.
 """
@@ -11,12 +15,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from vernier._core import Summary
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker only
     import polars as pl
+
+#: Three-tier parity mode (ADR-0002).
+#:
+#: - ``"strict"`` — bit-exact parity with pycocotools / panopticapi /
+#:   mmsegmentation. Reproduces upstream quirks and floating-point
+#:   accumulation order exactly.
+#: - ``"corrected"`` — the recommended mode for net-new users. Fixes
+#:   documented bugs and precision issues while staying
+#:   output-compatible with the COCO metric definitions.
+ParityMode = Literal["strict", "corrected"]
+
+#: Constant for strict parity mode.
+PARITY_STRICT: Final[ParityMode] = "strict"
+#: Constant for corrected parity mode.
+PARITY_CORRECTED: Final[ParityMode] = "corrected"
+
+#: Default boundary-IoU dilation ratio (0.02). Mirrors
+#: `BoundaryIou::Default` in vernier-core (Cheng et al. 2021); the
+#: bowenc0221 oracle and pycocotools use the same value as their
+#: default.
+DEFAULT_DILATION_RATIO: Final[float] = 0.02
 
 #: The set of result-table identifiers ``Evaluator.evaluate(tables=...)``
 #: accepts. Used in the keyword's :class:`tuple` form

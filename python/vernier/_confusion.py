@@ -11,13 +11,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, NoReturn
 
-from vernier._compat import ParityMode
 from vernier._core import (
     CocoDataset,
     confusion_matrix_bbox,
     confusion_matrix_boundary,
     confusion_matrix_segm,
 )
+from vernier._types import ParityMode
 
 if TYPE_CHECKING:  # pragma: no cover - type-checker only
     import polars as pl
