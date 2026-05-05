@@ -8,6 +8,8 @@
 use thiserror::Error;
 use vernier_mask::MaskError;
 
+use crate::parity::ParityMode;
+
 /// Unified error type for evaluation paths.
 ///
 /// Variants are kept coarse on purpose: each one corresponds to a class
@@ -212,9 +214,10 @@ pub enum EvalError {
 /// validation order in [`crate::distributed::validate_partial`] is
 /// cheapest-first so the kind also indicates how far the validator
 /// got before tripping.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum PartialFormatErrorKind {
     /// Length too short to contain even the header magic.
+    #[error("partial too short: observed {observed} bytes, minimum {minimum}")]
     TooShort {
         /// Length we observed.
         observed: usize,
@@ -222,11 +225,13 @@ pub enum PartialFormatErrorKind {
         minimum: usize,
     },
     /// Magic-bytes prefix didn't match the expected `b"VRPS"` tag.
+    #[error("wrong magic bytes: expected \"VRPS\", got {found:02x?}")]
     WrongMagic {
         /// First four bytes we found.
         found: [u8; 4],
     },
     /// `format_version` byte didn't match the receiving rank's.
+    #[error("wrong format_version: expected {expected}, got {found}")]
     WrongVersion {
         /// Expected (compiled-in) version.
         expected: u8,
@@ -235,9 +240,11 @@ pub enum PartialFormatErrorKind {
     },
     /// CRC32 footer didn't match the body. Truncation, transport
     /// corruption, or a hand-crafted payload.
+    #[error("crc32 footer mismatch")]
     Crc,
     /// Kernel discriminator didn't match — e.g., merging a bbox
     /// partial against a segm evaluator.
+    #[error("kernel_kind mismatch: expected discriminant {expected}, got {found}")]
     KernelMismatch {
         /// Receiving rank's [`crate::KernelKind`] discriminant.
         expected: u8,
@@ -248,21 +255,24 @@ pub enum PartialFormatErrorKind {
     /// didn't match. Means the partials were evaluated against a
     /// dataset with a different category set or a different
     /// `area_ranges` config.
+    #[error("grid mismatch: {detail}")]
     GridMismatch {
         /// Free-form detail string naming which axis mismatched.
         detail: String,
     },
     /// `parity_mode` byte didn't match. Strict and corrected can't
     /// merge — they accumulate different cells.
+    #[error("parity_mode mismatch: expected {expected:?}, got {found:?}")]
     ParityMismatch {
-        /// Expected (one of `b"strict"` / `b"corrected"`).
-        expected: &'static str,
-        /// Found.
-        found: &'static str,
+        /// Receiving rank's parity mode.
+        expected: ParityMode,
+        /// Partial's declared parity mode.
+        found: ParityMode,
     },
     /// `retain_iou` byte didn't match. The cells store layout
     /// differs (meta_cells / retained_ious presence), so a merge
     /// would lose data.
+    #[error("retain_iou mismatch: expected {expected}, got {found}")]
     RetainIouMismatch {
         /// Expected.
         expected: bool,
@@ -272,42 +282,9 @@ pub enum PartialFormatErrorKind {
     /// rkyv archive validation (bytecheck) refused the body. The
     /// payload is structurally invalid — pointer offsets out of
     /// range, bad enum tag, etc.
+    #[error("rkyv archive validation failed: {detail}")]
     RkyvDecode {
         /// rkyv's diagnostic message.
         detail: String,
     },
-}
-
-impl std::fmt::Display for PartialFormatErrorKind {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooShort { observed, minimum } => {
-                write!(
-                    f,
-                    "partial too short: observed {observed} bytes, minimum {minimum}"
-                )
-            }
-            Self::WrongMagic { found } => {
-                write!(f, "wrong magic bytes: expected \"VRPS\", got {found:02x?}")
-            }
-            Self::WrongVersion { expected, found } => {
-                write!(f, "wrong format_version: expected {expected}, got {found}")
-            }
-            Self::Crc => f.write_str("crc32 footer mismatch"),
-            Self::KernelMismatch { expected, found } => {
-                write!(
-                    f,
-                    "kernel_kind mismatch: expected discriminant {expected}, got {found}"
-                )
-            }
-            Self::GridMismatch { detail } => write!(f, "grid mismatch: {detail}"),
-            Self::ParityMismatch { expected, found } => {
-                write!(f, "parity_mode mismatch: expected {expected}, got {found}")
-            }
-            Self::RetainIouMismatch { expected, found } => {
-                write!(f, "retain_iou mismatch: expected {expected}, got {found}")
-            }
-            Self::RkyvDecode { detail } => write!(f, "rkyv archive validation failed: {detail}"),
-        }
-    }
 }

@@ -864,32 +864,16 @@ fn hash_string(h: &mut blake3::Hasher, s: &str) {
     hash_bytes(h, s.as_bytes());
 }
 #[inline]
-fn hash_opt_string(h: &mut blake3::Hasher, opt: Option<&str>) {
-    match opt {
-        None => hash_u8(h, 0),
-        Some(s) => {
-            hash_u8(h, 1);
-            hash_string(h, s);
-        }
-    }
-}
-#[inline]
-fn hash_opt_bool(h: &mut blake3::Hasher, opt: Option<bool>) {
-    match opt {
-        None => hash_u8(h, 0),
-        Some(b) => {
-            hash_u8(h, 1);
-            hash_bool(h, b);
-        }
-    }
-}
-#[inline]
-fn hash_opt_u32(h: &mut blake3::Hasher, opt: Option<u32>) {
+fn hash_option<T>(
+    h: &mut blake3::Hasher,
+    opt: Option<T>,
+    write: impl FnOnce(&mut blake3::Hasher, T),
+) {
     match opt {
         None => hash_u8(h, 0),
         Some(v) => {
             hash_u8(h, 1);
-            hash_u32(h, v);
+            write(h, v);
         }
     }
 }
@@ -937,43 +921,60 @@ fn hash_segmentation(h: &mut blake3::Hasher, seg: Option<&Segmentation>) {
     }
 }
 
-fn hash_opt_keypoints(h: &mut blake3::Hasher, kps: Option<&[f64]>) {
-    match kps {
-        None => hash_u8(h, 0),
-        Some(kps) => {
-            hash_u8(h, 1);
-            hash_u64(h, kps.len() as u64);
-            for &v in kps {
-                hash_f64(h, v);
-            }
-        }
-    }
-}
-
 fn hash_image_meta(h: &mut blake3::Hasher, im: &ImageMeta) {
-    hash_i64(h, im.id.0);
-    hash_u32(h, im.width);
-    hash_u32(h, im.height);
-    hash_opt_string(h, im.file_name.as_deref());
+    let ImageMeta {
+        id,
+        width,
+        height,
+        file_name,
+    } = im;
+    hash_i64(h, id.0);
+    hash_u32(h, *width);
+    hash_u32(h, *height);
+    hash_option(h, file_name.as_deref(), hash_string);
 }
 
 fn hash_category_meta(h: &mut blake3::Hasher, c: &CategoryMeta) {
-    hash_i64(h, c.id.0);
-    hash_string(h, &c.name);
-    hash_opt_string(h, c.supercategory.as_deref());
+    let CategoryMeta {
+        id,
+        name,
+        supercategory,
+    } = c;
+    hash_i64(h, id.0);
+    hash_string(h, name);
+    hash_option(h, supercategory.as_deref(), hash_string);
 }
 
 fn hash_coco_annotation(h: &mut blake3::Hasher, a: &CocoAnnotation) {
-    hash_i64(h, a.id.0);
-    hash_i64(h, a.image_id.0);
-    hash_i64(h, a.category_id.0);
-    hash_f64(h, a.area);
-    hash_bool(h, a.is_crowd);
-    hash_opt_bool(h, a.ignore_flag);
-    hash_bbox(h, &a.bbox);
-    hash_segmentation(h, a.segmentation.as_ref());
-    hash_opt_keypoints(h, a.keypoints.as_deref());
-    hash_opt_u32(h, a.num_keypoints);
+    // Exhaustive destructure: adding a field to CocoAnnotation is a
+    // compile error here, forcing the canonical form to stay in sync.
+    let CocoAnnotation {
+        id,
+        image_id,
+        category_id,
+        area,
+        is_crowd,
+        ignore_flag,
+        bbox,
+        segmentation,
+        keypoints,
+        num_keypoints,
+    } = a;
+    hash_i64(h, id.0);
+    hash_i64(h, image_id.0);
+    hash_i64(h, category_id.0);
+    hash_f64(h, *area);
+    hash_bool(h, *is_crowd);
+    hash_option(h, *ignore_flag, hash_bool);
+    hash_bbox(h, bbox);
+    hash_segmentation(h, segmentation.as_ref());
+    hash_option(h, keypoints.as_deref(), |h, kps| {
+        hash_u64(h, kps.len() as u64);
+        for &v in kps {
+            hash_f64(h, v);
+        }
+    });
+    hash_option(h, *num_keypoints, hash_u32);
 }
 
 fn hash_federated(h: &mut blake3::Hasher, fed: &FederatedMetadata) {
@@ -2399,39 +2400,31 @@ mod tests {
     proptest! {
         #[test]
         fn dataset_hash_invariant_under_id_shuffle(
-            ids in proptest::collection::vec(1i64..1000, 1..16),
+            mut images in proptest::collection::vec(arb_image(), 1..16),
+            categories in proptest::collection::vec(arb_category(), 1..4),
         ) {
-            // Construct two datasets whose images differ only in
-            // declaration order; assert hashes match.
-            let mut unique: Vec<i64> = ids;
-            unique.sort_unstable();
-            unique.dedup();
-            prop_assume!(!unique.is_empty());
+            // Dedup images / categories by id — `from_parts` doesn't
+            // reject duplicates, but the canonical-form hash is only
+            // well-defined over a unique set.
+            images.sort_by_key(|im| im.id.0);
+            images.dedup_by_key(|im| im.id.0);
+            let mut unique_categories = categories;
+            unique_categories.sort_by_key(|c| c.id.0);
+            unique_categories.dedup_by_key(|c| c.id.0);
+            prop_assume!(!images.is_empty());
+            prop_assume!(!unique_categories.is_empty());
 
-            let images_in: Vec<ImageMeta> = unique
-                .iter()
-                .map(|&id| ImageMeta {
-                    id: ImageId(id),
-                    width: 100,
-                    height: 100,
-                    file_name: None,
-                })
-                .collect();
-            let mut images_shuffled = images_in.clone();
-            images_shuffled.reverse();
-
-            let categories = vec![CategoryMeta {
-                id: CategoryId(1),
-                name: "x".to_string(),
-                supercategory: None,
-            }];
-            let annotations: Vec<CocoAnnotation> = unique
+            // One annotation per image, all on the first category — the
+            // shape doesn't matter, only that two datasets that differ
+            // solely in declaration order should hash identically.
+            let cat_id = unique_categories[0].id;
+            let annotations: Vec<CocoAnnotation> = images
                 .iter()
                 .enumerate()
-                .map(|(i, &im_id)| CocoAnnotation {
+                .map(|(i, im)| CocoAnnotation {
                     id: AnnId((i as i64) + 1),
-                    image_id: ImageId(im_id),
-                    category_id: CategoryId(1),
+                    image_id: im.id,
+                    category_id: cat_id,
                     area: 25.0,
                     is_crowd: false,
                     ignore_flag: None,
@@ -2441,16 +2434,18 @@ mod tests {
                     num_keypoints: None,
                 })
                 .collect();
+            let mut shuffled = images.clone();
+            shuffled.reverse();
 
             let a = CocoDataset::from_parts(
-                images_in,
+                images,
                 annotations.clone(),
-                categories.clone(),
+                unique_categories.clone(),
             ).unwrap();
             let b = CocoDataset::from_parts(
-                std::mem::take(&mut images_shuffled),
+                shuffled,
                 annotations,
-                categories,
+                unique_categories,
             ).unwrap();
             prop_assert_eq!(a.dataset_hash(), b.dataset_hash());
         }
