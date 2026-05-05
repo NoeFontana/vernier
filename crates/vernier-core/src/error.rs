@@ -141,4 +141,185 @@ pub enum EvalError {
         /// Sorted list of category ids that lacked a `frequency` value.
         category_ids: Vec<i64>,
     },
+
+    /// Partial wire-format header / framing rejected by
+    /// [`crate::distributed::validate_partial`] (ADR-0031). The `kind`
+    /// names which structural check tripped — magic, version, CRC,
+    /// kernel discriminator, grid dims, or rkyv archive validation.
+    #[error("partial wire format rejected: {kind}")]
+    PartialFormatMismatch {
+        /// Which framing or structural check failed. See
+        /// [`PartialFormatErrorKind`].
+        kind: PartialFormatErrorKind,
+    },
+
+    /// One or more partials carry a `dataset_hash` that doesn't match
+    /// the live dataset's. Means the partial was computed against a
+    /// different GT than the receiving rank loaded — almost always a
+    /// sampler / config bug; refusing protects the merge result from
+    /// the head-rank's perspective. ADR-0031 §"Validation order" #6.
+    #[error(
+        "partial dataset_hash mismatch: expected {expected:02x?}, got {actual:02x?}"
+    )]
+    PartialDatasetMismatch {
+        /// Receiving rank's `dataset_hash` (what the partial was
+        /// expected to be computed against).
+        expected: [u8; 32],
+        /// Partial's declared `dataset_hash` (what was actually used).
+        actual: [u8; 32],
+    },
+
+    /// One or more partials carry a `params_hash` that doesn't match
+    /// the receiving rank's. Means the partial was produced with
+    /// different `iou_thresholds` / `max_dets` / `use_cats` / etc. and
+    /// the merged result would not equal a batch run. ADR-0031
+    /// §"Validation order" #7.
+    #[error(
+        "partial params_hash mismatch: expected {expected:02x?}, got {actual:02x?}"
+    )]
+    PartialParamsMismatch {
+        /// Receiving rank's `params_hash`.
+        expected: [u8; 32],
+        /// Partial's declared `params_hash`.
+        actual: [u8; 32],
+    },
+
+    /// Two partials cover the same `image_id` — the disjoint-partition
+    /// rule (ADR-0031 §"Axis D" D1) is violated. Almost always a
+    /// `DistributedSampler` misconfiguration where two ranks evaluated
+    /// the same image. The error names both rank ids and the colliding
+    /// image so the user can fix their sampler.
+    #[error(
+        "partials cover image_id={image_id} on both rank {rank_a} and rank {rank_b}"
+    )]
+    PartialPartitionOverlap {
+        /// Lower rank id involved in the collision (sorted for
+        /// determinism — `min(a, b)`).
+        rank_a: u32,
+        /// Higher rank id involved in the collision.
+        rank_b: u32,
+        /// Image id that appeared in both partials' `seen_images`.
+        image_id: i64,
+    },
+
+    /// Two strict-mode partials declare the same `rank_id`. ADR-0031
+    /// §"Axis C" C2: strict-mode merge requires distinct rank ids so
+    /// the future `(score, rank_id, local_position)` tiebreak gives a
+    /// total order. Corrected mode tolerates collisions.
+    #[error("partials share rank_id={rank_id} in strict mode")]
+    PartialRankCollision {
+        /// The duplicated rank id.
+        rank_id: u32,
+    },
+}
+
+/// Sub-discriminator for [`EvalError::PartialFormatMismatch`]. Each
+/// variant names a specific structural check the partial failed; the
+/// validation order in [`crate::distributed::validate_partial`] is
+/// cheapest-first so the kind also indicates how far the validator
+/// got before tripping.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PartialFormatErrorKind {
+    /// Length too short to contain even the header magic.
+    TooShort {
+        /// Length we observed.
+        observed: usize,
+        /// Minimum length required.
+        minimum: usize,
+    },
+    /// Magic-bytes prefix didn't match the expected `b"VRPS"` tag.
+    WrongMagic {
+        /// First four bytes we found.
+        found: [u8; 4],
+    },
+    /// `format_version` byte didn't match the receiving rank's.
+    WrongVersion {
+        /// Expected (compiled-in) version.
+        expected: u8,
+        /// Found (in the partial).
+        found: u8,
+    },
+    /// CRC32 footer didn't match the body. Truncation, transport
+    /// corruption, or a hand-crafted payload.
+    Crc,
+    /// Kernel discriminator didn't match — e.g., merging a bbox
+    /// partial against a segm evaluator.
+    KernelMismatch {
+        /// Receiving rank's [`crate::KernelKind`] discriminant.
+        expected: u8,
+        /// Partial's declared discriminant.
+        found: u8,
+    },
+    /// Grid dimensions (`n_categories` / `n_area_ranges` / `n_images`)
+    /// didn't match. Means the partials were evaluated against a
+    /// dataset with a different category set or a different
+    /// `area_ranges` config.
+    GridMismatch {
+        /// Free-form detail string naming which axis mismatched.
+        detail: String,
+    },
+    /// `parity_mode` byte didn't match. Strict and corrected can't
+    /// merge — they accumulate different cells.
+    ParityMismatch {
+        /// Expected (one of `b"strict"` / `b"corrected"`).
+        expected: &'static str,
+        /// Found.
+        found: &'static str,
+    },
+    /// `retain_iou` byte didn't match. The cells store layout
+    /// differs (meta_cells / retained_ious presence), so a merge
+    /// would lose data.
+    RetainIouMismatch {
+        /// Expected.
+        expected: bool,
+        /// Found.
+        found: bool,
+    },
+    /// rkyv archive validation (bytecheck) refused the body. The
+    /// payload is structurally invalid — pointer offsets out of
+    /// range, bad enum tag, etc.
+    RkyvDecode {
+        /// rkyv's diagnostic message.
+        detail: String,
+    },
+}
+
+impl std::fmt::Display for PartialFormatErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooShort { observed, minimum } => {
+                write!(
+                    f,
+                    "partial too short: observed {observed} bytes, minimum {minimum}"
+                )
+            }
+            Self::WrongMagic { found } => {
+                write!(
+                    f,
+                    "wrong magic bytes: expected \"VRPS\", got {found:02x?}"
+                )
+            }
+            Self::WrongVersion { expected, found } => {
+                write!(f, "wrong format_version: expected {expected}, got {found}")
+            }
+            Self::Crc => f.write_str("crc32 footer mismatch"),
+            Self::KernelMismatch { expected, found } => {
+                write!(
+                    f,
+                    "kernel_kind mismatch: expected discriminant {expected}, got {found}"
+                )
+            }
+            Self::GridMismatch { detail } => write!(f, "grid mismatch: {detail}"),
+            Self::ParityMismatch { expected, found } => {
+                write!(f, "parity_mode mismatch: expected {expected}, got {found}")
+            }
+            Self::RetainIouMismatch { expected, found } => {
+                write!(
+                    f,
+                    "retain_iou mismatch: expected {expected}, got {found}"
+                )
+            }
+            Self::RkyvDecode { detail } => write!(f, "rkyv archive validation failed: {detail}"),
+        }
+    }
 }
