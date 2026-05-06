@@ -1,4 +1,5 @@
-"""Subprocess fan-out and result assembly (ADR-0017 §"Runner contract").
+"""Subprocess fan-out and result assembly (ADR-0017 §"Runner contract"
++ ADR-0033 paradigm-segmented path).
 
 ``run_cell`` is the cross-impl driver: it builds a schedule that
 interleaves every ``(impl, rep)`` pair across the cell's impl list,
@@ -9,8 +10,8 @@ pre-flight and an IQR-relative-to-median gate on the ``total`` stage
 (ADR-0017 §"Run modes").
 
 Every runner subprocess is invoked as
-``uv run --directory <bench_root>/envs/<impl> python -m bench.runners.<impl>_runner ...``
-so the runner sees its own pycocotools-flavored package and nothing else.
+``uv run --directory <bench_root>/envs/<env_name> python -m bench.runners.<impl>_runner ...``
+so the runner sees its own paradigm-flavored package and nothing else.
 The orchestrator never imports vernier or any baseline.
 """
 
@@ -24,10 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
+from coco_val_cache import file_sha256
 
 from bench import HARNESS_VERSION
 from bench.harness import machine
 from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
+from bench.harness.migrations.v1_to_v2 import TENSOR_KEY
 from bench.harness.parity import CellParityReport, compare_cell, write_report
 from bench.harness.schema import (
     Aggregation,
@@ -35,6 +38,7 @@ from bench.harness.schema import (
     IouType,
     IqrGateResult,
     Mode,
+    Paradigm,
     RepResult,
     RunnerRepOutput,
 )
@@ -44,7 +48,6 @@ from bench.harness.stats import (
     aggregate_reps,
     iqr_gate,
 )
-from coco_val_cache import file_sha256
 
 # (n_warmup, n_measurement) per ADR-0017 §"Run modes".
 MODE_REPS: dict[Mode, tuple[int, int]] = {
@@ -72,6 +75,7 @@ class RunSpec:
     run_seed: int
     reps_count: int = 1
     warmup_discarded: int = 0
+    paradigm: Paradigm = "instance"
 
 
 @dataclass(frozen=True)
@@ -88,14 +92,23 @@ def result_dir(
     machine_fp: str,
     workload_id: str,
     iou_type: IouType,
+    paradigm: Paradigm = "instance",
 ) -> Path:
-    """Canonical cell directory: ``<results_root>/<sha>/<fp>/<workload>/<iou>/``.
+    """Canonical cell directory:
+    ``<results_root>/<sha>/<fp>/<paradigm>/<workload>/<metric>/`` (ADR-0033 v2).
 
-    ``results_root`` is the parent of the per-sha buckets; in normal
-    operation that's ``bench/results/``. Reused by reports + tests so
-    the layout has one source of truth.
+    ``<metric>`` is the ex-``<iou>`` slot — bbox/segm/keypoints/
+    boundary for instance, ``pq`` for panoptic, ``miou`` for semantic,
+    throughput / p99 / rss for streaming. ``results_root`` is the
+    parent of the per-sha buckets; in normal operation that's
+    ``bench/results/``. Reused by reports + tests so the layout has
+    one source of truth.
+
+    ``paradigm`` defaults to ``"instance"`` so detection callers — and
+    the existing tests that pre-date ADR-0033 — keep their ergonomic
+    short signature; B-streams pass their paradigm explicitly.
     """
-    return results_root / git_sha / machine_fp / workload_id / iou_type
+    return results_root / git_sha / machine_fp / paradigm / workload_id / iou_type
 
 
 def _spawn_one_rep(
@@ -166,22 +179,29 @@ def _assemble_impl_result(
     reps_count: int,
     warmup_discarded: int,
     iqr_threshold: float,
+    paradigm: Paradigm = "instance",
 ) -> tuple[Path, np.ndarray, str, IqrGateResult | None]:
-    """Validate per-rep tensor bit-equality, promote rep 0, aggregate, write JSON."""
-    canonical_sha = spawned[0].runner_out.tensor_sha256
+    """Validate per-rep tensor bit-equality, promote rep 0, aggregate, write JSON.
+
+    Detection runners produce a single tensor under the canonical
+    ``"tensor"`` artifact slot; this assembler stays detection-shaped
+    until B-streams land their own assemblers (panoptic snapshots,
+    streaming summary+rss bundles).
+    """
+    canonical_sha = spawned[0].runner_out.artifact_sha256[TENSOR_KEY]
     for s in spawned[1:]:
-        if s.runner_out.tensor_sha256 != canonical_sha:
+        if s.runner_out.artifact_sha256[TENSOR_KEY] != canonical_sha:
             raise RuntimeError(
                 f"per-rep tensor disagreement for impl {impl!r}: rep 0 sha "
                 f"{canonical_sha[:12]} differs from rep {s.rep.rep} sha "
-                f"{s.runner_out.tensor_sha256[:12]}"
+                f"{s.runner_out.artifact_sha256[TENSOR_KEY][:12]}"
             )
 
     canonical = spawned[0]
     tensor_dst = out_dir / f"{impl}.npy"
     shutil.copyfile(canonical.tensor_path, tensor_dst)
     tensor_sha256 = file_sha256(tensor_dst)
-    if tensor_sha256 != canonical.runner_out.tensor_sha256:
+    if tensor_sha256 != canonical.runner_out.artifact_sha256[TENSOR_KEY]:
         raise RuntimeError("tensor sha256 mismatch between runner output and orchestrator copy")
 
     rep_results = [s.rep for s in spawned]
@@ -198,6 +218,7 @@ def _assemble_impl_result(
         )
 
     result = BenchResult(
+        paradigm=paradigm,
         impl=canonical.runner_out.impl,
         impl_version=canonical.runner_out.impl_version,
         iou_type=iou_type,
@@ -211,8 +232,8 @@ def _assemble_impl_result(
         warmup_discarded=warmup_discarded,
         reps=rep_results,
         aggregation=aggregation,
-        tensor_path=f"{impl}.npy",
-        tensor_sha256=tensor_sha256,
+        artifact_paths={TENSOR_KEY: f"{impl}.npy"},
+        artifact_sha256={TENSOR_KEY: tensor_sha256},
         warnings=list(canonical.runner_out.warnings),
     )
 
@@ -237,6 +258,7 @@ def run(spec: RunSpec) -> Path:
         machine_fp=machine_fp,
         workload_id=spec.workload_id,
         iou_type=spec.iou_type,
+        paradigm=spec.paradigm,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     intermediate_dir = out_dir / ".intermediate"
@@ -272,16 +294,19 @@ def run(spec: RunSpec) -> Path:
         reps_count=spec.reps_count,
         warmup_discarded=spec.warmup_discarded,
         iqr_threshold=DEFAULT_IQR_RELATIVE_THRESHOLD,
+        paradigm=spec.paradigm,
     )
     return out_json
 
 
 @dataclass(frozen=True)
 class CellSpec:
-    """One ``(workload, iou)`` cell with the impls to fan out across.
+    """One ``(paradigm, workload, metric)`` cell with the impls to fan
+    out across.
 
     Caller is responsible for filtering ``impls`` to entries that
-    support ``iou_type`` (the CLI does this via the matrix module).
+    support ``iou_type`` for the cell's paradigm (the CLI does this via
+    the matrix module).
     """
 
     bench_root: Path
@@ -293,6 +318,7 @@ class CellSpec:
     dt_path: Path
     mode: Mode
     run_seed: int
+    paradigm: Paradigm = "instance"
 
 
 @dataclass(frozen=True)
@@ -353,6 +379,7 @@ def run_cell(
         machine_fp=machine_fp,
         workload_id=cell.workload_id,
         iou_type=cell.iou_type,
+        paradigm=cell.paradigm,
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     intermediate_dir = out_dir / ".intermediate"
@@ -394,6 +421,7 @@ def run_cell(
             reps_count=n_measurement,
             warmup_discarded=n_warmup,
             iqr_threshold=iqr_threshold,
+            paradigm=cell.paradigm,
         )
         impl_jsons[impl_name] = out_json
         impl_tensors[impl_name] = tensor

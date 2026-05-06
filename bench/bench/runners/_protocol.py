@@ -1,8 +1,11 @@
 """Shared CLI argspec and output helpers for all impl runners.
 
-Every runner under ``bench.runners.*_runner`` accepts the same arguments
-and writes the same JSON shape (``RunnerRepOutput``) plus a ``.npy``
-precision tensor.
+Every detection runner under ``bench.runners.*_runner`` accepts the
+same arguments and writes the same JSON shape (``RunnerRepOutput``)
+plus a ``.npy`` precision tensor. ADR-0033 generalizes the schema to
+``artifact_paths`` / ``artifact_sha256`` dicts so non-instance
+paradigms can emit multi-artifact result bundles; detection sticks to
+the canonical single-tensor pair under the ``"tensor"`` slot.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from typing import Any, get_args
 import numpy as np
 from coco_val_cache import file_sha256
 
+from bench.harness.migrations.v1_to_v2 import TENSOR_KEY
 from bench.harness.schema import BenchWarning, IouType, RunnerRepOutput, StageTimings
 from bench.harness.timing import StageTable
 
@@ -73,19 +77,29 @@ def write_outputs(
     warnings: list[BenchWarning] | None = None,
 ) -> None:
     """Persist the tensor and the result JSON. The orchestrator re-checks
-    the tensor sha256 after copying to the canonical result path."""
+    the tensor sha256 after copying to the canonical result path.
+
+    Detection runners produce a single precision tensor; under v2 it is
+    written under the canonical ``"tensor"`` slot of the artifact
+    dicts. B-stream runners that emit multi-artifact bundles (panoptic
+    snapshot + per-class table; streaming summary + RSS curve) build
+    their ``RunnerRepOutput`` directly without going through this
+    helper.
+    """
     tensor_path: Path = args.tensor_output
     tensor_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(tensor_path, precision_tensor, allow_pickle=False)
 
     output = RunnerRepOutput(
+        paradigm="instance",
         impl=impl,
         impl_version=impl_version,
         iou_type=args.iou_type,
         workload_id=args.workload_id,
         stages=stages,
         summary_stats=summary_stats,
-        tensor_sha256=file_sha256(tensor_path),
+        artifact_paths={TENSOR_KEY: tensor_path.name},
+        artifact_sha256={TENSOR_KEY: file_sha256(tensor_path)},
         warnings=list(warnings or []),
     )
     output_path: Path = args.output

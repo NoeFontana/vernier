@@ -1,5 +1,5 @@
-"""Schema-v1 round-trips. Catches accidental field additions/removals
-and the extra=forbid contract."""
+"""Schema-v2 round-trips (ADR-0033). Catches accidental field
+additions/removals and the extra=forbid contract."""
 
 from __future__ import annotations
 
@@ -49,18 +49,21 @@ def _summary_stats() -> dict[str, float]:
 
 def _runner_rep_output() -> RunnerRepOutput:
     return RunnerRepOutput(
+        paradigm="instance",
         impl="vernier",
         impl_version="0.0.1",
         iou_type="bbox",
         workload_id="smoke_perfect_match",
         stages=_stages(),
         summary_stats=_summary_stats(),
-        tensor_sha256="0" * 64,
+        artifact_paths={"tensor": "vernier.npy"},
+        artifact_sha256={"tensor": "0" * 64},
     )
 
 
 def _bench_result() -> BenchResult:
     return BenchResult(
+        paradigm="instance",
         impl="vernier",
         impl_version="0.0.1",
         iou_type="bbox",
@@ -97,8 +100,8 @@ def _bench_result() -> BenchResult:
                 max_bytes=42 * 1024,
             ),
         ),
-        tensor_path="vernier.npy",
-        tensor_sha256="0" * 64,
+        artifact_paths={"tensor": "vernier.npy"},
+        artifact_sha256={"tensor": "0" * 64},
         warnings=[BenchWarning(code="smoke", message="just a test")],
     )
 
@@ -124,8 +127,8 @@ def test_extra_field_is_rejected() -> None:
         BenchResult.model_validate(payload)
 
 
-def test_schema_version_pinned_to_one() -> None:
+def test_schema_version_pinned_to_two() -> None:
     obj = _bench_result()
-    assert obj.schema_version == 1
+    assert obj.schema_version == 2
     serialized = json.loads(obj.model_dump_json())
-    assert serialized["schema_version"] == 1
+    assert serialized["schema_version"] == 2
