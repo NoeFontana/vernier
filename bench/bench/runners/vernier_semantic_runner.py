@@ -64,11 +64,6 @@ def main() -> int:
         n_classes == vs.CITYSCAPES_N_CLASSES
         and (ignore_label is None or ignore_label == vs.CITYSCAPES_IGNORE_LABEL)
     ):
-        dataset = vs.Dataset.cityscapes({})
-        # ``Dataset.cityscapes(...)`` expects PNG paths and decodes via
-        # Pillow; we already decoded them in the ``load`` stage. Use
-        # the lower-level constructor with the same n_classes /
-        # ignore_label values to reuse the decoded arrays.
         dataset = vs.Dataset.from_arrays(
             gt_label_maps,
             n_classes=vs.CITYSCAPES_N_CLASSES,

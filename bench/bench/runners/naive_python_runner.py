@@ -142,23 +142,19 @@ def main() -> int:
         # the steady-state grow.
         with stages.stage("accumulate_in_python"):
             predictions: list[Any] = []
-            # Explicitly iterate so the ``append`` is a real RSS-grower
-            # rather than a one-shot list literal copy. Mirrors the user
-            # pattern in the plan.
+            # Explicit append loop so the RSS curve captures the
+            # steady-state grow that the user pattern produces.
             for det in json.loads(dt_bytes):
                 predictions.append(det)
-            dt_payload = json.dumps(predictions).encode("utf-8")
-            del predictions
 
         with contextlib.redirect_stdout(io.StringIO()):
             with stages.stage("cocoeval_evaluate"):
                 # ``COCO`` parses GT JSON from disk; pass the path so the
                 # cost is the same one a user-pattern caller would pay.
                 gt = COCO(str(args.gt))
-                # ``loadRes`` accepts a list/np.ndarray as well as a file
-                # path; use the in-memory list to skip a disk round-trip
-                # that the streaming runner doesn't pay either.
-                dt = gt.loadRes(json.loads(dt_payload))
+                # ``loadRes`` accepts a list directly — pass it without
+                # the JSON dumps/loads round-trip.
+                dt = gt.loadRes(predictions)
                 cocoeval = COCOeval(gt, dt, iouType=args.iou_type)
                 cocoeval.evaluate()
             with stages.stage("cocoeval_accumulate"):

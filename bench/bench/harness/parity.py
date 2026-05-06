@@ -441,34 +441,6 @@ class _InstanceComparator:
         return CellParityReport(workload_id=workload_id, iou_type=iou_type, tiers=tiers)
 
 
-class _StubComparator:
-    """Placeholder comparator for non-instance paradigms.
-
-    Future paradigms register their concrete comparators by calling
-    :func:`register_comparator` at import time; until then the
-    registry knows the paradigm exists but refuses to dispatch — proves
-    the registry shape works without forcing the corresponding cell's
-    completion. After ADR-0033 §B1/B2/B3 land, instance / panoptic /
-    semantic / streaming all have concrete comparators; this stub
-    remains for the next paradigm to plug in.
-    """
-
-    def __init__(self, paradigm: Paradigm) -> None:
-        self.paradigm = paradigm
-
-    def compare(
-        self,
-        *,
-        workload_id: str,
-        iou_type: Metric,
-        impl_outputs: dict[str, ComparableArtifact],
-    ) -> CellParityReport:
-        raise NotImplementedError(
-            f"no comparator registered for paradigm {self.paradigm!r}; "
-            f"call register_comparator() at import time"
-        )
-
-
 # Per-bucket scalar fields on ``PanopticSnapshot`` that participate in
 # the float comparison. The matching count fields (``n``, ``n_things``,
 # ``n_stuff``) are always compared exactly — never gated by tolerance.
@@ -705,7 +677,7 @@ class _SemanticComparator:
         self,
         *,
         workload_id: str,
-        iou_type: IouType,
+        iou_type: Metric,
         impl_outputs: dict[str, ComparableArtifact],
     ) -> CellParityReport:
         # Filter to ConfusionMatrix entries — defensive; the orchestrator
@@ -827,7 +799,7 @@ class _StreamingComparator:
         self,
         *,
         workload_id: str,
-        iou_type: IouType,
+        iou_type: Metric,
         impl_outputs: dict[str, ComparableArtifact],
     ) -> CellParityReport:
         tiers: list[TierResult] = []

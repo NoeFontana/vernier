@@ -22,19 +22,10 @@ ALL_IMPLS: tuple[str, ...] = (
     "boundary-iou-api",
 )
 
-# Detection-only legacy mapping. Kept for callers that still index by
-# IouType (see ``impls_for_iou`` below). Superseded for new code by
-# ``IMPL_PARADIGM_SUPPORT[paradigm][impl]``.
-IMPL_IOU_SUPPORT: dict[str, frozenset[IouType]] = {
-    "vernier": frozenset({"bbox", "segm", "keypoints", "boundary"}),
-    "pycocotools": frozenset({"bbox", "segm", "keypoints"}),
-    "faster-coco-eval": frozenset({"bbox", "segm", "keypoints"}),
-    "boundary-iou-api": frozenset({"boundary"}),
-}
-
-# Per-paradigm impl/metric matrix (ADR-0033). The instance entry is
-# populated; panoptic / semantic / streaming entries are skeletons that
-# B1/B2/B3 fill in when their cells land.
+# Per-paradigm impl/metric matrix (ADR-0033). One source of truth for
+# which impl serves which (paradigm, metric) cell; ``IMPL_IOU_SUPPORT``
+# below derives from the instance entry for callers that still index
+# by IouType.
 IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
     "instance": {
         "vernier": frozenset({"bbox", "segm", "keypoints", "boundary"}),
@@ -42,60 +33,42 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         "faster-coco-eval": frozenset({"bbox", "segm", "keypoints"}),
         "boundary-iou-api": frozenset({"boundary"}),
     },
-    # B1: vernier_panoptic + panopticapi, both producing ``pq`` per
-    # ADR-0033 §"B1 — Panoptic MVB". The two impls share a single env
-    # (``bench/envs/panopticapi/``) — see ``IMPL_TO_ENV_NAME`` below.
     "panoptic": {
         "vernier_panoptic": frozenset({"pq"}),
         "panopticapi": frozenset({"pq"}),
     },
-    # Semantic Cityscapes MVB (ADR-0033 §B2). Both impls produce a
-    # 19x19 uint64 confusion matrix indexed by Cityscapes trainId; the
-    # comparator's strict tier asserts bit-equality on the integer
-    # array, and the four float headline metrics (mIoU / FWIoU /
-    # pixel_accuracy / mean_accuracy) inherit that bit-equality.
-    # S3-B will add an `"mmseg": frozenset({"miou"})` entry alongside
-    # the ADE20K env (deferred — separate ~5–8min `uv sync`).
+    # Cityscapes-vs-cityscapesScripts is strict on integer counts.
+    # ADE20K + mmseg lands in S3-B as an additional `aligned`-tier
+    # entry pending PR-B6/7/8 vendoring.
     "semantic": {
         "vernier_semantic": frozenset({"miou"}),
         "cityscapesscripts": frozenset({"miou"}),
     },
-    # B3 streaming impls — three coupled cells share these entries:
-    # * ``vernier_streaming`` runs all three (throughput, vs_naive, dlpack)
-    #   from one runner module gated by a ``--mode-flag`` argument.
-    # * ``naive_python`` is the ``predictions.append(...); cocoeval.evaluate()``
-    #   baseline that only participates in the vs_naive cell.
     "streaming": {
         "vernier_streaming": frozenset({"throughput", "vs_naive", "dlpack"}),
         "naive_python": frozenset({"vs_naive"}),
     },
 }
 
-# Env discovery: by default, ``bench/envs/<impl>/`` is the runner's
-# uv-managed env. B1/B2/B3 will register multi-runner envs (e.g.
-# ``vernier_panoptic`` and ``panopticapi`` runners both run in
-# ``bench/envs/panopticapi/``); they extend this map at import time.
-# Hyphenated impl names map to themselves (the env dir keeps the
-# hyphen — the module-name substitution lives in ``runner_module``).
+# Detection-only IouType view, derived from the instance entry. Used
+# by callers that still index by ``IouType`` (e.g. ``impls_for_iou``).
+IMPL_IOU_SUPPORT: dict[str, frozenset[IouType]] = {
+    impl: frozenset(metrics)  # type: ignore[arg-type]
+    for impl, metrics in IMPL_PARADIGM_SUPPORT["instance"].items()
+}
+
+# Maps impl-name → env-dir under ``bench/envs/``. Multiple impls can
+# share one env (panoptic + semantic group their two runners; streaming
+# reuses the detection envs).
 IMPL_TO_ENV_NAME: dict[str, str] = {
     "vernier": "vernier",
     "pycocotools": "pycocotools",
     "faster-coco-eval": "faster-coco-eval",
     "boundary-iou-api": "boundary-iou-api",
-    # B1 (ADR-0033 §"B1 — Panoptic MVB"): both runners share the
-    # ``panopticapi`` env so the parity comparator can run them in
-    # identical Python state. The orchestrator still spawns each as
-    # its own subprocess (one tensor-output per impl).
     "vernier_panoptic": "panopticapi",
     "panopticapi": "panopticapi",
-    # Semantic Cityscapes MVB (ADR-0033 §B2): both runners share the
-    # `bench/envs/cityscapes/` env (one `uv sync` covers both impls;
-    # the env carries `vernier` for the trainId fold + `cityscapesScripts`
-    # for the bincount-based oracle).
     "vernier_semantic": "cityscapes",
     "cityscapesscripts": "cityscapes",
-    # B3 streaming impls share the existing detection envs (per
-    # ADR-0033 §"reuse existing envs" — no ``bench/envs/streaming/``).
     # ``vernier_streaming`` runs in the vernier env so it can import
     # ``vernier.instance.StreamingEvaluator``; ``naive_python`` runs
     # in the pycocotools env so it can call cocoeval directly.

@@ -43,6 +43,7 @@ from bench.harness.parity import (
     CellParityReport,
     PanopticSnapshot,
     compare_cell,
+    get_comparator,
     write_report,
 )
 from bench.harness.schema import (
@@ -359,32 +360,15 @@ def _assemble_impl_result(
     warmup_discarded: int,
     iqr_threshold: float,
     paradigm: Paradigm = "instance",
-    expected_artifact_keys: set[str] | None = None,
 ) -> tuple[Path, np.ndarray, str, IqrGateResult | None]:
-    """Validate per-rep artifact bit-equality, promote rep 0, aggregate, write JSON.
+    """Detection-shaped assembler: validate per-rep tensor bit-equality,
+    promote rep 0, aggregate, write JSON.
 
-    Detection runners produce a single tensor under the canonical
-    ``"tensor"`` artifact slot — the default
-    ``expected_artifact_keys = {"tensor"}`` covers them. Non-instance
-    paradigms can extend the set:
-
-    - semantic (ADR-0033 §B2) — ``{"confusion"}``: a single ``.npy``
-      with the integer NxN confusion matrix (re-uses this assembler's
-      ndarray-load tail by promoting the same canonical artifact slot).
-    - panoptic (ADR-0033 §B1) — ``{"snapshot", "per_class"}``: routes
-      through :func:`_assemble_impl_result_panoptic` instead.
-    - streaming (ADR-0033 §B3) — ``{"summary", "rss_curve"}``.
-
-    Per-rep cross-validation walks every key in
-    ``expected_artifact_keys`` and asserts the rep-0 SHA equals every
-    later rep's SHA — the rep-determinism contract is paradigm-agnostic
-    and runs through :func:`_validate_artifacts`.
+    Panoptic cells route through :func:`_assemble_impl_result_panoptic`
+    (two-artifact bundle); other paradigms add their own assemblers as
+    they land.
     """
-    if expected_artifact_keys is None:
-        expected_artifact_keys = {TENSOR_KEY}
-    _ = _validate_artifacts(
-        impl=impl, spawned=spawned, expected_keys=expected_artifact_keys
-    )
+    _ = _validate_artifacts(impl=impl, spawned=spawned, expected_keys={TENSOR_KEY})
 
     canonical = spawned[0]
     if canonical.tensor_path is None:
@@ -395,9 +379,8 @@ def _assemble_impl_result(
     tensor_dst = out_dir / f"{impl}.npy"
     shutil.copyfile(canonical.tensor_path, tensor_dst)
     tensor_sha256 = file_sha256(tensor_dst)
-    legacy_key = TENSOR_KEY if TENSOR_KEY in expected_artifact_keys else next(iter(expected_artifact_keys))
-    if tensor_sha256 != canonical.runner_out.artifact_sha256[legacy_key]:
-        raise RuntimeError("artifact sha256 mismatch between runner output and orchestrator copy")
+    if tensor_sha256 != canonical.runner_out.artifact_sha256[TENSOR_KEY]:
+        raise RuntimeError("tensor sha256 mismatch between runner output and orchestrator copy")
 
     rep_results = [s.rep for s in spawned]
     aggregation, gate_result = _aggregate_reps(
@@ -419,8 +402,8 @@ def _assemble_impl_result(
         warmup_discarded=warmup_discarded,
         reps=rep_results,
         aggregation=aggregation,
-        artifact_paths={legacy_key: f"{impl}.npy"},
-        artifact_sha256={legacy_key: tensor_sha256},
+        artifact_paths={TENSOR_KEY: f"{impl}.npy"},
+        artifact_sha256={TENSOR_KEY: tensor_sha256},
         warnings=list(canonical.runner_out.warnings),
     )
 
@@ -453,24 +436,9 @@ def _assemble_impl_result_panoptic(
 
     Returns ``(out_json, canonical_snapshot, sha_by_key, gate_result)``.
     """
-    # Per-rep bit-equality check across both panoptic artifacts.
-    canonical_shas = spawned[0].runner_out.artifact_sha256
-    for key in _PANOPTIC_ARTIFACT_KEYS:
-        if key not in canonical_shas:
-            raise RuntimeError(
-                f"panoptic runner {impl!r} did not emit artifact {key!r}; "
-                f"got: {sorted(canonical_shas)}"
-            )
-    for s in spawned[1:]:
-        for key in _PANOPTIC_ARTIFACT_KEYS:
-            if s.runner_out.artifact_sha256.get(key) != canonical_shas[key]:
-                raise RuntimeError(
-                    f"per-rep panoptic artifact {key!r} disagreement for impl "
-                    f"{impl!r}: rep 0 sha {canonical_shas[key][:12]} differs from "
-                    f"rep {s.rep.rep} sha "
-                    f"{s.runner_out.artifact_sha256.get(key, '')[:12]}"
-                )
-
+    canonical_shas = _validate_artifacts(
+        impl=impl, spawned=spawned, expected_keys=set(_PANOPTIC_ARTIFACT_KEYS)
+    )
     canonical = spawned[0]
     snapshot_src = canonical.artifact_paths.get("snapshot")
     per_class_src = canonical.artifact_paths.get("per_class")
@@ -704,54 +672,104 @@ def run_cell(
         impl: [None] * total_reps for impl in cell.impls
     }
     for impl_name, rep_idx, warmup in schedule:
-        spawned[impl_name][rep_idx] = _spawn_one_rep(
-            bench_root=cell.bench_root,
-            impl=impl_name,
-            workload_id=cell.workload_id,
-            iou_type=cell.iou_type,
-            gt_path=cell.gt_path,
-            dt_path=cell.dt_path,
-            rep_index=rep_idx,
-            intermediate_dir=intermediate_dir,
-            warmup=warmup,
-        )
+        if cell.paradigm == "panoptic":
+            if (
+                cell.gt_png_dir is None
+                or cell.gt_json is None
+                or cell.dt_png_dir is None
+                or cell.dt_json is None
+                or cell.categories_json is None
+            ):
+                raise ValueError(
+                    "panoptic cell requires gt_png_dir/gt_json/dt_png_dir/dt_json/categories_json"
+                )
+            spawned[impl_name][rep_idx] = _spawn_one_rep_panoptic(
+                bench_root=cell.bench_root,
+                impl=impl_name,
+                workload_id=cell.workload_id,
+                gt_png_dir=cell.gt_png_dir,
+                gt_json=cell.gt_json,
+                dt_png_dir=cell.dt_png_dir,
+                dt_json=cell.dt_json,
+                categories_json=cell.categories_json,
+                rep_index=rep_idx,
+                intermediate_dir=intermediate_dir,
+                warmup=warmup,
+            )
+        else:
+            spawned[impl_name][rep_idx] = _spawn_one_rep(
+                bench_root=cell.bench_root,
+                impl=impl_name,
+                workload_id=cell.workload_id,
+                iou_type=cell.iou_type,
+                gt_path=cell.gt_path,
+                dt_path=cell.dt_path,
+                rep_index=rep_idx,
+                intermediate_dir=intermediate_dir,
+                warmup=warmup,
+            )
 
     impl_jsons: dict[str, Path] = {}
     impl_tensors: dict[str, np.ndarray] = {}
     impl_sha256: dict[str, str] = {}
+    impl_panoptic_snapshots: dict[str, PanopticSnapshot] = {}
     iqr_outcomes: dict[str, IqrGateResult] = {}
     for impl_name in cell.impls:
         results = [r for r in spawned[impl_name] if r is not None]
-        out_json, tensor, tensor_sha, iqr_outcome = _assemble_impl_result(
-            impl=impl_name,
-            out_dir=out_dir,
-            spawned=results,
-            iou_type=cell.iou_type,
-            workload_id=cell.workload_id,
-            git_sha=git_sha,
-            machine_fp=machine_fp,
-            mode=cell.mode,
-            run_seed=cell.run_seed,
-            reps_count=n_measurement,
-            warmup_discarded=n_warmup,
-            iqr_threshold=iqr_threshold,
-            paradigm=cell.paradigm,
-        )
-        impl_jsons[impl_name] = out_json
-        impl_tensors[impl_name] = tensor
-        impl_sha256[impl_name] = tensor_sha
+        if cell.paradigm == "panoptic":
+            out_json, snapshot, _shas, iqr_outcome = _assemble_impl_result_panoptic(
+                impl=impl_name,
+                out_dir=out_dir,
+                spawned=results,
+                workload_id=cell.workload_id,
+                git_sha=git_sha,
+                machine_fp=machine_fp,
+                mode=cell.mode,
+                run_seed=cell.run_seed,
+                reps_count=n_measurement,
+                warmup_discarded=n_warmup,
+                iqr_threshold=iqr_threshold,
+            )
+            impl_jsons[impl_name] = out_json
+            impl_panoptic_snapshots[impl_name] = snapshot
+        else:
+            out_json, tensor, tensor_sha, iqr_outcome = _assemble_impl_result(
+                impl=impl_name,
+                out_dir=out_dir,
+                spawned=results,
+                iou_type=cell.iou_type,
+                workload_id=cell.workload_id,
+                git_sha=git_sha,
+                machine_fp=machine_fp,
+                mode=cell.mode,
+                run_seed=cell.run_seed,
+                reps_count=n_measurement,
+                warmup_discarded=n_warmup,
+                iqr_threshold=iqr_threshold,
+                paradigm=cell.paradigm,
+            )
+            impl_jsons[impl_name] = out_json
+            impl_tensors[impl_name] = tensor
+            impl_sha256[impl_name] = tensor_sha
         if iqr_outcome is not None:
             iqr_outcomes[impl_name] = iqr_outcome
 
     parity_report: CellParityReport | None = None
     divergence_report_path: Path | None = None
     if parity:
-        parity_report = compare_cell(
-            workload_id=cell.workload_id,
-            iou_type=cell.iou_type,
-            impl_tensors=impl_tensors,
-            impl_sha256=impl_sha256,
-        )
+        if cell.paradigm == "instance":
+            parity_report = compare_cell(
+                workload_id=cell.workload_id,
+                iou_type=cell.iou_type,
+                impl_tensors=impl_tensors,
+                impl_sha256=impl_sha256,
+            )
+        elif cell.paradigm == "panoptic":
+            parity_report = get_comparator("panoptic").compare(
+                workload_id=cell.workload_id,
+                iou_type=cell.iou_type,
+                impl_outputs=dict(impl_panoptic_snapshots),
+            )
         if not parity_report.passed:
             divergence_report_path = write_report(parity_report, out_dir)
 
