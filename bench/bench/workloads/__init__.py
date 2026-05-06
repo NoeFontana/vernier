@@ -4,8 +4,8 @@ shapes per ADR-0033.
 The discriminator is ``paradigm: Literal["instance", "panoptic",
 "semantic", "streaming"]``. Today, every concrete workload is an
 ``InstanceWorkload`` (the detection-only shape from ADR-0017); the
-other three variants exist as Pydantic models that B1/B2/B3 will
-register concrete workloads against.
+other three variants are Pydantic models for the panoptic, semantic,
+and streaming workloads.
 
 Workload identifiers (instance — registered today):
 
@@ -165,9 +165,9 @@ _SYNTHETIC_DEFAULTS: dict[str, int] = {
 _SYNTHETIC_REQUIRED: frozenset[str] = frozenset({"n_images", "seed"})
 _SYNTHETIC_ALLOWED: frozenset[str] = _SYNTHETIC_REQUIRED | frozenset(_SYNTHETIC_DEFAULTS)
 
-# Prefixes reserved for B1/B2/B3 workloads. ``resolve()`` recognizes
-# these so the user-facing error message points at the right
-# B-stream rather than collapsing into "unknown workload".
+# Per-paradigm workload-id prefixes; ``resolve()`` recognizes these
+# so an unknown workload in a registered namespace surfaces a
+# paradigm-specific error message.
 _PANOPTIC_PREFIXES: tuple[str, ...] = ("coco_panoptic_val2017",)
 _SEMANTIC_PREFIXES: tuple[str, ...] = ("cityscapes_val", "ade20k_val")
 _STREAMING_PREFIXES: tuple[str, ...] = (

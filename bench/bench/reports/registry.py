@@ -3,15 +3,15 @@
 A "fragment" is a pluggable piece of a paradigm's report: the per-cell
 delta table for instance, the per-class PQ table for panoptic, the
 confusion-matrix divergence visualization for semantic, the RSS-curve
-plot for streaming. The registry lets B1/B2/B3/B5 plug their
+plot for streaming. The registry lets each paradigm plug its
 fragments in without touching the core compare/report code.
 
 Lifecycle:
 
-- A-thick (this module) defines the protocol, populates
+- This module defines the protocol, populates
   ``"instance"`` with the existing detection compare-table fragment
   refactored out of ``compare.py`` / ``render.py``.
-- B1/B2/B3/B5 import :func:`register_report_fragment` at module
+- Per-paradigm modules import :func:`register_report_fragment` at module
   import time and append their fragments to the appropriate
   paradigm's list. Multiple fragments per paradigm are supported —
   the renderer concatenates them in registration order.
@@ -145,7 +145,7 @@ def render_paradigm(paradigm: Paradigm, cells: Sequence[BenchResult]) -> str:
 # Built-in fragments
 # ---------------------------------------------------------------------------
 #
-# A-thick pre-populates the instance paradigm with the detection
+# Pre-populated for the instance paradigm with the detection
 # compare-table fragment that the existing ``compare.py`` /
 # ``render.py`` already implement. The fragment is a thin wrapper that
 # delegates to the legacy renderer; B-streams compose around it

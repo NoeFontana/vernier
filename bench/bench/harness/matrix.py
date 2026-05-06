@@ -95,7 +95,7 @@ def impls_for_metric(
     """Per-paradigm impl filter — preferred over ``impls_for_iou`` for
     new (multi-paradigm) code paths.
 
-    For unset paradigms (B1/B2/B3 have not yet populated their entries)
+    For unset paradigms (no impls registered for the (paradigm, metric))
     returns ``[]``; the CLI raises a clear error rather than silently
     skipping.
     """
