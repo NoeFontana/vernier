@@ -49,9 +49,17 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         "vernier_panoptic": frozenset({"pq"}),
         "panopticapi": frozenset({"pq"}),
     },
-    # B2 populates with vernier_semantic + cityscapesscripts (and
-    # eventually mmseg in S3-B). Map shape: {impl_name: frozenset({"miou"})}.
-    "semantic": {},
+    # Semantic Cityscapes MVB (ADR-0033 §B2). Both impls produce a
+    # 19x19 uint64 confusion matrix indexed by Cityscapes trainId; the
+    # comparator's strict tier asserts bit-equality on the integer
+    # array, and the four float headline metrics (mIoU / FWIoU /
+    # pixel_accuracy / mean_accuracy) inherit that bit-equality.
+    # S3-B will add an `"mmseg": frozenset({"miou"})` entry alongside
+    # the ADE20K env (deferred — separate ~5–8min `uv sync`).
+    "semantic": {
+        "vernier_semantic": frozenset({"miou"}),
+        "cityscapesscripts": frozenset({"miou"}),
+    },
     # B3 populates with vernier_streaming + naive_python. Map shape:
     # {impl_name: frozenset({"throughput", "p99", "rss"})} or whatever
     # subset of the metric literal each impl produces.
@@ -75,9 +83,12 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     # its own subprocess (one tensor-output per impl).
     "vernier_panoptic": "panopticapi",
     "panopticapi": "panopticapi",
-    # B2 will add (when the cityscapes env lands):
-    #   "vernier_semantic": "cityscapes",
-    #   "cityscapesscripts": "cityscapes",
+    # Semantic Cityscapes MVB (ADR-0033 §B2): both runners share the
+    # `bench/envs/cityscapes/` env (one `uv sync` covers both impls;
+    # the env carries `vernier` for the trainId fold + `cityscapesScripts`
+    # for the bincount-based oracle).
+    "vernier_semantic": "cityscapes",
+    "cityscapesscripts": "cityscapes",
     # B3 will add the streaming impls (sharing the existing
     # ``vernier`` and ``pycocotools`` envs):
     #   "vernier_streaming": "vernier",

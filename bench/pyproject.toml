@@ -26,6 +26,10 @@ dependencies = [
     # downloaded; rf-detr inferred via the TIDE harness). Path source
     # below; transitively pulls platformdirs.
     "vernier-real-predictions-cache",
+    # Cache-path resolver for the Cityscapes val dataset (ADR-0033 §B2,
+    # ADR-0028). No automatic download (Cityscapes is a gated dataset);
+    # the cache locates a user-populated extraction. Path source below.
+    "vernier-cityscapes-val-cache",
     # Workload-side: polygon-jittered DT generation needs morphological
     # ops (dilate/erode) and an RLE codec independent of vernier's own
     # mask kernels (using the system under test as the codec for test
@@ -41,6 +45,7 @@ vernier-coco-val-cache = { path = "../tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "../tools/lvis_val_cache", editable = true }
 vernier-panoptic-val-cache = { path = "../tools/panoptic_val_cache", editable = true }
 vernier-real-predictions-cache = { path = "../tools/real_predictions_cache", editable = true }
+vernier-cityscapes-val-cache = { path = "../tools/cityscapes_val_cache", editable = true }
 
 [project.scripts]
 vernier-bench = "bench.cli:main"

@@ -363,18 +363,24 @@ def _assemble_impl_result(
     paradigm: Paradigm = "instance",
     expected_artifact_keys: set[str] | None = None,
 ) -> tuple[Path, np.ndarray, str, IqrGateResult | None]:
-    """Detection-shaped assembler. Validate per-rep tensor bit-equality,
-    promote rep 0, aggregate, write JSON.
+    """Validate per-rep artifact bit-equality, promote rep 0, aggregate, write JSON.
 
     Detection runners produce a single tensor under the canonical
-    ``"tensor"`` artifact slot; this assembler stays detection-shaped.
-    Non-instance paradigms route through their own assembler
-    (:func:`_assemble_impl_result_panoptic` for B1; B2/B3 add their
-    own siblings).
+    ``"tensor"`` artifact slot — the default
+    ``expected_artifact_keys = {"tensor"}`` covers them. Non-instance
+    paradigms can extend the set:
 
-    ``expected_artifact_keys`` defaults to ``{"tensor"}`` — the
-    detection-shape contract. The cross-rep determinism check runs
-    over every named key via :func:`_validate_artifacts`.
+    - semantic (ADR-0033 §B2) — ``{"confusion"}``: a single ``.npy``
+      with the integer NxN confusion matrix (re-uses this assembler's
+      ndarray-load tail by promoting the same canonical artifact slot).
+    - panoptic (ADR-0033 §B1) — ``{"snapshot", "per_class"}``: routes
+      through :func:`_assemble_impl_result_panoptic` instead.
+    - streaming (ADR-0033 §B3) — ``{"summary", "rss_curve"}``.
+
+    Per-rep cross-validation walks every key in
+    ``expected_artifact_keys`` and asserts the rep-0 SHA equals every
+    later rep's SHA — the rep-determinism contract is paradigm-agnostic
+    and runs through :func:`_validate_artifacts`.
     """
     if expected_artifact_keys is None:
         expected_artifact_keys = {TENSOR_KEY}
@@ -392,8 +398,9 @@ def _assemble_impl_result(
     tensor_dst = out_dir / f"{impl}.npy"
     shutil.copyfile(canonical.tensor_path, tensor_dst)
     tensor_sha256 = file_sha256(tensor_dst)
-    if tensor_sha256 != canonical.runner_out.artifact_sha256[TENSOR_KEY]:
-        raise RuntimeError("tensor sha256 mismatch between runner output and orchestrator copy")
+    legacy_key = TENSOR_KEY if TENSOR_KEY in expected_artifact_keys else next(iter(expected_artifact_keys))
+    if tensor_sha256 != canonical.runner_out.artifact_sha256[legacy_key]:
+        raise RuntimeError("artifact sha256 mismatch between runner output and orchestrator copy")
 
     rep_results = [s.rep for s in spawned]
     aggregation, gate_result = _aggregate_reps(
@@ -415,8 +422,8 @@ def _assemble_impl_result(
         warmup_discarded=warmup_discarded,
         reps=rep_results,
         aggregation=aggregation,
-        artifact_paths={TENSOR_KEY: f"{impl}.npy"},
-        artifact_sha256={TENSOR_KEY: tensor_sha256},
+        artifact_paths={legacy_key: f"{impl}.npy"},
+        artifact_sha256={legacy_key: tensor_sha256},
         warnings=list(canonical.runner_out.warnings),
     )
 

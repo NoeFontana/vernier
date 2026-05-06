@@ -199,22 +199,51 @@ class PanopticSnapshot(_ArtifactBase):
 
 
 class ConfusionMatrix(_ArtifactBase):
-    """Semantic NxN integer confusion matrix. Stub fields; B2
-    populates the full shape (counts uint64 NxN, derived per-class
-    IoU, mIoU)."""
+    """Semantic NxN integer confusion matrix (ADR-0033 §B2).
+
+    Two carriers travel together on the strict path:
+
+    - ``counts`` — the `(n_classes, n_classes)` ``uint64`` array
+      itself, populated by the comparator after loading the impl's
+      ``.npy`` artifact. Optional in the schema (``None`` when the
+      object is constructed for canonical-form inspection without
+      the underlying tensor — e.g., re-reading a divergence report).
+    - ``counts_sha256`` — SHA of the on-disk ``.npy`` file. Always
+      populated; serves as the stable identity carrier in the
+      divergence-report JSON (the array itself isn't serialized —
+      large + non-portable).
+
+    Strict-tier comparison is ``np.array_equal(a.counts, b.counts)``
+    on integer arrays; the four headline float metrics (mIoU / FWIoU
+    / pixel_accuracy / mean_accuracy) are derived bit-deterministically
+    from the counts so equal counts ⇒ equal floats.
+    """
+
+    # The ``counts`` field is a NumPy array, which Pydantic doesn't
+    # serialize natively — populated post-validation by the comparator.
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
     kind: Literal["confusion_matrix"] = "confusion_matrix"
     n_classes: int = 0
-    # SHA of the .npy with the integer counts; the float mIoU is
+    ignore_label: int | None = None
+    # In-memory NxN counts; ``None`` when the object is reconstructed
+    # from a divergence-report JSON (only ``counts_sha256`` round-trips).
+    counts: np.ndarray | None = Field(default=None, exclude=True)
+    # SHA of the ``.npy`` with the integer counts; the float mIoU is
     # derived bit-deterministically from the counts so the SHA alone
     # is the parity carrier.
     counts_sha256: str = ""
+    # Optional human-readable class names. Populated for Cityscapes
+    # (`["road", "sidewalk", ...]`); empty for unlabeled callers.
+    label_set: list[str] = Field(default_factory=list)
 
     def to_canonical_form(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
             "n_classes": self.n_classes,
+            "ignore_label": self.ignore_label,
             "counts_sha256": self.counts_sha256,
+            "label_set": list(self.label_set),
         }
 
 
@@ -397,7 +426,7 @@ class _InstanceComparator:
 class _StubComparator:
     """Placeholder comparator for non-instance paradigms.
 
-    B1/B2/B3 register their concrete comparators when their cells
+    B1/B3 register their concrete comparators when their cells
     land. Until then, the registry knows the paradigm exists but
     refuses to dispatch — proves the registry shape works without
     forcing B-stream completion.
@@ -415,7 +444,7 @@ class _StubComparator:
     ) -> CellParityReport:
         raise NotImplementedError(
             f"comparator for paradigm {self.paradigm!r} is registered by the "
-            f"corresponding B-stream (B1 panoptic / B2 semantic / B3 streaming)"
+            f"corresponding B-stream (B1 panoptic / B3 streaming)"
         )
 
 
@@ -620,10 +649,125 @@ class _PanopticComparator:
         return CellParityReport(workload_id=workload_id, iou_type=iou_type, tiers=tiers)
 
 
+# Per-paradigm parity-tier metadata (ADR-0033 §"Comparator registry").
+# Mirrors the per-cell `parity_tier` flag the report layer renders so
+# reviewers can see at a glance which strict claims are real vs aligned-
+# pending-vendoring. ADE20K vs mmseg lands in S3-B and registers
+# `("vernier_semantic", "mmseg")` as ``aligned``; the Cityscapes-vs-
+# cityscapesScripts pair below is ``strict`` today.
+_SEMANTIC_TIER_PAIRS: tuple[tuple[Tier, str, str], ...] = (
+    ("strict", "vernier_semantic", "cityscapesscripts"),
+)
+
+
+class _SemanticComparator:
+    """Semantic-segmentation comparator (ADR-0033 §B2).
+
+    Strict-tier path: ``np.array_equal(a.counts, b.counts)`` on the
+    integer NxN confusion matrices. mIoU / FWIoU / pixel_accuracy /
+    mean_accuracy are derived bit-deterministically from the counts,
+    so equal counts ⇒ equal floats — checking the integer array is
+    necessary and sufficient.
+
+    The comparator's docstring is the canonical place to register the
+    future ADE20K-vs-mmseg path: that pair lands as an ``aligned`` tier
+    with ``rtol=1e-9`` (mirroring ``SEMANTIC_PARITY_EPS`` in
+    ``crates/vernier-semantic/src/parity.rs``) until PR-B6/B7/B8
+    vendor mmseg at a pinned SHA, at which point the tier re-grades
+    to ``strict``. The flag travels per-cell as ``parity_tier`` on
+    the ``TierResult`` so the report layer can flag the gap.
+    """
+
+    paradigm: ClassVar[Paradigm] = "semantic"
+
+    def compare(
+        self,
+        *,
+        workload_id: str,
+        iou_type: IouType,
+        impl_outputs: dict[str, ComparableArtifact],
+    ) -> CellParityReport:
+        # Filter to ConfusionMatrix entries — defensive; the orchestrator
+        # only routes semantic outputs here, but the protocol signature
+        # is paradigm-agnostic.
+        matrices: dict[str, ConfusionMatrix] = {
+            impl: art for impl, art in impl_outputs.items() if isinstance(art, ConfusionMatrix)
+        }
+        tiers: list[TierResult] = []
+        for tier, impl_a, impl_b in _SEMANTIC_TIER_PAIRS:
+            if impl_a not in matrices or impl_b not in matrices:
+                continue
+            tiers.append(_compare_confusion(tier=tier, impl_a=impl_a, impl_b=impl_b, matrices=matrices))
+        return CellParityReport(workload_id=workload_id, iou_type=iou_type, tiers=tiers)
+
+
+def _compare_confusion(
+    *,
+    tier: Tier,
+    impl_a: str,
+    impl_b: str,
+    matrices: dict[str, ConfusionMatrix],
+) -> TierResult:
+    """Strict integer-equality between two ``ConfusionMatrix`` artifacts.
+
+    On divergence, the first divergent ``(gt_class, pred_class)`` cell
+    coordinate is captured along with the count delta on each side —
+    matches the divergent-index pattern the instance comparator uses
+    for tensors.
+    """
+    a = matrices[impl_a]
+    b = matrices[impl_b]
+    if a.n_classes != b.n_classes:
+        raise ValueError(
+            f"n_classes mismatch comparing {impl_a} vs {impl_b}: "
+            f"{a.n_classes} vs {b.n_classes}"
+        )
+    counts_a = a.counts
+    counts_b = b.counts
+    if counts_a is None or counts_b is None:
+        # The orchestrator populates ``counts`` after loading the
+        # ``.npy`` artifact; receiving ``None`` here is a wiring bug,
+        # not a parity divergence. Surface it loudly.
+        raise ValueError(
+            f"_SemanticComparator requires populated `counts` arrays; "
+            f"got counts_a={'set' if counts_a is not None else 'None'}, "
+            f"counts_b={'set' if counts_b is not None else 'None'}"
+        )
+    if counts_a.shape != counts_b.shape:
+        raise ValueError(
+            f"shape mismatch comparing {impl_a} vs {impl_b}: "
+            f"{counts_a.shape} vs {counts_b.shape}"
+        )
+
+    divergent_mask = counts_a != counts_b
+    divergent_count = int(divergent_mask.sum())
+    first_divergence: Divergence | None = None
+    if divergent_count > 0:
+        first_idx = tuple(int(i) for i in np.argwhere(divergent_mask)[0])
+        first_divergence = Divergence(
+            index=first_idx,
+            value_a=float(counts_a[first_idx]),
+            value_b=float(counts_b[first_idx]),
+            abs_diff=float(abs(int(counts_a[first_idx]) - int(counts_b[first_idx]))),
+        )
+
+    return TierResult(
+        tier=tier,
+        impl_a=impl_a,
+        impl_b=impl_b,
+        atol=0.0,
+        passed=divergent_count == 0,
+        divergent_count=divergent_count,
+        first_divergence=first_divergence,
+        tensor_sha256_a=a.counts_sha256[:12],
+        tensor_sha256_b=b.counts_sha256[:12],
+    )
+
+
 _REGISTRY: dict[Paradigm, Comparator] = {
     "instance": _InstanceComparator(impl_tensors={}, impl_sha256={}),  # type: ignore[arg-type]
     "panoptic": _PanopticComparator(),
-    "semantic": _StubComparator("semantic"),
+    "semantic": _SemanticComparator(),
     "streaming": _StubComparator("streaming"),
 }
 

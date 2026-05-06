@@ -34,11 +34,12 @@ def test_instance_comparator_is_registered() -> None:
     assert cmp.paradigm == "instance"
 
 
-@pytest.mark.parametrize("paradigm", ["semantic", "streaming"])
+@pytest.mark.parametrize("paradigm", ["streaming"])
 def test_stub_comparators_raise_not_implemented(paradigm: Paradigm) -> None:
-    """Stub registry entries for B2/B3 paradigms that haven't landed
-    their concrete comparator yet. B1 (panoptic) is excluded — its
-    real comparator is registered (see :class:`_PanopticComparator`)."""
+    """Stub registry entries for B-stream paradigms that haven't landed
+    their concrete comparator yet. B1 (panoptic) and B2 (semantic) are
+    excluded — their real comparators are registered (see
+    :class:`_PanopticComparator` and :class:`_SemanticComparator`)."""
     cmp = get_comparator(paradigm)
     assert isinstance(cmp, Comparator)
     assert cmp.paradigm == paradigm
@@ -55,6 +56,18 @@ def test_panoptic_comparator_is_registered() -> None:
     # Empty impl_outputs is a degenerate-but-valid input — just yields
     # a report with zero tiers.
     report = cmp.compare(workload_id="x", iou_type="pq", impl_outputs={})
+    assert report.tiers == []
+
+
+def test_semantic_comparator_is_registered_and_returns_empty_tiers_when_no_pair() -> None:
+    """The semantic comparator (B2) is concrete: dispatching with no
+    impl outputs returns an empty-tiers report — same shape the
+    instance comparator returns when its tier pairs aren't all present.
+    """
+    cmp = get_comparator("semantic")
+    assert isinstance(cmp, Comparator)
+    assert cmp.paradigm == "semantic"
+    report = cmp.compare(workload_id="x", iou_type="bbox", impl_outputs={})
     assert report.tiers == []
 
 
