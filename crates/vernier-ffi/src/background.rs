@@ -181,6 +181,12 @@ pub(crate) struct BackgroundEvaluator<K: EvalKernel + Send + 'static> {
     worker: Mutex<Option<JoinHandle<Result<(), EvalError>>>>,
     config: BackgroundConfig,
     pub(crate) state: Arc<BackgroundState>,
+    /// Opt-in `submit_blocking` / `submit_timeout` latency sample
+    /// accumulator (B5 — BackgroundEvaluator p99 latency cell).
+    /// `None` when disabled (the default); the only always-on cost is
+    /// one `Option::is_some` check per submit. Each sample is the
+    /// wall-time of the FFI-to-`mpsc::send` leg in nanoseconds.
+    latency_samples: Option<Mutex<Vec<u64>>>,
 }
 
 /// Returned by [`BackgroundEvaluator::submit_timeout`] when the queue
@@ -213,14 +219,33 @@ impl From<EvalError> for SubmitError {
 
 impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
     /// Hand the evaluator to a fresh worker thread named
-    /// `vernier-bg-worker` and return the wrapper.
+    /// `vernier-bg-worker` and return the wrapper. Latency-sample
+    /// accumulation is off by default; see
+    /// [`Self::spawn_with_options`] to opt in.
     ///
     /// The worker applies its scheduling preferences (nice, affinity)
     /// before pulling its first message; the result is stashed in
     /// `state.scheduling_outcome` for the FFI to read once.
+    #[allow(dead_code, reason = "kept for symmetry with BackgroundCore::spawn; FFI calls spawn_with_options directly")]
     pub(crate) fn spawn(
         evaluator: StreamingEvaluator<K>,
         config: BackgroundConfig,
+    ) -> Result<Self, EvalError> {
+        Self::spawn_with_options(evaluator, config, false)
+    }
+
+    /// Variant of [`Self::spawn`] with a per-instance opt-in for
+    /// latency-sample accumulation (B5 — BackgroundEvaluator p99
+    /// latency cell). When `record_latency_samples` is `true`, every
+    /// successful `submit_blocking` / `submit_timeout` records the
+    /// wall-time of the channel-send leg in nanoseconds; readers
+    /// consume samples via [`Self::latency_samples_drain`]. When
+    /// `false`, the accumulator stays unallocated and the only cost
+    /// is one `Option::is_some` check per submit.
+    pub(crate) fn spawn_with_options(
+        evaluator: StreamingEvaluator<K>,
+        config: BackgroundConfig,
+        record_latency_samples: bool,
     ) -> Result<Self, EvalError> {
         let (sender, receiver) = sync_channel::<WorkerMessage<K>>(config.queue_capacity);
         let state = Arc::new(BackgroundState::new());
@@ -240,11 +265,18 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
                 detail: format!("failed to spawn background worker: {e}"),
             })?;
 
+        let latency_samples = if record_latency_samples {
+            Some(Mutex::new(Vec::new()))
+        } else {
+            None
+        };
+
         Ok(Self {
             sender,
             worker: Mutex::new(Some(handle)),
             config,
             state: Arc::clone(&state),
+            latency_samples,
         })
     }
 
@@ -253,9 +285,13 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
     /// and the previous call (and clears it).
     pub(crate) fn submit_blocking(&self, parsed: ParsedDetections<K>) -> Result<(), EvalError> {
         self.take_last_error()?;
+        let start = self.latency_start();
         self.state.queue_depth.fetch_add(1, Ordering::AcqRel);
         match self.sender.send(WorkerMessage::Update(parsed)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.record_latency_sample(start);
+                Ok(())
+            }
             Err(_) => {
                 // Worker is gone; roll back the advisory queue counter
                 // and report the disconnect to the caller.
@@ -276,10 +312,14 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
         timeout: Duration,
     ) -> Result<(), SubmitError> {
         self.take_last_error().map_err(SubmitError::Eval)?;
+        let start = self.latency_start();
         self.state.queue_depth.fetch_add(1, Ordering::AcqRel);
         let result = self.send_with_timeout(WorkerMessage::Update(parsed), timeout);
-        if result.is_err() {
-            self.state.queue_depth.fetch_sub(1, Ordering::AcqRel);
+        match &result {
+            Ok(()) => self.record_latency_sample(start),
+            Err(_) => {
+                self.state.queue_depth.fetch_sub(1, Ordering::AcqRel);
+            }
         }
         result
     }
@@ -574,6 +614,49 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
             .map_err(|_| EvalError::InvalidConfig {
                 detail: "background worker is no longer accepting submissions".to_string(),
             })
+    }
+
+    /// Drain and replace the per-instance submit-latency sample buffer
+    /// (B5). Each sample is the wall-time of the FFI-to-`mpsc::send`
+    /// leg in nanoseconds; the inner `Vec` is left freshly empty so
+    /// subsequent submits keep accumulating. Returns an empty `Vec`
+    /// when the wrapper was constructed without
+    /// `record_latency_samples`.
+    pub(crate) fn latency_samples_drain(&self) -> Vec<u64> {
+        match self.latency_samples.as_ref() {
+            Some(slot) => match slot.lock() {
+                Ok(mut guard) => std::mem::take(&mut *guard),
+                Err(_) => Vec::new(),
+            },
+            None => Vec::new(),
+        }
+    }
+
+    /// `Some(Instant::now())` when latency capture is on; `None`
+    /// otherwise. Inlined into the submit hot path.
+    fn latency_start(&self) -> Option<Instant> {
+        if self.latency_samples.is_some() {
+            Some(Instant::now())
+        } else {
+            None
+        }
+    }
+
+    /// Push the elapsed nanoseconds since `start` if both the
+    /// accumulator is enabled and `start` was captured. Mutex
+    /// contention is bounded — held only to push a single `u64`.
+    fn record_latency_sample(&self, start: Option<Instant>) {
+        let (slot, started) = match (self.latency_samples.as_ref(), start) {
+            (Some(slot), Some(t0)) => (slot, t0),
+            _ => return,
+        };
+        // `Duration::as_nanos` is `u128`; saturate on overflow rather
+        // than wrap so a runaway tail stays observable instead of
+        // looking artificially fast.
+        let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        if let Ok(mut guard) = slot.lock() {
+            guard.push(ns);
+        }
     }
 
     /// Drain `state.last_error` and surface it. The contract: errors
