@@ -47,6 +47,9 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
     "streaming": {
         "vernier_streaming": frozenset({"throughput", "vs_naive", "dlpack"}),
         "naive_python": frozenset({"vs_naive"}),
+        # B5: BackgroundEvaluator p99 cell. Single impl; no oracle —
+        # the latency_cdf artifact is informational (no parity gate).
+        "vernier_bg": frozenset({"p99"}),
     },
 }
 
@@ -74,6 +77,7 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     # in the pycocotools env so it can call cocoeval directly.
     "vernier_streaming": "vernier",
     "naive_python": "pycocotools",
+    "vernier_bg": "vernier",
 }
 
 

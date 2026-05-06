@@ -336,13 +336,18 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
         from bench.workloads.coco_val2017_dlpack import dlpack_vs_json
 
         return dlpack_vs_json()
+    if workload_name == "coco_val2017_bg_saturation":
+        from bench.workloads.coco_val2017_bg_saturation import bg_saturation
+
+        return bg_saturation()
     if any(workload_name.startswith(p) for p in _STREAMING_PREFIXES):
         raise NotImplementedError(
             f"workload {workload_name!r} is in the streaming namespace but "
             f"not registered. Known streaming workloads: "
             f"coco_val2017_streaming_throughput, "
             f"coco_val2017_streaming_vs_naive, "
-            f"coco_val2017_dlpack_vs_json."
+            f"coco_val2017_dlpack_vs_json, "
+            f"coco_val2017_bg_saturation."
         )
 
     raise ValueError(
