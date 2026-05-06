@@ -102,7 +102,7 @@ def four_paradigm_tree(tmp_path: Path) -> Path:
     plan: list[tuple[Paradigm, str, IouType, str]] = [
         ("instance", "smoke", "bbox", "vernier"),
         ("panoptic", "coco_panoptic_val2017_perfect", "bbox", "vernier_panoptic"),
-        ("semantic", "cityscapes_val_perfect", "bbox", "vernier_semantic"),
+        ("semantic", "ade20k_val_perfect", "bbox", "vernier_semantic"),
         ("streaming", "coco_val2017_streaming_throughput", "bbox", "vernier_streaming"),
     ]
     for paradigm, workload, iou, impl in plan:

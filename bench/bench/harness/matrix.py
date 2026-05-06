@@ -37,13 +37,11 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         "vernier_panoptic": frozenset({"pq"}),
         "panopticapi": frozenset({"pq"}),
     },
-    # Cityscapes-vs-cityscapesScripts is strict on integer counts.
-    # ADE20K + mmseg lands in S3-B as an additional `aligned`-tier
-    # entry pending PR-B6/7/8 vendoring.
-    "semantic": {
-        "vernier_semantic": frozenset({"miou"}),
-        "cityscapesscripts": frozenset({"miou"}),
-    },
+    # Semantic paradigm has no MVB cell at Stage 1 (the Cityscapes
+    # cell was dropped — Cityscapes' license restricts redistribution
+    # of derivative outputs, which doesn't fit the public bench-result
+    # tree). First concrete cell is S3-B: ADE20K + mmseg.
+    "semantic": {},
     "streaming": {
         "vernier_streaming": frozenset({"throughput", "vs_naive", "dlpack"}),
         "naive_python": frozenset({"vs_naive"}),
@@ -70,8 +68,6 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     "boundary-iou-api": "boundary-iou-api",
     "vernier_panoptic": "panopticapi",
     "panopticapi": "panopticapi",
-    "vernier_semantic": "cityscapes",
-    "cityscapesscripts": "cityscapes",
     # ``vernier_streaming`` runs in the vernier env so it can import
     # ``vernier.instance.StreamingEvaluator``; ``naive_python`` runs
     # in the pycocotools env so it can call cocoeval directly.
