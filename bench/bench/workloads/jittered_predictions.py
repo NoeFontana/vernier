@@ -1,23 +1,39 @@
 """Deterministic jittered detections from a COCO GT JSON.
 
 For every non-crowd GT annotation, emit a detection whose bbox is the
-GT bbox + Gaussian noise on ``(x, y, w, h)``, with a confidence drawn
-from a beta biased toward 1. A controlled fraction of GTs is dropped
+GT bbox + Gaussian noise on ``(x, y, w, h)``, score drawn from a beta
+biased toward 1, and segmentation produced by mask-space jitter on the
+GT mask (dilate ``k_d ~ Poisson(λ=1)``, erode ``k_e ~ Poisson(λ=1)``,
+both clipped to :data:`MASK_KERNEL_CLIP`; integer pixel translation
+``(dy, dx) ~ N(0, sigma=2px)``). A controlled fraction of GTs is dropped
 (false negatives) and the same fraction is added at random positions
-(false positives). The cache key is ``(seed, *jitter_params)`` — bump
+(false positives — segm field on FPs is the filled bbox rectangle, so
+segm/boundary runners can consume the same DT stream as bbox runners).
+
+The cache key is ``(seed, JITTER_PARAMS_VERSION)`` — bump
 :data:`JITTER_PARAMS_VERSION` if any default changes so old caches
 self-invalidate.
 
-Bbox-only for now. Segm/keypoints jittering follows when those iou
-types ship in the runtime matrix.
+Mask jitter draws come from an independent SeedSequence stream so the
+v1→v2 upgrade preserves seed=N's bbox/score/FP byte-identity (anyone
+who captured perf numbers under v1 sees the same bbox-row distribution
+under v2; the segm/boundary rows are new). Encode/decode go through
+pycocotools, not vernier-mask, since using the system under test as
+the codec for its own test data would be circular.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
+import scipy.ndimage as ndi
+from pycocotools import mask as mask_utils
+
+if TYPE_CHECKING:
+    from pycocotools.mask import _EncodedRLE
 
 from bench.harness.paths import bench_cache_root
 
@@ -28,8 +44,9 @@ SCORE_BETA_BETA = 1.0
 
 # Single bump-on-default-change number, shared by the workload_id and
 # cache filename so altering any default invalidates pre-existing
-# detections without per-knob bookkeeping.
-JITTER_PARAMS_VERSION = 1
+# detections without per-knob bookkeeping. v2 added mask-space jitter
+# on a side stream — bbox/score/FP draws are identical to v1.
+JITTER_PARAMS_VERSION = 2
 
 # Easy preset (per ADR-0017 §"Workloads → COCO val2017") — small bbox
 # jitter, modest FP/FN, scores biased toward correct so ranking is
@@ -37,6 +54,20 @@ JITTER_PARAMS_VERSION = 1
 BBOX_JITTER_SIGMA_PX = 5.0
 FP_FRACTION = 0.05
 FN_FRACTION = 0.05
+
+# Mask-space jitter (v2): structurally resembles real Mask R-CNN errors
+# (fattened/thinned/translated). Vertex-space jitter would push self-
+# intersecting polygons through pycocotools' ``rleFrPoly`` path
+# (boundary-iou-quirks H3), a parity disposition we keep out of the
+# test distribution.
+MASK_DILATE_LAMBDA = 1.0
+MASK_ERODE_LAMBDA = 1.0
+MASK_KERNEL_CLIP = 5
+MASK_TRANSLATE_SIGMA_PX = 2.0
+
+# Spawn key for the mask-jitter side stream. Pinned so v2 is reproducible
+# across NumPy versions; treat as a one-time ABI choice.
+_MASK_RNG_SPAWN_KEY = (0x6D61736B,)  # b"mask"
 
 
 def _jittered_dt_path(seed: int) -> Path:
@@ -48,14 +79,89 @@ def workload_id(seed: int) -> str:
     return f"coco_val2017_jittered_seed{seed}"
 
 
+def _decode_segm_to_mask(seg: Any, *, height: int, width: int) -> np.ndarray | None:
+    """Decode a COCO segmentation field to an HxW bool mask, or None if absent/empty."""
+    if seg is None:
+        return None
+    rle: _EncodedRLE
+    if isinstance(seg, list):
+        if not seg:
+            return None
+        rle = mask_utils.merge(mask_utils.frPyObjects(seg, height, width))
+    elif isinstance(seg, dict):
+        counts = seg.get("counts")
+        seg_rle = cast("_EncodedRLE", seg)
+        if isinstance(counts, list):
+            rle = cast("_EncodedRLE", mask_utils.frPyObjects(seg_rle, height, width))
+        else:
+            rle = seg_rle
+    else:
+        return None
+    decoded = mask_utils.decode(rle)
+    return np.asarray(decoded, dtype=bool)
+
+
+def _apply_mask_jitter(
+    mask: np.ndarray,
+    *,
+    k_dilate: int,
+    k_erode: int,
+    dy: int,
+    dx: int,
+    height: int,
+    width: int,
+) -> np.ndarray:
+    """Dilate (k_dilate iters), erode (k_erode iters), translate by (dy, dx) integer pixels."""
+    out = mask
+    if k_dilate > 0:
+        out = ndi.binary_dilation(out, iterations=k_dilate)
+    if k_erode > 0:
+        out = ndi.binary_erosion(out, iterations=k_erode)
+    if dy != 0 or dx != 0:
+        translated = np.zeros_like(out)
+        dst_ys, dst_ye = max(0, dy), min(height, height + dy)
+        dst_xs, dst_xe = max(0, dx), min(width, width + dx)
+        src_ys, src_ye = max(0, -dy), min(height, height - dy)
+        src_xs, src_xe = max(0, -dx), min(width, width - dx)
+        if dst_ye > dst_ys and dst_xe > dst_xs:
+            translated[dst_ys:dst_ye, dst_xs:dst_xe] = out[src_ys:src_ye, src_xs:src_xe]
+        out = translated
+    return out
+
+
+def _encode_mask(mask: np.ndarray) -> tuple[dict[str, Any], int]:
+    """Encode a 2-D bool mask as a COCO RLE dict with ASCII counts; returns ``(rle, area)``."""
+    encoded = mask_utils.encode(np.asfortranarray(mask.astype(np.uint8)))
+    area = int(mask_utils.area(encoded))
+    counts = encoded["counts"]
+    if isinstance(counts, bytes):
+        counts = counts.decode("ascii")
+    return {"size": list(encoded["size"]), "counts": counts}, area
+
+
+def _filled_bbox_mask(*, height: int, width: int, bbox: list[float]) -> np.ndarray:
+    x, y, w, h = bbox
+    out = np.zeros((height, width), dtype=bool)
+    y0 = max(0, round(y))
+    x0 = max(0, round(x))
+    y1 = min(height, round(y + h))
+    x1 = min(width, round(x + w))
+    if y1 > y0 and x1 > x0:
+        out[y0:y1, x0:x1] = True
+    return out
+
+
 def _generate(*, gt_path: Path, seed: int, out: Path) -> None:
     with gt_path.open("rb") as f:
         gt = json.load(f)
     rng = np.random.default_rng(seed)
+    # Independent stream so v1 bbox/score/FP byte-identity is preserved
+    # under the v2 schema bump.
+    mask_rng = np.random.default_rng(np.random.SeedSequence(seed, spawn_key=_MASK_RNG_SPAWN_KEY))
 
     images = gt.get("images", [])
-    image_size_by_id: dict[int, tuple[float, float]] = {
-        int(img["id"]): (float(img["width"]), float(img["height"])) for img in images
+    image_hw_by_id: dict[int, tuple[int, int]] = {
+        int(img["id"]): (int(img["height"]), int(img["width"])) for img in images
     }
 
     non_crowd = [a for a in gt["annotations"] if not a.get("iscrowd", 0)]
@@ -73,37 +179,72 @@ def _generate(*, gt_path: Path, seed: int, out: Path) -> None:
         jw = max(jw, 1.0)
         jh = max(jh, 1.0)
         score = float(rng.beta(SCORE_BETA_ALPHA, SCORE_BETA_BETA))
-        detections.append(
-            {
-                "image_id": int(ann["image_id"]),
-                "category_id": int(ann["category_id"]),
-                "bbox": [float(jx), float(jy), float(jw), float(jh)],
-                "score": score,
-            }
-        )
+        bbox = [float(jx), float(jy), float(jw), float(jh)]
+        det: dict[str, object] = {
+            "image_id": int(ann["image_id"]),
+            "category_id": int(ann["category_id"]),
+            "bbox": bbox,
+            "score": score,
+        }
+
+        # Always advance the mask RNG so a GT without segmentation
+        # doesn't desync the side stream from a GT with segmentation.
+        k_dilate = min(int(mask_rng.poisson(MASK_DILATE_LAMBDA)), MASK_KERNEL_CLIP)
+        k_erode = min(int(mask_rng.poisson(MASK_ERODE_LAMBDA)), MASK_KERNEL_CLIP)
+        dy = round(float(mask_rng.normal(0.0, MASK_TRANSLATE_SIGMA_PX)))
+        dx = round(float(mask_rng.normal(0.0, MASK_TRANSLATE_SIGMA_PX)))
+
+        hw = image_hw_by_id.get(int(ann["image_id"]))
+        if hw is not None:
+            gt_mask = _decode_segm_to_mask(ann.get("segmentation"), height=hw[0], width=hw[1])
+            if gt_mask is not None:
+                jittered = _apply_mask_jitter(
+                    gt_mask,
+                    k_dilate=k_dilate,
+                    k_erode=k_erode,
+                    dy=dy,
+                    dx=dx,
+                    height=hw[0],
+                    width=hw[1],
+                )
+                rle, area = _encode_mask(jittered)
+                det["segmentation"] = rle
+                det["area"] = float(area)
+
+        detections.append(det)
 
     n_fp = round(FP_FRACTION * len(non_crowd))
-    if n_fp and image_size_by_id and gt.get("categories"):
-        image_ids = list(image_size_by_id.keys())
+    if n_fp and image_hw_by_id and gt.get("categories"):
+        image_ids = list(image_hw_by_id.keys())
         category_ids = [int(c["id"]) for c in gt["categories"]]
         fp_image_idx = rng.integers(0, len(image_ids), size=n_fp)
         fp_cat_idx = rng.integers(0, len(category_ids), size=n_fp)
         fp_scores = rng.beta(SCORE_BETA_ALPHA, SCORE_BETA_BETA, size=n_fp)
         for i in range(n_fp):
             img_id = image_ids[int(fp_image_idx[i])]
-            iw, ih = image_size_by_id[img_id]
+            ih, iw = image_hw_by_id[img_id]
             w = float(rng.uniform(10.0, max(11.0, iw / 4.0)))
             h = float(rng.uniform(10.0, max(11.0, ih / 4.0)))
             x = float(rng.uniform(0.0, max(1.0, iw - w)))
             y = float(rng.uniform(0.0, max(1.0, ih - h)))
-            detections.append(
-                {
-                    "image_id": img_id,
-                    "category_id": category_ids[int(fp_cat_idx[i])],
-                    "bbox": [x, y, w, h],
-                    "score": float(fp_scores[i]),
-                }
-            )
+            fp_bbox = [x, y, w, h]
+            det = {
+                "image_id": img_id,
+                "category_id": category_ids[int(fp_cat_idx[i])],
+                "bbox": fp_bbox,
+                "score": float(fp_scores[i]),
+            }
+            # FP segmentation is the filled bbox rectangle: a structurally
+            # honest "this is what an unrecognized region looks like" mask
+            # that lets segm/boundary runners consume the same DT stream
+            # without a separate FP-suppression pass.
+            hw = image_hw_by_id.get(int(img_id))
+            if hw is not None:
+                fp_mask = _filled_bbox_mask(height=hw[0], width=hw[1], bbox=fp_bbox)
+                rle, area = _encode_mask(fp_mask)
+                det["segmentation"] = rle
+                det["area"] = float(area)
+            detections.append(det)
 
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w") as f:

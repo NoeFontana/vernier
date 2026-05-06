@@ -130,6 +130,11 @@ dev = [
     # `tests/python/parity_panoptic/test_panoptic_val.py` and the
     # `python -m panoptic_val_cache` CLI.
     "vernier-panoptic-val-cache",
+    # Real-model predictions cache (Mask R-CNN downloaded; rf-detr
+    # inferred via the TIDE harness). Single source of truth for the
+    # cache-path contract shared between bench's real-prediction adapter
+    # and `tools/fetch-real-predictions.sh`.
+    "vernier-real-predictions-cache",
 ]
 docs = [
     "mkdocs-material>=9.5",
@@ -143,6 +148,7 @@ docs = [
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "tools/lvis_val_cache", editable = true }
 vernier-panoptic-val-cache = { path = "tools/panoptic_val_cache", editable = true }
+vernier-real-predictions-cache = { path = "tools/real_predictions_cache", editable = true }
 
 # ---------------------------------------------------------------------------
 # Ruff: lint + format

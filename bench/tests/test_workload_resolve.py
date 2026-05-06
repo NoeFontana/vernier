@@ -79,3 +79,27 @@ def test_coco_val2017_perfect_segm_resolves_when_inputs_present(
     assert w.gt_path == gt
     assert w.dt_path == dt
     assert w.supported_iou_types == frozenset({"segm", "boundary"})
+
+
+def test_coco_val2017_jittered_serves_bbox_segm_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """v2 jitter materializes segm RLE alongside bbox so the workload
+    fans out to bbox + segm + boundary cells. Sha256-verified GT load
+    is short-circuited the same way the perfect-segm test does it."""
+    monkeypatch.setenv("VERNIER_BENCH_CACHE", str(tmp_path))
+    gt = tmp_path / "instances_val2017.json"
+    gt.write_text(
+        '{"images":[{"id":1,"width":32,"height":32,"file_name":"1.jpg"}],'
+        '"categories":[{"id":1,"name":"cat"}],'
+        '"annotations":[{"id":1,"image_id":1,"category_id":1,'
+        '"bbox":[4,4,8,8],"area":64,"iscrowd":0,'
+        '"segmentation":[[4,4,12,4,12,12,4,12]]}]}'
+    )
+    monkeypatch.setattr(coco_val2017, "gt_path", lambda: gt)
+
+    w = resolve("coco_val2017_jittered_seed42", REPO_ROOT)
+    assert w.workload_id == "coco_val2017_jittered_seed42"
+    assert w.gt_path == gt
+    assert w.dt_path.exists()
+    assert w.supported_iou_types == frozenset({"bbox", "segm", "boundary"})

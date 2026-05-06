@@ -1,0 +1,27 @@
+[project]
+name = "vernier-real-predictions-cache"
+version = "0.0.0"
+description = "Single source of truth for the real-model predictions cache contract (Mask R-CNN, rf-detr)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+dependencies = [
+    # Resolves the per-user cache root (XDG-correct on Linux,
+    # ~/Library/Caches on macOS, %LOCALAPPDATA% on Windows). Pure-Python
+    # tiny wheel; no transitive deps.
+    "platformdirs>=4",
+    # Sibling cache package — single owner of the streaming SHA256 +
+    # atomic-download helpers shared between the COCO val cache and the
+    # real-predictions cache.
+    "vernier-coco-val-cache",
+]
+
+[tool.uv.sources]
+vernier-coco-val-cache = { path = "../coco_val_cache", editable = true }
+
+[build-system]
+requires = ["hatchling>=1.18"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["real_predictions_cache"]
