@@ -20,6 +20,15 @@ who captured perf numbers under v1 sees the same bbox-row distribution
 under v2; the segm/boundary rows are new). Encode/decode go through
 pycocotools, not vernier-mask, since using the system under test as
 the codec for its own test data would be circular.
+
+Keypoint jitter (separate workload, separate cache file) applies
+positional noise scaled per-keypoint by ``COCO sigmas * sqrt(area)``,
+and flips visibility flags with low probability. Per ADR-0012 the COCO
+17-person sigmas are the canonical OKS scale; the bench mirrors them
+here from ``crates/vernier-core/src/similarity/oks.rs`` (post-divide-by-
+10) so the jitter scale aligns with the OKS denominator and produces
+realistic AP deltas. Keypoint jitter has its own SeedSequence stream so
+its outputs are independent of the bbox/segm streams above.
 """
 
 from __future__ import annotations
@@ -69,6 +78,30 @@ MASK_TRANSLATE_SIGMA_PX = 2.0
 # across NumPy versions; treat as a one-time ABI choice.
 _MASK_RNG_SPAWN_KEY = (0x6D61736B,)  # b"mask"
 
+# COCO 17-keypoint sigmas (post-divide-by-10), mirroring
+# ``crates/vernier-core/src/similarity/oks.rs::COCO_PERSON_SIGMAS``.
+# Bench-side jitter scales the per-keypoint Gaussian by ``sigma_i *
+# sqrt(area)`` so the perturbation magnitude maps onto the OKS
+# denominator: a unit jitter at keypoint ``i`` corresponds to one
+# OKS-equivalent on a unit-area object.
+COCO_PERSON_SIGMAS: tuple[float, ...] = (
+    0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072,
+    0.062, 0.062, 0.107, 0.107, 0.087, 0.087, 0.089, 0.089,
+)
+
+# Keypoint jitter knobs. ``KP_JITTER_SCALE`` sets the per-keypoint
+# Gaussian std as ``KP_JITTER_SCALE * sigma_i * sqrt(area)``; with
+# 1.0 the resulting OKS distribution centers around realistic
+# detector-vs-GT errors. Visibility flips are rare so
+# ``num_keypoints`` stays meaningful for the F3 surrogate branch.
+KP_JITTER_SCALE = 1.5
+KP_VISIBILITY_FLIP_PROB = 0.02
+
+# Spawn key for the keypoint-jitter side stream. Independent of bbox
+# and mask streams so seed=N's keypoint workload is reproducible
+# without mass-perturbing other workloads' caches.
+_KP_RNG_SPAWN_KEY = (0x6B70_6B70,)  # b"kpkp"
+
 
 def _jittered_dt_path(seed: int) -> Path:
     cache = bench_cache_root() / "jittered"
@@ -77,6 +110,15 @@ def _jittered_dt_path(seed: int) -> Path:
 
 def workload_id(seed: int) -> str:
     return f"coco_val2017_jittered_seed{seed}"
+
+
+def keypoints_workload_id(seed: int) -> str:
+    return f"coco_val2017_keypoints_jittered_seed{seed}"
+
+
+def _keypoints_jittered_dt_path(seed: int) -> Path:
+    cache = bench_cache_root() / "jittered"
+    return cache / f"coco_val2017_keypoints_jittered_seed{seed}_v{JITTER_PARAMS_VERSION}.json"
 
 
 def _decode_segm_to_mask(seg: Any, *, height: int, width: int) -> np.ndarray | None:
@@ -256,4 +298,97 @@ def dt_path(*, gt_path: Path, seed: int) -> Path:
     out = _jittered_dt_path(seed)
     if not out.exists():
         _generate(gt_path=gt_path, seed=seed, out=out)
+    return out
+
+
+def lvis_dt_path(*, gt_path: Path, seed: int) -> Path:
+    """LVIS-keyed cache sibling of :func:`dt_path`.
+
+    The same generator runs against the LVIS GT bytes; the only
+    difference is the cache filename, so a same-seed COCO and LVIS
+    jittered DT live in different files instead of clobbering each
+    other. Seed identity is therefore a property of (workload, seed),
+    not of (paradigm, seed).
+    """
+    cache = bench_cache_root() / "jittered"
+    out = cache / f"lvis_v1_val_jittered_seed{seed}_v{JITTER_PARAMS_VERSION}.json"
+    if not out.exists():
+        _generate(gt_path=gt_path, seed=seed, out=out)
+    return out
+
+
+def _generate_keypoints(*, gt_path: Path, seed: int, out: Path) -> None:
+    """Emit a keypoints DT JSON: one detection per non-crowd GT with a
+    keypoint vector. Per-keypoint Gaussian jitter is scaled by
+    ``sigma_i * sqrt(area)``; visibility flips at probability
+    :data:`KP_VISIBILITY_FLIP_PROB`. The bbox is the GT bbox (no bbox
+    jitter — the OKS area normaliser comes from ``ann["area"]``, not
+    the bbox).
+    """
+    with gt_path.open("rb") as f:
+        gt = json.load(f)
+    rng = np.random.default_rng(np.random.SeedSequence(seed, spawn_key=_KP_RNG_SPAWN_KEY))
+
+    n_default_sigmas = len(COCO_PERSON_SIGMAS)
+    detections: list[dict[str, object]] = []
+    for ann in gt.get("annotations", []):
+        if ann.get("iscrowd", 0):
+            continue
+        kp = ann.get("keypoints")
+        if not kp:
+            continue
+        n_triplets = len(kp) // 3
+        if n_triplets == 0:
+            continue
+        # Sigmas length must match n_triplets; fall back to COCO-person
+        # only when the count lines up. A non-17 keypoint vector with no
+        # category override is a fixture bug — keypoint jitter is not
+        # the place to silently invent a sigma table.
+        if n_triplets != n_default_sigmas:
+            raise ValueError(
+                f"keypoint jitter expects {n_default_sigmas} keypoints "
+                f"(COCO-person sigmas); GT ann {ann.get('id')} has {n_triplets}. "
+                f"Per-category sigma override is an ADR-0012 follow-up."
+            )
+
+        area = float(ann.get("area", 0.0))
+        scale = float(np.sqrt(max(area, 1.0)))
+
+        kp_arr = np.asarray(kp, dtype=np.float64).reshape(n_triplets, 3)
+        # One Gaussian draw per (x, y) per keypoint, scaled by
+        # sigma_i * sqrt(area). Drawing the whole matrix at once keeps
+        # the rng-stream order stable across numpy versions.
+        sigmas = np.asarray(COCO_PERSON_SIGMAS, dtype=np.float64)
+        noise = rng.normal(0.0, 1.0, size=(n_triplets, 2))
+        per_kp_std = (sigmas * scale * KP_JITTER_SCALE)[:, None]
+        kp_arr[:, :2] += noise * per_kp_std
+
+        # Visibility flips: rare bit-flip on the v channel
+        # (0 ↔ 2; v=1 is unused at the prediction boundary). Drawn
+        # after the position noise so the position stream is stable
+        # if KP_VISIBILITY_FLIP_PROB ever changes.
+        flip_mask = rng.random(n_triplets) < KP_VISIBILITY_FLIP_PROB
+        flipped = np.where(kp_arr[:, 2] > 0, 0.0, 2.0)
+        kp_arr[:, 2] = np.where(flip_mask, flipped, kp_arr[:, 2])
+
+        score = float(rng.beta(SCORE_BETA_ALPHA, SCORE_BETA_BETA))
+        det = {
+            "image_id": int(ann["image_id"]),
+            "category_id": int(ann["category_id"]),
+            "bbox": [float(v) for v in ann["bbox"]],
+            "score": score,
+            "keypoints": kp_arr.flatten().tolist(),
+        }
+        detections.append(det)
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w") as f:
+        json.dump(detections, f, separators=(",", ":"))
+
+
+def keypoints_dt_path(*, gt_path: Path, seed: int) -> Path:
+    """Return the cached keypoints-jittered DT, generating it if missing."""
+    out = _keypoints_jittered_dt_path(seed)
+    if not out.exists():
+        _generate_keypoints(gt_path=gt_path, seed=seed, out=out)
     return out

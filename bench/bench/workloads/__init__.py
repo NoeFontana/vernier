@@ -54,6 +54,7 @@ from bench.harness.schema import IouType
 from bench.workloads import (
     coco_val2017,
     jittered_predictions,
+    lvis_v1,
     real_predictions,
     smoke,
     synthetic,
@@ -148,6 +149,7 @@ WorkloadAdapter: TypeAdapter[Workload] = TypeAdapter(Workload)
 
 
 _COCO_JITTERED_RE = re.compile(r"^coco_val2017_jittered_seed(\d+)$")
+_COCO_KP_JITTERED_RE = re.compile(r"^coco_val2017_keypoints_jittered_seed(\d+)$")
 _SYNTHETIC_PREFIX = "synthetic:"
 _SYNTHETIC_DEFAULTS: dict[str, int] = {
     "n_categories": 80,
@@ -211,6 +213,37 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             gt_path=gt,
             dt_path=dt,
             supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
+        )
+
+    if m := _COCO_KP_JITTERED_RE.match(workload_name):
+        seed = int(m.group(1))
+        gt = coco_val2017.gt_path()
+        dt = jittered_predictions.keypoints_dt_path(gt_path=gt, seed=seed)
+        return InstanceWorkload(
+            workload_id=jittered_predictions.keypoints_workload_id(seed),
+            gt_path=gt,
+            dt_path=dt,
+            supported_iou_types=frozenset({"keypoints"}),
+        )
+
+    if workload_name == lvis_v1.PERFECT_WORKLOAD_ID:
+        gt = lvis_v1.gt_path()
+        dt = lvis_v1.perfect_dt_segm_path()
+        return InstanceWorkload(
+            workload_id=lvis_v1.PERFECT_WORKLOAD_ID,
+            gt_path=gt,
+            dt_path=dt,
+            supported_iou_types=frozenset({"bbox", "segm"}),
+        )
+
+    if (lvis_seed := lvis_v1.parse_jittered_seed(workload_name)) is not None:
+        gt = lvis_v1.gt_path()
+        dt = jittered_predictions.lvis_dt_path(gt_path=gt, seed=lvis_seed)
+        return InstanceWorkload(
+            workload_id=lvis_v1.jittered_workload_id(lvis_seed),
+            gt_path=gt,
+            dt_path=dt,
+            supported_iou_types=frozenset({"bbox", "segm"}),
         )
 
     if workload_name == "coco_val2017_perfect_segm":
@@ -278,8 +311,10 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
     raise ValueError(
         f"unknown workload {workload_name!r}; "
         f"known: 'smoke', 'coco_val2017_jittered_seed<N>', "
+        f"'coco_val2017_keypoints_jittered_seed<N>', "
         f"'coco_val2017_perfect_segm', 'synthetic:n_images=...,seed=...', "
         f"'{real_predictions.MASKRCNN_R50FPN_WORKLOAD_ID}', "
         f"'{real_predictions.RFDETR_NANO_WORKLOAD_ID}', "
-        f"'{real_predictions.RFDETR_SEGNANO_WORKLOAD_ID}'"
+        f"'{real_predictions.RFDETR_SEGNANO_WORKLOAD_ID}', "
+        f"'{lvis_v1.PERFECT_WORKLOAD_ID}', 'lvis_v1_val_jittered_seed<N>'"
     )

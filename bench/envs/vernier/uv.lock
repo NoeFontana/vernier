@@ -611,6 +611,7 @@ dependencies = [
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "vernier-coco-val-cache" },
+    { name = "vernier-lvis-val-cache" },
     { name = "vernier-real-predictions-cache" },
 ]
 
@@ -623,6 +624,7 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "vernier-coco-val-cache", editable = "../../../tools/coco_val_cache" },
+    { name = "vernier-lvis-val-cache", editable = "../../../tools/lvis_val_cache" },
     { name = "vernier-real-predictions-cache", editable = "../../../tools/real_predictions_cache" },
 ]
 
@@ -657,6 +659,11 @@ requires-dist = [
 name = "vernier-coco-val-cache"
 version = "0.0.0"
 source = { editable = "../../../tools/coco_val_cache" }
+
+[[package]]
+name = "vernier-lvis-val-cache"
+version = "0.0.0"
+source = { editable = "../../../tools/lvis_val_cache" }
 
 [[package]]
 name = "vernier-real-predictions-cache"
