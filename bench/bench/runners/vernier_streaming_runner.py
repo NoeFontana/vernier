@@ -135,7 +135,7 @@ def _segmentation_to_rle(seg: object, h: int, w: int) -> RLE:
     # Used only on segm/boundary cells. The bbox cells (today) skip this
     # branch; the runner imports ``pycocotools.mask`` lazily so the
     # bbox-only path doesn't pay the import cost.
-    from pycocotools import mask as pmask  # noqa: PLC0415
+    from pycocotools import mask as pmask
 
     if isinstance(seg, dict):
         counts = seg["counts"]

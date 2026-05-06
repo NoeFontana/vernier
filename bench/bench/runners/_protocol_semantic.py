@@ -26,7 +26,6 @@ import numpy as np
 from coco_val_cache import file_sha256
 
 from bench.harness.schema import BenchWarning, RunnerRepOutput, StageTimings
-from bench.harness.timing import StageTable
 
 #: Canonical artifact key for the semantic confusion matrix. Mirrors
 #: ``TENSOR_KEY`` in ``bench/bench/harness/migrations/v1_to_v2.py``;

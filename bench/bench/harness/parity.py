@@ -898,7 +898,7 @@ def _stats_dict_to_array(stats: dict[str, float]) -> np.ndarray:
 def _compare_streaming_pair_internal(
     *,
     impl: str,
-    artifact: "StreamingPair",
+    artifact: StreamingPair,
     atol: float,
 ) -> TierResult:
     """Bit-equality check between the two halves of a single impl's

@@ -1,4 +1,4 @@
-"""Render compare/longitudinal data into markdown and SVG.
+r"""Render compare/longitudinal data into markdown and SVG.
 
 The SVG renderer is hand-rolled to keep bench's dep tree light — a
 multi-line longitudinal chart is the only chart the harness emits and

@@ -14,7 +14,6 @@ import time
 
 import pytest
 
-from bench.harness import rss as rss_mod
 from bench.harness.rss import RSSSampler
 
 
@@ -83,6 +82,6 @@ def test_rss_sampler_thread_is_daemon() -> None:
     doesn't hang waiting for it (the runner subprocess relies on this)."""
     with RSSSampler(interval_s=0.05) as sampler:
         time.sleep(0.05)
-        thread = sampler._thread  # noqa: SLF001 — internal-state check
+        thread = sampler._thread
         assert thread is not None
         assert thread.daemon is True

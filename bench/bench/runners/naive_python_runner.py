@@ -32,7 +32,6 @@ import hashlib
 import io
 import json
 import sys
-import time
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 from typing import Any

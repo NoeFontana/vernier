@@ -41,10 +41,8 @@ from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.migrations.v1_to_v2 import TENSOR_KEY
 from bench.harness.parity import (
     CellParityReport,
-    ComparableArtifact,
     PanopticSnapshot,
     compare_cell,
-    get_comparator,
     write_report,
 )
 from bench.harness.schema import (
@@ -387,7 +385,6 @@ def _assemble_impl_result(
     _ = _validate_artifacts(
         impl=impl, spawned=spawned, expected_keys=expected_artifact_keys
     )
-    canonical_sha = spawned[0].runner_out.artifact_sha256[TENSOR_KEY]
 
     canonical = spawned[0]
     if canonical.tensor_path is None:

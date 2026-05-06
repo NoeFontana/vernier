@@ -64,7 +64,7 @@ class RSSSampler:
         self._thread: threading.Thread | None = None
         self._t0: float | None = None
 
-    def __enter__(self) -> "RSSSampler":
+    def __enter__(self) -> RSSSampler:
         if not _PSUTIL_AVAILABLE:
             # No-op path; thread is never started so __exit__ is also a
             # no-op. ``samples`` stays empty; ``peak_rss_bytes`` returns -1.
@@ -84,7 +84,7 @@ class RSSSampler:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: "TracebackType | None",
+        exc_tb: TracebackType | None,
     ) -> None:
         self._stop_event.set()
         if self._thread is not None:

@@ -43,7 +43,7 @@ class _StubFragment:
         self.name: str = name
         self._payload = payload
 
-    def render(self, cells: Sequence[BenchResult]) -> str:  # noqa: ARG002
+    def render(self, cells: Sequence[BenchResult]) -> str:
         return self._payload
 
 
@@ -131,7 +131,7 @@ def test_register_unknown_paradigm_rejected() -> None:
         paradigm: ClassVar[str] = "future_paradigm"
         name: ClassVar[str] = "x"
 
-        def render(self, cells: Sequence[BenchResult]) -> str:  # noqa: ARG002
+        def render(self, cells: Sequence[BenchResult]) -> str:
             return ""
 
     with pytest.raises(ValueError, match="future_paradigm"):

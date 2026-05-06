@@ -60,6 +60,7 @@ from bench.workloads import (
     smoke,
     synthetic,
 )
+
 # Streaming workload modules import this module's StreamingWorkload —
 # import them only inside ``resolve()`` to break the cycle. The modules
 # are public; use ``from bench.workloads.coco_val2017_streaming import ...``
