@@ -7,11 +7,12 @@ from pathlib import Path
 import pytest
 
 from bench.harness.paths import REPO_ROOT
-from bench.workloads import coco_val2017, resolve
+from bench.workloads import InstanceWorkload, coco_val2017, resolve
 
 
 def test_smoke_resolves_to_local_fixture() -> None:
     w = resolve("smoke", REPO_ROOT)
+    assert isinstance(w, InstanceWorkload)
     assert w.workload_id == "smoke_perfect_match_segm"
     assert w.gt_path.exists()
     assert w.dt_path.exists()
@@ -23,6 +24,7 @@ def test_synthetic_minimal_args_uses_defaults(
 ) -> None:
     monkeypatch.setenv("VERNIER_BENCH_CACHE", str(tmp_path))
     w = resolve("synthetic:n_images=3,seed=7", REPO_ROOT)
+    assert isinstance(w, InstanceWorkload)
     assert w.workload_id == "synthetic_n3_c80_g10_d30_s7"
     assert w.gt_path.exists()
     assert w.dt_path.exists()
@@ -75,6 +77,7 @@ def test_coco_val2017_perfect_segm_resolves_when_inputs_present(
     monkeypatch.setenv("VERNIER_COCO_DT_SEGM_PATH", str(dt))
 
     w = resolve("coco_val2017_perfect_segm", REPO_ROOT)
+    assert isinstance(w, InstanceWorkload)
     assert w.workload_id == "coco_val2017_perfect_segm"
     assert w.gt_path == gt
     assert w.dt_path == dt
@@ -99,6 +102,7 @@ def test_coco_val2017_jittered_serves_bbox_segm_boundary(
     monkeypatch.setattr(coco_val2017, "gt_path", lambda: gt)
 
     w = resolve("coco_val2017_jittered_seed42", REPO_ROOT)
+    assert isinstance(w, InstanceWorkload)
     assert w.workload_id == "coco_val2017_jittered_seed42"
     assert w.gt_path == gt
     assert w.dt_path.exists()

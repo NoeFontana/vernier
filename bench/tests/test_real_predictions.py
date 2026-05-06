@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from bench.harness.paths import REPO_ROOT
-from bench.workloads import coco_val2017, real_predictions, resolve
+from bench.workloads import InstanceWorkload, coco_val2017, real_predictions, resolve
 
 
 @pytest.fixture
@@ -77,6 +77,7 @@ def test_registry_resolves_real_predictions_workload(
     monkeypatch.setattr(coco_val2017, "gt_path", lambda: gt)
 
     w = resolve(workload_id, REPO_ROOT)
+    assert isinstance(w, InstanceWorkload)
     assert w.workload_id == workload_id
     assert w.dt_path == blob
     assert w.gt_path == gt
@@ -128,9 +129,9 @@ def test_populate_rfdetr_shells_into_real_models_extra(
 def test_populate_rfdetr_rejects_unknown_model() -> None:
     """Runtime check guards CLI args that bypass the Literal type at the
     boundary (e.g., via argparse parsing into a plain str)."""
-    import real_predictions_cache
     from typing import cast
 
+    import real_predictions_cache
     from real_predictions_cache import RfdetrModelName
 
     with pytest.raises(ValueError, match="unknown rf-detr model"):

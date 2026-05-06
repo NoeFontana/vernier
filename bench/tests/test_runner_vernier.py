@@ -18,9 +18,10 @@ from tests.conftest import skip_if_no_env
 
 def test_vernier_runner_smoke(tmp_path: Path) -> None:
     skip_if_no_env("vernier")
-    from bench.workloads import resolve
+    from bench.workloads import InstanceWorkload, resolve
 
     workload = resolve("smoke", REPO_ROOT)
+    assert isinstance(workload, InstanceWorkload)
     output = tmp_path / "vernier.json"
     tensor_output = tmp_path / "vernier.npy"
 
@@ -55,7 +56,8 @@ def test_vernier_runner_smoke(tmp_path: Path) -> None:
     assert tensor_output.exists()
 
     payload = json.loads(output.read_text())
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
+    assert payload["paradigm"] == "instance"
     assert payload["impl"] == "vernier"
     assert payload["iou_type"] == "bbox"
     assert payload["workload_id"] == workload.workload_id
@@ -68,7 +70,8 @@ def test_vernier_runner_smoke(tmp_path: Path) -> None:
     assert payload["summary_stats"]["AP50"] == pytest.approx(1.0)
 
     expected_sha = hashlib.sha256(tensor_output.read_bytes()).hexdigest()
-    assert payload["tensor_sha256"] == expected_sha
+    assert payload["artifact_sha256"]["tensor"] == expected_sha
+    assert payload["artifact_paths"]["tensor"].endswith(".npy")
 
     # (T, R, K, A, M) for default detection: (10, 101, 1, 4, 3).
     tensor = np.load(tensor_output)
@@ -84,9 +87,10 @@ def test_orchestrator_run_writes_tree(tmp_path: Path) -> None:
     skip_if_no_env("vernier")
     from bench.harness.orchestrate import RunSpec
     from bench.harness.orchestrate import run as run_spec
-    from bench.workloads import resolve
+    from bench.workloads import InstanceWorkload, resolve
 
     workload = resolve("smoke", REPO_ROOT)
+    assert isinstance(workload, InstanceWorkload)
 
     fake_bench_root = tmp_path / "bench"
     fake_bench_root.mkdir()
@@ -108,7 +112,8 @@ def test_orchestrator_run_writes_tree(tmp_path: Path) -> None:
     assert out_json.is_relative_to(fake_bench_root / "results")
 
     payload = json.loads(out_json.read_text())
-    assert payload["schema_version"] == 1
+    assert payload["schema_version"] == 2
+    assert payload["paradigm"] == "instance"
     assert payload["impl"] == "vernier"
     assert payload["mode"] == "dev"
     assert payload["reps_count"] == 1
