@@ -26,18 +26,24 @@
 //! preset constructors that drive them.
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+use std::time::Duration;
 
 use numpy::PyReadonlyArray2;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
 
+use vernier_partial::PartialError;
 use vernier_semantic::{
     accumulate_confusion, summarize, ClassSemanticStats, ConfusionMatrix, ParityMode,
     SemanticError, SemanticSummary, StreamingSemanticEvaluator,
 };
 
+use crate::background::BackgroundConfig;
+use crate::background_streaming::{BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError};
 use crate::numpy_utils::{parse_uint32_label_maps, ImageId, LabelMap};
+use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
 
 fn parse_label_remap(remap: Option<&Bound<'_, PyDict>>) -> PyResult<Option<HashMap<u32, u32>>> {
     match remap {
@@ -593,6 +599,376 @@ impl PyStreamingSemanticEvaluator {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Background semantic evaluator (ADR-0014 + ADR-0032).
+//
+// The `BackgroundCapable` impl is the only paradigm-side seam needed
+// by the generic `BackgroundCore<E>` worker; everything else
+// (channel, atomics, scheduling) is shared with the panoptic side.
+// ---------------------------------------------------------------------------
+
+/// Per-image payload carried over the worker channel. Owned data —
+/// the FFI thread builds this from the user's numpy arrays before
+/// dropping the GIL.
+pub(crate) struct SemanticUpdate {
+    image_id: ImageId,
+    gt: Vec<u32>,
+    dt: Vec<u32>,
+}
+
+impl BackgroundCapable for StreamingSemanticEvaluator {
+    type Update = SemanticUpdate;
+    type Summary = SemanticSummary;
+    type Error = SemanticError;
+
+    fn apply_update(&mut self, u: SemanticUpdate) -> Result<(), SemanticError> {
+        self.update(u.image_id, &u.gt, &u.dt)
+    }
+
+    fn snapshot(&self) -> Result<SemanticSummary, SemanticError> {
+        Ok(StreamingSemanticEvaluator::snapshot(self))
+    }
+
+    fn finalize(self) -> Result<SemanticSummary, SemanticError> {
+        Ok(StreamingSemanticEvaluator::finalize(self))
+    }
+
+    fn snapshot_to_partial(&self) -> Result<Vec<u8>, SemanticError> {
+        StreamingSemanticEvaluator::snapshot_to_partial(self)
+    }
+
+    fn finalize_to_partial(self) -> Result<Vec<u8>, SemanticError> {
+        StreamingSemanticEvaluator::finalize_to_partial(self)
+    }
+
+    fn images_seen(&self) -> usize {
+        self.n_images()
+    }
+
+    fn worker_disconnected() -> SemanticError {
+        SemanticError::Partial(PartialError::Format {
+            kind: vernier_partial::PartialFormatErrorKind::Internal {
+                detail: "background semantic worker is no longer reachable".to_string(),
+            },
+        })
+    }
+
+    fn already_finalized() -> SemanticError {
+        SemanticError::Partial(PartialError::Format {
+            kind: vernier_partial::PartialFormatErrorKind::Internal {
+                detail: "BackgroundSemanticEvaluator has already been finalized".to_string(),
+            },
+        })
+    }
+}
+
+/// Background semantic-segmentation evaluator (ADR-0014 + ADR-0032).
+///
+/// Wraps a single dedicated worker thread that owns the underlying
+/// [`StreamingSemanticEvaluator`]. `submit(image_id, gt, dt)` posts
+/// one image; `snapshot()` / `finalize()` block on a worker reply.
+///
+/// Mirrors the panoptic and instance background surfaces: same
+/// constructor knobs (`queue_capacity`, `worker_affinity`,
+/// `worker_nice`, `shutdown_timeout_seconds`), same context-manager
+/// lifecycle, same `to_partial` / `finalize_to_partial` for
+/// distributed-eval gather (ADR-0032).
+#[pyclass(module = "vernier._core", name = "BackgroundSemanticEvaluator")]
+pub(crate) struct PyBackgroundSemanticEvaluator {
+    lifecycle: Mutex<BackgroundLifecycle<StreamingSemanticEvaluator>>,
+    n_classes: u32,
+}
+
+impl PyBackgroundSemanticEvaluator {
+    fn lock_lifecycle(
+        &self,
+    ) -> PyResult<std::sync::MutexGuard<'_, BackgroundLifecycle<StreamingSemanticEvaluator>>>
+    {
+        self.lifecycle
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("BackgroundSemanticEvaluator state mutex poisoned"))
+    }
+}
+
+#[pymethods]
+impl PyBackgroundSemanticEvaluator {
+    #[new]
+    #[pyo3(signature = (
+        n_classes,
+        parity_mode,
+        *,
+        ignore_label = None,
+        rank_id = None,
+        queue_capacity = 8,
+        worker_affinity = None,
+        worker_nice = 5,
+        shutdown_timeout_seconds = 5.0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        n_classes: u32,
+        parity_mode: &str,
+        ignore_label: Option<u32>,
+        rank_id: Option<u32>,
+        queue_capacity: usize,
+        worker_affinity: Option<usize>,
+        worker_nice: i32,
+        shutdown_timeout_seconds: f64,
+    ) -> PyResult<Self> {
+        if n_classes == 0 {
+            return Err(PyValueError::new_err(
+                "BackgroundSemanticEvaluator requires n_classes >= 1",
+            ));
+        }
+        let mode = parse_parity_mode(parity_mode)?;
+        let mut inner = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode);
+        if let Some(rid) = rank_id {
+            inner = inner
+                .with_rank(rid)
+                .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        }
+        let config = BackgroundConfig {
+            queue_capacity,
+            worker_affinity,
+            worker_nice,
+            shutdown_timeout: validate_shutdown_timeout(shutdown_timeout_seconds)?,
+        };
+        let core = BackgroundCore::spawn(inner, config).map_err(|e| {
+            PyRuntimeError::new_err(format!("failed to spawn background worker: {e}"))
+        })?;
+
+        let this = Self {
+            lifecycle: Mutex::new(BackgroundLifecycle::new(core)),
+            n_classes,
+        };
+        poll_scheduling_warning(py, "BackgroundSemanticEvaluator", || {
+            Ok(this.lock_lifecycle()?.take_scheduling_outcome())
+        })?;
+        Ok(this)
+    }
+
+    /// Number of evaluation classes (constant for the lifetime of the
+    /// evaluator).
+    #[getter]
+    fn n_classes(&self) -> u32 {
+        self.n_classes
+    }
+
+    /// Submit one image's `(gt, dt)` label-map pair to the worker.
+    /// `timeout` mirrors the instance background:
+    ///
+    /// - `None` (default) → block until a slot is free
+    /// - `0.0` → single non-blocking attempt; raise `QueueFullError`
+    ///   if the queue is full
+    /// - `t > 0.0` → wait up to `t` seconds; raise `QueueFullError`
+    ///   on timeout
+    #[pyo3(signature = (image_id, gt, dt, *, timeout = None))]
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "PyO3 requires `PyReadonlyArray2` by value as a pyfunction argument; \
+                  the borrow lives only for the call's duration"
+    )]
+    fn submit<'py>(
+        &self,
+        py: Python<'py>,
+        image_id: i64,
+        gt: PyReadonlyArray2<'py, u32>,
+        dt: PyReadonlyArray2<'py, u32>,
+        timeout: Option<f64>,
+    ) -> PyResult<()> {
+        let gt_view = gt.as_array();
+        let dt_view = dt.as_array();
+        let gt_shape = gt_view.shape();
+        let dt_shape = dt_view.shape();
+        if gt_shape != dt_shape {
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::ShapeMismatch {
+                    image_id,
+                    gt_shape: (gt_shape[0] as u32, gt_shape[1] as u32),
+                    dt_shape: (dt_shape[0] as u32, dt_shape[1] as u32),
+                },
+            ));
+        }
+        let timeout_dur = match timeout {
+            None => None,
+            Some(t) => {
+                if !t.is_finite() || t < 0.0 {
+                    return Err(PyValueError::new_err(format!(
+                        "timeout must be a non-negative finite float or None, got {t}"
+                    )));
+                }
+                Some(Duration::from_secs_f64(t))
+            }
+        };
+
+        let payload = SemanticUpdate {
+            image_id,
+            gt: gt_view.iter().copied().collect(),
+            dt: dt_view.iter().copied().collect(),
+        };
+
+        let lifecycle = &self.lifecycle;
+        let result = py.detach(move || -> Result<(), SubmitError<SemanticError>> {
+            let guard = lifecycle
+                .lock()
+                .map_err(|_| SubmitError::Eval(StreamingSemanticEvaluator::worker_disconnected()))?;
+            let core = guard.active().map_err(SubmitError::Eval)?;
+            match timeout_dur {
+                None => core.submit_blocking(payload).map_err(SubmitError::Eval),
+                Some(t) => core.submit_timeout(payload, t),
+            }
+        });
+        result.map_err(|e| match e {
+            SubmitError::Eval(inner) => semantic_error_to_pyerr(py, &inner),
+            SubmitError::Full(full) => queue_full_to_pyerr(py, full),
+        })
+    }
+
+    /// Compute a `SemanticSummary` against the worker's current state.
+    fn snapshot(&self, py: Python<'_>) -> PyResult<PySemanticSummary> {
+        let lifecycle = &self.lifecycle;
+        let summary = py
+            .detach(|| -> Result<SemanticSummary, SemanticError> {
+                let guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingSemanticEvaluator::worker_disconnected())?;
+                guard.active()?.snapshot()
+            })
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Ok(PySemanticSummary { inner: summary })
+    }
+
+    /// Drain the queue, finalize the evaluator, and join the worker.
+    fn finalize(&self, py: Python<'_>) -> PyResult<PySemanticSummary> {
+        let lifecycle = &self.lifecycle;
+        let summary = py
+            .detach(|| {
+                let mut guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingSemanticEvaluator::worker_disconnected())?;
+                guard.take_and_finalize()
+            })
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Ok(PySemanticSummary { inner: summary })
+    }
+
+    /// ADR-0032: serialize the worker's current state as a partial
+    /// blob without consuming the evaluator.
+    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let lifecycle = &self.lifecycle;
+        let blob = py
+            .detach(|| -> Result<Vec<u8>, SemanticError> {
+                let guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingSemanticEvaluator::worker_disconnected())?;
+                guard.active()?.snapshot_to_partial()
+            })
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
+    /// ADR-0032: drain, serialize the final state, and shut the
+    /// worker down.
+    fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let lifecycle = &self.lifecycle;
+        let blob = py
+            .detach(|| {
+                let mut guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingSemanticEvaluator::worker_disconnected())?;
+                guard.take_and_finalize_to_partial()
+            })
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
+    /// `from_partials` classmethod inherited from the streaming
+    /// surface. Constructs a `StreamingSemanticEvaluator` (not a
+    /// background one) — the merged state is paradigm-shaped, not
+    /// re-spawned on a worker. Mirrors the instance pattern.
+    #[classmethod]
+    #[pyo3(signature = (n_classes, partials, parity_mode, *, ignore_label = None))]
+    fn from_partials(
+        cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        n_classes: u32,
+        partials: &Bound<'_, PyList>,
+        parity_mode: &str,
+        ignore_label: Option<u32>,
+    ) -> PyResult<PyStreamingSemanticEvaluator> {
+        PyStreamingSemanticEvaluator::from_partials(
+            cls, py, n_classes, partials, parity_mode, ignore_label,
+        )
+    }
+
+    /// Context-manager entry. Returns `self` so `with ev as e:`
+    /// binds the constructed instance.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Context-manager exit: best-effort shutdown.
+    #[pyo3(signature = (_exc_type=None, _exc=None, _tb=None))]
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        _exc_type: Option<Py<PyAny>>,
+        _exc: Option<Py<PyAny>>,
+        _tb: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        let lifecycle = &self.lifecycle;
+        py.detach(|| {
+            if let Ok(mut guard) = lifecycle.lock() {
+                guard.shutdown();
+            }
+        });
+        Ok(())
+    }
+
+    /// Best-effort cleanup if the user lets the wrapper go out of
+    /// scope without explicit `finalize` / `__exit__`. Silences all
+    /// errors — raising from `__del__` is invisible to the caller
+    /// anyway.
+    fn __del__(&self, py: Python<'_>) {
+        let lifecycle = &self.lifecycle;
+        py.detach(|| {
+            if let Ok(mut guard) = lifecycle.lock() {
+                guard.shutdown();
+            }
+        });
+    }
+
+    /// Mirror of the underlying evaluator's `n_images`. Advisory —
+    /// updated by the worker after each successful submit.
+    #[getter]
+    fn n_images(&self) -> PyResult<usize> {
+        Ok(self
+            .lock_lifecycle()?
+            .active()
+            .map(BackgroundCore::images_seen)
+            .unwrap_or(0))
+    }
+
+    /// Approximate count of `Update` messages waiting in the channel.
+    #[getter]
+    fn queue_depth(&self) -> PyResult<usize> {
+        Ok(self
+            .lock_lifecycle()?
+            .active()
+            .map(BackgroundCore::queue_depth)
+            .unwrap_or(0))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BackgroundSemanticEvaluator(n_classes={})",
+            self.n_classes
+        )
+    }
+}
+
 /// Register semantic FFI symbols on the `vernier._core` module. Called
 /// from the `_core` `#[pymodule]` factory in `lib.rs`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -600,6 +976,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyClassSemanticStats>()?;
     m.add_class::<PySemanticSummary>()?;
     m.add_class::<PyStreamingSemanticEvaluator>()?;
+    m.add_class::<PyBackgroundSemanticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_arrays, m)?)?;
     Ok(())
 }

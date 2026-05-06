@@ -50,6 +50,7 @@ use vernier_core::{
 
 mod array_ingest;
 mod background;
+mod background_streaming;
 mod confusion;
 mod dataset;
 mod dlpack;
@@ -57,6 +58,7 @@ mod numpy_utils;
 mod panoptic;
 mod semantic;
 mod tables;
+mod thread_sched;
 mod tide;
 
 use dataset::{DatasetCaches, PyDataset};
@@ -2617,32 +2619,85 @@ impl BackgroundEvalState {
 }
 
 /// Map a [`background::SubmitError`] to a Python exception. `Eval` is
-/// routed through [`eval_error_to_pyerr`]; `Full` is materialized into a
-/// [`QueueFullError`] with the `queue_capacity` and `timeout` (in
-/// fractional seconds) attached as instance attributes.
+/// routed through [`eval_error_to_pyerr`]; `Full` is routed through
+/// [`queue_full_to_pyerr`] (shared with the semantic / panoptic
+/// background paradigms — the `QueueFull` shape is paradigm-agnostic).
 fn submit_error_to_pyerr(py: Python<'_>, e: background::SubmitError) -> PyErr {
     match e {
         background::SubmitError::Eval(inner) => eval_error_to_pyerr(py, inner),
-        background::SubmitError::Full(full) => {
-            let exc = QueueFullError::new_err(format!(
-                "background submit queue full (capacity={}, timeout={:?})",
-                full.queue_capacity, full.timeout
-            ));
-            let value = exc.value(py);
-            if let Err(err) = value.setattr("queue_capacity", full.queue_capacity) {
-                return err;
-            }
-            // `timeout` is always finite here — `submit_blocking` (the
-            // `None` Python case) cannot return `Full` — so report it as
-            // a float in seconds, matching the docstring on
-            // `QueueFullError`.
-            let timeout_secs = full.timeout.as_secs_f64();
-            if let Err(err) = value.setattr("timeout", timeout_secs) {
-                return err;
-            }
-            exc
-        }
+        background::SubmitError::Full(full) => queue_full_to_pyerr(py, full),
     }
+}
+
+/// Validate a `shutdown_timeout_seconds` constructor arg
+/// (non-negative finite float). Shared across the three background
+/// pyclasses so the message is identical and the `f64::is_finite` /
+/// negative checks don't drift.
+pub(crate) fn validate_shutdown_timeout(seconds: f64) -> PyResult<Duration> {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "shutdown_timeout_seconds must be a non-negative finite float, got {seconds}"
+        )));
+    }
+    Ok(Duration::from_secs_f64(seconds))
+}
+
+/// Briefly poll the worker's startup scheduling outcome and emit a
+/// single `UserWarning` on `Err`. Shared across the three background
+/// pyclasses.
+///
+/// `read_outcome` is a closure the caller supplies that locks the
+/// caller's lifecycle/state mutex and forwards
+/// `take_scheduling_outcome()` — paradigm-specific because the
+/// pyclass holds its own mutex shape, but the polling cadence and
+/// warning emission are uniform.
+pub(crate) fn poll_scheduling_warning<F>(
+    py: Python<'_>,
+    evaluator_name: &str,
+    mut read_outcome: F,
+) -> PyResult<()>
+where
+    F: FnMut() -> PyResult<Option<Result<(), String>>>,
+{
+    const POLL_TRIES: usize = 10;
+    const POLL_INTERVAL: Duration = Duration::from_millis(1);
+    let mut found: Option<Result<(), String>> = None;
+    for _ in 0..POLL_TRIES {
+        if let Some(o) = read_outcome()? {
+            found = Some(o);
+            break;
+        }
+        py.detach(|| std::thread::sleep(POLL_INTERVAL));
+    }
+    if let Some(Err(msg)) = found {
+        emit_warning::<PyUserWarning>(py, &format!("{evaluator_name} scheduling: {msg}"))?;
+    }
+    Ok(())
+}
+
+/// Materialize a [`background::QueueFull`] into a [`QueueFullError`]
+/// with `queue_capacity` and `timeout` (in fractional seconds)
+/// attached as instance attributes. Shared across paradigms; the
+/// non-`QueueFull` arm of any paradigm's submit-error mapping calls
+/// the paradigm-specific error mapper.
+pub(crate) fn queue_full_to_pyerr(py: Python<'_>, full: background::QueueFull) -> PyErr {
+    let exc = QueueFullError::new_err(format!(
+        "background submit queue full (capacity={}, timeout={:?})",
+        full.queue_capacity, full.timeout
+    ));
+    let value = exc.value(py);
+    if let Err(err) = value.setattr("queue_capacity", full.queue_capacity) {
+        return err;
+    }
+    // `timeout` is always finite here — `submit_blocking` (the
+    // `None` Python case) cannot return `Full` — so report it as
+    // a float in seconds, matching the docstring on
+    // `QueueFullError`.
+    let timeout_secs = full.timeout.as_secs_f64();
+    if let Err(err) = value.setattr("timeout", timeout_secs) {
+        return err;
+    }
+    exc
 }
 
 /// Background-evaluator surface (ADR-0014). Wraps a worker thread that

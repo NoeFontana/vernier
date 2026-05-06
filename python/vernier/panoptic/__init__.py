@@ -26,6 +26,9 @@ from vernier._core import (
 from vernier._core import (
     StreamingPanopticEvaluator as StreamingEvaluator,
 )
+from vernier._core import (
+    BackgroundPanopticEvaluator as BackgroundEvaluator,
+)
 
 # Re-export the five distributed-eval exception types under the
 # panoptic namespace so callers catching `vernier.panoptic.PartialFormatMismatch`
@@ -41,6 +44,7 @@ from vernier._core import (
 from vernier._types import ParityMode
 
 __all__ = [
+    "BackgroundEvaluator",
     "ClassPanopticStats",
     "Dataset",
     "Evaluator",
@@ -137,4 +141,46 @@ class Evaluator:
             things_stuff_split=self.things_stuff_split,
             retain_per_image_deltas=retain_per_image_deltas,
             rank_id=rank_id,
+        )
+
+    def background(
+        self,
+        categories: bytes,
+        *,
+        retain_per_image_deltas: bool = False,
+        rank_id: int | None = None,
+        queue_capacity: int = 8,
+        worker_affinity: int | None = None,
+        worker_nice: int = 5,
+        shutdown_timeout_seconds: float = 5.0,
+    ) -> BackgroundEvaluator:
+        """Build a :class:`BackgroundEvaluator` (ADR-0014 + ADR-0032)
+        that shares this evaluator's ``parity_mode`` and
+        ``things_stuff_split``.
+
+        The returned wrapper owns a single dedicated worker thread
+        running a :class:`StreamingEvaluator` of the same shape;
+        :meth:`BackgroundEvaluator.submit` enqueues per-image
+        ``(gt_label_map, gt_segments_info, dt_label_map,
+        dt_segments_info)`` tuples and returns immediately. Use this
+        when the panoptic-quality kernel measurably stalls the
+        training loop — the per-image attribute pass is the dominant
+        cost at COCO-panoptic scale.
+
+        ``retain_per_image_deltas=True`` enables strict-mode bit-
+        equality across distributed-eval ranks (ADR-0032
+        §"Determinism") at ~2× streaming memory cost. The five
+        queueing / scheduling knobs mirror
+        :class:`vernier.instance.Evaluator.background`.
+        """
+        return BackgroundEvaluator(
+            categories,
+            self.parity_mode,
+            things_stuff_split=self.things_stuff_split,
+            retain_per_image_deltas=retain_per_image_deltas,
+            rank_id=rank_id,
+            queue_capacity=queue_capacity,
+            worker_affinity=worker_affinity,
+            worker_nice=worker_nice,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
         )
