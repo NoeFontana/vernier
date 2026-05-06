@@ -165,6 +165,46 @@ def _spawn_one_rep(
     return _SpawnResult(rep=rep_result, runner_out=runner_out, tensor_path=rep_npy)
 
 
+def _validate_artifacts(
+    *,
+    impl: str,
+    spawned: list[_SpawnResult],
+    expected_keys: set[str],
+) -> dict[str, str]:
+    """Cross-rep artifact-sha256 invariant check (paradigm-agnostic).
+
+    For each key in ``expected_keys``, every rep must produce the same
+    sha256 — that's what proves the runner is deterministic and lets
+    rep 0 be promoted as canonical. Returns the canonical (rep-0)
+    sha256 dict so the caller can re-stamp it in the assembled result.
+
+    Detection callers pass ``expected_keys={"tensor"}``. B-stream
+    callers (when their own assemblers land) pass their own key set —
+    e.g. panoptic ``{"snapshot", "per_class"}``, streaming
+    ``{"summary", "rss_curve"}``. The function deliberately doesn't
+    care which keys are which paradigm; it just checks every named
+    key matches across reps.
+
+    Idempotent on the empty key set (returns the empty dict). Raises
+    ``RuntimeError`` on the first key whose sha disagrees across reps,
+    naming the disagreeing rep so the diagnostic points at the
+    offending subprocess.
+    """
+    canonical: dict[str, str] = {}
+    for key in sorted(expected_keys):
+        canonical_sha = spawned[0].runner_out.artifact_sha256[key]
+        for s in spawned[1:]:
+            other = s.runner_out.artifact_sha256[key]
+            if other != canonical_sha:
+                raise RuntimeError(
+                    f"per-rep artifact disagreement for impl {impl!r}, "
+                    f"key {key!r}: rep 0 sha {canonical_sha[:12]} differs "
+                    f"from rep {s.rep.rep} sha {other[:12]}"
+                )
+        canonical[key] = canonical_sha
+    return canonical
+
+
 def _assemble_impl_result(
     *,
     impl: str,
@@ -180,6 +220,7 @@ def _assemble_impl_result(
     warmup_discarded: int,
     iqr_threshold: float,
     paradigm: Paradigm = "instance",
+    expected_artifact_keys: set[str] | None = None,
 ) -> tuple[Path, np.ndarray, str, IqrGateResult | None]:
     """Validate per-rep tensor bit-equality, promote rep 0, aggregate, write JSON.
 
@@ -187,15 +228,18 @@ def _assemble_impl_result(
     ``"tensor"`` artifact slot; this assembler stays detection-shaped
     until B-streams land their own assemblers (panoptic snapshots,
     streaming summary+rss bundles).
+
+    ``expected_artifact_keys`` defaults to ``{"tensor"}`` — the
+    detection-shape contract. B-stream assemblers that lift this
+    helper for their own paradigm pass their own set; the
+    cross-rep determinism check runs over every named key.
     """
+    if expected_artifact_keys is None:
+        expected_artifact_keys = {TENSOR_KEY}
+    _ = _validate_artifacts(
+        impl=impl, spawned=spawned, expected_keys=expected_artifact_keys
+    )
     canonical_sha = spawned[0].runner_out.artifact_sha256[TENSOR_KEY]
-    for s in spawned[1:]:
-        if s.runner_out.artifact_sha256[TENSOR_KEY] != canonical_sha:
-            raise RuntimeError(
-                f"per-rep tensor disagreement for impl {impl!r}: rep 0 sha "
-                f"{canonical_sha[:12]} differs from rep {s.rep.rep} sha "
-                f"{s.runner_out.artifact_sha256[TENSOR_KEY][:12]}"
-            )
 
     canonical = spawned[0]
     tensor_dst = out_dir / f"{impl}.npy"

@@ -29,6 +29,7 @@ from bench.harness.matrix import (
     IMPL_IOU_SUPPORT,
     impls_for_iou,
 )
+from bench.harness.migrations.v1_to_v2_tree import migrate_tree
 from bench.harness.orchestrate import CellSpec, run_cell
 from bench.harness.paths import BENCH_ROOT, REPO_ROOT
 from bench.harness.platform_check import UnsupportedPlatformError, ensure_linux
@@ -383,6 +384,56 @@ def report_cmd(since_spec: str, paradigm: str, output_dir: str | None) -> None:
         click.echo(f"report: {out / 'report.svg'}")
     else:
         click.echo(md, nl=False)
+
+
+@main.group("migrate")
+def migrate_grp() -> None:
+    """On-disk migrations for the result-store tree.
+
+    Subcommands re-emit existing cells at the v2 paradigm-segmented
+    paths (ADR-0033 §"Result-store path scheme v2"). The read-side
+    ``v1_to_v2`` shim handles already-loaded v1 results; this group
+    rewrites the on-disk shape so new writes don't sit alongside v1
+    leftovers.
+    """
+
+
+@migrate_grp.command("v1-to-v2")
+@click.option(
+    "--keep-v1-paths/--no-keep-v1-paths",
+    default=True,
+    show_default=True,
+    help=(
+        "Keep the v1 cell directories alongside the new v2 mirrors "
+        "(default; reversible). --no-keep-v1-paths deletes each v1 "
+        "cell once its v2 mirror is in place."
+    ),
+)
+@click.option(
+    "--results-root",
+    type=click.Path(file_okay=False, exists=False),
+    default=None,
+    help=(
+        "Override the default ``bench/results/`` location (used by "
+        "tests that operate on a synthetic tree)."
+    ),
+)
+def migrate_v1_to_v2_cmd(keep_v1_paths: bool, results_root: str | None) -> None:
+    """Forward-migrate a v1 result tree into the v2 paradigm-segmented layout.
+
+    Idempotent — re-running on an already-migrated tree only walks the
+    walker; per-file rewrites are content-compared and skipped when the
+    target already matches.
+    """
+    root = Path(results_root) if results_root else (BENCH_ROOT / "results")
+    stats = migrate_tree(root, keep_v1_paths=keep_v1_paths)
+    click.echo(
+        f"migrated {stats.cells_migrated} cell(s); "
+        f"{stats.files_copied} file(s) written, "
+        f"{stats.files_skipped_already_v2} already at v2"
+    )
+    if not keep_v1_paths:
+        click.echo(f"removed {stats.v1_paths_removed} v1 cell director(y/ies)")
 
 
 if __name__ == "__main__":
