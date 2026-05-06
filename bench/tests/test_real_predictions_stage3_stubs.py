@@ -24,13 +24,6 @@ def test_ensure_mask2former_raises_when_not_configured() -> None:
         panoptic.ensure_mask2former()
 
 
-def test_ensure_hrnet_cityscapes_raises_when_not_configured() -> None:
-    assert semantic.HRNET_CITYSCAPES_URL is None
-    assert semantic.HRNET_CITYSCAPES_SHA256 is None
-    with pytest.raises(RuntimeError, match="HRNet"):
-        semantic.ensure_hrnet_cityscapes()
-
-
 def test_ensure_ocrnet_ade20k_raises_when_not_configured() -> None:
     assert semantic.OCRNET_ADE20K_URL is None
     assert semantic.OCRNET_ADE20K_SHA256 is None
@@ -41,7 +34,5 @@ def test_ensure_ocrnet_ade20k_raises_when_not_configured() -> None:
 def test_filenames_carry_version_and_dataset_id() -> None:
     assert "v1" in panoptic.mask2former_cache_filename()
     assert "coco-panoptic-val2017" in panoptic.mask2former_cache_filename()
-    assert "v1" in semantic.hrnet_cityscapes_cache_filename()
-    assert "cityscapes-val" in semantic.hrnet_cityscapes_cache_filename()
     assert "v1" in semantic.ocrnet_ade20k_cache_filename()
     assert "ade20k-val" in semantic.ocrnet_ade20k_cache_filename()

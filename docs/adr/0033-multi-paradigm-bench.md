@@ -30,20 +30,24 @@ specifies.
 The scope here is **Stage 1** — the harness extension plus the
 Minimum-Viable-Bench cells for each paradigm. Stage 2 (per-surface
 optimization passes that consume these cells as their inner loop) and
-Stage 3 (real-prediction cells: Mask2Former for panoptic, HRNet for
-semantic Cityscapes, OCRNet for ADE20K) are framed at the end of this
-ADR but explicitly deferred.
+Stage 3 (real-prediction cells: Mask2Former for panoptic, OCRNet for
+ADE20K) are framed at the end of this ADR but explicitly deferred.
+
+The original Stage 1 plan included a Cityscapes B2 cell as the
+semantic MVB. It was dropped post-Stage-1 because Cityscapes' license
+restricts redistribution of derivative outputs (the public bench-result
+tree is the wrong fit). The semantic paradigm's first concrete cell
+moves to S3-B (ADE20K + mmseg).
 
 ## Decision drivers
 
 - **Four paradigms, four oracle stacks.** Detection oracles are
   pycocotools / faster-coco-eval / boundary-iou-api. Panoptic oracle is
   `panopticapi.evaluation.pq_compute_single_core` (single-process per
-  ADR-0025). Semantic oracles split per dataset:
-  `cityscapesScripts.evalPixelLevelSemanticLabeling` for Cityscapes,
-  `mmsegmentation.IoUMetric` for ADE20K. Streaming has **no external
-  oracle** — its parity contract is internal (batch and stream paths
-  must produce the same `Summary.stats`).
+  ADR-0025). Semantic oracle is `mmsegmentation.IoUMetric` for ADE20K
+  (S3-B). Streaming has **no external oracle** — its parity contract
+  is internal (batch and stream paths must produce the same
+  `Summary.stats`).
 - **Four fixture shapes.** Detection ships a `(gt.json, dt.json)` pair.
   Panoptic ships `(gt_png_dir, gt_json, dt_png_dir, dt_json,
   categories_json)`. Semantic ships `(gt_label_maps, dt_label_maps,
@@ -55,13 +59,11 @@ ADR but explicitly deferred.
   three-tier strict / aligned / boundary contract from ADR-0002.
   Panoptic is **strict** vs `pq_compute_single_core(proc_id=0, ...)`
   (pinned by SHA in `crates/vernier-panoptic/src/parity.rs`). Semantic
-  Cityscapes is **strict** on integer confusion-matrix counts (derived
-  float metrics inherit bit-equality). Semantic ADE20K-vs-mmseg is
-  **aligned** until PR-B6/7/8 vendors mmseg at a pinned SHA, at which
-  point it can be re-graded to strict; the tier is a per-cell metadata
-  flag, not a code change. Streaming is **bit-equal `Summary.stats`**
-  between batch and stream — no oracle, but the discipline is just as
-  tight.
+  ADE20K-vs-mmseg is **aligned** until PR-B6/7/8 vendors mmseg at a
+  pinned SHA, at which point it can be re-graded to strict; the tier
+  is a per-cell metadata flag, not a code change. Streaming is
+  **bit-equal `Summary.stats`** between batch and stream — no oracle,
+  but the discipline is just as tight.
 - **No cross-paradigm comparison.** Per ADR-0032, a `WireEnvelopeBody`
   is a closed-world tagged union and merging across paradigms is
   structurally rejected. Comparing PQ to AP is a category error in
@@ -218,14 +220,14 @@ The harness extension lands as seven coupled changes:
   as the optimization target and lives in a surface-specific PR. The
   harness's `compare --base <sha> --head <sha>` is the inner loop for
   these; this ADR does not specify their sequencing.
-- **Stage 3 real-prediction cells.** Mask2Former on COCO panoptic val,
-  HRNet on Cityscapes val, OCRNet on ADE20K val. Workloads ship as
-  docstring TODOs with `_URL = None` cache stubs in
+- **Stage 3 real-prediction cells.** Mask2Former on COCO panoptic val
+  and OCRNet on ADE20K val. Workloads ship as docstring TODOs with
+  `_URL = None` cache stubs in
   `tools/real_predictions_cache/{panoptic,semantic}.py`; Stage 3 plugs
   in the pinned URLs.
-- **mmseg env.** ~2 GB torch CPU. Deferred to S3-B; the
-  Cityscapes-vs-cityscapesScripts strict tier from B2 stands on its
-  own and the ADE20K-vs-mmseg aligned tier waits.
+- **mmseg env.** ~2 GB torch CPU. Deferred to S3-B; the semantic
+  paradigm has no MVB cell at Stage 1 (Cityscapes was dropped per the
+  license caveat).
 - **Boundary-PQ (ADR-0025 Z1).** Conditional on upstream fork
   resolution. If resolved before v1.0, a panoptic boundary cell joins
   the snapshot; if not, the gap is documented.
@@ -287,10 +289,12 @@ The harness extension lands as seven coupled changes:
   `pq_compute_single_core(proc_id=0)` strict, panopticapi SHA pinned
   in `crates/vernier-panoptic/src/parity.rs`. ADR-0025 §Z1
   (boundary-PQ) is the deferred-conditional cell.
-- ADR-0028 — Semantic segmentation. Source of the semantic parity
-  contract: Cityscapes-vs-cityscapesScripts strict on integer
-  confusion-matrix counts; ADE20K-vs-mmseg aligned pending PR-B6/7/8
-  vendoring.
+- ADR-0028 — Semantic segmentation. Source of the semantic library
+  design (per-paradigm submodule, three oracle stacks). ADE20K-vs-mmseg
+  is the bench cell anchor (S3-B), aligned-tier pending PR-B6/7/8
+  vendoring. The Cityscapes oracle path remains a valid library use
+  case (users with Cityscapes installs of their own); only the
+  redistributable-bench-cell story was dropped.
 - ADR-0029 — Per-paradigm namespace restructure. Precedent for a
   closed-world variant per paradigm; this ADR's `Workload` discriminated
   union mirrors that shape.

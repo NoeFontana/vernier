@@ -57,11 +57,11 @@ def test_panoptic_workload_roundtrip() -> None:
 
 def test_semantic_workload_roundtrip() -> None:
     wl = SemanticWorkload(
-        workload_id="cityscapes_val_perfect",
+        workload_id="ade20k_val_perfect",
         gt_label_maps=Path("/tmp/gt_labels"),
         dt_label_maps=Path("/tmp/dt_labels"),
-        n_classes=19,
-        ignore_label=255,
+        n_classes=150,
+        ignore_label=0,
         label_remap={7: 0, 8: 1},
     )
     payload = wl.model_dump(mode="json")

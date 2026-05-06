@@ -16,9 +16,10 @@ and asserts the cross-impl invariants documented in the parity ADRs:
       ``BOUNDARY_PARITY_EPS``.
 - **panoptic** — strict vs ``pq_compute_single_core(proc_id=0, ...)``
   per ADR-0025. Registered by B1.
-- **semantic** — strict on integer confusion-matrix counts for
-  Cityscapes; aligned for ADE20K-vs-mmseg pending PR-B6/7/8 vendoring.
-  Registered by B2.
+- **semantic** — first MVB cell deferred to S3-B (ADE20K + mmseg) as
+  an ``aligned``-tier pair pending PR-B6/7/8 vendoring. The
+  comparator + ``ConfusionMatrix`` artifact stay registered so the
+  paradigm scaffolding is complete.
 - **streaming** — bit-equal ``Summary.stats`` between batch and stream
   per ADR-0032; no external oracle. Registered by B3.
 
@@ -233,8 +234,7 @@ class ConfusionMatrix(_ArtifactBase):
     # derived bit-deterministically from the counts so the SHA alone
     # is the parity carrier.
     counts_sha256: str = ""
-    # Optional human-readable class names. Populated for Cityscapes
-    # (`["road", "sidewalk", ...]`); empty for unlabeled callers.
+    # Optional human-readable class names; empty for unlabeled callers.
     label_set: list[str] = Field(default_factory=list)
 
     def to_canonical_form(self) -> dict[str, Any]:
@@ -643,14 +643,12 @@ class _PanopticComparator:
 
 
 # Per-paradigm parity-tier metadata (ADR-0033 §"Comparator registry").
-# Mirrors the per-cell `parity_tier` flag the report layer renders so
-# reviewers can see at a glance which strict claims are real vs aligned-
-# pending-vendoring. ADE20K vs mmseg lands in S3-B and registers
-# `("vernier_semantic", "mmseg")` as ``aligned``; the Cityscapes-vs-
-# cityscapesScripts pair below is ``strict`` today.
-_SEMANTIC_TIER_PAIRS: tuple[tuple[Tier, str, str], ...] = (
-    ("strict", "vernier_semantic", "cityscapesscripts"),
-)
+# Empty until S3-B lands ADE20K + mmseg as an ``aligned``-tier pair
+# (rtol=1e-9, mirroring SEMANTIC_PARITY_EPS in
+# crates/vernier-semantic/src/parity.rs). The Cityscapes pair was
+# dropped — Cityscapes' license restricts redistribution of derivative
+# outputs, which doesn't fit the public bench-result tree.
+_SEMANTIC_TIER_PAIRS: tuple[tuple[Tier, str, str], ...] = ()
 
 
 class _SemanticComparator:

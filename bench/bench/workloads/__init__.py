@@ -113,10 +113,9 @@ class PanopticWorkload(_WorkloadBase):
 class SemanticWorkload(_WorkloadBase):
     """Semantic paradigm — mIoU cell over per-image label-map PNG dirs.
 
-    B2 will register concrete workloads (``cityscapes_val_perfect``
-    and Stage 3 real-prediction workloads). ``label_remap`` allows a
-    dataset-id → train-id remap for Cityscapes-style evaluation;
-    callers that don't need a remap set it empty.
+    First concrete cell lands at S3-B (ADE20K + mmseg). ``label_remap``
+    allows a dataset-id → train-id remap (e.g. ADE20K's 0-indexed
+    background); callers that don't need a remap set it empty.
     """
 
     paradigm: Literal["semantic"] = "semantic"
@@ -169,7 +168,7 @@ _SYNTHETIC_ALLOWED: frozenset[str] = _SYNTHETIC_REQUIRED | frozenset(_SYNTHETIC_
 # so an unknown workload in a registered namespace surfaces a
 # paradigm-specific error message.
 _PANOPTIC_PREFIXES: tuple[str, ...] = ("coco_panoptic_val2017",)
-_SEMANTIC_PREFIXES: tuple[str, ...] = ("cityscapes_val", "ade20k_val")
+_SEMANTIC_PREFIXES: tuple[str, ...] = ("ade20k_val",)
 _STREAMING_PREFIXES: tuple[str, ...] = (
     "coco_val2017_streaming",
     "coco_val2017_dlpack",
