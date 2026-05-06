@@ -5,7 +5,9 @@
   expanded with mask-space jitter; §"Reference-model predictions" promoted from
   out-of-scope to a real subsection; §"Out of scope" line removed accordingly.
   Motivation in `docs/engineering/benchmarking/2026-05-snapshot.md` §"segm —
-  perfect-match DT under-stresses matching".)
+  perfect-match DT under-stresses matching"; further amended 2026-05-06 —
+  ADR-0033 supersedes the streaming / `BackgroundEvaluator` carve-out under
+  §"Out of scope".)
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
@@ -635,10 +637,13 @@ vernier-core; that lives in `crates/vernier-core/tests/`.
 - **Auto-regression alerts.** Statistical-significance regression
   detection requires ≥30 commits of data to calibrate; building it
   before then produces alarms tuned to nothing.
-- **Streaming and BackgroundEvaluator surfaces.** The user explicitly
-  defers these to a follow-up. The runner protocol generalizes
-  naturally (a `--surface streaming` flag would just produce a
-  different stage breakdown), so nothing here forecloses it.
+- **Streaming and BackgroundEvaluator surfaces.** Superseded by
+  ADR-0033 (multi-paradigm bench harness extension). ADR-0033 lifts
+  the streaming / `BackgroundEvaluator` deferral and folds those
+  surfaces into the harness as paradigm-discriminated `Workload`
+  variants (`StreamingWorkload`) and a paradigm-segmented result-store
+  path. The runner protocol generalization predicted here lands in
+  ADR-0033 §"Stage-name conventions per paradigm".
 - **macOS support.** Out of scope per Axis G. A future ADR adds it
   if real demand appears, with a corresponding loss of rigor in the
   release-mode checks (or a more complex platform-shim layer).
@@ -852,9 +857,12 @@ vernier-core; that lives in `crates/vernier-core/tests/`.
   reused in the parity coupling.
 - ADR-0010 — Boundary IoU isolation. The boundary tier of the parity
   check follows from this ADR's isolation rule.
-- ADR-0013 — Streaming evaluator. The streaming surface is out of
-  scope here; a follow-up ADR adds it.
-- ADR-0014 — `BackgroundEvaluator`. Same deferral.
+- ADR-0013 — Streaming evaluator. The streaming surface, originally
+  out of scope here, is folded into the harness by ADR-0033.
+- ADR-0014 — `BackgroundEvaluator`. Same; ADR-0033 lifts the deferral.
+- ADR-0033 — Multi-paradigm bench harness extension. Supersedes the
+  §"Out of scope" streaming / `BackgroundEvaluator` carve-out and
+  extends the harness across panoptic, semantic, and streaming.
 - ADR-0015 — `vernier-cli` workspace binary. The bench harness sits
   in a sibling workspace and follows the same packaging pattern.
 - `docs/explanation/possible-extensions.md` — the Phase 5 capability
