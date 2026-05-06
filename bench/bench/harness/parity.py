@@ -87,7 +87,7 @@ class CellParityReport(BaseModel):
     workload_id: str
     # ``Metric`` is a superset of ``IouType`` (bbox/segm/keypoints/
     # boundary plus pq/miou/throughput/p99/rss). Detection cells stay
-    # IouType-shaped; B1/B2/B3 paradigms use their paradigm metric
+    # IouType-shaped; non-instance paradigms use their paradigm metric
     # (panoptic = "pq", semantic = "miou", streaming family).
     iou_type: Metric
     tiers: list[TierResult]
@@ -104,8 +104,8 @@ class CellParityReport(BaseModel):
 # report can render a stable snapshot of either side regardless of
 # paradigm. Instance keeps the legacy "first 16 bytes of tensor hash +
 # divergent index" via the existing ``CellParityReport`` shape;
-# B1/B2/B3 plug in their canonical-form snapshots when they register
-# their comparators.
+# Per-paradigm comparators plug in their canonical-form snapshots
+# at registration time.
 # ---------------------------------------------------------------------------
 
 

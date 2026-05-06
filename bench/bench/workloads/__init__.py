@@ -4,8 +4,8 @@ shapes per ADR-0033.
 The discriminator is ``paradigm: Literal["instance", "panoptic",
 "semantic", "streaming"]``. Today, every concrete workload is an
 ``InstanceWorkload`` (the detection-only shape from ADR-0017); the
-other three variants exist as Pydantic models that B1/B2/B3 will
-register concrete workloads against.
+other three variants are Pydantic models for the panoptic, semantic,
+and streaming workloads.
 
 Workload identifiers (instance — registered today):
 
@@ -165,9 +165,9 @@ _SYNTHETIC_DEFAULTS: dict[str, int] = {
 _SYNTHETIC_REQUIRED: frozenset[str] = frozenset({"n_images", "seed"})
 _SYNTHETIC_ALLOWED: frozenset[str] = _SYNTHETIC_REQUIRED | frozenset(_SYNTHETIC_DEFAULTS)
 
-# Prefixes reserved for B1/B2/B3 workloads. ``resolve()`` recognizes
-# these so the user-facing error message points at the right
-# B-stream rather than collapsing into "unknown workload".
+# Per-paradigm workload-id prefixes; ``resolve()`` recognizes these
+# so an unknown workload in a registered namespace surfaces a
+# paradigm-specific error message.
 _PANOPTIC_PREFIXES: tuple[str, ...] = ("coco_panoptic_val2017",)
 _SEMANTIC_PREFIXES: tuple[str, ...] = ("cityscapes_val", "ade20k_val")
 _STREAMING_PREFIXES: tuple[str, ...] = (
@@ -336,13 +336,18 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
         from bench.workloads.coco_val2017_dlpack import dlpack_vs_json
 
         return dlpack_vs_json()
+    if workload_name == "coco_val2017_bg_saturation":
+        from bench.workloads.coco_val2017_bg_saturation import bg_saturation
+
+        return bg_saturation()
     if any(workload_name.startswith(p) for p in _STREAMING_PREFIXES):
         raise NotImplementedError(
             f"workload {workload_name!r} is in the streaming namespace but "
             f"not registered. Known streaming workloads: "
             f"coco_val2017_streaming_throughput, "
             f"coco_val2017_streaming_vs_naive, "
-            f"coco_val2017_dlpack_vs_json."
+            f"coco_val2017_dlpack_vs_json, "
+            f"coco_val2017_bg_saturation."
         )
 
     raise ValueError(

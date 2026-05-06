@@ -1,7 +1,7 @@
 # ADR-0033: Extend the bench harness across paradigms (panoptic, semantic, streaming)
 
-- **Status:** proposed
-- **Date:** 2026-05-06
+- **Status:** accepted
+- **Date:** 2026-05-06 (accepted post-Stage-1 integration)
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors

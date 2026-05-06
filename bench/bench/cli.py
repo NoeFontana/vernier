@@ -156,7 +156,7 @@ def run_cmd(
     # instance paradigm uses iou-types (bbox/segm/keypoints/boundary);
     # other paradigms use their own metric names (pq, miou,
     # throughput, ...) and the user shouldn't pass --iou for them at
-    # all. Until B1/B2/B3 plumb a ``--metric`` flag, the safest
+    # all. Until a ``--metric`` flag is wired, the safest
     # behaviour is to reject every non-instance run from this CLI.
     if paradigm_typed != "instance":
         raise click.ClickException(
@@ -371,7 +371,7 @@ def report_cmd(since_spec: str, paradigm: str, output_dir: str | None) -> None:
         else "# Longitudinal\n\nNo results in the selected window.\n"
     )
     # The SVG renderer is single-paradigm — keep the first non-empty
-    # one for now; A-thick will extend the SVG renderer for
+    # one for now; the SVG renderer can be extended later for
     # multi-paradigm output if anyone needs it.
     svg = svg_sections[0] if svg_sections else render_longitudinal_svg({})
 
