@@ -161,8 +161,13 @@ _SYNTHETIC_DEFAULTS: dict[str, int] = {
     "dt_per_image": 30,
     "gt_per_image": 10,
 }
+_SYNTHETIC_FLOAT_DEFAULTS: dict[str, float] = {
+    "iscrowd_fraction": 0.0,
+}
 _SYNTHETIC_REQUIRED: frozenset[str] = frozenset({"n_images", "seed"})
-_SYNTHETIC_ALLOWED: frozenset[str] = _SYNTHETIC_REQUIRED | frozenset(_SYNTHETIC_DEFAULTS)
+_SYNTHETIC_ALLOWED: frozenset[str] = (
+    _SYNTHETIC_REQUIRED | frozenset(_SYNTHETIC_DEFAULTS) | frozenset(_SYNTHETIC_FLOAT_DEFAULTS)
+)
 
 # Per-paradigm workload-id prefixes; ``resolve()`` recognizes these
 # so an unknown workload in a registered namespace surfaces a
@@ -176,10 +181,12 @@ _STREAMING_PREFIXES: tuple[str, ...] = (
 )
 
 
-def _parse_synthetic_args(spec: str) -> dict[str, int]:
+def _parse_synthetic_args(spec: str) -> tuple[dict[str, int], dict[str, float]]:
+    """Parse ``synthetic:k=v,...`` into (int-params, float-params)."""
     if not spec:
         raise ValueError("synthetic: requires at least n_images=... and seed=...")
-    out: dict[str, int] = {}
+    int_out: dict[str, int] = {}
+    float_out: dict[str, float] = {}
     for token in spec.split(","):
         if "=" not in token:
             raise ValueError(f"synthetic: param {token!r} is not k=v")
@@ -189,14 +196,26 @@ def _parse_synthetic_args(spec: str) -> dict[str, int]:
             raise ValueError(
                 f"synthetic: unknown param {key!r}; allowed: {sorted(_SYNTHETIC_ALLOWED)}"
             )
-        try:
-            out[key] = int(value)
-        except ValueError as e:
-            raise ValueError(f"synthetic: param {key}={value!r} must be int") from e
-    missing = _SYNTHETIC_REQUIRED - out.keys()
+        if key in _SYNTHETIC_FLOAT_DEFAULTS:
+            try:
+                fval = float(value)
+            except ValueError as e:
+                raise ValueError(f"synthetic: param {key}={value!r} must be float") from e
+            if not 0.0 <= fval <= 1.0:
+                raise ValueError(f"synthetic: param {key}={value!r} must be in [0.0, 1.0]")
+            float_out[key] = fval
+        else:
+            try:
+                int_out[key] = int(value)
+            except ValueError as e:
+                raise ValueError(f"synthetic: param {key}={value!r} must be int") from e
+    missing = _SYNTHETIC_REQUIRED - int_out.keys()
     if missing:
         raise ValueError(f"synthetic: missing required param(s): {sorted(missing)}")
-    return {**_SYNTHETIC_DEFAULTS, **out}
+    return (
+        {**_SYNTHETIC_DEFAULTS, **int_out},
+        {**_SYNTHETIC_FLOAT_DEFAULTS, **float_out},
+    )
 
 
 def resolve(workload_name: str, repo_root: Path) -> Workload:
@@ -262,10 +281,13 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
         )
 
     if workload_name.startswith(_SYNTHETIC_PREFIX):
-        params = _parse_synthetic_args(workload_name.removeprefix(_SYNTHETIC_PREFIX))
-        gt, dt = synthetic.make_workload(**params)
+        int_params, float_params = _parse_synthetic_args(
+            workload_name.removeprefix(_SYNTHETIC_PREFIX)
+        )
+        iscrowd_fraction = float_params["iscrowd_fraction"]
+        gt, dt = synthetic.make_workload(**int_params, iscrowd_fraction=iscrowd_fraction)
         return InstanceWorkload(
-            workload_id=synthetic.workload_id(**params),
+            workload_id=synthetic.workload_id(**int_params, iscrowd_fraction=iscrowd_fraction),
             gt_path=gt,
             dt_path=dt,
             supported_iou_types=frozenset({"bbox"}),

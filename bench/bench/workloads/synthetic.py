@@ -9,6 +9,7 @@ materializes once and re-runs from the cache thereafter.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -23,11 +24,58 @@ from bench.workloads.jittered_predictions import SCORE_BETA_ALPHA, SCORE_BETA_BE
 IMAGE_W = 1024.0
 IMAGE_H = 1024.0
 
+# Int-typed parameters that scaling reports can pivot on. ``iscrowd_fraction``
+# is excluded — it's the only float param and isn't a scaling axis today.
+SCALING_AXES: tuple[str, ...] = (
+    "n_images",
+    "n_categories",
+    "gt_per_image",
+    "dt_per_image",
+    "seed",
+)
+
+_WORKLOAD_ID_RE = re.compile(
+    r"^synthetic"
+    r"_n(?P<n_images>\d+)"
+    r"_c(?P<n_categories>\d+)"
+    r"_g(?P<gt_per_image>\d+)"
+    r"_d(?P<dt_per_image>\d+)"
+    r"(?:_x(?P<iscrowd_pct>\d+))?"
+    r"_s(?P<seed>\d+)$"
+)
+
 
 def workload_id(
-    *, n_images: int, n_categories: int, dt_per_image: int, gt_per_image: int, seed: int
+    *,
+    n_images: int,
+    n_categories: int,
+    dt_per_image: int,
+    gt_per_image: int,
+    seed: int,
+    iscrowd_fraction: float = 0.0,
 ) -> str:
-    return f"synthetic_n{n_images}_c{n_categories}_g{gt_per_image}_d{dt_per_image}_s{seed}"
+    # iscrowd_fraction == 0.0 → no _x suffix, preserving legacy cache slots.
+    base = f"synthetic_n{n_images}_c{n_categories}_g{gt_per_image}_d{dt_per_image}"
+    if iscrowd_fraction > 0.0:
+        return f"{base}_x{int(iscrowd_fraction * 100):02d}_s{seed}"
+    return f"{base}_s{seed}"
+
+
+def parse_workload_id(wid: str) -> dict[str, int | float] | None:
+    """Inverse of :func:`workload_id`; ``None`` for non-synthetic ids."""
+    m = _WORKLOAD_ID_RE.match(wid)
+    if m is None:
+        return None
+    out: dict[str, int | float] = {
+        "n_images": int(m["n_images"]),
+        "n_categories": int(m["n_categories"]),
+        "gt_per_image": int(m["gt_per_image"]),
+        "dt_per_image": int(m["dt_per_image"]),
+        "seed": int(m["seed"]),
+    }
+    if m["iscrowd_pct"] is not None:
+        out["iscrowd_fraction"] = int(m["iscrowd_pct"]) / 100.0
+    return out
 
 
 def _cache_dir() -> Path:
@@ -43,7 +91,13 @@ def _random_bbox(rng: np.random.Generator) -> list[float]:
 
 
 def _generate(
-    *, n_images: int, n_categories: int, dt_per_image: int, gt_per_image: int, seed: int
+    *,
+    n_images: int,
+    n_categories: int,
+    dt_per_image: int,
+    gt_per_image: int,
+    seed: int,
+    iscrowd_fraction: float = 0.0,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     rng = np.random.default_rng(seed)
     images = [
@@ -52,11 +106,15 @@ def _generate(
     ]
     categories = [{"id": i + 1, "name": f"cat{i}"} for i in range(n_categories)]
 
+    # Crowd anns omit ``segmentation`` — pycocotools' crowd path keys off
+    # ``iscrowd`` + the bbox alone for bbox eval.
+    n_crowd_per_image = int(gt_per_image * iscrowd_fraction)
+
     annotations: list[dict[str, Any]] = []
     detections: list[dict[str, Any]] = []
     ann_id = 1
     for image in images:
-        for _ in range(gt_per_image):
+        for k in range(gt_per_image):
             bbox = _random_bbox(rng)
             cat_id = int(rng.integers(1, n_categories + 1))
             annotations.append(
@@ -66,7 +124,7 @@ def _generate(
                     "category_id": cat_id,
                     "bbox": bbox,
                     "area": bbox[2] * bbox[3],
-                    "iscrowd": 0,
+                    "iscrowd": 1 if k < n_crowd_per_image else 0,
                 }
             )
             ann_id += 1
@@ -87,7 +145,13 @@ def _generate(
 
 
 def make_workload(
-    *, n_images: int, n_categories: int, dt_per_image: int, gt_per_image: int, seed: int
+    *,
+    n_images: int,
+    n_categories: int,
+    dt_per_image: int,
+    gt_per_image: int,
+    seed: int,
+    iscrowd_fraction: float = 0.0,
 ) -> tuple[Path, Path]:
     """Return ``(gt_path, dt_path)``, materializing the cached pair if missing."""
     wid = workload_id(
@@ -96,6 +160,7 @@ def make_workload(
         dt_per_image=dt_per_image,
         gt_per_image=gt_per_image,
         seed=seed,
+        iscrowd_fraction=iscrowd_fraction,
     )
     cache = _cache_dir()
     gt_out = cache / f"{wid}_gt.json"
@@ -109,6 +174,7 @@ def make_workload(
         dt_per_image=dt_per_image,
         gt_per_image=gt_per_image,
         seed=seed,
+        iscrowd_fraction=iscrowd_fraction,
     )
     cache.mkdir(parents=True, exist_ok=True)
     with gt_out.open("w") as f:
