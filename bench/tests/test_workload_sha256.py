@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 
 import pytest
-
 from coco_val_cache import file_sha256
+
 from bench.workloads import coco_val2017
 
 _GATE = "VERNIER_BENCH_DOWNLOAD_TESTS"

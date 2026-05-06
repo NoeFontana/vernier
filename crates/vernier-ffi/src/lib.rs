@@ -2589,6 +2589,20 @@ impl BackgroundEvalState {
         }
     }
 
+    /// B5: drain the worker's accumulated submit-latency samples (in
+    /// nanoseconds). Returns an empty `Vec` when the evaluator was
+    /// constructed without `record_latency_samples=True` or after
+    /// finalize.
+    fn latency_samples_drain(&self) -> Vec<u64> {
+        match self {
+            Self::Bbox(ev) => ev.latency_samples_drain(),
+            Self::Segm(ev) => ev.latency_samples_drain(),
+            Self::Boundary(ev) => ev.latency_samples_drain(),
+            Self::Keypoints(ev) => ev.latency_samples_drain(),
+            Self::Finalized => Vec::new(),
+        }
+    }
+
     /// Best-effort cooperative shutdown. Used by `__exit__` and `__del__`
     /// when the evaluator hasn't already been finalized.
     fn shutdown(&mut self) {
@@ -2741,6 +2755,7 @@ impl PyBackgroundEvaluator {
         retain_iou = false,
         cast_inputs = false,
         rank_id = None,
+        record_latency_samples = false,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2760,6 +2775,7 @@ impl PyBackgroundEvaluator {
         retain_iou: bool,
         cast_inputs: bool,
         rank_id: Option<u32>,
+        record_latency_samples: bool,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -2805,8 +2821,12 @@ impl PyBackgroundEvaluator {
                         .map_err(|e| PyValueError::new_err(format!("{e}")))?,
                     rank_id,
                 )?;
-                let bg = background::BackgroundEvaluator::spawn(ev, config)
-                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                let bg = background::BackgroundEvaluator::spawn_with_options(
+                    ev,
+                    config,
+                    record_latency_samples,
+                )
+                .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
                     BackgroundEvalState::Bbox(bg),
                     array_ingest::ArrayIouType::Bbox,
@@ -2826,8 +2846,12 @@ impl PyBackgroundEvaluator {
                         .map_err(|e| PyValueError::new_err(format!("{e}")))?,
                     rank_id,
                 )?;
-                let bg = background::BackgroundEvaluator::spawn(ev, config)
-                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                let bg = background::BackgroundEvaluator::spawn_with_options(
+                    ev,
+                    config,
+                    record_latency_samples,
+                )
+                .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
                     BackgroundEvalState::Segm(bg),
                     array_ingest::ArrayIouType::Segm,
@@ -2849,8 +2873,12 @@ impl PyBackgroundEvaluator {
                         .map_err(|e| PyValueError::new_err(format!("{e}")))?,
                     rank_id,
                 )?;
-                let bg = background::BackgroundEvaluator::spawn(ev, config)
-                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                let bg = background::BackgroundEvaluator::spawn_with_options(
+                    ev,
+                    config,
+                    record_latency_samples,
+                )
+                .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
                     BackgroundEvalState::Boundary(bg),
                     array_ingest::ArrayIouType::Boundary,
@@ -2878,8 +2906,12 @@ impl PyBackgroundEvaluator {
                         .map_err(|e| PyValueError::new_err(format!("{e}")))?,
                     rank_id,
                 )?;
-                let bg = background::BackgroundEvaluator::spawn(ev, config)
-                    .map_err(|e| eval_error_to_pyerr(py, e))?;
+                let bg = background::BackgroundEvaluator::spawn_with_options(
+                    ev,
+                    config,
+                    record_latency_samples,
+                )
+                .map_err(|e| eval_error_to_pyerr(py, e))?;
                 (
                     BackgroundEvalState::Keypoints(bg),
                     array_ingest::ArrayIouType::Keypoints,
@@ -3195,6 +3227,18 @@ impl PyBackgroundEvaluator {
     #[getter]
     fn memory_used_bytes(&self) -> PyResult<usize> {
         Ok(self.lock_state()?.memory_used_bytes())
+    }
+
+    /// Drain the worker's accumulated submit-latency samples (B5).
+    ///
+    /// Each sample is the wall-time of one ``submit()`` call's
+    /// channel-send leg, in nanoseconds. The buffer is reset to empty
+    /// on each call so subsequent submits keep accumulating; returns
+    /// an empty list when the evaluator was constructed without
+    /// ``record_latency_samples=True`` (the default) or after
+    /// ``finalize`` has consumed the worker.
+    fn drain_latency_samples_ns(&self) -> PyResult<Vec<u64>> {
+        Ok(self.lock_state()?.latency_samples_drain())
     }
 
     /// Test-only: post a `Poison` message that panics the worker. Visible

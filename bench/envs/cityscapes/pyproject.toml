@@ -1,0 +1,43 @@
+[project]
+name = "vernier-bench-env-cityscapes"
+version = "0.0.0"
+description = "uv env for the cityscapes semantic-segmentation runners (ADR-0033 §B2)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# Shared env for the `vernier_semantic` and `cityscapesscripts` runner
+# subprocesses. Both runners produce a 19x19 uint64 confusion matrix
+# over Cityscapes trainId arrays; the strict-tier parity comparator
+# (ADR-0033 §"Comparator registry") checks bit-equality.
+#
+# Pin invariants:
+# - `cityscapesScripts` is mirrored from
+#   `crates/vernier-semantic/src/parity.rs::CITYSCAPESSCRIPTS_PIN`;
+#   the tripwire test `bench/tests/test_cityscapes_env_pin.py`
+#   re-reads the Rust constant and asserts equality. Bumping is an
+#   ADR-level decision (per ADR-0033, mirroring ADR-0017's
+#   pycocotools-pin discipline).
+# - `Pillow` mirrors the panopticapi env's pin
+#   (`crates/vernier-panoptic/src/parity.rs::ORACLE_PILLOW_PIN`)
+#   because the cityscapesScripts oracle's PNG decoder is also
+#   Pillow-driven; sharing the pin keeps every PNG-decode oracle on
+#   the same byte-for-byte release.
+dependencies = [
+    "vernier",
+    "vernier-bench",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+    "Pillow==12.2.0",
+    "cityscapesScripts==2.2.4",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# vernier itself is a maturin/PyO3 build — same convention as the
+# `bench/envs/vernier/` env (non-editable; `just bench-sync` rebuilds).
+vernier = { path = "../../..", editable = false }
+# vernier-bench is pure Python — editable lets harness source edits
+# show up in the runner subprocess without a re-sync.
+vernier-bench = { path = "../..", editable = true }

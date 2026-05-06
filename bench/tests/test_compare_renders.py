@@ -62,6 +62,7 @@ def _write_result(
     )
     out_dir.mkdir(parents=True, exist_ok=True)
     result = BenchResult(
+        paradigm="instance",
         impl=impl,
         impl_version="0.0.1",
         iou_type=iou,
@@ -84,8 +85,8 @@ def _write_result(
             )
         ],
         aggregation=_aggregation(total_ns, rss_bytes=rss_bytes),
-        tensor_path=f"{impl}.npy",
-        tensor_sha256="0" * 64,
+        artifact_paths={"tensor": f"{impl}.npy"},
+        artifact_sha256={"tensor": "0" * 64},
     )
     json_path = out_dir / f"{impl}.json"
     json_path.write_text(result.model_dump_json())

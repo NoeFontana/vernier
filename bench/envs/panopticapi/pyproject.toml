@@ -1,0 +1,45 @@
+[project]
+name = "vernier-bench-env-panopticapi"
+version = "0.0.0"
+description = "uv env for the panopticapi + vernier_panoptic runner subprocesses (ADR-0033 / B1)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# Two runners share this env: the panopticapi oracle (the strict-mode
+# reference) and vernier_panoptic (the candidate). Sharing the venv
+# lets the parity comparator run both in identical Python state, while
+# the orchestrator still spawns each as its own subprocess.
+#
+# panopticapi is fetched from a SHA-pinned git ref — same SHA the
+# strict-mode parity oracle uses (mirrored in
+# `crates/vernier-panoptic/src/parity.rs:ORACLE_COMMIT_SHA`). Pillow
+# is pinned to match `ORACLE_PILLOW_PIN` because PIL.Image is what
+# decodes panoptic PNGs into the uint32 label maps panopticapi's
+# `pq_compute_single_core` consumes; bumping it is an ADR-level
+# decision.
+dependencies = [
+    "vernier",
+    "vernier-bench",
+    "vernier-panoptic-val-cache",
+    "panopticapi",
+    "Pillow==12.2.0",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# vernier itself is a maturin/PyO3 build — same setup as the vernier env.
+vernier = { path = "../../..", editable = false }
+# vernier-bench is pure Python — editable so harness edits show up
+# without re-sync.
+vernier-bench = { path = "../..", editable = true }
+# panoptic_val_cache is the GT cache helper (tools/panoptic_val_cache).
+vernier-panoptic-val-cache = { path = "../../../tools/panoptic_val_cache", editable = true }
+# panopticapi: pinned commit SHA mirrors
+# `crates/vernier-panoptic/src/parity.rs:ORACLE_COMMIT_SHA`. The
+# tripwire test in `bench/tests/test_panopticapi_env_pin.py` parses
+# this constant and asserts equality.
+panopticapi = { git = "https://github.com/cocodataset/panopticapi.git", rev = "7bb4655548f98f3fedc07bf37e9040a992b054b0" }

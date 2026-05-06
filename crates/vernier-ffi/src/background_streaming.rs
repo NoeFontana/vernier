@@ -175,12 +175,36 @@ pub(crate) struct BackgroundCore<E: BackgroundCapable> {
     worker: Mutex<Option<JoinHandle<()>>>,
     config: BackgroundConfig,
     state: Arc<BackgroundState<E>>,
+    /// Opt-in `submit_blocking` / `submit_timeout` latency sample
+    /// accumulator (B5 — BackgroundEvaluator p99 latency cell).
+    /// `None` when disabled (the default); always-on cost is one
+    /// `is_some()` check per submit. Each sample is the wall time from
+    /// the FFI entry to the channel send completing, in nanoseconds.
+    latency_samples: Option<Mutex<Vec<u64>>>,
 }
 
 impl<E: BackgroundCapable> BackgroundCore<E> {
     /// Hand the evaluator to a fresh worker thread named
-    /// `vernier-bg-stream-worker` and return the wrapper.
+    /// `vernier-bg-stream-worker` and return the wrapper. Latency
+    /// sample accumulation is off by default; see
+    /// [`Self::spawn_with_options`] to opt in.
     pub(crate) fn spawn(evaluator: E, config: BackgroundConfig) -> std::io::Result<Self> {
+        Self::spawn_with_options(evaluator, config, false)
+    }
+
+    /// Variant of [`Self::spawn`] with a per-instance opt-in for
+    /// latency-sample accumulation (B5). When `record_latency_samples`
+    /// is `true`, every successful `submit_blocking` /
+    /// `submit_timeout` records the wall-time of the channel-send leg
+    /// in nanoseconds; readers consume samples via
+    /// [`Self::latency_samples_drain`]. When `false`, the
+    /// accumulator stays unallocated and the only cost is one
+    /// `Option::is_some` check per submit.
+    pub(crate) fn spawn_with_options(
+        evaluator: E,
+        config: BackgroundConfig,
+        record_latency_samples: bool,
+    ) -> std::io::Result<Self> {
         let (sender, receiver) = sync_channel::<WorkerMessage<E>>(config.queue_capacity);
         let state = Arc::new(BackgroundState::<E>::new());
         // Seed counters so the FFI accessors don't lie before the
@@ -198,11 +222,18 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
             .name("vernier-bg-stream-worker".to_string())
             .spawn(move || worker_loop::<E>(evaluator, receiver, worker_state, worker_config))?;
 
+        let latency_samples = if record_latency_samples {
+            Some(Mutex::new(Vec::new()))
+        } else {
+            None
+        };
+
         Ok(Self {
             sender,
             worker: Mutex::new(Some(handle)),
             config,
             state,
+            latency_samples,
         })
     }
 
@@ -211,9 +242,13 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
         if let Some(err) = self.take_last_error() {
             return Err(err);
         }
+        let start = self.latency_start();
         self.state.queue_depth.fetch_add(1, Ordering::AcqRel);
         match self.sender.send(WorkerMessage::Update(update)) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.record_latency_sample(start);
+                Ok(())
+            }
             Err(_) => {
                 self.state.queue_depth.fetch_sub(1, Ordering::AcqRel);
                 Err(E::worker_disconnected())
@@ -232,10 +267,14 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
         if let Some(err) = self.take_last_error() {
             return Err(SubmitError::Eval(err));
         }
+        let start = self.latency_start();
         self.state.queue_depth.fetch_add(1, Ordering::AcqRel);
         let result = self.send_with_timeout(WorkerMessage::Update(update), timeout);
-        if result.is_err() {
-            self.state.queue_depth.fetch_sub(1, Ordering::AcqRel);
+        match &result {
+            Ok(()) => self.record_latency_sample(start),
+            Err(_) => {
+                self.state.queue_depth.fetch_sub(1, Ordering::AcqRel);
+            }
         }
         result
     }
@@ -410,6 +449,58 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
         self.state.last_error.lock().ok()?.take()
     }
 
+    /// Drain and replace the per-instance submit-latency sample buffer
+    /// (B5). Returns the accumulated samples (each is the wall-time of
+    /// the FFI-to-`mpsc::send` leg in nanoseconds) and leaves the inner
+    /// `Vec` freshly empty so subsequent submits keep accumulating.
+    /// Returns an empty `Vec` when the wrapper was constructed without
+    /// `record_latency_samples`.
+    ///
+    /// Exposed pub(crate) so the panoptic / semantic FFI shims can
+    /// wire it through their pyclasses if/when they need a
+    /// per-paradigm `drain_latency_samples_ns()`. Today the
+    /// instance evaluator routes its own fork (see
+    /// [`crate::background::BackgroundEvaluator::latency_samples_drain`])
+    /// because B5's saturation workload uses the bbox kernel.
+    #[allow(dead_code, reason = "exposed for forward-compat with panoptic / semantic latency-cell wiring")]
+    pub(crate) fn latency_samples_drain(&self) -> Vec<u64> {
+        match self.latency_samples.as_ref() {
+            Some(slot) => match slot.lock() {
+                Ok(mut guard) => std::mem::take(&mut *guard),
+                Err(_) => Vec::new(),
+            },
+            None => Vec::new(),
+        }
+    }
+
+    /// `Some(Instant::now())` when latency capture is on; `None`
+    /// otherwise. Inlined into the submit hot path.
+    fn latency_start(&self) -> Option<Instant> {
+        if self.latency_samples.is_some() {
+            Some(Instant::now())
+        } else {
+            None
+        }
+    }
+
+    /// Push the elapsed nanoseconds since `start` if both the
+    /// accumulator is enabled and `start` was captured. Mutex
+    /// contention is bounded — held only to push a single `u64`.
+    fn record_latency_sample(&self, start: Option<Instant>) {
+        let (slot, started) = match (self.latency_samples.as_ref(), start) {
+            (Some(slot), Some(t0)) => (slot, t0),
+            _ => return,
+        };
+        // `Instant::elapsed` returns `Duration::from_secs(0)` when the
+        // monotonic clock is non-monotonic on the platform; saturating
+        // to `u64::MAX` keeps a runaway tail observable rather than
+        // wrapping into "fast" measurements.
+        let ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        if let Ok(mut guard) = slot.lock() {
+            guard.push(ns);
+        }
+    }
+
     fn take_worker(&self) -> Option<JoinHandle<()>> {
         self.worker.lock().ok()?.take()
     }
@@ -487,6 +578,17 @@ impl<E: BackgroundCapable> BackgroundLifecycle<E> {
     pub(crate) fn take_scheduling_outcome(&self) -> Option<Result<(), String>> {
         self.core.as_ref()?.take_scheduling_outcome()
     }
+
+    /// Forwarder for [`BackgroundCore::latency_samples_drain`] (B5).
+    /// Returns an empty `Vec` when the wrapper has been finalized or
+    /// was constructed without `record_latency_samples`.
+    #[allow(dead_code, reason = "exposed for forward-compat with panoptic / semantic latency-cell wiring")]
+    pub(crate) fn latency_samples_drain(&self) -> Vec<u64> {
+        match self.core.as_ref() {
+            Some(core) => core.latency_samples_drain(),
+            None => Vec::new(),
+        }
+    }
 }
 
 /// Worker entry point. Owns the evaluator outright; the only way to
@@ -554,5 +656,107 @@ fn worker_loop<E: BackgroundCapable>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    //! Latency-sample accumulator unit tests (B5). Exercise the
+    //! generic `BackgroundCore` opt-in path without the instance
+    //! `StreamingEvaluator<K>` parsing pipeline.
+
+    use super::*;
+
+    /// Minimal `BackgroundCapable` impl: counts `apply_update` calls
+    /// in an in-memory u64. Sufficient to drive `submit_blocking` for
+    /// the latency hook test.
+    #[derive(Default)]
+    struct CountingEvaluator {
+        applied: usize,
+    }
+
+    impl BackgroundCapable for CountingEvaluator {
+        type Update = ();
+        type Summary = usize;
+        type Error = String;
+
+        fn apply_update(&mut self, _: ()) -> Result<(), String> {
+            self.applied += 1;
+            Ok(())
+        }
+
+        fn snapshot(&self) -> Result<usize, String> {
+            Ok(self.applied)
+        }
+
+        fn finalize(self) -> Result<usize, String> {
+            Ok(self.applied)
+        }
+
+        fn snapshot_to_partial(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+
+        fn finalize_to_partial(self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+
+        fn images_seen(&self) -> usize {
+            self.applied
+        }
+
+        fn worker_disconnected() -> String {
+            "worker_disconnected".to_string()
+        }
+
+        fn already_finalized() -> String {
+            "already_finalized".to_string()
+        }
+    }
+
+    fn config() -> BackgroundConfig {
+        BackgroundConfig {
+            queue_capacity: 4,
+            worker_affinity: None,
+            worker_nice: 0,
+            shutdown_timeout: Duration::from_millis(200),
+        }
+    }
+
+    #[test]
+    fn latency_samples_disabled_by_default_returns_empty() {
+        let core = match BackgroundCore::spawn(CountingEvaluator::default(), config()) {
+            Ok(c) => c,
+            Err(e) => panic!("spawn worker: {e}"),
+        };
+        for _ in 0..8u32 {
+            if let Err(e) = core.submit_blocking(()) {
+                panic!("submit: {e}");
+            }
+        }
+        let drained = core.latency_samples_drain();
+        assert!(drained.is_empty(), "default-off accumulator must return empty");
+        core.shutdown();
+    }
+
+    #[test]
+    fn latency_samples_opt_in_records_one_per_submit() {
+        let core =
+            match BackgroundCore::spawn_with_options(CountingEvaluator::default(), config(), true) {
+                Ok(c) => c,
+                Err(e) => panic!("spawn worker: {e}"),
+            };
+        let n = 16usize;
+        for _ in 0..n {
+            if let Err(e) = core.submit_blocking(()) {
+                panic!("submit: {e}");
+            }
+        }
+        let drained = core.latency_samples_drain();
+        assert_eq!(drained.len(), n, "one sample per successful submit");
+        // Subsequent drain returns empty (the buffer was reset).
+        assert!(core.latency_samples_drain().is_empty());
+        core.shutdown();
     }
 }

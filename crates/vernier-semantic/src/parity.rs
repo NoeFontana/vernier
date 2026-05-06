@@ -93,6 +93,18 @@ pub const ORACLE_MMSEGMENTATION_COMMIT_SHA: &str = "PR-B6-pending";
 /// `tests/python/parity_semantic/oracle/cityscapesscripts/VENDORING.md`.
 pub const ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA: &str = "PR-B7-pending";
 
+/// PyPI release pin for `cityscapesScripts`. Separate from
+/// [`ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA`] (the vendored-source SHA
+/// used by the strict-mode parity harness in PR-B7): this pin is the
+/// version the **bench harness** installs in `bench/envs/cityscapes/`
+/// for the Cityscapes mIoU bench cell (ADR-0033 §"B2 — Semantic
+/// Cityscapes MVB"). The bench env can run today against the released
+/// wheel; the vendored oracle path is gated on the PR-B7 fork merge.
+///
+/// Drift between this constant and `bench/envs/cityscapes/pyproject.toml`
+/// is a build failure — see `bench/tests/test_cityscapes_env_pin.py`.
+pub const CITYSCAPESSCRIPTS_PIN: &str = "cityscapesScripts==2.2.4";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -160,6 +172,24 @@ mod tests {
             ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA.starts_with("PR-B7-")
                 || ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA.len() == 40,
             "expected placeholder or 40-char SHA, got {ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA:?}",
+        );
+    }
+
+    #[test]
+    fn cityscapesscripts_pin_is_pep440_release_spec() {
+        // Tripwire: `bench/envs/cityscapes/pyproject.toml` mirrors this
+        // constant verbatim. Editing one without the other defeats the
+        // ADR-0033 §"Comparator registry" reproducibility claim for the
+        // semantic Cityscapes bench cell — the bench harness pins this
+        // exact PyPI release in lock-step.
+        assert_eq!(CITYSCAPESSCRIPTS_PIN, "cityscapesScripts==2.2.4");
+        // Sanity: must be a `name==version` pin (not a git URL or
+        // unbounded constraint). The bench env pin contract (ADR-0033)
+        // is "exact PyPI release" — a `>=`/`~=` constraint here would
+        // silently widen to a different version under `uv lock`.
+        assert!(
+            CITYSCAPESSCRIPTS_PIN.contains("=="),
+            "expected `name==version` pin, got {CITYSCAPESSCRIPTS_PIN:?}",
         );
     }
 }

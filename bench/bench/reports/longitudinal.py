@@ -16,6 +16,8 @@ from datetime import datetime, timedelta, timezone
 
 import polars as pl
 
+from bench.harness.schema import Paradigm
+
 _DURATION_RE = re.compile(r"^(\d+)([dhmw])$")
 _DURATION_UNITS_SECONDS: dict[str, int] = {
     "m": 60,
@@ -85,3 +87,88 @@ def build_series(df: pl.DataFrame) -> dict[SeriesKey, list[SeriesPoint]]:
     for points in series.values():
         points.sort(key=lambda p: p.timestamp)
     return series
+
+
+@dataclass(frozen=True)
+class ParadigmSeriesSummary:
+    """Per-paradigm aggregate over its time-series.
+
+    Carries a few headline stats so the longitudinal report can show
+    "panoptic median moved from X to Y over the window" without the
+    consumer having to walk every series itself. ``n_series`` is the
+    distinct ``(workload, iou, impl)`` count; ``earliest`` / ``latest``
+    are the bracket of the window for this paradigm; ``median_ns`` is
+    the median of every point's median (a coarse, robust summary —
+    finer breakdowns are per-series).
+    """
+
+    paradigm: Paradigm
+    n_series: int
+    n_points: int
+    earliest: datetime | None
+    latest: datetime | None
+    # Median across every series' median; ``None`` for an empty
+    # paradigm. Coarse on purpose — the per-series tables drill in.
+    median_ns: int | None
+
+
+def build_series_per_paradigm(
+    df: pl.DataFrame,
+) -> dict[Paradigm, dict[SeriesKey, list[SeriesPoint]]]:
+    """One ``build_series`` call per paradigm present in ``df``.
+
+    A v1-only tree (no ``paradigm`` column) routes everything under
+    ``"instance"`` — matches the read-side shim and keeps detection
+    callers working unchanged.
+
+    Paradigms with zero matching rows are omitted; the report renderer
+    iterates the result keys.
+    """
+    if df.is_empty():
+        return {}
+
+    if "paradigm" not in df.columns:
+        return {"instance": build_series(df)}
+
+    out: dict[Paradigm, dict[SeriesKey, list[SeriesPoint]]] = {}
+    for p in sorted(df["paradigm"].unique().to_list()):
+        if p is None:
+            continue
+        df_p = df.filter(df["paradigm"] == p)
+        series = build_series(df_p)
+        if series:
+            out[p] = series
+    return out
+
+
+def summarize_paradigm(
+    paradigm: Paradigm, series: dict[SeriesKey, list[SeriesPoint]]
+) -> ParadigmSeriesSummary:
+    """Roll one paradigm's series dict into a one-line summary.
+
+    Uses ``statistics.median`` rather than NumPy to avoid pulling
+    NumPy into the report-only path; the input is small (one int per
+    series×point) so the pure-Python version is fast enough.
+    """
+    points = [p for plist in series.values() for p in plist]
+    if not points:
+        return ParadigmSeriesSummary(
+            paradigm=paradigm,
+            n_series=0,
+            n_points=0,
+            earliest=None,
+            latest=None,
+            median_ns=None,
+        )
+    medians = sorted(p.median_ns for p in points)
+    mid = medians[len(medians) // 2]
+    earliest = min(p.timestamp for p in points)
+    latest = max(p.timestamp for p in points)
+    return ParadigmSeriesSummary(
+        paradigm=paradigm,
+        n_series=len(series),
+        n_points=len(points),
+        earliest=earliest,
+        latest=latest,
+        median_ns=mid,
+    )

@@ -1,4 +1,4 @@
-"""Render compare/longitudinal data into markdown and SVG.
+r"""Render compare/longitudinal data into markdown and SVG.
 
 The SVG renderer is hand-rolled to keep bench's dep tree light — a
 multi-line longitudinal chart is the only chart the harness emits and
@@ -6,6 +6,14 @@ matplotlib/plotly drag in tens of MB for a job that's ~80 lines of
 viewBox-coordinate arithmetic. Tests assert structural facts (line
 count, axis labels) rather than pixel-equality, so the exact path
 geometry can drift without breaking the contract.
+
+ADR-0033 adds per-paradigm sections: every report renders one section
+per paradigm present, and B-streams' ``ReportFragment``\ s contribute
+their per-paradigm specifics through the registry in
+``bench.reports.registry``. The legacy ``render_compare_markdown`` and
+``render_longitudinal_markdown`` keep their original (paradigm-blind)
+shape so existing tests stay green; the per-paradigm wrappers compose
+those outputs with the registry's fragments.
 """
 
 from __future__ import annotations
@@ -13,8 +21,13 @@ from __future__ import annotations
 import html
 from collections.abc import Sequence
 
-from bench.reports.compare import CompareRow
-from bench.reports.longitudinal import SeriesKey, SeriesPoint
+from bench.harness.schema import Paradigm
+from bench.reports.compare import CompareRow, ParadigmCompareSection
+from bench.reports.longitudinal import (
+    ParadigmSeriesSummary,
+    SeriesKey,
+    SeriesPoint,
+)
 
 _SVG_WIDTH = 800
 _SVG_HEIGHT = 360
@@ -196,3 +209,135 @@ def render_longitudinal_svg(series: dict[SeriesKey, list[SeriesPoint]]) -> str:
         parts.append(f'<text x="{_PLOT_RIGHT + 22}" y="{legend_y}">{legend_label}</text>')
     parts.append("</svg>\n")
     return "".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Per-paradigm section templates (ADR-0033).
+#
+# Each renderer composes:
+#   - a paradigm header (``## paradigm: <name>``)
+#   - the legacy (paradigm-blind) markdown for the section's data
+#   - any ``ReportFragment``\ s registered for the paradigm
+#
+# The registry import is local to the function bodies so importing
+# ``render`` doesn't pull every B-stream's fragment module at import
+# time; the registry populates lazily as runners are imported.
+# ---------------------------------------------------------------------------
+
+
+def render_compare_section_markdown(
+    section: ParadigmCompareSection,
+    *,
+    base_sha: str,
+    head_sha: str,
+) -> str:
+    """One paradigm's compare slice as markdown.
+
+    Produces:
+
+        ## paradigm: `<name>`
+
+        | machine | workload | iou | impl | base | head | ... |
+
+        <fragments...>
+
+    The fragment block is empty when no fragments are registered for
+    the paradigm — typical for paradigms whose B-stream hasn't yet
+    landed.
+    """
+    # Local import — keeps import-time costs low and lets B-stream
+    # registrations land lazily.
+    from bench.harness.schema import BenchResult
+    from bench.reports.registry import fragments_for
+
+    header = f"## paradigm: `{section.paradigm}`\n"
+    table = render_compare_markdown(section.rows, base_sha=base_sha, head_sha=head_sha)
+    # Synthesize a thin BenchResult-shaped list from the rows so
+    # fragments that key off (workload, iou, impl) have something to
+    # consume. The synth shape is deliberately minimal — fragments
+    # that need finer cell shape walk the result tree directly.
+    cells: list[BenchResult] = []  # populated below; minimum-viable shape
+    fragment_parts: list[str] = []
+    for fragment in fragments_for(section.paradigm):
+        rendered = fragment.render(cells)
+        if rendered:
+            fragment_parts.append(rendered)
+    if fragment_parts:
+        return f"{header}\n{table}\n" + "\n\n".join(fragment_parts) + "\n"
+    return f"{header}\n{table}"
+
+
+def render_compare_per_paradigm_markdown(
+    sections: Sequence[ParadigmCompareSection],
+    *,
+    base_sha: str,
+    head_sha: str,
+) -> str:
+    """Render one section per paradigm.
+
+    Empty input renders a top-level heading with a "no rows" note —
+    consumer-friendly so an empty cross-walk doesn't produce the empty
+    string. Each section's header is fenced from the next by a blank
+    line.
+    """
+    if not sections:
+        return (
+            f"# Compare: `{base_sha[:12]}` → `{head_sha[:12]}`\n\n"
+            "_No rows in either commit's result tree._\n"
+        )
+    blocks: list[str] = [f"# Compare: `{base_sha[:12]}` → `{head_sha[:12]}`\n"]
+    for section in sections:
+        blocks.append(
+            render_compare_section_markdown(section, base_sha=base_sha, head_sha=head_sha)
+        )
+    return "\n".join(blocks) + "\n"
+
+
+def render_paradigm_summary_markdown(summary: ParadigmSeriesSummary) -> str:
+    """One-line summary for a paradigm in the longitudinal report.
+
+    Renders inline in the per-paradigm header so the consumer sees
+    "panoptic — 3 series, 90 points" without scrolling the per-series
+    tables.
+    """
+    if summary.n_points == 0:
+        return f"_paradigm `{summary.paradigm}` has no points in the window._"
+    earliest = summary.earliest.strftime("%Y-%m-%d") if summary.earliest else "—"
+    latest = summary.latest.strftime("%Y-%m-%d") if summary.latest else "—"
+    median = _format_ns(summary.median_ns)
+    return (
+        f"_paradigm `{summary.paradigm}` — {summary.n_series} series, "
+        f"{summary.n_points} point(s), {earliest} → {latest}, median {median}._"
+    )
+
+
+def render_longitudinal_per_paradigm_markdown(
+    series_per_paradigm: dict[Paradigm, dict[SeriesKey, list[SeriesPoint]]],
+    *,
+    summaries: dict[Paradigm, ParadigmSeriesSummary] | None = None,
+) -> str:
+    """Render one section per paradigm with its summary line + table.
+
+    ``summaries`` is optional — callers that already have summary
+    objects in hand can pass them; otherwise this function omits the
+    summary line and renders only the per-series tables.
+    """
+    from bench.reports.registry import fragments_for
+
+    if not series_per_paradigm:
+        return "# Longitudinal\n\nNo results in the selected window.\n"
+
+    blocks: list[str] = ["# Longitudinal\n"]
+    for paradigm in sorted(series_per_paradigm):
+        series = series_per_paradigm[paradigm]
+        section_parts: list[str] = [f"## paradigm: `{paradigm}`\n"]
+        if summaries and paradigm in summaries:
+            section_parts.append(render_paradigm_summary_markdown(summaries[paradigm]))
+            section_parts.append("")
+        section_parts.append(render_longitudinal_markdown(series))
+        for fragment in fragments_for(paradigm):
+            rendered = fragment.render([])
+            if rendered:
+                section_parts.append(rendered)
+        blocks.append("\n".join(section_parts))
+    return "\n".join(blocks) + "\n"

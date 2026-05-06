@@ -15,10 +15,21 @@ dependencies = [
     # Single source of truth for the COCO val2017 dev cache contract
     # (URL, SHA256, filename, fetch flow). Path source below.
     "vernier-coco-val-cache",
+    # Single source of truth for the LVIS v1 val dev cache (URL,
+    # SHA256, perfect-DT synth flow). Path source below; reuses the
+    # same fetch+verify shape as the COCO cache.
+    "vernier-lvis-val-cache",
+    # COCO panoptic val2017 dev cache (ADR-0025); same fetch+verify
+    # shape, gated on the same VERNIER_BENCH_DOWNLOAD_TESTS env var.
+    "vernier-panoptic-val-cache",
     # Cache-path resolver for real-model predictions (Mask R-CNN
     # downloaded; rf-detr inferred via the TIDE harness). Path source
     # below; transitively pulls platformdirs.
     "vernier-real-predictions-cache",
+    # Cache-path resolver for the Cityscapes val dataset (ADR-0033 §B2,
+    # ADR-0028). No automatic download (Cityscapes is a gated dataset);
+    # the cache locates a user-populated extraction. Path source below.
+    "vernier-cityscapes-val-cache",
     # Workload-side: polygon-jittered DT generation needs morphological
     # ops (dilate/erode) and an RLE codec independent of vernier's own
     # mask kernels (using the system under test as the codec for test
@@ -27,11 +38,20 @@ dependencies = [
     # source — small disk cost, simpler user flow than an opt-in extra.
     "scipy>=1.11",
     "pycocotools==2.0.11",
+    # psutil drives the streaming RSS sampler (bench/bench/harness/rss.py)
+    # used by the B3 streaming + naive-Python runners. Tolerated
+    # missing — the sampler returns empty samples + peak=-1 — but
+    # pinning the runtime dep avoids a "metric mysteriously absent"
+    # surprise in CI.
+    "psutil>=5.9",
 ]
 
 [tool.uv.sources]
 vernier-coco-val-cache = { path = "../tools/coco_val_cache", editable = true }
+vernier-lvis-val-cache = { path = "../tools/lvis_val_cache", editable = true }
+vernier-panoptic-val-cache = { path = "../tools/panoptic_val_cache", editable = true }
 vernier-real-predictions-cache = { path = "../tools/real_predictions_cache", editable = true }
+vernier-cityscapes-val-cache = { path = "../tools/cityscapes_val_cache", editable = true }
 
 [project.scripts]
 vernier-bench = "bench.cli:main"
