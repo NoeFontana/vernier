@@ -41,8 +41,12 @@ from bench.reports.render import (
     render_compare_markdown,
     render_longitudinal_markdown,
     render_longitudinal_svg,
+    render_scaling_svg,
+    render_scaling_table,
 )
+from bench.reports.scaling import group_by_synthetic_param
 from bench.workloads import InstanceWorkload, resolve
+from bench.workloads.synthetic import SCALING_AXES
 
 _IOU_CHOICES: tuple[str, ...] = get_args(IouType)
 _MODE_CHOICES: tuple[str, ...] = get_args(Mode)
@@ -260,8 +264,7 @@ def compare_cmd(base_sha: str, head_sha: str, paradigm: str, output: str | None)
         # ``auto`` requires a workload to disambiguate; compare doesn't
         # know one.
         raise click.ClickException(
-            "--paradigm auto isn't valid for compare; pass an explicit paradigm "
-            "or 'all' (default)."
+            "--paradigm auto isn't valid for compare; pass an explicit paradigm or 'all' (default)."
         )
 
     df = load_tree(BENCH_ROOT / "results", shas={base_sha, head_sha})
@@ -335,8 +338,7 @@ def report_cmd(since_spec: str, paradigm: str, output_dir: str | None) -> None:
     """Render a longitudinal view for the last ``--since`` window."""
     if paradigm == "auto":
         raise click.ClickException(
-            "--paradigm auto isn't valid for report; pass an explicit paradigm "
-            "or 'all' (default)."
+            "--paradigm auto isn't valid for report; pass an explicit paradigm or 'all' (default)."
         )
     try:
         since = parse_since(since_spec)
@@ -382,6 +384,100 @@ def report_cmd(since_spec: str, paradigm: str, output_dir: str | None) -> None:
         (out / "report.svg").write_text(svg)
         click.echo(f"report: {out / 'report.md'}")
         click.echo(f"report: {out / 'report.svg'}")
+    else:
+        click.echo(md, nl=False)
+
+
+def _parse_fix_spec(spec: str) -> dict[str, int]:
+    """Parse ``k=v,k=v,...`` into ``{name: int}`` for the scaling fix-axes."""
+    if not spec:
+        return {}
+    out: dict[str, int] = {}
+    for token in spec.split(","):
+        if "=" not in token:
+            raise click.ClickException(f"--fix entry {token!r} is not k=v")
+        key, value = token.split("=", 1)
+        key = key.strip()
+        if key not in SCALING_AXES:
+            raise click.ClickException(
+                f"--fix unknown axis {key!r}; choices: {sorted(SCALING_AXES)}"
+            )
+        try:
+            out[key] = int(value)
+        except ValueError as e:
+            raise click.ClickException(f"--fix {key}={value!r} must be int") from e
+    return out
+
+
+@main.command("scale")
+@click.option(
+    "--vary",
+    type=click.Choice(SCALING_AXES),
+    required=True,
+    help="Scaling axis to plot. The other axes must be pinned via --fix.",
+)
+@click.option(
+    "--fix",
+    "fix_spec",
+    type=str,
+    default="",
+    show_default=False,
+    help=(
+        "Comma-separated k=v pairs pinning the non-varying axes "
+        "(e.g. n_categories=80,gt_per_image=10,dt_per_image=30,seed=0)."
+    ),
+)
+@click.option(
+    "--iou",
+    "iou_type",
+    type=click.Choice(_IOU_CHOICES),
+    default="bbox",
+    show_default=True,
+    help="Metric to plot — one curve set per IoU type.",
+)
+@click.option(
+    "--output-dir",
+    type=click.Path(file_okay=False, writable=True),
+    default=None,
+    help="Write scaling.md and scaling.svg here; default is stdout (markdown only).",
+)
+def scale_cmd(vary: str, fix_spec: str, iou_type: str, output_dir: str | None) -> None:
+    """Render a per-impl scaling curve over a synthetic workload axis."""
+    fix = _parse_fix_spec(fix_spec)
+    if vary in fix:
+        raise click.ClickException(
+            f"--vary {vary!r} cannot also appear in --fix; pick one role per axis."
+        )
+
+    df = load_tree(BENCH_ROOT / "results")
+    if df.is_empty():
+        raise click.ClickException("no rows under bench/results/")
+
+    points_by_impl = group_by_synthetic_param(
+        df, vary=vary, fix=fix, iou_type=cast(IouType, iou_type)
+    )
+    if not points_by_impl:
+        raise click.ClickException(
+            f"no synthetic cells matched --vary {vary} --fix {fix_spec!r} --iou {iou_type}"
+        )
+
+    family_parts = [f"{k}={v}" for k, v in sorted(fix.items())]
+    workload_family = "synthetic[" + ",".join(family_parts) + "]" if family_parts else "synthetic"
+    md = render_scaling_table(
+        points_by_impl,
+        x_param=vary,
+        iou_type=iou_type,
+        workload_family=workload_family,
+    )
+    svg = render_scaling_svg(points_by_impl, x_param=vary)
+
+    if output_dir:
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "scaling.md").write_text(md)
+        (out / "scaling.svg").write_text(svg)
+        click.echo(f"scale: {out / 'scaling.md'}")
+        click.echo(f"scale: {out / 'scaling.svg'}")
     else:
         click.echo(md, nl=False)
 
