@@ -34,13 +34,28 @@ def test_instance_comparator_is_registered() -> None:
     assert cmp.paradigm == "instance"
 
 
-@pytest.mark.parametrize("paradigm", ["panoptic", "semantic", "streaming"])
+@pytest.mark.parametrize("paradigm", ["semantic", "streaming"])
 def test_stub_comparators_raise_not_implemented(paradigm: Paradigm) -> None:
+    """Stub registry entries for B2/B3 paradigms that haven't landed
+    their concrete comparator yet. B1 (panoptic) is excluded — its
+    real comparator is registered (see :class:`_PanopticComparator`)."""
     cmp = get_comparator(paradigm)
     assert isinstance(cmp, Comparator)
     assert cmp.paradigm == paradigm
     with pytest.raises(NotImplementedError, match=paradigm):
         cmp.compare(workload_id="anything", iou_type="bbox", impl_outputs={})
+
+
+def test_panoptic_comparator_is_registered() -> None:
+    """B1 has registered :class:`_PanopticComparator`. The registry
+    returns it (no stub) and ``compare`` accepts the ``"pq"`` metric."""
+    cmp = get_comparator("panoptic")
+    assert isinstance(cmp, Comparator)
+    assert cmp.paradigm == "panoptic"
+    # Empty impl_outputs is a degenerate-but-valid input — just yields
+    # a report with zero tiers.
+    report = cmp.compare(workload_id="x", iou_type="pq", impl_outputs={})
+    assert report.tiers == []
 
 
 def test_instance_comparator_matches_legacy_compare_cell_on_perfect_pair() -> None:

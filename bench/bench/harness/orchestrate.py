@@ -13,6 +13,14 @@ Every runner subprocess is invoked as
 ``uv run --directory <bench_root>/envs/<env_name> python -m bench.runners.<impl>_runner ...``
 so the runner sees its own paradigm-flavored package and nothing else.
 The orchestrator never imports vernier or any baseline.
+
+Per ADR-0033 §"Comparator registry", non-instance paradigms route the
+cross-impl parity check through the comparator registry rather than
+the legacy :func:`compare_cell` (which stays detection-only). The
+spawn path is also paradigm-aware: panoptic cells use a
+five-path argspec (``--gt-png-dir`` etc.) plus a two-artifact result
+bundle (``snapshot.json`` + ``per_class.npy``). Detection paths are
+byte-identical to v1.
 """
 
 from __future__ import annotations
@@ -21,7 +29,7 @@ import os
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
@@ -31,12 +39,20 @@ from bench import HARNESS_VERSION
 from bench.harness import machine
 from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.migrations.v1_to_v2 import TENSOR_KEY
-from bench.harness.parity import CellParityReport, compare_cell, write_report
+from bench.harness.parity import (
+    CellParityReport,
+    ComparableArtifact,
+    PanopticSnapshot,
+    compare_cell,
+    get_comparator,
+    write_report,
+)
 from bench.harness.schema import (
     Aggregation,
     BenchResult,
     IouType,
     IqrGateResult,
+    Metric,
     Mode,
     Paradigm,
     RepResult,
@@ -82,7 +98,14 @@ class RunSpec:
 class _SpawnResult:
     rep: RepResult
     runner_out: RunnerRepOutput
-    tensor_path: Path
+    # ``tensor_path`` is the legacy detection slot — populated for
+    # detection runners (the canonical ``"tensor"`` artifact). Non-
+    # instance paradigms produce multi-artifact bundles and populate
+    # ``artifact_paths`` (a per-rep map of artifact-key → Path)
+    # instead. Both shapes coexist; the assembler picks based on
+    # paradigm.
+    tensor_path: Path | None = None
+    artifact_paths: dict[str, Path] = field(default_factory=dict)
 
 
 def result_dir(
@@ -91,7 +114,7 @@ def result_dir(
     git_sha: str,
     machine_fp: str,
     workload_id: str,
-    iou_type: IouType,
+    iou_type: Metric,
     paradigm: Paradigm = "instance",
 ) -> Path:
     """Canonical cell directory:
@@ -107,8 +130,31 @@ def result_dir(
     ``paradigm`` defaults to ``"instance"`` so detection callers — and
     the existing tests that pre-date ADR-0033 — keep their ergonomic
     short signature; B-streams pass their paradigm explicitly.
+
+    The ``iou_type`` parameter is typed ``Metric`` (a superset of
+    ``IouType``) so non-instance paradigms can pass their paradigm-
+    specific metric ("pq", "miou", ...) directly.
     """
     return results_root / git_sha / machine_fp / paradigm / workload_id / iou_type
+
+
+def _spawn_subprocess(
+    *,
+    bench_root: Path,
+    impl: str,
+    cmd: list[str],
+) -> tuple[int, object, int]:
+    """Run a runner subprocess and return ``(status, rusage, parent_wall_ns)``.
+
+    Lifted out of :func:`_spawn_one_rep` so the panoptic spawn path
+    can share the wait4 + parent-clock pattern without duplicating
+    the pickle-glue.
+    """
+    parent_start = time.perf_counter_ns()
+    proc = subprocess.Popen(cmd, env=uv_run_env(bench_root, impl))
+    _pid, status, rusage = os.wait4(proc.pid, 0)
+    parent_wall_ns = time.perf_counter_ns() - parent_start
+    return status, rusage, parent_wall_ns
 
 
 def _spawn_one_rep(
@@ -143,10 +189,9 @@ def _spawn_one_rep(
         "--tensor-output",
         str(rep_npy),
     )
-    parent_start = time.perf_counter_ns()
-    proc = subprocess.Popen(cmd, env=uv_run_env(bench_root, impl))
-    _pid, status, rusage = os.wait4(proc.pid, 0)
-    parent_wall_ns = time.perf_counter_ns() - parent_start
+    status, rusage, parent_wall_ns = _spawn_subprocess(
+        bench_root=bench_root, impl=impl, cmd=cmd
+    )
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
     if not rep_json.exists() or not rep_npy.exists():
@@ -159,7 +204,7 @@ def _spawn_one_rep(
         stages=runner_out.stages,
         summary_stats=runner_out.summary_stats,
         # Linux ``ru_maxrss`` is reported in kilobytes; convert at capture.
-        ru_maxrss_bytes=int(rusage.ru_maxrss) * 1024,
+        ru_maxrss_bytes=int(rusage.ru_maxrss) * 1024,  # type: ignore[attr-defined]
         parent_wall_ns=parent_wall_ns,
     )
     return _SpawnResult(rep=rep_result, runner_out=runner_out, tensor_path=rep_npy)
@@ -205,6 +250,102 @@ def _validate_artifacts(
     return canonical
 
 
+def _spawn_one_rep_panoptic(
+    *,
+    bench_root: Path,
+    impl: str,
+    workload_id: str,
+    gt_png_dir: Path,
+    gt_json: Path,
+    dt_png_dir: Path,
+    dt_json: Path,
+    categories_json: Path,
+    rep_index: int,
+    intermediate_dir: Path,
+    warmup: bool,
+) -> _SpawnResult:
+    """Panoptic spawn path. Different argspec from
+    :func:`_spawn_one_rep` (the four-path GT/DT family + categories
+    JSON instead of single-path GT/DT) and a two-artifact result
+    bundle (``snapshot.json`` + ``per_class.npy``).
+    """
+    rep_json = intermediate_dir / f"{impl}-rep{rep_index}.json"
+    rep_snapshot = intermediate_dir / f"{impl}-rep{rep_index}-snapshot.json"
+    rep_per_class = intermediate_dir / f"{impl}-rep{rep_index}-per_class.npy"
+    cmd = uv_run_argv(
+        bench_root,
+        impl,
+        "-m",
+        runner_module(impl),
+        "--gt-png-dir",
+        str(gt_png_dir),
+        "--gt-json",
+        str(gt_json),
+        "--dt-png-dir",
+        str(dt_png_dir),
+        "--dt-json",
+        str(dt_json),
+        "--categories-json",
+        str(categories_json),
+        "--workload-id",
+        workload_id,
+        "--paradigm",
+        "panoptic",
+        "--output",
+        str(rep_json),
+        "--snapshot-output",
+        str(rep_snapshot),
+        "--per-class-output",
+        str(rep_per_class),
+    )
+    status, rusage, parent_wall_ns = _spawn_subprocess(
+        bench_root=bench_root, impl=impl, cmd=cmd
+    )
+    if status != 0:
+        raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
+    for required in (rep_json, rep_snapshot, rep_per_class):
+        if not required.exists():
+            raise RuntimeError(
+                f"panoptic runner {impl} succeeded but did not produce {required.name}"
+            )
+    runner_out = RunnerRepOutput.model_validate_json(rep_json.read_bytes())
+
+    rep_result = RepResult(
+        rep=rep_index,
+        warmup=warmup,
+        stages=runner_out.stages,
+        summary_stats=runner_out.summary_stats,
+        ru_maxrss_bytes=int(rusage.ru_maxrss) * 1024,  # type: ignore[attr-defined]
+        parent_wall_ns=parent_wall_ns,
+    )
+    return _SpawnResult(
+        rep=rep_result,
+        runner_out=runner_out,
+        artifact_paths={"snapshot": rep_snapshot, "per_class": rep_per_class},
+    )
+
+
+def _aggregate_reps(
+    *,
+    rep_results: list[RepResult],
+    mode: Mode,
+    iqr_threshold: float,
+) -> tuple[Aggregation | None, IqrGateResult | None]:
+    """Across-rep aggregation; shared by detection and panoptic paths."""
+    aggregation: Aggregation | None = None
+    gate_result: IqrGateResult | None = None
+    if any(not r.warmup for r in rep_results):
+        stages = aggregate_reps(rep_results)
+        if mode == "release" and "total" in stages:
+            gate_result = iqr_gate(stages, threshold=iqr_threshold)
+        aggregation = Aggregation(
+            stages=stages,
+            iqr_gate=gate_result,
+            memory=aggregate_memory(rep_results),
+        )
+    return aggregation, gate_result
+
+
 def _assemble_impl_result(
     *,
     impl: str,
@@ -222,17 +363,18 @@ def _assemble_impl_result(
     paradigm: Paradigm = "instance",
     expected_artifact_keys: set[str] | None = None,
 ) -> tuple[Path, np.ndarray, str, IqrGateResult | None]:
-    """Validate per-rep tensor bit-equality, promote rep 0, aggregate, write JSON.
+    """Detection-shaped assembler. Validate per-rep tensor bit-equality,
+    promote rep 0, aggregate, write JSON.
 
     Detection runners produce a single tensor under the canonical
-    ``"tensor"`` artifact slot; this assembler stays detection-shaped
-    until B-streams land their own assemblers (panoptic snapshots,
-    streaming summary+rss bundles).
+    ``"tensor"`` artifact slot; this assembler stays detection-shaped.
+    Non-instance paradigms route through their own assembler
+    (:func:`_assemble_impl_result_panoptic` for B1; B2/B3 add their
+    own siblings).
 
     ``expected_artifact_keys`` defaults to ``{"tensor"}`` — the
-    detection-shape contract. B-stream assemblers that lift this
-    helper for their own paradigm pass their own set; the
-    cross-rep determinism check runs over every named key.
+    detection-shape contract. The cross-rep determinism check runs
+    over every named key via :func:`_validate_artifacts`.
     """
     if expected_artifact_keys is None:
         expected_artifact_keys = {TENSOR_KEY}
@@ -242,6 +384,11 @@ def _assemble_impl_result(
     canonical_sha = spawned[0].runner_out.artifact_sha256[TENSOR_KEY]
 
     canonical = spawned[0]
+    if canonical.tensor_path is None:
+        raise RuntimeError(
+            f"detection assembler for impl {impl!r} requires tensor_path; "
+            f"runner produced none — check the runner's write_outputs call."
+        )
     tensor_dst = out_dir / f"{impl}.npy"
     shutil.copyfile(canonical.tensor_path, tensor_dst)
     tensor_sha256 = file_sha256(tensor_dst)
@@ -249,17 +396,9 @@ def _assemble_impl_result(
         raise RuntimeError("tensor sha256 mismatch between runner output and orchestrator copy")
 
     rep_results = [s.rep for s in spawned]
-    aggregation: Aggregation | None = None
-    gate_result: IqrGateResult | None = None
-    if any(not r.warmup for r in rep_results):
-        stages = aggregate_reps(rep_results)
-        if mode == "release" and "total" in stages:
-            gate_result = iqr_gate(stages, threshold=iqr_threshold)
-        aggregation = Aggregation(
-            stages=stages,
-            iqr_gate=gate_result,
-            memory=aggregate_memory(rep_results),
-        )
+    aggregation, gate_result = _aggregate_reps(
+        rep_results=rep_results, mode=mode, iqr_threshold=iqr_threshold
+    )
 
     result = BenchResult(
         paradigm=paradigm,
@@ -284,6 +423,121 @@ def _assemble_impl_result(
     out_json = out_dir / f"{impl}.json"
     out_json.write_text(result.model_dump_json(indent=2))
     return out_json, np.load(canonical.tensor_path), tensor_sha256, gate_result
+
+
+_PANOPTIC_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class"})
+
+
+def _assemble_impl_result_panoptic(
+    *,
+    impl: str,
+    out_dir: Path,
+    spawned: list[_SpawnResult],
+    workload_id: str,
+    git_sha: str,
+    machine_fp: str,
+    mode: Mode,
+    run_seed: int,
+    reps_count: int,
+    warmup_discarded: int,
+    iqr_threshold: float,
+) -> tuple[Path, PanopticSnapshot, dict[str, str], IqrGateResult | None]:
+    """Panoptic assembler. Validates per-rep snapshot + per-class sha
+    bit-equality (per the ADR-0033 strict-mode contract), promotes rep
+    0's artifacts to the canonical ``<impl>.json`` / ``<impl>_per_class.npy``
+    pair, aggregates rep timings, writes the ``BenchResult``.
+
+    Returns ``(out_json, canonical_snapshot, sha_by_key, gate_result)``.
+    """
+    # Per-rep bit-equality check across both panoptic artifacts.
+    canonical_shas = spawned[0].runner_out.artifact_sha256
+    for key in _PANOPTIC_ARTIFACT_KEYS:
+        if key not in canonical_shas:
+            raise RuntimeError(
+                f"panoptic runner {impl!r} did not emit artifact {key!r}; "
+                f"got: {sorted(canonical_shas)}"
+            )
+    for s in spawned[1:]:
+        for key in _PANOPTIC_ARTIFACT_KEYS:
+            if s.runner_out.artifact_sha256.get(key) != canonical_shas[key]:
+                raise RuntimeError(
+                    f"per-rep panoptic artifact {key!r} disagreement for impl "
+                    f"{impl!r}: rep 0 sha {canonical_shas[key][:12]} differs from "
+                    f"rep {s.rep.rep} sha "
+                    f"{s.runner_out.artifact_sha256.get(key, '')[:12]}"
+                )
+
+    canonical = spawned[0]
+    snapshot_src = canonical.artifact_paths.get("snapshot")
+    per_class_src = canonical.artifact_paths.get("per_class")
+    if snapshot_src is None or per_class_src is None:
+        raise RuntimeError(
+            f"panoptic spawn for impl {impl!r} missing artifact paths; "
+            f"got: {sorted(canonical.artifact_paths)}"
+        )
+
+    snapshot_dst = out_dir / f"{impl}.json"
+    per_class_dst = out_dir / f"{impl}_per_class.npy"
+    shutil.copyfile(snapshot_src, snapshot_dst.with_suffix(".snapshot.json"))
+    shutil.copyfile(per_class_src, per_class_dst)
+
+    snapshot_sha = file_sha256(snapshot_dst.with_suffix(".snapshot.json"))
+    per_class_sha = file_sha256(per_class_dst)
+    if snapshot_sha != canonical_shas["snapshot"]:
+        raise RuntimeError("panoptic snapshot sha mismatch between runner and orchestrator copy")
+    if per_class_sha != canonical_shas["per_class"]:
+        raise RuntimeError("panoptic per_class sha mismatch between runner and orchestrator copy")
+
+    canonical_snapshot = PanopticSnapshot.model_validate_json(
+        snapshot_dst.with_suffix(".snapshot.json").read_bytes()
+    )
+
+    rep_results = [s.rep for s in spawned]
+    aggregation, gate_result = _aggregate_reps(
+        rep_results=rep_results, mode=mode, iqr_threshold=iqr_threshold
+    )
+
+    # The result JSON carries the per-impl summary record; the
+    # snapshot.json sits next to it as a separate artifact (the
+    # comparator reads back from that path). Filename layout under
+    # the cell dir: ``<impl>.json`` (BenchResult), ``<impl>.snapshot.json``
+    # (PanopticSnapshot), ``<impl>_per_class.npy`` (uint64 N×3 table).
+    result = BenchResult(
+        paradigm="panoptic",
+        impl=canonical.runner_out.impl,
+        impl_version=canonical.runner_out.impl_version,
+        # The schema's IouType slot still validates "bbox"/etc.; we
+        # carry it for column compatibility — the panoptic metric is
+        # encoded in the path segment via ``result_dir(... iou_type="pq",
+        # paradigm="panoptic")``.
+        iou_type=canonical.runner_out.iou_type,
+        workload_id=workload_id,
+        git_sha=git_sha,
+        machine_fingerprint=machine_fp,
+        harness_version=HARNESS_VERSION,
+        mode=mode,
+        run_seed=run_seed,
+        reps_count=reps_count,
+        warmup_discarded=warmup_discarded,
+        reps=rep_results,
+        aggregation=aggregation,
+        artifact_paths={
+            "snapshot": f"{impl}.snapshot.json",
+            "per_class": per_class_dst.name,
+        },
+        artifact_sha256={
+            "snapshot": snapshot_sha,
+            "per_class": per_class_sha,
+        },
+        warnings=list(canonical.runner_out.warnings),
+    )
+    snapshot_dst.write_text(result.model_dump_json(indent=2))
+    return (
+        snapshot_dst,
+        canonical_snapshot,
+        {"snapshot": snapshot_sha, "per_class": per_class_sha},
+        gate_result,
+    )
 
 
 def run(spec: RunSpec) -> Path:
@@ -351,18 +605,30 @@ class CellSpec:
     Caller is responsible for filtering ``impls`` to entries that
     support ``iou_type`` for the cell's paradigm (the CLI does this via
     the matrix module).
+
+    Detection cells populate ``gt_path`` / ``dt_path`` (the legacy v1
+    shape). Panoptic cells (``paradigm="panoptic"``) populate the
+    panoptic four-path family + categories JSON instead — when set,
+    ``gt_path`` / ``dt_path`` become unused placeholders that the
+    panoptic spawn path ignores.
     """
 
     bench_root: Path
     repo_root: Path
     impls: list[str]
     workload_id: str
-    iou_type: IouType
+    iou_type: Metric  # widened from IouType for panoptic ("pq") + future paradigms.
     gt_path: Path
     dt_path: Path
     mode: Mode
     run_seed: int
     paradigm: Paradigm = "instance"
+    # Panoptic four-path family. Populated only when paradigm="panoptic".
+    gt_png_dir: Path | None = None
+    gt_json: Path | None = None
+    dt_png_dir: Path | None = None
+    dt_json: Path | None = None
+    categories_json: Path | None = None
 
 
 @dataclass(frozen=True)

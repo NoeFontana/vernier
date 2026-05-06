@@ -42,9 +42,13 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         "faster-coco-eval": frozenset({"bbox", "segm", "keypoints"}),
         "boundary-iou-api": frozenset({"boundary"}),
     },
-    # B1 populates with vernier_panoptic + panopticapi (each producing
-    # ``pq``). Map shape: {impl_name: frozenset({"pq"})}.
-    "panoptic": {},
+    # B1: vernier_panoptic + panopticapi, both producing ``pq`` per
+    # ADR-0033 §"B1 — Panoptic MVB". The two impls share a single env
+    # (``bench/envs/panopticapi/``) — see ``IMPL_TO_ENV_NAME`` below.
+    "panoptic": {
+        "vernier_panoptic": frozenset({"pq"}),
+        "panopticapi": frozenset({"pq"}),
+    },
     # B2 populates with vernier_semantic + cityscapesscripts (and
     # eventually mmseg in S3-B). Map shape: {impl_name: frozenset({"miou"})}.
     "semantic": {},
@@ -65,9 +69,12 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     "pycocotools": "pycocotools",
     "faster-coco-eval": "faster-coco-eval",
     "boundary-iou-api": "boundary-iou-api",
-    # B1 will add (when the panopticapi env lands):
-    #   "vernier_panoptic": "panopticapi",
-    #   "panopticapi": "panopticapi",
+    # B1 (ADR-0033 §"B1 — Panoptic MVB"): both runners share the
+    # ``panopticapi`` env so the parity comparator can run them in
+    # identical Python state. The orchestrator still spawns each as
+    # its own subprocess (one tensor-output per impl).
+    "vernier_panoptic": "panopticapi",
+    "panopticapi": "panopticapi",
     # B2 will add (when the cityscapes env lands):
     #   "vernier_semantic": "cityscapes",
     #   "cityscapesscripts": "cityscapes",

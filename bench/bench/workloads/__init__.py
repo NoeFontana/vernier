@@ -52,6 +52,7 @@ from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 from bench.harness.schema import IouType
 from bench.workloads import (
+    coco_panoptic_val2017,
     coco_val2017,
     jittered_predictions,
     lvis_v1,
@@ -288,6 +289,20 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             gt_path=coco_val2017.gt_path(),
             dt_path=real_predictions.rfdetr_dt_path("segnano"),
             supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
+        )
+
+    # B1 (ADR-0033 + ADR-0025): panoptic-quality cells.
+    if workload_name == coco_panoptic_val2017.PERFECT_WORKLOAD_ID:
+        gt_png_dir, gt_json, dt_png_dir, dt_json, cats_json = (
+            coco_panoptic_val2017.perfect_workload_paths()
+        )
+        return PanopticWorkload(
+            workload_id=workload_name,
+            gt_png_dir=gt_png_dir,
+            gt_json=gt_json,
+            dt_png_dir=dt_png_dir,
+            dt_json=dt_json,
+            categories_json=cats_json,
         )
 
     # Reserved B-stream namespaces — the prefix tells the user which
