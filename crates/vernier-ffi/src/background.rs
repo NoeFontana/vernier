@@ -622,7 +622,7 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
     state: Arc<BackgroundState>,
     config: BackgroundConfig,
 ) -> Result<(), EvalError> {
-    let outcome = apply_scheduling(&config);
+    let outcome = crate::thread_sched::apply_scheduling(config.worker_nice, config.worker_affinity);
     if let Ok(mut guard) = state.scheduling_outcome.lock() {
         *guard = Some(outcome);
     }
@@ -710,43 +710,3 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
     }
 }
 
-/// Apply the worker's startup scheduling preferences. Returns the
-/// composite outcome so the FFI can warn-once on failure. Both calls
-/// are best-effort: a syscall denial is reported as `Err` but does not
-/// abort the worker.
-fn apply_scheduling(config: &BackgroundConfig) -> Result<(), String> {
-    set_thread_nice(config.worker_nice).map_err(|e| format!("nice: {e}"))?;
-    if let Some(core) = config.worker_affinity {
-        set_thread_affinity(core).map_err(|e| format!("affinity: {e}"))?;
-    }
-    Ok(())
-}
-
-/// Map a POSIX-style nice value (`-20` highest priority, `19` lowest)
-/// to `thread-priority`'s 0..=99 cross-platform priority (higher =
-/// higher priority) and apply it to the current thread.
-fn set_thread_nice(nice: i32) -> Result<(), String> {
-    use thread_priority::{set_current_thread_priority, ThreadPriority, ThreadPriorityValue};
-    let clamped = nice.clamp(-20, 19);
-    // Linear map: nice = -20 → 99, nice = 19 → 0. Round to the nearest
-    // u8 along the way.
-    let priority_value: u8 = ((f64::from(19 - clamped)) * (99.0 / 39.0))
-        .round()
-        .clamp(0.0, 99.0) as u8;
-    let value = ThreadPriorityValue::try_from(priority_value)
-        .map_err(|e| format!("invalid priority value {priority_value}: {e:?}"))?;
-    set_current_thread_priority(ThreadPriority::Crossplatform(value))
-        .map_err(|e| format!("set_current_thread_priority: {e:?}"))
-}
-
-/// Pin the current thread to `core`. `core_affinity::set_for_current`
-/// returns `false` on failure rather than an error type, so we
-/// synthesize a message here.
-fn set_thread_affinity(core: usize) -> Result<(), String> {
-    let core_id = core_affinity::CoreId { id: core };
-    if core_affinity::set_for_current(core_id) {
-        Ok(())
-    } else {
-        Err(format!("set_for_current({core}) returned false"))
-    }
-}

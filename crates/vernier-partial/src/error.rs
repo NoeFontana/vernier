@@ -161,6 +161,19 @@ pub enum PartialFormatErrorKind {
         /// rkyv's diagnostic message.
         detail: String,
     },
+    /// Catch-all for internal-state failures that need to surface
+    /// through the partial-error vocabulary because they share the
+    /// FFI exception class but aren't framing-related: e.g., a
+    /// background worker that was shut down before the FFI call
+    /// reached it, or an op invoked after `finalize`. Distinct from
+    /// [`Self::RkyvDecode`] so users don't see a misleading
+    /// "rkyv_decode" tag for a non-archive failure.
+    #[error("partial wire-format internal error: {detail}")]
+    Internal {
+        /// Free-form detail. Surfaced on the FFI exception's `kind`
+        /// attribute as the literal `"internal"` tag.
+        detail: String,
+    },
 }
 
 impl PartialFormatErrorKind {
@@ -179,6 +192,7 @@ impl PartialFormatErrorKind {
             Self::GridMismatch { .. } => "grid_mismatch",
             Self::ParityMismatch { .. } => "parity_mismatch",
             Self::RkyvDecode { .. } => "rkyv_decode",
+            Self::Internal { .. } => "internal",
         }
     }
 }

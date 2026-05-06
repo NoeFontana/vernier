@@ -24,15 +24,20 @@
 //! `from_arrays` so the boundary path can avoid re-allocating.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use numpy::PyReadonlyArray2;
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
 use serde::Deserialize;
+use vernier_partial::PartialError;
 
+use crate::background::BackgroundConfig;
+use crate::background_streaming::{BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError};
 use crate::numpy_utils::parse_uint32_label_maps;
+use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
     evaluate, CategoryId, CategoryMeta, ClassPanopticStats, ImageEntry, ImageId, PanopticDataset,
@@ -778,6 +783,377 @@ impl PyStreamingPanopticEvaluator {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Background panoptic evaluator (ADR-0014 + ADR-0032).
+// ---------------------------------------------------------------------------
+
+/// Per-image payload sent over the worker channel. The FFI thread
+/// builds the two `ImageEntry`s (which validates segment ids and
+/// flatten the label-map arrays) before the GIL is dropped.
+pub(crate) struct PanopticUpdate {
+    image_id: ImageId,
+    gt: ImageEntry,
+    dt: ImageEntry,
+}
+
+impl BackgroundCapable for StreamingPanopticEvaluator {
+    type Update = PanopticUpdate;
+    type Summary = PanopticSummary;
+    type Error = PanopticError;
+
+    fn apply_update(&mut self, u: PanopticUpdate) -> Result<(), PanopticError> {
+        self.update(u.image_id, &u.gt, &u.dt)
+    }
+
+    fn snapshot(&self) -> Result<PanopticSummary, PanopticError> {
+        StreamingPanopticEvaluator::snapshot(self)
+    }
+
+    fn finalize(self) -> Result<PanopticSummary, PanopticError> {
+        StreamingPanopticEvaluator::finalize(self)
+    }
+
+    fn snapshot_to_partial(&self) -> Result<Vec<u8>, PanopticError> {
+        StreamingPanopticEvaluator::snapshot_to_partial(self)
+    }
+
+    fn finalize_to_partial(self) -> Result<Vec<u8>, PanopticError> {
+        StreamingPanopticEvaluator::finalize_to_partial(self)
+    }
+
+    fn images_seen(&self) -> usize {
+        self.n_images()
+    }
+
+    fn worker_disconnected() -> PanopticError {
+        PanopticError::Partial(PartialError::Format {
+            kind: vernier_partial::PartialFormatErrorKind::Internal {
+                detail: "background panoptic worker is no longer reachable".to_string(),
+            },
+        })
+    }
+
+    fn already_finalized() -> PanopticError {
+        PanopticError::Partial(PartialError::Format {
+            kind: vernier_partial::PartialFormatErrorKind::Internal {
+                detail: "BackgroundPanopticEvaluator has already been finalized".to_string(),
+            },
+        })
+    }
+}
+
+/// Background panoptic-quality evaluator (ADR-0014 + ADR-0032).
+///
+/// Wraps a single dedicated worker thread that owns the underlying
+/// [`StreamingPanopticEvaluator`]. `submit(image_id, gt_label_map,
+/// gt_segments_info, dt_label_map, dt_segments_info)` posts one image;
+/// `snapshot` / `finalize` block on a worker reply. Mirrors the
+/// instance and semantic background surfaces.
+///
+/// `retain_per_image_deltas=True` opts into the strict-mode bit-
+/// equality property at merge time (ADR-0032 §"Determinism") at the
+/// cost of ~2× streaming memory, same as the sibling streaming
+/// evaluator.
+#[pyclass(module = "vernier._core", name = "BackgroundPanopticEvaluator")]
+pub(crate) struct PyBackgroundPanopticEvaluator {
+    lifecycle: Mutex<BackgroundLifecycle<StreamingPanopticEvaluator>>,
+    n_categories: usize,
+}
+
+impl PyBackgroundPanopticEvaluator {
+    fn lock_lifecycle(
+        &self,
+    ) -> PyResult<std::sync::MutexGuard<'_, BackgroundLifecycle<StreamingPanopticEvaluator>>>
+    {
+        self.lifecycle
+            .lock()
+            .map_err(|_| PyRuntimeError::new_err("BackgroundPanopticEvaluator state mutex poisoned"))
+    }
+}
+
+#[pymethods]
+impl PyBackgroundPanopticEvaluator {
+    #[new]
+    #[pyo3(signature = (
+        categories,
+        parity_mode,
+        *,
+        things_stuff_split = true,
+        retain_per_image_deltas = false,
+        rank_id = None,
+        queue_capacity = 8,
+        worker_affinity = None,
+        worker_nice = 5,
+        shutdown_timeout_seconds = 5.0,
+    ))]
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        py: Python<'_>,
+        categories: &[u8],
+        parity_mode: &str,
+        things_stuff_split: bool,
+        retain_per_image_deltas: bool,
+        rank_id: Option<u32>,
+        queue_capacity: usize,
+        worker_affinity: Option<usize>,
+        worker_nice: i32,
+        shutdown_timeout_seconds: f64,
+    ) -> PyResult<Self> {
+        let mode = parse_panoptic_parity_mode(parity_mode)?;
+        let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        let n_categories = cats.len();
+        let mut inner = StreamingPanopticEvaluator::new(
+            cats,
+            mode,
+            things_stuff_split,
+            retain_per_image_deltas,
+        );
+        if let Some(rid) = rank_id {
+            inner = inner
+                .with_rank(rid)
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        }
+        let config = BackgroundConfig {
+            queue_capacity,
+            worker_affinity,
+            worker_nice,
+            shutdown_timeout: validate_shutdown_timeout(shutdown_timeout_seconds)?,
+        };
+        let core = BackgroundCore::spawn(inner, config).map_err(|e| {
+            PyRuntimeError::new_err(format!("failed to spawn background worker: {e}"))
+        })?;
+
+        let this = Self {
+            lifecycle: Mutex::new(BackgroundLifecycle::new(core)),
+            n_categories,
+        };
+        poll_scheduling_warning(py, "BackgroundPanopticEvaluator", || {
+            Ok(this.lock_lifecycle()?.take_scheduling_outcome())
+        })?;
+        Ok(this)
+    }
+
+    /// Number of categories in the taxonomy.
+    #[getter]
+    fn n_categories(&self) -> usize {
+        self.n_categories
+    }
+
+    /// Submit one image's GT/DT pair to the worker. `timeout` mirrors
+    /// the instance / semantic background surfaces.
+    #[pyo3(signature = (
+        image_id,
+        gt_label_map,
+        gt_segments_info,
+        dt_label_map,
+        dt_segments_info,
+        *,
+        timeout = None,
+    ))]
+    #[allow(
+        clippy::needless_pass_by_value,
+        clippy::too_many_arguments,
+        reason = "PyO3 requires `PyReadonlyArray2` by value as a pyfunction argument; \
+                  the rest mirror the streaming evaluator's update signature"
+    )]
+    fn submit<'py>(
+        &self,
+        py: Python<'py>,
+        image_id: i64,
+        gt_label_map: PyReadonlyArray2<'py, u32>,
+        gt_segments_info: &[u8],
+        dt_label_map: PyReadonlyArray2<'py, u32>,
+        dt_segments_info: &[u8],
+        timeout: Option<f64>,
+    ) -> PyResult<()> {
+        // Build the two ImageEntry on the FFI thread (still under
+        // GIL) so JSON parsing + segment-id validation are surfaced
+        // synchronously instead of as stashed worker errors.
+        let gt = build_image_entry(py, image_id, &gt_label_map, gt_segments_info, "gt")?;
+        let dt = build_image_entry(py, image_id, &dt_label_map, dt_segments_info, "dt")?;
+        let timeout_dur = match timeout {
+            None => None,
+            Some(t) => {
+                if !t.is_finite() || t < 0.0 {
+                    return Err(PyValueError::new_err(format!(
+                        "timeout must be a non-negative finite float or None, got {t}"
+                    )));
+                }
+                Some(Duration::from_secs_f64(t))
+            }
+        };
+
+        let payload = PanopticUpdate { image_id, gt, dt };
+        let lifecycle = &self.lifecycle;
+        let result = py.detach(move || -> Result<(), SubmitError<PanopticError>> {
+            let guard = lifecycle
+                .lock()
+                .map_err(|_| SubmitError::Eval(StreamingPanopticEvaluator::worker_disconnected()))?;
+            let core = guard.active().map_err(SubmitError::Eval)?;
+            match timeout_dur {
+                None => core.submit_blocking(payload).map_err(SubmitError::Eval),
+                Some(t) => core.submit_timeout(payload, t),
+            }
+        });
+        result.map_err(|e| match e {
+            SubmitError::Eval(inner) => panoptic_error_to_pyerr(py, inner),
+            SubmitError::Full(full) => queue_full_to_pyerr(py, full),
+        })
+    }
+
+    /// Compute a `PanopticSummary` against the worker's current state.
+    fn snapshot(&self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
+        let lifecycle = &self.lifecycle;
+        let summary = py
+            .detach(|| -> Result<PanopticSummary, PanopticError> {
+                let guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingPanopticEvaluator::worker_disconnected())?;
+                guard.active()?.snapshot()
+            })
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyPanopticSummary { inner: summary })
+    }
+
+    /// Drain the queue, finalize the evaluator, and join the worker.
+    fn finalize(&self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
+        let lifecycle = &self.lifecycle;
+        let summary = py
+            .detach(|| {
+                let mut guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingPanopticEvaluator::worker_disconnected())?;
+                guard.take_and_finalize()
+            })
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyPanopticSummary { inner: summary })
+    }
+
+    /// ADR-0032: serialize the worker's current state as a partial
+    /// blob without consuming the evaluator. The body carries
+    /// `per_image_deltas` iff `retain_per_image_deltas=True` was set
+    /// at construction.
+    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let lifecycle = &self.lifecycle;
+        let blob = py
+            .detach(|| -> Result<Vec<u8>, PanopticError> {
+                let guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingPanopticEvaluator::worker_disconnected())?;
+                guard.active()?.snapshot_to_partial()
+            })
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
+    /// ADR-0032: drain, serialize the final state, and shut the
+    /// worker down.
+    fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
+        let lifecycle = &self.lifecycle;
+        let blob = py
+            .detach(|| {
+                let mut guard = lifecycle
+                    .lock()
+                    .map_err(|_| StreamingPanopticEvaluator::worker_disconnected())?;
+                guard.take_and_finalize_to_partial()
+            })
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(PyBytes::new(py, &blob))
+    }
+
+    /// `from_partials` classmethod inherited from the streaming
+    /// surface. Returns a `StreamingPanopticEvaluator` (not a
+    /// background one) — the merged state is paradigm-shaped, not
+    /// re-spawned on a worker.
+    #[classmethod]
+    #[pyo3(signature = (
+        categories,
+        partials,
+        parity_mode,
+        *,
+        things_stuff_split = true,
+        retain_per_image_deltas = false,
+    ))]
+    fn from_partials(
+        cls: &Bound<'_, PyType>,
+        py: Python<'_>,
+        categories: &[u8],
+        partials: &Bound<'_, PyList>,
+        parity_mode: &str,
+        things_stuff_split: bool,
+        retain_per_image_deltas: bool,
+    ) -> PyResult<PyStreamingPanopticEvaluator> {
+        PyStreamingPanopticEvaluator::from_partials(
+            cls,
+            py,
+            categories,
+            partials,
+            parity_mode,
+            things_stuff_split,
+            retain_per_image_deltas,
+        )
+    }
+
+    /// Context-manager entry.
+    fn __enter__(slf: PyRef<'_, Self>) -> PyRef<'_, Self> {
+        slf
+    }
+
+    /// Context-manager exit: best-effort shutdown.
+    #[pyo3(signature = (_exc_type=None, _exc=None, _tb=None))]
+    fn __exit__(
+        &self,
+        py: Python<'_>,
+        _exc_type: Option<Py<PyAny>>,
+        _exc: Option<Py<PyAny>>,
+        _tb: Option<Py<PyAny>>,
+    ) -> PyResult<()> {
+        let lifecycle = &self.lifecycle;
+        py.detach(|| {
+            if let Ok(mut guard) = lifecycle.lock() {
+                guard.shutdown();
+            }
+        });
+        Ok(())
+    }
+
+    fn __del__(&self, py: Python<'_>) {
+        let lifecycle = &self.lifecycle;
+        py.detach(|| {
+            if let Ok(mut guard) = lifecycle.lock() {
+                guard.shutdown();
+            }
+        });
+    }
+
+    /// Mirror of the underlying evaluator's `n_images`. Advisory.
+    #[getter]
+    fn n_images(&self) -> PyResult<usize> {
+        Ok(self
+            .lock_lifecycle()?
+            .active()
+            .map(BackgroundCore::images_seen)
+            .unwrap_or(0))
+    }
+
+    /// Approximate count of `Update` messages waiting in the channel.
+    #[getter]
+    fn queue_depth(&self) -> PyResult<usize> {
+        Ok(self
+            .lock_lifecycle()?
+            .active()
+            .map(BackgroundCore::queue_depth)
+            .unwrap_or(0))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "BackgroundPanopticEvaluator(n_categories={})",
+            self.n_categories
+        )
+    }
+}
+
 /// Register panoptic FFI symbols on the `vernier._core` module. Called
 /// from the `_core` `#[pymodule]` factory in `lib.rs`.
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -786,6 +1162,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPanopticSummary>()?;
     m.add_class::<PyClassPanopticStats>()?;
     m.add_class::<PyStreamingPanopticEvaluator>()?;
+    m.add_class::<PyBackgroundPanopticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic, m)?)?;
     Ok(())
 }

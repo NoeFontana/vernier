@@ -44,6 +44,9 @@ from vernier._core import (
 from vernier._core import (
     StreamingSemanticEvaluator as StreamingEvaluator,
 )
+from vernier._core import (
+    BackgroundSemanticEvaluator as BackgroundEvaluator,
+)
 
 # Re-export the five distributed-eval exception types under the
 # semantic namespace so callers catching `vernier.semantic.PartialFormatMismatch`
@@ -65,6 +68,7 @@ __all__ = [
     "CITYSCAPES_N_CLASSES",
     "PASCAL_VOC_IGNORE_LABEL",
     "PASCAL_VOC_N_CLASSES",
+    "BackgroundEvaluator",
     "ClassSemanticStats",
     "ConfusionMatrix",
     "Dataset",
@@ -436,4 +440,51 @@ class Evaluator:
             self.parity_mode,
             ignore_label=ignore_label,
             rank_id=rank_id,
+        )
+
+    def background(
+        self,
+        n_classes: int,
+        ignore_label: int | None = None,
+        *,
+        rank_id: int | None = None,
+        queue_capacity: int = 8,
+        worker_affinity: int | None = None,
+        worker_nice: int = 5,
+        shutdown_timeout_seconds: float = 5.0,
+    ) -> BackgroundEvaluator:
+        """Build a :class:`BackgroundEvaluator` (ADR-0014 + ADR-0032)
+        that shares this evaluator's ``parity_mode``.
+
+        The returned wrapper owns a single dedicated worker thread
+        running a :class:`StreamingEvaluator` of the same shape; calls
+        to :meth:`BackgroundEvaluator.submit` enqueue per-image
+        ``(gt, dt)`` pairs and return immediately. Use this when the
+        confusion-matrix fold measurably stalls the training loop
+        (most users won't notice — semantic is fast — but per-image
+        update on dense Cityscapes pixels is the case where this
+        starts to matter).
+
+        ``rank_id``, when set, identifies this evaluator's rank in a
+        multi-process eval (ADR-0032). The five queueing /
+        scheduling knobs mirror :class:`vernier.instance.Evaluator
+        .background`.
+
+        ``label_remap`` does not propagate to the background path
+        (same caveat as :meth:`stream`).
+        """
+        if self.label_remap is not None:
+            raise NotImplementedError(
+                "Evaluator.background does not yet propagate label_remap; "
+                "apply the remap on the DT arrays before each submit call."
+            )
+        return BackgroundEvaluator(
+            n_classes,
+            self.parity_mode,
+            ignore_label=ignore_label,
+            rank_id=rank_id,
+            queue_capacity=queue_capacity,
+            worker_affinity=worker_affinity,
+            worker_nice=worker_nice,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
         )

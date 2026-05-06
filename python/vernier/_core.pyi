@@ -703,3 +703,103 @@ class StreamingSemanticEvaluator:
         *,
         ignore_label: int | None = ...,
     ) -> StreamingSemanticEvaluator: ...
+
+class BackgroundSemanticEvaluator:
+    def __init__(
+        self,
+        n_classes: int,
+        parity_mode: str,
+        *,
+        ignore_label: int | None = ...,
+        rank_id: int | None = ...,
+        queue_capacity: int = ...,
+        worker_affinity: int | None = ...,
+        worker_nice: int = ...,
+        shutdown_timeout_seconds: float = ...,
+    ) -> None: ...
+    @property
+    def n_classes(self) -> int: ...
+    @property
+    def n_images(self) -> int: ...
+    @property
+    def queue_depth(self) -> int: ...
+    def submit(
+        self,
+        image_id: int,
+        gt: NDArray[np.uint32],
+        dt: NDArray[np.uint32],
+        *,
+        timeout: float | None = ...,
+    ) -> None: ...
+    def snapshot(self) -> SemanticSummary: ...
+    def finalize(self) -> SemanticSummary: ...
+    def to_partial(self) -> bytes: ...
+    def finalize_to_partial(self) -> bytes: ...
+    @classmethod
+    def from_partials(
+        cls,
+        n_classes: int,
+        partials: Sequence[bytes],
+        parity_mode: str,
+        *,
+        ignore_label: int | None = ...,
+    ) -> StreamingSemanticEvaluator: ...
+    def __enter__(self) -> BackgroundSemanticEvaluator: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = ...,
+        exc: BaseException | None = ...,
+        tb: object | None = ...,
+    ) -> None: ...
+
+class BackgroundPanopticEvaluator:
+    def __init__(
+        self,
+        categories: bytes,
+        parity_mode: str,
+        *,
+        things_stuff_split: bool = ...,
+        retain_per_image_deltas: bool = ...,
+        rank_id: int | None = ...,
+        queue_capacity: int = ...,
+        worker_affinity: int | None = ...,
+        worker_nice: int = ...,
+        shutdown_timeout_seconds: float = ...,
+    ) -> None: ...
+    @property
+    def n_categories(self) -> int: ...
+    @property
+    def n_images(self) -> int: ...
+    @property
+    def queue_depth(self) -> int: ...
+    def submit(
+        self,
+        image_id: int,
+        gt_label_map: NDArray[np.uint32],
+        gt_segments_info: bytes,
+        dt_label_map: NDArray[np.uint32],
+        dt_segments_info: bytes,
+        *,
+        timeout: float | None = ...,
+    ) -> None: ...
+    def snapshot(self) -> PanopticSummary: ...
+    def finalize(self) -> PanopticSummary: ...
+    def to_partial(self) -> bytes: ...
+    def finalize_to_partial(self) -> bytes: ...
+    @classmethod
+    def from_partials(
+        cls,
+        categories: bytes,
+        partials: Sequence[bytes],
+        parity_mode: str,
+        *,
+        things_stuff_split: bool = ...,
+        retain_per_image_deltas: bool = ...,
+    ) -> StreamingPanopticEvaluator: ...
+    def __enter__(self) -> BackgroundPanopticEvaluator: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = ...,
+        exc: BaseException | None = ...,
+        tb: object | None = ...,
+    ) -> None: ...
