@@ -34,19 +34,6 @@ def test_instance_comparator_is_registered() -> None:
     assert cmp.paradigm == "instance"
 
 
-@pytest.mark.parametrize("paradigm", ["streaming"])
-def test_stub_comparators_raise_not_implemented(paradigm: Paradigm) -> None:
-    """Stub registry entries for B-stream paradigms that haven't landed
-    their concrete comparator yet. B1 (panoptic) and B2 (semantic) are
-    excluded — their real comparators are registered (see
-    :class:`_PanopticComparator` and :class:`_SemanticComparator`)."""
-    cmp = get_comparator(paradigm)
-    assert isinstance(cmp, Comparator)
-    assert cmp.paradigm == paradigm
-    with pytest.raises(NotImplementedError, match=paradigm):
-        cmp.compare(workload_id="anything", iou_type="bbox", impl_outputs={})
-
-
 def test_panoptic_comparator_is_registered() -> None:
     """B1 has registered :class:`_PanopticComparator`. The registry
     returns it (no stub) and ``compare`` accepts the ``"pq"`` metric."""
@@ -69,6 +56,21 @@ def test_semantic_comparator_is_registered_and_returns_empty_tiers_when_no_pair(
     assert cmp.paradigm == "semantic"
     report = cmp.compare(workload_id="x", iou_type="bbox", impl_outputs={})
     assert report.tiers == []
+
+
+def test_streaming_comparator_is_concrete() -> None:
+    """B3 has registered :class:`_StreamingComparator`; it returns a
+    (possibly empty) ``CellParityReport`` rather than raising
+    ``NotImplementedError``. After all three B-streams land, no
+    paradigms remain as stubs in the registry."""
+    cmp = get_comparator("streaming")
+    assert isinstance(cmp, Comparator)
+    assert cmp.paradigm == "streaming"
+    report = cmp.compare(workload_id="x", iou_type="bbox", impl_outputs={})
+    # Empty impl_outputs produces a report with zero tiers but passes
+    # vacuously — proves the comparator dispatches.
+    assert report.tiers == []
+    assert report.passed
 
 
 def test_instance_comparator_matches_legacy_compare_cell_on_perfect_pair() -> None:
@@ -144,7 +146,9 @@ def test_comparable_artifact_variants_round_trip_canonical_form() -> None:
     tensor = TensorArtifact(sha256="a" * 64, shape=(10, 101, 1, 4, 3))
     snapshot = PanopticSnapshot(pq=0.5, sq=0.6, rq=0.7)
     confusion = ConfusionMatrix(n_classes=19, counts_sha256="c" * 64)
-    streaming = StreamingPair(batch_stats={"AP": 0.3}, stream_stats={"AP": 0.3})
+    streaming = StreamingPair(
+        batch_summary={"stat_0": 0.3}, stream_summary={"stat_0": 0.3}
+    )
 
     for art in (tensor, snapshot, confusion, streaming):
         canon = art.to_canonical_form()

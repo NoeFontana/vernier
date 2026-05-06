@@ -60,10 +60,15 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         "vernier_semantic": frozenset({"miou"}),
         "cityscapesscripts": frozenset({"miou"}),
     },
-    # B3 populates with vernier_streaming + naive_python. Map shape:
-    # {impl_name: frozenset({"throughput", "p99", "rss"})} or whatever
-    # subset of the metric literal each impl produces.
-    "streaming": {},
+    # B3 streaming impls — three coupled cells share these entries:
+    # * ``vernier_streaming`` runs all three (throughput, vs_naive, dlpack)
+    #   from one runner module gated by a ``--mode-flag`` argument.
+    # * ``naive_python`` is the ``predictions.append(...); cocoeval.evaluate()``
+    #   baseline that only participates in the vs_naive cell.
+    "streaming": {
+        "vernier_streaming": frozenset({"throughput", "vs_naive", "dlpack"}),
+        "naive_python": frozenset({"vs_naive"}),
+    },
 }
 
 # Env discovery: by default, ``bench/envs/<impl>/`` is the runner's
@@ -89,10 +94,13 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     # for the bincount-based oracle).
     "vernier_semantic": "cityscapes",
     "cityscapesscripts": "cityscapes",
-    # B3 will add the streaming impls (sharing the existing
-    # ``vernier`` and ``pycocotools`` envs):
-    #   "vernier_streaming": "vernier",
-    #   "naive_python": "pycocotools",
+    # B3 streaming impls share the existing detection envs (per
+    # ADR-0033 §"reuse existing envs" — no ``bench/envs/streaming/``).
+    # ``vernier_streaming`` runs in the vernier env so it can import
+    # ``vernier.instance.StreamingEvaluator``; ``naive_python`` runs
+    # in the pycocotools env so it can call cocoeval directly.
+    "vernier_streaming": "vernier",
+    "naive_python": "pycocotools",
 }
 
 

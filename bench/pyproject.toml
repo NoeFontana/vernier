@@ -38,6 +38,12 @@ dependencies = [
     # source — small disk cost, simpler user flow than an opt-in extra.
     "scipy>=1.11",
     "pycocotools==2.0.11",
+    # psutil drives the streaming RSS sampler (bench/bench/harness/rss.py)
+    # used by the B3 streaming + naive-Python runners. Tolerated
+    # missing — the sampler returns empty samples + peak=-1 — but
+    # pinning the runtime dep avoids a "metric mysteriously absent"
+    # surprise in CI.
+    "psutil>=5.9",
 ]
 
 [tool.uv.sources]

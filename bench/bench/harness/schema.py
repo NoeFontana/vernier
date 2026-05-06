@@ -53,10 +53,16 @@ Metric = Literal[
     "pq",
     # semantic
     "miou",
-    # streaming (B3 populates per ADR-0033)
+    # streaming (B3 populates per ADR-0033). Each cell name doubles as
+    # the path segment under ``bench/results/<sha>/<fp>/streaming/<workload>/<metric>/``
+    # and is therefore a closed-world Literal. ``vs_naive`` is the
+    # ``naive_python`` baseline cell; ``dlpack`` is the JSON-vs-array
+    # ingest cell per ADR-0030.
     "throughput",
     "p99",
     "rss",
+    "vs_naive",
+    "dlpack",
 ]
 
 # Paradigm discriminator for both the workload tagged union (per

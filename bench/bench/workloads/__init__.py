@@ -60,6 +60,10 @@ from bench.workloads import (
     smoke,
     synthetic,
 )
+# Streaming workload modules import this module's StreamingWorkload —
+# import them only inside ``resolve()`` to break the cycle. The modules
+# are public; use ``from bench.workloads.coco_val2017_streaming import ...``
+# directly when consuming outside the resolver.
 
 
 class _WorkloadBase(BaseModel):
@@ -317,10 +321,27 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             f"workload {workload_name!r} is in the semantic namespace; "
             f"registered by the B2 stream (ADR-0033 + ADR-0028)."
         )
+    # B3 streaming workloads — three concrete cells share the
+    # ``StreamingWorkload`` shape. Lazy import keeps the cycle clean.
+    if workload_name == "coco_val2017_streaming_throughput":
+        from bench.workloads.coco_val2017_streaming import streaming_throughput
+
+        return streaming_throughput()
+    if workload_name == "coco_val2017_streaming_vs_naive":
+        from bench.workloads.coco_val2017_streaming import streaming_vs_naive
+
+        return streaming_vs_naive()
+    if workload_name == "coco_val2017_dlpack_vs_json":
+        from bench.workloads.coco_val2017_dlpack import dlpack_vs_json
+
+        return dlpack_vs_json()
     if any(workload_name.startswith(p) for p in _STREAMING_PREFIXES):
         raise NotImplementedError(
-            f"workload {workload_name!r} is in the streaming namespace; "
-            f"registered by the B3 stream (ADR-0033 + ADR-0032)."
+            f"workload {workload_name!r} is in the streaming namespace but "
+            f"not registered. Known streaming workloads: "
+            f"coco_val2017_streaming_throughput, "
+            f"coco_val2017_streaming_vs_naive, "
+            f"coco_val2017_dlpack_vs_json."
         )
 
     raise ValueError(

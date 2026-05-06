@@ -248,19 +248,37 @@ class ConfusionMatrix(_ArtifactBase):
 
 
 class StreamingPair(_ArtifactBase):
-    """Streaming batch-vs-stream Summary.stats pair. Stub fields; B3
-    populates the full shape (batch stats vector, stream stats vector,
-    optional RSS curve reference)."""
+    """Streaming batch-vs-stream ``Summary.stats`` pair (B3 / ADR-0033).
+
+    Carries the two summary-stats vectors that the streaming comparator
+    bit-equality-checks against each other:
+
+    - ``batch_summary`` — stats produced by the reference batch path
+      (vernier ``Evaluator.evaluate(...)`` on the same GT/DT pair, or
+      pycocotools ``cocoeval.summarize()`` for the vs-naive cell).
+    - ``stream_summary`` — stats produced by the streaming path
+      (``StreamingEvaluator.update()...finalize()`` per ADR-0013).
+
+    Each summary is a ``stat_<i>`` → float dict; the comparator walks
+    the two dicts in lockstep. The runner emits ``stat_<i>`` keys
+    positionally (no kernel-name dispatch) so the comparator works
+    uniformly across bbox / segm / boundary / keypoints — the order
+    is whatever ``Summary.stats`` produces for the configured kernel.
+    """
 
     kind: Literal["streaming_pair"] = "streaming_pair"
-    batch_stats: dict[str, float] = Field(default_factory=dict)
-    stream_stats: dict[str, float] = Field(default_factory=dict)
+    batch_summary: dict[str, float] = Field(default_factory=dict)
+    stream_summary: dict[str, float] = Field(default_factory=dict)
+    # Optional pointer to the side-by-side RSS curves (informational).
+    # The comparator does not gate on this field; reports do.
+    rss_curve_paths: dict[str, str] = Field(default_factory=dict)
 
     def to_canonical_form(self) -> dict[str, Any]:
         return {
             "kind": self.kind,
-            "batch_stats": dict(self.batch_stats),
-            "stream_stats": dict(self.stream_stats),
+            "batch_summary": dict(self.batch_summary),
+            "stream_summary": dict(self.stream_summary),
+            "rss_curve_paths": dict(self.rss_curve_paths),
         }
 
 
@@ -426,10 +444,13 @@ class _InstanceComparator:
 class _StubComparator:
     """Placeholder comparator for non-instance paradigms.
 
-    B1/B3 register their concrete comparators when their cells
-    land. Until then, the registry knows the paradigm exists but
-    refuses to dispatch — proves the registry shape works without
-    forcing B-stream completion.
+    Future paradigms register their concrete comparators by calling
+    :func:`register_comparator` at import time; until then the
+    registry knows the paradigm exists but refuses to dispatch — proves
+    the registry shape works without forcing the corresponding cell's
+    completion. After ADR-0033 §B1/B2/B3 land, instance / panoptic /
+    semantic / streaming all have concrete comparators; this stub
+    remains for the next paradigm to plug in.
     """
 
     def __init__(self, paradigm: Paradigm) -> None:
@@ -443,8 +464,8 @@ class _StubComparator:
         impl_outputs: dict[str, ComparableArtifact],
     ) -> CellParityReport:
         raise NotImplementedError(
-            f"comparator for paradigm {self.paradigm!r} is registered by the "
-            f"corresponding B-stream (B1 panoptic / B3 streaming)"
+            f"no comparator registered for paradigm {self.paradigm!r}; "
+            f"call register_comparator() at import time"
         )
 
 
@@ -764,11 +785,173 @@ def _compare_confusion(
     )
 
 
+# Streaming comparator parity tolerance — mirrors
+# ``tests/python/parity/streaming/test_streaming_finalize_equals_batch.py``'s
+# ``pytest.approx(rel=0, abs=1e-12)``. The streaming surface guarantees
+# bit-equality up to a sub-ULP wobble that comes from accumulate seeing
+# cells in a different (k, a, i) iteration order; ``1e-12`` absorbs
+# that without admitting any algorithmic divergence.
+STREAMING_PARITY_ATOL: float = 1e-12
+
+
+class _StreamingComparator:
+    """Streaming paradigm comparator (B3 / ADR-0033).
+
+    Three cell shapes route through this one comparator, distinguished
+    by which ``StreamingPair`` keys are populated:
+
+    1. **Batch-vs-stream** (the throughput cell's parity gate) — both
+       impls produce a ``StreamingPair`` whose ``batch_summary`` and
+       ``stream_summary`` come from the same impl (vernier batch via
+       ``Evaluator`` + vernier stream via ``StreamingEvaluator``); we
+       assert bit-equality between the two within the same artifact.
+    2. **DLPack-vs-JSON** — the comparator asserts
+       ``batch_summary == stream_summary`` where ``batch_summary`` is
+       the JSON ingest path's stats and ``stream_summary`` is the
+       array (DLPack) ingest path's stats (per ADR-0030).
+    3. **Streaming-vs-naive** — two impls each produce a
+       ``StreamingPair``. The parity gate is summary-stats bit-equality
+       between the two impls; throughput delta + RSS curves are
+       informational and don't gate.
+
+    Throughput and RSS measurements are not gated here; the cell
+    metadata (``parity_tier="informational"``) records that. The
+    divergence-report shape uses the existing ``Divergence`` /
+    ``TierResult`` plumbing for consistency with the instance
+    comparator's report.
+    """
+
+    paradigm: ClassVar[Paradigm] = "streaming"
+
+    def compare(
+        self,
+        *,
+        workload_id: str,
+        iou_type: IouType,
+        impl_outputs: dict[str, ComparableArtifact],
+    ) -> CellParityReport:
+        tiers: list[TierResult] = []
+        # 1. Each impl's own batch-vs-stream (or json-vs-array) bit-
+        # equality check. Skip silently for impls that ship with only
+        # one summary populated (the ``naive_python`` runner, which
+        # doesn't have a meaningful ``stream_summary``).
+        for impl_name, artifact in impl_outputs.items():
+            if not isinstance(artifact, StreamingPair):
+                raise ValueError(
+                    f"streaming comparator expected StreamingPair for impl "
+                    f"{impl_name!r}, got {type(artifact).__name__}"
+                )
+            if artifact.batch_summary and artifact.stream_summary:
+                tiers.append(
+                    _compare_streaming_pair_internal(
+                        impl=impl_name,
+                        artifact=artifact,
+                        atol=STREAMING_PARITY_ATOL,
+                    )
+                )
+        # 2. Cross-impl: when two impls participate (vs-naive cell),
+        # bit-equal each impl's ``batch_summary`` against the other's
+        # (same parity contract as the long-standing detection cell —
+        # vernier batch == pycocotools).
+        impls = sorted(impl_outputs.keys())
+        if len(impls) == 2:
+            a_name, b_name = impls
+            a_art = impl_outputs[a_name]
+            b_art = impl_outputs[b_name]
+            assert isinstance(a_art, StreamingPair)
+            assert isinstance(b_art, StreamingPair)
+            tiers.append(
+                _compare_streaming_cross_impl(
+                    impl_a=a_name,
+                    impl_b=b_name,
+                    a_summary=a_art.batch_summary,
+                    b_summary=b_art.batch_summary,
+                    atol=STREAMING_PARITY_ATOL,
+                    tier="aligned",
+                )
+            )
+        return CellParityReport(workload_id=workload_id, iou_type=iou_type, tiers=tiers)
+
+
+def _stats_dict_to_array(stats: dict[str, float]) -> np.ndarray:
+    """Materialize a ``stat_<i>``-keyed dict to a positional ndarray.
+
+    Uses the integer suffix as the axis index; raises if a key isn't of
+    the expected ``stat_<i>`` shape — sloppy keys would mask a runner
+    bug, so fail loud.
+    """
+    if not stats:
+        return np.empty((0,), dtype=np.float64)
+    indexed: list[tuple[int, float]] = []
+    for k, v in stats.items():
+        if not k.startswith("stat_"):
+            raise ValueError(f"streaming summary key {k!r} not in 'stat_<i>' form")
+        try:
+            i = int(k.removeprefix("stat_"))
+        except ValueError as e:
+            raise ValueError(f"streaming summary key {k!r} not in 'stat_<i>' form") from e
+        indexed.append((i, float(v)))
+    indexed.sort()
+    return np.asarray([v for _i, v in indexed], dtype=np.float64)
+
+
+def _compare_streaming_pair_internal(
+    *,
+    impl: str,
+    artifact: "StreamingPair",
+    atol: float,
+) -> TierResult:
+    """Bit-equality check between the two halves of a single impl's
+    ``StreamingPair`` (batch vs stream, or json vs array).
+
+    Uses ``tier="aligned"`` so ``_compare_pair`` exercises the
+    ``diff > atol`` branch (``STREAMING_PARITY_ATOL = 1e-12`` per the
+    streaming-vs-batch parity test); ``tier="strict"`` would force
+    bit-equality and reject the documented sub-ULP wobble.
+    """
+    batch = _stats_dict_to_array(artifact.batch_summary)
+    stream = _stats_dict_to_array(artifact.stream_summary)
+    return _compare_pair(
+        tier="aligned",
+        impl_a=f"{impl}/batch",
+        impl_b=f"{impl}/stream",
+        tensor_a=batch,
+        tensor_b=stream,
+        sha_a="",
+        sha_b="",
+        atol=atol,
+    )
+
+
+def _compare_streaming_cross_impl(
+    *,
+    impl_a: str,
+    impl_b: str,
+    a_summary: dict[str, float],
+    b_summary: dict[str, float],
+    atol: float,
+    tier: Tier,
+) -> TierResult:
+    """Cross-impl bit-equality on the ``batch_summary`` half."""
+    a = _stats_dict_to_array(a_summary)
+    b = _stats_dict_to_array(b_summary)
+    return _compare_pair(
+        tier=tier,
+        impl_a=impl_a,
+        impl_b=impl_b,
+        tensor_a=a,
+        tensor_b=b,
+        sha_a="",
+        sha_b="",
+        atol=atol,
+    )
+
+
 _REGISTRY: dict[Paradigm, Comparator] = {
     "instance": _InstanceComparator(impl_tensors={}, impl_sha256={}),  # type: ignore[arg-type]
     "panoptic": _PanopticComparator(),
     "semantic": _SemanticComparator(),
-    "streaming": _StubComparator("streaming"),
+    "streaming": _StreamingComparator(),
 }
 
 
