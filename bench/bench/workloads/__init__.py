@@ -5,8 +5,8 @@ Workload identifiers:
 
 - ``smoke`` — local fixture, all iou types.
 - ``coco_val2017_jittered_seed<N>`` — COCO val2017 GT (sha256-pinned)
-  with deterministic Gaussian-jittered DT for seed ``<N>``. Bbox-only
-  for now.
+  with deterministic Gaussian-jittered bbox + mask-space-jittered segm
+  DT for seed ``<N>``. Serves bbox, segm, and boundary cells.
 - ``coco_val2017_perfect_segm`` — COCO val2017 GT paired with the
   ``perfect_dt_segm.json`` "GT-as-DT" predictions used by the parity
   suite. Exercises segm + boundary at val2017 scale (5000 imgs / ~36k
@@ -17,6 +17,17 @@ Workload identifiers:
   ``n_images``, ``seed``. Optional: ``n_categories`` (default 80),
   ``dt_per_image`` (default 30), ``gt_per_image`` (default 10) — chosen
   to match the ADR's release-mode ladder defaults.
+- ``coco_val2017_maskrcnn_r50fpn_d2_v1`` — Mask R-CNN R50-FPN
+  predictions on val2017 (Detectron2 model zoo, 3x schedule). Sourced
+  from a pinned Hugging Face dump; populate via
+  ``./tools/fetch-real-predictions.sh --maskrcnn``. Serves bbox + segm
+  + boundary.
+- ``coco_val2017_rfdetr_nano_v<rfdetr-pin>`` — bbox-only rf-detr Nano
+  predictions on val2017. Inferred locally by the TIDE harness;
+  populate via ``pytest -m real_models``.
+- ``coco_val2017_rfdetr_segnano_v<rfdetr-pin>`` — instance-seg rf-detr
+  SegNano predictions on val2017. Same provenance as Nano. Serves bbox
+  + segm + boundary.
 """
 
 from __future__ import annotations
@@ -26,7 +37,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from bench.harness.schema import IouType
-from bench.workloads import coco_val2017, jittered_predictions, smoke, synthetic
+from bench.workloads import (
+    coco_val2017,
+    jittered_predictions,
+    real_predictions,
+    smoke,
+    synthetic,
+)
 
 
 @dataclass(frozen=True)
@@ -89,7 +106,7 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             workload_id=jittered_predictions.workload_id(seed),
             gt_path=gt,
             dt_path=dt,
-            supported_iou_types=frozenset({"bbox"}),
+            supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
         )
 
     if workload_name == "coco_val2017_perfect_segm":
@@ -112,8 +129,35 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             supported_iou_types=frozenset({"bbox"}),
         )
 
+    if workload_name == real_predictions.MASKRCNN_R50FPN_WORKLOAD_ID:
+        return Workload(
+            workload_id=workload_name,
+            gt_path=coco_val2017.gt_path(),
+            dt_path=real_predictions.maskrcnn_dt_path(),
+            supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
+        )
+
+    if workload_name == real_predictions.RFDETR_NANO_WORKLOAD_ID:
+        return Workload(
+            workload_id=workload_name,
+            gt_path=coco_val2017.gt_path(),
+            dt_path=real_predictions.rfdetr_dt_path("nano"),
+            supported_iou_types=frozenset({"bbox"}),
+        )
+
+    if workload_name == real_predictions.RFDETR_SEGNANO_WORKLOAD_ID:
+        return Workload(
+            workload_id=workload_name,
+            gt_path=coco_val2017.gt_path(),
+            dt_path=real_predictions.rfdetr_dt_path("segnano"),
+            supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
+        )
+
     raise ValueError(
         f"unknown workload {workload_name!r}; "
         f"known: 'smoke', 'coco_val2017_jittered_seed<N>', "
-        f"'coco_val2017_perfect_segm', 'synthetic:n_images=...,seed=...'"
+        f"'coco_val2017_perfect_segm', 'synthetic:n_images=...,seed=...', "
+        f"'{real_predictions.MASKRCNN_R50FPN_WORKLOAD_ID}', "
+        f"'{real_predictions.RFDETR_NANO_WORKLOAD_ID}', "
+        f"'{real_predictions.RFDETR_SEGNANO_WORKLOAD_ID}'"
     )

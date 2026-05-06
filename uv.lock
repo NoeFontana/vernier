@@ -2998,6 +2998,7 @@ dev = [
     { name = "vernier-coco-val-cache" },
     { name = "vernier-lvis-val-cache" },
     { name = "vernier-panoptic-val-cache" },
+    { name = "vernier-real-predictions-cache" },
 ]
 docs = [
     { name = "codespell" },
@@ -3033,6 +3034,7 @@ dev = [
     { name = "vernier-coco-val-cache", editable = "tools/coco_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "tools/lvis_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "tools/panoptic_val_cache" },
+    { name = "vernier-real-predictions-cache", editable = "tools/real_predictions_cache" },
 ]
 docs = [
     { name = "codespell", specifier = ">=2.3" },
@@ -3056,6 +3058,21 @@ source = { editable = "tools/lvis_val_cache" }
 name = "vernier-panoptic-val-cache"
 version = "0.0.0"
 source = { editable = "tools/panoptic_val_cache" }
+
+[[package]]
+name = "vernier-real-predictions-cache"
+version = "0.0.0"
+source = { editable = "tools/real_predictions_cache" }
+dependencies = [
+    { name = "platformdirs" },
+    { name = "vernier-coco-val-cache" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "platformdirs", specifier = ">=4" },
+    { name = "vernier-coco-val-cache", editable = "tools/coco_val_cache" },
+]
 
 [[package]]
 name = "verspec"

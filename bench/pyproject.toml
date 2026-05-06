@@ -15,10 +15,23 @@ dependencies = [
     # Single source of truth for the COCO val2017 dev cache contract
     # (URL, SHA256, filename, fetch flow). Path source below.
     "vernier-coco-val-cache",
+    # Cache-path resolver for real-model predictions (Mask R-CNN
+    # downloaded; rf-detr inferred via the TIDE harness). Path source
+    # below; transitively pulls platformdirs.
+    "vernier-real-predictions-cache",
+    # Workload-side: polygon-jittered DT generation needs morphological
+    # ops (dilate/erode) and an RLE codec independent of vernier's own
+    # mask kernels (using the system under test as the codec for test
+    # data is circular). Pycocotools pin matches the parity oracle.
+    # Runner envs transitively install these via vernier-bench's path
+    # source — small disk cost, simpler user flow than an opt-in extra.
+    "scipy>=1.11",
+    "pycocotools==2.0.11",
 ]
 
 [tool.uv.sources]
 vernier-coco-val-cache = { path = "../tools/coco_val_cache", editable = true }
+vernier-real-predictions-cache = { path = "../tools/real_predictions_cache", editable = true }
 
 [project.scripts]
 vernier-bench = "bench.cli:main"
@@ -43,6 +56,16 @@ target-version = "py310"
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "N", "PT"]
+
+[tool.pyright]
+include = ["bench", "tests"]
+venvPath = "."
+venv = ".venv"
+# pythonVersion governs language-feature checks; the resolver follows the
+# venv's interpreter (3.14 today) for site-packages.
+pythonVersion = "3.10"
+reportMissingImports = "error"
+reportMissingTypeStubs = "warning"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
