@@ -107,38 +107,35 @@ def _saturate_one_queue(
 ) -> tuple[list[int], dict[str, float]]:
     """Run the saturation loop at one queue depth. Returns
     ``(latency_samples_ns, percentile_dict)``."""
-    bg = BackgroundEvaluator(
+    with BackgroundEvaluator(
         gt_bytes,
         iou_type=iou_type,  # type: ignore[arg-type]
         queue_capacity=queue_capacity,
         record_latency_samples=True,
-    )
-    stop_event = threading.Event()
-    submission_count = [0]
+    ) as bg:
+        stop_event = threading.Event()
 
-    def _feeder() -> None:
-        for payload in cycle(payloads):
-            if stop_event.is_set():
-                return
-            try:
-                bg.submit(payload)
-            except Exception:
-                # The evaluator may shut down while a submit is in
-                # flight; bail rather than crashing the feeder thread.
-                return
-            submission_count[0] += 1
+        def _feeder() -> None:
+            for payload in cycle(payloads):
+                if stop_event.is_set():
+                    return
+                try:
+                    bg.submit(payload)
+                except Exception:
+                    # The evaluator may shut down while a submit is in
+                    # flight; bail rather than crashing the feeder thread.
+                    return
 
-    feeder = threading.Thread(target=_feeder, daemon=True)
-    feeder.start()
-    try:
-        time.sleep(duration_s)
-    finally:
-        stop_event.set()
-        feeder.join(timeout=2.0)
+        feeder = threading.Thread(target=_feeder, daemon=True)
+        feeder.start()
+        try:
+            time.sleep(duration_s)
+        finally:
+            stop_event.set()
+            feeder.join(timeout=2.0)
 
-    samples = bg.drain_latency_samples_ns()
-    bg.__exit__(None, None, None)
-    return list(samples), _percentiles(samples)
+        samples = list(bg.drain_latency_samples_ns())
+    return samples, _percentiles(samples)
 
 
 def _emit_outputs(
