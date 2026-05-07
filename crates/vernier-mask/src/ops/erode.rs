@@ -91,8 +91,9 @@ pub fn erode_chebyshev_ball_into(
     let h = rle.h as usize;
     let w = rle.w as usize;
     let d = radius_pixels as usize;
+    let bbox = rle.bbox();
     rle.to_raster_bytes_into(&mut scratch.raster);
-    erode_raster_into_scratch(scratch, h, w, d);
+    erode_raster_into_scratch(scratch, h, w, d, bbox);
     Rle::from_raster_bytes(&scratch.eroded, rle.h, rle.w)
 }
 
@@ -100,12 +101,17 @@ pub fn erode_chebyshev_ball_into(
 /// raster. Test-only wrapper so the proptest in this file can compare
 /// against the iterative reference without going through RLE
 /// encode/decode.
+///
+/// `bbox` is the foreground bbox in `[x, y, w, h]` form. The proptest
+/// path scans the raster to compute the tight foreground bbox; passing
+/// `[0, 0, w, h]` (the full image) is a valid no-op crop that exercises
+/// the same code paths as a full-image erode.
 #[cfg(test)]
-fn erode_raster_chebyshev(raster: &[u8], h: usize, w: usize, d: usize) -> Vec<u8> {
+fn erode_raster_chebyshev(raster: &[u8], h: usize, w: usize, d: usize, bbox: [u32; 4]) -> Vec<u8> {
     let mut scratch = ErodeScratch::new();
     scratch.raster.clear();
     scratch.raster.extend_from_slice(raster);
-    erode_raster_into_scratch(&mut scratch, h, w, d);
+    erode_raster_into_scratch(&mut scratch, h, w, d, bbox);
     scratch.eroded
 }
 
@@ -113,9 +119,44 @@ fn erode_raster_chebyshev(raster: &[u8], h: usize, w: usize, d: usize) -> Vec<u8
 /// raster. Reads input from `scratch.raster` (caller writes the raster
 /// in via [`Rle::to_raster_bytes_into`] or `Vec::extend_from_slice`)
 /// and writes the eroded interior to `scratch.eroded`.
-pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w: usize, d: usize) {
-    let ph = h + 2;
-    let pw = w + 2;
+///
+/// `bbox` is the foreground bounding box in `[x, y, w, h]` form (must
+/// contain every foreground pixel of `raster`). The internal pad / row
+/// pass / column pass run over a `(bh + 2, bw + 2)` window instead of
+/// the full `(h + 2, w + 2)` image — typically a 30× reduction in
+/// per-mask work for val2017's small instance bboxes. Outside the
+/// bbox `scratch.eroded` stays zero, which is the correct erosion
+/// since (a) input is zero outside the foreground bbox by definition
+/// and (b) the bbox-internal result is unaffected by the OOB-vs-data
+/// difference: any window that reaches the bbox edge already meets the
+/// 1-pixel zero ring at the bbox boundary, which is the only zero the
+/// algorithm needs to pull min to zero.
+pub(crate) fn erode_raster_into_scratch(
+    scratch: &mut ErodeScratch,
+    h: usize,
+    w: usize,
+    d: usize,
+    bbox: [u32; 4],
+) {
+    // Outside the bbox, eroded ≡ 0. Zeroing the full buffer gives the
+    // XOR scan a clean canvas; only the bbox interior is overwritten
+    // by step 4.
+    scratch.eroded.clear();
+    scratch.eroded.resize(h * w, 0);
+
+    let bx = bbox[0] as usize;
+    let by = bbox[1] as usize;
+    let bw = bbox[2] as usize;
+    let bh = bbox[3] as usize;
+
+    // Empty foreground (`Rle::bbox` returns `[0; 4]` per quirk G4):
+    // erosion is the empty mask, eroded buffer already all-zero.
+    if bw == 0 || bh == 0 {
+        return;
+    }
+
+    let ph = bh + 2;
+    let pw = bw + 2;
     let pad_size = ph * pw;
 
     // The ring of `padded` must be zero (N1); the interior is fully
@@ -132,8 +173,6 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
     scratch.row_in.resize(pw, 0);
     scratch.row_out.clear();
     scratch.row_out.resize(pw, 0);
-    scratch.eroded.clear();
-    scratch.eroded.resize(h * w, 0);
     // Two `max(ph, pw)`-byte ping-pong halves for the sparse-table
     // build inside `min_filter_binary`. Contents are dead on entry
     // (overwritten before read), so grow-only — no re-zeroing on the
@@ -172,13 +211,14 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
         min_temp_u64,
     } = scratch;
 
-    // 1. Pad to (h+2, w+2) column-major with a 1-pixel zero ring (N1).
-    //    Each source column is contiguous (column-major), so the per-x
-    //    body is a `copy_from_slice` between aligned `h`-byte slices.
-    for x in 0..w {
-        let src_start = x * h;
+    // 1. Pad to (bh+2, bw+2) column-major with a 1-pixel zero ring (N1).
+    //    Each source column of the bbox is contiguous in `raster`
+    //    (column-major), so the per-x body is a `copy_from_slice`
+    //    between aligned `bh`-byte slices.
+    for x in 0..bw {
+        let src_start = (bx + x) * h + by;
         let dst_start = (x + 1) * ph + 1;
-        padded[dst_start..dst_start + h].copy_from_slice(&raster[src_start..src_start + h]);
+        padded[dst_start..dst_start + bh].copy_from_slice(&raster[src_start..src_start + bh]);
     }
 
     // 2. Row pass: column-major means x-stride = ph (non-contiguous),
@@ -201,10 +241,9 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
             row_scratch[base..base + 8].copy_from_slice(&v.to_ne_bytes());
         }
     }
-    // Tail rows that didn't fit a full u64 chunk (`ph % 8`). On val2017
-    // image dims this is at most 7 of ~480 rows; for `ph < 8` images
-    // (e.g. some property-test cases) the bulk loop is skipped entirely
-    // and this scalar path covers everything.
+    // Tail rows that didn't fit a full u64 chunk (`ph % 8`). For small
+    // bboxes (`ph < 8`) the bulk loop is skipped entirely and this
+    // scalar path covers everything.
     for y in bulk_end..ph {
         for x in 0..pw {
             row_in[x] = padded[x * ph + y];
@@ -225,12 +264,13 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
         min_filter_binary(col_in, d, col_out, min_temp);
     }
 
-    // 4. Strip the pad: copy interior (1..=w) × (1..=h) back to (h, w)
-    //    column-major (N2).
-    for x in 0..w {
+    // 4. Strip the pad: copy the bbox interior (rows 1..=bh, cols
+    //    1..=bw of the cropped padded buffer) back to `eroded` at the
+    //    bbox offset in the full image (N2).
+    for x in 0..bw {
         let src_start = (x + 1) * ph + 1;
-        let dst_start = x * h;
-        eroded[dst_start..dst_start + h].copy_from_slice(&padded[src_start..src_start + h]);
+        let dst_start = (bx + x) * h + by;
+        eroded[dst_start..dst_start + bh].copy_from_slice(&padded[src_start..src_start + bh]);
     }
 }
 
@@ -570,10 +610,49 @@ mod tests {
             1, 1, 0, 0, // (4,0..4)
         ];
         for d in 1..=3 {
-            let single_pass = erode_raster_chebyshev(&raster, 4, 5, d);
+            let single_pass = erode_raster_chebyshev(&raster, 4, 5, d, [0, 0, 5, 4]);
             let iterative = erode_iterative_reference(&raster, 4, 5, d);
             assert_eq!(single_pass, iterative, "d={d}");
         }
+    }
+
+    /// Tight foreground bounding box of a column-major binary raster
+    /// in `[x, y, w, h]` form. Returns `[0; 4]` for an all-background
+    /// raster (matches `Rle::bbox` for the empty-foreground case).
+    /// Test-only — production callers use [`Rle::bbox`].
+    fn bbox_from_raster(raster: &[u8], h: usize, w: usize) -> [u32; 4] {
+        let mut x_min = w;
+        let mut x_max = 0usize;
+        let mut y_min = h;
+        let mut y_max = 0usize;
+        let mut found = false;
+        for x in 0..w {
+            for y in 0..h {
+                if raster[x * h + y] != 0 {
+                    if !found {
+                        x_min = x;
+                        x_max = x;
+                        y_min = y;
+                        y_max = y;
+                        found = true;
+                    } else {
+                        x_min = x_min.min(x);
+                        x_max = x_max.max(x);
+                        y_min = y_min.min(y);
+                        y_max = y_max.max(y);
+                    }
+                }
+            }
+        }
+        if !found {
+            return [0; 4];
+        }
+        [
+            x_min as u32,
+            y_min as u32,
+            (x_max - x_min + 1) as u32,
+            (y_max - y_min + 1) as u32,
+        ]
     }
 
     proptest! {
@@ -591,7 +670,10 @@ mod tests {
                     )
                 }),
         ) {
-            let single_pass = erode_raster_chebyshev(&raster, h, w, d);
+            // Full-image bbox: cropped path is a no-op crop equivalent
+            // to the pre-bbox erode contract.
+            let full_bbox = [0, 0, w as u32, h as u32];
+            let single_pass = erode_raster_chebyshev(&raster, h, w, d, full_bbox);
             let iterative = erode_iterative_reference(&raster, h, w, d);
             prop_assert_eq!(single_pass, iterative);
         }
@@ -612,9 +694,61 @@ mod tests {
                     )
                 }),
         ) {
-            let single_pass = erode_raster_chebyshev(&raster, h, w, d);
+            let full_bbox = [0, 0, w as u32, h as u32];
+            let single_pass = erode_raster_chebyshev(&raster, h, w, d, full_bbox);
             let iterative = erode_iterative_reference(&raster, h, w, d);
             prop_assert_eq!(single_pass, iterative);
+        }
+
+        // Tight foreground bbox crop: the boundary-IoU hot path. The
+        // input is generated with a non-trivial outer zero ring so the
+        // bbox is strictly smaller than the image — that's what
+        // exercises the bbox crop's strip-pad offset arithmetic.
+        // Image dims are widened (8..=20) so most cases land in the
+        // bulk u64 row-pass regime, matching val2017 image dims rather
+        // than the synthetic small-mask shape covered above.
+        #[test]
+        fn tight_bbox_crop_matches_iterative_full_image(
+            (h, w, d, raster) in (8usize..=20, 8usize..=20, 1usize..=4)
+                .prop_flat_map(|(h, w, d)| {
+                    let len = h * w;
+                    (
+                        Just(h),
+                        Just(w),
+                        Just(d),
+                        proptest::collection::vec(0u8..=1, len..=len),
+                    )
+                }),
+        ) {
+            let bbox = bbox_from_raster(&raster, h, w);
+            let single_pass = erode_raster_chebyshev(&raster, h, w, d, bbox);
+            let iterative = erode_iterative_reference(&raster, h, w, d);
+            prop_assert_eq!(single_pass, iterative);
+        }
+
+        // Pin equivalence: the cropped path must produce a bit-equal
+        // result to the no-op-crop (full image bbox) path on identical
+        // input, not just match the iterative reference modulo erosion
+        // semantics. Catches strip-pad offset bugs that happen to round
+        // back to the iterative output by accident.
+        #[test]
+        fn tight_bbox_crop_equals_full_image_bbox(
+            (h, w, d, raster) in (1usize..=20, 1usize..=20, 1usize..=4)
+                .prop_flat_map(|(h, w, d)| {
+                    let len = h * w;
+                    (
+                        Just(h),
+                        Just(w),
+                        Just(d),
+                        proptest::collection::vec(0u8..=1, len..=len),
+                    )
+                }),
+        ) {
+            let tight = bbox_from_raster(&raster, h, w);
+            let full = [0, 0, w as u32, h as u32];
+            let cropped = erode_raster_chebyshev(&raster, h, w, d, tight);
+            let uncropped = erode_raster_chebyshev(&raster, h, w, d, full);
+            prop_assert_eq!(cropped, uncropped);
         }
 
         #[test]
