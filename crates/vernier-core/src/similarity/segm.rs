@@ -210,15 +210,25 @@ pub(crate) fn segm_iou_compute(
     scratch.g_area.clear();
     scratch.g_segments.clear();
     populate_gt(gts, scratch, gt_cache);
+    // DT side: bbox + area + fg-offsets each walk the same counts
+    // array, so fold them into a single fused walk via
+    // `push_with_bbox_and_area` — saves two follow-up `Rle::bbox`
+    // and `Rle::area` walks per DT (~36k anns on val2017 segm).
     scratch.d_bbox.clear();
-    scratch
-        .d_bbox
-        .extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
     scratch.d_area.clear();
-    scratch.d_area.extend(dts.iter().map(|d| d.rle.area()));
     scratch.d_segments.clear();
     for d in dts {
-        scratch.d_segments.push_from_rle(&d.rle);
+        let ([x, y, w, h], area) = scratch.d_segments.push_with_bbox_and_area(&d.rle);
+        scratch.d_bbox.push(BboxAnn {
+            bbox: Bbox {
+                x: f64::from(x),
+                y: f64::from(y),
+                w: f64::from(w),
+                h: f64::from(h),
+            },
+            is_crowd: false,
+        });
+        scratch.d_area.push(area);
     }
     BboxIou.compute_overlap_mask(&scratch.g_bbox, &scratch.d_bbox, out)?;
 
@@ -255,9 +265,17 @@ pub(crate) fn segm_iou_compute(
 fn populate_gt(gts: &[SegmAnn], scratch: &mut SegmComputeScratch, cache: Option<&SegmGtCache>) {
     let Some(cache) = cache else {
         for g in gts {
-            scratch.g_bbox.push(to_bbox_ann(&g.rle, g.is_crowd));
-            scratch.g_area.push(g.rle.area());
-            scratch.g_segments.push_from_rle(&g.rle);
+            let ([x, y, w, h], area) = scratch.g_segments.push_with_bbox_and_area(&g.rle);
+            scratch.g_bbox.push(BboxAnn {
+                bbox: Bbox {
+                    x: f64::from(x),
+                    y: f64::from(y),
+                    w: f64::from(w),
+                    h: f64::from(h),
+                },
+                is_crowd: g.is_crowd,
+            });
+            scratch.g_area.push(area);
         }
         return;
     };
