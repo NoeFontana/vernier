@@ -29,6 +29,15 @@ fn main() {
 /// 100×1000 row stresses an LVIS-scale image.
 const GRIDS: &[(usize, usize)] = &[(4, 100), (10, 100), (30, 100), (100, 1000)];
 
+/// Dense-regime grids for single-category-ish workloads (200–300 GT/DT
+/// per image, 1–5 categories — surveillance, single-class detection,
+/// dense crowd scenes). Per
+/// `docs/engineering/benchmarking/2026-05-bbox-cdf.md`, these cells
+/// have `G·D ≥ 5,000` so inner-loop work dominates per-call setup; the
+/// `production`-vs-`scalar_reference` gap on this row is the headroom
+/// any explicit-SIMD pass needs to beat.
+const DENSE_GRIDS: &[(usize, usize)] = &[(50, 50), (100, 100), (200, 200), (300, 300)];
+
 fn make_anns(n: usize, offset: f64, is_crowd: bool) -> Vec<BboxAnn> {
     (0..n)
         .map(|i| {
@@ -75,6 +84,28 @@ fn production_crowd_gt(bencher: Bencher, &(g, d): &(usize, usize)) {
 
 #[divan::bench(args = GRIDS)]
 fn scalar_reference(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let gts = make_anns(g, 0.31, false);
+    let dts = make_anns(d, 0.71, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        scalar_compute(black_box(&gts), black_box(&dts), &mut out.view_mut());
+    });
+}
+
+#[divan::bench(args = DENSE_GRIDS)]
+fn production_dense(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let gts = make_anns(g, 0.31, false);
+    let dts = make_anns(d, 0.71, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        BboxIou
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+    });
+}
+
+#[divan::bench(args = DENSE_GRIDS)]
+fn scalar_reference_dense(bencher: Bencher, &(g, d): &(usize, usize)) {
     let gts = make_anns(g, 0.31, false);
     let dts = make_anns(d, 0.71, false);
     let mut out = Array2::<f64>::zeros((g, d));
