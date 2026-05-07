@@ -63,3 +63,7 @@ harness = false
 [[bench]]
 name = "segm_iou"
 harness = false
+
+[[bench]]
+name = "evaluate_bbox"
+harness = false
