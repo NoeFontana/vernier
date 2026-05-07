@@ -13,6 +13,15 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = []
+# Stage-0 instrumentation for the bbox-IoU optimization plan: records
+# (kernel-kind, g_count, d_count, wall_ns) per `BboxIou::compute` and
+# `BboxIou::compute_overlap_mask` call into a process-global Vec, dumped
+# as CSV via `similarity::bbox::histogram::dump_csv`. Off by default so
+# the shipped wheel never pays the recording cost.
+bench-histogram = []
+
 [dependencies]
 ndarray.workspace = true
 thiserror.workspace = true

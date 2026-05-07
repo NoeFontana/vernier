@@ -85,6 +85,22 @@ pub use tide::{
 /// debugging mismatches between Rust and Python sides of the FFI boundary.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Stage-0 instrumentation hook for the bbox-IoU optimization plan.
+///
+/// Writes the `(kind, g, d, wall_ns)` records accumulated across every
+/// `BboxIou::compute` and `BboxIou::compute_overlap_mask` call to
+/// `path` as CSV (header `kind,g,d,wall_ns`; `kind` is the variant
+/// label `FullIou` or `OverlapMask`), then clears the in-process
+/// buffer. Returns the number of records written.
+///
+/// Only present when the crate is compiled with `--features
+/// bench-histogram`. Bench harness builds set this; the shipped wheel
+/// never does, so production runs carry zero recording overhead.
+#[cfg(feature = "bench-histogram")]
+pub fn dump_bbox_iou_histogram_csv(path: &std::path::Path) -> std::io::Result<usize> {
+    similarity::bbox::histogram::dump_csv(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
