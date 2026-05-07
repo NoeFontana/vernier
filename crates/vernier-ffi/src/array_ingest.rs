@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::{PyTypeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyAny, PyBytes, PyDict, PySequence};
 
 use vernier_core::{
@@ -29,7 +30,10 @@ use crate::emit_warning;
 pub(crate) enum DetectionsArg<'py> {
     /// Legacy `loadRes`-shaped JSON bytes; routed straight to the
     /// existing JSON entry on the streaming/background state.
-    Bytes(Vec<u8>),
+    /// Held as a [`PyBackedBytes`] so the underlying `bytes` buffer
+    /// crosses `py.detach` without a copy — saves ~10 ms per val2017
+    /// DT submission (17 MB jittered output).
+    Bytes(PyBackedBytes),
     /// One or more per-image `Detections` dicts. Single-image inputs
     /// land here as a one-element vec.
     Dicts(Vec<Bound<'py, PyDict>>),
@@ -40,7 +44,7 @@ impl<'py> DetectionsArg<'py> {
     /// instances also satisfy the `Sequence` protocol.
     pub(crate) fn extract(obj: &Bound<'py, PyAny>) -> PyResult<Self> {
         if let Ok(b) = obj.cast::<PyBytes>() {
-            return Ok(Self::Bytes(b.as_bytes().to_vec()));
+            return Ok(Self::Bytes(PyBackedBytes::from(b.clone())));
         }
         if let Ok(d) = obj.cast::<PyDict>() {
             return Ok(Self::Dicts(vec![d.clone()]));
