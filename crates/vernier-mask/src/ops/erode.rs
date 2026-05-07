@@ -48,6 +48,12 @@ pub struct ErodeScratch {
     pub(crate) raster: Vec<u8>,
     pub(crate) eroded: Vec<u8>,
     pub(crate) min_temp: Vec<u8>,
+    // u64-packed buffers for the chunked row pass: each `u64` element
+    // carries 8 byte rows, so AND on the u64 lane is byte-wise AND on
+    // 8 rows in parallel.
+    pub(crate) row_in_u64: Vec<u64>,
+    pub(crate) row_out_u64: Vec<u64>,
+    pub(crate) min_temp_u64: Vec<u64>,
 }
 
 impl ErodeScratch {
@@ -136,6 +142,22 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
     if scratch.min_temp.len() < scan_needed {
         scratch.min_temp.resize(scan_needed, 0);
     }
+    // u64-packed row-pass buffers: each `u64` carries 8 row bytes for
+    // a single x, so the bulk row pass processes 8 rows in parallel
+    // with contiguous u64 loads. Sized only when the bulk path runs
+    // (`ph >= 8`); otherwise the scalar path covers everything.
+    let row_chunks = ph / 8;
+    if row_chunks > 0 {
+        if scratch.row_in_u64.len() < pw {
+            scratch.row_in_u64.resize(pw, 0);
+        }
+        if scratch.row_out_u64.len() < pw {
+            scratch.row_out_u64.resize(pw, 0);
+        }
+        if scratch.min_temp_u64.len() < 2 * pw {
+            scratch.min_temp_u64.resize(2 * pw, 0);
+        }
+    }
 
     let ErodeScratch {
         padded,
@@ -145,6 +167,9 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
         raster,
         eroded,
         min_temp,
+        row_in_u64,
+        row_out_u64,
+        min_temp_u64,
     } = scratch;
 
     // 1. Pad to (h+2, w+2) column-major with a 1-pixel zero ring (N1).
@@ -157,9 +182,30 @@ pub(crate) fn erode_raster_into_scratch(scratch: &mut ErodeScratch, h: usize, w:
     }
 
     // 2. Row pass: column-major means x-stride = ph (non-contiguous),
-    //    so for each y we gather a contiguous row of length pw, run
-    //    the 1D min, and scatter the result.
-    for y in 0..ph {
+    //    so the scalar form gathers byte-by-byte for each y. The bulk
+    //    form below packs 8 rows per x into a u64 and runs one min
+    //    filter for the chunk — `(2d+1)`-way binary min reduces to AND,
+    //    and a u64 AND is a byte-wise AND across 8 rows in parallel.
+    let bulk_end = row_chunks * 8;
+    for c in 0..row_chunks {
+        let y_chunk = c * 8;
+        for (x, slot) in row_in_u64[..pw].iter_mut().enumerate() {
+            let base = x * ph + y_chunk;
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&padded[base..base + 8]);
+            *slot = u64::from_ne_bytes(bytes);
+        }
+        min_filter_binary_u64(&row_in_u64[..pw], d, &mut row_out_u64[..pw], min_temp_u64);
+        for (x, &v) in row_out_u64[..pw].iter().enumerate() {
+            let base = x * ph + y_chunk;
+            row_scratch[base..base + 8].copy_from_slice(&v.to_ne_bytes());
+        }
+    }
+    // Tail rows that didn't fit a full u64 chunk (`ph % 8`). On val2017
+    // image dims this is at most 7 of ~480 rows; for `ph < 8` images
+    // (e.g. some property-test cases) the bulk loop is skipped entirely
+    // and this scalar path covers everything.
+    for y in bulk_end..ph {
         for x in 0..pw {
             row_in[x] = padded[x * ph + y];
         }
@@ -283,6 +329,99 @@ fn min_filter_binary(input: &[u8], d: usize, output: &mut [u8], temp: &mut [u8])
     let interior_len = n - 2 * d;
     let hi_off = win - pow_k;
     and_into(
+        &mut output[d..d + interior_len],
+        &src[..interior_len],
+        &src[hi_off..hi_off + interior_len],
+    );
+}
+
+/// OOB constant for the u64-packed row pass: every byte = 1, so a
+/// per-byte AND with this leaves the corresponding row's binary value
+/// unchanged — matching the scalar `clip_and` initial accumulator.
+const ONES_U64: u64 = 0x0101_0101_0101_0101;
+
+/// `dst[i] = a[i] & b[i]` over equal-length slices of `u64`. Same
+/// shape as [`and_into`] for the byte-packed row pass: each `u64`
+/// lane holds 8 row bytes, and a u64 AND is byte-wise AND across
+/// those 8 rows in parallel.
+#[inline]
+fn and_into_u64(dst: &mut [u64], a: &[u64], b: &[u64]) {
+    debug_assert_eq!(dst.len(), a.len());
+    debug_assert_eq!(dst.len(), b.len());
+    for ((d, &x), &y) in dst.iter_mut().zip(a.iter()).zip(b.iter()) {
+        *d = x & y;
+    }
+}
+
+/// `u64`-packed variant of [`min_filter_binary`].
+///
+/// Each input element is a `u64` carrying 8 byte rows packed via
+/// `u64::from_ne_bytes`; the algorithm and edge handling are identical
+/// to the scalar form, with byte-AND replaced by `u64`-AND (correct
+/// because the bytes are `{0, 1}` and AND is bitwise). OOB reads
+/// return [`ONES_U64`] — per-byte `1`, which is what the scalar form
+/// uses.
+///
+/// Used by [`erode_raster_into_scratch`]'s row pass to process 8 rows
+/// per pass over a column-major raster: 8 consecutive y values at a
+/// fixed x are 8 contiguous bytes, i.e. a single `u64` load. This
+/// removes the per-row strided gather/scatter into byte-wide `row_in`
+/// / `row_out` buffers and replaces it with one row-pass per 8-row
+/// chunk over `u64` buffers — the same sparse-table levels and edge
+/// passes, but 1/8 the loop iterations through the row dimension.
+fn min_filter_binary_u64(input: &[u64], d: usize, output: &mut [u64], temp: &mut [u64]) {
+    let n = input.len();
+    debug_assert_eq!(n, output.len());
+    debug_assert!(temp.len() >= 2 * n);
+    if n == 0 {
+        return;
+    }
+    if d == 0 {
+        output.copy_from_slice(input);
+        return;
+    }
+
+    let clip_and = |j: usize| -> u64 {
+        let lo = j.saturating_sub(d);
+        let hi = (j + d + 1).min(n);
+        input[lo..hi].iter().fold(ONES_U64, |acc, &v| acc & v)
+    };
+
+    if n <= 2 * d {
+        for (j, out) in output.iter_mut().enumerate() {
+            *out = clip_and(j);
+        }
+        return;
+    }
+
+    for (j, out) in (0..d).zip(output[..d].iter_mut()) {
+        *out = clip_and(j);
+    }
+    for (j, out) in (n - d..n).zip(output[n - d..].iter_mut()) {
+        *out = clip_and(j);
+    }
+
+    let win = 2 * d + 1;
+    let k = (usize::BITS - 1 - win.leading_zeros()) as usize;
+    let pow_k = 1_usize << k;
+
+    let (mut src, mut dst_buf) = temp.split_at_mut(n);
+
+    {
+        let stride = 1_usize;
+        let len = n - 2 + 1;
+        and_into_u64(&mut src[..len], &input[..len], &input[stride..stride + len]);
+    }
+    for l in 2..=k {
+        let stride = 1_usize << (l - 1);
+        let len = n - (1_usize << l) + 1;
+        and_into_u64(&mut dst_buf[..len], &src[..len], &src[stride..stride + len]);
+        std::mem::swap(&mut src, &mut dst_buf);
+    }
+
+    let interior_len = n - 2 * d;
+    let hi_off = win - pow_k;
+    and_into_u64(
         &mut output[d..d + interior_len],
         &src[..interior_len],
         &src[hi_off..hi_off + interior_len],
@@ -442,6 +581,27 @@ mod tests {
         #[test]
         fn single_pass_matches_iterative_on_random_binary_masks(
             (h, w, d, raster) in (1usize..=8, 1usize..=8, 1usize..=4)
+                .prop_flat_map(|(h, w, d)| {
+                    let len = h * w;
+                    (
+                        Just(h),
+                        Just(w),
+                        Just(d),
+                        proptest::collection::vec(0u8..=1, len..=len),
+                    )
+                }),
+        ) {
+            let single_pass = erode_raster_chebyshev(&raster, h, w, d);
+            let iterative = erode_iterative_reference(&raster, h, w, d);
+            prop_assert_eq!(single_pass, iterative);
+        }
+
+        // Sized to span every `ph % 8` residue (h ∈ 6..=22 → ph ∈ 8..=24)
+        // so the row pass exercises both the bulk u64 chunks and the
+        // scalar tail across all chunk counts up to 3.
+        #[test]
+        fn single_pass_matches_iterative_across_u64_chunk_boundaries(
+            (h, w, d, raster) in (6usize..=22, 6usize..=22, 1usize..=5)
                 .prop_flat_map(|(h, w, d)| {
                     let len = h * w;
                     (
