@@ -17,6 +17,13 @@ captures land alongside them.
   boundary-iou-api** on val2017 boundary (no boundary-mask cache yet,
   tracked follow-up). Parity OK on every cell.
 
+## Instrumentation guides
+
+* [bbox-iou-stage0-instrumentation.md](./bbox-iou-stage0-instrumentation.md)
+  — `bench-histogram` feature workflow for capturing the per-call
+  `(G, D, wall_ns)` distribution that gates Stages 1b/1c of the
+  bbox-IoU optimization plan.
+
 ## Reproducing a run
 
 ```bash
