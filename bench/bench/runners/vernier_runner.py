@@ -7,6 +7,7 @@ harness uses, with stage timers around each call.
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -68,6 +69,16 @@ def main() -> int:
     # ``perf_counter`` at module top would also catch import time, which
     # is interpreter-state more than impl behavior.
     stages.record("total", stages.total_so_far_ns())
+
+    # Stage-0 instrumentation hook (bbox-IoU optimization plan). Active
+    # only when both (a) `VERNIER_BENCH_HISTOGRAM_PATH` is set and (b)
+    # vernier was built with `--features bench-histogram` (i.e. the
+    # FFI exposes `dump_bbox_iou_histogram`). PID-suffixed so concurrent
+    # runner subprocesses don't clobber each other's CSVs.
+    histogram_path = os.environ.get("VERNIER_BENCH_HISTOGRAM_PATH")
+    dump_fn = getattr(_vernier_core, "dump_bbox_iou_histogram", None)
+    if histogram_path and dump_fn is not None:
+        dump_fn(f"{histogram_path}.{os.getpid()}.csv")
 
     write_outputs(
         args=args,

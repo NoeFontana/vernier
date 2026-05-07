@@ -29,14 +29,28 @@ the bbox-IoU optimization plan.
        --mode profile
    ```
 
-3. **Dump the buffer to CSV.** Histogram state lives in the *runner
-   subprocess*, so the dump must happen before that subprocess exits.
-   The bench harness does not currently call dump on shutdown — patch
-   `bench/bench/runners/vernier_runner.py` to invoke
-   `vernier._core.dump_bbox_iou_histogram(path)` between `summarize`
-   and `write_outputs`, gating on a `VERNIER_BENCH_HISTOGRAM_PATH` env
-   var so a non-instrumented build is unaffected. (Follow-up; not yet
-   wired.)
+3. **Dump the buffer to CSV.** Histogram state lives in the runner
+   subprocess, so the dump must happen before that subprocess exits.
+   The bench harness's vernier runner does this for you when
+   `VERNIER_BENCH_HISTOGRAM_PATH` is set — but `UV_NO_SYNC=1` is also
+   required, because `uv run` would otherwise re-sync the runner env
+   from `bench/envs/vernier/pyproject.toml` and overwrite the
+   feature-on wheel that step 1 installed:
+
+   ```bash
+   UV_NO_SYNC=1 \
+   VERNIER_BENCH_HISTOGRAM_PATH=/tmp/bbox-hist \
+   VERNIER_COCO_GT_PATH=/path/to/instances_val2017.json \
+     uv run --directory bench python -m bench run \
+       --impl vernier --workload coco_val2017_jittered_seed0 \
+       --iou bbox --mode profile
+   ```
+
+   Each runner subprocess writes `${VERNIER_BENCH_HISTOGRAM_PATH}.${PID}.csv`
+   so concurrent runners don't clobber each other. The hook is a no-op
+   when the env var is unset *or* when vernier was built without the
+   `bench-histogram` feature, so leaving the env var set in the shell
+   is safe.
 
    For a one-off single-process measurement (e.g., parity tests, a
    custom Python script), `vernier._core.dump_bbox_iou_histogram(path)`
