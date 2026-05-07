@@ -16,6 +16,11 @@ captures land alongside them.
   12.6× / 2.35× — and an honest **vernier 1.19× slower than
   boundary-iou-api** on val2017 boundary (no boundary-mask cache yet,
   tracked follow-up). Parity OK on every cell.
+* [2026-05-bbox-cdf.md](./2026-05-bbox-cdf.md) — Stage 0 measurement
+  for the bbox-IoU optimization plan. Median `G·D = 1` on val2017;
+  99.3% of wall time in cells with `G·D < 256`. Decision: **drop
+  Stages 1b, 1c, and 2c** — per-call setup overhead, not inner-loop
+  work, is the lever.
 
 ## Instrumentation guides
 

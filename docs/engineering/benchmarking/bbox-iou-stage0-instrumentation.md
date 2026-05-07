@@ -96,6 +96,10 @@ From the optimization plan:
 
 The intermediate band is judgment-call territory.
 
+The first capture (val2017, 2026-05) landed at 49.6%/0.7% — see
+[2026-05-bbox-cdf.md](./2026-05-bbox-cdf.md) for the full distribution
+and the stage-by-stage decisions it drove.
+
 ## Performance impact when feature is off
 
 Zero. The `bench-histogram` feature gates the entire histogram module
