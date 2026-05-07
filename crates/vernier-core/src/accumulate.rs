@@ -158,7 +158,7 @@ pub struct Accumulated {
 /// not equal `K * A * I`, or if any per-image array shapes disagree
 /// with the declared `T` (IoU-threshold count).
 pub fn accumulate(
-    eval_imgs: &[Option<PerImageEval>],
+    eval_imgs: &[Option<Box<PerImageEval>>],
     p: AccumulateParams<'_>,
     _parity_mode: ParityMode,
 ) -> Result<Accumulated, EvalError> {
@@ -222,7 +222,7 @@ pub fn accumulate(
         for a in 0..n_a {
             let na = a * n_i;
             let cells: Vec<&PerImageEval> = (0..n_i)
-                .filter_map(|i| eval_imgs[nk + na + i].as_ref())
+                .filter_map(|i| eval_imgs[nk + na + i].as_deref())
                 .collect();
             if cells.is_empty() {
                 continue;
@@ -424,7 +424,7 @@ mod tests {
             gt_ignore: vec![false],
         };
         let p = params(&[0.5, 0.75], &[0.0, 0.5, 1.0], &[100], 1);
-        let out = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap();
+        let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
         assert_eq!(out.recall[(0, 0, 0, 0)], 0.0);
         assert_eq!(out.recall[(1, 0, 0, 0)], 0.0);
         // No precision write happened — every cell still -1.
@@ -439,7 +439,7 @@ mod tests {
         // npig == 0 short-circuit: outputs stay at -1 (no recall write).
         let cell = one_threshold_eval(vec![0.9], vec![true], vec![true], vec![true]);
         let p = params(&[0.5], &[0.0, 0.5, 1.0], &[100], 1);
-        let out = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap();
+        let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
         assert_eq!(out.recall[(0, 0, 0, 0)], -1.0);
         assert_eq!(out.precision[(0, 0, 0, 0, 0)], -1.0);
     }
@@ -450,7 +450,7 @@ mod tests {
         // recall are 1.0 across every recall threshold.
         let cell = one_threshold_eval(vec![0.9], vec![true], vec![false], vec![false]);
         let p = params(&[0.5], &[0.0, 0.5, 1.0], &[100], 1);
-        let out = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap();
+        let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
 
         assert_eq!(out.recall[(0, 0, 0, 0)], 1.0);
         for ri in 0..3 {
@@ -470,7 +470,7 @@ mod tests {
         // pycocotools' silent-skip branch, leaving 0.0.
         let cell = one_threshold_eval(vec![0.9], vec![false], vec![false], vec![false]);
         let p = params(&[0.5], &[0.0, 0.5, 1.0], &[100], 1);
-        let out = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap();
+        let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
         assert_eq!(out.recall[(0, 0, 0, 0)], 0.0);
         for ri in 0..3 {
             // 0 / (0 + 1 + eps) ≈ 0 → envelope keeps it at 0.
@@ -496,7 +496,7 @@ mod tests {
             vec![false],
         );
         let p = params(&[0.5], &[0.0, 0.5, 1.0], &[100], 1);
-        let out = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap();
+        let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
 
         // tp=1 fp=0 → precision ≈ 1 everywhere on the curve.
         for ri in 0..3 {
@@ -519,7 +519,7 @@ mod tests {
             vec![false, false],
         );
         let p = params(&[0.5], &[0.0, 0.5, 1.0], &[100], 1);
-        let out = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap();
+        let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
 
         // recall thresholds 0.0 and 0.5 both fall on the first rc cell
         // where rc[0] = 0.5 (TP at j=0 → 1/2). Envelope makes pr[0]=1.0.
@@ -548,7 +548,7 @@ mod tests {
         let img0 = one_threshold_eval(vec![0.7], vec![true], vec![false], vec![false]);
         let img1 = one_threshold_eval(vec![0.7], vec![false], vec![false], vec![false]);
         // grid: K=1, A=1, I=2 → eval_imgs[0..2] is the (k=0, a=0) row.
-        let grid = vec![Some(img0), Some(img1)];
+        let grid = vec![Some(Box::new(img0)), Some(Box::new(img1))];
         let p = params(&[0.5], &[0.0, 0.5, 1.0], &[100], 2);
         let out = accumulate(&grid, p, ParityMode::Strict).unwrap();
 
@@ -573,7 +573,7 @@ mod tests {
             vec![false],
         );
         let p = params(&[0.5], &[0.0, 0.5, 1.0], &[1], 1);
-        let out = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap();
+        let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
         // Only FP survived → tp=0, fp=1, precision ≈ 0 everywhere.
         for ri in 0..3 {
             assert!(out.precision[(0, ri, 0, 0, 0)].abs() < 1e-12);
@@ -605,7 +605,7 @@ mod tests {
             gt_ignore: vec![false],
         };
         let p = params(&[0.5, 0.75, 0.9], &[0.0], &[100], 1);
-        let err = accumulate(&[Some(cell)], p, ParityMode::Strict).unwrap_err();
+        let err = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap_err();
         assert!(matches!(err, EvalError::DimensionMismatch { .. }));
     }
 
@@ -624,8 +624,8 @@ mod tests {
         // Only the first (k=0, a=0, i=0) slot carries data; remaining
         // slots are None as they would be for an image with no GTs/DTs in
         // those buckets.
-        let mut eval_imgs: Vec<Option<PerImageEval>> = vec![None; n_k * n_a_built * n_i];
-        eval_imgs[0] = Some(cell);
+        let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; n_k * n_a_built * n_i];
+        eval_imgs[0] = Some(Box::new(cell));
 
         // Mismatched params: claim the grid has 3 area ranges. Expected
         // grid size becomes 1*3*1 = 3, but we pass 4 cells → typed error.
@@ -782,7 +782,7 @@ mod tests {
 
         let canonical = vec![1usize, 10, 100];
         let canonical_acc = accumulate(
-            &[Some(cell.clone())],
+            &[Some(Box::new(cell.clone()))],
             params(&iou, &rec, &canonical, 1),
             ParityMode::Strict,
         )
@@ -792,7 +792,7 @@ mod tests {
         sort_max_dets(&mut permuted);
         assert_eq!(permuted, canonical);
         let permuted_acc = accumulate(
-            &[Some(cell)],
+            &[Some(Box::new(cell))],
             params(&iou, &rec, &permuted, 1),
             ParityMode::Strict,
         )

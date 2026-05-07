@@ -1803,7 +1803,7 @@ mod tests {
         store.insert(0, 0, iou);
         let grid = EvalGrid {
             eval_imgs: vec![None],
-            eval_imgs_meta: vec![Some(crate::evaluate::EvalImageMeta {
+            eval_imgs_meta: vec![Some(Box::new(crate::evaluate::EvalImageMeta {
                 image_id: 1,
                 category_id: 1,
                 area_rng: [0.0, f64::INFINITY],
@@ -1812,7 +1812,7 @@ mod tests {
                 gt_ids: vec![100, 200],
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
-            })],
+            }))],
             n_categories: 1,
             n_area_ranges: 1,
             n_images: 1,
@@ -1842,7 +1842,7 @@ mod tests {
         store.insert(0, 0, iou);
         let grid = EvalGrid {
             eval_imgs: vec![None],
-            eval_imgs_meta: vec![Some(crate::evaluate::EvalImageMeta {
+            eval_imgs_meta: vec![Some(Box::new(crate::evaluate::EvalImageMeta {
                 image_id: 1,
                 category_id: 1,
                 area_rng: [0.0, f64::INFINITY],
@@ -1851,7 +1851,7 @@ mod tests {
                 gt_ids: vec![100, 200],
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
-            })],
+            }))],
             n_categories: 1,
             n_area_ranges: 1,
             n_images: 1,

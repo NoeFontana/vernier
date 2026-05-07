@@ -164,16 +164,19 @@ impl PerImageEvalStore {
     }
 
     /// Densify into the `[k * A * I + a * I + i]`-laid-out
-    /// `Vec<Option<PerImageEval>>` that [`crate::accumulate`] consumes.
-    /// Cloning is intentional — `accumulate` borrows the slice and the
-    /// store must remain valid for further updates after a snapshot.
-    pub fn flatten(&self, meta: &EvalGridMeta) -> Vec<Option<PerImageEval>> {
+    /// `Vec<Option<Box<PerImageEval>>>` that [`crate::accumulate`]
+    /// consumes. Cloning is intentional — `accumulate` borrows the
+    /// slice and the store must remain valid for further updates after
+    /// a snapshot. The cells are heap-boxed so the dense slot Vec only
+    /// pays for a pointer per slot at zero-init time (see
+    /// [`crate::EvalGrid::eval_imgs`]).
+    pub fn flatten(&self, meta: &EvalGridMeta) -> Vec<Option<Box<PerImageEval>>> {
         let total = meta.n_categories * meta.n_area_ranges * meta.n_images;
-        let mut out: Vec<Option<PerImageEval>> = Vec::with_capacity(total);
+        let mut out: Vec<Option<Box<PerImageEval>>> = Vec::with_capacity(total);
         for k in 0..meta.n_categories {
             for a in 0..meta.n_area_ranges {
                 for i in 0..meta.n_images {
-                    out.push(self.cells.get(&(k, a, i)).cloned());
+                    out.push(self.cells.get(&(k, a, i)).cloned().map(Box::new));
                 }
             }
         }
@@ -284,7 +287,7 @@ pub struct StreamingEvaluator<K: EvalKernel> {
     /// to file cells for images that have not yet received any
     /// detection. GT is immutable, so the grid is computed at most
     /// once across the evaluator's lifetime.
-    gt_only_cells: Option<Vec<Option<PerImageEval>>>,
+    gt_only_cells: Option<Vec<Option<Box<PerImageEval>>>>,
     n_detections: usize,
     /// Monotonic DT-id counter. Reserved for the strict-mode
     /// `(score, stream_position)` tiebreak (ADR-0013 §Determinism); not
@@ -509,7 +512,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             for k in 0..n_k {
                 for a in 0..n_a {
                     let flat = k * n_a * n_i + a * n_i + i;
-                    if let Some(cell) = grid.eval_imgs.get(flat).and_then(|opt| opt.as_ref()) {
+                    if let Some(cell) = grid.eval_imgs.get(flat).and_then(|opt| opt.as_deref()) {
                         let cost = cell_cost(cell, n_t);
                         cost_total = cost_total.add(cost);
                         staged.push((k, a, i, cell.clone(), cost));
@@ -570,7 +573,11 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                 for k in 0..n_k {
                     for a in 0..n_a {
                         let flat = k * n_a * n_i + a * n_i + i;
-                        if let Some(meta) = grid.eval_imgs_meta.get_mut(flat).and_then(Option::take)
+                        if let Some(meta) = grid
+                            .eval_imgs_meta
+                            .get_mut(flat)
+                            .and_then(Option::take)
+                            .map(|b| *b)
                         {
                             self.meta_cells.insert((k, a, i), meta);
                         }
@@ -708,12 +715,12 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         let n_i = self.grid_meta.n_images;
         let total = n_k * n_a * n_i;
         let mut eval_imgs = self.cells.flatten(&self.grid_meta);
-        let eval_imgs_meta: Vec<Option<EvalImageMeta>> = if self.params.retain_iou {
-            let mut out: Vec<Option<EvalImageMeta>> = Vec::with_capacity(total);
+        let eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = if self.params.retain_iou {
+            let mut out: Vec<Option<Box<EvalImageMeta>>> = Vec::with_capacity(total);
             for k in 0..n_k {
                 for a in 0..n_a {
                     for i in 0..n_i {
-                        out.push(self.meta_cells.get(&(k, a, i)).cloned());
+                        out.push(self.meta_cells.get(&(k, a, i)).cloned().map(Box::new));
                     }
                 }
             }
