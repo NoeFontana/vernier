@@ -30,7 +30,7 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
     "instance": {
         "vernier": frozenset({"bbox", "segm", "keypoints", "boundary"}),
         "pycocotools": frozenset({"bbox", "segm", "keypoints"}),
-        "faster-coco-eval": frozenset({"bbox", "segm", "keypoints"}),
+        "faster-coco-eval": frozenset({"bbox", "segm", "keypoints", "boundary"}),
         "boundary-iou-api": frozenset({"boundary"}),
     },
     "panoptic": {

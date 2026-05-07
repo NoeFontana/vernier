@@ -36,27 +36,38 @@ each library supports.
 
 | impl              |    median   |  RSS (max) | vs vernier |
 | ----------------- | ----------: | ---------: | ---------: |
-| **vernier**       |   652.4 ms  |  784 MiB   |   **1.00x** |
-| faster-coco-eval  |    2.096 s  |  661 MiB   |    3.21x   |
-| pycocotools       |    5.989 s  |  576 MiB   |    9.18x   |
+| **vernier**       |   362.1 ms  |  235 MiB   |   **1.00x** |
+| faster-coco-eval  |    2.106 s  |  661 MiB   |    5.81x   |
+| pycocotools       |    5.779 s  |  576 MiB   |   15.96x   |
 
 ### segm
 
 | impl              |    median   |  RSS (max) | vs vernier |
 | ----------------- | ----------: | ---------: | ---------: |
-| **vernier**       |    1.283 s  |  785 MiB   |   **1.00x** |
-| faster-coco-eval  |    3.532 s  |  721 MiB   |    2.75x   |
-| pycocotools       |    6.814 s  |  569 MiB   |    5.31x   |
+| **vernier**       |   986.1 ms  |  236 MiB   |   **1.00x** |
+| faster-coco-eval  |    3.517 s  |  721 MiB   |    3.57x   |
+| pycocotools       |    6.819 s  |  568 MiB   |    6.92x   |
 
 ### boundary
 
-Boundary-IoU is a specialised metric — pycocotools and faster-coco-eval
-don't ship it natively. Comparison is vernier vs `boundary-iou-api`.
+Boundary-IoU is a specialised metric. The reference implementation is
+`boundary-iou-api`; faster-coco-eval ≥1.6 ships its own boundary
+surface alongside the COCOeval drop-in. pycocotools doesn't expose
+boundary natively.
 
 | impl              |    median   |  RSS (max) | vs vernier |
 | ----------------- | ----------: | ---------: | ---------: |
-| **vernier**       |   39.918 s  |  787 MiB   |   **1.00x** |
-| boundary-iou-api  |   61.982 s  |  666 MiB   |    1.55x   |
+| **vernier**       |    4.158 s  |  238 MiB   |   **1.00x** |
+| faster-coco-eval  |   17.840 s  |  794 MiB   |    4.29x   |
+| boundary-iou-api  |   62.075 s  |  663 MiB   |   14.93x   |
+
+The faster-coco-eval boundary cell is timing-only — it isn't gated by
+parity. The harness's boundary parity tier compares vernier vs
+`boundary-iou-api` (the per-quirk strict reference for ADR-0010).
+faster-coco-eval's boundary algorithm shares the 0.02 dilation-ratio
+default but its band-derivation path differs in detail; pinning a
+tolerance is a separate ADR-level decision, not a measurement
+question.
 
 ### Raw measurements (instance)
 
@@ -64,30 +75,39 @@ For downstream consumers that need ratios without rounding loss.
 
 | iou      | impl              |    median (ns) |    RSS (B)    |
 | -------- | ----------------- | -------------: | ------------: |
-| bbox     | vernier           |    652,386,175 |   821,981,184 |
-| bbox     | faster-coco-eval  |  2,095,863,547 |   692,973,568 |
-| bbox     | pycocotools       |  5,989,202,770 |   604,286,976 |
-| segm     | vernier           |  1,282,688,746 |   823,001,088 |
-| segm     | faster-coco-eval  |  3,531,793,356 |   755,785,728 |
-| segm     | pycocotools       |  6,813,613,131 |   596,291,584 |
-| boundary | vernier           | 39,918,396,016 |   824,963,072 |
-| boundary | boundary-iou-api  | 61,982,454,666 |   698,609,664 |
+| bbox     | vernier           |    362,102,286 |   246,702,080 |
+| bbox     | faster-coco-eval  |  2,105,592,180 |   693,239,808 |
+| bbox     | pycocotools       |  5,778,733,009 |   604,020,736 |
+| segm     | vernier           |    986,142,427 |   246,964,224 |
+| segm     | faster-coco-eval  |  3,517,070,528 |   755,789,824 |
+| segm     | pycocotools       |  6,819,027,732 |   596,033,536 |
+| boundary | vernier           |  4,158,086,331 |   249,311,232 |
+| boundary | faster-coco-eval  | 17,840,309,949 |   832,577,536 |
+| boundary | boundary-iou-api  | 62,074,594,905 |   695,209,984 |
 
 ### Read against the table
 
-- **bbox** has the widest gap (9.2x vs pycocotools, 3.2x vs fce). Bbox
-  IoU compute is cheap, so the gap is mostly framework overhead —
-  vernier's single-pass evaluator vs pycocotools' per-call cocoeval.
-- **segm** narrows the gap (5.3x / 2.75x). Segm IoU compute (RLE
-  intersection/union) dominates and runs in C-level libraries for
-  every impl, so the kernels equalize. **vernier-mask's RLE
-  intersection is the optimization target** to reopen the gap here.
-- **boundary** is the closest cell (1.55x). Boundary-IoU is dominated
-  by mask-boundary computation (distance transforms, polygon
-  rasterization). vernier-mask's pulp dispatch is competitive but not
-  dominant. **Boundary is the IoU type with the most absolute headroom
-  per CPU cycle** — the smallest ratio means the most room to win
-  back.
+- **bbox** widens to 16x vs pycocotools / 5.8x vs fce. Bbox IoU compute
+  is cheap, so the gap is mostly framework overhead — vernier's
+  single-pass evaluator vs pycocotools' per-call cocoeval. Vernier's
+  RSS is also a third of fce's; both are loading the same val2017
+  GT/DT but vernier ingests via the binary FFI without materializing
+  the JSON-shaped intermediate dicts each oracle keeps around.
+- **segm** is 6.9x vs pycocotools / 3.6x vs fce. The RLE
+  intersection/union kernel still does most of the work for every
+  impl, but the framework-overhead delta now exposes itself per-cell
+  more visibly than the previous round. PR #183 fused the per-cell
+  bbox+area+offsets walk; further compression here means going after
+  the intersection sweep itself.
+- **boundary** moved the most this round. The previous snapshot was
+  1.55x vs `boundary-iou-api` (the only oracle); after the bbox round
+  + #181/#182/#184/#185 it's now 14.9x. faster-coco-eval's boundary
+  cell sits between the two — 4.3x slower than vernier, 3.5x faster
+  than `boundary-iou-api` — which calibrates how much of vernier's
+  boundary win is its specific erode pipeline (u64-packed row pass,
+  bbox-cropped) vs general framework-overhead reduction. **Boundary
+  was identified as the cell with the most absolute headroom per CPU
+  cycle in the previous snapshot — that headroom is now realized.**
 
 ## Instance — `coco_val2017_keypoints_jittered_seed0` (keypoints)
 
