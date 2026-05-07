@@ -42,6 +42,19 @@ fn arch() -> &'static pulp::Arch {
     ARCH.get_or_init(pulp::Arch::new)
 }
 
+/// Skip the [`pulp::Arch::dispatch`] closure when `gts.len() *
+/// dts.len()` is below this. The dispatch boundary's fixed cost
+/// dominates per-call wall time on cells with tiny inner loops, and
+/// extracting the loop body as a free `#[inline(always)]` function
+/// also changes LLVM's unroll heuristics inside the closure for cells
+/// near the threshold — both effects are quantified in the divan
+/// `production_sparse` arm. A threshold of 32 keeps the fast path
+/// active across the whole regime where it materially helps
+/// (G·D ≤ 25) and falls through to the dispatched path well before
+/// AVX-512 vectorization headroom (on CPUs that have it) starts to
+/// matter.
+const SMALL_CELL_THRESHOLD: usize = 32;
+
 /// Stage-0 instrumentation: process-global histogram of `(kernel,
 /// g_count, d_count, wall_ns)` per call. Off by default; enabled at
 /// compile time via the `bench-histogram` feature for the bbox-IoU
@@ -204,32 +217,44 @@ impl Similarity for BboxIou {
         // `dispatch` runs the closure with the best-available SIMD
         // target features enabled, so LLVM auto-vectorizes the inner
         // loop across AVX2 / AVX-512 / NEON without per-arch source
-        // duplication. The crowd flag (E1) is hoisted to the outer loop
-        // so each inner pass is branch-free FMA-chain math.
-        arch().dispatch(|| {
-            for (g, gt) in gts.iter().enumerate() {
-                let gxa = gt.bbox.x;
-                let gya = gt.bbox.y;
-                let gw = gt.bbox.w;
-                let gh = gt.bbox.h;
-                let gxb = gxa + gw;
-                let gyb = gya + gh;
-                let g_area = gw * gh;
-
-                let mut row = out.row_mut(g);
-                if gt.is_crowd {
-                    for (d, dt) in dts.iter().enumerate() {
-                        row[d] = iou_pair(gxa, gya, gxb, gyb, dt.bbox, CrowdDenom);
-                    }
-                } else {
-                    for (d, dt) in dts.iter().enumerate() {
-                        row[d] = iou_pair(gxa, gya, gxb, gyb, dt.bbox, UnionDenom(g_area));
-                    }
-                }
-            }
-        });
+        // duplication. The crowd flag (E1) is hoisted to the outer
+        // loop so each inner pass is branch-free FMA-chain math.
+        //
+        // For cells smaller than `SMALL_CELL_THRESHOLD` the dispatch
+        // boundary itself dominates, so call the inner body directly
+        // — same algorithm, bit-identical output (no FMA introduced),
+        // no parity contract change.
+        if gts.len().saturating_mul(dts.len()) < SMALL_CELL_THRESHOLD {
+            full_iou_inner(gts, dts, out);
+        } else {
+            arch().dispatch(|| full_iou_inner(gts, dts, out));
+        }
 
         Ok(())
+    }
+}
+
+#[inline(always)]
+fn full_iou_inner(gts: &[BboxAnn], dts: &[BboxAnn], out: &mut ArrayViewMut2<'_, f64>) {
+    for (g, gt) in gts.iter().enumerate() {
+        let gxa = gt.bbox.x;
+        let gya = gt.bbox.y;
+        let gw = gt.bbox.w;
+        let gh = gt.bbox.h;
+        let gxb = gxa + gw;
+        let gyb = gya + gh;
+        let g_area = gw * gh;
+
+        let mut row = out.row_mut(g);
+        if gt.is_crowd {
+            for (d, dt) in dts.iter().enumerate() {
+                row[d] = iou_pair(gxa, gya, gxb, gyb, dt.bbox, CrowdDenom);
+            }
+        } else {
+            for (d, dt) in dts.iter().enumerate() {
+                row[d] = iou_pair(gxa, gya, gxb, gyb, dt.bbox, UnionDenom(g_area));
+            }
+        }
     }
 }
 
@@ -288,28 +313,38 @@ impl BboxIou {
         let _guard =
             histogram::CallTimer::new(histogram::KernelKind::OverlapMask, gts.len(), dts.len());
 
-        arch().dispatch(|| {
-            for (g, gt) in gts.iter().enumerate() {
-                let gxa = gt.bbox.x;
-                let gya = gt.bbox.y;
-                let gxb = gxa + gt.bbox.w;
-                let gyb = gya + gt.bbox.h;
-
-                let mut row = out.row_mut(g);
-                for (d, dt) in dts.iter().enumerate() {
-                    let dxa = dt.bbox.x;
-                    let dya = dt.bbox.y;
-                    let dxb = dxa + dt.bbox.w;
-                    let dyb = dya + dt.bbox.h;
-
-                    let iw = gxb.min(dxb) - gxa.max(dxa);
-                    let ih = gyb.min(dyb) - gya.max(dya);
-                    row[d] = if iw > 0.0 && ih > 0.0 { 1.0 } else { 0.0 };
-                }
-            }
-        });
+        // Same small-cell fast path as `compute`. The val2017 segm
+        // prefilter median is `G·D = 1`, so the bulk of calls land
+        // here.
+        if gts.len().saturating_mul(dts.len()) < SMALL_CELL_THRESHOLD {
+            overlap_mask_inner(gts, dts, out);
+        } else {
+            arch().dispatch(|| overlap_mask_inner(gts, dts, out));
+        }
 
         Ok(())
+    }
+}
+
+#[inline(always)]
+fn overlap_mask_inner(gts: &[BboxAnn], dts: &[BboxAnn], out: &mut ArrayViewMut2<'_, f64>) {
+    for (g, gt) in gts.iter().enumerate() {
+        let gxa = gt.bbox.x;
+        let gya = gt.bbox.y;
+        let gxb = gxa + gt.bbox.w;
+        let gyb = gya + gt.bbox.h;
+
+        let mut row = out.row_mut(g);
+        for (d, dt) in dts.iter().enumerate() {
+            let dxa = dt.bbox.x;
+            let dya = dt.bbox.y;
+            let dxb = dxa + dt.bbox.w;
+            let dyb = dya + dt.bbox.h;
+
+            let iw = gxb.min(dxb) - gxa.max(dxa);
+            let ih = gyb.min(dyb) - gya.max(dya);
+            row[d] = if iw > 0.0 && ih > 0.0 { 1.0 } else { 0.0 };
+        }
     }
 }
 
