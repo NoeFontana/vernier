@@ -27,7 +27,9 @@ import click
 from bench.harness.matrix import (
     ALL_IMPLS,
     IMPL_IOU_SUPPORT,
+    IMPL_PARADIGM_SUPPORT,
     impls_for_iou,
+    impls_for_metric,
 )
 from bench.harness.migrations.v1_to_v2_tree import migrate_tree
 from bench.harness.orchestrate import CellSpec, run_cell
@@ -45,7 +47,7 @@ from bench.reports.render import (
     render_scaling_table,
 )
 from bench.reports.scaling import group_by_synthetic_param
-from bench.workloads import InstanceWorkload, resolve
+from bench.workloads import InstanceWorkload, PanopticWorkload, resolve
 from bench.workloads.synthetic import SCALING_AXES
 
 _IOU_CHOICES: tuple[str, ...] = get_args(IouType)
@@ -156,12 +158,45 @@ def run_cmd(
             )
         paradigm_typed = explicit
 
-    # Per ADR-0033, paradigm/metric mismatches are rejected here. The
-    # instance paradigm uses iou-types (bbox/segm/keypoints/boundary);
-    # other paradigms use their own metric names (pq, miou,
-    # throughput, ...) and the user shouldn't pass --iou for them at
-    # all. Until a ``--metric`` flag is wired, the safest
-    # behaviour is to reject every non-instance run from this CLI.
+    if paradigm_typed == "panoptic":
+        if not isinstance(workload_obj, PanopticWorkload):
+            raise click.ClickException(
+                f"workload {workload!r} resolved to {type(workload_obj).__name__}, "
+                f"but --paradigm panoptic requires a PanopticWorkload."
+            )
+        impl_filter = None if impl == "all" else (impl,)
+        impls = impls_for_metric("panoptic", "pq", impl_filter=impl_filter)
+        if not impls:
+            choices = sorted(IMPL_PARADIGM_SUPPORT["panoptic"])
+            raise click.ClickException(
+                f"impl {impl!r} is not registered for paradigm=panoptic; choices: {choices}"
+            )
+        cell = CellSpec(
+            bench_root=BENCH_ROOT,
+            repo_root=REPO_ROOT,
+            impls=impls,
+            workload_id=workload_obj.workload_id,
+            iou_type="pq",
+            mode=mode_typed,
+            run_seed=run_seed,
+            paradigm="panoptic",
+            gt_png_dir=workload_obj.gt_png_dir,
+            gt_json=workload_obj.gt_json,
+            dt_png_dir=workload_obj.dt_png_dir,
+            dt_json=workload_obj.dt_json,
+            categories_json=workload_obj.categories_json,
+        )
+        do_parity = not no_parity and mode_typed != "profile"
+        result = run_cell(cell, parity=do_parity)
+        for impl_name, json_path in result.impl_jsons.items():
+            click.echo(f"{impl_name}: {json_path}")
+        if result.parity is not None:
+            if result.parity.passed:
+                click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+            else:
+                click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
+        return
+
     if paradigm_typed != "instance":
         raise click.ClickException(
             f"--paradigm {paradigm_typed!r} requires the corresponding B-stream's "

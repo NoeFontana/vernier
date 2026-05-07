@@ -188,9 +188,7 @@ def _spawn_one_rep(
         "--tensor-output",
         str(rep_npy),
     )
-    status, rusage, parent_wall_ns = _spawn_subprocess(
-        bench_root=bench_root, impl=impl, cmd=cmd
-    )
+    status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
     if not rep_json.exists() or not rep_npy.exists():
@@ -297,9 +295,7 @@ def _spawn_one_rep_panoptic(
         "--per-class-output",
         str(rep_per_class),
     )
-    status, rusage, parent_wall_ns = _spawn_subprocess(
-        bench_root=bench_root, impl=impl, cmd=cmd
-    )
+    status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
     for required in (rep_json, rep_snapshot, rep_per_class):
@@ -473,7 +469,7 @@ def _assemble_impl_result_panoptic(
     # snapshot.json sits next to it as a separate artifact (the
     # comparator reads back from that path). Filename layout under
     # the cell dir: ``<impl>.json`` (BenchResult), ``<impl>.snapshot.json``
-    # (PanopticSnapshot), ``<impl>_per_class.npy`` (uint64 N×3 table).
+    # (PanopticSnapshot), ``<impl>_per_class.npy`` (uint64 N-by-3 table).
     result = BenchResult(
         paradigm="panoptic",
         impl=canonical.runner_out.impl,
@@ -578,11 +574,8 @@ class CellSpec:
     support ``iou_type`` for the cell's paradigm (the CLI does this via
     the matrix module).
 
-    Detection cells populate ``gt_path`` / ``dt_path`` (the legacy v1
-    shape). Panoptic cells (``paradigm="panoptic"``) populate the
-    panoptic four-path family + categories JSON instead — when set,
-    ``gt_path`` / ``dt_path`` become unused placeholders that the
-    panoptic spawn path ignores.
+    Detection cells populate ``gt_path`` / ``dt_path``; panoptic cells
+    populate the four-path GT/DT family + categories JSON instead.
     """
 
     bench_root: Path
@@ -590,11 +583,11 @@ class CellSpec:
     impls: list[str]
     workload_id: str
     iou_type: Metric  # widened from IouType for panoptic ("pq") + future paradigms.
-    gt_path: Path
-    dt_path: Path
     mode: Mode
     run_seed: int
     paradigm: Paradigm = "instance"
+    gt_path: Path | None = None
+    dt_path: Path | None = None
     # Panoptic four-path family. Populated only when paradigm="panoptic".
     gt_png_dir: Path | None = None
     gt_json: Path | None = None
@@ -697,6 +690,8 @@ def run_cell(
                 warmup=warmup,
             )
         else:
+            if cell.gt_path is None or cell.dt_path is None:
+                raise ValueError(f"{cell.paradigm} cell requires gt_path and dt_path")
             spawned[impl_name][rep_idx] = _spawn_one_rep(
                 bench_root=cell.bench_root,
                 impl=impl_name,

@@ -53,6 +53,11 @@ def _ensure_categories_json(gt_json_path: Path) -> Path:
     with gt_json_path.open() as f:
         data = json.load(f)
     categories = data.get("categories", [])
+    # COCO upstream encodes ``isthing`` as int 0/1; vernier-panoptic's
+    # Rust deserializer expects a bool.
+    for c in categories:
+        if "isthing" in c:
+            c["isthing"] = bool(c["isthing"])
     cats_path.write_text(json.dumps(categories))
     return cats_path
 

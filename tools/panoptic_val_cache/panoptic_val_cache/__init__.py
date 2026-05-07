@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -33,22 +34,16 @@ from collections.abc import Sequence
 from pathlib import Path
 
 GT_URL = "http://images.cocodataset.org/annotations/panoptic_annotations_trainval2017.zip"
-#: Inner-zip relative paths we extract.
 GT_INNER_JSON = "annotations/panoptic_val2017.json"
-GT_INNER_PNG_DIR = "annotations/panoptic_val2017/"
+GT_INNER_PNG_ZIP = "annotations/panoptic_val2017.zip"
+GT_NESTED_PNG_PREFIX = "panoptic_val2017/"
 GT_JSON_FILENAME = "panoptic_val2017.json"
 GT_PNG_DIRNAME = "panoptic_val2017"
 #: SHA-256 of the panoptic-annotations zip artifact at upstream
-#: ``cocodataset.org`` as of 2026-05-03. Bumping is an ADR-level
-#: decision per ADR-0025 §"Parity strategy" — every quirk vernier
-#: reproduces is keyed to this exact byte sequence.
-#:
-#: NOTE: This SHA is **a placeholder** until the first developer
-#: provisions the cache and publishes the verified hash. The cache
-#: refuses to use any download whose SHA does not match the pinned
-#: value below; the bootstrap-mode `_verify_sha` raises with the
-#: observed hash so the developer can paste it into this constant.
-GT_ZIP_SHA256 = "0000000000000000000000000000000000000000000000000000000000000000"
+#: ``cocodataset.org`` as observed 2026-05-07. Bumping is an
+#: ADR-level decision per ADR-0025 §"Parity strategy" — every quirk
+#: vernier reproduces is keyed to this exact byte sequence.
+GT_ZIP_SHA256 = "c05f76d2129b6b561eb70efe16e7006df62f73fb92889132d373b9d90e31a370"
 
 CACHE_ENV = "VERNIER_PANOPTIC_CACHE"
 
@@ -95,16 +90,6 @@ def _atomic_download(url: str, dest: Path) -> None:
 
 def _verify_sha(zip_path: Path) -> None:
     actual = file_sha256(zip_path)
-    if GT_ZIP_SHA256 == "0" * 64:
-        zip_path.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"panoptic GT zip SHA-256 is unpinned (placeholder constant). "
-            f"Observed SHA-256: {actual}\n"
-            f"Bootstrap: paste this value into GT_ZIP_SHA256 in "
-            f"tools/panoptic_val_cache/panoptic_val_cache/__init__.py "
-            f"and rerun. The cache refuses any non-matching artifact "
-            f"once pinned (per the parity-contract reproducibility claim)."
-        )
     if actual != GT_ZIP_SHA256:
         zip_path.unlink(missing_ok=True)
         raise RuntimeError(
@@ -132,18 +117,16 @@ def ensure_gt(*, cache: Path | None = None) -> tuple[Path, Path]:
         _atomic_download(GT_URL, zip_path)
         _verify_sha(zip_path)
         with zipfile.ZipFile(zip_path) as z:
-            # Extract the val JSON.
             with z.open(GT_INNER_JSON) as src, json_path.open("wb") as dst:
                 shutil.copyfileobj(src, dst, length=_COPY_BUF_SIZE)
-            # Extract the val PNG directory.
-            png_dir.mkdir(exist_ok=True)
-            for name in z.namelist():
-                if not name.startswith(GT_INNER_PNG_DIR):
-                    continue
-                if name.endswith("/"):
+            nested_zip_bytes = z.read(GT_INNER_PNG_ZIP)
+        png_dir.mkdir(exist_ok=True)
+        with zipfile.ZipFile(io.BytesIO(nested_zip_bytes)) as inner:
+            for name in inner.namelist():
+                if not name.startswith(GT_NESTED_PNG_PREFIX) or name.endswith("/"):
                     continue
                 target = png_dir / Path(name).name
-                with z.open(name) as src, target.open("wb") as dst:
+                with inner.open(name) as src, target.open("wb") as dst:
                     shutil.copyfileobj(src, dst, length=_COPY_BUF_SIZE)
     finally:
         zip_path.unlink(missing_ok=True)

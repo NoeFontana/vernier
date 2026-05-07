@@ -241,7 +241,7 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
 
     if m := _COCO_KP_JITTERED_RE.match(workload_name):
         seed = int(m.group(1))
-        gt = coco_val2017.gt_path()
+        gt = coco_val2017.kp_gt_path()
         dt = jittered_predictions.keypoints_dt_path(gt_path=gt, seed=seed)
         return InstanceWorkload(
             workload_id=jittered_predictions.keypoints_workload_id(seed),
