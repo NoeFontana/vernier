@@ -250,10 +250,15 @@ pub(crate) fn boundary_iou_compute(
         }
     }
 
-    // I1 prefilter: bbox IoU on the tight RLE bboxes. Cells whose
-    // bbox IoU is 0 stay zero; non-zero cells get overwritten with
-    // the boundary IoU below. BboxIou honors the same E1 crowd
-    // asymmetry, so the gate is correct on crowd rows too.
+    // I1 prefilter: bbox-overlap mask on the tight RLE bboxes. Writes
+    // `1.0` where bbox intersection is strictly positive, `0.0`
+    // otherwise; the cheaper variant skips the IoU divide because
+    // boundary consumes only the survivor-bit (the `<= 0.0` gate
+    // below) and unconditionally overwrites passing cells with
+    // `min(mask_iou, bound_iou)`. The mask is crowd-agnostic —
+    // `inter > 0` iff `bbIoU > 0` for both crowd and non-crowd, so
+    // the gate stays correct without the prefilter honoring E1
+    // itself.
     scratch.g_bbox.clear();
     scratch
         .g_bbox
@@ -262,7 +267,7 @@ pub(crate) fn boundary_iou_compute(
     scratch
         .d_bbox
         .extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
-    BboxIou.compute(&scratch.g_bbox, &scratch.d_bbox, out)?;
+    BboxIou.compute_overlap_mask(&scratch.g_bbox, &scratch.d_bbox, out)?;
 
     // O1/O2: skip B(g) for crowd GTs — the boundary fold is
     // suppressed on crowd rows, so computing the band is wasted

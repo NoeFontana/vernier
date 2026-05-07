@@ -124,6 +124,24 @@ fn version() -> &'static str {
     vernier_core::VERSION
 }
 
+/// Stage-0 instrumentation hook for the bbox-IoU optimization plan.
+///
+/// Writes the `(kind, g, d, wall_ns)` records accumulated across every
+/// `BboxIou::compute` and `BboxIou::compute_overlap_mask` call to
+/// `path` as CSV (header `kind,g,d,wall_ns`; `kind` is the variant
+/// label `FullIou` or `OverlapMask`), then clears the in-process
+/// buffer. Returns the number of records written.
+///
+/// Only present when the FFI crate is compiled with `--features
+/// bench-histogram`. Bench harness builds set this; the shipped wheel
+/// never does, so production runs carry zero recording overhead.
+#[cfg(feature = "bench-histogram")]
+#[pyfunction]
+fn dump_bbox_iou_histogram(path: &str) -> PyResult<usize> {
+    vernier_core::dump_bbox_iou_histogram_csv(std::path::Path::new(path))
+        .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+}
+
 /// Pythonic view over a [`vernier_core::Summary`]. Frozen — the underlying
 /// value is constructed once by [`evaluate_bbox_summary`] and never
 /// mutated (per ADR-0006).
@@ -3258,6 +3276,8 @@ impl PyBackgroundEvaluator {
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
+    #[cfg(feature = "bench-histogram")]
+    m.add_function(wrap_pyfunction!(dump_bbox_iou_histogram, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid_with_dataset, m)?)?;

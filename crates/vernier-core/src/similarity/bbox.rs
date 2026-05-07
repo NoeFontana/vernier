@@ -25,11 +25,132 @@
 //! storage symmetry, but it is ignored — only `gts[g].is_crowd` drives
 //! the asymmetric branch.
 
+use std::sync::OnceLock;
+
 use ndarray::ArrayViewMut2;
 
 use super::Similarity;
 use crate::dataset::Bbox;
 use crate::error::EvalError;
+
+/// Process-wide [`pulp::Arch`] cache. `Arch::new()` runs `cpuid`-gated
+/// feature detection; per ADR-0003 we construct it once and reuse it on
+/// every kernel call rather than paying the detect cost per `(image,
+/// category)` cell.
+fn arch() -> &'static pulp::Arch {
+    static ARCH: OnceLock<pulp::Arch> = OnceLock::new();
+    ARCH.get_or_init(pulp::Arch::new)
+}
+
+/// Stage-0 instrumentation: process-global histogram of `(kernel,
+/// g_count, d_count, wall_ns)` per call. Off by default; enabled at
+/// compile time via the `bench-histogram` feature for the bbox-IoU
+/// optimization plan's measurement runs (see
+/// `docs/engineering/benchmarking/`).
+///
+/// Never compiled into shipped wheels — when the feature is off this
+/// module is absent and the kernels carry zero overhead. Crate-private
+/// because the public surface lives at
+/// [`crate::dump_bbox_iou_histogram_csv`]; callers shouldn't depend on
+/// the internal module path.
+#[cfg(feature = "bench-histogram")]
+pub(crate) mod histogram {
+    use std::path::Path;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    /// Kernel discriminator for histogram records. `FullIou` is the
+    /// standalone bbox-IoU path; `OverlapMask` is the segm/boundary
+    /// survivor-bit prefilter.
+    #[derive(Clone, Copy)]
+    pub(crate) enum KernelKind {
+        FullIou,
+        OverlapMask,
+    }
+
+    impl KernelKind {
+        /// Self-describing label written into the `kind` CSV column.
+        fn label(self) -> &'static str {
+            match self {
+                Self::FullIou => "FullIou",
+                Self::OverlapMask => "OverlapMask",
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct Record {
+        kind: KernelKind,
+        g: u32,
+        d: u32,
+        wall_ns: u64,
+    }
+
+    static RECORDS: Mutex<Vec<Record>> = Mutex::new(Vec::new());
+
+    /// Drop-on-end timer. Constructed at the top of each kernel call;
+    /// records `(kind, g, d, wall_ns)` into the global buffer when it
+    /// drops at end-of-scope.
+    pub(super) struct CallTimer {
+        kind: KernelKind,
+        g: u32,
+        d: u32,
+        start: Instant,
+    }
+
+    impl CallTimer {
+        pub(super) fn new(kind: KernelKind, g: usize, d: usize) -> Self {
+            Self {
+                kind,
+                g: u32::try_from(g).unwrap_or(u32::MAX),
+                d: u32::try_from(d).unwrap_or(u32::MAX),
+                start: Instant::now(),
+            }
+        }
+    }
+
+    impl Drop for CallTimer {
+        fn drop(&mut self) {
+            let elapsed = self.start.elapsed().as_nanos();
+            let wall_ns = u64::try_from(elapsed).unwrap_or(u64::MAX);
+            let record = Record {
+                kind: self.kind,
+                g: self.g,
+                d: self.d,
+                wall_ns,
+            };
+            if let Ok(mut records) = RECORDS.lock() {
+                records.push(record);
+            }
+        }
+    }
+
+    /// Write all recorded calls to `path` as CSV (header
+    /// `kind,g,d,wall_ns`; `kind` is the variant name `FullIou` or
+    /// `OverlapMask`), then clear the buffer so subsequent runs start
+    /// fresh. Returns the number of records written.
+    pub(crate) fn dump_csv(path: &Path) -> std::io::Result<usize> {
+        use std::io::Write;
+        let mut records = RECORDS.lock().unwrap_or_else(|p| p.into_inner());
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(file, "kind,g,d,wall_ns")?;
+        for r in records.iter() {
+            writeln!(file, "{},{},{},{}", r.kind.label(), r.g, r.d, r.wall_ns)?;
+        }
+        let n = records.len();
+        records.clear();
+        file.flush()?;
+        Ok(n)
+    }
+
+    /// Number of records currently buffered. Test-only hook for the
+    /// smoke test.
+    #[cfg(test)]
+    pub(super) fn len() -> usize {
+        let records = RECORDS.lock().unwrap_or_else(|p| p.into_inner());
+        records.len()
+    }
+}
 
 /// Annotation shape consumed by [`BboxIou`]. The matching engine
 /// constructs these from a concrete [`crate::dataset::CocoAnnotation`]
@@ -76,13 +197,16 @@ impl Similarity for BboxIou {
             return Ok(());
         }
 
+        #[cfg(feature = "bench-histogram")]
+        let _guard =
+            histogram::CallTimer::new(histogram::KernelKind::FullIou, gts.len(), dts.len());
+
         // `dispatch` runs the closure with the best-available SIMD
         // target features enabled, so LLVM auto-vectorizes the inner
         // loop across AVX2 / AVX-512 / NEON without per-arch source
         // duplication. The crowd flag (E1) is hoisted to the outer loop
         // so each inner pass is branch-free FMA-chain math.
-        let arch = pulp::Arch::new();
-        arch.dispatch(|| {
+        arch().dispatch(|| {
             for (g, gt) in gts.iter().enumerate() {
                 let gxa = gt.bbox.x;
                 let gya = gt.bbox.y;
@@ -101,6 +225,86 @@ impl Similarity for BboxIou {
                     for (d, dt) in dts.iter().enumerate() {
                         row[d] = iou_pair(gxa, gya, gxb, gyb, dt.bbox, UnionDenom(g_area));
                     }
+                }
+            }
+        });
+
+        Ok(())
+    }
+}
+
+impl BboxIou {
+    /// Survivor-bit prefilter for the segm and boundary IoU kernels.
+    ///
+    /// Writes `1.0` to `out[[g, d]]` iff `gts[g]` and `dts[d]` have a
+    /// strictly positive bbox intersection, `0.0` otherwise. Drops the
+    /// area multiplication and `vdivpd` from the inner loop — only
+    /// `vminpd` / `vmaxpd` / `vsubpd` plus the comparison remain.
+    ///
+    /// **Crowd-agnostic by design.** For the segm/boundary prefilter,
+    /// the only bit the consumer reads is "did the pair survive the
+    /// zero-gate?" That bit is independent of the E1 asymmetric
+    /// denominator:
+    ///
+    /// - Non-crowd: `inter > 0 ⇒ both areas > 0 ⇒ denom > 0`, so
+    ///   `iou_pair > 0 ⇔ inter > 0`.
+    /// - Crowd: `denom = d_area`, and `inter > 0 ⇒ inter ≤ d_area ⇒
+    ///   d_area > 0`, so again `iou_pair > 0 ⇔ inter > 0`.
+    ///
+    /// Quirk **I4** (edge-sharing → zero) still falls out automatically:
+    /// when `gxb == dxa`, `iw = 0` and the `> 0.0` test is false, so
+    /// the cell receives the `0.0` sentinel.
+    ///
+    /// **Not a [`Similarity`] trait method.** The operation is
+    /// bbox-specific (the sentinel output shape doesn't generalize to
+    /// other IoU types) and intentionally not exposed: the standalone
+    /// `iouType="bbox"` eval keeps [`Similarity::compute`] for its real
+    /// f64 IoU values.
+    ///
+    /// Same shape contract as [`Similarity::compute`]: `out` must be
+    /// `gts.len() x dts.len()`.
+    pub(super) fn compute_overlap_mask(
+        &self,
+        gts: &[BboxAnn],
+        dts: &[BboxAnn],
+        out: &mut ArrayViewMut2<'_, f64>,
+    ) -> Result<(), EvalError> {
+        if out.nrows() != gts.len() || out.ncols() != dts.len() {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "bbox overlap-mask output is {}x{}, expected {}x{}",
+                    out.nrows(),
+                    out.ncols(),
+                    gts.len(),
+                    dts.len()
+                ),
+            });
+        }
+        if gts.is_empty() || dts.is_empty() {
+            return Ok(());
+        }
+
+        #[cfg(feature = "bench-histogram")]
+        let _guard =
+            histogram::CallTimer::new(histogram::KernelKind::OverlapMask, gts.len(), dts.len());
+
+        arch().dispatch(|| {
+            for (g, gt) in gts.iter().enumerate() {
+                let gxa = gt.bbox.x;
+                let gya = gt.bbox.y;
+                let gxb = gxa + gt.bbox.w;
+                let gyb = gya + gt.bbox.h;
+
+                let mut row = out.row_mut(g);
+                for (d, dt) in dts.iter().enumerate() {
+                    let dxa = dt.bbox.x;
+                    let dya = dt.bbox.y;
+                    let dxb = dxa + dt.bbox.w;
+                    let dyb = dya + dt.bbox.h;
+
+                    let iw = gxb.min(dxb) - gxa.max(dxa);
+                    let ih = gyb.min(dyb) - gya.max(dya);
+                    row[d] = if iw > 0.0 && ih > 0.0 { 1.0 } else { 0.0 };
                 }
             }
         });
@@ -330,5 +534,149 @@ mod tests {
     fn impl_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<BboxIou>();
+    }
+
+    fn overlap_mask(gts: &[BboxAnn], dts: &[BboxAnn]) -> Array2<f64> {
+        let mut out = Array2::<f64>::zeros((gts.len(), dts.len()));
+        BboxIou
+            .compute_overlap_mask(gts, dts, &mut out.view_mut())
+            .unwrap();
+        out
+    }
+
+    #[test]
+    fn overlap_mask_writes_only_zero_or_one_sentinels() {
+        // Exhaust the variants the segm/boundary prefilter sees: perfect,
+        // partial, no overlap, edge-sharing (I4), zero-area GT (I3) and
+        // crowd GT (E1). Every cell must end up bit-equal to 0.0 or 1.0.
+        let gts = [
+            make_ann(0.0, 0.0, 2.0, 2.0, false),
+            make_ann(5.0, 5.0, 2.0, 2.0, false),
+            make_ann(0.0, 0.0, 10.0, 10.0, true),
+            make_ann(5.0, 5.0, 0.0, 5.0, false), // zero-width GT
+        ];
+        let dts = [
+            make_ann(0.0, 0.0, 2.0, 2.0, false),
+            make_ann(1.0, 1.0, 2.0, 2.0, false),
+            make_ann(2.0, 0.0, 1.0, 1.0, false), // edge-sharing with gt0
+            make_ann(20.0, 20.0, 1.0, 1.0, false),
+        ];
+        let m = overlap_mask(&gts, &dts);
+        let zero = 0.0_f64.to_bits();
+        let one = 1.0_f64.to_bits();
+        for g in 0..gts.len() {
+            for d in 0..dts.len() {
+                let bits = m[[g, d]].to_bits();
+                assert!(
+                    bits == zero || bits == one,
+                    "overlap_mask[{g},{d}] = {} ({:#x}); expected 0.0 or 1.0",
+                    m[[g, d]],
+                    bits,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overlap_mask_survivor_bit_matches_full_iou() {
+        // Pins the algebraic claim that `compute_overlap_mask` and
+        // `Similarity::compute` agree on the survivor set: for every
+        // cell, `mask > 0` iff `iou > 0`. The IoU value is allowed to
+        // diverge (the mask writes a 1.0 sentinel; iou writes the real
+        // number) — only the bit matters for the segm/boundary gate.
+        let gts = [
+            make_ann(0.0, 0.0, 2.0, 2.0, false),
+            make_ann(5.0, 5.0, 2.0, 2.0, false),
+            make_ann(0.0, 0.0, 10.0, 10.0, true),
+            make_ann(5.0, 5.0, 0.0, 5.0, false),
+            make_ann(5.0, 5.0, 0.0, 0.0, false), // fully degenerate GT
+        ];
+        let dts = [
+            make_ann(0.0, 0.0, 2.0, 2.0, false),
+            make_ann(1.0, 1.0, 2.0, 2.0, false),
+            make_ann(2.0, 0.0, 1.0, 1.0, false),
+            make_ann(20.0, 20.0, 1.0, 1.0, false),
+            make_ann(5.0, 5.0, 0.0, 0.0, false),
+        ];
+        let iou = compute(&gts, &dts);
+        let mask = overlap_mask(&gts, &dts);
+        for g in 0..gts.len() {
+            for d in 0..dts.len() {
+                let iou_pos = iou[[g, d]] > 0.0;
+                let mask_pos = mask[[g, d]] > 0.0;
+                assert_eq!(
+                    iou_pos,
+                    mask_pos,
+                    "survivor-bit mismatch at ({g},{d}): iou={}, mask={}",
+                    iou[[g, d]],
+                    mask[[g, d]],
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn overlap_mask_dimension_mismatch_returns_typed_error() {
+        let gts = [make_ann(0.0, 0.0, 1.0, 1.0, false); 2];
+        let dts = [make_ann(0.0, 0.0, 1.0, 1.0, false); 3];
+        let mut out = Array2::<f64>::zeros((1, 1));
+        let err = BboxIou
+            .compute_overlap_mask(&gts, &dts, &mut out.view_mut())
+            .unwrap_err();
+        match err {
+            EvalError::DimensionMismatch { detail } => {
+                assert!(detail.contains("2"));
+                assert!(detail.contains("3"));
+            }
+            other => panic!("expected DimensionMismatch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overlap_mask_empty_inputs_return_unchanged_matrix() {
+        let dts = [make_ann(0.0, 0.0, 1.0, 1.0, false); 3];
+        let mut out = Array2::<f64>::from_elem((0, 3), 7.0);
+        BboxIou
+            .compute_overlap_mask(&[], &dts, &mut out.view_mut())
+            .unwrap();
+        assert_eq!(out.shape(), &[0, 3]);
+    }
+
+    #[cfg(feature = "bench-histogram")]
+    #[test]
+    fn histogram_records_kernel_calls_when_feature_on() {
+        // Smoke test for the Stage-0 instrumentation: verifies the
+        // CallTimer guard fires on both kernel paths and the CSV dump
+        // round-trips with the documented schema. Other bbox tests run
+        // in parallel and also push records into the same global
+        // buffer, so we only assert monotonic growth — not exact
+        // counts. The kind labels (`FullIou`, `OverlapMask`) are part
+        // of the dump-CSV contract; pin them here so a future rename
+        // breaks the test instead of silently breaking downstream
+        // post-processors.
+        use super::histogram;
+
+        let gts = [make_ann(0.0, 0.0, 2.0, 2.0, false)];
+        let dts = [make_ann(1.0, 1.0, 2.0, 2.0, false)];
+
+        let _ = compute(&gts, &dts);
+        let _ = overlap_mask(&gts, &dts);
+        assert!(histogram::len() >= 2);
+
+        let tmp = std::env::temp_dir().join("vernier-bench-histogram-smoke.csv");
+        let n = histogram::dump_csv(&tmp).expect("dump_csv should succeed");
+        assert!(n >= 2);
+        let csv = std::fs::read_to_string(&tmp).expect("dumped file should be readable");
+        assert!(csv.starts_with("kind,g,d,wall_ns\n"));
+        assert!(csv.lines().count() > n);
+        assert!(
+            csv.contains("FullIou,"),
+            "expected FullIou rows in CSV: {csv}"
+        );
+        assert!(
+            csv.contains("OverlapMask,"),
+            "expected OverlapMask rows in CSV: {csv}"
+        );
+        std::fs::remove_file(&tmp).ok();
     }
 }

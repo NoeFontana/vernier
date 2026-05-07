@@ -25,6 +25,11 @@ extension-module = ["pyo3/extension-module"]
 # for the panic-recovery test in tests/python/background/. CI runs
 # `maturin develop --features test-poison` for that single job.
 test-poison = []
+# Stage-0 instrumentation for the bbox-IoU optimization plan: surfaces
+# `dump_bbox_iou_histogram(path)` to Python for the bench harness to
+# call at end-of-run. Off by default; never compiled into shipped
+# wheels.
+bench-histogram = ["vernier-core/bench-histogram"]
 
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.0.1" }

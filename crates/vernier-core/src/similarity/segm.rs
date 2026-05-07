@@ -194,10 +194,14 @@ pub(crate) fn segm_iou_compute(
         }
     }
 
-    // I1 prefilter: bbox IoU on the tight RLE bboxes. Cells with
-    // bb_iou == 0 stay zero; non-zero cells get overwritten with
-    // the exact RLE IoU below. BboxIou honors the same E1 crowd
-    // asymmetry, so the gate is correct on crowd rows too.
+    // I1 prefilter: bbox-overlap mask on the tight RLE bboxes. Writes
+    // `1.0` where bbox intersection is strictly positive, `0.0`
+    // otherwise; the cheaper variant skips the IoU divide because
+    // segm consumes only the survivor-bit (the `<= 0.0` gate below)
+    // and unconditionally overwrites passing cells with the exact
+    // RLE IoU. The mask is crowd-agnostic — `inter > 0` iff
+    // `bbIoU > 0` for both crowd and non-crowd, so the gate stays
+    // correct without the prefilter honoring E1 itself.
     //
     // GT-side bbox + area + fg-offsets are populated together — all
     // three walk the same counts array, so a `SegmGtCache` amortises
@@ -216,7 +220,7 @@ pub(crate) fn segm_iou_compute(
     for d in dts {
         scratch.d_segments.push_from_rle(&d.rle);
     }
-    BboxIou.compute(&scratch.g_bbox, &scratch.d_bbox, out)?;
+    BboxIou.compute_overlap_mask(&scratch.g_bbox, &scratch.d_bbox, out)?;
 
     for g in 0..gts.len() {
         let crowd = gts[g].is_crowd;
