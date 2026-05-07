@@ -74,6 +74,14 @@ pub(crate) struct BoundaryComputeScratch {
     g_band_segments: SegmentTable,
     d_mask_segments: SegmentTable,
     d_band_segments: SegmentTable,
+    /// Per-row "needs band" flags derived from the bbox prefilter:
+    /// `true` when at least one DT survives the prefilter against this
+    /// GT, `false` otherwise. The pair loop below skips zero entries
+    /// via `out[[g, d]] <= 0.0`, so inactive GTs are never read — and
+    /// their band derivation is wasted work proportional to mask area
+    /// (~36 GB of byte ops on val2017 boundary). Same for `d_active`.
+    g_active: Vec<bool>,
+    d_active: Vec<bool>,
 }
 
 impl BoundaryComputeScratch {
@@ -269,6 +277,26 @@ pub(crate) fn boundary_iou_compute(
         .extend(dts.iter().map(|d| to_bbox_ann(&d.rle, false)));
     BboxIou.compute_overlap_mask(&scratch.g_bbox, &scratch.d_bbox, out)?;
 
+    // Active-row / active-column scan over the prefilter mask. A GT
+    // with no surviving DT (or vice versa) is wasted band work — the
+    // pair loop's `out[[g, d]] <= 0.0` guard skips every read of its
+    // mask/band segments. On COCO-shaped sparse cells (~1 GT × few DTs
+    // per (image, category)) a non-trivial fraction of (g, d) bbox
+    // pairs miss, so the row/col scan is the cheapest place to surface
+    // that signal before paying the per-band erosion cost.
+    scratch.g_active.clear();
+    scratch.g_active.resize(gts.len(), false);
+    scratch.d_active.clear();
+    scratch.d_active.resize(dts.len(), false);
+    for g in 0..gts.len() {
+        for d in 0..dts.len() {
+            if out[[g, d]] > 0.0 {
+                scratch.g_active[g] = true;
+                scratch.d_active[d] = true;
+            }
+        }
+    }
+
     // O1/O2: skip B(g) for crowd GTs — the boundary fold is
     // suppressed on crowd rows, so computing the band is wasted
     // work proportional to the (often large) crowd-mask area. The
@@ -279,7 +307,17 @@ pub(crate) fn boundary_iou_compute(
     scratch.g_band_area.clear();
     scratch.g_mask_segments.clear();
     scratch.g_band_segments.clear();
-    for g in gts {
+    for (g_idx, g) in gts.iter().enumerate() {
+        if !scratch.g_active[g_idx] {
+            // Inactive GT: the pair loop never reads its rows. Push
+            // placeholder zeros so g_idx still aligns with the
+            // segment-table rows.
+            scratch.g_mask_area.push(0);
+            scratch.g_mask_segments.push_segments(&[]);
+            scratch.g_band_area.push(0);
+            scratch.g_band_segments.push_segments(&[]);
+            continue;
+        }
         scratch.g_mask_area.push(g.rle.area());
         if g.is_crowd {
             scratch.g_mask_segments.push_from_rle(&g.rle);
@@ -293,7 +331,14 @@ pub(crate) fn boundary_iou_compute(
     scratch.d_band_area.clear();
     scratch.d_mask_segments.clear();
     scratch.d_band_segments.clear();
-    for d in dts {
+    for (d_idx, d) in dts.iter().enumerate() {
+        if !scratch.d_active[d_idx] {
+            scratch.d_mask_area.push(0);
+            scratch.d_mask_segments.push_segments(&[]);
+            scratch.d_band_area.push(0);
+            scratch.d_band_segments.push_segments(&[]);
+            continue;
+        }
         scratch.d_mask_area.push(d.rle.area());
         scratch.d_mask_segments.push_from_rle(&d.rle);
         let band_area = boundary_band_segments_into(
