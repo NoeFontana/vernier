@@ -302,6 +302,61 @@ impl SegmentTable {
         self.idx.push(self.flat.len());
     }
 
+    /// Same as [`Self::push_from_rle`] but folds the area sum and
+    /// tight bbox into the same single walk of `counts` — saving the
+    /// two follow-up `Rle::area` and `Rle::bbox` walks the segm /
+    /// boundary kernels would otherwise do per annotation. Returns
+    /// `([x, y, w, h], area)` in pixel-integer form, matching
+    /// [`Rle::bbox`] / [`Rle::area`] respectively. An empty mask
+    /// returns `([0; 4], 0)`.
+    pub fn push_with_bbox_and_area(&mut self, rle: &Rle) -> ([u32; 4], u64) {
+        if rle.h == 0 || rle.w == 0 || rle.counts.is_empty() {
+            self.idx.push(self.flat.len());
+            return ([0; 4], 0);
+        }
+        let h = rle.h;
+        let h64 = u64::from(h);
+        let mut xs = rle.w;
+        let mut ys = h;
+        let mut xe: u32 = 0;
+        let mut ye: u32 = 0;
+        let mut found = false;
+        let mut cum: u64 = 0;
+        let mut area: u64 = 0;
+        for (j, &c) in rle.counts.iter().enumerate() {
+            let start = cum;
+            let len = u64::from(c);
+            cum += len;
+            if j % 2 == 0 || len == 0 {
+                continue;
+            }
+            self.flat.push(start);
+            self.flat.push(cum);
+            area += len;
+            let y_start = (start % h64) as u32;
+            let x_start = (start / h64) as u32;
+            let y_end = ((cum - 1) % h64) as u32;
+            let x_end = ((cum - 1) / h64) as u32;
+            xs = xs.min(x_start);
+            xe = xe.max(x_end);
+            if x_start < x_end {
+                ys = 0;
+                ye = h - 1;
+            } else {
+                ys = ys.min(y_start);
+                ye = ye.max(y_end);
+            }
+            found = true;
+        }
+        self.idx.push(self.flat.len());
+        let bbox = if found {
+            [xs, ys, xe - xs + 1, ye - ys + 1]
+        } else {
+            [0; 4]
+        };
+        (bbox, area)
+    }
+
     /// Appends one row by walking a column-major byte raster: fg-byte
     /// (`!= 0`, per quirk **G6**) transitions become `[start, end]`
     /// cumulative-offset pairs in the flat buffer. Returns the fg-byte
