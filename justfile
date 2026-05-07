@@ -136,6 +136,14 @@ bench-test:
 bench-run *ARGS:
     uv run --directory bench python -m bench run {{ARGS}}
 
+# Rebuild vernier with the `bench-histogram` feature into the bench env's
+# venv. Surfaces `vernier._core.dump_bbox_iou_histogram(path)` for
+# Stage-0 measurement of the bbox-IoU optimization plan. Run
+# `just bench-sync` afterwards to revert the bench env to a stock build.
+bench-develop-histogram:
+    @[ -d bench/envs/vernier/.venv ] || { echo "bench env venv missing — run 'just bench-sync' first" >&2; exit 1; }
+    VIRTUAL_ENV=$(realpath bench/envs/vernier/.venv) .venv/bin/maturin develop --features bench-histogram
+
 # ---------------------------------------------------------------------------
 # Audit & maintenance
 # ---------------------------------------------------------------------------
