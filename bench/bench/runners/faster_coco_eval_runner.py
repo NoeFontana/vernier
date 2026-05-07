@@ -6,6 +6,13 @@ Bootstrap order is load-bearing: faster-coco-eval registers its drop-in
 must run *before* any ``from pycocotools...`` import — otherwise the
 unmodified pycocotools names get bound and the runner silently
 benchmarks pycocotools instead.
+
+Supported iouType set spans bbox / segm / keypoints / boundary —
+faster-coco-eval (≥1.6) ships its own boundary surface alongside the
+COCOeval drop-in, with the ``boundary_dilation_ratio`` default tracking
+the boundary-iou-api 0.02 reference. Numerical agreement with
+``boundary-iou-api`` at the parity tensor level is not asserted here;
+the cell is timing-only.
 """
 
 from __future__ import annotations
@@ -27,13 +34,6 @@ from bench.runners._protocol import parse_runner_args, run_cocoeval_pipeline  # 
 
 def main() -> int:
     args = parse_runner_args()
-    if args.iou_type == "boundary":
-        print(
-            "faster_coco_eval_runner: boundary IoU is not a faster-coco-eval surface",
-            file=sys.stderr,
-        )
-        return 2
-
     run_cocoeval_pipeline(
         args=args,
         impl="faster-coco-eval",

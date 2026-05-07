@@ -96,8 +96,9 @@ fn erode_for_band(rle: &Rle, dilation_ratio: f64, scratch: &mut ErodeScratch) {
     let h = rle.h as usize;
     let w = rle.w as usize;
     let d = radius as usize;
+    let bbox = rle.bbox();
     rle.to_raster_bytes_into(&mut scratch.raster);
-    erode_raster_into_scratch(scratch, h, w, d);
+    erode_raster_into_scratch(scratch, h, w, d, bbox);
 }
 
 /// Quirks **M2** + **M3**: pixel dilation distance for a `(h, w)`
