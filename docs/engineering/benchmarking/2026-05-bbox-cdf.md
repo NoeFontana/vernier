@@ -117,6 +117,54 @@ These are speculative directions, not committed work — captured here
 so the next round of bbox-IoU optimization starts with measurement, not
 the now-disproven inner-loop-SIMD intuition.
 
+## Dense-scene regime (single-category, ≥50 GT/image)
+
+The val2017 decisions are scoped to the **per-cell** regime they were
+measured in. The defining variable is `G·D` per `BboxIou::compute` call,
+which is dominated by **per-category density** (`n_categories` per
+image), not raw GT count per image. Three additional captures on
+`synthetic` workloads, same harness:
+
+| Workload                             | calls | total wall | median/call | median G·D | G·D ≥ 256 |
+|--------------------------------------|------:|-----------:|------------:|-----------:|----------:|
+| val2017 (real, 80 cats)              | 14205 |    25.3 ms |      460 ns |          1 |      0.7% |
+| synthetic G=200, D=100, 80 cats      | 10550 |    12.1 ms |    1.01 µs  |          4 |      0.0% |
+| synthetic G=50,  D=100, 1 cat        |   200 |    71.2 ms |     350 µs  |       5000 |    100.0% |
+| synthetic G=200, D=100, 1 cat        |   200 |   280.3 ms |    1387 µs  |      20000 |    100.0% |
+
+Two distinct regimes:
+
+* **Multi-category sparse (val2017, 200-GT-with-80-cats):** `G·D` median
+  ≤ 4, every cell well under the 256 threshold, per-call setup
+  dominates. The decisions above (drop 1b/1c/2c) hold.
+* **Single-category dense (200-GT scenes, dense surveillance, single-
+  class detection):** `G·D` median ≥ 5,000, 100% of wall time well past
+  the 256 threshold, per-call setup is < 0.1% of cell cost. **The
+  decisions invert.**
+
+If your workload is single-category (or near-single-category) with
+dense per-image GT counts, 1b/1c/2c become defensible:
+
+* **Stage 1c (explicit `pulp::Simd` lanes)** is the highest-leverage
+  move. The 5–8% production-vs-`scalar_reference` gap I observed in the
+  divan benches translates directly to wins on cells where the inner
+  loop dominates. AVX-512's 8-wide f64 lanes vs AVX2's 4-wide is a
+  potential 2× on Ice Lake / Sapphire Rapids servers.
+* **Stage 1b (SoA refactor)** as a prerequisite — the per-cell gather
+  cost (8 `Vec<f64>` extends, ~1 µs at memcpy speed) amortizes cleanly
+  over 5,000–20,000 inner-loop iterations, and contiguous loads matter
+  for explicit-lane vector loads.
+* **Stage 2c (x-axis early-out)** depends on spatial sparsity — for
+  uniform-random distributions the early-out catches ~50% of cells, but
+  for clustered scenes (the typical dense-detection failure mode) it
+  catches less. Bench-flag landing if 1b/1c numbers are insufficient.
+
+What this means in practice: there isn't a single optimization plan
+for "vernier bbox-IoU." The plan splits along this regime line. The
+shipped 1a + 2a wins are universal (correctness fix + free divide
+elimination on segm/boundary prefilter); the next perf-push round
+should pick a regime explicitly.
+
 ## Caveats
 
 * Numbers include the histogram instrumentation overhead (~50 ns per
@@ -126,6 +174,8 @@ the now-disproven inner-loop-SIMD intuition.
 * `Instant::now()` resolution on this machine is 19 ns (per divan
   preamble), so the 480–921 ns medians are well-resolved but the
   smallest cells (G=1, D=1) are still close to the timer floor.
-* Single-process measurement on `coco_val2017_jittered_seed0`. LVIS-
-  scale workloads (1k+ DTs/image) would shift the distribution rightward
-  and could flip the 1b/2c decisions; this doc bounds itself to COCO.
+* Single-process measurement on `coco_val2017_jittered_seed0` plus
+  three `synthetic:` workloads. LVIS-scale (1k+ DTs/image) and dense
+  single-category scenes shift the distribution as documented in the
+  "Dense-scene regime" section. The split-by-regime guidance there
+  supersedes any single-CDF reading.

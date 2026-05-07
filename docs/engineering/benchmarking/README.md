@@ -17,10 +17,11 @@ captures land alongside them.
   boundary-iou-api** on val2017 boundary (no boundary-mask cache yet,
   tracked follow-up). Parity OK on every cell.
 * [2026-05-bbox-cdf.md](./2026-05-bbox-cdf.md) — Stage 0 measurement
-  for the bbox-IoU optimization plan. Median `G·D = 1` on val2017;
-  99.3% of wall time in cells with `G·D < 256`. Decision: **drop
-  Stages 1b, 1c, and 2c** — per-call setup overhead, not inner-loop
-  work, is the lever.
+  for the bbox-IoU optimization plan. **Two regimes**: multi-category
+  sparse (val2017: median `G·D = 1`, drop 1b/1c/2c, lever is per-call
+  overhead) vs single-category dense (synthetic G=200/c=1: median
+  `G·D = 20k`, 1b/1c/2c become positive ROI, lever is the inner loop).
+  The defining variable is per-category density, not raw GT count.
 
 ## Instrumentation guides
 
