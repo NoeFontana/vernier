@@ -56,6 +56,17 @@ fn main() {
 /// the real COCO eval distribution.
 const GRIDS: &[(usize, usize)] = &[(4, 100), (10, 100), (30, 100)];
 
+/// Small-square grids covering the **per-call setup overhead** regime.
+/// Both regime extrema (1–30 GT/10 cats, 100–300 GT/100 cats) decompose
+/// into many small cells per kernel call. Per
+/// `docs/engineering/benchmarking/2026-05-bbox-cdf.md`, val2017 has
+/// median `G·D = 1` and ~99% of wall time in cells with `G·D < 256`.
+/// At this shape boundary's per-annotation band precompute (2) still
+/// runs (cost ~constant per side), so the arm isolates the
+/// prefilter + per-cell setup contribution that the larger `GRIDS`
+/// row hides under (2)'s ms-scale cost.
+const SPARSE_GRIDS: &[(usize, usize)] = &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (10, 10)];
+
 #[divan::bench(args = GRIDS)]
 fn production_overlap(bencher: Bencher, &(g, d): &(usize, usize)) {
     let kernel = BoundaryIou::default();
@@ -95,6 +106,48 @@ fn production_crowd_gt(bencher: Bencher, &(g, d): &(usize, usize)) {
     // precompute and the per-cell band intersect. The savings
     // here vs `production_overlap` upper-bounds what
     // parallelising the band precompute could buy.
+    let kernel = BoundaryIou::default();
+    let gts = overlapping_rects(g, true);
+    let dts = overlapping_rects(d, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        kernel
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+        out.fill(0.0);
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn production_sparse_overlap(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let kernel = BoundaryIou::default();
+    let gts = overlapping_rects(g, false);
+    let dts = overlapping_rects(d, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        kernel
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+        out.fill(0.0);
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn production_sparse_disjoint(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let kernel = BoundaryIou::default();
+    let gts = disjoint_rects(g);
+    let dts = disjoint_rects(d);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        kernel
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+        out.fill(0.0);
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn production_sparse_crowd_gt(bencher: Bencher, &(g, d): &(usize, usize)) {
     let kernel = BoundaryIou::default();
     let gts = overlapping_rects(g, true);
     let dts = overlapping_rects(d, false);

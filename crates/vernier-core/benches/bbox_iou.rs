@@ -38,6 +38,19 @@ const GRIDS: &[(usize, usize)] = &[(4, 100), (10, 100), (30, 100), (100, 1000)];
 /// any explicit-SIMD pass needs to beat.
 const DENSE_GRIDS: &[(usize, usize)] = &[(50, 50), (100, 100), (200, 200), (300, 300)];
 
+/// Small-square grids covering the **per-call setup overhead** regime.
+/// Both regime extrema (1–30 GT/10 cats, 100–300 GT/100 cats) decompose
+/// into many small cells per kernel call — uniform class assignment
+/// pushes per-cell `G·D` to single digits even at the dense end. Per
+/// `docs/engineering/benchmarking/2026-05-bbox-cdf.md`, val2017 has
+/// median `G·D = 1` and ~99% of wall time in cells with `G·D < 256`,
+/// so this is the shape where any per-call-overhead optimization (e.g.
+/// dispatch closure boundary, `out.row_mut`, empty-check guard) shows
+/// up first. The `production`-vs-`scalar_reference` gap on this row
+/// quantifies the dispatch overhead, since the inner loop is too short
+/// to amortize anything else.
+const SPARSE_GRIDS: &[(usize, usize)] = &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (10, 10)];
+
 fn make_anns(n: usize, offset: f64, is_crowd: bool) -> Vec<BboxAnn> {
     (0..n)
         .map(|i| {
@@ -106,6 +119,28 @@ fn production_dense(bencher: Bencher, &(g, d): &(usize, usize)) {
 
 #[divan::bench(args = DENSE_GRIDS)]
 fn scalar_reference_dense(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let gts = make_anns(g, 0.31, false);
+    let dts = make_anns(d, 0.71, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        scalar_compute(black_box(&gts), black_box(&dts), &mut out.view_mut());
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn production_sparse(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let gts = make_anns(g, 0.31, false);
+    let dts = make_anns(d, 0.71, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        BboxIou
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn scalar_reference_sparse(bencher: Bencher, &(g, d): &(usize, usize)) {
     let gts = make_anns(g, 0.31, false);
     let dts = make_anns(d, 0.71, false);
     let mut out = Array2::<f64>::zeros((g, d));
