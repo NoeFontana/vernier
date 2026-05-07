@@ -564,7 +564,12 @@ fn evaluate_grid_impl(
     cast_inputs: bool,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt_bytes = gt_json.as_bytes().to_vec();
+    // Zero-copy borrow over the GT bytes — `PyBackedBytes` keeps the
+    // underlying `Py<PyBytes>` alive across `py.detach` while exposing
+    // `&[u8]` via `Deref`. Saves a 20 MB `to_vec()` per call on val2017
+    // and is `Send + Sync` so the buffer crosses the GIL release safely
+    // (the underlying object is Python-immutable and refcount-pinned).
+    let gt_bytes = pyo3::pybacked::PyBackedBytes::from(gt_json.clone());
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
@@ -1735,7 +1740,7 @@ fn streaming_tables_result(
 /// intentionally deferred to the consumer's `py.detach` block so it
 /// doesn't hold the GIL.
 pub(crate) enum UpdatePayload {
-    Bytes(Vec<u8>),
+    Bytes(pyo3::pybacked::PyBackedBytes),
     Inputs(Vec<DetectionInput>),
 }
 
