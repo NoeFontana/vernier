@@ -90,32 +90,49 @@ won't amortize at this scale.
 
 ## What the lever actually is
 
-Median call: 911 ns of wall time for `G·D = 1` — i.e. ~3 ns of f64
-arithmetic and ~908 ns of *something else*. That something is per-call
-setup overhead — `pulp::Arch::dispatch` boundary, `out.row_mut(g)`, the
-empty-check guard, the histogram instrumentation (~50 ns when on),
-iterator and closure prologue.
+Median val2017 call: 911 ns of wall time at `G·D = 1` per the
+histogram. The naïve reading is "the kernel needs ~900 ns per call,"
+but PR #174 added direct divan arms (`bbox_iou::production_sparse`)
+that disprove that — `BboxIou::compute` itself takes only **~40 ns**
+at (1, 1) on the same machine. So the 911 ns decomposes as:
 
-Stage 1a (the `OnceLock` Arch hoist, shipped in #168) was the first
-move in this direction; the per-call cpuid feature-detect was real
-overhead even though it was below the divan-bench noise floor on the
-synthetic grids. The remaining levers are dominantly outside the inner
-loop.
+* ~3 ns f64 arithmetic
+* ~34 ns kernel setup (`pulp::Arch::dispatch` boundary, `out.row_mut`,
+  empty-check guard, iterator/closure prologue) — the headroom
+  visible in the divan `production`-vs-`scalar_reference` gap, which
+  shrinks from +566% at (1, 1) to +3% at (10, 10).
+* ~80–100 ns histogram instrumentation overhead — `Mutex::lock` +
+  `Vec::push` + two `Instant::now()` calls in the `CallTimer` guard.
+  This is the measurement tool's own footprint, not real production
+  cost.
+* ~770–800 ns *framework overhead outside the kernel* — matching
+  engine per-cell preamble, scratch-buffer resets, ndarray `Array2`
+  zero-init, the `evaluate_bbox_grid` loop body, per-image
+  category-cell partitioning, etc. This dominates the small-cell
+  regime by an order of magnitude over the kernel itself.
 
-A reasonable next perf-push round would target this directly:
+The lever is the framework, not the kernel. Stage 1a's `OnceLock`
+hoist was a real fix (ADR-0003 violation) but the per-call cpuid
+detect it removed was a small fraction of even the kernel-side 34 ns.
 
-1. Per-call profiling on a `(1, 1)` and `(2, 2)` synthetic cell —
-   isolate which non-inner-loop code accounts for the 900 ns.
-2. Consider whether `out.row_mut` (ndarray's mutable row-view
-   construction) is a hidden cost on tiny cells. Direct slice access
-   may amortize better.
-3. Consider a small-cell fast path that bypasses the dispatch closure
-   for `G·D ≤ 4`. The dispatch overhead becomes substantial relative
-   to the work for the median cell.
+Optimization headroom on the kernel itself is bounded:
 
-These are speculative directions, not committed work — captured here
-so the next round of bbox-IoU optimization starts with measurement, not
-the now-disproven inner-loop-SIMD intuition.
+| Per-cell `G·D` | kernel headroom (production − scalar) |
+|---:|---:|
+| 1 | ~34 ns (a small-cell fast path bypassing `Arch::dispatch` would land here) |
+| 4 | ~6 ns |
+| 9 | ~4 ns |
+| 25 | ~5 ns |
+| 100 | ~5 ns |
+| 2500 | ~6 µs (~5%) |
+| 90,000 | ~6 µs (~5%) |
+
+The big lever for the val2017-shape regime — small-cell-dominated
+workloads — is in the framework code that wraps each kernel call,
+not in the kernel inner loop or its SIMD strategy. A small-cell fast
+path closes the kernel-level gap below `G·D ≈ 16`; framework-level
+work would target `evaluate_bbox_grid`'s per-cell preamble and the
+matching engine's per-cell scratch.
 
 ## Dense-scene regime (single-category, ≥50 GT/image)
 
@@ -167,9 +184,12 @@ should pick a regime explicitly.
 
 ## Caveats
 
-* Numbers include the histogram instrumentation overhead (~50 ns per
-  call from `Mutex::lock` + `Vec::push` in the `CallTimer::Drop`
-  guard). Production `wall_ns` would be ~5% lower at the median, ~0%
+* Numbers include the histogram instrumentation overhead. Direct
+  divan arms in PR #174 measured this at ~80–100 ns per call (not the
+  ~50 ns originally guessed) on the same machine — `Mutex::lock` +
+  two `Instant::now()` + `Vec::push` in the `CallTimer::Drop` guard.
+  Production `wall_ns` is correspondingly ~10% lower at the median,
+  ~0%
   at the long tail. The shape of the distribution is unaffected.
 * `Instant::now()` resolution on this machine is 19 ns (per divan
   preamble), so the 480–921 ns medians are well-resolved but the
