@@ -722,11 +722,19 @@ pub struct EvalGrid {
     /// where pycocotools would emit `None` (image absent from
     /// detections, no GTs and no DTs in the cell). Layout is K-major,
     /// then A, then I — `eval_imgs[k * A * I + a * I + i]`.
-    pub eval_imgs: Vec<Option<PerImageEval>>,
+    ///
+    /// Cells are heap-boxed: `Option<Box<PerImageEval>>` is 8 bytes
+    /// (Box's `NonNull` niche absorbs the discriminant), so the dense
+    /// `n_categories * n_area_ranges * n_images` grid only pays for a
+    /// pointer per slot at zero-init time. On val2017 (1.6M slots,
+    /// 14k populated) this drops the upfront alloc from 268 MB to
+    /// 12.8 MB and the zero-init from ~120 ms to ~5 ms — see
+    /// `docs/engineering/benchmarking/2026-05-bbox-cdf.md`.
+    pub eval_imgs: Vec<Option<Box<PerImageEval>>>,
     /// Pycocotools-shaped bookkeeping for each populated cell (same
     /// `[k][a][i]` layout as `eval_imgs`; `None` wherever `eval_imgs` is
-    /// `None`).
-    pub eval_imgs_meta: Vec<Option<EvalImageMeta>>,
+    /// `None`). Boxed for the same reason as `eval_imgs`.
+    pub eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>>,
     /// `K` axis size: the number of categories used for evaluation, or
     /// `1` when `use_cats=false`.
     pub n_categories: usize,
@@ -748,14 +756,14 @@ impl EvalGrid {
     /// returns `None` for out-of-bounds indices as well.
     pub fn cell(&self, k: usize, a: usize, i: usize) -> Option<&PerImageEval> {
         let idx = self.flat_index(k, a, i)?;
-        self.eval_imgs.get(idx).and_then(Option::as_ref)
+        self.eval_imgs.get(idx).and_then(Option::as_deref)
     }
 
     /// Pycocotools-shaped bookkeeping at `(category_index, area_index,
     /// image_index)`. `None` exactly when [`EvalGrid::cell`] is `None`.
     pub fn cell_meta(&self, k: usize, a: usize, i: usize) -> Option<&EvalImageMeta> {
         let idx = self.flat_index(k, a, i)?;
-        self.eval_imgs_meta.get(idx).and_then(Option::as_ref)
+        self.eval_imgs_meta.get(idx).and_then(Option::as_deref)
     }
 
     fn flat_index(&self, k: usize, a: usize, i: usize) -> Option<usize> {
@@ -805,8 +813,8 @@ pub fn evaluate_with<K: EvalKernel>(
     };
     let n_k = category_buckets.len();
 
-    let mut eval_imgs: Vec<Option<PerImageEval>> = vec![None; n_k * n_a * n_i];
-    let mut eval_imgs_meta: Vec<Option<EvalImageMeta>> = vec![None; n_k * n_a * n_i];
+    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; n_k * n_a * n_i];
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; n_k * n_a * n_i];
     // Optional IoU retention, keyed by `(k, i)` — IoU is geometry-only,
     // so storing per-area would duplicate ~4× under the COCO grid.
     let mut retained_ious_map: Option<std::collections::HashMap<(usize, usize), Array2<f64>>> =
@@ -965,8 +973,8 @@ pub fn evaluate_with<K: EvalKernel>(
                     parity_mode,
                 )?;
                 let flat = nk + a * n_i + i;
-                eval_imgs[flat] = Some(cell);
-                eval_imgs_meta[flat] = Some(meta);
+                eval_imgs[flat] = Some(Box::new(cell));
+                eval_imgs_meta[flat] = Some(Box::new(meta));
             }
 
             // Retain a clone of the IoU matrix exactly when the caller

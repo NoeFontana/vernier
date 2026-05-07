@@ -833,8 +833,8 @@ mod tests {
 
         // K=1, A=4 (all/small/medium/large), I=1; we populate only the
         // `all` cell. small/medium/large stay None → -1 sentinel.
-        let mut grid: Vec<Option<PerImageEval>> = vec![None; 4];
-        grid[0] = Some(cell);
+        let mut grid: Vec<Option<Box<PerImageEval>>> = vec![None; 4];
+        grid[0] = Some(Box::new(cell));
 
         let p = AccumulateParams {
             iou_thresholds: iou,
