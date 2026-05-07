@@ -46,6 +46,16 @@ fn main() {
 /// 2026-05 perf push touches that shared kernel.
 const GRIDS: &[(usize, usize)] = &[(4, 100), (10, 100), (30, 100)];
 
+/// Small-square grids covering the **per-call setup overhead** regime.
+/// Both regime extrema (1–30 GT/10 cats, 100–300 GT/100 cats) decompose
+/// into many small cells per kernel call. Per
+/// `docs/engineering/benchmarking/2026-05-bbox-cdf.md`, val2017 has
+/// median `G·D = 1` and ~99% of wall time in cells with `G·D < 256`.
+/// At this shape the bbox prefilter (1) is dominant in absolute terms
+/// but each call's RLE-side work (2) is also tiny, so the arm
+/// captures the per-call setup contribution end-to-end.
+const SPARSE_GRIDS: &[(usize, usize)] = &[(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (10, 10)];
+
 #[divan::bench(args = GRIDS)]
 fn production_overlap(bencher: Bencher, &(g, d): &(usize, usize)) {
     let gts = overlapping_rects(g, false);
@@ -78,6 +88,45 @@ fn production_disjoint(bencher: Bencher, &(g, d): &(usize, usize)) {
 
 #[divan::bench(args = GRIDS)]
 fn production_crowd_gt(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let gts = overlapping_rects(g, true);
+    let dts = overlapping_rects(d, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        SegmIou
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+        out.fill(0.0);
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn production_sparse_overlap(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let gts = overlapping_rects(g, false);
+    let dts = overlapping_rects(d, false);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        SegmIou
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+        out.fill(0.0);
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn production_sparse_disjoint(bencher: Bencher, &(g, d): &(usize, usize)) {
+    let gts = disjoint_rects(g);
+    let dts = disjoint_rects(d);
+    let mut out = Array2::<f64>::zeros((g, d));
+    bencher.bench_local(|| {
+        SegmIou
+            .compute(black_box(&gts), black_box(&dts), &mut out.view_mut())
+            .unwrap();
+        out.fill(0.0);
+    });
+}
+
+#[divan::bench(args = SPARSE_GRIDS)]
+fn production_sparse_crowd_gt(bencher: Bencher, &(g, d): &(usize, usize)) {
     let gts = overlapping_rects(g, true);
     let dts = overlapping_rects(d, false);
     let mut out = Array2::<f64>::zeros((g, d));
