@@ -54,6 +54,16 @@ pub struct ErodeScratch {
     pub(crate) row_in_u64: Vec<u64>,
     pub(crate) row_out_u64: Vec<u64>,
     pub(crate) min_temp_u64: Vec<u64>,
+    // Bbox-shape (bw * bh column-major) buffers used by the
+    // boundary-IoU fast path: the mask raster decode and the eroded
+    // result both sit in these contiguous bbox-only buffers, so the
+    // XOR-scan walks bbox-only memory without paying for the
+    // `(h - bh)` rows × `(w - bw)` cols of zero outside the bbox that
+    // the full-image variants iterate over. The full-image `raster`
+    // and `eroded` fields above stay intact for the slow paths
+    // (`erode_chebyshev_ball*`, `boundary_band_into`).
+    pub(crate) raster_bbox: Vec<u8>,
+    pub(crate) eroded_bbox: Vec<u8>,
 }
 
 impl ErodeScratch {
@@ -209,6 +219,7 @@ pub(crate) fn erode_raster_into_scratch(
         row_in_u64,
         row_out_u64,
         min_temp_u64,
+        ..
     } = scratch;
 
     // 1. Pad to (bh+2, bw+2) column-major with a 1-pixel zero ring (N1).
@@ -271,6 +282,129 @@ pub(crate) fn erode_raster_into_scratch(
         let src_start = (x + 1) * ph + 1;
         let dst_start = (bx + x) * h + by;
         eroded[dst_start..dst_start + bh].copy_from_slice(&padded[src_start..src_start + bh]);
+    }
+}
+
+/// Bbox-shape variant of [`erode_raster_into_scratch`]. Reads input
+/// from `scratch.raster_bbox` (`bw * bh` column-major) and writes the
+/// eroded result to `scratch.eroded_bbox` (`bw * bh` column-major) —
+/// the boundary-IoU fast path's bbox-only buffers.
+///
+/// Algorithmically identical to [`erode_raster_into_scratch`] (same
+/// pad / row pass / column pass / strip pad over `(bh + 2, bw + 2)`
+/// padded buffer), but the input copy-in and output strip-out are
+/// contiguous bbox-shape slices rather than scattered full-image
+/// columns. That removes the per-mask full-image
+/// [`Rle::to_raster_bytes_into`] write and the per-mask full-image
+/// `eroded` zero-init the full-image variant pays for outside the
+/// foreground bbox — both of which are bandwidth-bound on val2017's
+/// 480×640 image dims.
+pub(crate) fn erode_bbox_into_scratch(scratch: &mut ErodeScratch, bw: usize, bh: usize, d: usize) {
+    debug_assert_eq!(scratch.raster_bbox.len(), bw * bh);
+    scratch.eroded_bbox.clear();
+    scratch.eroded_bbox.resize(bw * bh, 0);
+
+    if bw == 0 || bh == 0 {
+        return;
+    }
+
+    let ph = bh + 2;
+    let pw = bw + 2;
+    let pad_size = ph * pw;
+
+    scratch.padded.clear();
+    scratch.padded.resize(pad_size, 0);
+
+    scratch.row_scratch.clear();
+    scratch.row_scratch.resize(pad_size, 0);
+    scratch.row_in.clear();
+    scratch.row_in.resize(pw, 0);
+    scratch.row_out.clear();
+    scratch.row_out.resize(pw, 0);
+
+    let scan_needed = 2 * ph.max(pw);
+    if scratch.min_temp.len() < scan_needed {
+        scratch.min_temp.resize(scan_needed, 0);
+    }
+    let row_chunks = ph / 8;
+    if row_chunks > 0 {
+        if scratch.row_in_u64.len() < pw {
+            scratch.row_in_u64.resize(pw, 0);
+        }
+        if scratch.row_out_u64.len() < pw {
+            scratch.row_out_u64.resize(pw, 0);
+        }
+        if scratch.min_temp_u64.len() < 2 * pw {
+            scratch.min_temp_u64.resize(2 * pw, 0);
+        }
+    }
+
+    let ErodeScratch {
+        padded,
+        row_scratch,
+        row_in,
+        row_out,
+        raster_bbox,
+        eroded_bbox,
+        min_temp,
+        row_in_u64,
+        row_out_u64,
+        min_temp_u64,
+        ..
+    } = scratch;
+
+    // 1. Pad: `raster_bbox` is already `bw * bh` column-major, so
+    //    each source column is `bh` contiguous bytes — same shape as
+    //    the bbox-cropped destination column in `padded`, just
+    //    without the full-image x-stride math.
+    for x in 0..bw {
+        let src_start = x * bh;
+        let dst_start = (x + 1) * ph + 1;
+        padded[dst_start..dst_start + bh].copy_from_slice(&raster_bbox[src_start..src_start + bh]);
+    }
+
+    // 2. Row pass — identical to the full-image variant.
+    let bulk_end = row_chunks * 8;
+    for c in 0..row_chunks {
+        let y_chunk = c * 8;
+        for (x, slot) in row_in_u64[..pw].iter_mut().enumerate() {
+            let base = x * ph + y_chunk;
+            let mut bytes = [0u8; 8];
+            bytes.copy_from_slice(&padded[base..base + 8]);
+            *slot = u64::from_ne_bytes(bytes);
+        }
+        min_filter_binary_u64(&row_in_u64[..pw], d, &mut row_out_u64[..pw], min_temp_u64);
+        for (x, &v) in row_out_u64[..pw].iter().enumerate() {
+            let base = x * ph + y_chunk;
+            row_scratch[base..base + 8].copy_from_slice(&v.to_ne_bytes());
+        }
+    }
+    for y in bulk_end..ph {
+        for x in 0..pw {
+            row_in[x] = padded[x * ph + y];
+        }
+        min_filter_binary(row_in, d, row_out, min_temp);
+        for x in 0..pw {
+            row_scratch[x * ph + y] = row_out[x];
+        }
+    }
+
+    // 3. Column pass — identical to the full-image variant.
+    for x in 0..pw {
+        let col = x * ph;
+        let col_in = &row_scratch[col..col + ph];
+        let col_out = &mut padded[col..col + ph];
+        min_filter_binary(col_in, d, col_out, min_temp);
+    }
+
+    // 4. Strip the pad: copy the bbox interior of the cropped padded
+    //    buffer (rows 1..=bh, cols 1..=bw) back into the contiguous
+    //    bbox-shape `eroded_bbox`. Each output column is `bh` bytes,
+    //    contiguous — no full-image stride math.
+    for x in 0..bw {
+        let src_start = (x + 1) * ph + 1;
+        let dst_start = x * bh;
+        eroded_bbox[dst_start..dst_start + bh].copy_from_slice(&padded[src_start..src_start + bh]);
     }
 }
 
