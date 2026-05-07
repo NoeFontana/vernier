@@ -67,3 +67,11 @@ harness = false
 [[bench]]
 name = "evaluate_bbox"
 harness = false
+
+[[bench]]
+name = "evaluate_segm"
+harness = false
+
+[[bench]]
+name = "evaluate_boundary"
+harness = false
