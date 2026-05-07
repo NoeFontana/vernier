@@ -48,6 +48,13 @@ GT_FILENAME = "instances_val2017.json"
 #: reproduce is keyed to this exact byte sequence.
 GT_SHA256 = "e8c7f7908f1d7278341fae127d0da654f102f11bd7b21d8aeefa635b8c810b6f"
 
+#: Keypoints GT — same upstream zip as the instances GT. Bumping is
+#: the same ADR-level decision per docs/engineering/coco-val-parity.md;
+#: OKS parity quirks (F1/F3/F4) are keyed to this byte sequence.
+KP_GT_INNER_PATH = "annotations/person_keypoints_val2017.json"
+KP_GT_FILENAME = "person_keypoints_val2017.json"
+KP_GT_SHA256 = "788e2dae83c86bd547be7fab269d6399df5671063d29a61360cdb2cc370d2b14"
+
 IMAGES_URL = "http://images.cocodataset.org/zips/val2017.zip"
 IMAGES_DIRNAME = "val2017"
 IMAGES_EXPECTED_COUNT = 5000
@@ -122,40 +129,57 @@ def _images_dir_ok(images_dir: Path) -> bool:
     return n == IMAGES_EXPECTED_COUNT
 
 
-def ensure_gt(*, cache: Path | None = None) -> Path:
-    """Return a verified path to the GT JSON, downloading if necessary.
-
-    Idempotent. If the cached file matches :data:`GT_SHA256`, returns
-    immediately. Otherwise (re)downloads from :data:`GT_URL`, extracts,
-    verifies, returns the path. Raises ``RuntimeError`` on a
-    post-download SHA mismatch.
+def _ensure_inner_zip_member(
+    *, cache: Path | None, filename: str, inner_path: str, expected_sha: str
+) -> Path:
+    """Return a verified path to ``filename`` inside the upstream
+    ``annotations_trainval2017.zip``. Idempotent under the SHA pin.
     """
     cache = cache_root(cache)
     cache.mkdir(parents=True, exist_ok=True)
-    gt = cache / GT_FILENAME
+    dest = cache / filename
 
-    if gt.is_file() and file_sha256(gt) == GT_SHA256:
-        return gt
+    if dest.is_file() and file_sha256(dest) == expected_sha:
+        return dest
 
-    gt.unlink(missing_ok=True)
+    dest.unlink(missing_ok=True)
     zip_path = cache / "annotations_trainval2017.zip"
     try:
         _atomic_download(GT_URL, zip_path)
-        with zipfile.ZipFile(zip_path) as z, z.open(GT_INNER_PATH) as src, gt.open("wb") as dst:
+        with (
+            zipfile.ZipFile(zip_path) as z,
+            z.open(inner_path) as src,
+            dest.open("wb") as dst,
+        ):
             shutil.copyfileobj(src, dst, length=_COPY_BUF_SIZE)
     finally:
         zip_path.unlink(missing_ok=True)
 
-    actual = file_sha256(gt)
-    if actual != GT_SHA256:
-        gt.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"GT SHA256 mismatch: expected {GT_SHA256}, got {actual}. "
-            f"Either the upstream CDN served a different artifact or the "
-            f"download was corrupted; rerun, and if the mismatch persists "
-            f"open an issue."
-        )
-    return gt
+    actual = file_sha256(dest)
+    if actual != expected_sha:
+        dest.unlink(missing_ok=True)
+        raise RuntimeError(f"{filename} SHA256 mismatch: expected {expected_sha}, got {actual}.")
+    return dest
+
+
+def ensure_gt(*, cache: Path | None = None) -> Path:
+    """Return a verified path to the instances GT JSON."""
+    return _ensure_inner_zip_member(
+        cache=cache,
+        filename=GT_FILENAME,
+        inner_path=GT_INNER_PATH,
+        expected_sha=GT_SHA256,
+    )
+
+
+def ensure_kp_gt(*, cache: Path | None = None) -> Path:
+    """Return a verified path to the keypoints GT JSON."""
+    return _ensure_inner_zip_member(
+        cache=cache,
+        filename=KP_GT_FILENAME,
+        inner_path=KP_GT_INNER_PATH,
+        expected_sha=KP_GT_SHA256,
+    )
 
 
 def ensure_images(*, cache: Path | None = None) -> Path:

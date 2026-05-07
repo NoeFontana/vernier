@@ -18,7 +18,14 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from coco_val_cache import GT_FILENAME, GT_SHA256, ensure_gt, file_sha256
+from coco_val_cache import (
+    GT_FILENAME,
+    GT_SHA256,
+    KP_GT_SHA256,
+    ensure_gt,
+    ensure_kp_gt,
+    file_sha256,
+)
 
 from bench.harness.paths import bench_cache_root
 
@@ -41,6 +48,20 @@ def gt_path() -> Path:
             return candidate
 
     return ensure_gt(cache=bench_cache_root() / "coco_val2017")
+
+
+def kp_gt_path() -> Path:
+    """Return a verified path to the COCO val2017 keypoints GT JSON.
+
+    Honors ``VERNIER_COCO_KP_GT_PATH`` first; falls back to the bench cache.
+    """
+    env_override = os.environ.get("VERNIER_COCO_KP_GT_PATH")
+    if env_override:
+        candidate = Path(env_override)
+        if candidate.exists() and file_sha256(candidate) == KP_GT_SHA256:
+            return candidate
+
+    return ensure_kp_gt(cache=bench_cache_root() / "coco_val2017")
 
 
 def perfect_dt_segm_path() -> Path:
@@ -72,4 +93,4 @@ def perfect_dt_segm_path() -> Path:
     )
 
 
-__all__ = ["EXPECTED_SHA256", "GT_FILENAME", "gt_path", "perfect_dt_segm_path"]
+__all__ = ["EXPECTED_SHA256", "GT_FILENAME", "gt_path", "kp_gt_path", "perfect_dt_segm_path"]
