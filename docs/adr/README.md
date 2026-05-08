@@ -12,8 +12,8 @@ editing in place.
 
 ## Suggested reading order for newcomers
 
-Five ADRs explain the project's load-bearing decisions; everything else
-is detail.
+Five themes explain the project's load-bearing decisions; everything
+else is detail.
 
 1. **[0002 — three-tier parity model](0002-three-tier-parity-model.md).**
    The contract that distinguishes vernier from every other fast COCO
@@ -100,7 +100,7 @@ is detail.
 
 | #    | Title                                                       | Status   |
 | ---- | ----------------------------------------------------------- | -------- |
-| [0031](0031-dist-eval.md) | `from_partials` and the partial wire format (instance) | accepted (cross-paradigm clause superseded by 0032) |
+| [0031](0031-dist-eval.md) | `from_partials` and the partial wire format (instance) | accepted (cross-paradigm carve-out superseded by 0032) |
 | [0032](0032-dist-eval-paradigms.md) | Distributed evaluation across paradigms | accepted (supersedes 0031's cross-paradigm carve-out) |
 
 ### Bench harness
