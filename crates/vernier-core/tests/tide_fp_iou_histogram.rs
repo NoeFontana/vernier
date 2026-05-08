@@ -8,8 +8,6 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::PathBuf;
-
 use vernier_core::tide::{
     compute_fp_iou_histogram_bbox, compute_fp_iou_histogram_segm, KernelMarker,
 };
@@ -18,13 +16,8 @@ use vernier_core::{
     TideParams,
 };
 
-fn fixture_path(name: &str, file: &str) -> PathBuf {
-    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("../../tests/python/oracle/tide/fixtures");
-    p.push(name);
-    p.push(file);
-    p
-}
+mod common;
+use common::fixture_path;
 
 fn load_fixture(name: &str) -> (CocoDataset, CocoDetections) {
     let gt_bytes = std::fs::read(fixture_path(name, "gt.json"))

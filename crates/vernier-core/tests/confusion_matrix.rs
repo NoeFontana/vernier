@@ -10,20 +10,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::collections::HashMap;
-use std::path::PathBuf;
 
 use vernier_core::similarity::BboxIou;
 use vernier_core::{
     compute_confusion_matrix, CocoDataset, CocoDetections, ConfusionMatrixCounts, ParityMode,
 };
 
-fn fixture_path(name: &str, file: &str) -> PathBuf {
-    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("../../tests/python/oracle/tide/fixtures");
-    p.push(name);
-    p.push(file);
-    p
-}
+mod common;
+use common::fixture_path;
 
 fn load_fixture(name: &str) -> (CocoDataset, CocoDetections) {
     let gt_bytes = std::fs::read(fixture_path(name, "gt.json"))
