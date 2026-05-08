@@ -47,7 +47,7 @@ from bench.reports.render import (
     render_scaling_table,
 )
 from bench.reports.scaling import group_by_synthetic_param
-from bench.workloads import InstanceWorkload, PanopticWorkload, resolve
+from bench.workloads import InstanceWorkload, PanopticWorkload, SemanticWorkload, resolve
 from bench.workloads.synthetic import SCALING_AXES
 
 _IOU_CHOICES: tuple[str, ...] = get_args(IouType)
@@ -187,6 +187,49 @@ def run_cmd(
             categories_json=workload_obj.categories_json,
         )
         do_parity = not no_parity and mode_typed != "profile"
+        result = run_cell(cell, parity=do_parity)
+        for impl_name, json_path in result.impl_jsons.items():
+            click.echo(f"{impl_name}: {json_path}")
+        if result.parity is not None:
+            if result.parity.passed:
+                click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+            else:
+                click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
+        return
+
+    if paradigm_typed == "semantic":
+        if not isinstance(workload_obj, SemanticWorkload):
+            raise click.ClickException(
+                f"workload {workload!r} resolved to {type(workload_obj).__name__}, "
+                f"but --paradigm semantic requires a SemanticWorkload."
+            )
+        impl_filter = None if impl == "all" else (impl,)
+        impls = impls_for_metric("semantic", "miou", impl_filter=impl_filter)
+        if not impls:
+            choices = sorted(IMPL_PARADIGM_SUPPORT["semantic"])
+            raise click.ClickException(
+                f"impl {impl!r} is not registered for paradigm=semantic; choices: {choices}"
+            )
+        cell = CellSpec(
+            bench_root=BENCH_ROOT,
+            repo_root=REPO_ROOT,
+            impls=impls,
+            workload_id=workload_obj.workload_id,
+            iou_type="miou",
+            mode=mode_typed,
+            run_seed=run_seed,
+            paradigm="semantic",
+            gt_label_map_dir=workload_obj.gt_label_maps,
+            dt_label_map_dir=workload_obj.dt_label_maps,
+            n_classes=workload_obj.n_classes,
+            ignore_label=workload_obj.ignore_label,
+        )
+        # No oracle for semantic yet (S3-B mmseg env pending) — skip
+        # parity even if --no-parity wasn't passed. Profile mode also
+        # skips, matching the instance/panoptic convention.
+        do_parity = (
+            not no_parity and mode_typed != "profile" and len(IMPL_PARADIGM_SUPPORT["semantic"]) > 1
+        )
         result = run_cell(cell, parity=do_parity)
         for impl_name, json_path in result.impl_jsons.items():
             click.echo(f"{impl_name}: {json_path}")

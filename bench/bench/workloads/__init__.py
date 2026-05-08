@@ -59,6 +59,7 @@ from bench.workloads import (
     real_predictions,
     smoke,
     synthetic,
+    synthetic_semantic,
 )
 
 # Streaming workload modules import this module's StreamingWorkload —
@@ -174,11 +175,58 @@ _SYNTHETIC_ALLOWED: frozenset[str] = (
 # paradigm-specific error message.
 _PANOPTIC_PREFIXES: tuple[str, ...] = ("coco_panoptic_val2017",)
 _SEMANTIC_PREFIXES: tuple[str, ...] = ("ade20k_val",)
+_SYNTHETIC_SEMANTIC_PREFIX = "synthetic_semantic:"
+_SYNTHETIC_SEMANTIC_REQUIRED: frozenset[str] = frozenset({"n_images", "n_classes", "seed"})
+_SYNTHETIC_SEMANTIC_INT_OPTIONAL: frozenset[str] = frozenset({"ignore_label"})
+_SYNTHETIC_SEMANTIC_FLOAT_OPTIONAL: frozenset[str] = frozenset({"jitter_rate"})
 _STREAMING_PREFIXES: tuple[str, ...] = (
     "coco_val2017_streaming",
     "coco_val2017_dlpack",
     "coco_val2017_bg_saturation",
 )
+
+
+def _parse_synthetic_semantic_args(spec: str) -> tuple[dict[str, int], dict[str, float]]:
+    """Parse ``synthetic_semantic:k=v,...`` into (int-params, float-params).
+
+    Required: ``n_images``, ``n_classes``, ``seed``. Optional int:
+    ``ignore_label``. Optional float: ``jitter_rate``.
+    """
+    if not spec:
+        raise ValueError("synthetic_semantic: requires at least n_images=, n_classes=, seed=")
+    int_out: dict[str, int] = {}
+    float_out: dict[str, float] = {}
+    allowed = (
+        _SYNTHETIC_SEMANTIC_REQUIRED
+        | _SYNTHETIC_SEMANTIC_INT_OPTIONAL
+        | _SYNTHETIC_SEMANTIC_FLOAT_OPTIONAL
+    )
+    for token in spec.split(","):
+        if "=" not in token:
+            raise ValueError(f"synthetic_semantic: param {token!r} is not k=v")
+        key, value = token.split("=", 1)
+        key = key.strip()
+        if key not in allowed:
+            raise ValueError(
+                f"synthetic_semantic: unknown param {key!r}; allowed: {sorted(allowed)}"
+            )
+        if key in _SYNTHETIC_SEMANTIC_FLOAT_OPTIONAL:
+            try:
+                fval = float(value)
+            except ValueError as e:
+                raise ValueError(f"synthetic_semantic: param {key}={value!r} must be float") from e
+            if not 0.0 <= fval <= 1.0:
+                raise ValueError(f"synthetic_semantic: param {key}={value!r} must be in [0.0, 1.0]")
+            float_out[key] = fval
+        else:
+            try:
+                int_out[key] = int(value)
+            except ValueError as e:
+                raise ValueError(f"synthetic_semantic: param {key}={value!r} must be int") from e
+    missing = _SYNTHETIC_SEMANTIC_REQUIRED - int_out.keys()
+    if missing:
+        raise ValueError(f"synthetic_semantic: missing required param(s): {sorted(missing)}")
+    return int_out, float_out
 
 
 def _parse_synthetic_args(spec: str) -> tuple[dict[str, int], dict[str, float]]:
@@ -338,10 +386,34 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             f"workload {workload_name!r} is in the panoptic namespace; "
             f"registered by the B1 stream (ADR-0033 + ADR-0025)."
         )
+    # B2 (ADR-0033 + ADR-0028): semantic-segmentation cells. The
+    # synthetic-semantic family is the vernier-only baseline; ADE20K
+    # waits on the S3-B oracle vendoring + license-cleared cache.
+    if workload_name.startswith(_SYNTHETIC_SEMANTIC_PREFIX):
+        int_params, float_params = _parse_synthetic_semantic_args(
+            workload_name.removeprefix(_SYNTHETIC_SEMANTIC_PREFIX)
+        )
+        ignore_label = int_params.pop("ignore_label", synthetic_semantic.DEFAULT_IGNORE_LABEL)
+        jitter_rate = float_params.get("jitter_rate", synthetic_semantic.DEFAULT_JITTER_RATE)
+        gt_dir, dt_dir = synthetic_semantic.make_workload(
+            **int_params,
+            jitter_rate=jitter_rate,
+            ignore_label=ignore_label,
+        )
+        return SemanticWorkload(
+            workload_id=synthetic_semantic.workload_id(**int_params, jitter_rate=jitter_rate),
+            gt_label_maps=gt_dir,
+            dt_label_maps=dt_dir,
+            n_classes=int_params["n_classes"],
+            ignore_label=ignore_label,
+        )
     if any(workload_name.startswith(p) for p in _SEMANTIC_PREFIXES):
         raise NotImplementedError(
             f"workload {workload_name!r} is in the semantic namespace; "
-            f"registered by the B2 stream (ADR-0033 + ADR-0028)."
+            f"the ADE20K cell waits on the S3-B oracle vendoring "
+            f"(mmsegmentation env + license-cleared val cache). For a "
+            f"vernier-only baseline today, use "
+            f"'synthetic_semantic:n_images=...,n_classes=...,seed=...'."
         )
     # B3 streaming workloads — three concrete cells share the
     # ``StreamingWorkload`` shape. Lazy import keeps the cycle clean.

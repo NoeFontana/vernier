@@ -199,6 +199,48 @@ class PanopticSnapshot(_ArtifactBase):
         }
 
 
+class SemanticSnapshot(_ArtifactBase):
+    """Semantic per-class table + scalar mIoU/FWIoU/pixel_accuracy/
+    mean_accuracy (ADR-0028).
+
+    Mirrors the ``PySemanticSummary`` shape from
+    :mod:`vernier.semantic`: four headline floats and a per-class map
+    keyed by class id (kept as ``str`` for JSON-portability — the
+    comparator decodes back to int via the union of keys, mirroring
+    :class:`PanopticSnapshot`).
+
+    The strict-tier parity carrier is the sibling
+    :class:`ConfusionMatrix` artifact (counts.npy SHA); this snapshot
+    is the scalar projection used by reports + the divergence-report
+    canonical form.
+    """
+
+    kind: Literal["semantic_snapshot"] = "semantic_snapshot"
+
+    miou: float = 0.0
+    fwiou: float = 0.0
+    pixel_accuracy: float = 0.0
+    mean_accuracy: float = 0.0
+    n_classes: int = 0
+
+    # Per-class rows, keys are stringified class ids. Each row carries
+    # ``{iou, accuracy, precision}`` — same shape vernier.semantic's
+    # ``Summary.per_class()`` produces, minus the int-valued pixel
+    # supports (those live on the ConfusionMatrix artifact).
+    per_class: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+    def to_canonical_form(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "miou": self.miou,
+            "fwiou": self.fwiou,
+            "pixel_accuracy": self.pixel_accuracy,
+            "mean_accuracy": self.mean_accuracy,
+            "n_classes": self.n_classes,
+            "per_class": {k: dict(v) for k, v in self.per_class.items()},
+        }
+
+
 class ConfusionMatrix(_ArtifactBase):
     """Semantic NxN integer confusion matrix (ADR-0033 §B2).
 
@@ -283,7 +325,9 @@ class StreamingPair(_ArtifactBase):
 
 
 # Discriminated union; each variant carries its ``kind`` literal.
-ComparableArtifact = TensorArtifact | PanopticSnapshot | ConfusionMatrix | StreamingPair
+ComparableArtifact = (
+    TensorArtifact | PanopticSnapshot | SemanticSnapshot | ConfusionMatrix | StreamingPair
+)
 
 
 # ---------------------------------------------------------------------------
@@ -688,7 +732,9 @@ class _SemanticComparator:
         for tier, impl_a, impl_b in _SEMANTIC_TIER_PAIRS:
             if impl_a not in matrices or impl_b not in matrices:
                 continue
-            tiers.append(_compare_confusion(tier=tier, impl_a=impl_a, impl_b=impl_b, matrices=matrices))
+            tiers.append(
+                _compare_confusion(tier=tier, impl_a=impl_a, impl_b=impl_b, matrices=matrices)
+            )
         return CellParityReport(workload_id=workload_id, iou_type=iou_type, tiers=tiers)
 
 
@@ -710,8 +756,7 @@ def _compare_confusion(
     b = matrices[impl_b]
     if a.n_classes != b.n_classes:
         raise ValueError(
-            f"n_classes mismatch comparing {impl_a} vs {impl_b}: "
-            f"{a.n_classes} vs {b.n_classes}"
+            f"n_classes mismatch comparing {impl_a} vs {impl_b}: {a.n_classes} vs {b.n_classes}"
         )
     counts_a = a.counts
     counts_b = b.counts
@@ -726,8 +771,7 @@ def _compare_confusion(
         )
     if counts_a.shape != counts_b.shape:
         raise ValueError(
-            f"shape mismatch comparing {impl_a} vs {impl_b}: "
-            f"{counts_a.shape} vs {counts_b.shape}"
+            f"shape mismatch comparing {impl_a} vs {impl_b}: {counts_a.shape} vs {counts_b.shape}"
         )
 
     divergent_mask = counts_a != counts_b

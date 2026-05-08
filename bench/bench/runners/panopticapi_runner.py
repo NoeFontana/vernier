@@ -19,15 +19,15 @@ from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 from typing import Any
-
-import numpy as np
-from PIL import Image as PILImage
 
 from bench.harness.parity import PanopticSnapshot
 from bench.harness.timing import StageTable
-from bench.runners._protocol import parse_panoptic_runner_args, write_panoptic_outputs
+from bench.runners._protocol import (
+    parse_panoptic_runner_args,
+    per_class_uint64_table,
+    write_panoptic_outputs,
+)
 
 # Mirrors ``ORACLE_COMMIT_SHA`` in
 # ``crates/vernier-panoptic/src/parity.rs``. The bench env's
@@ -35,19 +35,6 @@ from bench.runners._protocol import parse_panoptic_runner_args, write_panoptic_o
 # ``bench/tests/test_panopticapi_env_pin.py`` parses the parity.rs
 # constant and asserts both files agree.
 _ORACLE_SHA_PREFIX = "7bb4655548f9"
-
-
-def _decode_panoptic_png_to_uint32(path: Path) -> np.ndarray:
-    """Decode a panoptic PNG to a uint32 label map via PIL + rgb2id.
-
-    Mirrors panopticapi's eval-side decode (evaluation.py:86-89).
-    Pillow is the decoder of record (the env pins
-    ``Pillow==12.2.0``); RGB → ``r + 256*g + 256²*b``.
-    """
-    rgb = np.array(PILImage.open(path), dtype=np.uint32)
-    if rgb.ndim != 3 or rgb.shape[2] < 3:
-        raise ValueError(f"non-RGB panoptic PNG: {path}")
-    return rgb[:, :, 0] + 256 * rgb[:, :, 1] + 256 * 256 * rgb[:, :, 2]
 
 
 def _pq_stat_to_snapshot(pq_stat: Any, cats_dict: dict[int, dict[str, Any]]) -> PanopticSnapshot:
@@ -76,26 +63,11 @@ def _pq_stat_to_snapshot(pq_stat: Any, cats_dict: dict[int, dict[str, Any]]) -> 
         sq_stuff=float(stuff_d["sq"]),
         rq_stuff=float(stuff_d["rq"]),
         n_stuff=int(stuff_d["n"]),
-        per_class={str(int(k)): {"pq": float(v["pq"]), "sq": float(v["sq"]), "rq": float(v["rq"])} for k, v in per_class.items()},
+        per_class={
+            str(int(k)): {"pq": float(v["pq"]), "sq": float(v["sq"]), "rq": float(v["rq"])}
+            for k, v in per_class.items()
+        },
     )
-
-
-def _per_class_table(snap: PanopticSnapshot) -> np.ndarray:
-    """Build the per-class N×3 ``[pq, sq, rq]`` table.
-
-    Float64 cast as uint64 for the on-disk artifact (the
-    ``PanopticSnapshot`` JSON carries the labelled metric for human
-    readers; the npy is the bit-stable carrier — uint64 view of f64
-    avoids float-text rounding under ``np.save``).
-    """
-    rows: list[tuple[int, float, float, float]] = sorted(
-        ((int(k), v["pq"], v["sq"], v["rq"]) for k, v in snap.per_class.items()),
-        key=lambda r: r[0],
-    )
-    if not rows:
-        return np.zeros((0, 3), dtype=np.uint64)
-    arr = np.array([[r[1], r[2], r[3]] for r in rows], dtype=np.float64)
-    return arr.view(np.uint64).reshape(arr.shape)
 
 
 def main() -> int:
@@ -136,7 +108,7 @@ def main() -> int:
 
     with stages.stage("aggregate"):
         snap = _pq_stat_to_snapshot(pq_stat, cats_dict)
-        per_class_array = _per_class_table(snap)
+        per_class_array = per_class_uint64_table(snap.per_class, columns=("pq", "sq", "rq"))
         snap_json = snap.model_dump_json().encode()
 
     stages.record("total", stages.total_so_far_ns())

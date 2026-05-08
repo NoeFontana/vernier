@@ -42,6 +42,7 @@ from bench.harness.migrations.v1_to_v2 import TENSOR_KEY
 from bench.harness.parity import (
     CellParityReport,
     PanopticSnapshot,
+    SemanticSnapshot,
     compare_cell,
     get_comparator,
     write_report,
@@ -320,6 +321,78 @@ def _spawn_one_rep_panoptic(
     )
 
 
+def _spawn_one_rep_semantic(
+    *,
+    bench_root: Path,
+    impl: str,
+    workload_id: str,
+    gt_label_map_dir: Path,
+    dt_label_map_dir: Path,
+    n_classes: int,
+    ignore_label: int | None,
+    rep_index: int,
+    intermediate_dir: Path,
+    warmup: bool,
+) -> _SpawnResult:
+    """Semantic spawn path. Different argspec from
+    :func:`_spawn_one_rep` (label-map dirs + n_classes + ignore_label
+    instead of single-path GT/DT JSONs) and a two-artifact result
+    bundle (``snapshot.json`` + ``per_class.npy``), mirroring panoptic.
+    """
+    rep_json = intermediate_dir / f"{impl}-rep{rep_index}.json"
+    rep_snapshot = intermediate_dir / f"{impl}-rep{rep_index}-snapshot.json"
+    rep_per_class = intermediate_dir / f"{impl}-rep{rep_index}-per_class.npy"
+    cmd = uv_run_argv(
+        bench_root,
+        impl,
+        "-m",
+        runner_module(impl),
+        "--gt-label-map-dir",
+        str(gt_label_map_dir),
+        "--dt-label-map-dir",
+        str(dt_label_map_dir),
+        "--n-classes",
+        str(n_classes),
+        # Wire ignore_label as -1 sentinel for "none"; the runner
+        # decodes back to None.
+        "--ignore-label",
+        str(ignore_label if ignore_label is not None else -1),
+        "--workload-id",
+        workload_id,
+        "--paradigm",
+        "semantic",
+        "--output",
+        str(rep_json),
+        "--snapshot-output",
+        str(rep_snapshot),
+        "--per-class-output",
+        str(rep_per_class),
+    )
+    status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
+    if status != 0:
+        raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
+    for required in (rep_json, rep_snapshot, rep_per_class):
+        if not required.exists():
+            raise RuntimeError(
+                f"semantic runner {impl} succeeded but did not produce {required.name}"
+            )
+    runner_out = RunnerRepOutput.model_validate_json(rep_json.read_bytes())
+
+    rep_result = RepResult(
+        rep=rep_index,
+        warmup=warmup,
+        stages=runner_out.stages,
+        summary_stats=runner_out.summary_stats,
+        ru_maxrss_bytes=int(rusage.ru_maxrss) * 1024,  # type: ignore[attr-defined]
+        parent_wall_ns=parent_wall_ns,
+    )
+    return _SpawnResult(
+        rep=rep_result,
+        runner_out=runner_out,
+        artifact_paths={"snapshot": rep_snapshot, "per_class": rep_per_class},
+    )
+
+
 def _aggregate_reps(
     *,
     rep_results: list[RepResult],
@@ -408,7 +481,10 @@ def _assemble_impl_result(
     return out_json, np.load(canonical.tensor_path), tensor_sha256, gate_result
 
 
-_PANOPTIC_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class"})
+# Panoptic and semantic both emit a snapshot JSON + per-class npy
+# table, so the artifact-key set is the same for both. Keep it under
+# one name; the spawn/assemble functions stay paradigm-specific.
+_TWO_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class"})
 
 
 def _assemble_impl_result_panoptic(
@@ -433,7 +509,7 @@ def _assemble_impl_result_panoptic(
     Returns ``(out_json, canonical_snapshot, sha_by_key, gate_result)``.
     """
     canonical_shas = _validate_artifacts(
-        impl=impl, spawned=spawned, expected_keys=set(_PANOPTIC_ARTIFACT_KEYS)
+        impl=impl, spawned=spawned, expected_keys=set(_TWO_ARTIFACT_KEYS)
     )
     canonical = spawned[0]
     snapshot_src = canonical.artifact_paths.get("snapshot")
@@ -478,6 +554,95 @@ def _assemble_impl_result_panoptic(
         # carry it for column compatibility — the panoptic metric is
         # encoded in the path segment via ``result_dir(... iou_type="pq",
         # paradigm="panoptic")``.
+        iou_type=canonical.runner_out.iou_type,
+        workload_id=workload_id,
+        git_sha=git_sha,
+        machine_fingerprint=machine_fp,
+        harness_version=HARNESS_VERSION,
+        mode=mode,
+        run_seed=run_seed,
+        reps_count=reps_count,
+        warmup_discarded=warmup_discarded,
+        reps=rep_results,
+        aggregation=aggregation,
+        artifact_paths={
+            "snapshot": f"{impl}.snapshot.json",
+            "per_class": per_class_dst.name,
+        },
+        artifact_sha256={
+            "snapshot": snapshot_sha,
+            "per_class": per_class_sha,
+        },
+        warnings=list(canonical.runner_out.warnings),
+    )
+    snapshot_dst.write_text(result.model_dump_json(indent=2))
+    return (
+        snapshot_dst,
+        canonical_snapshot,
+        {"snapshot": snapshot_sha, "per_class": per_class_sha},
+        gate_result,
+    )
+
+
+def _assemble_impl_result_semantic(
+    *,
+    impl: str,
+    out_dir: Path,
+    spawned: list[_SpawnResult],
+    workload_id: str,
+    git_sha: str,
+    machine_fp: str,
+    mode: Mode,
+    run_seed: int,
+    reps_count: int,
+    warmup_discarded: int,
+    iqr_threshold: float,
+) -> tuple[Path, SemanticSnapshot, dict[str, str], IqrGateResult | None]:
+    """Semantic assembler. Mirrors :func:`_assemble_impl_result_panoptic`:
+    validates per-rep snapshot + per-class sha bit-equality, promotes
+    rep 0's artifacts to the canonical ``<impl>.json`` /
+    ``<impl>_per_class.npy`` pair, aggregates rep timings, writes the
+    ``BenchResult``.
+
+    Returns ``(out_json, canonical_snapshot, sha_by_key, gate_result)``.
+    """
+    canonical_shas = _validate_artifacts(
+        impl=impl, spawned=spawned, expected_keys=set(_TWO_ARTIFACT_KEYS)
+    )
+    canonical = spawned[0]
+    snapshot_src = canonical.artifact_paths.get("snapshot")
+    per_class_src = canonical.artifact_paths.get("per_class")
+    if snapshot_src is None or per_class_src is None:
+        raise RuntimeError(
+            f"semantic spawn for impl {impl!r} missing artifact paths; "
+            f"got: {sorted(canonical.artifact_paths)}"
+        )
+
+    snapshot_dst = out_dir / f"{impl}.json"
+    per_class_dst = out_dir / f"{impl}_per_class.npy"
+    shutil.copyfile(snapshot_src, snapshot_dst.with_suffix(".snapshot.json"))
+    shutil.copyfile(per_class_src, per_class_dst)
+
+    snapshot_sha = file_sha256(snapshot_dst.with_suffix(".snapshot.json"))
+    per_class_sha = file_sha256(per_class_dst)
+    if snapshot_sha != canonical_shas["snapshot"]:
+        raise RuntimeError("semantic snapshot sha mismatch between runner and orchestrator copy")
+    if per_class_sha != canonical_shas["per_class"]:
+        raise RuntimeError("semantic per_class sha mismatch between runner and orchestrator copy")
+
+    canonical_snapshot = SemanticSnapshot.model_validate_json(
+        snapshot_dst.with_suffix(".snapshot.json").read_bytes()
+    )
+
+    rep_results = [s.rep for s in spawned]
+    aggregation, gate_result = _aggregate_reps(
+        rep_results=rep_results, mode=mode, iqr_threshold=iqr_threshold
+    )
+
+    result = BenchResult(
+        paradigm="semantic",
+        impl=canonical.runner_out.impl,
+        impl_version=canonical.runner_out.impl_version,
         iou_type=canonical.runner_out.iou_type,
         workload_id=workload_id,
         git_sha=git_sha,
@@ -594,6 +759,11 @@ class CellSpec:
     dt_png_dir: Path | None = None
     dt_json: Path | None = None
     categories_json: Path | None = None
+    # Semantic family. Populated only when paradigm="semantic".
+    gt_label_map_dir: Path | None = None
+    dt_label_map_dir: Path | None = None
+    n_classes: int | None = None
+    ignore_label: int | None = None
 
 
 @dataclass(frozen=True)
@@ -689,6 +859,27 @@ def run_cell(
                 intermediate_dir=intermediate_dir,
                 warmup=warmup,
             )
+        elif cell.paradigm == "semantic":
+            if (
+                cell.gt_label_map_dir is None
+                or cell.dt_label_map_dir is None
+                or cell.n_classes is None
+            ):
+                raise ValueError(
+                    "semantic cell requires gt_label_map_dir/dt_label_map_dir/n_classes"
+                )
+            spawned[impl_name][rep_idx] = _spawn_one_rep_semantic(
+                bench_root=cell.bench_root,
+                impl=impl_name,
+                workload_id=cell.workload_id,
+                gt_label_map_dir=cell.gt_label_map_dir,
+                dt_label_map_dir=cell.dt_label_map_dir,
+                n_classes=cell.n_classes,
+                ignore_label=cell.ignore_label,
+                rep_index=rep_idx,
+                intermediate_dir=intermediate_dir,
+                warmup=warmup,
+            )
         else:
             if cell.gt_path is None or cell.dt_path is None:
                 raise ValueError(f"{cell.paradigm} cell requires gt_path and dt_path")
@@ -708,6 +899,7 @@ def run_cell(
     impl_tensors: dict[str, np.ndarray] = {}
     impl_sha256: dict[str, str] = {}
     impl_panoptic_snapshots: dict[str, PanopticSnapshot] = {}
+    impl_semantic_snapshots: dict[str, SemanticSnapshot] = {}
     iqr_outcomes: dict[str, IqrGateResult] = {}
     for impl_name in cell.impls:
         results = [r for r in spawned[impl_name] if r is not None]
@@ -727,6 +919,22 @@ def run_cell(
             )
             impl_jsons[impl_name] = out_json
             impl_panoptic_snapshots[impl_name] = snapshot
+        elif cell.paradigm == "semantic":
+            out_json, sem_snapshot, _shas, iqr_outcome = _assemble_impl_result_semantic(
+                impl=impl_name,
+                out_dir=out_dir,
+                spawned=results,
+                workload_id=cell.workload_id,
+                git_sha=git_sha,
+                machine_fp=machine_fp,
+                mode=cell.mode,
+                run_seed=cell.run_seed,
+                reps_count=n_measurement,
+                warmup_discarded=n_warmup,
+                iqr_threshold=iqr_threshold,
+            )
+            impl_jsons[impl_name] = out_json
+            impl_semantic_snapshots[impl_name] = sem_snapshot
         else:
             out_json, tensor, tensor_sha, iqr_outcome = _assemble_impl_result(
                 impl=impl_name,
@@ -765,7 +973,11 @@ def run_cell(
                 iou_type=cell.iou_type,
                 impl_outputs=dict(impl_panoptic_snapshots),
             )
-        if not parity_report.passed:
+        # Semantic has no oracle yet (S3-B / mmseg pending) so
+        # ``parity_report`` stays None for semantic cells; the CLI
+        # also short-circuits ``parity=False`` when only the
+        # vernier_semantic impl is registered.
+        if parity_report is not None and not parity_report.passed:
             divergence_report_path = write_report(parity_report, out_dir)
 
     return CellRun(

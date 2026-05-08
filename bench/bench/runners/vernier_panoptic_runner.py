@@ -1,45 +1,34 @@
 """vernier_panoptic runner — invoked as a subprocess in
 ``bench/envs/panopticapi`` (ADR-0033 §B1).
 
-Mirrors :func:`tests/python/parity_panoptic/harness.py:_vernier_snapshot`:
-load the GT / DT PNG pairs into uint32 ndarrays, then call
-``vernier.panoptic.Evaluator(parity_mode=...).evaluate(dataset,
-predictions)``. The bench runner adds stage timers and emits a
-:class:`bench.harness.parity.PanopticSnapshot` JSON instead of the
-harness's frozen-dataclass return.
+Streams per-image GT/DT pairs through
+:meth:`vernier.panoptic.Evaluator.background`: PNG decode runs on the
+main thread while the Rust PQ kernel folds on a worker thread, with
+bounded queue depth. Constant RSS by construction — only
+``queue_capacity`` decoded label maps are in flight at any one time,
+versus the prior eager-decode path that materialized all 5000 GT +
+5000 DT uint32 arrays before invoking the kernel (~20 GiB at val2017
+scale).
 
-This runner shares the panopticapi env so the bench comparator can
-run both impls in identical Python state. ``vernier`` itself is
-installed via the vernier path-dep at ``bench/envs/panopticapi/``.
+The kernel itself is unchanged; strict-tier parity vs panopticapi
+still passes.
 """
 
 from __future__ import annotations
 
 import json
 import sys
-from pathlib import Path
 from typing import Any
 
-import numpy as np
 import vernier
-from PIL import Image as PILImage
 
 from bench.harness.parity import PanopticSnapshot
 from bench.harness.timing import StageTable
-from bench.runners._protocol import parse_panoptic_runner_args, write_panoptic_outputs
-
-
-def _decode_panoptic_png_to_uint32(path: Path) -> np.ndarray:
-    """Decode a panoptic PNG to a uint32 label map via PIL + rgb2id.
-
-    Same decode as panopticapi's evaluation.py:86-89; vernier consumes
-    the resulting uint32 ndarrays directly via
-    :meth:`vernier.panoptic.Dataset.from_arrays`.
-    """
-    rgb = np.array(PILImage.open(path), dtype=np.uint32)
-    if rgb.ndim != 3 or rgb.shape[2] < 3:
-        raise ValueError(f"non-RGB panoptic PNG: {path}")
-    return rgb[:, :, 0] + 256 * rgb[:, :, 1] + 256 * 256 * rgb[:, :, 2]
+from bench.runners._protocol import (
+    parse_panoptic_runner_args,
+    per_class_uint64_table,
+    write_panoptic_outputs,
+)
 
 
 def _summary_to_snapshot(summary: vernier.panoptic.Summary) -> PanopticSnapshot:
@@ -70,33 +59,6 @@ def _summary_to_snapshot(summary: vernier.panoptic.Summary) -> PanopticSnapshot:
     )
 
 
-def _per_class_table(snap: PanopticSnapshot) -> np.ndarray:
-    """Build the per-class N×3 ``[pq, sq, rq]`` table.
-
-    Same shape as the panopticapi runner's table (uint64 view of
-    f64) so the per-class npy artifacts diff bit-equally between
-    impls under the strict tier.
-    """
-    rows: list[tuple[int, float, float, float]] = sorted(
-        ((int(k), v["pq"], v["sq"], v["rq"]) for k, v in snap.per_class.items()),
-        key=lambda r: r[0],
-    )
-    if not rows:
-        return np.zeros((0, 3), dtype=np.uint64)
-    arr = np.array([[r[1], r[2], r[3]] for r in rows], dtype=np.float64)
-    return arr.view(np.uint64).reshape(arr.shape)
-
-
-def _build_label_maps(
-    annotations: list[dict[str, Any]],
-    png_dir: Path,
-) -> dict[int, np.ndarray]:
-    return {
-        int(ann["image_id"]): _decode_panoptic_png_to_uint32(png_dir / ann["file_name"])
-        for ann in annotations
-    }
-
-
 def main() -> int:
     args = parse_panoptic_runner_args()
     stages = StageTable()
@@ -113,43 +75,38 @@ def main() -> int:
         # has both a GT label-map and a DT label-map; matches the
         # oracle's pairing rule.
         pred_by_image = {a["image_id"]: a for a in dt["annotations"]}
-        gt_anns: list[dict[str, Any]] = []
-        dt_anns: list[dict[str, Any]] = []
-        for gt_ann in gt["annotations"]:
-            if gt_ann["image_id"] in pred_by_image:
-                gt_anns.append(gt_ann)
-                dt_anns.append(pred_by_image[gt_ann["image_id"]])
-
-    with stages.stage("decode_pngs"):
-        gt_label_maps = _build_label_maps(gt_anns, args.gt_png_dir)
-        dt_label_maps = _build_label_maps(dt_anns, args.dt_png_dir)
-        gt_segs = {ann["image_id"]: ann["segments_info"] for ann in gt_anns}
-        dt_segs = {ann["image_id"]: ann["segments_info"] for ann in dt_anns}
-
-        gt_segs_bytes = json.dumps({str(k): v for k, v in gt_segs.items()}).encode()
-        dt_segs_bytes = json.dumps({str(k): v for k, v in dt_segs.items()}).encode()
+        pairs: list[tuple[dict[str, Any], dict[str, Any]]] = [
+            (gt_ann, pred_by_image[gt_ann["image_id"]])
+            for gt_ann in gt["annotations"]
+            if gt_ann["image_id"] in pred_by_image
+        ]
         cats_bytes = json.dumps(list(categories)).encode()
 
-        gt_dataset = vernier.panoptic.Dataset.from_arrays(
-            gt_label_maps, gt_segs_bytes, cats_bytes
-        )
-        dt_predictions = vernier.panoptic.Predictions.from_arrays(
-            dt_label_maps, dt_segs_bytes
-        )
-
-    with stages.stage("pq_compute"):
-        # parity_mode="strict" so this runner reproduces panopticapi
-        # bit-exactly under the strict-tier comparator. Aligned-tier
-        # comparisons would relax to ``parity_mode="corrected"`` —
-        # left as a Stage 3 follow-up (the strict run is the canonical
-        # bench cell here).
-        summary = vernier.panoptic.Evaluator(
-            parity_mode="strict", things_stuff_split=True
-        ).evaluate(gt_dataset, dt_predictions)
+    # The Background ``with`` block covers worker-thread shutdown if
+    # ``submit`` raises; otherwise the worker would leak past the
+    # runner's lifetime. parity_mode="strict" reproduces panopticapi
+    # bit-exactly under the strict-tier comparator.
+    with (
+        stages.stage("stream_pq"),
+        vernier.panoptic.Evaluator(parity_mode="strict", things_stuff_split=True).background(
+            cats_bytes
+        ) as ev,
+    ):
+        for gt_ann, dt_ann in pairs:
+            gt_arr = vernier.panoptic.decode_label_map_png(args.gt_png_dir / gt_ann["file_name"])
+            dt_arr = vernier.panoptic.decode_label_map_png(args.dt_png_dir / dt_ann["file_name"])
+            ev.submit(
+                int(gt_ann["image_id"]),
+                gt_arr,
+                json.dumps(gt_ann["segments_info"]).encode(),
+                dt_arr,
+                json.dumps(dt_ann["segments_info"]).encode(),
+            )
+        summary = ev.finalize()
 
     with stages.stage("aggregate"):
         snap = _summary_to_snapshot(summary)
-        per_class_array = _per_class_table(snap)
+        per_class_array = per_class_uint64_table(snap.per_class, columns=("pq", "sq", "rq"))
         snap_json = snap.model_dump_json().encode()
 
     stages.record("total", stages.total_so_far_ns())
