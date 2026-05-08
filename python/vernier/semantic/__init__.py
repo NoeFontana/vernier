@@ -34,17 +34,6 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vernier._core import (
-    ClassSemanticStats,
-    ConfusionMatrix,
-    evaluate_semantic_from_arrays,
-)
-from vernier._core import (
-    SemanticSummary as Summary,
-)
-from vernier._core import (
-    StreamingSemanticEvaluator as StreamingEvaluator,
-)
-from vernier._core import (
     BackgroundSemanticEvaluator as BackgroundEvaluator,
 )
 
@@ -53,11 +42,20 @@ from vernier._core import (
 # match the same class object as `vernier.instance.PartialFormatMismatch`
 # (ADR-0032: shared paradigm-agnostic error classes).
 from vernier._core import (
+    ClassSemanticStats,
+    ConfusionMatrix,
     PartialDatasetMismatch,
     PartialFormatMismatch,
     PartialParamsMismatch,
     PartialPartitionOverlap,
     PartialRankCollision,
+    evaluate_semantic_from_arrays,
+)
+from vernier._core import (
+    SemanticSummary as Summary,
+)
+from vernier._core import (
+    StreamingSemanticEvaluator as StreamingEvaluator,
 )
 from vernier._types import ParityMode
 
@@ -82,6 +80,7 @@ __all__ = [
     "Predictions",
     "StreamingEvaluator",
     "Summary",
+    "decode_label_map_png",
 ]
 
 #: Cityscapes ignore-label convention (255). Mirrors
@@ -101,17 +100,21 @@ PASCAL_VOC_IGNORE_LABEL: Final[int] = 255
 PASCAL_VOC_N_CLASSES: Final[int] = 21
 
 
-def _decode_png_to_uint32(path: str | Path) -> NDArray[np.uint32]:
-    """Load a single-channel PNG label map as a `(H, W)` ``uint32``
-    array. Lazy-imports Pillow; raises a structured :class:`ImportError`
-    if Pillow is not installed.
+def decode_label_map_png(path: str | Path) -> NDArray[np.uint32]:
+    """Load a single-channel PNG label map as a ``(H, W)`` ``uint32``
+    array.
+
+    Lazy-imports Pillow; raises a structured :class:`ImportError` if
+    Pillow is not installed. Multi-channel (RGB-encoded) panoptic
+    PNGs belong in :func:`vernier.panoptic.decode_label_map_png` —
+    they are rejected here with :class:`ValueError`.
     """
     try:
         from PIL import Image
     except ImportError as e:
         raise ImportError(
-            "Pillow is required for `vernier.semantic.Dataset.from_files` "
-            "and the per-dataset presets; install via `pip install Pillow` "
+            "Pillow is required for `vernier.semantic.decode_label_map_png` "
+            "(and the per-dataset presets); install via `pip install Pillow` "
             "(or include it in your dev environment)."
         ) from e
     img = Image.open(path)
@@ -130,7 +133,7 @@ def _decode_png_paths(
 ) -> dict[int, NDArray[np.uint32]]:
     """Decode a mapping of image_id → png path into the ``uint32``
     label-map dict the FFI consumes."""
-    return {image_id: _decode_png_to_uint32(p) for image_id, p in png_paths.items()}
+    return {image_id: decode_label_map_png(p) for image_id, p in png_paths.items()}
 
 
 def _merge_binary_masks(

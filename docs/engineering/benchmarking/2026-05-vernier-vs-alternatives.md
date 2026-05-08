@@ -143,33 +143,37 @@ passes against panopticapi on every cell (PQ=1.0 by construction).
 
 | impl                  |   median    | RSS (max)   | vs vernier_panoptic |
 | --------------------- | ----------: | ----------: | ------------------: |
-| **vernier_panoptic**  |   85.631 s  |  21.17 GiB  |   **1.00x**         |
-| panopticapi           |   34.297 s  |  144.6 MiB  |    0.40x (faster)   |
+| **vernier_panoptic**  |   51.036 s  |  129.8 MiB  |   **1.00x**         |
+| panopticapi           |   34.599 s  |  144.6 MiB  |    0.68x (faster)   |
 
 | metric | impl             |    median (ns) |    RSS (B)     |
 | ------ | ---------------- | -------------: | -------------: |
-| pq     | vernier_panoptic | 85,631,466,597 | 22,736,642,048 |
-| pq     | panopticapi      | 34,296,700,267 |    151,678,976 |
+| pq     | vernier_panoptic | 51,036,000,000 |    136,118,272 |
+| pq     | panopticapi      | 34,599,000,000 |    151,678,976 |
 
-**Findings flag.** Unlike every instance cell, vernier is **slower
-and ~150x more memory-heavy** than the oracle on panoptic. Two
-contributing factors visible from the runner code:
+**Findings flag (resolved).** The previous snapshot showed vernier
+2.5x slower and ~150x more memory-heavy than panopticapi on this
+cell. The runner now streams via
+`vernier.panoptic.Evaluator.background()`: PNG decode runs on the
+main thread while the Rust PQ kernel folds on a worker, with bounded
+queue depth, so RSS is `O(queue_capacity * image_size * 4 bytes)`
+instead of `O(n_images * image_size * 4 bytes)`. The runner-side
+`_build_label_maps` eager decode is gone.
 
-- **Eager label-map decode**: `bench/bench/runners/vernier_panoptic_runner.py`
-  decodes every PNG label map into a uint32 numpy array up front
-  (`_build_label_maps`), holding all 5000 GT + 5000 DT maps in RAM
-  before the kernel runs. ~1 MP × 4 bytes × 10000 maps ≈ 20 GB RSS,
-  which matches the observation.
-- **panopticapi streams**: the oracle iterates per-image on disk
-  (you can see "Core: 0, X from 5000 images processed" in the run
-  log) — constant-RSS by construction.
+- **Wall**: 85.631 s → 51.036 s (-40.4%). Decode + kernel now overlap;
+  the remaining gap to panopticapi (1.5x slower) is per-image
+  framework overhead inside the streaming submit + finalize loop.
+- **RSS**: 21.17 GiB → 129.8 MiB (-99.4%). Now slightly *under*
+  panopticapi's 144.6 MiB.
 
-**Optimization target** (engineer-facing): rework the panoptic runner
-(or the `vernier.panoptic.Dataset.from_arrays` API) so label maps
-stream rather than load eagerly. Memory delta should be at least
-100x; depending on how much of the 85 s wall is spent on Python-side
-PNG decoding vs the Rust PQ kernel, wall-time delta could be similar.
-Worth profiling both stages to see which dominates before optimizing.
+The Rust PQ kernel itself is unchanged; strict-tier parity vs
+`pq_compute_single_core` still passes.
+
+**Next optimization target** (engineer-facing): the remaining 1.5x
+wall-time gap vs panopticapi. Both impls now stream, so the delta is
+either (a) per-image FFI overhead in `submit()` + JSON-encoded
+segments_info parsing, or (b) the Rust kernel itself. Profile both
+sides before picking.
 
 **Harness fixes landed this phase**:
 - ``GT_ZIP_SHA256`` placeholder pinned to the upstream `c05f76d2…`.
@@ -184,27 +188,33 @@ Worth profiling both stages to see which dominates before optimizing.
 - CLI extended to dispatch `--paradigm panoptic` (was hard-gated to
   instance only); routes to the four-path GT/DT bundle.
 
-## Semantic — `ade20k_val_*`
+## Semantic — `synthetic_semantic:*` and `ade20k_val_*`
 
-**Not runnable this phase.** The semantic paradigm is registered in
-the type system (`SemanticWorkload`, the `--paradigm semantic` CLI
-flag), and the `vernier-semantic` Rust crate ships with mIoU support,
-but the bench harness has no runners or workloads wired up:
+**Vernier-only baseline runnable this phase.** The bench harness now
+dispatches `--paradigm semantic`: `IMPL_PARADIGM_SUPPORT["semantic"] =
+{"vernier_semantic": {"miou"}}`, the workload resolver takes
+`synthetic_semantic:n_images=,n_classes=,seed=` (deterministic uint8
+PNG label-map pairs cached under `bench/.cache/synthetic_semantic/`),
+and `bench/bench/runners/vernier_semantic_runner.py` streams via
+`vernier.semantic.Evaluator.stream()`. No oracle yet — the
+`mmsegmentation` env (PR-B6/B7/B8) and ADE20K val cache (academic
+license, no auto-download) are external blockers, so parity is
+skipped while only one impl is registered.
 
-- `IMPL_PARADIGM_SUPPORT["semantic"] = {}` — no impls registered
-- `_SEMANTIC_PREFIXES = ("ade20k_val",)` namespaces the workload IDs,
-  but the resolver raises `NotImplementedError("registered by the B2
-  stream")`
-- No `bench/envs/mmseg/` env (the planned oracle install is ~5-8 min
-  via `uv sync`, plus ADE20K val data ~2 GB which is academic-license
-  gated and not auto-downloadable)
-- No `vernier_semantic_runner` or `mmseg_runner` modules under
-  `bench/bench/runners/`
+A 200-image / 19-class / `jitter_rate=0.1` synthetic cell on this
+host:
 
-To get semantic numbers, the bench harness B2 stream needs to land:
-ADE20K val cache pin, runner pair, `mmseg` env, IMPL_PARADIGM_SUPPORT
-registration. That's a follow-up PR larger than the panoptic and
-keypoints fixes combined; tracked separately.
+| impl              |   median   | RSS (max) | mIoU    |
+| ----------------- | ---------: | --------: | ------: |
+| vernier_semantic  |   200 ms   |  93.8 MiB |  0.8180 |
+
+This is a measurement loop, not a comparison — the synthetic workload
+is for iterating on the kernel under realistic-shaped data, not for
+calibrating against a third party. ADE20K + mmseg parity (S3-B) is
+where the comparable numbers will live.
+
+**`ade20k_val_*` still raises** `NotImplementedError` from the
+resolver, with an updated message pointing at the external blockers.
 
 ## How to refresh
 
@@ -226,10 +236,17 @@ python -m panoptic_val_cache
 vernier-bench run --paradigm panoptic --impl all \
   --workload coco_panoptic_val2017_perfect --mode dev
 
+# Semantic — vernier-only baseline against a synthetic workload
+# (no oracle until S3-B mmsegmentation env lands). The first run
+# materializes the cache under bench/.cache/synthetic_semantic/.
+vernier-bench run --paradigm semantic --impl all \
+  --workload "synthetic_semantic:n_images=200,n_classes=19,seed=0" --mode dev
+
 # Re-pull the medians + RSS from the result tree:
 for cell in instance/coco_val2017_jittered_seed0/{bbox,segm,boundary} \
             instance/coco_val2017_keypoints_jittered_seed0/keypoints \
-            panoptic/coco_panoptic_val2017_perfect/pq; do
+            panoptic/coco_panoptic_val2017_perfect/pq \
+            semantic/synthetic_semantic_n200_c19_s0/miou; do
   for f in bench/results/<sha>/<fp>/$cell/*.json; do
     [ -f "$f" ] && python -c "import json; d=json.load(open('$f')); reps=[r for r in d['reps'] if not r['warmup']]; print(reps[0]['stages']['total']['wall_ns'], reps[0]['ru_maxrss_bytes'])"
   done

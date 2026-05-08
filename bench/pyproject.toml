@@ -40,6 +40,11 @@ dependencies = [
     # pinning the runtime dep avoids a "metric mysteriously absent"
     # surprise in CI.
     "psutil>=5.9",
+    # Pillow drives single-channel PNG generation for the
+    # synthetic_semantic workload (bench/bench/workloads/synthetic_semantic.py)
+    # and the same decoder shape the runners use. Pinned to match the
+    # runner-env Pillow pin so generation and decode use one ABI.
+    "Pillow>=10",
 ]
 
 [tool.uv.sources]

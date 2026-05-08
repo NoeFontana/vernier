@@ -9,9 +9,26 @@ Per ADR-0029, the panoptic-segmentation evaluation paradigm lives under
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+from numpy.typing import NDArray
 
 from vernier._core import (
+    BackgroundPanopticEvaluator as BackgroundEvaluator,
+)
+
+# Re-export the five distributed-eval exception types under the
+# panoptic namespace so callers catching `vernier.panoptic.PartialFormatMismatch`
+# match the same class object as `vernier.instance.PartialFormatMismatch`
+# (ADR-0032: shared paradigm-agnostic error classes).
+from vernier._core import (
     ClassPanopticStats,
+    PartialDatasetMismatch,
+    PartialFormatMismatch,
+    PartialParamsMismatch,
+    PartialPartitionOverlap,
+    PartialRankCollision,
     evaluate_panoptic,
 )
 from vernier._core import (
@@ -25,21 +42,6 @@ from vernier._core import (
 )
 from vernier._core import (
     StreamingPanopticEvaluator as StreamingEvaluator,
-)
-from vernier._core import (
-    BackgroundPanopticEvaluator as BackgroundEvaluator,
-)
-
-# Re-export the five distributed-eval exception types under the
-# panoptic namespace so callers catching `vernier.panoptic.PartialFormatMismatch`
-# match the same class object as `vernier.instance.PartialFormatMismatch`
-# (ADR-0032: shared paradigm-agnostic error classes).
-from vernier._core import (
-    PartialDatasetMismatch,
-    PartialFormatMismatch,
-    PartialParamsMismatch,
-    PartialPartitionOverlap,
-    PartialRankCollision,
 )
 from vernier._types import ParityMode
 
@@ -57,7 +59,37 @@ __all__ = [
     "Predictions",
     "StreamingEvaluator",
     "Summary",
+    "decode_label_map_png",
 ]
+
+
+def decode_label_map_png(path: str | Path) -> NDArray[np.uint32]:
+    """Decode a panoptic RGB PNG into a `(H, W)` ``uint32`` segment-id
+    label map via the ``rgb2id`` convention (panopticapi/evaluation.py
+    rgb2id: ``r + 256*g + 256²*b``).
+
+    Lazy-imports Pillow; raises a structured :class:`ImportError` if it
+    isn't installed. Three channels are required — a non-RGB PNG is
+    rejected with :class:`ValueError`. Single-channel class-id label
+    maps (semantic-segmentation) belong in
+    :func:`vernier.semantic.Dataset.from_files`, which has its own
+    decoder.
+    """
+    try:
+        from PIL import Image
+    except ImportError as e:
+        raise ImportError(
+            "Pillow is required for `vernier.panoptic.decode_label_map_png`; "
+            "install via `pip install Pillow` (or include it in your dev "
+            "environment)."
+        ) from e
+    rgb = np.array(Image.open(path), dtype=np.uint32)
+    if rgb.ndim != 3 or rgb.shape[2] < 3:
+        raise ValueError(
+            f"panoptic PNG {path!s} must be RGB (3 channels); got shape {rgb.shape!r}. "
+            f"Single-channel semantic label maps belong in `vernier.semantic`."
+        )
+    return rgb[:, :, 0] + 256 * rgb[:, :, 1] + 256 * 256 * rgb[:, :, 2]
 
 
 @dataclass(frozen=True, slots=True)

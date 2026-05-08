@@ -142,6 +142,150 @@ def parse_panoptic_runner_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def per_class_uint64_table(
+    per_class: dict[str, dict[str, float]],
+    columns: tuple[str, ...],
+) -> np.ndarray:
+    """Build an ``N x len(columns)`` ``uint64`` view of an ``f64``
+    per-class table from a snapshot's ``per_class`` dict.
+
+    Rows are sorted by integer class id so the artifact diffs
+    bit-equally between impls (uint64 view of f64 sidesteps the
+    text-rounding ``np.save`` would otherwise apply to a float-text
+    column).
+    """
+    rows: list[tuple[int, tuple[float, ...]]] = sorted(
+        ((int(k), tuple(float(v[c]) for c in columns)) for k, v in per_class.items()),
+        key=lambda r: r[0],
+    )
+    if not rows:
+        return np.zeros((0, len(columns)), dtype=np.uint64)
+    arr = np.array([list(r[1]) for r in rows], dtype=np.float64)
+    return arr.view(np.uint64).reshape(arr.shape)
+
+
+def parse_semantic_runner_args() -> argparse.Namespace:
+    """Semantic-runner argspec (ADR-0033 §B2).
+
+    The label-map family (GT label-map dir + DT label-map dir, plus
+    ``--n-classes`` and an optional ``--ignore-label``) replaces
+    ``--gt`` / ``--dt``. Output flags follow the panoptic two-artifact
+    shape:
+
+    - ``--output`` — the per-rep ``RunnerRepOutput`` JSON.
+    - ``--snapshot-output`` — the per-rep ``SemanticSnapshot`` JSON
+      under the ``"snapshot"`` artifact slot.
+    - ``--per-class-output`` — the per-rep per-class ``.npy`` table
+      under the ``"per_class"`` artifact slot.
+
+    ``--ignore-label`` is encoded as a non-negative int; pass
+    ``-1`` to mean "no ignore label" (matches the
+    :class:`vernier.semantic.Evaluator` ``ignore_label=None`` shape).
+    """
+    p = argparse.ArgumentParser(add_help=True)
+    p.add_argument("--gt-label-map-dir", type=Path, required=True)
+    p.add_argument("--dt-label-map-dir", type=Path, required=True)
+    p.add_argument("--n-classes", type=int, required=True)
+    p.add_argument(
+        "--ignore-label",
+        type=int,
+        default=-1,
+        help="Ignore-label class id; -1 means no ignore label.",
+    )
+    p.add_argument("--workload-id", type=str, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--snapshot-output", type=Path, required=True)
+    p.add_argument("--per-class-output", type=Path, required=True)
+    p.add_argument(
+        "--paradigm",
+        type=str,
+        default="semantic",
+        choices=["semantic"],
+        help="Evaluation paradigm. Pinned to 'semantic' for this runner family.",
+    )
+    p.add_argument(
+        "--iou-type",
+        type=str,
+        default="bbox",
+        help=(
+            "Detection-IouType slot carried by RunnerRepOutput. Ignored "
+            "by semantic runners; the metric for the cell is 'miou'."
+        ),
+    )
+    return p.parse_args()
+
+
+def write_semantic_outputs(
+    *,
+    args: argparse.Namespace,
+    impl: str,
+    impl_version: str,
+    stages: dict[str, StageTimings],
+    snapshot_json_bytes: bytes,
+    per_class_array: np.ndarray,
+    warnings: list[BenchWarning] | None = None,
+) -> None:
+    """Persist a semantic runner's two-artifact bundle.
+
+    - ``snapshot.json`` — the ``SemanticSnapshot`` Pydantic JSON; the
+      comparator reads this back and dispatches per-tier comparisons.
+    - ``per_class.npy`` — uint64 ``N x 4`` array (rows sorted by class id)
+      holding ``[iou, accuracy, precision, support]`` as f64 bit-cast
+      into uint64. ``np.save`` with ``allow_pickle=False``; readers cast
+      back via ``arr.view(np.float64)``.
+
+    The ``RunnerRepOutput`` records both artifacts under the canonical
+    ``"snapshot"`` and ``"per_class"`` slots. The ``summary_stats``
+    slot carries the four headline scalars (mIoU / FWIoU /
+    pixel_accuracy / mean_accuracy) so downstream report aggregation
+    has scalar columns without re-parsing the snapshot.
+    """
+    from bench.harness.parity import SemanticSnapshot
+
+    snap = SemanticSnapshot.model_validate_json(snapshot_json_bytes)
+
+    snapshot_path: Path = args.snapshot_output
+    snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    snapshot_path.write_bytes(snapshot_json_bytes)
+
+    per_class_path: Path = args.per_class_output
+    per_class_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(per_class_path, per_class_array, allow_pickle=False)
+
+    summary_stats: dict[str, float] = {
+        "mIoU": float(snap.miou),
+        "FWIoU": float(snap.fwiou),
+        "pixel_accuracy": float(snap.pixel_accuracy),
+        "mean_accuracy": float(snap.mean_accuracy),
+        "n_classes": float(snap.n_classes),
+    }
+
+    output = RunnerRepOutput(
+        paradigm="semantic",
+        impl=impl,
+        impl_version=impl_version,
+        # IouType slot kept for cross-paradigm column compatibility;
+        # the metric for semantic cells is "miou", recorded by the
+        # orchestrator separately.
+        iou_type=args.iou_type,
+        workload_id=args.workload_id,
+        stages=stages,
+        summary_stats=summary_stats,
+        artifact_paths={
+            "snapshot": snapshot_path.name,
+            "per_class": per_class_path.name,
+        },
+        artifact_sha256={
+            "snapshot": file_sha256(snapshot_path),
+            "per_class": file_sha256(per_class_path),
+        },
+        warnings=list(warnings or []),
+    )
+    output_path: Path = args.output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(output.model_dump_json(indent=2))
+
+
 def write_panoptic_outputs(
     *,
     args: argparse.Namespace,
@@ -156,7 +300,7 @@ def write_panoptic_outputs(
 
     - ``snapshot.json`` — the ``PanopticSnapshot`` Pydantic JSON; the
       comparator reads this back and dispatches per-tier comparisons.
-    - ``per_class.npy`` — uint64 ``N×3`` array (rows sorted by
+    - ``per_class.npy`` — uint64 ``N x 3`` array (rows sorted by
       category id) holding ``[pq, sq, rq]`` per category as f64
       bit-cast into uint64. ``np.save`` with ``allow_pickle=False``;
       readers cast back via ``arr.view(np.float64)``.
