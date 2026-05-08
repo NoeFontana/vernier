@@ -19,7 +19,7 @@
 //!   subset invariant ever broke.
 
 use crate::error::MaskError;
-use crate::ops::erode::{erode_raster_into_scratch, ErodeScratch};
+use crate::ops::erode::{erode_bbox_into_scratch, erode_raster_into_scratch, ErodeScratch};
 use crate::ops::SegmentTable;
 use crate::rle::Rle;
 
@@ -79,8 +79,25 @@ pub fn boundary_band_segments_into(
         segments.push_segments(&[]);
         return Ok(0);
     }
-    erode_for_band(rle, dilation_ratio, scratch);
-    Ok(segments.push_from_rasters_xor(&scratch.raster, &scratch.eroded))
+    let radius = dilation_pixels(rle.h, rle.w, dilation_ratio);
+    let h = rle.h as usize;
+    let d = radius as usize;
+    let bbox = rle.bbox();
+    let bw = bbox[2] as usize;
+    let bh = bbox[3] as usize;
+    if bw == 0 || bh == 0 {
+        // Empty foreground → empty band → no segments.
+        segments.push_segments(&[]);
+        return Ok(0);
+    }
+    rle.decode_bbox_into(&mut scratch.raster_bbox, bbox);
+    erode_bbox_into_scratch(scratch, bw, bh, d);
+    Ok(segments.push_from_rasters_xor_bbox(
+        &scratch.raster_bbox,
+        &scratch.eroded_bbox,
+        h,
+        bbox,
+    ))
 }
 
 /// Decodes `rle` to `scratch.raster` and writes the eroded raster to
@@ -123,6 +140,7 @@ pub(crate) fn dilation_pixels(h: u32, w: u32, dilation_ratio: f64) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
         Rle { h, w, counts }
@@ -251,5 +269,59 @@ mod tests {
         let area = boundary_band_segments_into(&r, 0.02, &mut erode, &mut segments).unwrap();
         assert_eq!(area, 0);
         assert!(segments.row(0).is_empty());
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig { cases: 256, ..ProptestConfig::default() })]
+
+        // Property check: across random binary masks of varying shape
+        // and dilation ratio, the bbox-cropped fast path's emitted
+        // segments must equal the `boundary_band_into` slow path's
+        // `decode_fg_offsets_into` byte-for-byte. Catches: column-
+        // spanning miscompiles when bh == h, off-by-one in bbox-row
+        // clipping, and any drift between the bbox erode and the
+        // full-image erode.
+        //
+        // Image dims (h, w) ∈ 1..=14 deliberately cover the bh==h
+        // edge case (the dilation ratio is clamped to ≥ 1 pixel per
+        // M3, so even small images get a non-trivial erosion radius
+        // that may make the foreground bbox span the full column
+        // height after expansion — exercising the contiguous-columns
+        // branch in `push_from_rasters_xor_bbox`).
+        #[test]
+        fn boundary_band_segments_into_proptest_matches_band_decode(
+            (h, w, ratio_idx, raster) in (1usize..=14, 1usize..=14, 0u32..=4)
+                .prop_flat_map(|(h, w, ratio_idx)| {
+                    let len = h * w;
+                    (
+                        Just(h),
+                        Just(w),
+                        Just(ratio_idx),
+                        proptest::collection::vec(0u8..=1, len..=len),
+                    )
+                }),
+        ) {
+            let r = Rle::from_raster_bytes(&raster, h as u32, w as u32).unwrap();
+            let ratio = match ratio_idx {
+                0 => 0.02,
+                1 => 0.1,
+                2 => 0.3,
+                3 => 0.5,
+                _ => 0.8,
+            };
+            let mut erode_slow = ErodeScratch::new();
+            let band = boundary_band_into(&r, ratio, &mut erode_slow).unwrap();
+            let mut expected_offsets = Vec::new();
+            band.decode_fg_offsets_into(&mut expected_offsets);
+
+            let mut erode_fast = ErodeScratch::new();
+            let mut segments = SegmentTable::new();
+            let area = boundary_band_segments_into(
+                &r, ratio, &mut erode_fast, &mut segments,
+            ).unwrap();
+
+            proptest::prop_assert_eq!(area, band.area());
+            proptest::prop_assert_eq!(segments.row(0), expected_offsets.as_slice());
+        }
     }
 }

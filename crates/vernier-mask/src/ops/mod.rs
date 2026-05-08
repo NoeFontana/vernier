@@ -386,7 +386,68 @@ impl SegmentTable {
     /// without materializing the band raster.
     pub fn push_from_rasters_xor(&mut self, a: &[u8], b: &[u8]) -> u64 {
         debug_assert_eq!(a.len(), b.len());
-        let area = scan_segments_xor(&mut self.flat, a, b);
+        let area = scan_segments_xor(&mut self.flat, a, b, 0);
+        self.idx.push(self.flat.len());
+        area
+    }
+
+    /// Bbox-cropped variant of [`Self::push_from_rasters_xor`]: walks
+    /// `a` and `b` as `bw * bh` column-major bbox-shape rasters and
+    /// emits segment offsets in the original full-image flat coord
+    /// system via `(bx + col) * h + by + within_col_y`.
+    ///
+    /// Used by the boundary-IoU fast path so the per-mask XOR scan
+    /// reads only the bbox bytes — `bw * bh` per call instead of
+    /// `h * w`. On val2017 instance bboxes (~100×100 in 480×640
+    /// images), that's a ~30× reduction in scan-loop memory traffic.
+    ///
+    /// Each bbox column is scanned independently so any in-progress
+    /// foreground run is closed at the column boundary. When `bh < h`
+    /// the bbox columns are non-adjacent in flat coords, so this is
+    /// semantically equivalent to the full-image scan. When `bh == h`
+    /// (foreground spans the full column height) a band run that
+    /// would naturally span columns gets split into per-column
+    /// segments — the two-pointer sweep in
+    /// [`intersect_area_offsets`] folds adjacent segments correctly,
+    /// so intersection areas stay bit-equal to the full-image path.
+    pub fn push_from_rasters_xor_bbox(
+        &mut self,
+        a: &[u8],
+        b: &[u8],
+        h: usize,
+        bbox: [u32; 4],
+    ) -> u64 {
+        let bx = bbox[0] as usize;
+        let by = bbox[1] as usize;
+        let bw = bbox[2] as usize;
+        let bh = bbox[3] as usize;
+        debug_assert_eq!(a.len(), bw * bh);
+        debug_assert_eq!(b.len(), bw * bh);
+        let area = if bh == h {
+            // bbox spans the full column height (bh == h ⇒ by == 0),
+            // so consecutive bbox columns are flat-contiguous in the
+            // original image — a band run can naturally span column
+            // boundaries. Walk the entire `bw * h` slab as one chunk
+            // so segments emit with the same boundaries the
+            // full-image scan would, preserving the no-adjacent
+            // -segments invariant the rest of the codebase relies on.
+            scan_segments_xor(&mut self.flat, a, b, (bx * h) as u64)
+        } else {
+            // bh < h: bbox columns are separated by `(h - bh)` rows
+            // of guaranteed-zero band bytes (mask = 0 = eroded
+            // outside the foreground bbox), so per-column scans with
+            // fresh state are bit-identical to a full-image scan
+            // restricted to the bbox.
+            let mut total = 0u64;
+            for col in 0..bw {
+                let col_start_local = col * bh;
+                let col_a = &a[col_start_local..col_start_local + bh];
+                let col_b = &b[col_start_local..col_start_local + bh];
+                let col_base = ((bx + col) * h + by) as u64;
+                total += scan_segments_xor(&mut self.flat, col_a, col_b, col_base);
+            }
+            total
+        };
         self.idx.push(self.flat.len());
         area
     }
@@ -447,7 +508,14 @@ fn scan_segments_raster(flat: &mut Vec<u64>, raster: &[u8]) -> u64 {
 /// pure-background windows (mask = eroded = 0) and pure-interior
 /// windows (mask = eroded = 1) — the two regions that dominate the
 /// boundary-band raster.
-fn scan_segments_xor(flat: &mut Vec<u64>, a: &[u8], b: &[u8]) -> u64 {
+///
+/// `base` is added to every emitted offset (and to the final close
+/// offset). The full-image XOR scan passes `0`; the bbox path passes
+/// the bbox column's flat-image start so per-column walks emit
+/// segments in the original coord system. Open runs are closed at
+/// `base + len`, so per-column callers get column-bounded segments
+/// for free.
+fn scan_segments_xor(flat: &mut Vec<u64>, a: &[u8], b: &[u8], base: u64) -> u64 {
     debug_assert_eq!(a.len(), b.len());
     let len = a.len().min(b.len());
     let mut state = ScanState::new();
@@ -465,14 +533,14 @@ fn scan_segments_xor(flat: &mut Vec<u64>, a: &[u8], b: &[u8]) -> u64 {
         }
         let xor_bytes = xor.to_ne_bytes();
         for (j, &byte) in xor_bytes.iter().enumerate() {
-            state.step(flat, (i + j) as u64, byte != 0);
+            state.step(flat, base + (i + j) as u64, byte != 0);
         }
         i += SCAN_CHUNK;
     }
     for k in body_len..len {
-        state.step(flat, k as u64, (a[k] ^ b[k]) != 0);
+        state.step(flat, base + k as u64, (a[k] ^ b[k]) != 0);
     }
-    state.finish(flat, len as u64)
+    state.finish(flat, base + len as u64)
 }
 
 /// Mutable scan state shared by [`scan_segments_raster`] and
