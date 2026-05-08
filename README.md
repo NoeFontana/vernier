@@ -36,8 +36,22 @@ third path:
   The CLI ships as a static binary, so CI pipelines call vernier
   without provisioning a Python interpreter.
 
-> **Status:** pre-1.0; public API is unstable. See
-> [`docs/adr/`](docs/adr/) for the design decisions shaping it.
+## Status & validation
+
+Pre-1.0; public API is unstable. See [`docs/adr/`](docs/adr/) for the
+design decisions shaping it. Per-paradigm parity status:
+
+| Paradigm / metric | Oracle | Parity tier | Open caveat |
+| --- | --- | --- | --- |
+| Instance bbox / segm / keypoints AP | `pycocotools==2.0.11` | strict bit-equal | none |
+| Instance boundary IoU | `boundary-iou-api` | strict bit-equal | none |
+| Segm + boundary TIDE thresholds (`t_b`) | none yet | corrected-only | [ADR-0022](docs/adr/0022-tide-thresholds.md) still `proposed`; defaults extrapolated, not measured |
+| Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | `boundary=True` raises `NotImplementedError` ([ADR-0025](docs/adr/0025-panoptic-api.md) §Q3) |
+| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric`, `cityscapesScripts` (S3-B landing); synthetic fixtures today | **provisional** within patch line | [ADR-0028](docs/adr/0028-sem-seg.md); vendored-oracle env still landing |
+| LVIS federated AP | `lvis-api` | semantics match | ~22 GB peak on full LVIS val; optimization scheduled post-0.0.2 |
+
+Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
+per-library comparison: [`docs/comparison.md`](docs/comparison.md).
 
 ## Benchmarks
 
@@ -54,9 +68,10 @@ third path:
 | Instance — keypoints AP (OKS) | 130 ms | **12.7×** faster-coco-eval · **17.6×** pycocotools |
 | Panoptic — PQ | 32.0 s | **1.07×** panopticapi |
 
-Median total-stage wall time on a single machine, harness mode `dev`,
-build profile = cargo release defaults (`opt-level=3`, `lto=thin`,
-`codegen-units=1`, no `target-cpu`) — same as the PyPI wheel.
+Median total-stage wall time on a single machine (AMD EPYC-Milan
+Processor, `x86_64`), harness mode `dev`, build profile = cargo release
+defaults (`opt-level=3`, `lto=thin`, `codegen-units=1`, no
+`target-cpu`) — same as the PyPI wheel.
 Full per-cell breakdown, RSS, and methodology in
 [`docs/benchmarks.md`](docs/benchmarks.md); per-library comparison of
 when to pick which in [`docs/comparison.md`](docs/comparison.md).

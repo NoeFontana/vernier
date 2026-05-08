@@ -5,6 +5,12 @@ strict parity mode. ADR-0026 is the design record for the LVIS
 support; this guide is the user-facing migration path. Audience:
 anyone moving an existing LVIS evaluation pipeline onto vernier.
 
+> **Status.** LVIS federated semantics match `lvis-api`; the dense-grid
+> memory peak (~22 GB on full LVIS val) is a known follow-up scheduled
+> post-0.0.2. See the
+> [README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation)
+> matrix.
+
 ## TL;DR — what to change
 
 | `lvis-api` | vernier |

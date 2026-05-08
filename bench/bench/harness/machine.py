@@ -100,6 +100,17 @@ def fingerprint() -> str:
     return digest[:12]
 
 
+def cpu_arch() -> str:
+    """Machine architecture string (e.g., ``x86_64``, ``aarch64``).
+
+    Carried alongside the fingerprint in :class:`BenchResult` for
+    human-readable provenance. Deliberately *not* part of the
+    fingerprint hash input — adding it would re-bucket every existing
+    result.
+    """
+    return platform.machine()
+
+
 def _governor_paths() -> list[Path]:
     return sorted(Path("/").glob(_CPUFREQ_GLOB))
 

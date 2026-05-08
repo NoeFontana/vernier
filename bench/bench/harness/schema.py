@@ -179,6 +179,12 @@ class BenchResult(BaseModel):
 
     git_sha: str
     machine_fingerprint: str
+    # Human-readable provenance carried alongside the fingerprint. Both
+    # are optional so result files written before these fields landed
+    # still parse. **Not** folded into the fingerprint hash — see
+    # ``MachineInputs`` (re-bucketing existing results is not free).
+    cpu_model: str | None = None
+    cpu_arch: str | None = None
     harness_version: str
     mode: Mode
     run_seed: int
