@@ -18,9 +18,9 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyFrozenSet, PyTuple};
 
-use vernier_core::{
-    BoundaryGtCache, CategoryId, CocoDataset, EvalDataset, EvalError, ImageId, SegmGtCache,
-};
+use vernier_core::dataset::{CategoryId, ImageId};
+use vernier_core::similarity::{BoundaryGtCache, SegmGtCache};
+use vernier_core::{CocoDataset, EvalDataset, EvalError};
 
 use crate::parse_gt;
 

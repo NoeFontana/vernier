@@ -43,7 +43,7 @@ pub enum ParityMode {
 /// VOID label id. Pixels with `id == 0` are excluded from FN (GT side)
 /// and contribute "free" overlap to the FP-exclusion rule (V4). Quirk
 /// **R3** — strict; hardcoded in `panopticapi/evaluation.py:20`.
-pub const PANOPTIC_VOID: u32 = 0;
+pub(crate) const PANOPTIC_VOID: u32 = 0;
 
 /// OFFSET used by panopticapi's `np.unique` over the uint64-encoded
 /// `(gt, dt)` pair: `combined = pan_gt * OFFSET + pan_pred`. Equal to
@@ -61,7 +61,7 @@ pub const PANOPTIC_OFFSET: u64 = 256 * 256 * 256;
 /// (not ≥) — quirk **U7** — and metric-defining: `>` is the pivot
 /// guaranteeing at-most-one-match per GT (U9). Hardcoded in
 /// `panopticapi/evaluation.py:134`.
-pub const PANOPTIC_IOU_THRESHOLD: f64 = 0.5;
+pub(crate) const PANOPTIC_IOU_THRESHOLD: f64 = 0.5;
 
 /// IoU/PQ-equality tolerance applied under
 /// [`ParityMode::Corrected`] when comparing multi-process panopticapi

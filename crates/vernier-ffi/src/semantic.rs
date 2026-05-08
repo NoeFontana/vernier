@@ -35,9 +35,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
 
 use vernier_partial::PartialError;
+use vernier_semantic::kernel::accumulate_confusion;
 use vernier_semantic::{
-    accumulate_confusion, summarize, ClassSemanticStats, ConfusionMatrix, ParityMode,
-    SemanticError, SemanticSummary, StreamingSemanticEvaluator,
+    summarize, ClassSemanticStats, ConfusionMatrix, ParityMode, SemanticError, SemanticSummary,
+    StreamingSemanticEvaluator,
 };
 
 use crate::background::BackgroundConfig;

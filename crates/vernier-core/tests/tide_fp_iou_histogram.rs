@@ -8,13 +8,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::tide::{
-    compute_fp_iou_histogram_bbox, compute_fp_iou_histogram_segm, KernelMarker,
+    compute_fp_iou_histogram_bbox, compute_fp_iou_histogram_segm, KernelMarker, TideParams,
 };
-use vernier_core::{
-    iou_thresholds, recall_thresholds, AreaRange, CocoDataset, CocoDetections, ParityMode,
-    TideParams,
-};
+use vernier_core::{AreaRange, CocoDataset, CocoDetections, ParityMode};
 
 mod common;
 use common::fixture_path;

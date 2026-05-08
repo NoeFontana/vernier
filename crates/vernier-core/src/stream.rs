@@ -669,9 +669,9 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///   [`crate::build_per_image`] / [`crate::build_per_class`] calls.
     pub fn finalize_with_tables(
         mut self,
-        request: crate::TablesRequest,
-        config: &crate::TablesConfig,
-    ) -> Result<(Summary, crate::Tables), EvalError> {
+        request: crate::tables::TablesRequest,
+        config: &crate::tables::TablesConfig,
+    ) -> Result<(Summary, crate::tables::Tables), EvalError> {
         self.compute_summary_and_tables(request, config)
     }
 
@@ -683,17 +683,17 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// Same conditions as [`Self::finalize_with_tables`].
     pub fn snapshot_with_tables(
         &mut self,
-        request: crate::TablesRequest,
-        config: &crate::TablesConfig,
-    ) -> Result<(Summary, crate::Tables), EvalError> {
+        request: crate::tables::TablesRequest,
+        config: &crate::tables::TablesConfig,
+    ) -> Result<(Summary, crate::tables::Tables), EvalError> {
         self.compute_summary_and_tables(request, config)
     }
 
     fn compute_summary_and_tables(
         &mut self,
-        request: crate::TablesRequest,
-        config: &crate::TablesConfig,
-    ) -> Result<(Summary, crate::Tables), EvalError> {
+        request: crate::tables::TablesRequest,
+        config: &crate::tables::TablesConfig,
+    ) -> Result<(Summary, crate::tables::Tables), EvalError> {
         if request.requires_iou_retention() && !self.params.retain_iou {
             return Err(EvalError::InvalidConfig {
                 detail: "per_detection / per_pair require retain_iou=True at \
@@ -754,7 +754,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             }
         }
 
-        let synthetic_grid = crate::EvalGrid {
+        let synthetic_grid = crate::evaluate::EvalGrid {
             eval_imgs,
             eval_imgs_meta,
             n_categories: n_k,
@@ -805,7 +805,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         } else {
             None
         };
-        let tables = crate::build_tables(
+        let tables = crate::tables::build_tables(
             &synthetic_grid,
             &accumulated,
             &self.dataset,

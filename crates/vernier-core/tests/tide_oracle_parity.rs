@@ -26,10 +26,11 @@
 use std::collections::HashMap;
 
 use serde::Deserialize;
-use vernier_core::{
-    error_decomposition_bbox, error_decomposition_segm, iou_thresholds, recall_thresholds,
-    AreaRange, CocoDataset, CocoDetections, ParityMode, TideErrorBin, TideParams, TideReport,
+use vernier_core::parity::{iou_thresholds, recall_thresholds};
+use vernier_core::tide::{
+    error_decomposition_bbox, error_decomposition_segm, TideErrorBin, TideParams, TideReport,
 };
+use vernier_core::{AreaRange, CocoDataset, CocoDetections, ParityMode};
 
 mod common;
 use common::{expected_path, fixture_path};
@@ -192,7 +193,7 @@ fn config_carries_resolved_thresholds() {
     let r = run_tide("all_perfect");
     assert_eq!(r.config.t_f, 0.5);
     assert_eq!(r.config.t_b, 0.1);
-    assert_eq!(r.config.kernel, vernier_core::KernelMarker::Bbox);
+    assert_eq!(r.config.kernel, vernier_core::tide::KernelMarker::Bbox);
     assert!(r.config.cross_class_topk.is_none());
 }
 
@@ -235,6 +236,6 @@ fn segm_config_carries_resolved_thresholds() {
     let r = run_tide_segm("segm_all_perfect");
     assert_eq!(r.config.t_f, 0.5);
     assert_eq!(r.config.t_b, 0.1);
-    assert_eq!(r.config.kernel, vernier_core::KernelMarker::Segm);
+    assert_eq!(r.config.kernel, vernier_core::tide::KernelMarker::Segm);
     assert!(r.config.cross_class_topk.is_none());
 }

@@ -48,7 +48,8 @@ Stable Rust only (MSRV in `rust-toolchain.toml`, currently 1.83).
 ## Minimal usage
 
 ```rust
-use vernier_semantic::{accumulate_confusion, ConfusionMatrix};
+use vernier_semantic::ConfusionMatrix;
+use vernier_semantic::kernel::accumulate_confusion;
 
 let mut cm = ConfusionMatrix::new(/* n_classes */ 21, /* ignore_label */ Some(255));
 accumulate_confusion(&mut cm, &gt_mask, &dt_mask)?;

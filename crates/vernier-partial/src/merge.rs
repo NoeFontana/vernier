@@ -15,7 +15,7 @@ pub type RankId = u32;
 /// Sentinel `RankId` carried in the partition-overlap error when one
 /// of the colliding partials lacked a rank id (single-rank flow). Real
 /// `rank_id`s should always be `< u32::MAX` in any DDP shape.
-pub const UNRANKED_SENTINEL: RankId = u32::MAX;
+pub(crate) const UNRANKED_SENTINEL: RankId = u32::MAX;
 
 use crate::error::PartialError;
 

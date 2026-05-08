@@ -31,17 +31,12 @@ pub mod parity;
 pub mod stream;
 pub mod summarize;
 
-pub use attribute::{attribute_image, PqStat};
-pub use dataset::{
-    CategoryId, CategoryMeta, ImageEntry, ImageId, PanopticDataset, PanopticPredictions,
-    SegmentInfo,
-};
+// Each item lives at exactly one path — its home module. Adding a
+// re-export here widens the headline; treat it as a deliberate
+// decision, not a default for new pub items.
+pub use dataset::{PanopticDataset, PanopticPredictions};
 pub use error::PanopticError;
-pub use kernel::{pq_image, pq_image_with_id, PqImageReport, TpPair};
-pub use parity::{
-    ParityMode, ORACLE_COMMIT_SHA, ORACLE_PILLOW_PIN, PANOPTIC_IOU_THRESHOLD, PANOPTIC_OFFSET,
-    PANOPTIC_PARITY_EPS, PANOPTIC_VOID,
-};
+pub use parity::ParityMode;
 pub use summarize::{evaluate, ClassPanopticStats, PanopticSummary};
 
 /// Library version string. Useful for parity tracing in fixtures and

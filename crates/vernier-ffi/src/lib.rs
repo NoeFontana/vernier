@@ -38,14 +38,22 @@ use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyUserWarning, PyV
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
+use vernier_core::accumulate::{accumulate, sort_max_dets, AccumulateParams, PerImageEval};
+use vernier_core::dataset::{CategoryId, DetectionInput};
+use vernier_core::evaluate::{
+    evaluate_boundary_cached, evaluate_segm_cached, EvalImageMeta, EvalKernel, OwnedEvaluateParams,
+};
+use vernier_core::parity::{iou_thresholds, recall_thresholds};
+use vernier_core::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
+use vernier_core::stream::{MemoryBudget, ParsedDetections, StreamingEvaluator, UpdateReport};
+use vernier_core::summarize::{
+    summarize_detection, summarize_with, summarize_with_lvis, StatRequest,
+};
+use vernier_core::tables::{Tables, TablesConfig, TablesRequest};
 use vernier_core::{
-    accumulate, evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints,
-    evaluate_segm, evaluate_segm_cached, iou_thresholds, recall_thresholds, sort_max_dets,
-    summarize_detection, summarize_with, summarize_with_lvis, AccumulateParams, Accumulated,
-    AreaRange, BboxIou, BoundaryIou, CocoDataset, CocoDetections, DetectionInput, EvalDataset,
-    EvalError, EvalGrid, EvalImageMeta, EvaluateParams, MemoryBudget, OksSimilarity,
-    OwnedEvaluateParams, ParityMode, ParsedDetections, PerImageEval, SegmIou, StatRequest,
-    StreamingEvaluator, Summary, UpdateReport,
+    evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, Accumulated, AreaRange,
+    CocoDataset, CocoDetections, EvalDataset, EvalError, EvalGrid, EvaluateParams, ParityMode,
+    Summary,
 };
 
 mod array_ingest;
@@ -403,7 +411,7 @@ impl PyAccumulated {
         let dataset = gt.dataset_ref();
         let summary = py
             .detach(move || -> Result<vernier_core::Summary, EvalError> {
-                let mut category_ids: Vec<vernier_core::CategoryId> =
+                let mut category_ids: Vec<CategoryId> =
                     dataset.categories().iter().map(|c| c.id).collect();
                 category_ids.sort_unstable_by_key(|c| c.0);
                 summarize_with_lvis(
@@ -1261,7 +1269,7 @@ fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
 /// caller provided one, leaving it untagged otherwise. ADR-0031: rank
 /// identity is a construction-time property; vernier never mutates it
 /// after the first `update`.
-fn maybe_tag_rank<K: vernier_core::EvalKernel>(
+fn maybe_tag_rank<K: EvalKernel>(
     ev: StreamingEvaluator<K>,
     rank_id: Option<u32>,
 ) -> PyResult<StreamingEvaluator<K>> {
@@ -1586,9 +1594,9 @@ impl StreamingState {
     /// store does not retain `EvalImageMeta` in v0.5).
     fn snapshot_with_tables(
         &mut self,
-        request: vernier_core::TablesRequest,
-        config: &vernier_core::TablesConfig,
-    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        request: TablesRequest,
+        config: &TablesConfig,
+    ) -> Result<(Summary, Tables), EvalError> {
         match self {
             Self::Bbox(ev) => ev.snapshot_with_tables(request, config),
             Self::Segm(ev) => ev.snapshot_with_tables(request, config),
@@ -1600,9 +1608,9 @@ impl StreamingState {
 
     fn take_and_finalize_with_tables(
         &mut self,
-        request: vernier_core::TablesRequest,
-        config: &vernier_core::TablesConfig,
-    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        request: TablesRequest,
+        config: &TablesConfig,
+    ) -> Result<(Summary, Tables), EvalError> {
         let prev = std::mem::replace(self, Self::Finalized);
         match prev {
             Self::Bbox(ev) => ev.finalize_with_tables(request, config),
@@ -1700,10 +1708,7 @@ type StreamingTablesResult = (
     Option<tables::ArrowRecordBatchPy>,
 );
 
-fn streaming_tables_result(
-    summary: Summary,
-    tables: vernier_core::Tables,
-) -> PyResult<StreamingTablesResult> {
+fn streaming_tables_result(summary: Summary, tables: Tables) -> PyResult<StreamingTablesResult> {
     let per_image = tables
         .per_image
         .map(|t| tables::per_image_table_to_arrow(&t))
@@ -2313,13 +2318,13 @@ impl PyStreamingEvaluator {
         per_pair_max_rows: usize,
         per_detection_with_geometry: bool,
     ) -> PyResult<StreamingTablesResult> {
-        let request = vernier_core::TablesRequest {
+        let request = TablesRequest {
             per_image,
             per_class,
             per_detection,
             per_pair,
         };
-        let cfg = vernier_core::TablesConfig {
+        let cfg = TablesConfig {
             per_pair_iou_floor,
             per_pair_max_rows,
             per_detection_with_geometry,
@@ -2359,13 +2364,13 @@ impl PyStreamingEvaluator {
         per_pair_max_rows: usize,
         per_detection_with_geometry: bool,
     ) -> PyResult<StreamingTablesResult> {
-        let request = vernier_core::TablesRequest {
+        let request = TablesRequest {
             per_image,
             per_class,
             per_detection,
             per_pair,
         };
-        let cfg = vernier_core::TablesConfig {
+        let cfg = TablesConfig {
             per_pair_iou_floor,
             per_pair_max_rows,
             per_detection_with_geometry,
@@ -2433,7 +2438,7 @@ enum BackgroundEvalState {
 /// the blocking or bounded-wait sender depending on `timeout`. Lifted
 /// out of `BackgroundEvalState::submit` so the JSON and array paths can
 /// share the same backpressure logic.
-fn send_parsed<K: vernier_core::EvalKernel + Send + 'static>(
+fn send_parsed<K: EvalKernel + Send + 'static>(
     ev: &background::BackgroundEvaluator<K>,
     parsed: ParsedDetections<K>,
     timeout: Option<Duration>,
@@ -2503,9 +2508,9 @@ impl BackgroundEvalState {
 
     fn snapshot_with_tables(
         &self,
-        request: vernier_core::TablesRequest,
-        config: vernier_core::TablesConfig,
-    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        request: TablesRequest,
+        config: TablesConfig,
+    ) -> Result<(Summary, Tables), EvalError> {
         match self {
             Self::Bbox(ev) => ev.snapshot_with_tables(request, config),
             Self::Segm(ev) => ev.snapshot_with_tables(request, config),
@@ -2528,9 +2533,9 @@ impl BackgroundEvalState {
 
     fn take_and_finalize_with_tables(
         &mut self,
-        request: vernier_core::TablesRequest,
-        config: vernier_core::TablesConfig,
-    ) -> Result<(Summary, vernier_core::Tables), EvalError> {
+        request: TablesRequest,
+        config: TablesConfig,
+    ) -> Result<(Summary, Tables), EvalError> {
         let prev = std::mem::replace(self, Self::Finalized);
         match prev {
             Self::Bbox(ev) => ev.finalize_with_tables(request, config),
@@ -3084,13 +3089,13 @@ impl PyBackgroundEvaluator {
         per_pair_max_rows: usize,
         per_detection_with_geometry: bool,
     ) -> PyResult<StreamingTablesResult> {
-        let request = vernier_core::TablesRequest {
+        let request = TablesRequest {
             per_image,
             per_class,
             per_detection,
             per_pair,
         };
-        let cfg = vernier_core::TablesConfig {
+        let cfg = TablesConfig {
             per_pair_iou_floor,
             per_pair_max_rows,
             per_detection_with_geometry,
@@ -3129,13 +3134,13 @@ impl PyBackgroundEvaluator {
         per_pair_max_rows: usize,
         per_detection_with_geometry: bool,
     ) -> PyResult<StreamingTablesResult> {
-        let request = vernier_core::TablesRequest {
+        let request = TablesRequest {
             per_image,
             per_class,
             per_detection,
             per_pair,
         };
-        let cfg = vernier_core::TablesConfig {
+        let cfg = TablesConfig {
             per_pair_iou_floor,
             per_pair_max_rows,
             per_detection_with_geometry,

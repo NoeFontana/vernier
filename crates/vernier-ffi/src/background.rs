@@ -31,10 +31,10 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use vernier_core::{
-    EvalError, EvalKernel, ParsedDetections, StreamingEvaluator, Summary, Tables, TablesConfig,
-    TablesRequest,
-};
+use vernier_core::evaluate::EvalKernel;
+use vernier_core::stream::{ParsedDetections, StreamingEvaluator};
+use vernier_core::tables::{Tables, TablesConfig, TablesRequest};
+use vernier_core::{EvalError, Summary};
 
 /// Configuration knobs for the background worker.
 ///

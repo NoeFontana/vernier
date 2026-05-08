@@ -41,7 +41,7 @@ pub fn boundary_band(rle: &Rle, dilation_ratio: f64) -> Result<Rle, MaskError> {
 /// eroded-RLE encode/decode roundtrip by XORing the mask with the
 /// eroded raster in place — the boundary-IoU dataset-wide pass on
 /// val2017 amortizes the per-mask allocations across ~36k calls.
-pub fn boundary_band_into(
+pub(crate) fn boundary_band_into(
     rle: &Rle,
     dilation_ratio: f64,
     scratch: &mut ErodeScratch,

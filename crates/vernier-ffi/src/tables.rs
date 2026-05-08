@@ -19,11 +19,13 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyCapsule};
 
-use vernier_core::{
+use vernier_core::parity::iou_thresholds;
+use vernier_core::tables::{
     aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
-    build_per_pair, iou_thresholds, BboxColumns, EvalError, MatchStatus, PerClassTable,
-    PerDetectionTable, PerImageTable, PerPairTable, TablesConfig,
+    build_per_pair, BboxColumns, MatchStatus, PerClassTable, PerDetectionTable, PerImageTable,
+    PerPairTable, TablesConfig,
 };
+use vernier_core::EvalError;
 
 use crate::dataset::PyDataset;
 use crate::PyAccumulated;

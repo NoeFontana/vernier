@@ -40,10 +40,11 @@ use crate::background_streaming::{
 };
 use crate::numpy_utils::parse_uint32_label_maps;
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
+use vernier_panoptic::dataset::{CategoryId, CategoryMeta, ImageEntry, ImageId, SegmentInfo};
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
-    evaluate, CategoryId, CategoryMeta, ClassPanopticStats, ImageEntry, ImageId, PanopticDataset,
-    PanopticError, PanopticPredictions, PanopticSummary, ParityMode, SegmentInfo,
+    evaluate, ClassPanopticStats, PanopticDataset, PanopticError, PanopticPredictions,
+    PanopticSummary, ParityMode,
 };
 
 // ---------------------------------------------------------------------------

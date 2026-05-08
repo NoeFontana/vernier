@@ -29,12 +29,10 @@ pub mod polygon;
 pub mod raster;
 pub mod rle;
 
+// Lib root mirrors the pycocotools.mask split (codec + RLE type);
+// kernels live at one path under `ops::*`.
 pub use codec::{decode_counts, encode_counts};
 pub use error::MaskError;
-pub use ops::{
-    boundary_band, boundary_band_into, boundary_band_segments_into, erode_chebyshev_ball,
-    erode_chebyshev_ball_into, intersect_area_offsets, ErodeScratch, SegmentTable,
-};
 pub use rle::Rle;
 
 /// Library version string. Useful for parity tracing and debugging

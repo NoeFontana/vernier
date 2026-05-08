@@ -23,10 +23,13 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
+use vernier_core::evaluate::evaluate_boundary_cached;
+use vernier_core::parity::iou_thresholds;
+use vernier_core::similarity::BoundaryGtCache;
 use vernier_core::{
-    evaluate_boundary, evaluate_boundary_cached, iou_thresholds, AreaRange, BoundaryGtCache,
-    CocoDataset, CocoDetections, EvalDataset, EvaluateParams, ParityMode,
-    BOUNDARY_DILATION_RATIO_DEFAULT,
+    evaluate_boundary, AreaRange, CocoDataset, CocoDetections, EvalDataset, EvaluateParams,
+    ParityMode,
 };
 
 fn gt_path() -> PathBuf {

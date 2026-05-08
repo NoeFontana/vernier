@@ -32,54 +32,19 @@ pub mod summarize;
 pub mod tables;
 pub mod tide;
 
-pub use accumulate::{accumulate, sort_max_dets, AccumulateParams, Accumulated, PerImageEval};
-pub use boundary_parity::{
-    BOUNDARY_DILATION_RATIO_DEFAULT, BOUNDARY_PARITY_EPS, ORACLE_COMMIT_SHA, ORACLE_OPENCV_PIN,
-};
-pub use breakdown::{Breakdown, Bucket};
-pub use dataset::{
-    AnnId, Annotation, AnnotationIter, Bbox, CategoryId, CategoryMeta, CocoAnnotation, CocoDataset,
-    CocoDetection, CocoDetections, CocoJson, DetectionInput, EvalDataset, FederatedMetadata,
-    Frequency, ImageId, ImageMeta,
-};
-pub use error::{EvalError, PartialFormatErrorKind};
+// Each item lives at exactly one path — its home module. Adding a
+// re-export here widens the headline; treat it as a deliberate
+// decision keyed to the README minimal-usage example, not a default
+// for new pub items.
+pub use accumulate::Accumulated;
+pub use dataset::{CocoDataset, CocoDetections, EvalDataset};
+pub use error::EvalError;
 pub use evaluate::{
-    evaluate_bbox, evaluate_boundary, evaluate_boundary_cached, evaluate_keypoints, evaluate_segm,
-    evaluate_segm_cached, evaluate_with, evaluate_with_retention, AreaRange, EvalGrid,
-    EvalImageMeta, EvalKernel, EvaluateParams, KernelKind, OwnedEvaluateParams,
-    COLLAPSED_CATEGORY_SENTINEL,
+    evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, evaluate_with, AreaRange,
+    EvalGrid, EvaluateParams,
 };
-pub use lvis_parity::{
-    LVIS_BOUNDARY_DILATION_RATIO_DEFAULT, LVIS_DEFAULT_MAX_DETS, LVIS_PARITY_EPS,
-    ORACLE_LVIS_COMMIT_SHA, ORACLE_LVIS_VERSION, ORACLE_PYCOCOTOOLS_PIN,
-};
-pub use matching::{match_image, MatchResult};
-pub use parity::{iou_thresholds, recall_thresholds, ParityMode, IOU_BOUNDARY_EPS, PARITY_EPS};
-pub use segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
-pub use similarity::{
-    BboxAnn, BboxIou, BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmGtCache,
-    SegmIou, Similarity, COCO_PERSON_SIGMAS,
-};
-pub use stream::{
-    EvalGridMeta, MemoryBudget, ParsedDetections, PerImageEvalStore, StreamingEvaluator,
-    UpdateReport,
-};
-pub use summarize::{
-    summarize_detection, summarize_with, summarize_with_lvis, AreaRng, CategoryFilter,
-    MaxDetSelector, Metric, StatLine, StatRequest, Summary,
-};
-pub use tables::{
-    aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
-    build_per_pair, build_tables, BboxColumns, CrossClassIous, MatchStatus, PerClassSupport,
-    PerClassTable, PerDetectionTable, PerImageTable, PerPairTable, RetainedIous, Tables,
-    TablesConfig, TablesRequest,
-};
-pub use tide::{
-    apply_fix, assign_bins, compute_confusion_matrix, compute_cross_class_ious,
-    error_decomposition_bbox, error_decomposition_boundary, error_decomposition_segm,
-    error_decomposition_with, BinAssignment, ConfusionMatrixCounts, DtBin, DtBinLabel, FixKind,
-    KernelMarker, TideConfig, TideErrorBin, TideParams, TideReport,
-};
+pub use parity::ParityMode;
+pub use summarize::Summary;
 
 /// Library version string. Useful for parity tracing in fixtures and for
 /// debugging mismatches between Rust and Python sides of the FFI boundary.

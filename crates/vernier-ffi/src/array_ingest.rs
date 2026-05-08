@@ -12,9 +12,8 @@ use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyAny, PyBytes, PyDict, PySequence};
 
-use vernier_core::{
-    Bbox, CategoryId, DetectionInput, ImageId, Segmentation, SegmentationRle, SegmentationRleCounts,
-};
+use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
+use vernier_core::segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
 
 use crate::dlpack;
 use crate::emit_warning;

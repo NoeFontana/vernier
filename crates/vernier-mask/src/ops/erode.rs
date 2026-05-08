@@ -90,7 +90,7 @@ pub fn erode_chebyshev_ball(rle: &Rle, radius_pixels: u32) -> Result<Rle, MaskEr
 /// `_into` variant of [`erode_chebyshev_ball`] reusing a caller-owned
 /// [`ErodeScratch`]. Same semantics; lets hot-path callers (e.g. the
 /// boundary-IoU dataset-wide pass) amortize per-mask allocations.
-pub fn erode_chebyshev_ball_into(
+pub(crate) fn erode_chebyshev_ball_into(
     rle: &Rle,
     radius_pixels: u32,
     scratch: &mut ErodeScratch,

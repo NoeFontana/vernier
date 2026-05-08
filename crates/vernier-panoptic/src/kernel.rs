@@ -28,7 +28,7 @@ use rustc_hash::FxHashMap;
 
 use crate::dataset::{CategoryId, ImageEntry, ImageId};
 use crate::error::PanopticError;
-use crate::{PANOPTIC_IOU_THRESHOLD, PANOPTIC_VOID};
+use crate::parity::{PANOPTIC_IOU_THRESHOLD, PANOPTIC_VOID};
 
 /// Per-image kernel output: the matched TP pairs (with their IoUs)
 /// and the GT/DT segments that did not match. Consumed by

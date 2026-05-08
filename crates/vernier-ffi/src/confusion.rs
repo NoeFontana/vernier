@@ -36,8 +36,8 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 
 use vernier_core::similarity::{BboxIou, BoundaryIou, SegmIou};
-use vernier_core::tide::ConfusionMatrixCounts;
-use vernier_core::{compute_confusion_matrix, CocoDataset, CocoDetections, EvalError, ParityMode};
+use vernier_core::tide::{compute_confusion_matrix, ConfusionMatrixCounts};
+use vernier_core::{CocoDataset, CocoDetections, EvalError, ParityMode};
 
 use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
 
