@@ -46,7 +46,9 @@ Decision Records). To propose a new ADR:
 | 0027 | Documentation framework — Diátaxis on `mkdocs-material`, code-tested, gated in CI | accepted |
 | 0028 | Add semantic segmentation evaluation as a `vernier-semantic` sibling crate | accepted |
 | 0029 | Restructure public Python API into per-paradigm submodules | accepted |
+| 0034 | Add `aarch64-unknown-linux-gnu` to the `vernier-cli` GitHub Release target list | proposed |
 
 (Update this table as ADRs land. Eventually we may automate it from the
 front-matter, but until there are enough ADRs to make that worthwhile, hand
-maintenance is fine.)
+maintenance is fine. Note: rows 0030–0033 are missing from this index — a
+separate cleanup, not in scope for ADR-0034.)
