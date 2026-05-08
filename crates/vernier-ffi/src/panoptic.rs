@@ -65,12 +65,14 @@ struct SegmentInfoJson {
 #[derive(Deserialize)]
 struct CategoryMetaJson {
     id: i64,
-    isthing: bool,
+    isthing: serde_json::Value,
 }
 
-/// Convert the `iscrowd` field to bool. panopticapi accepts `int` or
-/// bool (quirk **S5**); we normalize to bool.
-fn parse_iscrowd(v: &serde_json::Value) -> bool {
+/// Convert the `iscrowd` / `isthing` field to bool. panopticapi accepts
+/// `int` or bool (quirk **S5** for `iscrowd`; the COCO panoptic JSON
+/// likewise stores `isthing` as `int 0/1`). We normalize to bool on
+/// the FFI boundary.
+fn parse_bool_or_int(v: &serde_json::Value) -> bool {
     match v {
         serde_json::Value::Bool(b) => *b,
         serde_json::Value::Number(n) => n.as_i64().is_some_and(|x| x != 0),
@@ -90,7 +92,7 @@ fn parse_segments_map(bytes: &[u8]) -> Result<HashMap<ImageId, Vec<SegmentInfo>>
                 .map(|s| SegmentInfo {
                     id: s.id,
                     category_id: s.category_id,
-                    iscrowd: parse_iscrowd(&s.iscrowd),
+                    iscrowd: parse_bool_or_int(&s.iscrowd),
                     area: s.area,
                 })
                 .collect();
@@ -108,7 +110,7 @@ fn parse_categories(bytes: &[u8]) -> Result<HashMap<CategoryId, CategoryMeta>, P
                 c.id,
                 CategoryMeta {
                     id: c.id,
-                    isthing: c.isthing,
+                    isthing: parse_bool_or_int(&c.isthing),
                 },
             )
         })
@@ -574,7 +576,7 @@ fn build_image_entry<'py>(
         .map(|s| SegmentInfo {
             id: s.id,
             category_id: s.category_id,
-            iscrowd: parse_iscrowd(&s.iscrowd),
+            iscrowd: parse_bool_or_int(&s.iscrowd),
             area: s.area,
         })
         .collect();

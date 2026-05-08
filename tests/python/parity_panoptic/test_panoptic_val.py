@@ -67,6 +67,24 @@ def _build_label_maps(
     }
 
 
+def _np_default(o: object) -> int | float | list:
+    """JSON ``default=`` handler for numpy scalars / arrays.
+
+    `pq_compute_single_core` mutates each segment's ``area`` field with
+    a value derived from the rasterized PNG (a numpy ``int64``), so
+    re-encoding the post-oracle ``segments_info`` via ``json.dumps``
+    fails on the default encoder. Cast numpy scalars back to native
+    Python types on the encode path; the wire shape is unchanged.
+    """
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+
 def _oracle_snapshot_full(
     gt_json: Path,
     gt_png_dir: Path,
@@ -111,9 +129,13 @@ def _vernier_snapshot_full(
     gt_segs = {ann["image_id"]: ann["segments_info"] for ann in gt_anns}
     dt_segs = {ann["image_id"]: ann["segments_info"] for ann in dt_anns}
 
-    gt_segs_bytes = json.dumps({str(k): v for k, v in gt_segs.items()}).encode()
-    dt_segs_bytes = json.dumps({str(k): v for k, v in dt_segs.items()}).encode()
-    cats_bytes = json.dumps(list(cats_dict.values())).encode()
+    gt_segs_bytes = json.dumps(
+        {str(k): v for k, v in gt_segs.items()}, default=_np_default
+    ).encode()
+    dt_segs_bytes = json.dumps(
+        {str(k): v for k, v in dt_segs.items()}, default=_np_default
+    ).encode()
+    cats_bytes = json.dumps(list(cats_dict.values()), default=_np_default).encode()
 
     gt = vernier.panoptic.Dataset.from_arrays(gt_label_maps, gt_segs_bytes, cats_bytes)
     dt = vernier.panoptic.Predictions.from_arrays(dt_label_maps, dt_segs_bytes)
