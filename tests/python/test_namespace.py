@@ -152,8 +152,14 @@ def test_ffi_reexport_identities() -> None:
     # Instance re-exports
     from vernier._core import (
         BackgroundEvaluator as FfiBackground,
+    )
+    from vernier._core import (
         CocoDataset as FfiDataset,
+    )
+    from vernier._core import (
         StreamingEvaluator as FfiStreaming,
+    )
+    from vernier._core import (
         Summary as FfiSummary,
     )
 
@@ -165,8 +171,14 @@ def test_ffi_reexport_identities() -> None:
     # Panoptic re-exports
     from vernier._core import (
         ClassPanopticStats as FfiPanopticStats,
+    )
+    from vernier._core import (
         PanopticDataset as FfiPanopticDataset,
+    )
+    from vernier._core import (
         PanopticPredictions as FfiPanopticPredictions,
+    )
+    from vernier._core import (
         PanopticSummary as FfiPanopticSummary,
     )
 
@@ -178,8 +190,14 @@ def test_ffi_reexport_identities() -> None:
     # Semantic re-exports
     from vernier._core import (
         ClassSemanticStats as FfiSemanticStats,
+    )
+    from vernier._core import (
         ConfusionMatrix as FfiConfusion,
+    )
+    from vernier._core import (
         SemanticSummary as FfiSemanticSummary,
+    )
+    from vernier._core import (
         StreamingSemanticEvaluator as FfiSemanticStreaming,
     )
 

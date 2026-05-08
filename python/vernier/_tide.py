@@ -18,9 +18,10 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Final, Literal
+from typing import TYPE_CHECKING, Any, Literal, NoReturn
 
 import numpy as np
+
 from vernier._core import (
     CocoDataset,
     error_decomposition_bbox,

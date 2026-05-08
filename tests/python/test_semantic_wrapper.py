@@ -14,13 +14,8 @@ Per-dataset presets that decode PNG fixtures live in
 
 from __future__ import annotations
 
-from typing import Mapping
-from pathlib import Path
-
 import numpy as np
 import pytest
-
-from numpy.typing import NDArray
 
 from vernier.semantic import (
     ADE20K_IGNORE_LABEL,

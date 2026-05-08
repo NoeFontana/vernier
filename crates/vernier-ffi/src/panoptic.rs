@@ -35,7 +35,9 @@ use serde::Deserialize;
 use vernier_partial::PartialError;
 
 use crate::background::BackgroundConfig;
-use crate::background_streaming::{BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError};
+use crate::background_streaming::{
+    BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError,
+};
 use crate::numpy_utils::parse_uint32_label_maps;
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
@@ -863,11 +865,10 @@ pub(crate) struct PyBackgroundPanopticEvaluator {
 impl PyBackgroundPanopticEvaluator {
     fn lock_lifecycle(
         &self,
-    ) -> PyResult<std::sync::MutexGuard<'_, BackgroundLifecycle<StreamingPanopticEvaluator>>>
-    {
-        self.lifecycle
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("BackgroundPanopticEvaluator state mutex poisoned"))
+    ) -> PyResult<std::sync::MutexGuard<'_, BackgroundLifecycle<StreamingPanopticEvaluator>>> {
+        self.lifecycle.lock().map_err(|_| {
+            PyRuntimeError::new_err("BackgroundPanopticEvaluator state mutex poisoned")
+        })
     }
 }
 
@@ -986,9 +987,9 @@ impl PyBackgroundPanopticEvaluator {
         let payload = PanopticUpdate { image_id, gt, dt };
         let lifecycle = &self.lifecycle;
         let result = py.detach(move || -> Result<(), SubmitError<PanopticError>> {
-            let guard = lifecycle
-                .lock()
-                .map_err(|_| SubmitError::Eval(StreamingPanopticEvaluator::worker_disconnected()))?;
+            let guard = lifecycle.lock().map_err(|_| {
+                SubmitError::Eval(StreamingPanopticEvaluator::worker_disconnected())
+            })?;
             let core = guard.active().map_err(SubmitError::Eval)?;
             match timeout_dur {
                 None => core.submit_blocking(payload).map_err(SubmitError::Eval),

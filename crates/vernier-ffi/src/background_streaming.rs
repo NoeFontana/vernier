@@ -338,7 +338,9 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
         {
             return Err(E::worker_disconnected());
         }
-        reply_rx.recv().unwrap_or_else(|_| Err(E::worker_disconnected()))
+        reply_rx
+            .recv()
+            .unwrap_or_else(|_| Err(E::worker_disconnected()))
     }
 
     /// Drain and finalize. Consumes the wrapper.
@@ -374,7 +376,9 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
         {
             return Err(E::worker_disconnected());
         }
-        reply_rx.recv().unwrap_or_else(|_| Err(E::worker_disconnected()))
+        reply_rx
+            .recv()
+            .unwrap_or_else(|_| Err(E::worker_disconnected()))
     }
 
     /// Finalize to a partial blob (ADR-0032). Consumes the wrapper.
@@ -433,7 +437,10 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
     /// Mirrors the instance-background API surface so paradigms that
     /// later wire up a `memory_used_bytes` getter on their pyclass
     /// don't need to reach into private state.
-    #[allow(dead_code, reason = "exposed for forward-compat with future paradigm getters")]
+    #[allow(
+        dead_code,
+        reason = "exposed for forward-compat with future paradigm getters"
+    )]
     pub(crate) fn memory_used_bytes(&self) -> usize {
         self.state.memory_used_bytes.load(Ordering::Acquire)
     }
@@ -462,7 +469,10 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
     /// instance evaluator routes its own fork (see
     /// [`crate::background::BackgroundEvaluator::latency_samples_drain`])
     /// because B5's saturation workload uses the bbox kernel.
-    #[allow(dead_code, reason = "exposed for forward-compat with panoptic / semantic latency-cell wiring")]
+    #[allow(
+        dead_code,
+        reason = "exposed for forward-compat with panoptic / semantic latency-cell wiring"
+    )]
     pub(crate) fn latency_samples_drain(&self) -> Vec<u64> {
         match self.latency_samples.as_ref() {
             Some(slot) => match slot.lock() {
@@ -582,7 +592,10 @@ impl<E: BackgroundCapable> BackgroundLifecycle<E> {
     /// Forwarder for [`BackgroundCore::latency_samples_drain`] (B5).
     /// Returns an empty `Vec` when the wrapper has been finalized or
     /// was constructed without `record_latency_samples`.
-    #[allow(dead_code, reason = "exposed for forward-compat with panoptic / semantic latency-cell wiring")]
+    #[allow(
+        dead_code,
+        reason = "exposed for forward-compat with panoptic / semantic latency-cell wiring"
+    )]
     pub(crate) fn latency_samples_drain(&self) -> Vec<u64> {
         match self.core.as_ref() {
             Some(core) => core.latency_samples_drain(),
@@ -736,17 +749,23 @@ mod tests {
             }
         }
         let drained = core.latency_samples_drain();
-        assert!(drained.is_empty(), "default-off accumulator must return empty");
+        assert!(
+            drained.is_empty(),
+            "default-off accumulator must return empty"
+        );
         core.shutdown();
     }
 
     #[test]
     fn latency_samples_opt_in_records_one_per_submit() {
-        let core =
-            match BackgroundCore::spawn_with_options(CountingEvaluator::default(), config(), true) {
-                Ok(c) => c,
-                Err(e) => panic!("spawn worker: {e}"),
-            };
+        let core = match BackgroundCore::spawn_with_options(
+            CountingEvaluator::default(),
+            config(),
+            true,
+        ) {
+            Ok(c) => c,
+            Err(e) => panic!("spawn worker: {e}"),
+        };
         let n = 16usize;
         for _ in 0..n {
             if let Err(e) = core.submit_blocking(()) {

@@ -25,10 +25,10 @@ import numpy as np
 from numpy.typing import NDArray
 
 from vernier._core import evaluate_bbox_grid_with_dataset
+from vernier.instance import CocoDataset
 
 # The oracle goes via the vendored tree (conftest patches `sys.path`);
 # vernier ships an FFI grid helper used by the candidate path.
-from vernier.instance import CocoDataset
 
 ImplName = Literal["vernier", "lvis_api"]
 
@@ -89,9 +89,9 @@ def _vernier_snapshot(
 ) -> LvisSnapshot:
     # The JSON-bytes grid path strips federated metadata at GT load
     # (it goes through `from_json_bytes`); for ADR-0026 the harness
-    # has to thread a parsed-once `Dataset.from_lvis_json` through
+    # has to thread a parsed-once `CocoDataset.from_lvis_json` through
     # so the orchestrator's AA3/AA4 branches actually fire.
-    gt_dataset = Dataset.from_lvis_json(gt_bytes)
+    gt_dataset = CocoDataset.from_lvis_json(gt_bytes)
     grid = evaluate_bbox_grid_with_dataset(
         gt_dataset,
         dt_bytes,

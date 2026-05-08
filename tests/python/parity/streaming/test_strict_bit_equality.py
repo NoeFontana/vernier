@@ -70,9 +70,7 @@ def test_semantic_strict_merge_bit_equals_batch(n_ranks: int) -> None:
                 ev.update(image_id, gt_maps[image_id], dt_maps[image_id])
         partials.append(ev.finalize_to_partial())
 
-    merged = sem.StreamingEvaluator.from_partials(
-        n_classes, partials, "strict"
-    ).finalize()
+    merged = sem.StreamingEvaluator.from_partials(n_classes, partials, "strict").finalize()
 
     # u64 confusion matrix → bit-equal element-wise.
     np.testing.assert_array_equal(
@@ -100,16 +98,14 @@ _PANOPTIC_CATS = json.dumps(
 ).encode()
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _panoptic_image(seed: int) -> tuple[np.ndarray, bytes, np.ndarray, bytes]:
     """Build one (gt_label_map, gt_segs, dt_label_map, dt_segs) pair
     keyed by ``seed`` — same shape as the panoptic distributed-merge
     fixture, kept independent so this test stands alone.
     """
     rng = np.random.default_rng(seed)
-    gt_label = np.array(
-        [[1, 1, 2, 2, 3], [1, 1, 2, 2, 3]], dtype=np.uint32
-    )
+    gt_label = np.array([[1, 1, 2, 2, 3], [1, 1, 2, 2, 3]], dtype=np.uint32)
     gt_segs = json.dumps(
         [
             {"id": 1, "category_id": 1, "iscrowd": 0, "area": 4},
@@ -144,9 +140,7 @@ def test_panoptic_strict_merge_bit_equals_batch_with_deltas(
     seeds = list(range(16))
 
     # Single-rank baseline (the "batch" run).
-    baseline = pq.StreamingEvaluator(
-        _PANOPTIC_CATS, "strict", retain_per_image_deltas=True
-    )
+    baseline = pq.StreamingEvaluator(_PANOPTIC_CATS, "strict", retain_per_image_deltas=True)
     for s in seeds:
         gt_lm, gt_si, dt_lm, dt_si = _panoptic_image(s)
         baseline.update(s, gt_lm, gt_si, dt_lm, dt_si)

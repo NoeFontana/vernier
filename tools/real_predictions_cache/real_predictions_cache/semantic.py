@@ -1,7 +1,7 @@
 """Real-prediction cache for semantic-segmentation models (Stage 3 / S3-B).
 
 Single model anchor: OCRNet on ADE20K val. Needs the mmsegmentation env
-(the heavy ~5–8 min ``uv sync``); the cache adapter lands here even when
+(the heavy ~5-8 min ``uv sync``); the cache adapter lands here even when
 the env is deferred so the workload module can plug in once both pieces
 are available.
 
@@ -26,7 +26,6 @@ from coco_val_cache import _atomic_download, file_sha256
 
 from real_predictions_cache import cache_root
 
-
 # --- OCRNet on ADE20K val -------------------------------------------
 
 OCRNET_ADE20K_BLOB_VERSION = "v1"
@@ -37,9 +36,7 @@ _OCRNET_DATASET_ID = "ade20k-val"
 
 
 def ocrnet_ade20k_cache_filename() -> str:
-    return (
-        f"ocrnet-hrnet-w48-{OCRNET_ADE20K_BLOB_VERSION}-{_OCRNET_DATASET_ID}.tar.gz"
-    )
+    return f"ocrnet-hrnet-w48-{OCRNET_ADE20K_BLOB_VERSION}-{_OCRNET_DATASET_ID}.tar.gz"
 
 
 def ocrnet_ade20k_cache_path(*, cache: Path | None = None) -> Path:

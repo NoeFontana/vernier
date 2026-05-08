@@ -43,10 +43,7 @@ def _segments_info(triples: list[tuple[int, int, int]]) -> bytes:
     ``(segment_id, category_id, area)`` triples (iscrowd=0).
     """
     return json.dumps(
-        [
-            {"id": sid, "category_id": cid, "iscrowd": 0, "area": area}
-            for sid, cid, area in triples
-        ]
+        [{"id": sid, "category_id": cid, "iscrowd": 0, "area": area} for sid, cid, area in triples]
     ).encode()
 
 
@@ -73,9 +70,7 @@ def _image_pair(
     flips = rng.random(size=gt_label.shape) < 0.15
     dt_label[flips] = 1
     dt_areas = np.bincount(dt_label.ravel(), minlength=3)
-    dt_segs = _segments_info(
-        [(1, 1, int(dt_areas[1])), (2, 2, int(dt_areas[2]))]
-    )
+    dt_segs = _segments_info([(1, 1, int(dt_areas[1])), (2, 2, int(dt_areas[2]))])
     return gt_label, gt_segs, dt_label, dt_segs
 
 
@@ -113,10 +108,7 @@ def test_corrected_merge_within_envelope(n_ranks: int) -> None:
     """
     seeds = list(range(8))
     shards = [seeds[i::n_ranks] for i in range(n_ranks)]
-    partials = [
-        _evaluator_partial("corrected", rank, shard)
-        for rank, shard in enumerate(shards)
-    ]
+    partials = [_evaluator_partial("corrected", rank, shard) for rank, shard in enumerate(shards)]
     merged = pq.StreamingEvaluator.from_partials(
         THREE_CLASS_CATS_JSON, partials, "corrected"
     ).finalize()
@@ -156,9 +148,7 @@ def test_strict_merge_bit_equals_batch_with_deltas(n_ranks: int) -> None:
     # Sharded merge.
     shards = [seeds[i::n_ranks] for i in range(n_ranks)]
     partials = [
-        _evaluator_partial(
-            "strict", rank, shard, retain_per_image_deltas=True
-        )
+        _evaluator_partial("strict", rank, shard, retain_per_image_deltas=True)
         for rank, shard in enumerate(shards)
     ]
     merged = pq.StreamingEvaluator.from_partials(
@@ -206,10 +196,7 @@ def test_n_way_equals_pairwise_reduction() -> None:
     """
     seeds = list(range(9))
     shards = [seeds[i::3] for i in range(3)]
-    a, b, c = (
-        _evaluator_partial("corrected", rank, shard)
-        for rank, shard in enumerate(shards)
-    )
+    a, b, c = (_evaluator_partial("corrected", rank, shard) for rank, shard in enumerate(shards))
 
     one_shot = pq.StreamingEvaluator.from_partials(
         THREE_CLASS_CATS_JSON, [a, b, c], "corrected"
@@ -248,9 +235,7 @@ def test_partition_overlap_rejected() -> None:
 
 def test_dataset_hash_mismatch_rejected() -> None:
     a = _evaluator_partial("corrected", 0, [1])
-    other_cats = json.dumps(
-        [{"id": 1, "isthing": False}, {"id": 2, "isthing": False}]
-    ).encode()
+    other_cats = json.dumps([{"id": 1, "isthing": False}, {"id": 2, "isthing": False}]).encode()
 
     # n_categories differs (2 vs 3) → grid_mismatch fires before
     # dataset_hash compare.
@@ -285,9 +270,7 @@ def test_parity_mode_mismatch_rejected() -> None:
     a = _evaluator_partial("strict", 0, [1], retain_per_image_deltas=True)
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        pq.StreamingEvaluator.from_partials(
-            THREE_CLASS_CATS_JSON, [a], "corrected"
-        )
+        pq.StreamingEvaluator.from_partials(THREE_CLASS_CATS_JSON, [a], "corrected")
     assert exc_info.value.kind == "parity_mismatch"
 
 
@@ -297,9 +280,7 @@ def test_parity_mode_mismatch_rejected() -> None:
 
 
 def test_things_stuff_split_mismatch_rejected() -> None:
-    a = _evaluator_partial(
-        "corrected", 0, [1], things_stuff_split=False
-    )
+    a = _evaluator_partial("corrected", 0, [1], things_stuff_split=False)
     with pytest.raises(pq.PartialParamsMismatch):
         pq.StreamingEvaluator.from_partials(
             THREE_CLASS_CATS_JSON, [a], "corrected", things_stuff_split=True
@@ -316,9 +297,7 @@ def test_retain_per_image_deltas_mismatch_rejected() -> None:
     """A partial encoded WITHOUT per-image deltas cannot merge into
     a strict-mode evaluator that demands them (and vice versa).
     """
-    a = _evaluator_partial(
-        "strict", 0, [1], retain_per_image_deltas=False
-    )
+    a = _evaluator_partial("strict", 0, [1], retain_per_image_deltas=False)
     with pytest.raises(pq.PartialParamsMismatch):
         pq.StreamingEvaluator.from_partials(
             THREE_CLASS_CATS_JSON,
@@ -336,14 +315,15 @@ def test_retain_per_image_deltas_mismatch_rejected() -> None:
 def test_paradigm_mismatch_rejected() -> None:
     import vernier.instance as inst
 
-    gt_json = b'{"images":[{"id":1,"width":4,"height":4}],"categories":[{"id":1,"name":"a"}],"annotations":[]}'
+    gt_json = (
+        b'{"images":[{"id":1,"width":4,"height":4}],'
+        b'"categories":[{"id":1,"name":"a"}],"annotations":[]}'
+    )
     inst_ev = inst.StreamingEvaluator(gt_json, iou_type="bbox", rank_id=0)
     instance_partial = inst_ev.finalize_to_partial()
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        pq.StreamingEvaluator.from_partials(
-            THREE_CLASS_CATS_JSON, [instance_partial], "corrected"
-        )
+        pq.StreamingEvaluator.from_partials(THREE_CLASS_CATS_JSON, [instance_partial], "corrected")
     assert exc_info.value.kind == "paradigm_mismatch"
 
 
@@ -353,12 +333,8 @@ def test_paradigm_mismatch_rejected() -> None:
 
 
 def test_strict_rank_collision_rejected() -> None:
-    a = _evaluator_partial(
-        "strict", 7, [1], retain_per_image_deltas=True
-    )
-    b = _evaluator_partial(
-        "strict", 7, [2], retain_per_image_deltas=True
-    )
+    a = _evaluator_partial("strict", 7, [1], retain_per_image_deltas=True)
+    b = _evaluator_partial("strict", 7, [2], retain_per_image_deltas=True)
     with pytest.raises(pq.PartialRankCollision) as exc_info:
         pq.StreamingEvaluator.from_partials(
             THREE_CLASS_CATS_JSON,
@@ -372,9 +348,7 @@ def test_strict_rank_collision_rejected() -> None:
 def test_corrected_rank_collision_tolerated() -> None:
     a = _evaluator_partial("corrected", 7, [1])
     b = _evaluator_partial("corrected", 7, [2])
-    pq.StreamingEvaluator.from_partials(
-        THREE_CLASS_CATS_JSON, [a, b], "corrected"
-    ).finalize()
+    pq.StreamingEvaluator.from_partials(THREE_CLASS_CATS_JSON, [a, b], "corrected").finalize()
 
 
 # ---------------------------------------------------------------------------
@@ -389,9 +363,7 @@ def test_wrong_version_rejected() -> None:
     bad.extend(b"\x00\x00\x00\x00")
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        pq.StreamingEvaluator.from_partials(
-            THREE_CLASS_CATS_JSON, [bytes(bad)], "corrected"
-        )
+        pq.StreamingEvaluator.from_partials(THREE_CLASS_CATS_JSON, [bytes(bad)], "corrected")
     assert exc_info.value.kind == "wrong_version"
 
 
@@ -405,9 +377,7 @@ def test_crc_corruption_detected() -> None:
     partial[20] ^= 0xFF
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        pq.StreamingEvaluator.from_partials(
-            THREE_CLASS_CATS_JSON, [bytes(partial)], "corrected"
-        )
+        pq.StreamingEvaluator.from_partials(THREE_CLASS_CATS_JSON, [bytes(partial)], "corrected")
     assert exc_info.value.kind in {"crc", "rkyv_decode"}
 
 
@@ -453,9 +423,7 @@ def test_empty_rank_merges_cleanly() -> None:
     produce a valid partial. Merge equals the populated rank's
     contribution alone.
     """
-    populated = _evaluator_partial(
-        "corrected", 0, [1, 2, 3]
-    )
+    populated = _evaluator_partial("corrected", 0, [1, 2, 3])
     empty = pq.StreamingEvaluator(
         THREE_CLASS_CATS_JSON, "corrected", rank_id=1
     ).finalize_to_partial()

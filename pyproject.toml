@@ -187,6 +187,11 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["B", "N802"]   # tests can be sloppier
+# `_core.pyi` mirrors PyO3 #[pyclass] names from vernier-ffi; the
+# `Partial*Mismatch`/`Partial*Overlap`/`Partial*Collision` exception
+# classes are part of the shipped public surface (ADR-0032 §"Errors")
+# and cannot be renamed without a coordinated Rust + Python break.
+"python/vernier/_core.pyi" = ["N818"]
 
 # ---------------------------------------------------------------------------
 # Pyright: strict on the public API, warn on tests

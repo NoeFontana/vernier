@@ -92,9 +92,7 @@ def _semantic_partial() -> bytes:
     return ev.finalize_to_partial()
 
 
-_PANOPTIC_CATS = json.dumps(
-    [{"id": 1, "isthing": True}, {"id": 2, "isthing": False}]
-).encode()
+_PANOPTIC_CATS = json.dumps([{"id": 1, "isthing": True}, {"id": 2, "isthing": False}]).encode()
 
 
 def _panoptic_partial() -> bytes:
@@ -127,9 +125,7 @@ def _load_into_semantic(partial: bytes) -> None:
 
 
 def _load_into_panoptic(partial: bytes) -> None:
-    pq.StreamingEvaluator.from_partials(
-        _PANOPTIC_CATS, [partial], "corrected"
-    )
+    pq.StreamingEvaluator.from_partials(_PANOPTIC_CATS, [partial], "corrected")
 
 
 @pytest.mark.parametrize(

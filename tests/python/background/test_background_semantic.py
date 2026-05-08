@@ -19,9 +19,9 @@ import pytest
 import vernier.semantic as sem
 
 
-def _label_maps(seed: int = 0, n_images: int = 4) -> tuple[
-    Mapping[int, np.ndarray], Mapping[int, np.ndarray]
-]:
+def _label_maps(
+    seed: int = 0, n_images: int = 4
+) -> tuple[Mapping[int, np.ndarray], Mapping[int, np.ndarray]]:
     """Synthetic GT/DT label-map pairs. Same shape as the parity
     distributed-merge harness, kept independent so this test stands
     alone.
@@ -81,9 +81,7 @@ def test_background_to_partial_round_trips_through_from_partials() -> None:
         bg.submit(image_id, gt_maps[image_id], dt_maps[image_id])
     blob = bg.finalize_to_partial()
 
-    restored = sem.StreamingEvaluator.from_partials(
-        n_classes, [blob], "strict"
-    )
+    restored = sem.StreamingEvaluator.from_partials(n_classes, [blob], "strict")
     restored_summary = restored.finalize()
 
     streaming = sem.StreamingEvaluator(n_classes, "strict")
@@ -126,5 +124,5 @@ def test_finalize_then_use_raises() -> None:
     """
     bg = sem.BackgroundEvaluator(3, "corrected")
     bg.finalize()
-    with pytest.raises(Exception):  # noqa: BLE001 - cross-version: any wire-format error
+    with pytest.raises(Exception, match="already been finalized"):
         bg.snapshot()

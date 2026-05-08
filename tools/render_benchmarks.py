@@ -115,7 +115,7 @@ def format_bytes(b: int | None) -> str:
 def format_speedup(ratio: float | None) -> str:
     if ratio is None:
         return "—"
-    return f"{ratio:.2f}×"
+    return f"{ratio:.2f}×"  # noqa: RUF001
 
 
 def is_vernier(impl: str) -> bool:
@@ -164,10 +164,7 @@ def auto_select_mfp(sha: str) -> str:
         sys.exit(f"error: no machine-fingerprints under bench/results/{sha}/")
     if len(mfps) > 1:
         # Prefer the mfp with the most cells.
-        counts = {
-            mfp: sum(1 for _ in (sha_root / mfp).rglob("*.json"))
-            for mfp in mfps
-        }
+        counts = {mfp: sum(1 for _ in (sha_root / mfp).rglob("*.json")) for mfp in mfps}
         return max(mfps, key=lambda m: counts[m])
     return mfps[0]
 
@@ -239,7 +236,11 @@ def render_iou_table(
     workload: str,
     iou: str,
 ) -> str:
-    matching = {k.impl: v for k, v in cells.items() if k.paradigm == paradigm and k.workload == workload and k.iou == iou}
+    matching = {
+        k.impl: v
+        for k, v in cells.items()
+        if k.paradigm == paradigm and k.workload == workload and k.iou == iou
+    }
     if not matching:
         return ""
     baseline = vernier_baseline_for(cells, paradigm, workload, iou)
@@ -256,9 +257,12 @@ def render_iou_table(
         cell_label = IMPL_LABELS.get(impl, impl)
         if is_vernier(impl):
             cell_label = f"**{cell_label}**"
-        ratio_cell = f"**{format_speedup(speedup)}**" if is_vernier(impl) else format_speedup(speedup)
+        ratio_cell = (
+            f"**{format_speedup(speedup)}**" if is_vernier(impl) else format_speedup(speedup)
+        )
         rows.append(
-            f"| {cell_label} | {format_ns(stats.median_ns)} | {format_bytes(stats.max_rss_bytes)} | {ratio_cell} |"
+            f"| {cell_label} | {format_ns(stats.median_ns)} "
+            f"| {format_bytes(stats.max_rss_bytes)} | {ratio_cell} |"
         )
     return "\n".join(rows)
 
@@ -289,9 +293,7 @@ def render_paradigm_section(
     return "\n".join(out)
 
 
-def render_document(
-    sha: str, mfp: str, cells: dict[CellKey, CellStats], harness_mode: str
-) -> str:
+def render_document(sha: str, mfp: str, cells: dict[CellKey, CellStats], harness_mode: str) -> str:
     if not cells:
         sys.exit("error: no usable cells in the selected SHA/mfp")
 

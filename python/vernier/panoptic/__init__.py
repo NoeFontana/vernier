@@ -160,7 +160,7 @@ class Evaluator:
 
         ``retain_per_image_deltas=True`` enables strict-mode bit-
         equality across distributed-eval ranks (ADR-0032 PR-E
-        §"Determinism") at ~2× streaming memory cost. Default off
+        §"Determinism") at ~2x streaming memory cost. Default off
         keeps the single-rank path lean.
 
         ``rank_id``, when set, identifies this evaluator's rank in
@@ -201,7 +201,7 @@ class Evaluator:
 
         ``retain_per_image_deltas=True`` enables strict-mode bit-
         equality across distributed-eval ranks (ADR-0032
-        §"Determinism") at ~2× streaming memory cost. The five
+        §"Determinism") at ~2x streaming memory cost. The five
         queueing / scheduling knobs mirror
         :class:`vernier.instance.Evaluator.background`.
         """

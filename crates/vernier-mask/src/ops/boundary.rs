@@ -92,12 +92,7 @@ pub fn boundary_band_segments_into(
     }
     rle.decode_bbox_into(&mut scratch.raster_bbox, bbox);
     erode_bbox_into_scratch(scratch, bw, bh, d);
-    Ok(segments.push_from_rasters_xor_bbox(
-        &scratch.raster_bbox,
-        &scratch.eroded_bbox,
-        h,
-        bbox,
-    ))
+    Ok(segments.push_from_rasters_xor_bbox(&scratch.raster_bbox, &scratch.eroded_bbox, h, bbox))
 }
 
 /// Decodes `rle` to `scratch.raster` and writes the eroded raster to

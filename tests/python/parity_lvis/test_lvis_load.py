@@ -1,6 +1,6 @@
 """LVIS dataset loader smoke tests (PR-2 of the ADR-0026 rollout).
 
-These exercise the public Python surface only — `Dataset.from_lvis_json`,
+These exercise the public Python surface only — `CocoDataset.from_lvis_json`,
 the federated accessors, and the `Frequency` enum. Cell-skip and
 `dt_ignore` semantics land in PR-3 with their own parity harness; the
 checks here pin the *shape* of the federated metadata as observed
@@ -73,7 +73,7 @@ def _gt_bytes(payload: Mapping[str, object]) -> bytes:
 
 @pytest.mark.parity_lvis
 def test_from_lvis_json_loads_minimal_valid_dataset() -> None:
-    ds = Dataset.from_lvis_json(_gt_bytes(_LVIS_MIN_VALID))
+    ds = CocoDataset.from_lvis_json(_gt_bytes(_LVIS_MIN_VALID))
     assert ds.num_images == 2
     assert ds.num_annotations == 2
     assert ds.num_categories == 2
@@ -82,7 +82,7 @@ def test_from_lvis_json_loads_minimal_valid_dataset() -> None:
 
 @pytest.mark.parity_lvis
 def test_federated_accessors_match_aa1_aa2_aa3_ab1() -> None:
-    ds = Dataset.from_lvis_json(_gt_bytes(_LVIS_MIN_VALID))
+    ds = CocoDataset.from_lvis_json(_gt_bytes(_LVIS_MIN_VALID))
     pos = ds.pos_category_ids
     neg = ds.neg_category_ids
     nel = ds.not_exhaustive_category_ids
@@ -119,7 +119,7 @@ def test_from_json_leaves_federated_accessors_none() -> None:
     # The COCO loader on the same payload silently drops the LVIS
     # extras (AG1) and leaves federated metadata absent — the
     # orchestrator falls back to COCO semantics on every cell.
-    ds = Dataset.from_json(_gt_bytes(_LVIS_MIN_VALID))
+    ds = CocoDataset.from_json(_gt_bytes(_LVIS_MIN_VALID))
     assert ds.is_federated is False
     assert ds.pos_category_ids is None
     assert ds.neg_category_ids is None
@@ -155,7 +155,7 @@ def test_aa7_pos_intersect_neg_raises() -> None:
         "categories": [{"id": 1, "name": "a", "frequency": "f"}],
     }
     with pytest.raises(ValueError, match="lvis federated conflict"):
-        Dataset.from_lvis_json(_gt_bytes(bad))
+        CocoDataset.from_lvis_json(_gt_bytes(bad))
 
 
 @pytest.mark.parity_lvis
@@ -187,7 +187,7 @@ def test_aa7_not_exhaustive_outside_pos_raises() -> None:
         ],
     }
     with pytest.raises(ValueError, match="not_exhaustive"):
-        Dataset.from_lvis_json(_gt_bytes(bad))
+        CocoDataset.from_lvis_json(_gt_bytes(bad))
 
 
 @pytest.mark.parity_lvis
@@ -212,7 +212,7 @@ def test_ab6_missing_frequency_collects_all_offenders() -> None:
         ],
     }
     with pytest.raises(ValueError, match=r"missing `frequency` on 2 categories: \[3, 7\]"):
-        Dataset.from_lvis_json(_gt_bytes(bad))
+        CocoDataset.from_lvis_json(_gt_bytes(bad))
 
 
 @pytest.mark.parity_lvis
