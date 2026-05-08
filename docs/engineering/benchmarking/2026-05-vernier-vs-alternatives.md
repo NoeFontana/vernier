@@ -143,37 +143,44 @@ passes against panopticapi on every cell (PQ=1.0 by construction).
 
 | impl                  |   median    | RSS (max)   | vs vernier_panoptic |
 | --------------------- | ----------: | ----------: | ------------------: |
-| **vernier_panoptic**  |   51.036 s  |  129.8 MiB  |   **1.00x**         |
-| panopticapi           |   34.599 s  |  144.6 MiB  |    0.68x (faster)   |
+| **vernier_panoptic**  |   32.337 s  |  127.2 MiB  |   **1.00x**         |
+| panopticapi           |   35.903 s  |  147.2 MiB  |    1.11x (slower)   |
 
 | metric | impl             |    median (ns) |    RSS (B)     |
 | ------ | ---------------- | -------------: | -------------: |
-| pq     | vernier_panoptic | 51,036,000,000 |    136,118,272 |
-| pq     | panopticapi      | 34,599,000,000 |    151,678,976 |
+| pq     | vernier_panoptic | 32,337,000,000 |    133,373,952 |
+| pq     | panopticapi      | 35,903,000,000 |    154,374,144 |
 
-**Findings flag (resolved).** The previous snapshot showed vernier
-2.5x slower and ~150x more memory-heavy than panopticapi on this
-cell. The runner now streams via
-`vernier.panoptic.Evaluator.background()`: PNG decode runs on the
-main thread while the Rust PQ kernel folds on a worker, with bounded
-queue depth, so RSS is `O(queue_capacity * image_size * 4 bytes)`
-instead of `O(n_images * image_size * 4 bytes)`. The runner-side
-`_build_label_maps` eager decode is gone.
+**Findings flag (resolved).** Two consecutive rounds closed the gap
+panopticapi held over vernier on this cell:
 
-- **Wall**: 85.631 s → 51.036 s (-40.4%). Decode + kernel now overlap;
-  the remaining gap to panopticapi (1.5x slower) is per-image
-  framework overhead inside the streaming submit + finalize loop.
-- **RSS**: 21.17 GiB → 129.8 MiB (-99.4%). Now slightly *under*
-  panopticapi's 144.6 MiB.
+| round | wall | RSS | vs panopticapi |
+| --- | ---: | ---: | ---: |
+| 0 (eager decode) | 85.6 s | 21.17 GiB | 0.40x (slower) |
+| 1 (streaming refactor, #187) | 51.0 s | 130 MiB | 0.68x (slower) |
+| **2 (FxHash internal maps, #188)** | **32.3 s** | **127 MiB** | **1.11x (faster)** |
 
-The Rust PQ kernel itself is unchanged; strict-tier parity vs
-`pq_compute_single_core` still passes.
+Round 1 replaced the runner's eager-PNG-decode loop with
+`vernier.panoptic.Evaluator.background()` — PNG decode runs on the
+main thread while the Rust PQ kernel folds on a worker, so RSS is
+bounded by `queue_capacity × image_size × 4 bytes` instead of
+`n_images × …`. Round 2 swapped the per-image `HashMap<(u32, u32),
+u32>` (intersection histogram) and `HashMap<u32, SegmentInfo>` (DT
+validation) to `FxHashMap`: SipHash's DoS resistance was wasted work
+on internal integer keys walked at ~1.5 B ops per cell. The `submit`
+hot path dropped 24.9 s → 4.7 s (5.3x); the divan-level kernel arm
+dropped 3.56 ms → 0.63 ms.
 
-**Next optimization target** (engineer-facing): the remaining 1.5x
-wall-time gap vs panopticapi. Both impls now stream, so the delta is
-either (a) per-image FFI overhead in `submit()` + JSON-encoded
-segments_info parsing, or (b) the Rust kernel itself. Profile both
-sides before picking.
+Strict-tier parity vs `pq_compute_single_core` still passes — FxHash
+is deterministic and the histogram-iteration order is irrelevant per
+quirk U9.
+
+**Remaining headroom**: PNG decode (~33 s) is now the long pole and
+runs on the main thread. The Rust PQ kernel is GIL-free on a worker;
+the cell is decode-bound. Faster panoptic PNG decode (e.g.,
+`image-rs` PNG over `Pillow`) would shave wall-time further, but at
+that point we're optimizing PIL's RGB→uint32 conversion, which
+panopticapi also pays.
 
 **Harness fixes landed this phase**:
 - ``GT_ZIP_SHA256`` placeholder pinned to the upstream `c05f76d2…`.
