@@ -17,6 +17,19 @@ workspace = true
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
+# cargo-binstall path templates. cargo-dist names artifacts
+# `{name}-{target}.{ext}` (no version segment), which doesn't match
+# binstall's default URL heuristic — so we declare it explicitly per
+# ADR-0015's binstall rule. `{archive-suffix}` resolves to `.tar.xz`
+# on Linux/macOS and `.zip` on Windows; the binary inside is `vernier`
+# (`vernier.exe` on Windows) per the [[bin]] declaration below.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [[bin]]
 name = "vernier"
 path = "src/main.rs"
