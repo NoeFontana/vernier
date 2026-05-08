@@ -201,22 +201,35 @@ jobs:
           name: sdist
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # PEP 740: sigstore-sign each artifact and upload the
+          # attestation alongside it. PyPI verifies and exposes the
+          # attestation on the project page; supply-chain-conscious
+          # consumers (`pip --require-hashes`, `pip-audit`,
+          # security-scanning tools) gate installs on it. Requires the
+          # OIDC `id-token: write` permission already granted on this
+          # job and is a no-op for non-Trusted-Publisher uploads.
+          attestations: true
 
   # crates.io publish via Trusted Publisher (OIDC — no
   # CARGO_REGISTRY_TOKEN secret). Requires Trusted Publishers set up at
-  # https://crates.io/me/trusted-publishers FOR EACH crate
-  # (`vernier-mask`, `vernier-core`, `vernier-cli`) with `Environment`
-  # left blank — crates.io scopes publishers per crate, unlike PyPI's
-  # per-project scope.
+  # https://crates.io/me/trusted-publishers FOR EACH crate (the six
+  # listed below) with `Environment` left blank — crates.io scopes
+  # publishers per crate, unlike PyPI's per-project scope.
   #
   # No `environment:` gate on the job for the same reason as
   # `publish-pypi` above: free-tier private-repo environments don't
   # enforce protection rules.
   #
-  # Order matters: `vernier-cli` and `vernier-ffi` depend on
-  # `vernier-core` which depends on `vernier-mask`. Modern cargo
-  # blocks until the index reflects the new version, so sequential
-  # publish is sufficient (no manual sleep). `vernier-ffi` is
+  # Order is a topological sort of the workspace's internal dep graph:
+  #   vernier-mask    (leaf)
+  #   vernier-partial (leaf)
+  #   vernier-core      depends on mask + partial
+  #   vernier-panoptic  depends on mask + partial
+  #   vernier-semantic  depends on core + partial
+  #   vernier-cli       depends on core
+  # Modern cargo blocks until the index reflects each new version, so
+  # sequential publish is sufficient (no manual sleep). `vernier-ffi` is
   # `publish = false` and ships only inside the wheel.
   publish-crates-io:
     name: publish to crates.io
@@ -239,10 +252,22 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p vernier-mask
+      - name: cargo publish vernier-partial
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p vernier-partial
       - name: cargo publish vernier-core
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p vernier-core
+      - name: cargo publish vernier-panoptic
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p vernier-panoptic
+      - name: cargo publish vernier-semantic
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p vernier-semantic
       - name: cargo publish vernier-cli
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
