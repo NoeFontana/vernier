@@ -127,18 +127,8 @@ pub fn attribute_image(
         let Some(seg) = dt.segments.get(&dt_id) else {
             continue;
         };
-        let void_overlap = report
-            .intersections
-            .get(&(PANOPTIC_VOID, dt_id))
-            .copied()
-            .unwrap_or(0) as u64;
-        let lookup = |gt_id: u32| -> u64 {
-            report
-                .intersections
-                .get(&(gt_id, dt_id))
-                .copied()
-                .unwrap_or(0) as u64
-        };
+        let void_overlap = report.intersections.count(PANOPTIC_VOID, dt_id) as u64;
+        let lookup = |gt_id: u32| -> u64 { report.intersections.count(gt_id, dt_id) as u64 };
         let crowd_overlap: u64 = match &crowd {
             CrowdMap::Strict(m) => m.get(&seg.category_id).copied().map(lookup).unwrap_or(0),
             CrowdMap::Corrected(m) => m
