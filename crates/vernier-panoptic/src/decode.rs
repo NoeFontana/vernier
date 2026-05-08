@@ -56,98 +56,27 @@ pub fn decode_panoptic_png(
     segments_list: Vec<SegmentInfo>,
     side: &'static str,
 ) -> Result<ImageEntry, PanopticError> {
-    let (height, width, rgb) = decode_rgb_8bit(image_id, bytes)?;
-    let n_pixels = (height as usize) * (width as usize);
-
-    // Build the per-image segment lookup. Direct Vec<u32> when the
-    // raw id range fits the DENSE_LOOKUP_MAX_ID cap; FxHashMap fallback
-    // otherwise. The Vec path is the typical case (COCO panoptic ids
-    // stay well under 1 M); the hashmap fallback handles datasets that
-    // pack high bits of the encoded id space.
-    let n_segments = segments_list.len();
-    let max_id = segments_list.iter().map(|s| s.id).max().unwrap_or(0);
-    let mut lookup = SegmentLookup::build(image_id, &segments_list, max_id, side)?;
-    let mut areas: Vec<u64> = vec![0; n_segments];
-    let mut seen: Vec<bool> = vec![false; n_segments];
-
-    let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
-    let dt = side == "dt";
-
-    // Inner loop: read 3 bytes per pixel, encode as id, fold into the
-    // label map and (DT side) into the per-segment area + seen
-    // bitmap. The hot path is straight-line code; the per-pixel
-    // branches are well-predicted (VOID hits are rare in non-trivial
-    // segmentations, and the DT-side validation either always hits or
-    // always misses for a given image's id space).
-    let mut chunks = rgb.chunks_exact(3);
-    for chunk in &mut chunks {
-        // SAFETY of indexing: `chunks_exact(3)` yields a `&[u8]` of
-        // length exactly 3, so [0]/[1]/[2] are bounds-checked but
-        // collapse to a single bounds check the compiler can hoist.
-        let id = (chunk[0] as u32) | ((chunk[1] as u32) << 8) | ((chunk[2] as u32) << 16);
-        label_map.push(id);
-        if id == PANOPTIC_VOID {
-            continue;
-        }
-        match lookup.index_of(id) {
-            Some(idx) => {
-                areas[idx] += 1;
-                seen[idx] = true;
-            }
-            None => {
-                if dt {
-                    return Err(PanopticError::UnknownPredSegmentId {
-                        image_id,
-                        segment_id: id,
-                    });
-                }
-                // GT: ignore unknown ids per S8 (segments_info may
-                // declare more ids than appear in the PNG; the kernel
-                // iterates the histogram, not the dict).
-            }
-        }
+    if side == "dt" {
+        decode_dt(image_id, bytes, segments_list)
+    } else {
+        decode_gt(image_id, bytes, segments_list)
     }
-    debug_assert!(chunks.remainder().is_empty());
-
-    if dt {
-        for (idx, seg) in segments_list.iter().enumerate() {
-            if !seen[idx] {
-                return Err(PanopticError::MissingPredSegmentInPng {
-                    image_id,
-                    segment_id: seg.id,
-                });
-            }
-        }
-    }
-
-    // Materialize the segments map. DT side overwrites area with the
-    // PNG marginal (S3); GT side keeps the JSON value (S4).
-    let mut segments: FxHashMap<u32, SegmentInfo> =
-        FxHashMap::with_capacity_and_hasher(n_segments, Default::default());
-    for (idx, mut seg) in segments_list.into_iter().enumerate() {
-        if dt {
-            seg.area = areas[idx];
-        }
-        // Duplicate id was already rejected by `SegmentLookup::build`.
-        segments.insert(seg.id, seg);
-    }
-
-    Ok(ImageEntry {
-        height,
-        width,
-        label_map,
-        segments,
-    })
 }
 
-/// Read the PNG header, verify 8-bit RGB, and decode into a flat
-/// `Vec<u8>` of length `3 * height * width`. Other color types
-/// (Grayscale / Indexed / GrayscaleAlpha / RGBA) are rejected at the
-/// FFI boundary per quirk **R2** (panopticapi silently drops alpha on
-/// RGBA via `[:,:,0..2]` indexing and crashes on P/L; vernier rejects).
-fn decode_rgb_8bit(image_id: ImageId, bytes: &[u8]) -> Result<(u32, u32, Vec<u8>), PanopticError> {
+/// Validated 8-bit-RGB row-streaming reader plus image dimensions.
+struct PngStream<'a> {
+    height: u32,
+    width: u32,
+    reader: png::Reader<Cursor<&'a [u8]>>,
+}
+
+/// Initialize a row-streaming PNG reader for an 8-bit RGB panoptic
+/// image. Returns the reader plus the validated dimensions. Other
+/// color types (Grayscale / Indexed / GrayscaleAlpha / RGBA) are
+/// rejected at the FFI boundary per quirk **R2**.
+fn init_reader(image_id: ImageId, bytes: &[u8]) -> Result<PngStream<'_>, PanopticError> {
     let decoder = png::Decoder::new(Cursor::new(bytes));
-    let mut reader = decoder
+    let reader = decoder
         .read_info()
         .map_err(|e| PanopticError::Png(format!("image_id={image_id}: read_info: {e}")))?;
     let info = reader.info();
@@ -159,20 +88,140 @@ fn decode_rgb_8bit(image_id: ImageId, bytes: &[u8]) -> Result<(u32, u32, Vec<u8>
             mode: color_type_label(color_type, bit_depth),
         });
     }
-    let buf_size = reader.output_buffer_size().ok_or_else(|| {
-        PanopticError::Png(format!(
-            "image_id={image_id}: output_buffer_size unavailable"
-        ))
-    })?;
-    let mut buf = vec![0u8; buf_size];
-    let out = reader
-        .next_frame(&mut buf)
-        .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_frame: {e}")))?;
-    // `next_frame` writes the raw image bytes; for 8-bit RGB this is
-    // exactly `3 * width * height` bytes contiguous, no padding.
-    let (h, w) = (out.height, out.width);
-    buf.truncate((h as usize) * (w as usize) * 3);
-    Ok((h, w, buf))
+    let height = info.height;
+    let width = info.width;
+    Ok(PngStream {
+        height,
+        width,
+        reader,
+    })
+}
+
+/// GT-side decode: RGB→id straight into `label_map`, row by row,
+/// without ever materializing the full `3 * H * W` RGB buffer. No
+/// segment-id lookup, no per-pixel area accumulation, no S1/S11
+/// validation — quirk **S8** is "GT JSON-extras silently kept;
+/// matching iterates the histogram, not the dict", and quirk **S4**
+/// is "GT areas come from JSON, not from the PNG marginal." So the
+/// GT inner loop is just `id = R | G<<8 | B<<16; push`.
+///
+/// The S7 duplicate-id check still runs against `segments_list` so
+/// the corrected disposition rejects malformed input — that walk is
+/// over the (small) segments JSON, not the (large) pixel buffer.
+fn decode_gt(
+    image_id: ImageId,
+    bytes: &[u8],
+    segments_list: Vec<SegmentInfo>,
+) -> Result<ImageEntry, PanopticError> {
+    let PngStream {
+        height,
+        width,
+        mut reader,
+    } = init_reader(image_id, bytes)?;
+    let n_pixels = (height as usize) * (width as usize);
+    let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
+
+    while let Some(row) = reader
+        .next_row()
+        .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
+    {
+        for chunk in row.data().chunks_exact(3) {
+            let id = (chunk[0] as u32) | ((chunk[1] as u32) << 8) | ((chunk[2] as u32) << 16);
+            label_map.push(id);
+        }
+    }
+
+    let mut segments: FxHashMap<u32, SegmentInfo> =
+        FxHashMap::with_capacity_and_hasher(segments_list.len(), Default::default());
+    for seg in segments_list {
+        if segments.insert(seg.id, seg).is_some() {
+            return Err(PanopticError::DuplicateSegmentId {
+                image_id,
+                segment_id: seg.id,
+                side: "gt",
+            });
+        }
+    }
+
+    Ok(ImageEntry {
+        height,
+        width,
+        label_map,
+        segments,
+    })
+}
+
+/// DT-side decode: the full validation + S3 area marginal pass, also
+/// row-streaming. Per pixel we (a) push id, (b) skip VOID, (c) look
+/// up in the segment remap, (d) bump per-segment area + mark seen.
+/// After the walk we check S11 (every declared id was seen) and
+/// overwrite each segment's `area` with the PNG marginal (S3).
+fn decode_dt(
+    image_id: ImageId,
+    bytes: &[u8],
+    segments_list: Vec<SegmentInfo>,
+) -> Result<ImageEntry, PanopticError> {
+    let PngStream {
+        height,
+        width,
+        mut reader,
+    } = init_reader(image_id, bytes)?;
+    let n_pixels = (height as usize) * (width as usize);
+    let n_segments = segments_list.len();
+    let max_id = segments_list.iter().map(|s| s.id).max().unwrap_or(0);
+    let mut lookup = SegmentLookup::build(image_id, &segments_list, max_id, "dt")?;
+    let mut areas: Vec<u64> = vec![0; n_segments];
+    let mut seen: Vec<bool> = vec![false; n_segments];
+    let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
+
+    while let Some(row) = reader
+        .next_row()
+        .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
+    {
+        for chunk in row.data().chunks_exact(3) {
+            let id = (chunk[0] as u32) | ((chunk[1] as u32) << 8) | ((chunk[2] as u32) << 16);
+            label_map.push(id);
+            if id == PANOPTIC_VOID {
+                continue;
+            }
+            match lookup.index_of(id) {
+                Some(idx) => {
+                    areas[idx] += 1;
+                    seen[idx] = true;
+                }
+                None => {
+                    return Err(PanopticError::UnknownPredSegmentId {
+                        image_id,
+                        segment_id: id,
+                    });
+                }
+            }
+        }
+    }
+
+    for (idx, seg) in segments_list.iter().enumerate() {
+        if !seen[idx] {
+            return Err(PanopticError::MissingPredSegmentInPng {
+                image_id,
+                segment_id: seg.id,
+            });
+        }
+    }
+
+    let mut segments: FxHashMap<u32, SegmentInfo> =
+        FxHashMap::with_capacity_and_hasher(n_segments, Default::default());
+    for (idx, mut seg) in segments_list.into_iter().enumerate() {
+        seg.area = areas[idx];
+        // Duplicate id was already rejected by `SegmentLookup::build`.
+        segments.insert(seg.id, seg);
+    }
+
+    Ok(ImageEntry {
+        height,
+        width,
+        label_map,
+        segments,
+    })
 }
 
 fn color_type_label(c: png::ColorType, d: png::BitDepth) -> &'static str {
