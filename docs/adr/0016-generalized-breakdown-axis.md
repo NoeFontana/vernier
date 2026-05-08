@@ -1,6 +1,6 @@
 # ADR-0016: Generalize the A-axis as a value-typed `Breakdown`
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-04-29
 - **Deciders:** @NoeFontana
 - **Consulted:** —

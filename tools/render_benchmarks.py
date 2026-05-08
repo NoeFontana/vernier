@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 from dataclasses import dataclass
@@ -133,9 +134,12 @@ def auto_select_sha() -> str:
 
     Ties broken by total cell count, then lexically. A SHA with no
     third-party baseline runs (vernier-only round) loses to any SHA
-    that has at least one comparison cell.
+    that has at least one comparison cell. When more than one SHA is
+    on disk, prints the choice + runner-up to stderr so the docs
+    author can spot a wrong-pick (e.g. an annex-heavy older round
+    outranking a newer headline run) and override with `--sha`.
     """
-    best: tuple[int, int, str] | None = None
+    candidates: list[tuple[int, int, str]] = []
     for sha in discover_shas():
         sha_root = RESULTS_ROOT / sha
         comparison_cells = 0
@@ -144,16 +148,22 @@ def auto_select_sha() -> str:
             if ".intermediate" in path.parts or path.name.endswith(".snapshot.json"):
                 continue
             total_cells += 1
-            impl = path.stem
-            if not is_vernier(impl):
+            if not is_vernier(path.stem):
                 comparison_cells += 1
-        if total_cells == 0:
-            continue
-        candidate = (comparison_cells, total_cells, sha)
-        if best is None or candidate > best:
-            best = candidate
-    if best is None:
+        if total_cells > 0:
+            candidates.append((comparison_cells, total_cells, sha))
+    if not candidates:
         sys.exit("error: no result JSONs found under bench/results/")
+    candidates.sort(reverse=True)
+    best = candidates[0]
+    if len(candidates) > 1:
+        runner_up = candidates[1]
+        print(
+            f"auto-selected sha={best[2]} ({best[0]} comparison / "
+            f"{best[1]} total cells), runner-up sha={runner_up[2]} "
+            f"({runner_up[0]} / {runner_up[1]}); pass --sha to override",
+            file=sys.stderr,
+        )
     return best[2]
 
 
@@ -169,8 +179,8 @@ def auto_select_mfp(sha: str) -> str:
     return mfps[0]
 
 
-def load_cell(path: Path) -> tuple[CellStats, str] | None:
-    """Load a single result JSON; return (stats, harness_mode) or None.
+def load_cell(path: Path) -> tuple[CellStats, str, str] | None:
+    """Load a single result JSON; return (stats, harness_mode, impl_version) or None.
 
     Returns None if the file has no non-warmup reps (e.g., an aborted
     run or a snapshot artifact).
@@ -186,17 +196,24 @@ def load_cell(path: Path) -> tuple[CellStats, str] | None:
         median_ns=int(statistics.median(walls)),
         max_rss_bytes=max(rsses) if rsses else 0,
     )
-    return stats, str(data.get("mode", ""))
+    return stats, str(data.get("mode", "")), str(data.get("impl_version", ""))
 
 
-def gather_cells(sha: str, mfp: str) -> tuple[dict[CellKey, CellStats], str]:
-    """Return the cells dict plus the harness mode shared across them."""
+def gather_cells(sha: str, mfp: str) -> tuple[dict[CellKey, CellStats], str, dict[str, str]]:
+    """Return the cells dict, the harness mode, and impl→version pins.
+
+    Warns on stderr if a result JSON has no `impl_version` field, or if
+    the same impl is pinned to multiple versions across cells (the
+    rendered baseline line would silently pick whichever was visited
+    first).
+    """
     base = RESULTS_ROOT / sha / mfp
     if not base.is_dir():
         sys.exit(f"error: {base} not found")
     out: dict[CellKey, CellStats] = {}
     mode = ""
-    for path in base.rglob("*.json"):
+    versions_seen: dict[str, set[str]] = {}
+    for path in sorted(base.rglob("*.json")):
         if ".intermediate" in path.parts or path.name.endswith(".snapshot.json"):
             continue
         # Path under base: <paradigm>/<workload>/<iou>/<impl>.json
@@ -209,11 +226,31 @@ def gather_cells(sha: str, mfp: str) -> tuple[dict[CellKey, CellStats], str]:
         loaded = load_cell(path)
         if loaded is None:
             continue
-        stats, cell_mode = loaded
+        stats, cell_mode, impl_version = loaded
         out[CellKey(paradigm, workload, iou, impl)] = stats
         if not mode:
             mode = cell_mode
-    return out, mode
+        if impl_version:
+            versions_seen.setdefault(impl, set()).add(impl_version)
+        else:
+            print(
+                f"warning: {path.relative_to(REPO_ROOT)} has no impl_version",
+                file=sys.stderr,
+            )
+
+    impl_versions: dict[str, str] = {}
+    for impl, versions in versions_seen.items():
+        if len(versions) > 1:
+            chosen = sorted(versions)[0]
+            print(
+                f"warning: {impl} pinned to multiple versions across cells "
+                f"({sorted(versions)}); rendering with {chosen}",
+                file=sys.stderr,
+            )
+            impl_versions[impl] = chosen
+        else:
+            impl_versions[impl] = next(iter(versions))
+    return out, mode, impl_versions
 
 
 def vernier_baseline_for(
@@ -293,9 +330,56 @@ def render_paradigm_section(
     return "\n".join(out)
 
 
-def render_document(sha: str, mfp: str, cells: dict[CellKey, CellStats], harness_mode: str) -> str:
+_PYPI_BASELINES: frozenset[str] = frozenset({"pycocotools", "faster-coco-eval", "mmsegmentation"})
+_GH_BASELINES: dict[str, str] = {
+    "panopticapi": "cocodataset/panopticapi",
+    "boundary-iou-api": "bowenc0221/boundary-iou-api",
+}
+assert set(IMPL_ORDER) >= _PYPI_BASELINES
+assert set(IMPL_ORDER) >= _GH_BASELINES.keys()
+
+_HEX_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+
+
+def _baseline_link(impl: str, version: str) -> str:
+    if impl in _PYPI_BASELINES:
+        return f"[`{impl}=={version}`](https://pypi.org/project/{impl}/{version}/)"
+    if impl in _GH_BASELINES and _HEX_SHA_RE.match(version):
+        return (
+            f"[`{impl}` @ `{version[:7]}`]"
+            f"(https://github.com/{_GH_BASELINES[impl]}/commit/{version})"
+        )
+    return f"`{impl}=={version}`"
+
+
+def render_baselines_block(impl_versions: dict[str, str]) -> str:
+    """Render the pinned-baselines line; skips vernier-family impls."""
+    pieces = [
+        _baseline_link(impl, impl_versions[impl])
+        for impl in IMPL_ORDER
+        if not is_vernier(impl) and impl in impl_versions
+    ]
+    if not pieces:
+        return ""
+    return (
+        "**Baselines pinned for these numbers** — "
+        + " · ".join(pieces)
+        + ". Each baseline is locked in its own uv-managed venv per ADR-0017."
+    )
+
+
+def render_document(
+    sha: str,
+    mfp: str,
+    cells: dict[CellKey, CellStats],
+    harness_mode: str,
+    impl_versions: dict[str, str],
+) -> str:
     if not cells:
         sys.exit("error: no usable cells in the selected SHA/mfp")
+
+    baselines_block = render_baselines_block(impl_versions)
+    baselines_section = ("\n\n" + baselines_block) if baselines_block else ""
 
     header = f"""# Benchmarks
 
@@ -310,7 +394,7 @@ extended cross-paradigm in
 mode `{harness_mode}` · build profile = cargo release defaults
 (`opt-level=3`, `lto=thin`, `codegen-units=1`, no `target-cpu`). The
 release wheel on PyPI is built with the same profile — no
-benchmarking-only flags.
+benchmarking-only flags.{baselines_section}
 
 For the full per-cell deep-dive (per-stage breakdown, RSS evolution,
 parity gating, narrative on what moved each round), see
@@ -368,8 +452,8 @@ def main() -> None:
 
     sha = args.sha or auto_select_sha()
     mfp = args.mfp or auto_select_mfp(sha)
-    cells, harness_mode = gather_cells(sha, mfp)
-    document = render_document(sha, mfp, cells, harness_mode)
+    cells, harness_mode, impl_versions = gather_cells(sha, mfp)
+    document = render_document(sha, mfp, cells, harness_mode, impl_versions)
     args.output.write_text(document)
     try:
         rel = args.output.relative_to(REPO_ROOT)

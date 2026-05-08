@@ -3,6 +3,51 @@
 Welcome. This document covers the basics; see `docs/engineering/` for the
 detailed standards once they're written.
 
+## Repository layout
+
+```
+crates/
+  vernier-core/      pure Rust evaluation logic; no Python dependency
+  vernier-mask/      pure Rust COCO RLE codec, polygon rasterizer, mask ops (ADR-0009)
+  vernier-ffi/       PyO3 bindings; data conversion only, no business logic
+  vernier-cli/       `vernier` binary — workspace member per ADR-0015
+  vernier-panoptic/  PQ evaluator (ADR-0025); sibling to vernier-core
+  vernier-semantic/  mIoU evaluator (ADR-0028); sibling to vernier-core
+  vernier-partial/   distributed-eval wire envelope (ADR-0031, ADR-0032)
+python/
+  vernier/           thin Python wrapper; the user-facing API lives here
+tools/
+  reservations/      placeholder packages holding registry names; outside the workspace
+docs/
+  adr/               Architecture Decision Records
+  ...                Diátaxis-organized documentation
+tests/
+  rust/              Rust integration tests
+  python/            Python tests against the FFI boundary
+```
+
+## Development quickstart
+
+Prerequisites:
+
+- [Rust stable](https://rustup.rs/) (`rustc >= 1.83`, pinned in `rust-toolchain.toml`)
+- [uv](https://docs.astral.sh/uv/) for the Python toolchain (Python `>= 3.10`)
+- [just](https://github.com/casey/just) for task running
+- [`cargo-nextest`](https://nexte.st/) for the Rust test runner
+- [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for `just audit`
+
+```bash
+# One-time setup
+just bootstrap
+
+# Iterate
+just develop      # fast incremental rebuild
+just test         # Rust + Python tests
+just lint         # clippy + ruff + pyright (read-only, CI-equivalent)
+just fmt          # auto-format everything
+just audit        # cargo-deny check
+```
+
 ## ADR-driven workflow
 
 Significant changes — anything that affects the public API, the FFI boundary,

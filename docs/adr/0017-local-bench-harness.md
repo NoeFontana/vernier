@@ -1,6 +1,6 @@
 # ADR-0017: Local bench harness — subprocess-isolated, uv-managed, parity-coupled
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-01 (amended 2026-05-06 — workload realism: §"COCO val2017"
   expanded with mask-space jitter; §"Reference-model predictions" promoted from
   out-of-scope to a real subsection; §"Out of scope" line removed accordingly.
