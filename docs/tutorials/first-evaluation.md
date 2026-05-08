@@ -82,10 +82,11 @@ for the cross-codebase comparison.
   for OKS (ADR-0012). Recipes:
   [`how-to/boundary-iou.md`](../how-to/boundary-iou.md),
   [`how-to/keypoints-oks.md`](../how-to/keypoints-oks.md).
-- **Run continuously during training.** `StreamingEvaluator`
-  accepts predictions in batches and yields a running summary —
-  you can log AP every N steps without re-evaluating from scratch.
-  Tutorial: [`training-loop.md`](training-loop.md).
+- **Log AP mid-epoch.** End-of-epoch `Evaluator(...).evaluate(...)` is
+  the default. If you specifically need a *running* AP every N steps
+  during validation, `StreamingEvaluator` accepts predictions in
+  batches and yields a running summary. Tutorial:
+  [`training-loop.md`](training-loop.md).
 - **Migrate from a competing tool.** The TL;DR table in
   [`migrate/from-pycocotools.md`](../migrate/from-pycocotools.md)
   maps the `COCOeval(...).evaluate().accumulate().summarize()`

@@ -174,11 +174,14 @@ A short, honest list:
   not draw bounding boxes on images. Tools like
   [supervision](https://github.com/roboflow/supervision) and
   [fiftyone](https://github.com/voxel51/fiftyone) cover that ground.
-- **Training-loop integration beyond the streaming evaluator.** The
-  `Evaluator.stream()` surface
+- **Training-loop integration beyond two supported entry points.**
+  `Evaluator.evaluate()` at end-of-epoch is the default; the
+  `StreamingEvaluator` surface
   ([ADR-0013](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0013-streaming-evaluator.md))
-  is the supported integration point; full callbacks-and-loggers
-  integration is downstream-framework territory.
+  is the secondary one for *mid-epoch* AP logging. Multi-rank
+  rank-local + gather is the
+  [distributed-eval how-to](how-to/distributed-eval.md). Full
+  callbacks-and-loggers integration is downstream-framework territory.
 - **Pretty HTML reports.** The CLI emits text and JSON; HTML report
   generation is a follow-up tool that consumes the JSON output.
 - **A model zoo / pretrained predictor.** vernier evaluates predictions

@@ -27,6 +27,11 @@ not share the AP fold (one-to-one matching on `IoU > 0.5`, no score
 gradient, no T/R/A/M axes). Choose the submodule that matches your
 metric.
 
+> **Status.** Panoptic PQ is bit-equal vs `pq_compute_single_core` in
+> strict mode; `boundary=True` is the one open follow-up. See the
+> [README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation)
+> matrix.
+
 ## Single-threaded vs multi-process
 
 `panopticapi.evaluation.pq_compute` parallelizes over

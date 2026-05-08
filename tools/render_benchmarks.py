@@ -179,11 +179,13 @@ def auto_select_mfp(sha: str) -> str:
     return mfps[0]
 
 
-def load_cell(path: Path) -> tuple[CellStats, str, str] | None:
-    """Load a single result JSON; return (stats, harness_mode, impl_version) or None.
+def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] | None:
+    """Load a single result JSON; return (stats, mode, impl_version, cpu_model, cpu_arch) or None.
 
     Returns None if the file has no non-warmup reps (e.g., an aborted
-    run or a snapshot artifact).
+    run or a snapshot artifact). ``cpu_model`` / ``cpu_arch`` are
+    ``None`` when read from result files written before those fields
+    landed in the schema.
     """
     with path.open() as f:
         data = json.load(f)
@@ -196,16 +198,29 @@ def load_cell(path: Path) -> tuple[CellStats, str, str] | None:
         median_ns=int(statistics.median(walls)),
         max_rss_bytes=max(rsses) if rsses else 0,
     )
-    return stats, str(data.get("mode", "")), str(data.get("impl_version", ""))
+    cpu_model = data.get("cpu_model")
+    cpu_arch = data.get("cpu_arch")
+    return (
+        stats,
+        str(data.get("mode", "")),
+        str(data.get("impl_version", "")),
+        cpu_model if isinstance(cpu_model, str) else None,
+        cpu_arch if isinstance(cpu_arch, str) else None,
+    )
 
 
-def gather_cells(sha: str, mfp: str) -> tuple[dict[CellKey, CellStats], str, dict[str, str]]:
-    """Return the cells dict, the harness mode, and impl→version pins.
+def gather_cells(
+    sha: str, mfp: str
+) -> tuple[dict[CellKey, CellStats], str, dict[str, str], str | None, str | None]:
+    """Return the cells dict, the harness mode, impl→version pins, and CPU info.
 
     Warns on stderr if a result JSON has no `impl_version` field, or if
     the same impl is pinned to multiple versions across cells (the
     rendered baseline line would silently pick whichever was visited
-    first).
+    first). All cells under one ``<machine-fp>`` share a machine by
+    construction, so CPU info from the first loaded cell is the canonical
+    value; ``None`` for older result files written before those fields
+    landed.
     """
     base = RESULTS_ROOT / sha / mfp
     if not base.is_dir():
@@ -213,6 +228,8 @@ def gather_cells(sha: str, mfp: str) -> tuple[dict[CellKey, CellStats], str, dic
     out: dict[CellKey, CellStats] = {}
     mode = ""
     versions_seen: dict[str, set[str]] = {}
+    cpu_model: str | None = None
+    cpu_arch: str | None = None
     for path in sorted(base.rglob("*.json")):
         if ".intermediate" in path.parts or path.name.endswith(".snapshot.json"):
             continue
@@ -226,10 +243,14 @@ def gather_cells(sha: str, mfp: str) -> tuple[dict[CellKey, CellStats], str, dic
         loaded = load_cell(path)
         if loaded is None:
             continue
-        stats, cell_mode, impl_version = loaded
+        stats, cell_mode, impl_version, cell_cpu_model, cell_cpu_arch = loaded
         out[CellKey(paradigm, workload, iou, impl)] = stats
         if not mode:
             mode = cell_mode
+        if cpu_model is None and cell_cpu_model is not None:
+            cpu_model = cell_cpu_model
+        if cpu_arch is None and cell_cpu_arch is not None:
+            cpu_arch = cell_cpu_arch
         if impl_version:
             versions_seen.setdefault(impl, set()).add(impl_version)
         else:
@@ -250,7 +271,7 @@ def gather_cells(sha: str, mfp: str) -> tuple[dict[CellKey, CellStats], str, dic
             impl_versions[impl] = chosen
         else:
             impl_versions[impl] = next(iter(versions))
-    return out, mode, impl_versions
+    return out, mode, impl_versions, cpu_model, cpu_arch
 
 
 def vernier_baseline_for(
@@ -368,18 +389,35 @@ def render_baselines_block(impl_versions: dict[str, str]) -> str:
     )
 
 
+def _cpu_provenance(cpu_model: str | None, cpu_arch: str | None) -> str:
+    """Render the optional CPU clause of the provenance line.
+
+    Empty string when both fields are ``None`` (older v2 result files
+    written before the schema picked up CPU info), so the renderer
+    falls back to the original fingerprint-only string.
+    """
+    if cpu_model is None and cpu_arch is None:
+        return ""
+    if cpu_model is not None and cpu_arch is not None:
+        return f" · CPU {cpu_model} ({cpu_arch})"
+    return f" · CPU {cpu_model or cpu_arch}"
+
+
 def render_document(
     sha: str,
     mfp: str,
     cells: dict[CellKey, CellStats],
     harness_mode: str,
     impl_versions: dict[str, str],
+    cpu_model: str | None,
+    cpu_arch: str | None,
 ) -> str:
     if not cells:
         sys.exit("error: no usable cells in the selected SHA/mfp")
 
     baselines_block = render_baselines_block(impl_versions)
     baselines_section = ("\n\n" + baselines_block) if baselines_block else ""
+    cpu_clause = _cpu_provenance(cpu_model, cpu_arch)
 
     header = f"""# Benchmarks
 
@@ -390,7 +428,7 @@ the local bench harness ([ADR-0017](https://github.com/NoeFontana/vernier/blob/m
 extended cross-paradigm in
 [ADR-0033](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0033-multi-paradigm-bench.md)).
 
-**Provenance** — git SHA `{sha}` · machine fingerprint `{mfp}` · harness
+**Provenance** — git SHA `{sha}` · machine fingerprint `{mfp}`{cpu_clause} · harness
 mode `{harness_mode}` · build profile = cargo release defaults
 (`opt-level=3`, `lto=thin`, `codegen-units=1`, no `target-cpu`). The
 release wheel on PyPI is built with the same profile — no
@@ -452,8 +490,8 @@ def main() -> None:
 
     sha = args.sha or auto_select_sha()
     mfp = args.mfp or auto_select_mfp(sha)
-    cells, harness_mode, impl_versions = gather_cells(sha, mfp)
-    document = render_document(sha, mfp, cells, harness_mode, impl_versions)
+    cells, harness_mode, impl_versions, cpu_model, cpu_arch = gather_cells(sha, mfp)
+    document = render_document(sha, mfp, cells, harness_mode, impl_versions, cpu_model, cpu_arch)
     args.output.write_text(document)
     try:
         rel = args.output.relative_to(REPO_ROOT)
