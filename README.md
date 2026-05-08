@@ -68,10 +68,10 @@ per-library comparison: [`docs/comparison.md`](docs/comparison.md).
 | Instance — keypoints AP (OKS) | 130 ms | **12.7×** faster-coco-eval · **17.6×** pycocotools |
 | Panoptic — PQ | 32.0 s | **1.07×** panopticapi |
 
-Median total-stage wall time on a single machine (AMD EPYC-Milan
-Processor, `x86_64`), harness mode `dev`, build profile = cargo release
-defaults (`opt-level=3`, `lto=thin`, `codegen-units=1`, no
-`target-cpu`) — same as the PyPI wheel.
+Median total-stage wall time on a KVM VPS (AMD EPYC-Milan, 4 cores ×
+2 threads = 8 logical CPUs, `x86_64` — not a bare-metal Milan box), harness
+mode `dev`, build profile = cargo release defaults (`opt-level=3`,
+`lto=thin`, `codegen-units=1`, no `target-cpu`) — same as the PyPI wheel.
 Full per-cell breakdown, RSS, and methodology in
 [`docs/benchmarks.md`](docs/benchmarks.md); per-library comparison of
 when to pick which in [`docs/comparison.md`](docs/comparison.md).
