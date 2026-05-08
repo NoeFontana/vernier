@@ -60,6 +60,7 @@ plugins:
 nav:
   - Home: index.md
   - Benchmarks: benchmarks.md
+  - Comparison: comparison.md
   - Tutorials:
       - tutorials/README.md
       - Your first evaluation: tutorials/first-evaluation.md
