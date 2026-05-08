@@ -285,6 +285,7 @@ pub fn summarize_from_acc(
 mod tests {
     use super::*;
     use crate::dataset::{CategoryMeta, ImageEntry, SegmentInfo};
+    use rustc_hash::FxHashMap;
     use std::collections::HashMap;
 
     fn entry(
@@ -293,7 +294,7 @@ mod tests {
         label_map: Vec<u32>,
         segments: &[(u32, CategoryId, bool, u64)],
     ) -> ImageEntry {
-        let mut map = HashMap::new();
+        let mut map = FxHashMap::default();
         for &(id, category_id, iscrowd, area) in segments {
             map.insert(
                 id,
