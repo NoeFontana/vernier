@@ -1,6 +1,6 @@
 # ADR-0019: Result tables — opt-in, Arrow-backed, zero-overhead by default
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-02
 - **Deciders:** @NoeFontana
 - **Consulted:** —

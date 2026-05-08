@@ -10,11 +10,11 @@ provide. For mechanical "rewrite my imports" instructions, see the
 
 | Library | Paradigms | Parity contract | Performance vs vernier | When you'd still pick it |
 |---|---|---|---|---|
-| `pycocotools` | instance (bbox / segm / keypoints) | The reference | ~6–16× slower | You need the literal pycocotools printed table for an external system that scrapes it |
-| `faster-coco-eval` | instance (bbox / segm / keypoints / boundary) | "Faster, mostly compatible" — quirks chosen silently | ~3–12× slower | You're already running it in production and don't need vernier's auditable parity surface |
-| `panopticapi` | panoptic | The reference | ~1.1× slower | You explicitly need the `pq_compute_*` script outputs unchanged |
+| `pycocotools` | instance (bbox / segm / keypoints) | The reference | ~7–18× slower | You need the literal pycocotools printed table for an external system that scrapes it |
+| `faster-coco-eval` | instance (bbox / segm / keypoints / boundary) | "Faster, mostly compatible" — quirks chosen silently | ~4–13× slower | You're already running it in production and don't need vernier's auditable parity surface |
+| `panopticapi` | panoptic | The reference | ~1.07× slower | You explicitly need the `pq_compute_*` script outputs unchanged |
 | `lvis-api` | LVIS federated | The reference | Vernier reuses orchestration only | Your tooling depends on the `LVISEval` instance attributes |
-| `boundary-iou-api` | boundary IoU only | The reference | Vernier is currently 1.5–15× faster depending on workload | You're running an external evaluation script that loads `boundary_iou.coco_instance_api.COCOeval` by name |
+| `boundary-iou-api` | boundary IoU only | The reference | ~20× slower on val2017 perfect-DT | You're running an external evaluation script that loads `boundary_iou.coco_instance_api.COCOeval` by name |
 | `mmsegmentation` | semantic | One of three references vernier targets | Vernier is faster (S3-B mmseg env still landing) | You need the full `mmseg.evaluation` registry surface (it's a training framework, not just an evaluator) |
 
 Numbers above reference the [benchmarks page](benchmarks.md) and the
@@ -37,7 +37,7 @@ matches — is filed under one of three dispositions in
 fix). The full table lives in
 [`docs/engineering/pycocotools-quirks.md`](https://github.com/NoeFontana/vernier/blob/main/docs/engineering/pycocotools-quirks.md).
 
-vernier is ~6–16× faster on val2017 across bbox / segm / keypoints (see the
+vernier is ~7–18× faster on val2017 across bbox / segm / keypoints (see the
 [benchmarks](benchmarks.md)). The drop-in shim
 ([ADR-0007](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0007-patch-pycocotools-policy.md))
 keeps `from pycocotools.cocoeval import COCOeval` working in existing
@@ -66,8 +66,8 @@ why and where.
 vernier targets the same drop-in pattern but with auditable parity. Every
 quirk has a row in the disposition table; strict mode reproduces
 pycocotools bit-for-bit; corrected fixes are listed and opt-in. The
-performance gap is real on val2017 — vernier is ~3–12× faster on
-bbox / segm / keypoints — but the headline benefit is "you can prove what
+performance gap is real on val2017 — vernier is ~4–13× faster on
+bbox / segm / keypoints / boundary — but the headline benefit is "you can prove what
 your numbers mean".
 
 **Pick `faster-coco-eval` instead** when you have an existing CI pipeline

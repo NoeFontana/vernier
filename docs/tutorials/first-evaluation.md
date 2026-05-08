@@ -33,12 +33,12 @@ use); download them locally before continuing.
 <!-- needs-coco -->
 ```python
 from pathlib import Path
-from vernier.instance import Bbox, Dataset, Evaluator
+from vernier.instance import Bbox, CocoDataset, Evaluator
 
 gt_bytes = Path("instances_val2017.json").read_bytes()
 dt_bytes = Path("detections.json").read_bytes()
 
-dataset = Dataset.from_json(gt_bytes)
+dataset = CocoDataset.from_json(gt_bytes)
 summary = Evaluator(iou=Bbox()).evaluate(dataset, dt_bytes)
 
 for line in summary.pretty_lines():

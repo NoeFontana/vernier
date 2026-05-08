@@ -53,12 +53,12 @@ cargo install vernier-cli
 
 ```python
 from pathlib import Path
-from vernier.instance import Bbox, Dataset, Evaluator
+from vernier.instance import Bbox, CocoDataset, Evaluator
 
 gt_bytes = Path("instances_val2017.json").read_bytes()
 dt_bytes = Path("detections.json").read_bytes()
 
-dataset = Dataset.from_json(gt_bytes)
+dataset = CocoDataset.from_json(gt_bytes)
 summary = Evaluator(iou=Bbox()).evaluate(dataset, dt_bytes)
 for line in summary.pretty_lines():
     print(line)
@@ -91,6 +91,11 @@ matching rules, different parity oracles). See
 - **New to vernier?** Start with [Tutorials](tutorials/README.md).
 - **Migrating from pycocotools, faster-coco-eval, panopticapi, lvis-api, or mmsegmentation?**
   See [Migrate](migrate/README.md).
+- **Comparing alternatives?** [How vernier compares](comparison.md) is a
+  per-library decision aid (when to pick vernier, when to keep what you
+  have).
+- **Curious about speed?** [Benchmarks](benchmarks.md) carries the
+  per-cell medians and methodology.
 - **Looking for a specific recipe?** See [How-to](how-to/README.md).
 - **Need API details?** See [Reference](reference/README.md).
 - **Want to understand the design?** See [Explanation](explanation/README.md)

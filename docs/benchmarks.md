@@ -7,11 +7,13 @@ the local bench harness ([ADR-0017](https://github.com/NoeFontana/vernier/blob/m
 extended cross-paradigm in
 [ADR-0033](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0033-multi-paradigm-bench.md)).
 
-**Provenance** — git SHA `a81a86db789b` · machine fingerprint `5658de0e29a3` · harness
+**Provenance** — git SHA `f58f1075985f` · machine fingerprint `5658de0e29a3` · harness
 mode `dev` · build profile = cargo release defaults
 (`opt-level=3`, `lto=thin`, `codegen-units=1`, no `target-cpu`). The
 release wheel on PyPI is built with the same profile — no
 benchmarking-only flags.
+
+**Baselines pinned for these numbers** — [`faster-coco-eval==1.7.2`](https://pypi.org/project/faster-coco-eval/1.7.2/) · [`pycocotools==2.0.11`](https://pypi.org/project/pycocotools/2.0.11/) · [`boundary-iou-api` @ `37d2558`](https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677) · [`panopticapi` @ `7bb4655`](https://github.com/cocodataset/panopticapi/commit/7bb4655548f9). Each baseline is locked in its own uv-managed venv per ADR-0017.
 
 For the full per-cell deep-dive (per-stage breakdown, RSS evolution,
 parity gating, narrative on what moved each round), see
@@ -30,24 +32,25 @@ This page is regenerated from the harness result tree by
 
 | impl | median | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: |
-| **vernier** | 652.4 ms | 784 MiB | **1.00×** |
-| faster-coco-eval | 2.096 s | 661 MiB | 3.21× |
-| pycocotools | 5.989 s | 576 MiB | 9.18× |
+| **vernier** | 361.6 ms | 235 MiB | **1.00×** |
+| faster-coco-eval | 2.123 s | 661 MiB | 5.87× |
+| pycocotools | 5.811 s | 576 MiB | 16.07× |
 
 **`segm`**
 
 | impl | median | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: |
-| **vernier** | 1.283 s | 785 MiB | **1.00×** |
-| faster-coco-eval | 3.532 s | 721 MiB | 2.75× |
-| pycocotools | 6.814 s | 569 MiB | 5.31× |
+| **vernier** | 960.9 ms | 236 MiB | **1.00×** |
+| faster-coco-eval | 3.496 s | 721 MiB | 3.64× |
+| pycocotools | 6.727 s | 569 MiB | 7.00× |
 
 **`boundary`**
 
 | impl | median | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: |
-| **vernier** | 39.918 s | 787 MiB | **1.00×** |
-| boundary-iou-api | 61.982 s | 666 MiB | 1.55× |
+| **vernier** | 3.136 s | 238 MiB | **1.00×** |
+| faster-coco-eval | 17.670 s | 794 MiB | 5.63× |
+| boundary-iou-api | 61.838 s | 666 MiB | 19.72× |
 
 ### Workload: `coco_val2017_keypoints_jittered_seed0`
 
@@ -55,39 +58,9 @@ This page is regenerated from the harness result tree by
 
 | impl | median | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: |
-| **vernier** | 144.4 ms | 113 MiB | **1.00×** |
-| faster-coco-eval | 1.703 s | 154 MiB | 11.79× |
-| pycocotools | 2.288 s | 163 MiB | 15.84× |
-
-### Workload: `synthetic_n10000_c80_g10_d30_s0`
-
-**`bbox`**
-
-| impl | median | RSS (max) | vs vernier |
-| --- | ---: | ---: | ---: |
-| **vernier** | 2.433 s | 1.67 GiB | **1.00×** |
-| faster-coco-eval | 5.965 s | 1.36 GiB | 2.45× |
-| pycocotools | 34.808 s | 2.63 GiB | 14.30× |
-
-### Workload: `synthetic_n1000_c80_g10_d30_s0`
-
-**`bbox`**
-
-| impl | median | RSS (max) | vs vernier |
-| --- | ---: | ---: | ---: |
-| **vernier** | 214.5 ms | 233 MiB | **1.00×** |
-| faster-coco-eval | 538.1 ms | 210 MiB | 2.51× |
-| pycocotools | 2.849 s | 330 MiB | 13.28× |
-
-### Workload: `synthetic_n50000_c80_g10_d30_s0`
-
-**`bbox`**
-
-| impl | median | RSS (max) | vs vernier |
-| --- | ---: | ---: | ---: |
-| **vernier** | 12.690 s | 8.17 GiB | **1.00×** |
-| faster-coco-eval | 35.342 s | 6.45 GiB | 2.78× |
-| pycocotools | 194.651 s | 12.78 GiB | 15.34× |
+| **vernier** | 130.2 ms | 101 MiB | **1.00×** |
+| faster-coco-eval | 1.654 s | 154 MiB | 12.70× |
+| pycocotools | 2.288 s | 163 MiB | 17.57× |
 
 
 ## Panoptic — PQ
@@ -98,8 +71,19 @@ This page is regenerated from the harness result tree by
 
 | impl | median | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: |
-| **vernier** | 86.117 s | 21.18 GiB | **1.00×** |
-| panopticapi | 34.762 s | 146 MiB | 0.40× |
+| **vernier** | 32.004 s | 127 MiB | **1.00×** |
+| panopticapi | 34.397 s | 145 MiB | 1.07× |
+
+
+## Semantic — mIoU
+
+### Workload: `synthetic_semantic_n200_c19_s0`
+
+**`miou`**
+
+| impl | median | RSS (max) | vs vernier |
+| --- | ---: | ---: | ---: |
+| **vernier** | 193.0 ms | 88 MiB | **1.00×** |
 
 
 ## Methodology in one paragraph

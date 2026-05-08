@@ -1,6 +1,6 @@
-## ADR-0020: Parsed-once `Dataset` handle as the GT-side derivation cache
+# ADR-0020: Parsed-once `Dataset` handle as the GT-side derivation cache
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-02
 - **Deciders:** @NoeFontana
 - **Consulted:** —
