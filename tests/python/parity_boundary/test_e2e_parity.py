@@ -21,16 +21,26 @@ FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
 
 # Each fixture re-augments every annotation with cv2-based boundary
 # masks (see `conftest.py:_force_single_process_boundary_augment` for
-# why this is single-threaded under our harness). The corpus has ~33
-# fixtures; the file as a whole is multi-minute. Mark slow so
-# `-m "not slow"` skips the whole tree.
-pytestmark = pytest.mark.slow
+# why this is single-threaded under our harness). The corpus has 11
+# segm fixtures; running them all is multi-minute, so most are gated
+# behind `slow`. A small smoke trio stays in the default PR run to
+# catch a "boundary entirely broken" regression — see
+# BOUNDARY_FAST_SMOKE below.
 
 # Reuse the segm corpus verbatim. Boundary IoU is defined for the same
 # segmentation inputs and any divergence that breaks segm parity will
 # also break boundary parity, so a single source of truth keeps the two
 # corpora from drifting apart.
 BOUNDARY_FIXTURES: list[str] = list(SEGM_FIXTURES)
+
+# Smoke trio kept on the PR-time path: a perfect-match baseline (whose
+# oracle augmentation is already cached for sibling tests below), a
+# zero-overlap counterpart that the sanity-gate also exercises, and one
+# boundary-specific edge case (`boundary_area_segm`) that catches band
+# composition regressions invisible to plain segm parity.
+BOUNDARY_FAST_SMOKE: frozenset[str] = frozenset(
+    {"perfect_match_segm", "zero_overlap_segm", "boundary_area_segm"}
+)
 
 
 def _fixture_paths(name: str) -> tuple[Path, Path]:
@@ -49,7 +59,16 @@ def perfect_match_oracle() -> BoundaryEvalSnapshot:
 
 
 @pytest.mark.parity_boundary
-@pytest.mark.parametrize("fixture", BOUNDARY_FIXTURES)
+@pytest.mark.parametrize(
+    "fixture",
+    [
+        pytest.param(
+            name,
+            marks=[] if name in BOUNDARY_FAST_SMOKE else [pytest.mark.slow],
+        )
+        for name in BOUNDARY_FIXTURES
+    ],
+)
 def test_e2e_parity_against_oracle(fixture: str) -> None:
     gt, dt = _fixture_paths(fixture)
     ref = snapshot("oracle", gt, dt)
@@ -77,6 +96,7 @@ def test_perfect_match_baseline_ap(
     assert perfect_match_oracle.stats[0] == pytest.approx(1.0, abs=1e-9)
 
 
+@pytest.mark.slow
 @pytest.mark.parity_boundary
 def test_lvis_dilation_ratio_parity() -> None:
     # ADR-0010 §A2: LVIS uses `dilation_ratio = 0.008`. Exercising a

@@ -1,0 +1,59 @@
+name: Slow tier
+
+# On-demand companion to ci.yml. The PR-time gate runs `pytest -m "not
+# slow"` plus debug-mode `cargo nextest`; this workflow backfills the
+# slow tier (boundary parity tree, env-gated *_val.py smokes) and a
+# release-mode Rust nextest sweep. A maintainer triggers it manually
+# before cutting a release tag — there is no recurring schedule.
+on:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-py-full:
+    name: pytest (full, python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+      - name: install python
+        run: uv python install ${{ matrix.python-version }}
+      - name: sync deps
+        run: uv sync --all-extras --python ${{ matrix.python-version }}
+      # Build vernier in --release, matching the wheel users actually
+      # consume. ci.yml's debug build is fine for the PR gate; the
+      # slow tier mirrors release reality (per the parity-with-shipped-
+      # wheel discipline in the bench scripts).
+      - name: maturin develop (release)
+        run: uv run --no-sync --python ${{ matrix.python-version }} maturin develop --release
+      - name: pytest (no marker filter)
+        run: uv run --no-sync --python ${{ matrix.python-version }} pytest
+
+  test-rust-release:
+    name: cargo nextest (--release)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - name: cargo nextest (release)
+        run: cargo nextest run --workspace --release

@@ -2,11 +2,13 @@
 //!
 //! Per ADR-0021, the numpy oracle at `tests/python/oracle/tide/oracle.py`
 //! is the spec for `vernier::error_decomposition_bbox`. This integration
-//! test mirrors the hand-computed assertions from
-//! `tests/python/oracle/tide/test_oracle.py` against the Rust
-//! implementation: every per-bin ΔmAP and the all-FP-removed sanity
-//! delta must match the values pinned in the oracle test file within
-//! `1e-9`.
+//! test loads per-fixture expected outputs from
+//! `tests/python/oracle/tide/expected/<name>.json` — the same JSON
+//! `tests/python/oracle/tide/test_oracle.py` reads — and asserts the
+//! Rust implementation matches those values within `1e-9` ΔmAP. Both
+//! sides reading the same file is what keeps Rust and Python from
+//! drifting; the *why* behind each pinned value lives in the Python
+//! test docstrings (re-derive from there, not from the JSON).
 //!
 //! The Python parity test (Agent B's deliverable) closes the other half
 //! of the contract: it runs the oracle and Rust on the same fixtures
@@ -21,23 +23,37 @@
 // here keeps the integration test surface honest.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::PathBuf;
+use std::collections::HashMap;
 
+use serde::Deserialize;
 use vernier_core::{
     error_decomposition_bbox, error_decomposition_segm, iou_thresholds, recall_thresholds,
-    AreaRange, CocoDataset, CocoDetections, ParityMode, TideErrorBin, TideParams,
+    AreaRange, CocoDataset, CocoDetections, ParityMode, TideErrorBin, TideParams, TideReport,
 };
+
+mod common;
+use common::{expected_path, fixture_path};
 
 const PARITY_TOL: f64 = 1e-9;
 
-fn fixture_path(name: &str, file: &str) -> PathBuf {
-    let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // tests live at `crates/vernier-core/tests/`; the oracle fixtures are
-    // at the workspace root under `tests/python/oracle/tide/fixtures/`.
-    p.push("../../tests/python/oracle/tide/fixtures");
-    p.push(name);
-    p.push(file);
-    p
+#[derive(Deserialize)]
+struct ExpectedReport {
+    baseline_map: f64,
+    deltas: HashMap<String, f64>,
+    // The Python `error_decomposition` returns this under
+    // `delta_all_fp_removed`; the JSON key matches the Python public API.
+    // The Rust `TideReport` struct (`vernier_core`) shortens it to
+    // `delta_all_fp`; we keep that field name local and rename only on
+    // the wire so neither side has to learn the other's spelling.
+    #[serde(rename = "delta_all_fp_removed")]
+    delta_all_fp: f64,
+}
+
+fn load_expected(name: &str) -> ExpectedReport {
+    let bytes = std::fs::read(expected_path(name))
+        .unwrap_or_else(|e| panic!("failed to read expected/{name}.json: {e}"));
+    serde_json::from_slice(&bytes)
+        .unwrap_or_else(|e| panic!("failed to parse expected/{name}.json: {e}"))
 }
 
 fn load_fixture(name: &str) -> (CocoDataset, CocoDetections) {
@@ -52,7 +68,7 @@ fn load_fixture(name: &str) -> (CocoDataset, CocoDetections) {
     (gt, dt)
 }
 
-fn run_tide(name: &str) -> vernier_core::TideReport {
+fn run_tide(name: &str) -> TideReport {
     let (gt, dt) = load_fixture(name);
     let area_ranges = AreaRange::coco_default();
     let params = TideParams {
@@ -73,7 +89,7 @@ fn run_tide(name: &str) -> vernier_core::TideReport {
 /// `error_decomposition_segm` entry point. Fixtures need to carry
 /// `segmentation` on every GT (and either `segmentation` or — under
 /// strict parity, via the J2 path — a bbox-only DT entry).
-fn run_tide_segm(name: &str) -> vernier_core::TideReport {
+fn run_tide_segm(name: &str) -> TideReport {
     let (gt, dt) = load_fixture(name);
     let area_ranges = AreaRange::coco_default();
     let params = TideParams {
@@ -89,8 +105,19 @@ fn run_tide_segm(name: &str) -> vernier_core::TideReport {
         .unwrap_or_else(|e| panic!("error_decomposition_segm failed on fixture {name}: {e}"))
 }
 
-fn delta_or_zero(report: &vernier_core::TideReport, bin: TideErrorBin) -> f64 {
+fn delta_or_zero(report: &TideReport, bin: TideErrorBin) -> f64 {
     report.delta_per_bin.get(&bin).copied().unwrap_or(0.0)
+}
+
+fn bin_key(bin: TideErrorBin) -> &'static str {
+    match bin {
+        TideErrorBin::Cls => "cls",
+        TideErrorBin::Loc => "loc",
+        TideErrorBin::Both => "both",
+        TideErrorBin::Dupe => "dupe",
+        TideErrorBin::Bkg => "bkg",
+        TideErrorBin::Missed => "missed",
+    }
 }
 
 fn assert_close(actual: f64, expected: f64, label: &str) {
@@ -101,12 +128,12 @@ fn assert_close(actual: f64, expected: f64, label: &str) {
     );
 }
 
-#[test]
-fn all_perfect_baseline_one_no_deltas() {
-    // From `test_oracle.py::test_all_perfect_baseline_one_and_no_deltas`:
-    // baseline = 1.0, every delta = 0.
-    let r = run_tide("all_perfect");
-    assert_close(r.baseline_map, 1.0, "baseline_map");
+/// Assert the report matches every pinned value in `expected`: the
+/// baseline mAP, every per-bin Δ, and the all-FPs-removed sanity
+/// delta. Bins absent from `expected.deltas` are treated as zero so
+/// the JSON only needs to enumerate the bins a fixture actually pins.
+fn assert_report_matches(actual: &TideReport, expected: &ExpectedReport) {
+    assert_close(actual.baseline_map, expected.baseline_map, "baseline_map");
     for bin in [
         TideErrorBin::Cls,
         TideErrorBin::Loc,
@@ -115,132 +142,49 @@ fn all_perfect_baseline_one_no_deltas() {
         TideErrorBin::Bkg,
         TideErrorBin::Missed,
     ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
+        let key = bin_key(bin);
+        let want = expected.deltas.get(key).copied().unwrap_or(0.0);
+        assert_close(delta_or_zero(actual, bin), want, &format!("delta[{key}]"));
     }
-    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+    assert_close(actual.delta_all_fp, expected.delta_all_fp, "delta_all_fp");
+}
+
+#[test]
+fn all_perfect_baseline_one_no_deltas() {
+    assert_report_matches(&run_tide("all_perfect"), &load_expected("all_perfect"));
 }
 
 #[test]
 fn all_bkg_isolates_bkg_bin() {
-    // From `test_oracle.py::test_all_bkg_isolates_bkg_bin`:
-    // baseline = 0.5, delta_bkg = 0.5, every other = 0.
-    let r = run_tide("all_bkg");
-    assert_close(r.baseline_map, 0.5, "baseline_map");
-    assert_close(delta_or_zero(&r, TideErrorBin::Bkg), 0.5, "delta[bkg]");
-    for bin in [
-        TideErrorBin::Cls,
-        TideErrorBin::Loc,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.5, "delta_all_fp");
+    assert_report_matches(&run_tide("all_bkg"), &load_expected("all_bkg"));
 }
 
 #[test]
 fn all_cls_isolates_cls_bin() {
-    // From `test_oracle.py::test_all_cls_isolates_cls_bin`:
-    // baseline = 0, delta_cls = 1.0, others = 0,
-    // delta_all_fp_removed = 0 (loose-bound, removing FPs leaves zero
-    // detections).
-    let r = run_tide("all_cls");
-    assert_close(r.baseline_map, 0.0, "baseline_map");
-    assert_close(delta_or_zero(&r, TideErrorBin::Cls), 1.0, "delta[cls]");
-    for bin in [
-        TideErrorBin::Loc,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Bkg,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+    assert_report_matches(&run_tide("all_cls"), &load_expected("all_cls"));
 }
 
 #[test]
 fn all_loc_isolates_loc_bin() {
-    // From `test_oracle.py::test_all_loc_isolates_loc_bin`:
-    // baseline = 0, delta_loc = 1.0, others = 0, delta_all_fp = 0.
-    let r = run_tide("all_loc");
-    assert_close(r.baseline_map, 0.0, "baseline_map");
-    assert_close(delta_or_zero(&r, TideErrorBin::Loc), 1.0, "delta[loc]");
-    for bin in [
-        TideErrorBin::Cls,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Bkg,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+    assert_report_matches(&run_tide("all_loc"), &load_expected("all_loc"));
 }
 
 #[test]
 fn all_dupe_isolates_dupe_bin() {
-    // From `test_oracle.py::test_all_dupe_isolates_dupe_bin`:
-    // baseline = 76/101, delta_dupe = 25/101, others = 0,
-    // delta_all_fp_removed = delta_dupe.
-    let r = run_tide("all_dupe");
-    let expected_baseline = 76.0_f64 / 101.0_f64;
-    let expected_dupe = 25.0_f64 / 101.0_f64;
-    assert_close(r.baseline_map, expected_baseline, "baseline_map");
-    assert_close(
-        delta_or_zero(&r, TideErrorBin::Dupe),
-        expected_dupe,
-        "delta[dupe]",
-    );
-    for bin in [
-        TideErrorBin::Cls,
-        TideErrorBin::Loc,
-        TideErrorBin::Both,
-        TideErrorBin::Bkg,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, expected_dupe, "delta_all_fp");
+    assert_report_matches(&run_tide("all_dupe"), &load_expected("all_dupe"));
 }
 
 #[test]
 fn with_ignore_does_not_bin_crowd_matched_dts() {
-    // From `test_oracle.py::test_with_ignore_does_not_bin_crowd_matched_dts`:
-    // baseline = 0.5, delta_bkg = 0.5, others = 0, delta_all_fp = 0.5.
-    let r = run_tide("with_ignore");
-    assert_close(r.baseline_map, 0.5, "baseline_map");
-    assert_close(delta_or_zero(&r, TideErrorBin::Bkg), 0.5, "delta[bkg]");
-    for bin in [
-        TideErrorBin::Cls,
-        TideErrorBin::Loc,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.5, "delta_all_fp");
+    assert_report_matches(&run_tide("with_ignore"), &load_expected("with_ignore"));
 }
 
 #[test]
 fn loc_vs_both_priority_loc_wins_when_same_class_gt_is_closer() {
-    // From `test_oracle.py::test_loc_vs_both_priority_loc_wins_...`:
-    // baseline = 0, delta_loc = 0.5, others = 0, delta_all_fp = 0.
-    let r = run_tide("loc_vs_both_priority");
-    assert_close(r.baseline_map, 0.0, "baseline_map");
-    assert_close(delta_or_zero(&r, TideErrorBin::Loc), 0.5, "delta[loc]");
-    for bin in [
-        TideErrorBin::Cls,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Bkg,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+    assert_report_matches(
+        &run_tide("loc_vs_both_priority"),
+        &load_expected("loc_vs_both_priority"),
+    );
 }
 
 #[test]
@@ -264,59 +208,26 @@ fn config_carries_resolved_thresholds() {
 
 #[test]
 fn segm_all_perfect_baseline_one_no_deltas() {
-    // From `test_oracle.py::test_segm_all_perfect_baseline_one_and_no_deltas`:
-    // baseline = 1.0, every delta = 0.
-    let r = run_tide_segm("segm_all_perfect");
-    assert_close(r.baseline_map, 1.0, "baseline_map");
-    for bin in [
-        TideErrorBin::Cls,
-        TideErrorBin::Loc,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Bkg,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+    assert_report_matches(
+        &run_tide_segm("segm_all_perfect"),
+        &load_expected("segm_all_perfect"),
+    );
 }
 
 #[test]
 fn segm_all_loc_isolates_loc_bin() {
-    // From `test_oracle.py::test_segm_all_loc_isolates_loc_bin`:
-    // baseline = 0, delta_loc = 1.0, others = 0, delta_all_fp = 0.
-    let r = run_tide_segm("segm_all_loc");
-    assert_close(r.baseline_map, 0.0, "baseline_map");
-    assert_close(delta_or_zero(&r, TideErrorBin::Loc), 1.0, "delta[loc]");
-    for bin in [
-        TideErrorBin::Cls,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Bkg,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+    assert_report_matches(
+        &run_tide_segm("segm_all_loc"),
+        &load_expected("segm_all_loc"),
+    );
 }
 
 #[test]
 fn segm_all_cls_isolates_cls_bin() {
-    // From `test_oracle.py::test_segm_all_cls_isolates_cls_bin`:
-    // baseline = 0, delta_cls = 1.0, others = 0, delta_all_fp = 0.
-    let r = run_tide_segm("segm_all_cls");
-    assert_close(r.baseline_map, 0.0, "baseline_map");
-    assert_close(delta_or_zero(&r, TideErrorBin::Cls), 1.0, "delta[cls]");
-    for bin in [
-        TideErrorBin::Loc,
-        TideErrorBin::Both,
-        TideErrorBin::Dupe,
-        TideErrorBin::Bkg,
-        TideErrorBin::Missed,
-    ] {
-        assert_close(delta_or_zero(&r, bin), 0.0, &format!("delta[{bin:?}]"));
-    }
-    assert_close(r.delta_all_fp, 0.0, "delta_all_fp");
+    assert_report_matches(
+        &run_tide_segm("segm_all_cls"),
+        &load_expected("segm_all_cls"),
+    );
 }
 
 #[test]

@@ -39,6 +39,11 @@ jobs:
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # cargo-deny piggy-backs on the Rust toolchain + checkout already
+      # set up here, so it runs as a final lint step rather than as its
+      # own job (saves a runner cold-start per PR).
+      - name: cargo deny
+        uses: EmbarkStudios/cargo-deny-action@v2
 
   test-rust:
     name: test (rust)
@@ -50,13 +55,6 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: cargo nextest
         run: cargo nextest run --workspace
-
-  audit:
-    name: audit (cargo-deny)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: EmbarkStudios/cargo-deny-action@v2
 
   # Build the abi3 wheel once. Because pyo3 is pinned to abi3-py310
   # (Cargo.toml), the resulting wheel installs into Python 3.10–3.14
@@ -112,7 +110,8 @@ jobs:
       matrix:
         # abi3 floor + ceiling. The middle versions (3.11/3.12/3.13)
         # share the same abi3-py310 wheel, so per-version test runs are
-        # rarely informative; a monthly cron could backfill if needed.
+        # rarely informative; `slow.yml` (workflow_dispatch) backfills
+        # the full suite before a release cut.
         python-version: ["3.10", "3.14"]
     steps:
       - uses: actions/checkout@v6
@@ -130,4 +129,7 @@ jobs:
       - name: install built wheel
         run: uv pip install --python ${{ matrix.python-version }} dist/vernier-*.whl
       - name: pytest
-        run: uv run --no-sync --python ${{ matrix.python-version }} pytest
+        # PR gate skips the slow tier (boundary parity tree, env-gated
+        # *_val.py whole-dataset smokes). Run the full suite via the
+        # `slow.yml` workflow_dispatch before cutting a release.
+        run: uv run --no-sync --python ${{ matrix.python-version }} pytest -m "not slow"

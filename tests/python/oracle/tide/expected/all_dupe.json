@@ -1,0 +1,5 @@
+{
+  "baseline_map": 0.7524752475247525,
+  "deltas": {"cls": 0.0, "loc": 0.0, "both": 0.0, "dupe": 0.24752475247524752, "bkg": 0.0, "missed": 0.0},
+  "delta_all_fp_removed": 0.24752475247524752
+}

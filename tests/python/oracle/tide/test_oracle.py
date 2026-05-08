@@ -23,6 +23,7 @@ import pytest
 from .oracle import bbox_iou, boundary_iou, error_decomposition, segm_iou
 
 FIXTURES = Path(__file__).parent / "fixtures"
+EXPECTED = Path(__file__).parent / "expected"
 
 # Per ADR-0022 the boundary `t_b` default is `0.05` at
 # `dilation_ratio=0.02` (a tentative default with the empirical
@@ -55,6 +56,7 @@ def _boundary_sim() -> Any:
 TOL = 1e-6
 
 
+@functools.cache
 def _load(name: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     fix_dir = FIXTURES / name
     gt = json.loads((fix_dir / "gt.json").read_text())
@@ -62,10 +64,40 @@ def _load(name: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     return gt, dt
 
 
+@functools.cache
+def _load_expected(name: str) -> dict[str, Any]:
+    """Load the per-fixture expected report from `expected/<name>.json`.
+
+    The same JSON is consumed by ``crates/vernier-core/tests/tide_oracle_parity.rs``
+    — Rust and Python read identical bytes, which is what keeps the two
+    implementations from drifting. The *why* behind each pinned value
+    lives in the test docstrings below; re-derive from there rather
+    than from the JSON.
+    """
+    return json.loads((EXPECTED / f"{name}.json").read_text())
+
+
 def _assert_close(actual: float, expected: float, label: str) -> None:
     assert abs(actual - expected) < TOL, (
         f"{label}: expected {expected!r}, got {actual!r}, "
         f"diff {actual - expected!r} exceeds tolerance {TOL!r}"
+    )
+
+
+def _assert_report_matches(out: dict[str, Any], expected: dict[str, Any]) -> None:
+    """Assert ``out`` matches every pinned value in ``expected``: baseline,
+    every per-bin Δ, and the all-FPs-removed sanity delta. Bins absent
+    from ``expected['deltas']`` default to zero, so the JSON only needs
+    to enumerate the bins a fixture actually pins.
+    """
+    _assert_close(out["baseline_map"], expected["baseline_map"], "baseline_map")
+    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
+        want = expected["deltas"].get(bin_name, 0.0)
+        _assert_close(out["delta"][bin_name], want, f"delta[{bin_name}]")
+    _assert_close(
+        out["delta_all_fp_removed"],
+        expected["delta_all_fp_removed"],
+        "delta_all_fp_removed",
     )
 
 
@@ -82,10 +114,7 @@ def test_all_perfect_baseline_one_and_no_deltas() -> None:
     """
     gt, dt = _load("all_perfect")
     out = error_decomposition(gt, dt)
-    _assert_close(out["baseline_map"], 1.0, "baseline_map")
-    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("all_perfect"))
 
 
 def test_all_bkg_isolates_bkg_bin() -> None:
@@ -114,11 +143,7 @@ def test_all_bkg_isolates_bkg_bin() -> None:
     """
     gt, dt = _load("all_bkg")
     out = error_decomposition(gt, dt)
-    _assert_close(out["baseline_map"], 0.5, "baseline_map")
-    _assert_close(out["delta"]["bkg"], 0.5, "delta[bkg]")
-    for bin_name in ("cls", "loc", "both", "dupe", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.5, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("all_bkg"))
 
 
 def test_all_cls_isolates_cls_bin() -> None:
@@ -149,11 +174,7 @@ def test_all_cls_isolates_cls_bin() -> None:
     """
     gt, dt = _load("all_cls")
     out = error_decomposition(gt, dt)
-    _assert_close(out["baseline_map"], 0.0, "baseline_map")
-    _assert_close(out["delta"]["cls"], 1.0, "delta[cls]")
-    for bin_name in ("loc", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("all_cls"))
 
 
 def test_all_loc_isolates_loc_bin() -> None:
@@ -178,11 +199,7 @@ def test_all_loc_isolates_loc_bin() -> None:
     """
     gt, dt = _load("all_loc")
     out = error_decomposition(gt, dt)
-    _assert_close(out["baseline_map"], 0.0, "baseline_map")
-    _assert_close(out["delta"]["loc"], 1.0, "delta[loc]")
-    for bin_name in ("cls", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("all_loc"))
 
 
 def test_all_dupe_isolates_dupe_bin() -> None:
@@ -219,13 +236,7 @@ def test_all_dupe_isolates_dupe_bin() -> None:
     """
     gt, dt = _load("all_dupe")
     out = error_decomposition(gt, dt)
-    expected_baseline = 76.0 / 101.0
-    expected_dupe_delta = 25.0 / 101.0
-    _assert_close(out["baseline_map"], expected_baseline, "baseline_map")
-    _assert_close(out["delta"]["dupe"], expected_dupe_delta, "delta[dupe]")
-    for bin_name in ("cls", "loc", "both", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], expected_dupe_delta, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("all_dupe"))
 
 
 def test_with_ignore_does_not_bin_crowd_matched_dts() -> None:
@@ -263,11 +274,7 @@ def test_with_ignore_does_not_bin_crowd_matched_dts() -> None:
     """
     gt, dt = _load("with_ignore")
     out = error_decomposition(gt, dt)
-    _assert_close(out["baseline_map"], 0.5, "baseline_map")
-    _assert_close(out["delta"]["bkg"], 0.5, "delta[bkg]")
-    for bin_name in ("cls", "loc", "both", "dupe", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.5, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("with_ignore"))
 
 
 def test_loc_vs_both_priority_loc_wins_when_same_class_gt_is_closer() -> None:
@@ -312,11 +319,7 @@ def test_loc_vs_both_priority_loc_wins_when_same_class_gt_is_closer() -> None:
     """
     gt, dt = _load("loc_vs_both_priority")
     out = error_decomposition(gt, dt)
-    _assert_close(out["baseline_map"], 0.0, "baseline_map")
-    _assert_close(out["delta"]["loc"], 0.5, "delta[loc]")
-    for bin_name in ("cls", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("loc_vs_both_priority"))
 
 
 def test_segm_all_perfect_baseline_one_and_no_deltas() -> None:
@@ -338,10 +341,7 @@ def test_segm_all_perfect_baseline_one_and_no_deltas() -> None:
     """
     gt, dt = _load("segm_all_perfect")
     out = error_decomposition(gt, dt, segm_iou)
-    _assert_close(out["baseline_map"], 1.0, "baseline_map")
-    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("segm_all_perfect"))
 
 
 def test_segm_all_loc_isolates_loc_bin() -> None:
@@ -368,11 +368,7 @@ def test_segm_all_loc_isolates_loc_bin() -> None:
     """
     gt, dt = _load("segm_all_loc")
     out = error_decomposition(gt, dt, segm_iou)
-    _assert_close(out["baseline_map"], 0.0, "baseline_map")
-    _assert_close(out["delta"]["loc"], 1.0, "delta[loc]")
-    for bin_name in ("cls", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("segm_all_loc"))
 
 
 def test_segm_all_cls_isolates_cls_bin() -> None:
@@ -396,11 +392,7 @@ def test_segm_all_cls_isolates_cls_bin() -> None:
     """
     gt, dt = _load("segm_all_cls")
     out = error_decomposition(gt, dt, segm_iou)
-    _assert_close(out["baseline_map"], 0.0, "baseline_map")
-    _assert_close(out["delta"]["cls"], 1.0, "delta[cls]")
-    for bin_name in ("loc", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("segm_all_cls"))
 
 
 def test_boundary_all_perfect_baseline_one_and_no_deltas() -> None:
@@ -425,10 +417,7 @@ def test_boundary_all_perfect_baseline_one_and_no_deltas() -> None:
         t_b=_BOUNDARY_T_B,
         kernel_name="boundary",
     )
-    _assert_close(out["baseline_map"], 1.0, "baseline_map")
-    for bin_name in ("cls", "loc", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("boundary_all_perfect"))
 
 
 def test_boundary_all_loc_isolates_loc_bin() -> None:
@@ -478,11 +467,7 @@ def test_boundary_all_loc_isolates_loc_bin() -> None:
         t_b=_BOUNDARY_T_B,
         kernel_name="boundary",
     )
-    _assert_close(out["baseline_map"], 0.0, "baseline_map")
-    _assert_close(out["delta"]["loc"], 1.0, "delta[loc]")
-    for bin_name in ("cls", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("boundary_all_loc"))
 
 
 def test_boundary_all_cls_isolates_cls_bin() -> None:
@@ -519,11 +504,7 @@ def test_boundary_all_cls_isolates_cls_bin() -> None:
         t_b=_BOUNDARY_T_B,
         kernel_name="boundary",
     )
-    _assert_close(out["baseline_map"], 0.0, "baseline_map")
-    _assert_close(out["delta"]["cls"], 1.0, "delta[cls]")
-    for bin_name in ("loc", "both", "dupe", "bkg", "missed"):
-        _assert_close(out["delta"][bin_name], 0.0, f"delta[{bin_name}]")
-    _assert_close(out["delta_all_fp_removed"], 0.0, "delta_all_fp_removed")
+    _assert_report_matches(out, _load_expected("boundary_all_cls"))
 
 
 _ALL_FIXTURES = [

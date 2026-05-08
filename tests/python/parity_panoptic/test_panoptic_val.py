@@ -37,6 +37,13 @@ from .harness import (
 )
 from .panoptic_val_paths import require_artifacts, sample_image_count
 
+# Mirrors the file-level marker stack on the sibling whole-dataset val
+# smokes (`tests/python/parity/test_coco_val.py`,
+# `tests/python/parity_boundary/test_coco_val.py`,
+# `tests/python/parity_lvis/test_lvis_val.py`): one decorator stack at
+# module scope so any test added here joins the slow tier by default.
+pytestmark = [pytest.mark.parity_panoptic_val, pytest.mark.slow]
+
 
 def _decode_png_to_uint32(path: Path) -> np.ndarray:
     """Decode a panoptic PNG to a uint32 label map via Pillow + rgb2id.
@@ -114,7 +121,6 @@ def _vernier_snapshot_full(
     return summary_to_snapshot(summary)
 
 
-@pytest.mark.parity_panoptic_val
 def test_panoptic_val2017_strict_bit_equal() -> None:
     """End-to-end strict-mode parity vs `pq_compute_single_core` on
     a (subsampled) panoptic val2017 corpus."""
