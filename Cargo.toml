@@ -98,6 +98,11 @@ blake3 = "1"
 # truncation and bit-flips that would slip past `rkyv`'s archive
 # validation; the two checks are complementary, not redundant.
 crc32fast = "1"
+# Faster non-cryptographic hash for internal HashMaps with integer
+# keys. The std `HashMap` uses SipHash (DoS-resistant) which is
+# overkill for hot-path histograms over `(u32, u32)` keys that never
+# touch user-controlled input.
+rustc-hash = "2"
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit

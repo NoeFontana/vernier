@@ -22,7 +22,9 @@
 //! FP / FN attribution lives in [`crate::attribute`]; this module
 //! emits a [`PqImageReport`] consumed there.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
+
+use rustc_hash::FxHashMap;
 
 use crate::dataset::{CategoryId, ImageEntry, ImageId};
 use crate::error::PanopticError;
@@ -49,7 +51,9 @@ pub struct PqImageReport {
     /// Sparse intersection map keyed by `(gt_id, dt_id)`. Read by the
     /// attribute step for the V4 FP-exclusion test
     /// (`hist[(VOID, dt)] + same_cat_crowd_overlap > 0.5 * dt_area`).
-    pub intersections: HashMap<(u32, u32), u32>,
+    /// Uses FxHash because the keys are internal `(u32, u32)` —
+    /// SipHash's DoS resistance is wasted work on this hot path.
+    pub intersections: FxHashMap<(u32, u32), u32>,
 }
 
 /// One matched TP pair with the metadata needed by the summarize
@@ -187,14 +191,15 @@ pub fn pq_image_with_id(
 /// `gt` and `dt` must have the same length; the orchestrator validates
 /// this via [`pq_image_with_id`]'s `ShapeMismatch` check before
 /// reaching here.
-fn build_intersection_histogram(gt: &[u32], dt: &[u32]) -> HashMap<(u32, u32), u32> {
+fn build_intersection_histogram(gt: &[u32], dt: &[u32]) -> FxHashMap<(u32, u32), u32> {
     debug_assert_eq!(gt.len(), dt.len());
     // Histograms are bounded by `len(gt_segments) * len(dt_segments)`
     // not pixel count; typical panoptic images carry a few dozen
     // unique `(gt, dt)` pairs. A small fixed seed avoids reserving
     // hundreds of KB of buckets per image (the prior `H*W/16`
     // heuristic over-allocated by ~2 orders of magnitude).
-    let mut out: HashMap<(u32, u32), u32> = HashMap::with_capacity(128);
+    let mut out: FxHashMap<(u32, u32), u32> =
+        FxHashMap::with_capacity_and_hasher(128, Default::default());
     for (g, d) in gt.iter().zip(dt.iter()) {
         *out.entry((*g, *d)).or_insert(0) += 1;
     }
@@ -205,7 +210,6 @@ fn build_intersection_histogram(gt: &[u32], dt: &[u32]) -> HashMap<(u32, u32), u
 mod tests {
     use super::*;
     use crate::dataset::SegmentInfo;
-    use std::collections::HashMap;
 
     fn entry(
         height: u32,
@@ -213,7 +217,7 @@ mod tests {
         label_map: Vec<u32>,
         segments: &[(u32, CategoryId, bool, u64)],
     ) -> ImageEntry {
-        let mut map = HashMap::new();
+        let mut map = FxHashMap::default();
         for &(id, category_id, iscrowd, area) in segments {
             map.insert(
                 id,

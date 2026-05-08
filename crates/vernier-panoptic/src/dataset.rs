@@ -11,8 +11,9 @@
 //! validations that don't require I/O. The PNG-decode and JSON-parse
 //! glue lives in `vernier-ffi::panoptic`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Serialize};
 
 use crate::error::PanopticError;
@@ -76,8 +77,10 @@ pub struct ImageEntry {
     /// **R3**).
     pub label_map: Vec<u32>,
     /// Maps each segment id present (or declared) in this image to
-    /// its metadata.
-    pub segments: HashMap<u32, SegmentInfo>,
+    /// its metadata. Uses FxHash because the keys are internal `u32`
+    /// segment ids; SipHash's DoS resistance is wasted work on the
+    /// per-pixel validation pass that walks `O(H*W)` pixels.
+    pub segments: FxHashMap<u32, SegmentInfo>,
 }
 
 impl ImageEntry {
@@ -123,7 +126,8 @@ impl ImageEntry {
             });
         }
 
-        let mut segments: HashMap<u32, SegmentInfo> = HashMap::with_capacity(segments_list.len());
+        let mut segments: FxHashMap<u32, SegmentInfo> =
+            FxHashMap::with_capacity_and_hasher(segments_list.len(), Default::default());
         for seg in segments_list {
             if segments.insert(seg.id, seg).is_some() {
                 return Err(PanopticError::DuplicateSegmentId {
@@ -135,7 +139,7 @@ impl ImageEntry {
         }
 
         if side == "dt" {
-            let mut declared: HashSet<u32> = segments.keys().copied().collect();
+            let mut declared: FxHashSet<u32> = segments.keys().copied().collect();
             for &px in &label_map {
                 if px == crate::PANOPTIC_VOID {
                     continue;
