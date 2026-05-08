@@ -6,12 +6,14 @@ on:
       - "docs/**"
       - "python/vernier/**"
       - "mkdocs.yml"
+  # No `paths:` filter on push: deploy needs to run on every main push (to
+  # update the `main` alias) and on every release tag (to deploy the
+  # versioned site). The build job here is fast (~1 min) so the cost of
+  # running it on non-docs main pushes is negligible.
   push:
     branches: [main]
-    paths:
-      - "docs/**"
-      - "python/vernier/**"
-      - "mkdocs.yml"
+    tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -43,6 +45,53 @@ jobs:
       - name: Spell-check user-facing docs
         # adr/ and engineering/ use domain notation and excluded from the site
         run: uv run --group docs codespell docs/ --skip "docs/adr,docs/engineering"
+
+  # Deploy versioned site to gh-pages via mike. Pushes to main update the
+  # `main` version and the `latest` alias; tag pushes deploy `X.Y` (the
+  # minor-version segment of the tag) and update the `stable` alias.
+  #
+  # First-deploy setup (one-time, after the first run lands a gh-pages
+  # branch): in repo Settings → Pages, set Source = "Deploy from a branch"
+  # and Branch = "gh-pages" / root, then run
+  # `mike set-default --push stable` locally to redirect /vernier/ to
+  # /vernier/stable/. See docs/engineering/release-runbook.md §5.
+  deploy:
+    name: deploy to gh-pages
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: [build, spell]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # mike commits to the gh-pages branch and needs to see it; the
+          # default shallow checkout works because mike fetches gh-pages
+          # itself, but unshallowing keeps the diff readable in the
+          # workflow log.
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+      - name: Install docs deps
+        run: uv sync --group docs --no-install-project
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - name: Deploy main + latest alias (push to main)
+        if: github.ref == 'refs/heads/main'
+        run: uv run --group docs mike deploy --push --update-aliases main latest
+      - name: Deploy X.Y + stable alias (release tag)
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF#refs/tags/v}"
+          # Collapse to the minor (X.Y) so 0.0.2 / 0.0.3 / ... share one
+          # versioned page that always reflects the latest patch.
+          # Pre-1.0 we treat each patch as the new "stable"; once the
+          # project moves to 0.1.0+ the stable-alias rule changes to
+          # only update on minor releases (see runbook §5).
+          minor="${version%.*}"
+          uv run --group docs mike deploy --push --update-aliases "$minor" stable
 
   # TODO(lychee): add a link-checking job once lychee is wired up.
   # External links should run on a weekly schedule to avoid flakiness on PR
