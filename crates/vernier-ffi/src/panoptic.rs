@@ -41,6 +41,7 @@ use crate::background_streaming::{
 use crate::numpy_utils::parse_uint32_label_maps;
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
 use vernier_panoptic::dataset::{CategoryId, CategoryMeta, ImageEntry, ImageId, SegmentInfo};
+use vernier_panoptic::decode::decode_panoptic_png;
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
     evaluate, ClassPanopticStats, PanopticDataset, PanopticError, PanopticPredictions,
@@ -581,7 +582,52 @@ fn build_image_entry<'py>(
             area: s.area,
         })
         .collect();
-    ImageEntry::from_components(image_id, h, w, buf, segments, side)
+    let mut entry = ImageEntry::from_components(image_id, h, w, buf, segments, side)
+        .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    if side == "dt" {
+        // S3: pred area is always overwritten from the PNG marginal,
+        // matching the batch `PyPanopticPredictions::from_arrays` path.
+        // Without this, the streaming / background submit() path would
+        // silently use the JSON `area` field — currently OK on COCO
+        // because panopticapi's writers ship `area == PNG marginal`,
+        // but a latent spec gap.
+        entry.recompute_areas_from_png();
+    }
+    Ok(entry)
+}
+
+/// Build an `ImageEntry` directly from a panoptic PNG byte blob —
+/// fuses libpng decode, the RGB→id pass, and (DT side) the S3 area
+/// recompute + S1/S11 validation in a single walk over the decoded
+/// pixels. The companion to [`build_image_entry`] on the
+/// `submit`/`update` side; both produce equivalent `ImageEntry`s,
+/// this one bypasses the Pillow → numpy → uint32 round-trip the
+/// Python wrapper would otherwise drive on the main thread.
+fn build_image_entry_from_png(
+    py: Python<'_>,
+    image_id: ImageId,
+    png_bytes: &[u8],
+    segments_info_bytes: &[u8],
+    side: &'static str,
+) -> PyResult<ImageEntry> {
+    let segs: Vec<SegmentInfoJson> = serde_json::from_slice(segments_info_bytes).map_err(|e| {
+        panoptic_error_to_pyerr(
+            py,
+            PanopticError::InvalidInput {
+                detail: format!("segments_info JSON for image_id={image_id} is invalid: {e}"),
+            },
+        )
+    })?;
+    let segments: Vec<SegmentInfo> = segs
+        .into_iter()
+        .map(|s| SegmentInfo {
+            id: s.id,
+            category_id: s.category_id,
+            iscrowd: parse_bool_or_int(&s.iscrowd),
+            area: s.area,
+        })
+        .collect();
+    decode_panoptic_png(image_id, png_bytes, segments, side)
         .map_err(|e| panoptic_error_to_pyerr(py, e))
 }
 
@@ -666,6 +712,31 @@ impl PyStreamingPanopticEvaluator {
     ) -> PyResult<()> {
         let gt_entry = build_image_entry(py, image_id, &gt_label_map, gt_segments_info, "gt")?;
         let dt_entry = build_image_entry(py, image_id, &dt_label_map, dt_segments_info, "dt")?;
+        py.detach(move || self.inner.update(image_id, &gt_entry, &dt_entry))
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Ok(())
+    }
+
+    /// Variant of [`Self::update`] that takes panoptic PNG byte blobs
+    /// instead of pre-decoded uint32 ndarrays. Fuses libpng decode +
+    /// RGB→id + (DT side) S3 area marginals in one Rust pass; skips
+    /// the Pillow → numpy → uint32 round-trip the Python wrapper
+    /// would otherwise drive. Strictly equivalent to
+    /// `update(decode_label_map_png(p), ...)` on the result; the diff
+    /// is wall-time, not correctness.
+    fn update_png(
+        &mut self,
+        py: Python<'_>,
+        image_id: i64,
+        gt_png_bytes: &[u8],
+        gt_segments_info: &[u8],
+        dt_png_bytes: &[u8],
+        dt_segments_info: &[u8],
+    ) -> PyResult<()> {
+        let gt_entry =
+            build_image_entry_from_png(py, image_id, gt_png_bytes, gt_segments_info, "gt")?;
+        let dt_entry =
+            build_image_entry_from_png(py, image_id, dt_png_bytes, dt_segments_info, "dt")?;
         py.detach(move || self.inner.update(image_id, &gt_entry, &dt_entry))
             .map_err(|e| panoptic_error_to_pyerr(py, e))?;
         Ok(())
@@ -975,6 +1046,69 @@ impl PyBackgroundPanopticEvaluator {
         // synchronously instead of as stashed worker errors.
         let gt = build_image_entry(py, image_id, &gt_label_map, gt_segments_info, "gt")?;
         let dt = build_image_entry(py, image_id, &dt_label_map, dt_segments_info, "dt")?;
+        let timeout_dur = match timeout {
+            None => None,
+            Some(t) => {
+                if !t.is_finite() || t < 0.0 {
+                    return Err(PyValueError::new_err(format!(
+                        "timeout must be a non-negative finite float or None, got {t}"
+                    )));
+                }
+                Some(Duration::from_secs_f64(t))
+            }
+        };
+
+        let payload = PanopticUpdate { image_id, gt, dt };
+        let lifecycle = &self.lifecycle;
+        let result = py.detach(move || -> Result<(), SubmitError<PanopticError>> {
+            let guard = lifecycle.lock().map_err(|_| {
+                SubmitError::Eval(StreamingPanopticEvaluator::worker_disconnected())
+            })?;
+            let core = guard.active().map_err(SubmitError::Eval)?;
+            match timeout_dur {
+                None => core.submit_blocking(payload).map_err(SubmitError::Eval),
+                Some(t) => core.submit_timeout(payload, t),
+            }
+        });
+        result.map_err(|e| match e {
+            SubmitError::Eval(inner) => panoptic_error_to_pyerr(py, inner),
+            SubmitError::Full(full) => queue_full_to_pyerr(py, full),
+        })
+    }
+
+    /// Variant of [`Self::submit`] that takes panoptic PNG byte blobs
+    /// instead of pre-decoded uint32 ndarrays. Fuses libpng decode +
+    /// RGB→id + (DT side) S3 area marginals + S1/S11 validation in
+    /// one Rust pass; skips the Pillow → numpy → uint32 round-trip
+    /// the Python wrapper would otherwise drive on the main thread.
+    /// Strictly equivalent to
+    /// `submit(decode_label_map_png(p), ...)` on the result; the diff
+    /// is wall-time, not correctness.
+    #[pyo3(signature = (
+        image_id,
+        gt_png_bytes,
+        gt_segments_info,
+        dt_png_bytes,
+        dt_segments_info,
+        *,
+        timeout = None,
+    ))]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "mirrors the streaming evaluator's update_png signature"
+    )]
+    fn submit_png(
+        &self,
+        py: Python<'_>,
+        image_id: i64,
+        gt_png_bytes: &[u8],
+        gt_segments_info: &[u8],
+        dt_png_bytes: &[u8],
+        dt_segments_info: &[u8],
+        timeout: Option<f64>,
+    ) -> PyResult<()> {
+        let gt = build_image_entry_from_png(py, image_id, gt_png_bytes, gt_segments_info, "gt")?;
+        let dt = build_image_entry_from_png(py, image_id, dt_png_bytes, dt_segments_info, "dt")?;
         let timeout_dur = match timeout {
             None => None,
             Some(t) => {

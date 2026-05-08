@@ -20,13 +20,22 @@ Each fixture closes one open question from the ADR appendix:
 
 from __future__ import annotations
 
+import io
+import json
+
 import numpy as np
 import pytest
+from PIL import Image as PILImage
+
+import vernier
+import vernier.panoptic
 
 from .harness import (
     _oracle_snapshot,
     _vernier_snapshot,
     assert_snapshots_equal,
+    id2rgb,
+    summary_to_snapshot,
 )
 
 pytestmark = pytest.mark.parity_panoptic
@@ -273,3 +282,139 @@ def test_q5_w7_long_tailed_global_sq_bit_equal() -> None:
     assert abs(oracle.sq - 0.725) < 1e-12, oracle.sq
     pooled = (1.7 + 0.6) / 3.0
     assert abs(oracle.sq - pooled) > 0.01, "Q5 fixture must show mean ≠ pooled"
+
+
+def _label_map_to_png_bytes(label_map: np.ndarray) -> bytes:
+    """Encode a `(H, W) uint32` panoptic label map as RGB PNG bytes
+    via the rgb2id convention. Round-trippable through both
+    `vernier.panoptic.decode_label_map_png` (Pillow path) and
+    `submit_png` / `update_png` (Rust path)."""
+    rgb = id2rgb(label_map)
+    buf = io.BytesIO()
+    PILImage.fromarray(rgb, mode="RGB").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_submit_png_matches_array_path_perfect_match() -> None:
+    """The new ``submit_png`` / ``update_png`` decode-in-Rust path
+    must produce a byte-identical :class:`PanopticSummary` to the
+    array path for the same fixture. Same fold, same kernel, same
+    parity mode — diff is wall-time, not correctness.
+    """
+    gt_lm = np.array([[1, 1, 1, 1, 1, 2, 2, 2, 2, 2]], dtype=np.uint32)
+    dt_lm = np.array([[10, 10, 10, 10, 10, 11, 11, 11, 11, 11]], dtype=np.uint32)
+    gt_segs = [
+        {"id": 1, "category_id": 100, "iscrowd": False, "area": 5},
+        {"id": 2, "category_id": 200, "iscrowd": False, "area": 5},
+    ]
+    dt_segs = [
+        {"id": 10, "category_id": 100, "iscrowd": False, "area": 5},
+        {"id": 11, "category_id": 200, "iscrowd": False, "area": 5},
+    ]
+    cats = [
+        {"id": 100, "isthing": True},
+        {"id": 200, "isthing": False},
+    ]
+    cats_bytes = json.dumps(cats).encode()
+    gt_segs_bytes = json.dumps(gt_segs).encode()
+    dt_segs_bytes = json.dumps(dt_segs).encode()
+    gt_png = _label_map_to_png_bytes(gt_lm)
+    dt_png = _label_map_to_png_bytes(dt_lm)
+
+    # Array path: pre-decoded uint32 arrays via update.
+    ev_array = vernier.panoptic.StreamingEvaluator(cats_bytes, "strict")
+    ev_array.update(1, gt_lm, gt_segs_bytes, dt_lm, dt_segs_bytes)
+    summary_array = ev_array.finalize()
+
+    # PNG path: raw bytes via update_png; Rust does decode + RGB→id +
+    # S3 area fold + S1/S11 validation in one pass.
+    ev_png = vernier.panoptic.StreamingEvaluator(cats_bytes, "strict")
+    ev_png.update_png(1, gt_png, gt_segs_bytes, dt_png, dt_segs_bytes)
+    summary_png = ev_png.finalize()
+
+    snap_array = summary_to_snapshot(summary_array)
+    snap_png = summary_to_snapshot(summary_png)
+    assert_snapshots_equal(snap_array, snap_png)
+
+
+def test_submit_png_matches_array_path_with_void_and_jitter() -> None:
+    """Same equivalence under non-trivial coverage: VOID pixels (S6
+    union subtraction site), DT-side area marginals (S3), and a
+    mismatched DT segment that drives a TP via the U6 panoptic union
+    rather than a literal IoU.
+    """
+    # 1x4: GT covers pixel 0 as id=1; pixels 1..3 are VOID. DT covers
+    # all 4 as id=10. U6 union = 1 + 4 - 1 - 3 = 1; IoU = 1.0 → TP.
+    gt_lm = np.array([[1, 0, 0, 0]], dtype=np.uint32)
+    dt_lm = np.array([[10, 10, 10, 10]], dtype=np.uint32)
+    gt_segs = [{"id": 1, "category_id": 100, "iscrowd": False, "area": 1}]
+    # Lying JSON DT area; S3 should overwrite to 4 on both paths.
+    dt_segs = [{"id": 10, "category_id": 100, "iscrowd": False, "area": 99_999}]
+    cats = [{"id": 100, "isthing": True}]
+    cats_bytes = json.dumps(cats).encode()
+    gt_segs_bytes = json.dumps(gt_segs).encode()
+    dt_segs_bytes = json.dumps(dt_segs).encode()
+    gt_png = _label_map_to_png_bytes(gt_lm)
+    dt_png = _label_map_to_png_bytes(dt_lm)
+
+    # Single-thing fixture: switch to corrected mode to skip the W6
+    # strict-mode raise on the empty stuff bucket. Equivalence between
+    # array and PNG paths is the property under test, not strict-W6.
+    ev_array = vernier.panoptic.StreamingEvaluator(cats_bytes, "corrected")
+    ev_array.update(1, gt_lm, gt_segs_bytes, dt_lm, dt_segs_bytes)
+    summary_array = ev_array.finalize()
+
+    ev_png = vernier.panoptic.StreamingEvaluator(cats_bytes, "corrected")
+    ev_png.update_png(1, gt_png, gt_segs_bytes, dt_png, dt_segs_bytes)
+    summary_png = ev_png.finalize()
+
+    snap_array = summary_to_snapshot(summary_array)
+    snap_png = summary_to_snapshot(summary_png)
+    assert_snapshots_equal(snap_array, snap_png)
+    # Sanity: the U6 + S3 fixture lands a perfect TP in both paths.
+    assert snap_png.pq == 1.0
+    assert snap_array.pq == 1.0
+
+
+def test_submit_png_matches_oracle_strict() -> None:
+    """End-to-end strict-tier: ``submit_png`` reproduces panopticapi's
+    ``pq_compute_single_core`` bit-exactly on the perfect-match
+    fixture from :func:`test_perfect_match_strict_bit_equal`. Pins
+    the new entry point against the oracle directly, not just
+    against the array path."""
+    gt = {1: np.array([[1, 1, 1, 1, 1, 2, 2, 2, 2, 2]], dtype=np.uint32)}
+    dt = {1: np.array([[10, 10, 10, 10, 10, 11, 11, 11, 11, 11]], dtype=np.uint32)}
+    gt_segs = {
+        1: [
+            {"id": 1, "category_id": 100, "iscrowd": False, "area": 5},
+            {"id": 2, "category_id": 200, "iscrowd": False, "area": 5},
+        ]
+    }
+    dt_segs = {
+        1: [
+            {"id": 10, "category_id": 100, "iscrowd": False, "area": 5},
+            {"id": 11, "category_id": 200, "iscrowd": False, "area": 5},
+        ]
+    }
+    cats = [
+        {"id": 100, "isthing": True},
+        {"id": 200, "isthing": False},
+    ]
+    oracle = _oracle_snapshot(gt, gt_segs, dt, dt_segs, cats)
+
+    cats_bytes = json.dumps(cats).encode()
+    ev = vernier.panoptic.StreamingEvaluator(cats_bytes, "strict")
+    for image_id, gt_lm in gt.items():
+        dt_lm = dt[image_id]
+        gt_png = _label_map_to_png_bytes(gt_lm)
+        dt_png = _label_map_to_png_bytes(dt_lm)
+        ev.update_png(
+            int(image_id),
+            gt_png,
+            json.dumps(gt_segs[image_id]).encode(),
+            dt_png,
+            json.dumps(dt_segs[image_id]).encode(),
+        )
+    snap = summary_to_snapshot(ev.finalize())
+    assert_snapshots_equal(oracle, snap)
+    assert snap.pq == 1.0

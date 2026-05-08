@@ -83,9 +83,16 @@ def main() -> int:
         cats_bytes = json.dumps(list(categories)).encode()
 
     # The Background ``with`` block covers worker-thread shutdown if
-    # ``submit`` raises; otherwise the worker would leak past the
+    # ``submit_png`` raises; otherwise the worker would leak past the
     # runner's lifetime. parity_mode="strict" reproduces panopticapi
     # bit-exactly under the strict-tier comparator.
+    #
+    # ``submit_png`` hands raw PNG bytes to the Rust kernel, which
+    # fuses libpng decode + RGB→id + (DT side) S3 area marginals in a
+    # single pass. The prior path round-tripped through Pillow +
+    # ``np.array(..., dtype=np.uint32)`` + Python-level ``R + 256·G +
+    # 256²·B`` arithmetic on the main thread, which dominated wall
+    # time on val2017 perfect-DT.
     with (
         stages.stage("stream_pq"),
         vernier.panoptic.Evaluator(parity_mode="strict", things_stuff_split=True).background(
@@ -93,13 +100,13 @@ def main() -> int:
         ) as ev,
     ):
         for gt_ann, dt_ann in pairs:
-            gt_arr = vernier.panoptic.decode_label_map_png(args.gt_png_dir / gt_ann["file_name"])
-            dt_arr = vernier.panoptic.decode_label_map_png(args.dt_png_dir / dt_ann["file_name"])
-            ev.submit(
+            gt_bytes = (args.gt_png_dir / gt_ann["file_name"]).read_bytes()
+            dt_bytes = (args.dt_png_dir / dt_ann["file_name"]).read_bytes()
+            ev.submit_png(
                 int(gt_ann["image_id"]),
-                gt_arr,
+                gt_bytes,
                 json.dumps(gt_ann["segments_info"]).encode(),
-                dt_arr,
+                dt_bytes,
                 json.dumps(dt_ann["segments_info"]).encode(),
             )
         summary = ev.finalize()

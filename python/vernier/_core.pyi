@@ -601,6 +601,14 @@ class StreamingPanopticEvaluator:
         dt_label_map: NDArray[np.uint32],
         dt_segments_info: bytes,
     ) -> None: ...
+    def update_png(
+        self,
+        image_id: int,
+        gt_png_bytes: bytes,
+        gt_segments_info: bytes,
+        dt_png_bytes: bytes,
+        dt_segments_info: bytes,
+    ) -> None: ...
     def snapshot(self) -> PanopticSummary: ...
     def finalize(self) -> PanopticSummary: ...
     def to_partial(self) -> bytes: ...
@@ -781,6 +789,16 @@ class BackgroundPanopticEvaluator:
         gt_label_map: NDArray[np.uint32],
         gt_segments_info: bytes,
         dt_label_map: NDArray[np.uint32],
+        dt_segments_info: bytes,
+        *,
+        timeout: float | None = ...,
+    ) -> None: ...
+    def submit_png(
+        self,
+        image_id: int,
+        gt_png_bytes: bytes,
+        gt_segments_info: bytes,
+        dt_png_bytes: bytes,
         dt_segments_info: bytes,
         *,
         timeout: float | None = ...,

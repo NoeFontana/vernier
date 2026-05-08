@@ -24,6 +24,7 @@
 
 pub mod attribute;
 pub mod dataset;
+pub mod decode;
 pub mod distributed;
 pub mod error;
 pub mod kernel;
