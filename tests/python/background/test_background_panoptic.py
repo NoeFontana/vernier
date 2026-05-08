@@ -23,7 +23,6 @@ import pytest
 
 import vernier.panoptic as pq
 
-
 _CATS = json.dumps(
     [
         {"id": 1, "isthing": True},
@@ -103,9 +102,7 @@ def test_background_strict_partial_merges_bit_equal_to_batch() -> None:
     batch_summary = batch.finalize()
 
     # Background "rank" — one bg evaluator covers everything.
-    bg = pq.BackgroundEvaluator(
-        _CATS, "strict", retain_per_image_deltas=True, rank_id=0
-    )
+    bg = pq.BackgroundEvaluator(_CATS, "strict", retain_per_image_deltas=True, rank_id=0)
     for s in seeds:
         gt_lm, gt_si, dt_lm, dt_si = _image(s)
         bg.submit(s, gt_lm, gt_si, dt_lm, dt_si)
@@ -142,5 +139,5 @@ def test_context_manager_finalize() -> None:
 def test_finalize_then_use_raises() -> None:
     bg = pq.BackgroundEvaluator(_CATS, "corrected")
     bg.finalize()
-    with pytest.raises(Exception):  # noqa: BLE001 - cross-version: any wire-format error
+    with pytest.raises(Exception, match="already been finalized"):
         bg.snapshot()

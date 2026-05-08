@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from types import TracebackType
 from typing import Any, Literal, TypeAlias, TypedDict
 
 import numpy as np
@@ -746,12 +747,12 @@ class BackgroundSemanticEvaluator:
         *,
         ignore_label: int | None = ...,
     ) -> StreamingSemanticEvaluator: ...
-    def __enter__(self) -> BackgroundSemanticEvaluator: ...
+    def __enter__(self) -> Self: ...
     def __exit__(
         self,
         exc_type: type[BaseException] | None = ...,
         exc: BaseException | None = ...,
-        tb: object | None = ...,
+        tb: TracebackType | None = ...,
     ) -> None: ...
 
 class BackgroundPanopticEvaluator:
@@ -798,10 +799,10 @@ class BackgroundPanopticEvaluator:
         things_stuff_split: bool = ...,
         retain_per_image_deltas: bool = ...,
     ) -> StreamingPanopticEvaluator: ...
-    def __enter__(self) -> BackgroundPanopticEvaluator: ...
+    def __enter__(self) -> Self: ...
     def __exit__(
         self,
         exc_type: type[BaseException] | None = ...,
         exc: BaseException | None = ...,
-        tb: object | None = ...,
+        tb: TracebackType | None = ...,
     ) -> None: ...

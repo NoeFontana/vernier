@@ -41,7 +41,9 @@ use vernier_semantic::{
 };
 
 use crate::background::BackgroundConfig;
-use crate::background_streaming::{BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError};
+use crate::background_streaming::{
+    BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError,
+};
 use crate::numpy_utils::{parse_uint32_label_maps, ImageId, LabelMap};
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
 
@@ -682,11 +684,10 @@ pub(crate) struct PyBackgroundSemanticEvaluator {
 impl PyBackgroundSemanticEvaluator {
     fn lock_lifecycle(
         &self,
-    ) -> PyResult<std::sync::MutexGuard<'_, BackgroundLifecycle<StreamingSemanticEvaluator>>>
-    {
-        self.lifecycle
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("BackgroundSemanticEvaluator state mutex poisoned"))
+    ) -> PyResult<std::sync::MutexGuard<'_, BackgroundLifecycle<StreamingSemanticEvaluator>>> {
+        self.lifecycle.lock().map_err(|_| {
+            PyRuntimeError::new_err("BackgroundSemanticEvaluator state mutex poisoned")
+        })
     }
 }
 
@@ -811,9 +812,9 @@ impl PyBackgroundSemanticEvaluator {
 
         let lifecycle = &self.lifecycle;
         let result = py.detach(move || -> Result<(), SubmitError<SemanticError>> {
-            let guard = lifecycle
-                .lock()
-                .map_err(|_| SubmitError::Eval(StreamingSemanticEvaluator::worker_disconnected()))?;
+            let guard = lifecycle.lock().map_err(|_| {
+                SubmitError::Eval(StreamingSemanticEvaluator::worker_disconnected())
+            })?;
             let core = guard.active().map_err(SubmitError::Eval)?;
             match timeout_dur {
                 None => core.submit_blocking(payload).map_err(SubmitError::Eval),
@@ -899,7 +900,12 @@ impl PyBackgroundSemanticEvaluator {
         ignore_label: Option<u32>,
     ) -> PyResult<PyStreamingSemanticEvaluator> {
         PyStreamingSemanticEvaluator::from_partials(
-            cls, py, n_classes, partials, parity_mode, ignore_label,
+            cls,
+            py,
+            n_classes,
+            partials,
+            parity_mode,
+            ignore_label,
         )
     }
 
@@ -962,10 +968,7 @@ impl PyBackgroundSemanticEvaluator {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "BackgroundSemanticEvaluator(n_classes={})",
-            self.n_classes
-        )
+        format!("BackgroundSemanticEvaluator(n_classes={})", self.n_classes)
     }
 }
 

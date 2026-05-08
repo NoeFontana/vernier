@@ -36,7 +36,6 @@ from vernier._core import (
 )
 from vernier._types import (
     DEFAULT_DILATION_RATIO,
-    PARITY_CORRECTED,
     PARITY_STRICT,
     ParityMode,
 )

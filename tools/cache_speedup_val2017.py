@@ -79,12 +79,12 @@ def main() -> int:
     _timed("bytes call 1", lambda: evaluator.evaluate(gt_bytes, dt_bytes))
     bytes2_ms = _timed("bytes call 2", lambda: evaluator.evaluate(gt_bytes, dt_bytes))
 
-    print("\n=== Dataset-path: parse-once + warm-cache reuse ===")
+    print("\n=== CocoDataset-path: parse-once + warm-cache reuse ===")
     t = time.perf_counter()
-    ds = Dataset.from_json(gt_bytes)
-    print(f"{'Dataset.from_json':<48} {(time.perf_counter() - t) * 1000.0:>9.0f} ms")
-    _timed("Dataset call 1 (cold cache, populates)", lambda: evaluator.evaluate(ds, dt_bytes))
-    ds2_ms = _timed("Dataset call 2 (warm cache, hits)", lambda: evaluator.evaluate(ds, dt_bytes))
+    ds = CocoDataset.from_json(gt_bytes)
+    print(f"{'CocoDataset.from_json':<48} {(time.perf_counter() - t) * 1000.0:>9.0f} ms")
+    _timed("CocoDataset call 1 (cold cache)", lambda: evaluator.evaluate(ds, dt_bytes))
+    ds2_ms = _timed("CocoDataset call 2 (warm cache)", lambda: evaluator.evaluate(ds, dt_bytes))
 
     speedup = bytes2_ms / ds2_ms if ds2_ms > 0 else float("inf")
     saved_ms = bytes2_ms - ds2_ms

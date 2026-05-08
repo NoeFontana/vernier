@@ -91,8 +91,7 @@ def ensure_mask2former(
     if actual != final_sha:
         out.unlink(missing_ok=True)
         raise RuntimeError(
-            f"Mask2Former prediction blob SHA256 mismatch: expected "
-            f"{final_sha}, got {actual}."
+            f"Mask2Former prediction blob SHA256 mismatch: expected {final_sha}, got {actual}."
         )
     return out
 

@@ -226,7 +226,10 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
     /// The worker applies its scheduling preferences (nice, affinity)
     /// before pulling its first message; the result is stashed in
     /// `state.scheduling_outcome` for the FFI to read once.
-    #[allow(dead_code, reason = "kept for symmetry with BackgroundCore::spawn; FFI calls spawn_with_options directly")]
+    #[allow(
+        dead_code,
+        reason = "kept for symmetry with BackgroundCore::spawn; FFI calls spawn_with_options directly"
+    )]
     pub(crate) fn spawn(
         evaluator: StreamingEvaluator<K>,
         config: BackgroundConfig,
@@ -792,4 +795,3 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
         }
     }
 }
-

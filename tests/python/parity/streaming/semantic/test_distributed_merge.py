@@ -22,21 +22,21 @@ the union. No ``(score, rank_id, local_position)`` tiebreak needed.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Literal
 
 import numpy as np
 import pytest
 
 import vernier.semantic as sem
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
 
-def _label_maps(seed: int = 0, n_images: int = 6) -> tuple[
-    Mapping[int, np.ndarray], Mapping[int, np.ndarray]
-]:
+def _label_maps(
+    seed: int = 0, n_images: int = 6
+) -> tuple[Mapping[int, np.ndarray], Mapping[int, np.ndarray]]:
     """Build a synthetic GT/DT label-map pair with deterministic noise.
 
     The ``seed`` controls the RNG; same seed produces identical maps.
@@ -58,9 +58,7 @@ def _label_maps(seed: int = 0, n_images: int = 6) -> tuple[
     return gt_maps, dt_maps
 
 
-def _shard(
-    label_maps: Mapping[int, np.ndarray], n_shards: int
-) -> list[dict[int, np.ndarray]]:
+def _shard(label_maps: Mapping[int, np.ndarray], n_shards: int) -> list[dict[int, np.ndarray]]:
     """Round-robin shard a label-map dict across `n_shards` partitions."""
     shards: list[dict[int, np.ndarray]] = [{} for _ in range(n_shards)]
     for image_id, arr in label_maps.items():
@@ -70,16 +68,14 @@ def _shard(
 
 def _evaluator_partial(
     n_classes: int,
-    parity_mode: str,
+    parity_mode: Literal["strict", "corrected"],
     rank_id: int,
     gt_shard: Mapping[int, np.ndarray],
     dt_shard: Mapping[int, np.ndarray],
     ignore_label: int | None = None,
 ) -> bytes:
     """Build a partial blob for one rank's shard."""
-    ev = sem.StreamingEvaluator(
-        n_classes, parity_mode, ignore_label=ignore_label, rank_id=rank_id
-    )
+    ev = sem.StreamingEvaluator(n_classes, parity_mode, ignore_label=ignore_label, rank_id=rank_id)
     for image_id in sorted(gt_shard):
         ev.update(image_id, gt_shard[image_id], dt_shard[image_id])
     return ev.finalize_to_partial()
@@ -92,7 +88,9 @@ def _evaluator_partial(
 
 @pytest.mark.parametrize("parity_mode", ["strict", "corrected"])
 @pytest.mark.parametrize("n_ranks", [2, 4])
-def test_shard_and_merge_equals_batch(parity_mode: str, n_ranks: int) -> None:
+def test_shard_and_merge_equals_batch(
+    parity_mode: Literal["strict", "corrected"], n_ranks: int
+) -> None:
     """For every shard count and parity mode, the merged confusion
     matrix is element-wise bit-equal to a batch run over the union.
     """
@@ -110,9 +108,7 @@ def test_shard_and_merge_equals_batch(parity_mode: str, n_ranks: int) -> None:
         _evaluator_partial(n_classes, parity_mode, rank, g, d)
         for rank, (g, d) in enumerate(zip(gt_shards, dt_shards))
     ]
-    merged = sem.StreamingEvaluator.from_partials(
-        n_classes, partials, parity_mode
-    ).finalize()
+    merged = sem.StreamingEvaluator.from_partials(n_classes, partials, parity_mode).finalize()
 
     np.testing.assert_array_equal(
         merged.confusion_matrix.counts(),
@@ -145,9 +141,7 @@ def test_roundtrip_single_partial_equals_finalize() -> None:
     direct = ev.snapshot()
 
     partial = ev.finalize_to_partial()
-    restored = sem.StreamingEvaluator.from_partials(
-        n_classes, [partial], "corrected"
-    ).finalize()
+    restored = sem.StreamingEvaluator.from_partials(n_classes, [partial], "corrected").finalize()
 
     np.testing.assert_array_equal(
         direct.confusion_matrix.counts(),
@@ -174,16 +168,10 @@ def test_n_way_equals_pairwise_reduction() -> None:
         for rank, (g, d) in enumerate(zip(gt_shards, dt_shards))
     )
 
-    one_shot = sem.StreamingEvaluator.from_partials(
-        n_classes, [a, b, c], "corrected"
-    ).finalize()
+    one_shot = sem.StreamingEvaluator.from_partials(n_classes, [a, b, c], "corrected").finalize()
 
-    ab = sem.StreamingEvaluator.from_partials(
-        n_classes, [a, b], "corrected"
-    ).finalize_to_partial()
-    pairwise = sem.StreamingEvaluator.from_partials(
-        n_classes, [ab, c], "corrected"
-    ).finalize()
+    ab = sem.StreamingEvaluator.from_partials(n_classes, [a, b], "corrected").finalize_to_partial()
+    pairwise = sem.StreamingEvaluator.from_partials(n_classes, [ab, c], "corrected").finalize()
 
     np.testing.assert_array_equal(
         one_shot.confusion_matrix.counts(),
@@ -204,12 +192,8 @@ def test_partition_overlap_rejected() -> None:
     gt_maps, dt_maps = _label_maps(seed=1, n_images=4)
     n_classes = 3
 
-    a = _evaluator_partial(
-        n_classes, "corrected", 0, {2: gt_maps[2]}, {2: dt_maps[2]}
-    )
-    b = _evaluator_partial(
-        n_classes, "corrected", 1, {2: gt_maps[2]}, {2: dt_maps[2]}
-    )
+    a = _evaluator_partial(n_classes, "corrected", 0, {2: gt_maps[2]}, {2: dt_maps[2]})
+    b = _evaluator_partial(n_classes, "corrected", 1, {2: gt_maps[2]}, {2: dt_maps[2]})
 
     with pytest.raises(sem.PartialPartitionOverlap) as exc_info:
         sem.StreamingEvaluator.from_partials(n_classes, [a, b], "corrected")
@@ -277,7 +261,10 @@ def test_paradigm_mismatch_rejected() -> None:
     import vernier.instance as inst
 
     # Build a minimal instance partial via the existing harness shape.
-    gt_json = b'{"images":[{"id":1,"width":4,"height":4}],"categories":[{"id":1,"name":"a"}],"annotations":[]}'
+    gt_json = (
+        b'{"images":[{"id":1,"width":4,"height":4}],'
+        b'"categories":[{"id":1,"name":"a"}],"annotations":[]}'
+    )
     inst_ev = inst.StreamingEvaluator(gt_json, iou_type="bbox", rank_id=0)
     instance_partial = inst_ev.finalize_to_partial()
 
@@ -296,12 +283,8 @@ def test_strict_rank_collision_rejected() -> None:
     ``PartialRankCollision``.
     """
     gt_maps, dt_maps = _label_maps(seed=5, n_images=4)
-    a = _evaluator_partial(
-        3, "strict", 7, {0: gt_maps[0]}, {0: dt_maps[0]}
-    )
-    b = _evaluator_partial(
-        3, "strict", 7, {1: gt_maps[1]}, {1: dt_maps[1]}
-    )
+    a = _evaluator_partial(3, "strict", 7, {0: gt_maps[0]}, {0: dt_maps[0]})
+    b = _evaluator_partial(3, "strict", 7, {1: gt_maps[1]}, {1: dt_maps[1]})
 
     with pytest.raises(sem.PartialRankCollision) as exc_info:
         sem.StreamingEvaluator.from_partials(3, [a, b], "strict")
@@ -313,12 +296,8 @@ def test_corrected_rank_collision_tolerated() -> None:
     informational only.
     """
     gt_maps, dt_maps = _label_maps(seed=6, n_images=4)
-    a = _evaluator_partial(
-        3, "corrected", 7, {0: gt_maps[0]}, {0: dt_maps[0]}
-    )
-    b = _evaluator_partial(
-        3, "corrected", 7, {1: gt_maps[1]}, {1: dt_maps[1]}
-    )
+    a = _evaluator_partial(3, "corrected", 7, {0: gt_maps[0]}, {0: dt_maps[0]})
+    b = _evaluator_partial(3, "corrected", 7, {1: gt_maps[1]}, {1: dt_maps[1]})
 
     # Should not raise — rank_id is informational in corrected mode.
     sem.StreamingEvaluator.from_partials(3, [a, b], "corrected").finalize()
@@ -397,12 +376,8 @@ def test_empty_rank_merges_cleanly() -> None:
     gt_maps, dt_maps = _label_maps(seed=12, n_images=4)
     n_classes = 3
 
-    populated = _evaluator_partial(
-        n_classes, "corrected", 0, gt_maps, dt_maps
-    )
-    empty = sem.StreamingEvaluator(
-        n_classes, "corrected", rank_id=1
-    ).finalize_to_partial()
+    populated = _evaluator_partial(n_classes, "corrected", 0, gt_maps, dt_maps)
+    empty = sem.StreamingEvaluator(n_classes, "corrected", rank_id=1).finalize_to_partial()
 
     merged = sem.StreamingEvaluator.from_partials(
         n_classes, [populated, empty], "corrected"

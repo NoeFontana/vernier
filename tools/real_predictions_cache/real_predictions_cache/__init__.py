@@ -207,8 +207,7 @@ def populate_rfdetr(model_name: RfdetrModelName) -> None:
         model_name,
     ]
     print(
-        f"Shelling into [real-models] extra for rf-detr {model_name} inference: "
-        f"{' '.join(cmd)}",
+        f"Shelling into [real-models] extra for rf-detr {model_name} inference: {' '.join(cmd)}",
         file=sys.stderr,
     )
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
@@ -233,8 +232,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--url",
         default=None,
-        help="Override Mask R-CNN URL (for ad-hoc testing before the "
-        "canonical upload lands).",
+        help="Override Mask R-CNN URL (for ad-hoc testing before the canonical upload lands).",
     )
     parser.add_argument(
         "--sha256",
