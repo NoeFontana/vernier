@@ -2,17 +2,13 @@
 
 Engineer-facing snapshot of vernier vs the third-party libraries we
 benchmark against, run across every IoU kind / paradigm we currently
-support. Companion to:
-
-- [`v0.0.1-snapshot.md`](v0.0.1-snapshot.md) — release-mode baseline
-  (placeholders today, fills in when a release-mode rerun lands)
-- [`2026-05-scaling.md`](2026-05-scaling.md) — engineer-facing synthetic
-  ladder (image-count scaling on bbox)
+support.
 
 This doc is **dev-mode N=1**. Every cell is one measurement rep, no
 warmup, no IQR gate. That's enough to read the gap between vernier and
 each oracle on the same workload — within-cell variance is dominated
-by the data (5000 val2017 images per cell), not run-to-run jitter.
+by the data (5000 val2017 images per cell), not run-to-run jitter. A
+release-mode (N=10 + IQR gate) rerun would fold in here when one lands.
 
 ## Shared configuration
 

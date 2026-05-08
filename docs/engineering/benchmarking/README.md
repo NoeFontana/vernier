@@ -3,32 +3,30 @@
 Captured runs of `vernier-bench` (ADR-0017). Each file is a snapshot of one
 machine on one day — cross-machine aggregation is intentionally absent (the
 harness scopes everything by machine fingerprint, see ADR-0017 §"Out of
-scope").
-
-One file per snapshot — typically a month's worth of cells captured
-together. Older snapshots aren't deleted (they're history); new
-captures land alongside them.
+scope"). One file per snapshot — typically a month's worth of cells captured
+together.
 
 ## Index
 
-* [2026-05-snapshot.md](./2026-05-snapshot.md) — first release-mode
-  capture: bbox 9.1× / 3.2×, segm 4.66× / 2.61×, synthetic n=500
-  12.6× / 2.35× — and an honest **vernier 1.19× slower than
-  boundary-iou-api** on val2017 boundary (no boundary-mask cache yet,
-  tracked follow-up). Parity OK on every cell.
+* [2026-05-vernier-vs-alternatives.md](./2026-05-vernier-vs-alternatives.md)
+  — current cross-paradigm dev-mode snapshot. Instance (bbox / segm /
+  boundary / keypoints), panoptic, and the vernier-only synthetic
+  semantic baseline. Carries the perf-round timeline so a reader can
+  see how each cell got to its current numbers.
 * [2026-05-bbox-cdf.md](./2026-05-bbox-cdf.md) — Stage 0 measurement
   for the bbox-IoU optimization plan. **Two regimes**: multi-category
   sparse (val2017: median `G·D = 1`, drop 1b/1c/2c, lever is per-call
   overhead) vs single-category dense (synthetic G=200/c=1: median
   `G·D = 20k`, 1b/1c/2c become positive ROI, lever is the inner loop).
-  The defining variable is per-category density, not raw GT count.
+  Drove the call to drop explicit `pulp::Simd` lanes for the val2017
+  shape.
 
 ## Instrumentation guides
 
 * [bbox-iou-stage0-instrumentation.md](./bbox-iou-stage0-instrumentation.md)
-  — `bench-histogram` feature workflow for capturing the per-call
-  `(G, D, wall_ns)` distribution that gates Stages 1b/1c of the
-  bbox-IoU optimization plan.
+  — `bench-histogram` Cargo-feature workflow for capturing the
+  per-call `(G, D, wall_ns)` distribution. The feature still ships in
+  `vernier-core` / `vernier-ffi`; this is the live how-to.
 
 ## Reproducing a run
 
@@ -38,7 +36,7 @@ cd bench
 VERNIER_COCO_GT_PATH=/path/to/instances_val2017.json \
   uv run python -m bench run \
     --impl all \
-    --workload coco_val2017_jittered_seed42 \
+    --workload coco_val2017_jittered_seed0 \
     --iou bbox \
     --mode release
 
@@ -47,7 +45,7 @@ uv run python -m bench compare --base <sha> --head <sha>
 ```
 
 The harness writes JSON + `.npy` per impl under
-`bench/results/<git_sha>/<machine_fp>/<workload>/<iou>/<impl>.json`.
+`bench/results/<git_sha>/<machine_fp>/<paradigm>/<workload>/<iou>/<impl>.json`.
 The COCO GT is sha256-pinned (`tools/fetch-coco-val.sh` matches); set
-`VERNIER_COCO_GT_PATH` to skip the harness's own download. See the
-ADR-0017 doc and `bench/README.md` for the full surface.
+`VERNIER_COCO_GT_PATH` to skip the harness's own download. See ADR-0017
+and `bench/README.md` for the full surface.
