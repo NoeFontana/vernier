@@ -23,7 +23,7 @@
 use divan::{black_box, Bencher};
 use rustc_hash::FxHashMap;
 use vernier_panoptic::dataset::{ImageEntry, SegmentInfo};
-use vernier_panoptic::pq_image_with_id;
+use vernier_panoptic::kernel::pq_image_with_id;
 
 fn main() {
     divan::main();

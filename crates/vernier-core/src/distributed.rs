@@ -33,10 +33,10 @@ use std::collections::HashMap;
 
 use ndarray::Array2;
 use rkyv::rancor::Error as RkyvError;
-use vernier_partial::{
-    BaseMergeAccumulator, ParadigmKind, Partial, PartialError, PartialExpectation, ValidatedView,
-    WireEnvelopeHeader,
-};
+use vernier_partial::envelope::ValidatedView;
+use vernier_partial::merge::BaseMergeAccumulator;
+use vernier_partial::traits::{ParadigmKind, Partial, PartialExpectation};
+use vernier_partial::{PartialError, WireEnvelopeHeader};
 
 use crate::accumulate::PerImageEval;
 use crate::dataset::{AnnId, Bbox, CategoryId, CocoDataset, CocoDetection, ImageId};
@@ -642,7 +642,7 @@ impl InstanceMergeAccumulator {
     /// strict-mode rank collisions. The outer caller propagates via
     /// `?` through the `From<PartialError> for EvalError` impl.
     pub(crate) fn ingest(&mut self, view: &ValidatedView<'_>) -> Result<(), PartialError> {
-        let rank_id = vernier_partial::rank_id_from_archive(view.header);
+        let rank_id = vernier_partial::envelope::rank_id_from_archive(view.header);
         self.base.ingest_rank_id(rank_id)?;
 
         let mut aligned: rkyv::util::AlignedVec<16> =

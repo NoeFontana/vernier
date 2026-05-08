@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use crate::dataset::{CategoryId, ImageEntry};
 use crate::kernel::{PqImageReport, TpPair};
 use crate::parity::ParityMode;
-use crate::PANOPTIC_VOID;
+use crate::parity::PANOPTIC_VOID;
 
 /// Per-category cumulative panoptic stats (sum over images).
 ///

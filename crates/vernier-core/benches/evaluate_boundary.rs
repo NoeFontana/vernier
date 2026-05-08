@@ -25,10 +25,13 @@
 #![allow(clippy::unwrap_used)]
 
 use divan::{black_box, Bencher};
+use vernier_core::dataset::{
+    AnnId, Bbox, CategoryId, CategoryMeta, CocoAnnotation, DetectionInput, ImageId, ImageMeta,
+};
+use vernier_core::parity::iou_thresholds;
+use vernier_core::segmentation::Segmentation;
 use vernier_core::{
-    evaluate_boundary, iou_thresholds, AnnId, AreaRange, Bbox, CategoryId, CategoryMeta,
-    CocoAnnotation, CocoDataset, CocoDetections, DetectionInput, EvaluateParams, ImageId,
-    ImageMeta, ParityMode, Segmentation,
+    evaluate_boundary, AreaRange, CocoDataset, CocoDetections, EvaluateParams, ParityMode,
 };
 
 fn main() {

@@ -16,11 +16,13 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
+use vernier_core::accumulate::{accumulate, sort_max_dets, AccumulateParams};
+use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
+use vernier_core::parity::{iou_thresholds, recall_thresholds};
+use vernier_core::summarize::{summarize_detection, summarize_with, StatRequest};
 use vernier_core::{
-    accumulate, evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm,
-    iou_thresholds, recall_thresholds, sort_max_dets, summarize_detection, summarize_with,
-    AccumulateParams, AreaRange, CocoDataset, CocoDetections, EvalError, EvaluateParams,
-    ParityMode, StatRequest, Summary, BOUNDARY_DILATION_RATIO_DEFAULT,
+    evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, AreaRange, CocoDataset,
+    CocoDetections, EvalError, EvaluateParams, ParityMode, Summary,
 };
 
 use crate::cli::{EmitDestination, EmitSpec, EvalArgs, IouTypeArg};

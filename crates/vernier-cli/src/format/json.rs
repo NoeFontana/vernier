@@ -20,7 +20,8 @@
 use std::io;
 
 use serde::Serialize;
-use vernier_core::{Metric, ParityMode, StatLine, Summary};
+use vernier_core::summarize::{Metric, StatLine};
+use vernier_core::{ParityMode, Summary};
 
 use crate::error::CliError;
 use crate::format::{FormatContext, FormatName, Formatter};

@@ -45,13 +45,9 @@ pub mod error;
 pub mod merge;
 pub mod traits;
 
-// Re-export the high-traffic surface so paradigm crates write
-// `use vernier_partial::{encode, ParadigmKind, PartialError};`
-// instead of the longer module paths.
-pub use envelope::{
-    encode, rank_id_from_archive, with_validated_envelope, ArchivedWireEnvelopeHeader,
-    ValidatedView, WireEnvelopeHeader, FORMAT_VERSION, MAGIC,
-};
+// Each item lives at exactly one path — its home module. Adding a
+// re-export here widens the headline; treat it as a deliberate
+// decision, not a default for new pub items.
+pub use envelope::{encode, with_validated_envelope, WireEnvelopeHeader, FORMAT_VERSION, MAGIC};
 pub use error::{PartialError, PartialFormatErrorKind};
-pub use merge::{BaseMergeAccumulator, RankId, UNRANKED_SENTINEL};
-pub use traits::{ParadigmKind, Partial, PartialExpectation};
+pub use merge::RankId;

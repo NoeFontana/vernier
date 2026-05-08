@@ -45,12 +45,13 @@ pub mod parity;
 pub mod stream;
 pub mod summarize;
 
-pub use error::{DupSide, SemanticError};
-pub use kernel::{accumulate_confusion, ConfusionMatrix};
-pub use parity::{
-    ParityMode, ADE20K_IGNORE_LABEL, CITYSCAPES_IGNORE_LABEL, ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA,
-    ORACLE_MMSEGMENTATION_COMMIT_SHA, PASCAL_VOC_IGNORE_LABEL, SEMANTIC_PARITY_EPS,
-};
+// Each item lives at exactly one path — its home module.
+// `ConfusionMatrix` is at the root as a first-class output of the
+// semantic paradigm (ADR-0028 §F1), on equal footing with
+// `SemanticSummary`.
+pub use error::SemanticError;
+pub use kernel::ConfusionMatrix;
+pub use parity::ParityMode;
 pub use stream::StreamingSemanticEvaluator;
 pub use summarize::{summarize, ClassSemanticStats, SemanticSummary};
 

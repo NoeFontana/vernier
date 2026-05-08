@@ -348,7 +348,7 @@ fn run_fix_pass<K: EvalKernel>(
 /// matches `oracle.py::_compute_map`'s `if not ap_values: return 0.0`
 /// early-exit so the per-bin delta arithmetic stays defined.
 fn compute_map(
-    grid: &crate::EvalGrid,
+    grid: &crate::evaluate::EvalGrid,
     iou_thresholds: &[f64],
     max_dets_per_image: usize,
 ) -> Result<f64, EvalError> {
@@ -362,7 +362,7 @@ fn compute_map(
         &grid.eval_imgs,
         AccumulateParams {
             iou_thresholds,
-            recall_thresholds: crate::recall_thresholds(),
+            recall_thresholds: crate::parity::recall_thresholds(),
             max_dets: &max_dets,
             n_categories: grid.n_categories,
             n_area_ranges: grid.n_area_ranges,

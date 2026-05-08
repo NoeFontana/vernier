@@ -141,7 +141,7 @@ impl ImageEntry {
         if side == "dt" {
             let mut declared: FxHashSet<u32> = segments.keys().copied().collect();
             for &px in &label_map {
-                if px == crate::PANOPTIC_VOID {
+                if px == crate::parity::PANOPTIC_VOID {
                     continue;
                 }
                 if !segments.contains_key(&px) {
@@ -182,7 +182,7 @@ impl ImageEntry {
             seg.area = 0;
         }
         for &px in &self.label_map {
-            if px == crate::PANOPTIC_VOID {
+            if px == crate::parity::PANOPTIC_VOID {
                 continue;
             }
             if let Some(seg) = self.segments.get_mut(&px) {

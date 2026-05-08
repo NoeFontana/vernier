@@ -1021,7 +1021,7 @@ pub fn evaluate_with<K: EvalKernel>(
 /// # Errors
 ///
 /// Propagates [`EvalError`] from either pass.
-pub fn evaluate_with_retention<K: EvalKernel>(
+pub(crate) fn evaluate_with_retention<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
     params: EvaluateParams<'_>,
@@ -3224,7 +3224,7 @@ mod tests {
         categories: &[CategoryMeta],
         neg: &[(i64, Vec<i64>)],
         nel: &[(i64, Vec<i64>)],
-        freq: &[(i64, crate::Frequency)],
+        freq: &[(i64, crate::dataset::Frequency)],
     ) -> CocoDataset {
         // Build LVIS JSON bytes through the public loader so the
         // resulting dataset uses the same code path the FFI exercises.
@@ -3259,9 +3259,9 @@ mod tests {
                     .iter()
                     .find(|(id, _)| *id == c.id.0)
                     .map(|(_, f)| match f {
-                        crate::Frequency::Rare => "r",
-                        crate::Frequency::Common => "c",
-                        crate::Frequency::Frequent => "f",
+                        crate::dataset::Frequency::Rare => "r",
+                        crate::dataset::Frequency::Common => "c",
+                        crate::dataset::Frequency::Frequent => "f",
                     })
                     .expect("test fixture must include frequency for every category");
                 serde_json::json!({
@@ -3303,8 +3303,8 @@ mod tests {
             &[(1, vec![]), (2, vec![])],
             &[(1, vec![]), (2, vec![])],
             &[
-                (1, crate::Frequency::Frequent),
-                (2, crate::Frequency::Frequent),
+                (1, crate::dataset::Frequency::Frequent),
+                (2, crate::dataset::Frequency::Frequent),
             ],
         );
         let gt_coco = CocoDataset::from_parts(images, anns, cats).unwrap();
@@ -3360,8 +3360,8 @@ mod tests {
             &[(1, vec![2])], // cat 2 ∈ neg[1]
             &[(1, vec![])],
             &[
-                (1, crate::Frequency::Frequent),
-                (2, crate::Frequency::Frequent),
+                (1, crate::dataset::Frequency::Frequent),
+                (2, crate::dataset::Frequency::Frequent),
             ],
         );
         let dts = CocoDetections::from_inputs(vec![
@@ -3404,7 +3404,7 @@ mod tests {
             &cats,
             &[(1, vec![])],
             &[(1, vec![1])], // cat 1 ∈ not_exhaustive[1]
-            &[(1, crate::Frequency::Frequent)],
+            &[(1, crate::dataset::Frequency::Frequent)],
         );
         let dts = CocoDetections::from_inputs(vec![
             dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),   // TP
@@ -3449,7 +3449,7 @@ mod tests {
             &cats,
             &[(1, vec![])],
             &[(1, vec![])],
-            &[(1, crate::Frequency::Frequent)],
+            &[(1, crate::dataset::Frequency::Frequent)],
         );
         let dts = CocoDetections::from_inputs(vec![
             dt_input(1, 1, 0.9, (0.0, 0.0, 10.0, 10.0)),
@@ -3488,8 +3488,8 @@ mod tests {
             &[(1, vec![]), (2, vec![])],
             &[(1, vec![]), (2, vec![])],
             &[
-                (1, crate::Frequency::Frequent),
-                (2, crate::Frequency::Frequent),
+                (1, crate::dataset::Frequency::Frequent),
+                (2, crate::dataset::Frequency::Frequent),
             ],
         );
         let dts = CocoDetections::from_inputs(vec![

@@ -12,9 +12,8 @@
 use std::collections::HashMap;
 
 use vernier_core::similarity::BboxIou;
-use vernier_core::{
-    compute_confusion_matrix, CocoDataset, CocoDetections, ConfusionMatrixCounts, ParityMode,
-};
+use vernier_core::tide::{compute_confusion_matrix, ConfusionMatrixCounts};
+use vernier_core::{CocoDataset, CocoDetections, ParityMode};
 
 mod common;
 use common::fixture_path;

@@ -67,7 +67,7 @@ use crate::parity::{argsort_score_desc, ParityMode, IOU_BOUNDARY_EPS};
 /// [`MatchResult::gt_perm`] to recover the input index for any sorted
 /// position.
 #[derive(Debug, Clone)]
-pub struct MatchResult {
+pub(crate) struct MatchResult {
     /// `dt_perm[k]` is the input DT index of the `k`-th highest-scoring
     /// DT (length D). Built by stable mergesort on `-dt_scores`.
     pub dt_perm: Vec<usize>,
@@ -113,7 +113,7 @@ pub struct MatchResult {
 // `(ptr, dims, strides)` triple), so by-value is idiomatic; clippy's
 // `needless_pass_by_value` doesn't recognize that here.
 #[allow(clippy::needless_pass_by_value)]
-pub fn match_image(
+pub(crate) fn match_image(
     iou_matrix: ArrayView2<'_, f64>,
     gt_ignore: &[bool],
     gt_iscrowd: &[bool],

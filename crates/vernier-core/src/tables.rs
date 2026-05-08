@@ -447,7 +447,7 @@ fn find_max_dets_index(max_dets: &[usize], target: usize) -> Result<usize, EvalE
 /// Out-of-range `area_index_all` (typically `0` for the COCO
 /// detection grid) yields an all-zero support struct.
 pub fn aggregate_per_class_support(
-    grid: &crate::EvalGrid,
+    grid: &crate::evaluate::EvalGrid,
     area_index_all: usize,
 ) -> PerClassSupport {
     let mut support = PerClassSupport::zeros(grid.n_categories);
@@ -1595,15 +1595,17 @@ mod tests {
         let (grid, dataset) = perfect_match_grid_two_images();
         let max_dets = [1usize, 10, 100];
         // Drive the same pipeline the FFI runs end-to-end.
-        let p = crate::AccumulateParams {
-            iou_thresholds: crate::iou_thresholds(),
-            recall_thresholds: crate::recall_thresholds(),
+        let p = crate::accumulate::AccumulateParams {
+            iou_thresholds: crate::parity::iou_thresholds(),
+            recall_thresholds: crate::parity::recall_thresholds(),
             max_dets: &max_dets,
             n_categories: grid.n_categories,
             n_area_ranges: grid.n_area_ranges,
             n_images: grid.n_images,
         };
-        let accum = crate::accumulate(&grid.eval_imgs, p, crate::ParityMode::Corrected).unwrap();
+        let accum =
+            crate::accumulate::accumulate(&grid.eval_imgs, p, crate::parity::ParityMode::Corrected)
+                .unwrap();
 
         let tables = build_tables(
             &grid,
@@ -1611,7 +1613,7 @@ mod tests {
             &dataset,
             None,
             None,
-            crate::iou_thresholds(),
+            crate::parity::iou_thresholds(),
             &max_dets,
             TablesRequest::CHEAP,
             &TablesConfig::default(),
@@ -1704,18 +1706,22 @@ mod tests {
         // Drive the same accumulate→summarize over both grids; assert
         // bit-equal stats. This is the headline contract of the
         // retain_iou flag.
-        let p = crate::AccumulateParams {
+        let p = crate::accumulate::AccumulateParams {
             iou_thresholds: iou_thresholds(),
-            recall_thresholds: crate::recall_thresholds(),
+            recall_thresholds: crate::parity::recall_thresholds(),
             max_dets: &max_dets,
             n_categories: grid_off.n_categories,
             n_area_ranges: grid_off.n_area_ranges,
             n_images: grid_off.n_images,
         };
-        let acc_off = crate::accumulate(&grid_off.eval_imgs, p, ParityMode::Corrected).unwrap();
-        let acc_on = crate::accumulate(&grid_on.eval_imgs, p, ParityMode::Corrected).unwrap();
-        let sum_off = crate::summarize_detection(&acc_off, iou_thresholds(), &max_dets).unwrap();
-        let sum_on = crate::summarize_detection(&acc_on, iou_thresholds(), &max_dets).unwrap();
+        let acc_off =
+            crate::accumulate::accumulate(&grid_off.eval_imgs, p, ParityMode::Corrected).unwrap();
+        let acc_on =
+            crate::accumulate::accumulate(&grid_on.eval_imgs, p, ParityMode::Corrected).unwrap();
+        let sum_off =
+            crate::summarize::summarize_detection(&acc_off, iou_thresholds(), &max_dets).unwrap();
+        let sum_on =
+            crate::summarize::summarize_detection(&acc_on, iou_thresholds(), &max_dets).unwrap();
         for (a, b) in sum_off.stats().iter().zip(sum_on.stats().iter()) {
             assert_eq!(a.to_bits(), b.to_bits(), "stat drift: off={a} on={b}");
         }
@@ -1727,15 +1733,17 @@ mod tests {
         // surface a clear error pointing at the missing argument.
         let (grid, dataset) = perfect_match_grid_two_images();
         let max_dets = [1usize, 10, 100];
-        let p = crate::AccumulateParams {
-            iou_thresholds: crate::iou_thresholds(),
-            recall_thresholds: crate::recall_thresholds(),
+        let p = crate::accumulate::AccumulateParams {
+            iou_thresholds: crate::parity::iou_thresholds(),
+            recall_thresholds: crate::parity::recall_thresholds(),
             max_dets: &max_dets,
             n_categories: grid.n_categories,
             n_area_ranges: grid.n_area_ranges,
             n_images: grid.n_images,
         };
-        let accum = crate::accumulate(&grid.eval_imgs, p, crate::ParityMode::Corrected).unwrap();
+        let accum =
+            crate::accumulate::accumulate(&grid.eval_imgs, p, crate::parity::ParityMode::Corrected)
+                .unwrap();
         let request = TablesRequest {
             per_detection: true,
             ..TablesRequest::default()
@@ -1746,7 +1754,7 @@ mod tests {
             &dataset,
             None,
             None,
-            crate::iou_thresholds(),
+            crate::parity::iou_thresholds(),
             &max_dets,
             request,
             &TablesConfig::default(),
@@ -1759,15 +1767,17 @@ mod tests {
     fn build_tables_per_pair_without_retention_returns_invalid_config() {
         let (grid, dataset) = perfect_match_grid_two_images();
         let max_dets = [1usize, 10, 100];
-        let p = crate::AccumulateParams {
-            iou_thresholds: crate::iou_thresholds(),
-            recall_thresholds: crate::recall_thresholds(),
+        let p = crate::accumulate::AccumulateParams {
+            iou_thresholds: crate::parity::iou_thresholds(),
+            recall_thresholds: crate::parity::recall_thresholds(),
             max_dets: &max_dets,
             n_categories: grid.n_categories,
             n_area_ranges: grid.n_area_ranges,
             n_images: grid.n_images,
         };
-        let accum = crate::accumulate(&grid.eval_imgs, p, crate::ParityMode::Corrected).unwrap();
+        let accum =
+            crate::accumulate::accumulate(&grid.eval_imgs, p, crate::parity::ParityMode::Corrected)
+                .unwrap();
         let request = TablesRequest {
             per_pair: true,
             ..TablesRequest::default()
@@ -1778,7 +1788,7 @@ mod tests {
             &dataset,
             None,
             None,
-            crate::iou_thresholds(),
+            crate::parity::iou_thresholds(),
             &max_dets,
             request,
             &TablesConfig::default(),
@@ -1909,7 +1919,7 @@ mod tests {
         let table = build_per_detection(
             &grid,
             &detections,
-            crate::iou_thresholds(),
+            crate::parity::iou_thresholds(),
             None,
             &TablesConfig::default(),
         )
