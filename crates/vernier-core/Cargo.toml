@@ -13,6 +13,10 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [features]
 default = []
 # Stage-0 instrumentation for the bbox-IoU optimization plan: records

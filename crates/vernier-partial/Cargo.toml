@@ -13,6 +13,10 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 thiserror.workspace = true
 # Wire-format substrate. The header is rkyv-archived; each paradigm's

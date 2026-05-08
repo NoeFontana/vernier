@@ -13,6 +13,10 @@ categories = ["science", "computer-vision", "command-line-utilities"]
 [lints]
 workspace = true
 
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [[bin]]
 name = "vernier"
 path = "src/main.rs"
