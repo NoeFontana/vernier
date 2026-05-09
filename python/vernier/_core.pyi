@@ -586,8 +586,8 @@ class SemanticSummary:
     def per_class(self) -> dict[int, ClassSemanticStats]: ...
 
 def evaluate_semantic_from_arrays(
-    gt_label_maps: dict[int, NDArray[np.uint32]],
-    dt_label_maps: dict[int, NDArray[np.uint32]],
+    gt_label_maps: dict[int, NDArray[np.unsignedinteger[Any]]],
+    dt_label_maps: dict[int, NDArray[np.unsignedinteger[Any]]],
     n_classes: int,
     parity_mode: str,
     *,
@@ -603,8 +603,8 @@ def evaluate_semantic_from_pngs(
     ignore_label: int | None = ...,
 ) -> SemanticSummary: ...
 def evaluate_semantic_to_partial(
-    gt_label_maps: dict[int, NDArray[np.uint32]],
-    dt_label_maps: dict[int, NDArray[np.uint32]],
+    gt_label_maps: dict[int, NDArray[np.unsignedinteger[Any]]],
+    dt_label_maps: dict[int, NDArray[np.unsignedinteger[Any]]],
     n_classes: int,
     parity_mode: str,
     rank_id: int,
@@ -641,8 +641,8 @@ class BackgroundSemanticEvaluator:
     def submit(
         self,
         image_id: int,
-        gt: NDArray[np.uint32],
-        dt: NDArray[np.uint32],
+        gt: NDArray[np.unsignedinteger[Any]],
+        dt: NDArray[np.unsignedinteger[Any]],
         *,
         timeout: float | None = ...,
     ) -> None: ...

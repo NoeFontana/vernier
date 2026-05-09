@@ -189,8 +189,9 @@ class Dataset:
     Carries per-image label maps, the evaluation class count, and the
     ignore label. Constructors:
 
-    - :meth:`from_arrays` — pre-decoded ``uint32`` ``ndarray`` per
-      image. Zero-copy on the FFI hot path.
+    - :meth:`from_arrays` — pre-decoded ``uint8`` / ``uint16`` /
+      ``uint32`` ``ndarray`` per image. Zero-copy on the FFI hot
+      path; the kernel walks at native dtype (ADR-0037).
     - :meth:`from_files` — PNG paths; decoded via Pillow.
     - :meth:`cityscapes` / :meth:`ade20k` / :meth:`pascal_voc` —
       per-dataset presets that bake the canonical ``n_classes`` and
@@ -201,7 +202,7 @@ class Dataset:
     authoritative source).
     """
 
-    label_maps: Mapping[int, NDArray[np.uint32]]
+    label_maps: Mapping[int, np.ndarray]
     n_classes: int
     ignore_label: int | None = None
 
@@ -222,13 +223,13 @@ class Dataset:
     ) -> Dataset:
         """Construct from pre-decoded label-map ``ndarray`` per image.
 
-        Each ``label_maps[image_id]`` must be a 2-D integer array.
-        Common dtypes (``uint8`` / ``uint16`` / ``uint32``) are upcast
-        to ``uint32`` for the FFI boundary; passing ``uint32`` directly
-        avoids the copy.
+        Each ``label_maps[image_id]`` must be a 2-D integer array. The
+        FFI boundary accepts ``uint8`` / ``uint16`` / ``uint32`` natively
+        (ADR-0037); the kernel walks at native dtype, so passing
+        ``uint8`` from a ``torch.Tensor`` avoids the 4x upcast that
+        earlier wheel versions paid here.
         """
-        upcast = {iid: arr.astype(np.uint32, copy=False) for iid, arr in label_maps.items()}
-        return cls(label_maps=upcast, n_classes=n_classes, ignore_label=ignore_label)
+        return cls(label_maps=dict(label_maps), n_classes=n_classes, ignore_label=ignore_label)
 
     @classmethod
     def from_files(
@@ -307,19 +308,23 @@ class Predictions:
     metadata live on the sibling :class:`Dataset` (the authoritative
     source). Constructors mirror :class:`Dataset`:
 
-    - :meth:`from_arrays` — pre-decoded ``uint32`` ``ndarray`` per
-      image.
+    - :meth:`from_arrays` — pre-decoded ``uint8`` / ``uint16`` /
+      ``uint32`` ``ndarray`` per image (ADR-0037).
     - :meth:`from_files` — PNG paths; decoded via Pillow.
     - :meth:`from_binary_masks` — per-class binary masks merged into
       a single class-id label map per image (quirk **AN2**).
     """
 
-    label_maps: Mapping[int, NDArray[np.uint32]]
+    label_maps: Mapping[int, np.ndarray]
 
     @classmethod
     def from_arrays(cls, label_maps: Mapping[int, np.ndarray]) -> Predictions:
-        upcast = {iid: arr.astype(np.uint32, copy=False) for iid, arr in label_maps.items()}
-        return cls(label_maps=upcast)
+        """Construct from pre-decoded label-map ``ndarray`` per image.
+
+        Accepts ``uint8`` / ``uint16`` / ``uint32`` natively (ADR-0037);
+        the FFI walks at the input dtype.
+        """
+        return cls(label_maps=dict(label_maps))
 
     @classmethod
     def from_files(cls, png_paths: Mapping[int, str | Path]) -> Predictions:

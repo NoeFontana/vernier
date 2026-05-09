@@ -46,8 +46,86 @@ use crate::background::BackgroundConfig;
 use crate::background_streaming::{
     BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError,
 };
-use crate::numpy_utils::{parse_uint32_label_maps, ImageId, LabelMap};
+use crate::numpy_utils::ImageId;
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
+
+/// Per-image label-map buffer extracted from a numpy ndarray. Lets the
+/// semantic FFI accept `uint8` / `uint16` / `uint32` natively (ADR-0037);
+/// the kernel walks at native width via the [`ClassId`] trait.
+///
+/// [`ClassId`]: vernier_semantic::kernel::ClassId
+pub(crate) enum SemanticPixelBuf {
+    U8(Vec<u8>),
+    U16(Vec<u16>),
+    U32(Vec<u32>),
+}
+
+/// Extract a 2-D `uint8` / `uint16` / `uint32` ndarray into a typed
+/// pixel buffer. Returns the buffer plus `(height, width)`.
+fn extract_label_map(
+    arr: &Bound<'_, PyAny>,
+    context: &str,
+    image_id: ImageId,
+) -> PyResult<(SemanticPixelBuf, (u32, u32))> {
+    if let Ok(a) = arr.extract::<PyReadonlyArray2<u32>>() {
+        let view = a.as_array();
+        let (h, w) = check_shape(image_id, context, view.shape())?;
+        return Ok((
+            SemanticPixelBuf::U32(view.iter().copied().collect()),
+            (h, w),
+        ));
+    }
+    if let Ok(a) = arr.extract::<PyReadonlyArray2<u16>>() {
+        let view = a.as_array();
+        let (h, w) = check_shape(image_id, context, view.shape())?;
+        return Ok((
+            SemanticPixelBuf::U16(view.iter().copied().collect()),
+            (h, w),
+        ));
+    }
+    if let Ok(a) = arr.extract::<PyReadonlyArray2<u8>>() {
+        let view = a.as_array();
+        let (h, w) = check_shape(image_id, context, view.shape())?;
+        return Ok((SemanticPixelBuf::U8(view.iter().copied().collect()), (h, w)));
+    }
+    Err(PyValueError::new_err(format!(
+        "{context} label_maps[{image_id}] must be a 2-D uint8/uint16/uint32 ndarray"
+    )))
+}
+
+fn check_shape(image_id: ImageId, context: &str, shape: &[usize]) -> PyResult<(u32, u32)> {
+    let (h, w) = (shape[0], shape[1]);
+    if h > u32::MAX as usize || w > u32::MAX as usize {
+        return Err(PyValueError::new_err(format!(
+            "{context} label_maps[{image_id}] shape ({h}, {w}) exceeds u32 bounds"
+        )));
+    }
+    Ok((h as u32, w as u32))
+}
+
+/// `(height, width, decoded_pixels)` triple for one image's label map.
+type SemanticLabelMap = (u32, u32, SemanticPixelBuf);
+
+fn parse_semantic_label_maps(
+    label_maps: &Bound<'_, PyDict>,
+    context: &str,
+) -> PyResult<HashMap<ImageId, SemanticLabelMap>> {
+    let mut out: HashMap<ImageId, SemanticLabelMap> = HashMap::with_capacity(label_maps.len());
+    for (key, value) in label_maps.iter() {
+        let image_id: ImageId = key.extract().map_err(|e| {
+            PyValueError::new_err(format!(
+                "{context} label_maps dict key must be an integer image id: {e}"
+            ))
+        })?;
+        let (buf, (h, w)) = extract_label_map(&value, context, image_id)?;
+        if out.insert(image_id, (h, w, buf)).is_some() {
+            return Err(PyValueError::new_err(format!(
+                "{context} label_maps has duplicate image_id={image_id}"
+            )));
+        }
+    }
+    Ok(out)
+}
 
 fn parse_label_remap(remap: Option<&Bound<'_, PyDict>>) -> PyResult<Option<HashMap<u32, u32>>> {
     match remap {
@@ -64,19 +142,6 @@ fn parse_label_remap(remap: Option<&Bound<'_, PyDict>>) -> PyResult<Option<HashM
                 out.insert(from, to);
             }
             Ok(Some(out))
-        }
-    }
-}
-
-/// Apply a label remap in place to one image's flat DT pixel buffer
-/// (quirk **AK2**). Pixels with values not in `remap` are left
-/// untouched. Pixels remapped to `>= n_classes` (e.g., to the ignore
-/// label sentinel of 255 on a 19-class evaluator) are silently
-/// dropped by the kernel via the existing AI4 strict-MS path.
-fn apply_label_remap(buf: &mut [u32], remap: &HashMap<u32, u32>) {
-    for v in buf.iter_mut() {
-        if let Some(&new) = remap.get(v) {
-            *v = new;
         }
     }
 }
@@ -332,8 +397,8 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
         ));
     }
     let mode = crate::parse_parity_mode(parity_mode)?;
-    let mut gt_maps = parse_uint32_label_maps(gt_label_maps, "semantic gt")?;
-    let mut dt_maps = parse_uint32_label_maps(dt_label_maps, "semantic dt")?;
+    let mut gt_maps = parse_semantic_label_maps(gt_label_maps, "semantic gt")?;
+    let mut dt_maps = parse_semantic_label_maps(dt_label_maps, "semantic dt")?;
     let remap = parse_label_remap(label_remap)?;
 
     // Validate that every GT image has a matching DT image. Quirk
@@ -352,10 +417,11 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
 
     // Apply label_remap to DT buffers up-front (AK2). Pre-applying at
     // FFI parse time avoids a per-pixel dict lookup in the hot kernel
-    // loop.
+    // loop. Remap output values are u32 — buffers narrower than u32
+    // promote here so the remap range can hit any class id.
     if let Some(remap) = &remap {
         for (_, _, buf) in dt_maps.values_mut() {
-            apply_label_remap(buf, remap);
+            *buf = apply_remap_promote_u32(buf, remap);
         }
     }
 
@@ -363,25 +429,18 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
         return Err(semantic_error_to_pyerr(py, &SemanticError::EmptyDataset));
     }
 
-    // Build the iteration plan on the Python thread (the data we move
-    // into `py.detach` is plain `Vec<u32>` slices and a HashMap of
-    // image ids — no PyO3 types cross the boundary). Image-id
-    // iteration order is sorted for determinism (quirk AM5).
     let mut image_ids: Vec<ImageId> = gt_maps.keys().copied().collect();
     image_ids.sort_unstable();
 
-    // Eagerly extract the (gt_buf, dt_buf, gt_shape, dt_shape) tuple
-    // per image so the GIL-free closure has only owned data.
-    let mut work: Vec<(ImageId, LabelMap, LabelMap)> = Vec::with_capacity(image_ids.len());
+    let mut work: Vec<(ImageId, SemanticLabelMap, SemanticLabelMap)> =
+        Vec::with_capacity(image_ids.len());
     for image_id in &image_ids {
         let gt = gt_maps.remove(image_id).ok_or_else(|| {
-            // Unreachable in practice: image_id came from gt_maps.keys() above.
             PyValueError::new_err(format!(
                 "internal: missing gt label_map for image_id={image_id}"
             ))
         })?;
         let dt = dt_maps.remove(image_id).ok_or_else(|| {
-            // Unreachable: validated above.
             PyValueError::new_err(format!(
                 "internal: missing dt label_map for image_id={image_id}"
             ))
@@ -402,12 +461,72 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     let summary = py.detach(move || {
         let mut confusion = ConfusionMatrix::zeros(n_classes);
         for (_, (_, _, gt_buf), (_, _, dt_buf)) in &work {
-            accumulate_confusion(gt_buf, dt_buf, ignore_label, &mut confusion);
+            fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut confusion);
         }
         summarize(confusion, mode)
     });
 
     Ok(PySemanticSummary { inner: summary })
+}
+
+/// Dispatch [`accumulate_confusion`] over the runtime dtype of a
+/// `(gt, dt)` [`SemanticPixelBuf`] pair. Buffers can be a mix of
+/// widths (e.g., `u8` GT with `u32` remapped DT after `apply_remap`).
+fn fold_pair_buf(
+    gt: &SemanticPixelBuf,
+    dt: &SemanticPixelBuf,
+    ignore_label: Option<u32>,
+    confusion: &mut ConfusionMatrix,
+) {
+    use SemanticPixelBuf::{U16, U32, U8};
+    match (gt, dt) {
+        (U8(g), U8(d)) => accumulate_confusion(g, d, ignore_label, confusion),
+        (U16(g), U16(d)) => accumulate_confusion(g, d, ignore_label, confusion),
+        (U32(g), U32(d)) => accumulate_confusion(g, d, ignore_label, confusion),
+        // Mixed-width pairs widen the narrower side to u32. Cheap
+        // (one cast pass per image) and only fires if a caller hands
+        // us mismatched dtypes — uncommon enough to warrant the cast.
+        (g, d) => {
+            let g32 = pixels_to_u32(g);
+            let d32 = pixels_to_u32(d);
+            accumulate_confusion(&g32, &d32, ignore_label, confusion);
+        }
+    }
+}
+
+fn pixels_to_u32(buf: &SemanticPixelBuf) -> Vec<u32> {
+    match buf {
+        SemanticPixelBuf::U8(v) => v.iter().map(|&x| u32::from(x)).collect(),
+        SemanticPixelBuf::U16(v) => v.iter().map(|&x| u32::from(x)).collect(),
+        SemanticPixelBuf::U32(v) => v.clone(),
+    }
+}
+
+fn apply_remap_promote_u32(buf: &SemanticPixelBuf, remap: &HashMap<u32, u32>) -> SemanticPixelBuf {
+    let promoted = pixels_to_u32(buf);
+    let mut out = promoted;
+    for v in out.iter_mut() {
+        if let Some(&new) = remap.get(v) {
+            *v = new;
+        }
+    }
+    SemanticPixelBuf::U32(out)
+}
+
+/// Build a [`SemanticUpdate`] payload, choosing the variant by the
+/// matching dtype of the input pair. Mixed-width pairs widen to u32.
+fn build_payload(image_id: ImageId, gt: SemanticPixelBuf, dt: SemanticPixelBuf) -> SemanticUpdate {
+    use SemanticPixelBuf::{U16, U32, U8};
+    match (gt, dt) {
+        (U8(gt), U8(dt)) => SemanticUpdate::U8 { image_id, gt, dt },
+        (U16(gt), U16(dt)) => SemanticUpdate::U16 { image_id, gt, dt },
+        (U32(gt), U32(dt)) => SemanticUpdate::U32 { image_id, gt, dt },
+        (g, d) => SemanticUpdate::U32 {
+            image_id,
+            gt: pixels_to_u32(&g),
+            dt: pixels_to_u32(&d),
+        },
+    }
 }
 
 /// Run the semantic-segmentation evaluation directly against PNG label
@@ -526,8 +645,8 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
         ));
     }
     let mode = crate::parse_parity_mode(parity_mode)?;
-    let mut gt_maps = parse_uint32_label_maps(gt_label_maps, "semantic gt")?;
-    let mut dt_maps = parse_uint32_label_maps(dt_label_maps, "semantic dt")?;
+    let mut gt_maps = parse_semantic_label_maps(gt_label_maps, "semantic gt")?;
+    let mut dt_maps = parse_semantic_label_maps(dt_label_maps, "semantic dt")?;
 
     for image_id in gt_maps.keys() {
         if !dt_maps.contains_key(image_id) {
@@ -545,19 +664,13 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
     image_ids.sort_unstable();
 
     // Construct the evaluator up front so we can stream per-image
-    // updates inside the loop. This mirrors the panoptic
-    // `evaluate_panoptic_to_partial` shape: extracting one image's
-    // owned buffers under the GIL and then dropping the GIL only for
-    // the kernel walk, so the working set never exceeds one image's
-    // pair of label maps (vs the eager `Vec<(_, LabelMap, LabelMap)>`
-    // that previously held the whole corpus — ~4 GiB on ADE20K val).
+    // updates inside the loop — only one decoded image-pair lives in
+    // memory at a time on this path (vs an eager Vec over the whole
+    // corpus, ~4 GiB on ADE20K val).
     let mut ev = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode)
         .with_rank(rank_id)
         .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     for image_id in &image_ids {
-        // Both removes are unreachable in practice: image_id came from
-        // gt_maps.keys() above and dt_maps presence was checked at the
-        // missing-prediction loop earlier in this function.
         let (gh, gw, gt_buf) = gt_maps.remove(image_id).ok_or_else(|| {
             PyValueError::new_err(format!(
                 "internal: missing gt label_map for image_id={image_id}"
@@ -579,7 +692,7 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
             ));
         }
         let image_id = *image_id;
-        py.detach(|| ev.update(image_id, &gt_buf, &dt_buf))
+        py.detach(|| update_streaming(&mut ev, image_id, &gt_buf, &dt_buf))
             .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     }
 
@@ -587,6 +700,28 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
         .detach(move || ev.finalize_to_partial())
         .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     Ok(PyBytes::new(py, &bytes))
+}
+
+/// Dispatch [`StreamingSemanticEvaluator::update`] over the runtime
+/// dtype of a `(gt, dt)` [`SemanticPixelBuf`] pair. Same widening
+/// fallback as [`fold_pair_buf`] for mixed-width inputs.
+fn update_streaming(
+    ev: &mut StreamingSemanticEvaluator,
+    image_id: ImageId,
+    gt: &SemanticPixelBuf,
+    dt: &SemanticPixelBuf,
+) -> Result<(), SemanticError> {
+    use SemanticPixelBuf::{U16, U32, U8};
+    match (gt, dt) {
+        (U8(g), U8(d)) => ev.update(image_id, g, d),
+        (U16(g), U16(d)) => ev.update(image_id, g, d),
+        (U32(g), U32(d)) => ev.update(image_id, g, d),
+        (g, d) => {
+            let g32 = pixels_to_u32(g);
+            let d32 = pixels_to_u32(d);
+            ev.update(image_id, &g32, &d32)
+        }
+    }
 }
 
 /// Merge per-rank partials into a final summary (ADR-0035).
@@ -636,17 +771,19 @@ pub(crate) fn merge_semantic_partials<'py>(
 
 /// Per-image payload carried over the worker channel. Owned data —
 /// the FFI thread builds this from the user's numpy arrays (or
-/// PNG-decoded `u8` buffer) before dropping the GIL.
+/// PNG-decoded `u8` buffer) before dropping the GIL. ADR-0037: kernel
+/// walks at native dtype, so the channel carries the natural width.
 pub(crate) enum SemanticUpdate {
-    /// Pre-decoded `u32` label maps from the array-input `submit` path.
     U32 {
         image_id: ImageId,
         gt: Vec<u32>,
         dt: Vec<u32>,
     },
-    /// Native-width `u8` label maps from the `submit_png` path. The
-    /// FFI thread runs the libpng decode synchronously before sending
-    /// (per ADR-0037 the kernel walks at native dtype).
+    U16 {
+        image_id: ImageId,
+        gt: Vec<u16>,
+        dt: Vec<u16>,
+    },
     U8 {
         image_id: ImageId,
         gt: Vec<u8>,
@@ -662,6 +799,7 @@ impl BackgroundCapable for StreamingSemanticEvaluator {
     fn apply_update(&mut self, u: SemanticUpdate) -> Result<(), SemanticError> {
         match u {
             SemanticUpdate::U32 { image_id, gt, dt } => self.update(image_id, &gt, &dt),
+            SemanticUpdate::U16 { image_id, gt, dt } => self.update(image_id, &gt, &dt),
             SemanticUpdate::U8 { image_id, gt, dt } => self.update(image_id, &gt, &dt),
         }
     }
@@ -788,7 +926,9 @@ impl PyBackgroundSemanticEvaluator {
     }
 
     /// Submit one image's `(gt, dt)` label-map pair to the worker.
-    /// `timeout` mirrors the instance background:
+    /// Accepts `uint8` / `uint16` / `uint32` 2-D ndarrays (ADR-0037);
+    /// the worker walks at native dtype without an upcast. `timeout`
+    /// mirrors the instance background:
     ///
     /// - `None` (default) → block until a slot is free
     /// - `0.0` → single non-blocking attempt; raise `QueueFullError`
@@ -796,30 +936,23 @@ impl PyBackgroundSemanticEvaluator {
     /// - `t > 0.0` → wait up to `t` seconds; raise `QueueFullError`
     ///   on timeout
     #[pyo3(signature = (image_id, gt, dt, *, timeout = None))]
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "PyO3 requires `PyReadonlyArray2` by value as a pyfunction argument; \
-                  the borrow lives only for the call's duration"
-    )]
-    fn submit<'py>(
+    fn submit(
         &self,
-        py: Python<'py>,
+        py: Python<'_>,
         image_id: i64,
-        gt: PyReadonlyArray2<'py, u32>,
-        dt: PyReadonlyArray2<'py, u32>,
+        gt: &Bound<'_, PyAny>,
+        dt: &Bound<'_, PyAny>,
         timeout: Option<f64>,
     ) -> PyResult<()> {
-        let gt_view = gt.as_array();
-        let dt_view = dt.as_array();
-        let gt_shape = gt_view.shape();
-        let dt_shape = dt_view.shape();
-        if gt_shape != dt_shape {
+        let (gt_buf, gt_dims) = extract_label_map(gt, "BackgroundSemanticEvaluator gt", image_id)?;
+        let (dt_buf, dt_dims) = extract_label_map(dt, "BackgroundSemanticEvaluator dt", image_id)?;
+        if gt_dims != dt_dims {
             return Err(semantic_error_to_pyerr(
                 py,
                 &SemanticError::ShapeMismatch {
                     image_id,
-                    gt_shape: (gt_shape[0] as u32, gt_shape[1] as u32),
-                    dt_shape: (dt_shape[0] as u32, dt_shape[1] as u32),
+                    gt_shape: gt_dims,
+                    dt_shape: dt_dims,
                 },
             ));
         }
@@ -835,11 +968,7 @@ impl PyBackgroundSemanticEvaluator {
             }
         };
 
-        let payload = SemanticUpdate::U32 {
-            image_id,
-            gt: gt_view.iter().copied().collect(),
-            dt: dt_view.iter().copied().collect(),
-        };
+        let payload = build_payload(image_id, gt_buf, dt_buf);
 
         let lifecycle = &self.lifecycle;
         let result = py.detach(move || -> Result<(), SubmitError<SemanticError>> {
