@@ -45,6 +45,7 @@ pub mod kernel;
 pub mod parity;
 pub mod stream;
 pub mod summarize;
+pub mod tables;
 
 // Each item lives at exactly one path — its home module.
 // `ConfusionMatrix` is at the root as a first-class output of the

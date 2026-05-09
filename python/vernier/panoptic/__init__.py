@@ -9,8 +9,10 @@ Per ADR-0029, the panoptic-segmentation evaluation paradigm lives under
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -31,6 +33,7 @@ from vernier._core import (
     PartialPartitionOverlap,
     PartialRankCollision,
     evaluate_panoptic,
+    panoptic_per_class_to_arrow_pycapsule,
 )
 from vernier._core import (
     PanopticDataset as Dataset,
@@ -47,12 +50,23 @@ from vernier._core import (
 from vernier._core import (
     merge_panoptic_partials as _merge_panoptic_partials,
 )
-from vernier._types import ParityMode
+from vernier._tables import arrow_to_dataframe
+from vernier._types import ParityMode, normalize_tables_arg
+
+if TYPE_CHECKING:  # pragma: no cover — type-checker only
+    import polars as pl
+
+#: Tables ``Evaluator.evaluate(tables=...)`` accepts on the panoptic
+#: paradigm. Per-detection and per-pair tables are instance-only (no
+#: IoU-curve matching for panoptic); per-image PQ is deferred.
+TableName = Literal["per_class"]
+SUPPORTED_TABLES: frozenset[TableName] = frozenset({"per_class"})
 
 __all__ = [
     "BackgroundEvaluator",
     "ClassPanopticStats",
     "Dataset",
+    "EvalResult",
     "Evaluator",
     "ParityMode",
     "PartialDatasetMismatch",
@@ -62,8 +76,25 @@ __all__ = [
     "PartialRankCollision",
     "Predictions",
     "Summary",
+    "TableName",
     "decode_label_map_png",
 ]
+
+
+@dataclass(frozen=True)
+class EvalResult:
+    """Opt-in result of :meth:`Evaluator.evaluate` when ``tables=`` is
+    passed. Carries :class:`Summary` plus a polars DataFrame view of
+    the per-class panoptic-quality breakdown."""
+
+    summary: Summary
+    _per_class_batch: object | None = field(default=None, repr=False)
+
+    @cached_property
+    def per_class(self) -> pl.DataFrame:
+        """One row per category. Columns: ``category_id``, ``pq``,
+        ``sq``, ``rq``, ``n_tp``, ``n_fp``, ``n_fn``, ``iou_sum``."""
+        return arrow_to_dataframe(self._per_class_batch, "per_class")
 
 
 def decode_label_map_png(path: str | Path) -> NDArray[np.uint32]:
@@ -134,18 +165,51 @@ class Evaluator:
                 "requires its own pass."
             )
 
+    @overload
     def evaluate(
         self,
         gt: Dataset,
         dt: Predictions,
-    ) -> Summary:
+        *,
+        tables: None = None,
+    ) -> Summary: ...
+
+    @overload
+    def evaluate(
+        self,
+        gt: Dataset,
+        dt: Predictions,
+        *,
+        tables: Literal["all"] | tuple[TableName, ...],
+    ) -> EvalResult: ...
+
+    def evaluate(
+        self,
+        gt: Dataset,
+        dt: Predictions,
+        *,
+        tables: Literal["all"] | tuple[TableName, ...] | None = None,
+    ) -> Summary | EvalResult:
         """Run the panoptic-quality evaluation.
 
         ``gt`` and ``dt`` must have been built via
         :meth:`Dataset.from_arrays` / :meth:`Predictions.from_arrays`
         (file-loading helpers ship in a follow-up).
+
+        ``tables=`` is the opt-in keyword for result tables (ADR-0038).
+        Defaults to ``None``, returning :class:`Summary` (existing
+        behavior, bit-identical to the pre-tables release). Pass
+        ``"all"`` or a tuple of :data:`TableName` values to opt into
+        the wider :class:`EvalResult` return type.
         """
-        return evaluate_panoptic(gt, dt, self.parity_mode, self.things_stuff_split)
+        summary = evaluate_panoptic(gt, dt, self.parity_mode, self.things_stuff_split)
+        if tables is None:
+            return summary
+        requested = normalize_tables_arg(tables, SUPPORTED_TABLES)
+        per_class_batch = (
+            panoptic_per_class_to_arrow_pycapsule(summary) if "per_class" in requested else None
+        )
+        return EvalResult(summary=summary, _per_class_batch=per_class_batch)
 
     def evaluate_to_partial(
         self,

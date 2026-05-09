@@ -343,6 +343,12 @@ impl PySemanticSummary {
     }
 }
 
+impl PySemanticSummary {
+    pub(crate) fn summary_ref(&self) -> &SemanticSummary {
+        &self.inner
+    }
+}
+
 /// Map a [`SemanticError`] to a Python exception. The `Partial`
 /// variant routes through [`crate::partial_error_to_pyerr`] so the
 /// five distributed-eval exception classes are shared with the

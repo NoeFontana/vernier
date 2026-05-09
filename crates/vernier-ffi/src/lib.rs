@@ -58,6 +58,7 @@ use vernier_core::{
 };
 
 mod array_ingest;
+mod arrow_helpers;
 mod background;
 mod background_streaming;
 mod confusion;
@@ -65,7 +66,9 @@ mod dataset;
 mod dlpack;
 mod numpy_utils;
 mod panoptic;
+mod panoptic_tables;
 mod semantic;
+mod semantic_tables;
 mod tables;
 mod thread_sched;
 mod tide;
@@ -1584,10 +1587,10 @@ impl StreamingState {
 /// table column `Some` only when its flag was set on the call.
 type StreamingTablesResult = (
     PySummary,
-    Option<tables::ArrowRecordBatchPy>,
-    Option<tables::ArrowRecordBatchPy>,
-    Option<tables::ArrowRecordBatchPy>,
-    Option<tables::ArrowRecordBatchPy>,
+    Option<arrow_helpers::ArrowRecordBatchPy>,
+    Option<arrow_helpers::ArrowRecordBatchPy>,
+    Option<arrow_helpers::ArrowRecordBatchPy>,
+    Option<arrow_helpers::ArrowRecordBatchPy>,
 );
 
 fn streaming_tables_result(summary: Summary, tables: Tables) -> PyResult<StreamingTablesResult> {
@@ -2934,6 +2937,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         m
     )?)?;
     m.add_function(wrap_pyfunction!(tables::per_pair_to_arrow_pycapsule, m)?)?;
+    m.add_function(wrap_pyfunction!(
+        panoptic_tables::panoptic_per_class_to_arrow_pycapsule,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        semantic_tables::semantic_per_class_to_arrow_pycapsule,
+        m
+    )?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_bbox, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_segm, m)?)?;
     m.add_function(wrap_pyfunction!(tide::error_decomposition_boundary, m)?)?;
@@ -2950,7 +2961,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyAccumulated>()?;
     m.add_class::<PyDataset>()?;
     m.add_class::<PyBackgroundEvaluator>()?;
-    m.add_class::<tables::ArrowRecordBatchPy>()?;
+    m.add_class::<arrow_helpers::ArrowRecordBatchPy>()?;
     m.add("OutOfBudgetError", m.py().get_type::<OutOfBudgetError>())?;
     m.add("QueueFullError", m.py().get_type::<QueueFullError>())?;
     m.add(

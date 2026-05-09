@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Final, Literal
+from typing import TYPE_CHECKING, Final, Literal, TypeVar
 
 from vernier._core import Summary
+from vernier._tables import arrow_to_dataframe
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker only
     import polars as pl
@@ -102,73 +103,52 @@ class EvalResult:
     def per_image(self) -> pl.DataFrame:
         """One row per image rollup. Raises ``RuntimeError`` if
         ``per_image`` was not in the ``tables=`` request."""
-        return _arrow_to_dataframe(self._per_image_batch, "per_image")
+        return arrow_to_dataframe(self._per_image_batch, "per_image")
 
     @cached_property
     def per_class(self) -> pl.DataFrame:
         """One row per category. Raises ``RuntimeError`` if
         ``per_class`` was not in the ``tables=`` request."""
-        return _arrow_to_dataframe(self._per_class_batch, "per_class")
+        return arrow_to_dataframe(self._per_class_batch, "per_class")
 
     @cached_property
     def per_detection(self) -> pl.DataFrame:
         """One row per detection. Raises ``RuntimeError`` if
         ``per_detection`` was not in the ``tables=`` request."""
-        return _arrow_to_dataframe(self._per_detection_batch, "per_detection")
+        return arrow_to_dataframe(self._per_detection_batch, "per_detection")
 
     @cached_property
     def per_pair(self) -> pl.DataFrame:
         """One row per (DT, GT) pair. Raises ``RuntimeError`` if
         ``per_pair`` was not in the ``tables=`` request."""
-        return _arrow_to_dataframe(self._per_pair_batch, "per_pair")
+        return arrow_to_dataframe(self._per_pair_batch, "per_pair")
 
 
-def _arrow_to_dataframe(batch: object | None, name: str) -> pl.DataFrame:
-    """Lazy polars import + Arrow zero-copy conversion. Raises a
-    structured ``ImportError`` when polars is absent (steering the user
-    to the install command), and a structured ``RuntimeError`` when the
-    requested table wasn't built."""
-    if batch is None:
-        raise RuntimeError(
-            f"{name!r} was not in the tables= request — pass it explicitly via "
-            f"Evaluator.evaluate(..., tables=({name!r},)) or tables='all'"
-        )
-    try:
-        import polars as pl
-    except ImportError as e:  # pragma: no cover — exercised in lazy-import test
-        raise ImportError(
-            "result tables expose polars.DataFrame; install polars via "
-            "`pip install 'vernier[tables]'`"
-        ) from e
-    # polars 1.40+ types `from_arrow` overload with `Unknown` data params
-    # under pyright strict mode, surfacing reportUnknownMemberType. The call
-    # itself is sound (batch is an Arrow PyCapsule from the FFI layer); the
-    # ignore is scoped to this single call site.
-    df = pl.from_arrow(batch)  # pyright: ignore[reportUnknownMemberType]
-    if isinstance(df, pl.Series):
-        df = df.to_frame()
-    return df
-
-
-#: Tables the active build of vernier knows how to produce. ``"all"``
-#: expands to exactly this set. Users who want a stable set across
-#: versions should write the tuple explicitly instead of ``"all"``.
+#: Tables the active build of vernier knows how to produce on the
+#: instance paradigm. ``"all"`` expands to exactly this set on
+#: :class:`vernier.instance.Evaluator.evaluate`. Per-paradigm
+#: equivalents live in ``vernier.panoptic`` / ``vernier.semantic``.
 SUPPORTED_TABLES: frozenset[TableName] = frozenset(
     {"per_image", "per_class", "per_detection", "per_pair"}
 )
 
 
+_T = TypeVar("_T", bound=str)
+
+
 def normalize_tables_arg(
-    tables: tuple[TableName, ...] | Literal["all"],
-) -> set[TableName]:
+    tables: tuple[_T, ...] | Literal["all"],
+    supported: frozenset[_T],
+) -> set[_T]:
     """Normalize the ``tables=`` keyword to a concrete set of names.
 
-    The literal ``"all"`` expands to every table name :data:`SUPPORTED_TABLES`
-    contains. Bare-string inputs (other than ``"all"``) raise — that's
-    the "I forgot the comma in my one-tuple" footgun.
+    ``"all"`` expands to ``supported``. Bare-string inputs (other than
+    ``"all"``) raise — the "I forgot the comma in my one-tuple"
+    footgun. ``supported`` is the per-paradigm allowlist; pyright's
+    ``Literal`` narrows the input independently.
     """
     if tables == "all":
-        return set(SUPPORTED_TABLES)
+        return set(supported)
     if isinstance(tables, str):
         raise ValueError(
             f"tables= must be a tuple of names or the literal 'all'; "
