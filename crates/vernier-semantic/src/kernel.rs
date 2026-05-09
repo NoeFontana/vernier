@@ -111,10 +111,50 @@ impl ConfusionMatrix {
     }
 }
 
+/// Class-id types accepted by [`accumulate_confusion`] (ADR-0037).
+///
+/// Implementations exist for `u8`, `u16`, and `u32` — the natural
+/// dtypes for class-id label maps (PNG-decoded inputs are typically
+/// `u8`; sparse-class workloads like Cityscapes 30+ stay in `u16`;
+/// `u32` remains the canonical wire format for the FFI array path
+/// and for the partials format).
+///
+/// Class ids widen to `u32` inside the kernel for comparison against
+/// `ignore_label` and indexing the confusion matrix; the cast is free
+/// on smaller types and lets the kernel walk a `(H, W)` `u8` buffer
+/// without a 4× upcast at the FFI boundary.
+pub trait ClassId: Copy {
+    /// Widen the class id to `u32` for ignore-label comparison and
+    /// confusion-matrix indexing.
+    fn as_u32(self) -> u32;
+}
+
+impl ClassId for u8 {
+    #[inline(always)]
+    fn as_u32(self) -> u32 {
+        u32::from(self)
+    }
+}
+
+impl ClassId for u16 {
+    #[inline(always)]
+    fn as_u32(self) -> u32 {
+        u32::from(self)
+    }
+}
+
+impl ClassId for u32 {
+    #[inline(always)]
+    fn as_u32(self) -> u32 {
+        self
+    }
+}
+
 /// Fold one image's `(gt, dt)` label-map pair into a confusion matrix.
 ///
 /// `gt` and `dt` are flattened row-major `(H, W)` slices of equal
-/// length. `n_classes` is the evaluation class count (taken from
+/// length, generic over [`ClassId`] (`u8` / `u16` / `u32`).
+/// `n_classes` is the evaluation class count (taken from
 /// `confusion.n_classes()`). `ignore_label`, when present, masks out
 /// pixels with `gt == ignore_label` from the histogram (per quirk
 /// **AJ2**); the prediction value at those pixels is ignored.
@@ -138,9 +178,9 @@ impl ConfusionMatrix {
 ///
 /// [`ParityMode::Corrected`]: crate::parity::ParityMode::Corrected
 /// [`ParityMode::Strict`]: crate::parity::ParityMode::Strict
-pub fn accumulate_confusion(
-    gt: &[u32],
-    dt: &[u32],
+pub fn accumulate_confusion<T: ClassId>(
+    gt: &[T],
+    dt: &[T],
     ignore_label: Option<u32>,
     confusion: &mut ConfusionMatrix,
 ) {
@@ -152,6 +192,8 @@ pub fn accumulate_confusion(
     let n = confusion.n_classes as usize;
     let counts = confusion.counts_mut();
     for (&g, &d) in gt.iter().zip(dt.iter()) {
+        let g = g.as_u32();
+        let d = d.as_u32();
         if Some(g) == ignore_label {
             continue;
         }
@@ -278,10 +320,10 @@ mod tests {
         // Streaming-style accumulation: two per-image confusion
         // matrices sum element-wise into a global one.
         let mut img1 = ConfusionMatrix::zeros(2);
-        accumulate_confusion(&[0, 1], &[0, 1], None, &mut img1);
+        accumulate_confusion(&[0u32, 1], &[0u32, 1], None, &mut img1);
 
         let mut img2 = ConfusionMatrix::zeros(2);
-        accumulate_confusion(&[0, 0, 1], &[0, 1, 1], None, &mut img2);
+        accumulate_confusion(&[0u32, 0, 1], &[0u32, 1, 1], None, &mut img2);
 
         let mut global = ConfusionMatrix::zeros(2);
         global.add_assign(&img1).unwrap();
@@ -302,6 +344,56 @@ mod tests {
         let b = ConfusionMatrix::zeros(3);
         let err = a.add_assign(&b).unwrap_err();
         assert!(matches!(err, SemanticError::ShapeMismatch { .. }));
+    }
+
+    #[test]
+    fn u8_path_matches_u32_for_identical_values() {
+        // ADR-0037: the u8 monomorphization produces a bit-identical
+        // confusion matrix to the u32 path when the values fit. PNG
+        // label maps are u8 by nature; this is the load-bearing
+        // equivalence for the fused-decode FFI surface.
+        let gt = [0u8, 1, 2, 0, 255, 1, 2];
+        let dt = [0u8, 1, 0, 0, 7, 1, 2];
+        let ignore = Some(255u32);
+        let n = 3u32;
+
+        let mut cm_u8 = ConfusionMatrix::zeros(n);
+        accumulate_confusion(&gt, &dt, ignore, &mut cm_u8);
+
+        let gt_u32: Vec<u32> = gt.iter().map(|&x| u32::from(x)).collect();
+        let dt_u32: Vec<u32> = dt.iter().map(|&x| u32::from(x)).collect();
+        let mut cm_u32 = ConfusionMatrix::zeros(n);
+        accumulate_confusion(&gt_u32, &dt_u32, ignore, &mut cm_u32);
+
+        assert_eq!(
+            cm_u8, cm_u32,
+            "u8 and u32 paths must produce identical matrices"
+        );
+    }
+
+    #[test]
+    fn u16_path_matches_u32_for_identical_values() {
+        // Cityscapes 19-class evaluation with ignore_label=255 — u16
+        // is the natural width when raw labels span 0..34 before the
+        // trainId remap, and ignore_label=255 is too large to fit in
+        // a generic-over-T parameter narrower than u16.
+        let gt: Vec<u16> = vec![0, 1, 18, 255, 5, 255, 12, 0];
+        let dt: Vec<u16> = vec![0, 1, 18, 7, 6, 0, 18, 999];
+        let ignore = Some(255u32);
+        let n = 19u32;
+
+        let mut cm_u16 = ConfusionMatrix::zeros(n);
+        accumulate_confusion(&gt, &dt, ignore, &mut cm_u16);
+
+        let gt_u32: Vec<u32> = gt.iter().map(|&x| u32::from(x)).collect();
+        let dt_u32: Vec<u32> = dt.iter().map(|&x| u32::from(x)).collect();
+        let mut cm_u32 = ConfusionMatrix::zeros(n);
+        accumulate_confusion(&gt_u32, &dt_u32, ignore, &mut cm_u32);
+
+        assert_eq!(
+            cm_u16, cm_u32,
+            "u16 and u32 paths must produce identical matrices"
+        );
     }
 
     #[test]

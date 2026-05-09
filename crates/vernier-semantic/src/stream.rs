@@ -238,8 +238,8 @@ mod tests {
         let stream_summary = ev.finalize();
 
         let mut batch_cm = ConfusionMatrix::zeros(3);
-        accumulate_confusion(&[0, 1, 2], &[0, 1, 2], None, &mut batch_cm);
-        accumulate_confusion(&[0, 0, 1, 2], &[0, 0, 1, 2], None, &mut batch_cm);
+        accumulate_confusion(&[0u32, 1, 2], &[0u32, 1, 2], None, &mut batch_cm);
+        accumulate_confusion(&[0u32, 0, 1, 2], &[0u32, 0, 1, 2], None, &mut batch_cm);
         let batch_summary = summarize(batch_cm, ParityMode::Corrected);
 
         assert_eq!(stream_summary.miou.to_bits(), batch_summary.miou.to_bits());
