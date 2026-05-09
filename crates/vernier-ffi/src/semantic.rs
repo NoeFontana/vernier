@@ -37,7 +37,7 @@ use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList};
 use vernier_partial::PartialError;
 use vernier_semantic::kernel::accumulate_confusion;
 use vernier_semantic::{
-    summarize, ClassSemanticStats, ConfusionMatrix, ParityMode, SemanticError, SemanticSummary,
+    summarize, ClassSemanticStats, ConfusionMatrix, SemanticError, SemanticSummary,
     StreamingSemanticEvaluator,
 };
 
@@ -64,16 +64,6 @@ fn parse_label_remap(remap: Option<&Bound<'_, PyDict>>) -> PyResult<Option<HashM
             }
             Ok(Some(out))
         }
-    }
-}
-
-fn parse_parity_mode(s: &str) -> PyResult<ParityMode> {
-    match s {
-        "strict" => Ok(ParityMode::Strict),
-        "corrected" => Ok(ParityMode::Corrected),
-        other => Err(PyValueError::new_err(format!(
-            "unknown semantic parity_mode {other:?}; expected 'strict' or 'corrected'"
-        ))),
     }
 }
 
@@ -340,7 +330,7 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
             "semantic evaluator requires n_classes >= 1",
         ));
     }
-    let mode = parse_parity_mode(parity_mode)?;
+    let mode = crate::parse_parity_mode(parity_mode)?;
     let mut gt_maps = parse_uint32_label_maps(gt_label_maps, "semantic gt")?;
     let mut dt_maps = parse_uint32_label_maps(dt_label_maps, "semantic dt")?;
     let remap = parse_label_remap(label_remap)?;
@@ -449,7 +439,7 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
             "evaluate_semantic_to_partial requires n_classes >= 1",
         ));
     }
-    let mode = parse_parity_mode(parity_mode)?;
+    let mode = crate::parse_parity_mode(parity_mode)?;
     let mut gt_maps = parse_uint32_label_maps(gt_label_maps, "semantic gt")?;
     let mut dt_maps = parse_uint32_label_maps(dt_label_maps, "semantic dt")?;
 
@@ -464,17 +454,29 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
         }
     }
 
+    // Sorted iteration for determinism (quirk AM5).
     let mut image_ids: Vec<ImageId> = gt_maps.keys().copied().collect();
     image_ids.sort_unstable();
 
-    let mut work: Vec<(ImageId, LabelMap, LabelMap)> = Vec::with_capacity(image_ids.len());
+    // Construct the evaluator up front so we can stream per-image
+    // updates inside the loop. This mirrors the panoptic
+    // `evaluate_panoptic_to_partial` shape: extracting one image's
+    // owned buffers under the GIL and then dropping the GIL only for
+    // the kernel walk, so the working set never exceeds one image's
+    // pair of label maps (vs the eager `Vec<(_, LabelMap, LabelMap)>`
+    // that previously held the whole corpus — ~4 GiB on ADE20K val).
+    let mut ev = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode)
+        .with_rank(rank_id)
+        .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     for image_id in &image_ids {
-        let gt = gt_maps.remove(image_id).ok_or_else(|| {
+        let gt: LabelMap = gt_maps.remove(image_id).ok_or_else(|| {
+            // Unreachable in practice: image_id came from gt_maps.keys() above.
             PyValueError::new_err(format!(
                 "internal: missing gt label_map for image_id={image_id}"
             ))
         })?;
-        let dt = dt_maps.remove(image_id).ok_or_else(|| {
+        let dt: LabelMap = dt_maps.remove(image_id).ok_or_else(|| {
+            // Unreachable: validated above.
             PyValueError::new_err(format!(
                 "internal: missing dt label_map for image_id={image_id}"
             ))
@@ -489,18 +491,15 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
                 },
             ));
         }
-        work.push((*image_id, gt, dt));
+        let (_, _, gt_buf) = gt;
+        let (_, _, dt_buf) = dt;
+        let image_id = *image_id;
+        py.detach(|| ev.update(image_id, &gt_buf, &dt_buf))
+            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     }
 
     let bytes = py
-        .detach(move || -> Result<Vec<u8>, SemanticError> {
-            let mut ev = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode)
-                .with_rank(rank_id)?;
-            for (image_id, gt, dt) in &work {
-                ev.update(*image_id, &gt.2, &dt.2)?;
-            }
-            ev.finalize_to_partial()
-        })
+        .detach(move || ev.finalize_to_partial())
         .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     Ok(PyBytes::new(py, &bytes))
 }
@@ -520,7 +519,7 @@ pub(crate) fn merge_semantic_partials<'py>(
             "merge_semantic_partials requires n_classes >= 1",
         ));
     }
-    let mode = parse_parity_mode(parity_mode)?;
+    let mode = crate::parse_parity_mode(parity_mode)?;
     let owned: Vec<Vec<u8>> = partials
         .iter()
         .map(|item| {
@@ -655,7 +654,7 @@ impl PyBackgroundSemanticEvaluator {
                 "BackgroundSemanticEvaluator requires n_classes >= 1",
             ));
         }
-        let mode = parse_parity_mode(parity_mode)?;
+        let mode = crate::parse_parity_mode(parity_mode)?;
         let mut inner = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode);
         if let Some(rid) = rank_id {
             inner = inner
