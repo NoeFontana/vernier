@@ -5,6 +5,7 @@
 //! `CocoDetections::from_inputs` constructor the JSON path uses; parity
 //! is structural, not a separate invariant.
 
+use std::cell::OnceCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::{PyTypeError, PyUserWarning, PyValueError};
@@ -14,6 +15,7 @@ use pyo3::types::{PyAny, PyBytes, PyDict, PySequence};
 
 use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
 use vernier_core::segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
+use vernier_mask::Rle;
 
 use crate::dlpack;
 use crate::emit_warning;
@@ -129,14 +131,13 @@ fn emit_cast_warning_once(py: Python<'_>, latch: &AtomicBool) -> PyResult<()> {
 // Per-image extraction
 // ---------------------------------------------------------------------------
 
-/// Per-call state threaded through validation helpers. Bundles the
-/// Python token with the optional cast plan; `cast.is_some()` gates the
-/// f32→f64 / i32→i64 promotion path. `numpy.ascontiguousarray` is
-/// resolved once per [`dicts_to_detections`] call so the inner loops
-/// don't re-walk `sys.modules` per (dict × field).
+/// Per-call state threaded through validation helpers. `cast.is_some()`
+/// gates the f32→f64 / i32→i64 promotion path. The numpy resolvers are
+/// cached so inner loops don't re-walk `sys.modules` per (dict × field).
 struct CastCtx<'py, 'a> {
     py: Python<'py>,
     cast: Option<(&'a AtomicBool, &'a Bound<'py, PyAny>)>,
+    asfortranarray: OnceCell<Bound<'py, PyAny>>,
 }
 
 impl<'py, 'a> CastCtx<'py, 'a> {
@@ -151,15 +152,24 @@ impl<'py, 'a> CastCtx<'py, 'a> {
             Some((latch, ascontig)) => cast_via_numpy(self.py, &obj, field, dtype, latch, ascontig),
         }
     }
+
+    fn asfortranarray(&self) -> PyResult<Bound<'py, PyAny>> {
+        if let Some(f) = self.asfortranarray.get() {
+            return Ok(f.clone());
+        }
+        let resolved = resolve_asfortranarray(self.py)?;
+        let _ = self.asfortranarray.set(resolved.clone());
+        Ok(resolved)
+    }
 }
 
 /// Extract one `Detections` dict into a flat `Vec<DetectionInput>` ready
 /// to feed `CocoDetections::from_inputs`. `iou_type` controls which
 /// fields are required and which are silently ignored.
-fn extract_inputs_one(
-    dict: &Bound<'_, PyDict>,
+fn extract_inputs_one<'py>(
+    dict: &Bound<'py, PyDict>,
     iou_type: ArrayIouType,
-    ctx: &CastCtx<'_, '_>,
+    ctx: &CastCtx<'py, '_>,
 ) -> PyResult<Vec<DetectionInput>> {
     let image_id_obj = dict.get_item("image_id")?.ok_or_else(|| {
         PyValueError::new_err(
@@ -211,11 +221,14 @@ fn extract_inputs_one(
             let rles_obj = dict.get_item("rles")?.ok_or_else(|| {
                 PyValueError::new_err(format!(
                     "detections: iou_type={} requires a 'rles' field \
-                     (sequence of {{counts: uint32, size: (h, w)}} dicts)",
+                     (sequence of RLE dicts or 2-D bool/uint8 bitmasks)",
                     iou_type.as_str()
                 ))
             })?;
-            extract_rles(&rles_obj, n)?.into_iter().map(Some).collect()
+            extract_rles(&rles_obj, n, ctx)?
+                .into_iter()
+                .map(Some)
+                .collect()
         }
         ArrayIouType::Bbox | ArrayIouType::Keypoints => Vec::new(),
     };
@@ -275,12 +288,17 @@ fn extract_inputs_one(
     Ok(inputs)
 }
 
-/// Pull a sequence of `RLE` dicts out of a Python value and decode each
-/// into a `Segmentation::Rle` ready to land on `DetectionInput`.
-fn extract_rles(obj: &Bound<'_, PyAny>, n: usize) -> PyResult<Vec<Segmentation>> {
+/// Per-item dispatcher: uncompressed dict, compressed (bytes) dict, or
+/// 2-D bitmask. See `_array_types.RLEInput` for the public typing.
+fn extract_rles<'py>(
+    obj: &Bound<'py, PyAny>,
+    n: usize,
+    ctx: &CastCtx<'py, '_>,
+) -> PyResult<Vec<Segmentation>> {
     let seq = obj.cast::<PySequence>().map_err(|e| {
         PyTypeError::new_err(format!(
-            "detections.rles: expected a sequence of RLE dicts: {e}"
+            "detections.rles: expected a sequence of RLE dicts \
+             or 2-D bool/uint8 bitmasks: {e}"
         ))
     })?;
     let len = seq.len()?;
@@ -292,28 +310,78 @@ fn extract_rles(obj: &Bound<'_, PyAny>, n: usize) -> PyResult<Vec<Segmentation>>
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
         let item = seq.get_item(i)?;
-        let dict = item.cast_into::<PyDict>().map_err(|e| {
-            PyTypeError::new_err(format!(
-                "detections.rles[{i}]: expected RLE dict {{counts, size}}: {e}"
-            ))
-        })?;
-        let counts_obj = dict.get_item("counts")?.ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "detections.rles[{i}]: missing 'counts' (uint32 1-D array)"
-            ))
-        })?;
-        let size_obj = dict.get_item("size")?.ok_or_else(|| {
-            PyValueError::new_err(format!("detections.rles[{i}]: missing 'size' (h, w) tuple"))
-        })?;
-        let (h, w) = extract_size_tuple(&size_obj, i)?;
-        let counts_field = format!("rles[{i}].counts");
-        let counts_view = dlpack::extract_u32_1d(&counts_obj, &counts_field)?;
-        out.push(Segmentation::Rle(SegmentationRle {
-            size: [h, w],
-            counts: SegmentationRleCounts::Uncompressed(counts_view.as_slice().to_vec()),
-        }));
+        let seg = if let Ok(dict) = item.cast::<PyDict>() {
+            extract_rle_dict(dict, i)?
+        } else if item.hasattr("__dlpack_device__")? {
+            extract_rle_bitmask(&item, i, ctx)?
+        } else {
+            let type_name = item
+                .get_type()
+                .name()
+                .map_or_else(|_| "<unknown>".to_string(), |n| n.to_string());
+            return Err(PyTypeError::new_err(format!(
+                "detections.rles[{i}]: expected RLE dict {{counts, size}} \
+                 or 2-D bool/uint8 array, got {type_name}"
+            )));
+        };
+        out.push(seg);
     }
     Ok(out)
+}
+
+/// Forms 1 + 2: dict-shaped RLE. `counts` may be either `bytes`
+/// (compressed COCO 6-bit string) or a uint32 1-D DLPack array
+/// (uncompressed run lengths).
+fn extract_rle_dict(dict: &Bound<'_, PyDict>, i: usize) -> PyResult<Segmentation> {
+    let counts_obj = dict.get_item("counts")?.ok_or_else(|| {
+        PyValueError::new_err(format!(
+            "detections.rles[{i}]: missing 'counts' \
+             (uint32 1-D array or bytes)"
+        ))
+    })?;
+    let size_obj = dict.get_item("size")?.ok_or_else(|| {
+        PyValueError::new_err(format!("detections.rles[{i}]: missing 'size' (h, w) tuple"))
+    })?;
+    let (h, w) = extract_size_tuple(&size_obj, i)?;
+
+    let counts = if let Ok(b) = counts_obj.cast::<PyBytes>() {
+        let bytes = b.as_bytes();
+        let s = std::str::from_utf8(bytes).map_err(|_| {
+            PyValueError::new_err(format!(
+                "detections.rles[{i}].counts: compressed RLE bytes must be \
+                 valid UTF-8 ASCII (COCO 6-bit string)"
+            ))
+        })?;
+        SegmentationRleCounts::Compressed(s.to_owned())
+    } else {
+        let counts_field = format!("rles[{i}].counts");
+        let counts_view = dlpack::extract_u32_1d(&counts_obj, &counts_field)?;
+        SegmentationRleCounts::Uncompressed(counts_view.as_slice().to_vec())
+    };
+
+    Ok(Segmentation::Rle(SegmentationRle {
+        size: [h, w],
+        counts,
+    }))
+}
+
+/// Form 3: 2-D bool/uint8 bitmask. C-contiguous input is copied once
+/// via `numpy.asfortranarray` inside the dlpack helper before reaching
+/// [`Rle::from_raster_bytes`].
+fn extract_rle_bitmask<'py>(
+    item: &Bound<'py, PyAny>,
+    i: usize,
+    ctx: &CastCtx<'py, '_>,
+) -> PyResult<Segmentation> {
+    let field = format!("rles[{i}]");
+    let asfortran = ctx.asfortranarray()?;
+    let (view, h, w) = dlpack::extract_u8_or_bool_2d_fortran(item, &field, &asfortran)?;
+    let rle = Rle::from_raster_bytes(view.as_slice(), h, w)
+        .map_err(|e| PyValueError::new_err(format!("detections.rles[{i}]: {e}")))?;
+    Ok(Segmentation::Rle(SegmentationRle {
+        size: [rle.h, rle.w],
+        counts: SegmentationRleCounts::Uncompressed(rle.counts),
+    }))
 }
 
 fn extract_size_tuple(obj: &Bound<'_, PyAny>, i: usize) -> PyResult<(u32, u32)> {
@@ -373,6 +441,19 @@ fn resolve_ascontiguousarray(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
     np.getattr("ascontiguousarray")
 }
 
+/// Resolve `numpy.asfortranarray` lazily for the form-3 bitmask path
+/// (ADR-0030 amendment). Mirrors [`resolve_ascontiguousarray`] but is
+/// only called when a C-order bitmask is observed; F-order ingest is
+/// zero-copy.
+fn resolve_asfortranarray(py: Python<'_>) -> PyResult<Bound<'_, PyAny>> {
+    let np = py.import("numpy").map_err(|e| {
+        PyTypeError::new_err(format!(
+            "C-order bitmask ingest requires numpy for an asfortranarray copy: {e}"
+        ))
+    })?;
+    np.getattr("asfortranarray")
+}
+
 // ---------------------------------------------------------------------------
 // Multi-image dispatch
 // ---------------------------------------------------------------------------
@@ -395,6 +476,7 @@ pub(crate) fn dicts_to_inputs(
     let ctx = CastCtx {
         py,
         cast: cast_state.as_ref().zip(ascontig.as_ref()),
+        asfortranarray: OnceCell::new(),
     };
     let mut all_inputs: Vec<DetectionInput> = Vec::new();
     for dict in dicts {

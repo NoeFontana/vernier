@@ -19,6 +19,7 @@ import numpy as np
 import pytest
 from pycocotools import mask as pmask
 
+from vernier._array_types import CompressedRLE
 from vernier.instance import RLE, Detections
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
@@ -86,24 +87,66 @@ def loadres_to_detections(
     return out
 
 
-def _segmentation_to_rle(seg: object, h: int, w: int) -> RLE:
+def _decode_seg_to_binary(seg: object, h: int, w: int) -> np.ndarray:
+    """Render any COCO segmentation (polygon list, uncompressed-list dict,
+    or compressed-string dict) into a binary 2-D mask via pycocotools."""
     if isinstance(seg, dict):
         counts = seg["counts"]
+        seg_h, seg_w = int(seg["size"][0]), int(seg["size"][1])
         if isinstance(counts, list):
-            return {
-                "counts": np.asarray(counts, dtype=np.uint32),
-                "size": (int(seg["size"][0]), int(seg["size"][1])),
-            }
-        # Compressed RLE string — round-trip through a binary mask.
+            rle_list = pmask.frPyObjects(
+                {"counts": counts, "size": [seg_h, seg_w]},  # type: ignore[arg-type]
+                seg_h,
+                seg_w,
+            )
+            return np.asarray(pmask.decode(rle_list))
         encoded = {"counts": counts.encode("ascii"), "size": list(seg["size"])}
-        binary = np.asarray(pmask.decode(encoded))  # type: ignore[arg-type]
-    else:
-        encoded_list = pmask.frPyObjects([list(p) for p in seg], h, w)  # type: ignore[arg-type]
-        binary = np.asarray(pmask.decode(pmask.merge(encoded_list)))
+        return np.asarray(pmask.decode(encoded))  # type: ignore[arg-type]
+    encoded_list = pmask.frPyObjects([list(p) for p in seg], h, w)  # type: ignore[arg-type]
+    return np.asarray(pmask.decode(pmask.merge(encoded_list)))
+
+
+def _segmentation_to_rle(seg: object, h: int, w: int) -> RLE:
+    if isinstance(seg, dict) and isinstance(seg["counts"], list):
+        return {
+            "counts": np.asarray(seg["counts"], dtype=np.uint32),
+            "size": (int(seg["size"][0]), int(seg["size"][1])),
+        }
+    binary = _decode_seg_to_binary(seg, h, w)
     return {
         "counts": np.asarray(_binary_mask_to_runs(binary), dtype=np.uint32),
         "size": (binary.shape[0], binary.shape[1]),
     }
+
+
+def _segmentation_to_compressed_rle(seg: object, h: int, w: int) -> CompressedRLE:
+    """Form-2 ingest shape: ``{counts: bytes, size: (h, w)}`` where
+    ``counts`` is the COCO 6-bit ASCII compressed payload emitted by
+    :func:`pycocotools.mask.encode`.
+    """
+    binary = _decode_seg_to_binary(seg, h, w)
+    compressed = pmask.encode(np.asfortranarray(binary.astype(np.uint8)))
+    raw_counts = compressed["counts"]
+    if isinstance(raw_counts, bytes):
+        counts_bytes = raw_counts
+    elif isinstance(raw_counts, str):
+        counts_bytes = raw_counts.encode("ascii")
+    else:
+        counts_bytes = bytes(raw_counts)
+    return {
+        "counts": counts_bytes,
+        "size": (binary.shape[0], binary.shape[1]),
+    }
+
+
+def _segmentation_to_bitmask(
+    seg: object, h: int, w: int, order: Literal["C", "F"] = "C"
+) -> np.ndarray:
+    """Form-3 ingest shape: 2-D ``uint8`` array of shape ``(h, w)``."""
+    binary_u8 = _decode_seg_to_binary(seg, h, w).astype(np.uint8, copy=False)
+    if order == "F":
+        return np.asfortranarray(binary_u8)
+    return np.ascontiguousarray(binary_u8)
 
 
 def _binary_mask_to_runs(binary: np.ndarray) -> list[int]:

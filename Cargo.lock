@@ -1572,6 +1572,7 @@ dependencies = [
  "serde_json",
  "thread-priority",
  "vernier-core",
+ "vernier-mask",
  "vernier-panoptic",
  "vernier-partial",
  "vernier-semantic",
