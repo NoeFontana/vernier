@@ -739,12 +739,8 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
                     }
                 }
             }
-            Ok(WorkerMessage::Snapshot { reply, peek }) => {
-                let s = if peek {
-                    evaluator.snapshot_running()
-                } else {
-                    evaluator.snapshot()
-                };
+            Ok(WorkerMessage::Snapshot { reply, peek: _ }) => {
+                let s = evaluator.snapshot();
                 let _ = reply.send(s);
             }
             Ok(WorkerMessage::SnapshotWithTables {

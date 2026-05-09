@@ -1539,36 +1539,12 @@ impl StreamingState {
         }
     }
 
-    fn snapshot(&mut self, running: bool) -> Result<Summary, EvalError> {
+    fn snapshot(&mut self) -> Result<Summary, EvalError> {
         match self {
-            Self::Bbox(ev) => {
-                if running {
-                    ev.snapshot_running()
-                } else {
-                    ev.snapshot()
-                }
-            }
-            Self::Segm(ev) => {
-                if running {
-                    ev.snapshot_running()
-                } else {
-                    ev.snapshot()
-                }
-            }
-            Self::Boundary(ev) => {
-                if running {
-                    ev.snapshot_running()
-                } else {
-                    ev.snapshot()
-                }
-            }
-            Self::Keypoints(ev) => {
-                if running {
-                    ev.snapshot_running()
-                } else {
-                    ev.snapshot()
-                }
-            }
+            Self::Bbox(ev) => ev.snapshot(),
+            Self::Segm(ev) => ev.snapshot(),
+            Self::Boundary(ev) => ev.snapshot(),
+            Self::Keypoints(ev) => ev.snapshot(),
             Self::Finalized => Err(finalized_error()),
         }
     }
@@ -2057,18 +2033,17 @@ impl PyStreamingEvaluator {
         Ok(dict)
     }
 
-    /// Compute a `Summary` over the current store. `running=True` selects
-    /// the "fast" snapshot path (currently identical to the regular
-    /// snapshot — see `StreamingEvaluator::snapshot_running` rustdoc).
-    #[pyo3(signature = (*, running = false))]
-    fn snapshot(&self, py: Python<'_>, running: bool) -> PyResult<PySummary> {
+    /// Compute a `Summary` over the current store without consuming
+    /// the evaluator (ADR-0035). The evaluator can keep accepting
+    /// updates after this call.
+    fn snapshot(&self, py: Python<'_>) -> PyResult<PySummary> {
         let state_mutex = &self.state;
         let summary = py
             .detach(move || {
                 let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
                     detail: "StreamingEvaluator state mutex poisoned".into(),
                 })?;
-                guard.snapshot(running)
+                guard.snapshot()
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PySummary { inner: summary })
@@ -3031,23 +3006,6 @@ impl PyBackgroundEvaluator {
         result.map_err(|e| submit_error_to_pyerr(py, e))
     }
 
-    /// Compute a `Summary` against the worker's current store. `peek=True`
-    /// uses the cheaper snapshot path (currently identical to the regular
-    /// snapshot).
-    #[pyo3(signature = (*, peek = false))]
-    fn snapshot(&self, py: Python<'_>, peek: bool) -> PyResult<PySummary> {
-        let state_mutex = &self.state;
-        let summary = py
-            .detach(move || {
-                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "BackgroundEvaluator state mutex poisoned".into(),
-                })?;
-                guard.snapshot(peek)
-            })
-            .map_err(|e| eval_error_to_pyerr(py, e))?;
-        Ok(PySummary { inner: summary })
-    }
-
     /// Drain the queue, finalize the evaluator, and join the worker.
     /// Subsequent calls error with the "already finalized" message.
     fn finalize(&self, py: Python<'_>) -> PyResult<PySummary> {
@@ -3061,55 +3019,6 @@ impl PyBackgroundEvaluator {
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PySummary { inner: summary })
-    }
-
-    /// Snapshot variant that builds the requested result tables on the
-    /// worker thread (no GIL held) and ships them back. Same shape as
-    /// [`PyStreamingEvaluator::snapshot_with_tables`] but routed through
-    /// the background worker so the caller's thread isn't blocked on
-    /// pycocotools-style compute.
-    #[pyo3(signature = (
-        per_image=false,
-        per_class=false,
-        per_detection=false,
-        per_pair=false,
-        per_pair_iou_floor=0.1,
-        per_pair_max_rows=10_000_000,
-        per_detection_with_geometry=false,
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn snapshot_with_tables(
-        &self,
-        py: Python<'_>,
-        per_image: bool,
-        per_class: bool,
-        per_detection: bool,
-        per_pair: bool,
-        per_pair_iou_floor: f64,
-        per_pair_max_rows: usize,
-        per_detection_with_geometry: bool,
-    ) -> PyResult<StreamingTablesResult> {
-        let request = TablesRequest {
-            per_image,
-            per_class,
-            per_detection,
-            per_pair,
-        };
-        let cfg = TablesConfig {
-            per_pair_iou_floor,
-            per_pair_max_rows,
-            per_detection_with_geometry,
-        };
-        let state_mutex = &self.state;
-        let (summary, tables) = py
-            .detach(move || {
-                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "BackgroundEvaluator state mutex poisoned".into(),
-                })?;
-                guard.snapshot_with_tables(request, cfg)
-            })
-            .map_err(|e| eval_error_to_pyerr(py, e))?;
-        streaming_tables_result(summary, tables)
     }
 
     /// Tables-aware finalize. Drains the queue and consumes the worker.
@@ -3157,25 +3066,9 @@ impl PyBackgroundEvaluator {
         streaming_tables_result(summary, tables)
     }
 
-    /// ADR-0031: ask the worker to serialize its current state as a
-    /// partial blob. The worker stays alive after replying, so callers
-    /// can continue submitting batches and finalize later.
-    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let state_mutex = &self.state;
-        let blob = py
-            .detach(move || {
-                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "BackgroundEvaluator state mutex poisoned".into(),
-                })?;
-                guard.snapshot_to_partial()
-            })
-            .map_err(|e| eval_error_to_pyerr(py, e))?;
-        Ok(PyBytes::new(py, &blob))
-    }
-
-    /// ADR-0031: drain the queue, serialize the worker's final state
-    /// as a partial blob, and shut the worker down. Subsequent calls
-    /// raise "already finalized".
+    /// ADR-0031 / ADR-0035: drain the queue, serialize the worker's
+    /// final state as a partial blob, and shut the worker down.
+    /// Subsequent calls raise "already finalized".
     fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let state_mutex = &self.state;
         let blob = py

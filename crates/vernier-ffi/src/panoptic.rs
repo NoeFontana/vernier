@@ -30,7 +30,7 @@ use std::time::Duration;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
 use serde::Deserialize;
 use vernier_partial::PartialError;
 
@@ -1139,20 +1139,6 @@ impl PyBackgroundPanopticEvaluator {
         })
     }
 
-    /// Compute a `PanopticSummary` against the worker's current state.
-    fn snapshot(&self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
-        let lifecycle = &self.lifecycle;
-        let summary = py
-            .detach(|| -> Result<PanopticSummary, PanopticError> {
-                let guard = lifecycle
-                    .lock()
-                    .map_err(|_| StreamingPanopticEvaluator::worker_disconnected())?;
-                guard.active()?.snapshot()
-            })
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(PyPanopticSummary { inner: summary })
-    }
-
     /// Drain the queue, finalize the evaluator, and join the worker.
     fn finalize(&self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
         let lifecycle = &self.lifecycle;
@@ -1167,25 +1153,8 @@ impl PyBackgroundPanopticEvaluator {
         Ok(PyPanopticSummary { inner: summary })
     }
 
-    /// ADR-0032: serialize the worker's current state as a partial
-    /// blob without consuming the evaluator. The body carries
-    /// `per_image_deltas` iff `retain_per_image_deltas=True` was set
-    /// at construction.
-    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let lifecycle = &self.lifecycle;
-        let blob = py
-            .detach(|| -> Result<Vec<u8>, PanopticError> {
-                let guard = lifecycle
-                    .lock()
-                    .map_err(|_| StreamingPanopticEvaluator::worker_disconnected())?;
-                guard.active()?.snapshot_to_partial()
-            })
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(PyBytes::new(py, &blob))
-    }
-
-    /// ADR-0032: drain, serialize the final state, and shut the
-    /// worker down.
+    /// ADR-0032 / ADR-0035: drain, serialize the final state, and
+    /// shut the worker down.
     fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let lifecycle = &self.lifecycle;
         let blob = py
@@ -1197,39 +1166,6 @@ impl PyBackgroundPanopticEvaluator {
             })
             .map_err(|e| panoptic_error_to_pyerr(py, e))?;
         Ok(PyBytes::new(py, &blob))
-    }
-
-    /// `from_partials` classmethod inherited from the streaming
-    /// surface. Returns a `StreamingPanopticEvaluator` (not a
-    /// background one) — the merged state is paradigm-shaped, not
-    /// re-spawned on a worker.
-    #[classmethod]
-    #[pyo3(signature = (
-        categories,
-        partials,
-        parity_mode,
-        *,
-        things_stuff_split = true,
-        retain_per_image_deltas = false,
-    ))]
-    fn from_partials(
-        cls: &Bound<'_, PyType>,
-        py: Python<'_>,
-        categories: &[u8],
-        partials: &Bound<'_, PyList>,
-        parity_mode: &str,
-        things_stuff_split: bool,
-        retain_per_image_deltas: bool,
-    ) -> PyResult<PyStreamingPanopticEvaluator> {
-        PyStreamingPanopticEvaluator::from_partials(
-            cls,
-            py,
-            categories,
-            partials,
-            parity_mode,
-            things_stuff_split,
-            retain_per_image_deltas,
-        )
     }
 
     /// Context-manager entry.

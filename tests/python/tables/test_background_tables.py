@@ -111,7 +111,7 @@ def test_background_per_detection_per_pair_require_retain_iou() -> None:
     with BackgroundEvaluator(_GT) as ev:
         ev.submit(_DT_BATCH_FULL)
         with pytest.raises(ValueError, match="retain_iou"):
-            ev.snapshot_with_tables(per_detection=True)
+            ev.finalize_with_tables(per_detection=True)
 
 
 def test_background_finalize_per_detection_matches_batch() -> None:
@@ -131,16 +131,3 @@ def test_background_finalize_per_detection_matches_batch() -> None:
     assert_frame_equal(batch_df, bg_df)
 
 
-def test_background_snapshot_with_tables_does_not_consume() -> None:
-    """``snapshot_with_tables`` must leave the worker usable."""
-    pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
-    with BackgroundEvaluator(_GT) as ev:
-        ev.submit(_DT_BATCH_1)
-        s1, p1, _, _, _ = ev.snapshot_with_tables(per_image=True)
-        assert s1 is not None
-        assert p1 is not None
-
-        ev.submit(_DT_BATCH_2)
-        s2, p2, _, _, _ = ev.snapshot_with_tables(per_image=True)
-        assert s2 is not None
-        assert p2 is not None

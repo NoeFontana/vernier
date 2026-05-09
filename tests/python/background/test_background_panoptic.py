@@ -141,4 +141,4 @@ def test_finalize_then_use_raises() -> None:
     bg = pq.BackgroundEvaluator(_CATS, "corrected")
     bg.finalize()
     with pytest.raises(Exception, match="already been finalized"):
-        bg.snapshot()
+        bg.finalize()
