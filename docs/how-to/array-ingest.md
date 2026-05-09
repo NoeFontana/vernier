@@ -1,7 +1,7 @@
 # How to submit detections as numpy arrays or DLPack tensors
 
-`Evaluator.evaluate(...)`, `StreamingEvaluator.update(...)`, and
-`BackgroundEvaluator.submit(...)` all accept detections in two forms
+`Evaluator.evaluate(...)` and `BackgroundEvaluator.submit(...)` both
+accept detections in two forms
 (per ADR-0030):
 
 - **JSON bytes** (legacy) — the COCO `loadRes` shape. One parser path,
@@ -43,29 +43,28 @@ per call with a `UserWarning`.
 ## The training-loop case
 
 Model outputs are already numpy arrays / torch tensors. Pass them
-through directly:
+through `BackgroundEvaluator.submit`:
 
 ```python
 import numpy as np
-from vernier.instance import StreamingEvaluator
+from vernier.instance import BackgroundEvaluator
 
 gt_bytes = open("instances_val2017.json", "rb").read()
-ev = StreamingEvaluator(gt_bytes, iou_type="bbox")
 
-for images, image_ids in val_loader:
-    out = model(images)  # boxes (N, 4), scores (N,), labels (N,)
-    for image_id, b, s, l in zip(image_ids, out.boxes, out.scores, out.labels):
-        ev.update({
-            "image_id": int(image_id),
-            "boxes": b.cpu().numpy().astype(np.float64),
-            "scores": s.cpu().numpy().astype(np.float64),
-            "labels": l.cpu().numpy().astype(np.int64),
-        })
-
-summary = ev.finalize()
+with BackgroundEvaluator(gt_bytes, iou_type="bbox") as ev:
+    for images, image_ids in val_loader:
+        out = model(images)  # boxes (N, 4), scores (N,), labels (N,)
+        for image_id, b, s, l in zip(image_ids, out.boxes, out.scores, out.labels):
+            ev.submit({
+                "image_id": int(image_id),
+                "boxes": b.cpu().numpy().astype(np.float64),
+                "scores": s.cpu().numpy().astype(np.float64),
+                "labels": l.cpu().numpy().astype(np.int64),
+            })
+    summary = ev.finalize()
 ```
 
-`update` accepts a single per-image `Detections` dict (the natural
+`submit` accepts a single per-image `Detections` dict (the natural
 shape of a model forward) or a `Sequence[Detections]` for multi-image
 batches in one call. Empty batches are valid; pass an empty list.
 
@@ -73,23 +72,20 @@ DLPack tensors flow through the same path:
 
 ```python
 import torch
-from vernier.instance import StreamingEvaluator
+from vernier.instance import BackgroundEvaluator
 
-ev = StreamingEvaluator(gt_bytes, iou_type="bbox")
-boxes = torch.zeros((128, 4), dtype=torch.float64)  # CPU tensor
-scores = torch.zeros(128, dtype=torch.float64)
-labels = torch.ones(128, dtype=torch.int64)
+with BackgroundEvaluator(gt_bytes, iou_type="bbox") as ev:
+    boxes = torch.zeros((128, 4), dtype=torch.float64)  # CPU tensor
+    scores = torch.zeros(128, dtype=torch.float64)
+    labels = torch.ones(128, dtype=torch.int64)
 
-# numpy and torch CPU tensors both expose __dlpack__; the FFI screens
-# device via __dlpack_device__ before reading the capsule.
-ev.update({"image_id": 1, "boxes": boxes, "scores": scores, "labels": labels})
+    # numpy and torch CPU tensors both expose __dlpack__; the FFI screens
+    # device via __dlpack_device__ before reading the capsule.
+    ev.submit({"image_id": 1, "boxes": boxes, "scores": scores, "labels": labels})
 ```
 
-GPU-resident tensors are rejected explicitly — move to CPU first:
-
-```python
-ev.update({"image_id": 1, "boxes": boxes.cpu(), ...})
-```
+GPU-resident tensors are rejected explicitly — move to CPU first
+(`ev.submit({"image_id": 1, "boxes": boxes.cpu(), ...})`).
 
 ## Required dtypes and layout
 
@@ -107,7 +103,7 @@ The boundary contract (ADR-0030 §"Validation rules at the boundary"):
 who want the convenience, opt in at construction:
 
 ```python
-ev = StreamingEvaluator(gt_bytes, iou_type="bbox", cast_inputs=True)
+ev = BackgroundEvaluator(gt_bytes, iou_type="bbox", cast_inputs=True)
 ```
 
 `cast_inputs=True` silently runs `np.ascontiguousarray(arr, dtype=...)`
@@ -124,29 +120,29 @@ encode to RLE at the dataloader boundary instead:
 ```python
 import numpy as np
 from pycocotools import mask as pmask
-from vernier.instance import StreamingEvaluator
+from vernier.instance import BackgroundEvaluator
 
 gt_bytes = open("instances_val2017.json", "rb").read()
-ev = StreamingEvaluator(gt_bytes, iou_type="segm")
 
-for image_id, masks_hxw, boxes, scores, labels in batches:
-    rles = []
-    for m in masks_hxw:               # m: (H, W) bool
-        compressed = pmask.encode(np.asfortranarray(m.astype(np.uint8)))
-        # Convert to uncompressed counts:
-        binary = np.asarray(pmask.decode(compressed))
-        counts = _column_major_runs(binary)  # your own helper
-        rles.append({
-            "counts": np.asarray(counts, dtype=np.uint32),
-            "size": (m.shape[0], m.shape[1]),
+with BackgroundEvaluator(gt_bytes, iou_type="segm") as ev:
+    for image_id, masks_hxw, boxes, scores, labels in batches:
+        rles = []
+        for m in masks_hxw:               # m: (H, W) bool
+            compressed = pmask.encode(np.asfortranarray(m.astype(np.uint8)))
+            # Convert to uncompressed counts:
+            binary = np.asarray(pmask.decode(compressed))
+            counts = _column_major_runs(binary)  # your own helper
+            rles.append({
+                "counts": np.asarray(counts, dtype=np.uint32),
+                "size": (m.shape[0], m.shape[1]),
+            })
+        ev.submit({
+            "image_id": int(image_id),
+            "boxes": boxes,
+            "scores": scores,
+            "labels": labels,
+            "rles": rles,
         })
-    ev.update({
-        "image_id": int(image_id),
-        "boxes": boxes,
-        "scores": scores,
-        "labels": labels,
-        "rles": rles,
-    })
 ```
 
 A future `vernier.mask.encode_batch` helper will package the encode
@@ -158,14 +154,14 @@ loop above (per ADR-0030 §"Future work").
 `(x, y, v)` triplets:
 
 ```python
-ev = StreamingEvaluator(gt_bytes, iou_type="keypoints")
-ev.update({
-    "image_id": 1,
-    "boxes": np.asarray(...),    # (N, 4)
-    "scores": np.asarray(...),   # (N,)
-    "labels": np.asarray(...),   # (N,)
-    "keypoints": np.asarray(...),  # (N, K, 3)
-})
+with BackgroundEvaluator(gt_bytes, iou_type="keypoints") as ev:
+    ev.submit({
+        "image_id": 1,
+        "boxes": np.asarray(...),    # (N, 4)
+        "scores": np.asarray(...),   # (N,)
+        "labels": np.asarray(...),   # (N,)
+        "keypoints": np.asarray(...),  # (N, K, 3)
+    })
 ```
 
 ## Background evaluator

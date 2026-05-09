@@ -83,9 +83,9 @@ for the cross-codebase comparison.
   [`how-to/boundary-iou.md`](../how-to/boundary-iou.md),
   [`how-to/keypoints-oks.md`](../how-to/keypoints-oks.md).
 - **Log AP mid-epoch.** End-of-epoch `Evaluator(...).evaluate(...)` is
-  the default. If you specifically need a *running* AP every N steps
-  during validation, `StreamingEvaluator` accepts predictions in
-  batches and yields a running summary. Tutorial:
+  the default. If validation pass timing matters,
+  `BackgroundEvaluator.submit(...)` runs the kernel on a worker thread
+  so the training thread doesn't stall. Tutorial:
   [`training-loop.md`](training-loop.md).
 - **Migrate from a competing tool.** The TL;DR table in
   [`migrate/from-pycocotools.md`](../migrate/from-pycocotools.md)

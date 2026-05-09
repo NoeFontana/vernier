@@ -210,6 +210,6 @@ is documented at its own anchor:
   — rationale for the per-image AP omission.
 - [`docs/adr/0007-patch-pycocotools-policy.md`](../adr/0007-patch-pycocotools-policy.md)
   — why the `COCOeval` drop-in stays narrow.
-- [`docs/adr/0013-streaming-evaluator.md`](../adr/0013-streaming-evaluator.md)
-  — `StreamingEvaluator.finalize(tables=...)` shape and the
+- [`docs/adr/0014-background-evaluator.md`](../adr/0014-background-evaluator.md)
+  — `BackgroundEvaluator.finalize_with_tables(...)` shape and the
   detection-id caveat that propagates into `per_detection`.
