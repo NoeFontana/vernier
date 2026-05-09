@@ -1,7 +1,8 @@
 # ADR-0039: Cross-paradigm conventions for user-parametrizable evaluation
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-09
+- **Accepted on:** 2026-05-09
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** —

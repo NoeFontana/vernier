@@ -1,7 +1,8 @@
 # ADR-0042: User-parametrizable panoptic evaluation
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-09
+- **Accepted on:** 2026-05-09
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** —
