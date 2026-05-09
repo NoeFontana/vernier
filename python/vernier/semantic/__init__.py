@@ -50,6 +50,7 @@ from vernier._core import (
     PartialPartitionOverlap,
     PartialRankCollision,
     evaluate_semantic_from_arrays,
+    evaluate_semantic_from_pngs,
 )
 from vernier._core import (
     SemanticSummary as Summary,
@@ -400,6 +401,47 @@ class Evaluator:
             parity_mode=self.parity_mode,
             ignore_label=gt.ignore_label,
             label_remap=dict(self.label_remap) if self.label_remap is not None else None,
+        )
+
+    def evaluate_from_pngs(
+        self,
+        gt_paths: Mapping[int, str | Path],
+        dt_paths: Mapping[int, str | Path],
+        *,
+        n_classes: int,
+        ignore_label: int | None = None,
+    ) -> Summary:
+        """Run the evaluation directly against 8-bit grayscale PNG label
+        maps on disk (ADR-0037).
+
+        Skips the Pillow → ndarray → ``astype(np.uint32)`` pipeline:
+        the libpng decode and the per-image confusion-matrix fold run
+        in Rust under ``py.detach``, so the GIL is released for the
+        whole batch and only one decoded label-map per side is in
+        flight at a time. Memory ceiling is bounded by image size,
+        not dataset size.
+
+        Format contract: 8-bit grayscale PNGs only (the natural width
+        for class-id label maps up to 256 classes; covers every dataset
+        in the per-paradigm presets — Cityscapes, ADE20K, Pascal VOC,
+        plus panoptic-derived semantic). Wider class-id ranges should
+        use :meth:`evaluate` with ``np.uint16`` / ``np.uint32`` ndarrays.
+
+        ``label_remap`` does not propagate to the fused path; callers
+        needing a remap should rewrite the DT PNGs upstream or fall
+        back to :meth:`evaluate`.
+        """
+        if self.label_remap is not None:
+            raise NotImplementedError(
+                "Evaluator.evaluate_from_pngs does not yet propagate label_remap; "
+                "rewrite the DT PNGs upstream or fall back to Evaluator.evaluate."
+            )
+        return evaluate_semantic_from_pngs(
+            dict(gt_paths),
+            dict(dt_paths),
+            n_classes=n_classes,
+            parity_mode=self.parity_mode,
+            ignore_label=ignore_label,
         )
 
     def evaluate_to_partial(
