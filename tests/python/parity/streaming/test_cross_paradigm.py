@@ -28,11 +28,6 @@ import pytest
 import vernier.instance as inst
 import vernier.panoptic as pq
 import vernier.semantic as sem
-from vernier._impl import (
-    StreamingEvaluator,
-    StreamingPanopticEvaluator,
-    StreamingSemanticEvaluator,
-)
 
 # ---------------------------------------------------------------------------
 # Paradigm-shared exception identity (Contract 2).
@@ -77,14 +72,9 @@ _PERFECT_MATCH_DT = (_FIXTURES / "perfect_match" / "dt.json").read_bytes()
 
 def _instance_partial() -> bytes:
     """Build a one-rank instance partial from the perfect_match fixture."""
-    ev = StreamingEvaluator(
-        _PERFECT_MATCH_GT,
-        iou_type="bbox",
-        parity_mode="corrected",
-        rank_id=0,
+    return inst.Evaluator(iou=inst.Bbox()).evaluate_to_partial(
+        _PERFECT_MATCH_GT, _PERFECT_MATCH_DT, rank_id=0
     )
-    ev.update(_PERFECT_MATCH_DT)
-    return ev.finalize_to_partial()
 
 
 def _semantic_partial() -> bytes:
@@ -92,9 +82,11 @@ def _semantic_partial() -> bytes:
     rng = np.random.default_rng(0)
     gt = rng.integers(0, 3, size=(4, 4), dtype=np.uint32)
     dt = gt.copy()
-    ev = StreamingSemanticEvaluator(3, "corrected", rank_id=0)
-    ev.update(0, gt, dt)
-    return ev.finalize_to_partial()
+    return sem.Evaluator().evaluate_to_partial(
+        sem.Dataset.from_arrays({0: gt}, n_classes=3),
+        sem.Predictions.from_arrays({0: dt}),
+        rank_id=0,
+    )
 
 
 _PANOPTIC_CATS = json.dumps([{"id": 1, "isthing": True}, {"id": 2, "isthing": False}]).encode()
@@ -109,9 +101,11 @@ def _panoptic_partial() -> bytes:
             {"id": 2, "category_id": 2, "iscrowd": 0, "area": 4},
         ]
     ).encode()
-    ev = StreamingPanopticEvaluator(_PANOPTIC_CATS, "corrected", rank_id=0)
-    ev.update(0, label_map, segs, label_map, segs)
-    return ev.finalize_to_partial()
+    return pq.Evaluator().evaluate_to_partial(
+        [(0, label_map, segs, label_map, segs)],
+        categories=_PANOPTIC_CATS,
+        rank_id=0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -120,17 +114,17 @@ def _panoptic_partial() -> bytes:
 
 
 def _load_into_instance(partial: bytes) -> None:
-    StreamingEvaluator.from_partials(
-        _PERFECT_MATCH_GT, [partial], iou_type="bbox", parity_mode="corrected"
+    inst.Evaluator.from_partials(
+        _PERFECT_MATCH_GT, [partial], iou=inst.Bbox(), parity_mode="corrected"
     )
 
 
 def _load_into_semantic(partial: bytes) -> None:
-    StreamingSemanticEvaluator.from_partials(3, [partial], "corrected")
+    sem.Evaluator.from_partials(3, [partial], parity_mode="corrected")
 
 
 def _load_into_panoptic(partial: bytes) -> None:
-    StreamingPanopticEvaluator.from_partials(_PANOPTIC_CATS, [partial], "corrected")
+    pq.Evaluator.from_partials(_PANOPTIC_CATS, [partial], parity_mode="corrected")
 
 
 @pytest.mark.parametrize(
