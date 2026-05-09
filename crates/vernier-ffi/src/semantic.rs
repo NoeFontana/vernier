@@ -469,30 +469,29 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
         .with_rank(rank_id)
         .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     for image_id in &image_ids {
-        let gt: LabelMap = gt_maps.remove(image_id).ok_or_else(|| {
-            // Unreachable in practice: image_id came from gt_maps.keys() above.
+        // Both removes are unreachable in practice: image_id came from
+        // gt_maps.keys() above and dt_maps presence was checked at the
+        // missing-prediction loop earlier in this function.
+        let (gh, gw, gt_buf) = gt_maps.remove(image_id).ok_or_else(|| {
             PyValueError::new_err(format!(
                 "internal: missing gt label_map for image_id={image_id}"
             ))
         })?;
-        let dt: LabelMap = dt_maps.remove(image_id).ok_or_else(|| {
-            // Unreachable: validated above.
+        let (dh, dw, dt_buf) = dt_maps.remove(image_id).ok_or_else(|| {
             PyValueError::new_err(format!(
                 "internal: missing dt label_map for image_id={image_id}"
             ))
         })?;
-        if gt.0 != dt.0 || gt.1 != dt.1 {
+        if (gh, gw) != (dh, dw) {
             return Err(semantic_error_to_pyerr(
                 py,
                 &SemanticError::ShapeMismatch {
                     image_id: *image_id,
-                    gt_shape: (gt.0, gt.1),
-                    dt_shape: (dt.0, dt.1),
+                    gt_shape: (gh, gw),
+                    dt_shape: (dh, dw),
                 },
             ));
         }
-        let (_, _, gt_buf) = gt;
-        let (_, _, dt_buf) = dt;
         let image_id = *image_id;
         py.detach(|| ev.update(image_id, &gt_buf, &dt_buf))
             .map_err(|e| semantic_error_to_pyerr(py, &e))?;

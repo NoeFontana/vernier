@@ -13,12 +13,13 @@
 //! objects: data conversion happens at the boundary, before [`Python::detach`];
 //! results are converted back after the GIL is re-acquired.
 //!
-//! Two pyclasses extend the threading model beyond the immutable batch
-//! evaluators:
+//! Two threaded surfaces extend the immutable batch evaluators:
 //!
-//! - [`PyStreamingEvaluator`] (ADR-0013) is mutable but **single-writer**:
-//!   the `ThreadId` of the first caller is stashed on first `update()`,
-//!   and submissions from any other thread raise `RuntimeError`.
+//! - [`InstanceStreamOrchestrator`] (ADR-0035) is an internal Rust
+//!   struct — not a pyclass. The `evaluate_instance_to_partial` and
+//!   `merge_instance_partials` pyfunctions own one synchronously and
+//!   drive it through a single construct + update + finalize-to-partial
+//!   cycle.
 //! - [`PyBackgroundEvaluator`] (ADR-0014) wraps a streaming evaluator in
 //!   a dedicated worker thread. The worker owns the inner evaluator,
 //!   so the single-writer rule is satisfied by construction; callers
@@ -1689,15 +1690,14 @@ fn prepare_dt_payload<'py>(
 
 /// Internal Rust orchestrator for the per-rank distributed-eval flow
 /// (ADR-0035). Not exposed to Python: the `evaluate_instance_to_partial`
-/// and `merge_instance_partials` pyfunctions drive it through one
-/// construct + update + finalize-to-partial cycle. Single-writer per the
-/// runtime `owner_thread` check; mutable state guarded by an internal
-/// `Mutex` so methods can take `&self`.
-struct PyStreamingEvaluator {
-    state: Mutex<StreamingState>,
-    owner_thread: Mutex<Option<std::thread::ThreadId>>,
-    /// Cached at construction so `update` does not need to lock `state`
-    /// just to learn which fields each `Detections` dict requires.
+/// and `merge_instance_partials` pyfunctions own one synchronously and
+/// drive it through a single construct + update + finalize-to-partial
+/// cycle.
+struct InstanceStreamOrchestrator {
+    state: StreamingState,
+    /// Cached at construction so `update` doesn't have to re-walk the
+    /// dispatch enum to learn which fields each `Detections` dict
+    /// requires.
     array_iou_type: array_ingest::ArrayIouType,
     /// `Some(latch)` when `cast_inputs=True` — the latch fires the
     /// `UserWarning` at most once. `None` when the strict ADR-0004
@@ -1705,27 +1705,7 @@ struct PyStreamingEvaluator {
     cast_state: array_ingest::CastState,
 }
 
-impl PyStreamingEvaluator {
-    /// Single-writer guard. The first `update()` call records the
-    /// calling thread; later calls verify it. Mismatch raises a
-    /// `RuntimeError` that names both threads.
-    fn check_owner_thread(&self) -> PyResult<()> {
-        let mut owner = self.owner_thread.lock().map_err(|_| {
-            PyRuntimeError::new_err("StreamingEvaluator owner_thread mutex poisoned")
-        })?;
-        let current = std::thread::current().id();
-        match *owner {
-            None => {
-                *owner = Some(current);
-                Ok(())
-            }
-            Some(prior) if prior == current => Ok(()),
-            Some(prior) => Err(PyRuntimeError::new_err(format!(
-                "StreamingEvaluator is single-writer; submitted from {current:?}, owned by {prior:?}"
-            ))),
-        }
-    }
-
+impl InstanceStreamOrchestrator {
     #[allow(clippy::too_many_arguments)]
     fn new(
         gt_json: &Bound<'_, PyBytes>,
@@ -1852,8 +1832,7 @@ impl PyStreamingEvaluator {
         };
 
         Ok(Self {
-            state: Mutex::new(state),
-            owner_thread: Mutex::new(None),
+            state,
             array_iou_type,
             cast_state: array_ingest::new_cast_state(cast_inputs),
         })
@@ -1863,32 +1842,22 @@ impl PyStreamingEvaluator {
     /// `bytes` (legacy) or an ADR-0030 `Detections` dict / sequence of
     /// `Detections` dicts (numpy/DLPack). Returns an `_UpdateReportDict`
     /// describing what was accepted plus the post-update memory total.
-    /// Single-writer: only the first calling thread is permitted to call
-    /// this method.
     fn update<'py>(
-        &self,
+        &mut self,
         py: Python<'py>,
         detections: &Bound<'py, PyAny>,
     ) -> PyResult<Bound<'py, PyDict>> {
-        self.check_owner_thread()?;
         // Build the kernel-input payload before dropping the GIL: the
         // array path borrows DLPack views to materialize `DetectionInput`s,
         // which requires Python-side reads.
         let parsed_payload =
             build_update_payload(py, detections, self.array_iou_type, &self.cast_state)?;
 
-        // Lock inside `py.detach` so the `MutexGuard` (which is `!Send`)
-        // never crosses the closure boundary on Send-checking. The
-        // `Mutex` itself is `Send + Sync`, so a borrow of it is fine to
-        // capture into the GIL-released body.
-        let state_mutex = &self.state;
+        let state = &mut self.state;
         let (report, memory_used_bytes) = py
             .detach(move || {
-                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "StreamingEvaluator state mutex poisoned".into(),
-                })?;
-                let report = guard.run_update(parsed_payload)?;
-                let memory = guard.memory_used_bytes();
+                let report = state.run_update(parsed_payload)?;
+                let memory = state.memory_used_bytes();
                 Ok::<(UpdateReport, usize), EvalError>((report, memory))
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
@@ -1916,34 +1885,19 @@ impl PyStreamingEvaluator {
         Ok(dict)
     }
 
-    /// Consume the evaluator and return the final summary. Subsequent
-    /// calls on this object error out with the "already finalized"
-    /// message.
-    fn finalize(&self, py: Python<'_>) -> PyResult<PySummary> {
-        let state_mutex = &self.state;
+    /// Consume the orchestrator and return the final summary.
+    fn finalize(mut self, py: Python<'_>) -> PyResult<PySummary> {
         let summary = py
-            .detach(move || {
-                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "StreamingEvaluator state mutex poisoned".into(),
-                })?;
-                guard.take_and_finalize()
-            })
+            .detach(move || self.state.take_and_finalize())
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PySummary { inner: summary })
     }
 
-    /// ADR-0031: consume the evaluator and serialize its final state
-    /// as a partial byte blob. Subsequent calls on this object raise
-    /// "already finalized".
-    fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let state_mutex = &self.state;
+    /// ADR-0031: consume the orchestrator and serialize its final state
+    /// as a partial byte blob.
+    fn finalize_to_partial<'py>(mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let blob = py
-            .detach(move || {
-                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "StreamingEvaluator state mutex poisoned".into(),
-                })?;
-                guard.take_and_finalize_to_partial()
-            })
+            .detach(move || self.state.take_and_finalize_to_partial())
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PyBytes::new(py, &blob))
     }
@@ -2090,8 +2044,7 @@ impl PyStreamingEvaluator {
             .map_err(|e| eval_error_to_pyerr(py, e))?;
 
         Ok(Self {
-            state: Mutex::new(state),
-            owner_thread: Mutex::new(None),
+            state,
             array_iou_type,
             cast_state: array_ingest::new_cast_state(cast_inputs),
         })
@@ -2389,12 +2342,10 @@ pub(crate) fn queue_full_to_pyerr(py: Python<'_>, full: background::QueueFull) -
 // ---------------------------------------------------------------------------
 // One-shot streaming partial functions (ADR-0035).
 //
-// These pyfunctions are the public entry points for the per-rank
-// distributed-eval flow on the instance paradigm. The streaming
-// `PyStreamingEvaluator` pyclass above is no longer registered on the
-// Python module; it survives only as an internal Rust orchestrator that
-// the functions below drive through one construct + update +
-// finalize-to-partial cycle.
+// Public entry points for the per-rank distributed-eval flow on the
+// instance paradigm. Each pyfunction owns one
+// `InstanceStreamOrchestrator` synchronously and drives it through a
+// single construct + update + finalize-to-partial cycle.
 // ---------------------------------------------------------------------------
 
 /// Construct a streaming evaluator, submit one batch, and serialize a
@@ -2431,7 +2382,7 @@ fn evaluate_instance_to_partial<'py>(
     retain_iou: bool,
     cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
-    let ev = PyStreamingEvaluator::new(
+    let mut ev = InstanceStreamOrchestrator::new(
         gt_json,
         iou_type,
         parity_mode,
@@ -2479,7 +2430,7 @@ fn merge_instance_partials<'py>(
     retain_iou: bool,
     cast_inputs: bool,
 ) -> PyResult<PySummary> {
-    let merged = PyStreamingEvaluator::from_partials(
+    let merged = InstanceStreamOrchestrator::from_partials(
         py,
         gt_json,
         partials,
@@ -2503,9 +2454,9 @@ fn merge_instance_partials<'py>(
 #[pyclass(module = "vernier._core", name = "BackgroundEvaluator")]
 struct PyBackgroundEvaluator {
     state: Mutex<BackgroundEvalState>,
-    /// Cached at construction; same role as on `PyStreamingEvaluator`.
+    /// Cached at construction; same role as on `InstanceStreamOrchestrator`.
     array_iou_type: array_ingest::ArrayIouType,
-    /// `Some` when `cast_inputs=True`. See `PyStreamingEvaluator::cast_state`.
+    /// `Some` when `cast_inputs=True`. See `InstanceStreamOrchestrator::cast_state`.
     cast_state: array_ingest::CastState,
 }
 
