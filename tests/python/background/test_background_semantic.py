@@ -17,7 +17,6 @@ import numpy as np
 import pytest
 
 import vernier.semantic as sem
-from vernier._impl import StreamingSemanticEvaluator
 
 
 def _label_maps(
@@ -41,18 +40,18 @@ def _label_maps(
     return gt_maps, dt_maps
 
 
-def test_background_finalize_equals_streaming() -> None:
+def test_background_finalize_equals_batch() -> None:
     """For the same image sequence, background finalize bit-equals the
-    streaming finalize. Confusion-matrix sums are u64-additive — no
-    FP wobble to worry about.
+    batch ``Evaluator.evaluate``. Confusion-matrix sums are
+    u64-additive — no FP wobble to worry about.
     """
     gt_maps, dt_maps = _label_maps(seed=42, n_images=6)
     n_classes = 3
 
-    streaming = StreamingSemanticEvaluator(n_classes, "strict")
-    for image_id in sorted(gt_maps):
-        streaming.update(image_id, gt_maps[image_id], dt_maps[image_id])
-    streaming_summary = streaming.finalize()
+    batch_summary = sem.Evaluator(parity_mode="strict").evaluate(
+        sem.Dataset.from_arrays(gt_maps, n_classes=n_classes),
+        sem.Predictions.from_arrays(dt_maps),
+    )
 
     bg = sem.BackgroundEvaluator(n_classes, "strict")
     for image_id in sorted(gt_maps):
@@ -61,18 +60,18 @@ def test_background_finalize_equals_streaming() -> None:
 
     np.testing.assert_array_equal(
         bg_summary.confusion_matrix.counts(),
-        streaming_summary.confusion_matrix.counts(),
+        batch_summary.confusion_matrix.counts(),
     )
-    assert bg_summary.miou == streaming_summary.miou
-    assert bg_summary.fwiou == streaming_summary.fwiou
-    assert bg_summary.pixel_accuracy == streaming_summary.pixel_accuracy
+    assert bg_summary.miou == batch_summary.miou
+    assert bg_summary.fwiou == batch_summary.fwiou
+    assert bg_summary.pixel_accuracy == batch_summary.pixel_accuracy
 
 
 def test_background_to_partial_round_trips_through_from_partials() -> None:
     """``bg.finalize_to_partial()`` ships a wire-format byte string
-    that ``StreamingEvaluator.from_partials`` reconstructs into an
-    evaluator equivalent to the original. Pins the ADR-0032 partial-
-    inheritance property at the background layer.
+    that ``Evaluator.from_partials`` reconstructs into a Summary
+    equivalent to the batch run. Pins the ADR-0032 partial-inheritance
+    property at the background layer.
     """
     gt_maps, dt_maps = _label_maps(seed=7, n_images=4)
     n_classes = 3
@@ -82,13 +81,13 @@ def test_background_to_partial_round_trips_through_from_partials() -> None:
         bg.submit(image_id, gt_maps[image_id], dt_maps[image_id])
     blob = bg.finalize_to_partial()
 
-    restored = StreamingSemanticEvaluator.from_partials(n_classes, [blob], "strict")
-    restored_summary = restored.finalize()
-
-    streaming = StreamingSemanticEvaluator(n_classes, "strict")
-    for image_id in sorted(gt_maps):
-        streaming.update(image_id, gt_maps[image_id], dt_maps[image_id])
-    direct_summary = streaming.finalize()
+    restored_summary = sem.Evaluator.from_partials(
+        n_classes, [blob], parity_mode="strict"
+    )
+    direct_summary = sem.Evaluator(parity_mode="strict").evaluate(
+        sem.Dataset.from_arrays(gt_maps, n_classes=n_classes),
+        sem.Predictions.from_arrays(dt_maps),
+    )
 
     np.testing.assert_array_equal(
         restored_summary.confusion_matrix.counts(),

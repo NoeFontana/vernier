@@ -22,7 +22,6 @@ import numpy as np
 import pytest
 
 import vernier.panoptic as pq
-from vernier._impl import StreamingPanopticEvaluator
 
 _CATS = json.dumps(
     [
@@ -60,18 +59,21 @@ def _image(seed: int) -> tuple[np.ndarray, bytes, np.ndarray, bytes]:
     return gt_label, gt_segs, dt_label, dt_segs
 
 
-def test_background_finalize_equals_streaming() -> None:
-    """For the same image sequence, background finalize bit-equals
-    the streaming finalize. The worker preserves submission order so
+def test_background_finalize_equals_one_shot_partial() -> None:
+    """For the same image sequence, background finalize bit-equals a
+    single-rank one-shot ``Evaluator.evaluate_to_partial`` +
+    ``from_partials`` cycle. The worker preserves submission order so
     the f64 PqStat fold reproduces the same bit pattern.
     """
     seeds = list(range(6))
+    images = [(s, *_image(s)) for s in seeds]
 
-    streaming = StreamingPanopticEvaluator(_CATS, "strict", retain_per_image_deltas=True)
-    for s in seeds:
-        gt_lm, gt_si, dt_lm, dt_si = _image(s)
-        streaming.update(s, gt_lm, gt_si, dt_lm, dt_si)
-    streaming_summary = streaming.finalize()
+    one_shot_partial = pq.Evaluator(parity_mode="strict").evaluate_to_partial(
+        images, categories=_CATS, rank_id=0, retain_per_image_deltas=True
+    )
+    reference = pq.Evaluator.from_partials(
+        _CATS, [one_shot_partial], parity_mode="strict", retain_per_image_deltas=True
+    )
 
     bg = pq.BackgroundEvaluator(_CATS, "strict", retain_per_image_deltas=True)
     for s in seeds:
@@ -79,11 +81,11 @@ def test_background_finalize_equals_streaming() -> None:
         bg.submit(s, gt_lm, gt_si, dt_lm, dt_si)
     bg_summary = bg.finalize()
 
-    assert bg_summary.pq == streaming_summary.pq
-    assert bg_summary.sq == streaming_summary.sq
-    assert bg_summary.rq == streaming_summary.rq
-    assert bg_summary.pq_things == streaming_summary.pq_things
-    assert bg_summary.pq_stuff == streaming_summary.pq_stuff
+    assert bg_summary.pq == reference.pq
+    assert bg_summary.sq == reference.sq
+    assert bg_summary.rq == reference.rq
+    assert bg_summary.pq_things == reference.pq_things
+    assert bg_summary.pq_stuff == reference.pq_stuff
 
 
 def test_background_strict_partial_merges_bit_equal_to_batch() -> None:
@@ -94,13 +96,15 @@ def test_background_strict_partial_merges_bit_equal_to_batch() -> None:
     extended over the threading boundary.
     """
     seeds = list(range(8))
+    images = [(s, *_image(s)) for s in seeds]
 
-    # Single-rank batch baseline (no background, no shards).
-    batch = StreamingPanopticEvaluator(_CATS, "strict", retain_per_image_deltas=True)
-    for s in seeds:
-        gt_lm, gt_si, dt_lm, dt_si = _image(s)
-        batch.update(s, gt_lm, gt_si, dt_lm, dt_si)
-    batch_summary = batch.finalize()
+    # Single-rank batch baseline via Evaluator.evaluate_to_partial.
+    batch_partial = pq.Evaluator(parity_mode="strict").evaluate_to_partial(
+        images, categories=_CATS, rank_id=0, retain_per_image_deltas=True
+    )
+    batch_summary = pq.Evaluator.from_partials(
+        _CATS, [batch_partial], parity_mode="strict", retain_per_image_deltas=True
+    )
 
     # Background "rank" — one bg evaluator covers everything.
     bg = pq.BackgroundEvaluator(_CATS, "strict", retain_per_image_deltas=True, rank_id=0)
@@ -109,9 +113,9 @@ def test_background_strict_partial_merges_bit_equal_to_batch() -> None:
         bg.submit(s, gt_lm, gt_si, dt_lm, dt_si)
     blob = bg.finalize_to_partial()
 
-    merged = StreamingPanopticEvaluator.from_partials(
-        _CATS, [blob], "strict", retain_per_image_deltas=True
-    ).finalize()
+    merged = pq.Evaluator.from_partials(
+        _CATS, [blob], parity_mode="strict", retain_per_image_deltas=True
+    )
 
     assert merged.pq == batch_summary.pq
     assert merged.sq == batch_summary.sq

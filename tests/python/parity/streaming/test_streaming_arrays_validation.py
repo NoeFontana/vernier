@@ -17,7 +17,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from vernier._impl import StreamingEvaluator
+from vernier.instance import BackgroundEvaluator
 from vernier.instance import Detections
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
@@ -45,21 +45,21 @@ def _bbox_payload(
 
 @pytest.mark.parity
 def test_f32_boxes_rejected_with_cast_hint() -> None:
-    ev = StreamingEvaluator(_gt_bbox_bytes(), iou_type="bbox")
+    ev = BackgroundEvaluator(_gt_bbox_bytes(), iou_type="bbox")
     with pytest.raises(TypeError, match="cast_inputs=True"):
-        ev.update(_bbox_payload(dtype_boxes=np.float32))  # type: ignore[arg-type]
+        ev.submit(_bbox_payload(dtype_boxes=np.float32))  # type: ignore[arg-type]
 
 
 @pytest.mark.parity
 def test_i32_labels_rejected() -> None:
-    ev = StreamingEvaluator(_gt_bbox_bytes(), iou_type="bbox")
+    ev = BackgroundEvaluator(_gt_bbox_bytes(), iou_type="bbox")
     with pytest.raises(TypeError, match="expected int64"):
-        ev.update(_bbox_payload(dtype_labels=np.int32))  # type: ignore[arg-type]
+        ev.submit(_bbox_payload(dtype_labels=np.int32))  # type: ignore[arg-type]
 
 
 @pytest.mark.parity
 def test_non_contiguous_boxes_rejected() -> None:
-    ev = StreamingEvaluator(_gt_bbox_bytes(), iou_type="bbox")
+    ev = BackgroundEvaluator(_gt_bbox_bytes(), iou_type="bbox")
     full = np.zeros((1, 8), dtype=np.float64)
     full[0, :4] = [10.0, 10.0, 50.0, 50.0]
     payload: dict[str, Any] = {
@@ -69,32 +69,32 @@ def test_non_contiguous_boxes_rejected() -> None:
         "labels": np.array([1], dtype=np.int64),
     }
     with pytest.raises(TypeError, match="ascontiguousarray"):
-        ev.update(payload)  # type: ignore[arg-type]
+        ev.submit(payload)  # type: ignore[arg-type]
 
 
 @pytest.mark.parity
 def test_missing_required_field_lists_field_name() -> None:
-    ev = StreamingEvaluator(_gt_bbox_bytes(), iou_type="bbox")
+    ev = BackgroundEvaluator(_gt_bbox_bytes(), iou_type="bbox")
     incomplete = _bbox_payload()
     del incomplete["scores"]
     with pytest.raises(ValueError, match="scores"):
-        ev.update(incomplete)  # type: ignore[arg-type]
+        ev.submit(incomplete)  # type: ignore[arg-type]
 
 
 @pytest.mark.parity
 def test_segm_requires_rles() -> None:
     gt_segm = (FIXTURES / "perfect_match_segm" / "gt.json").read_bytes()
-    ev = StreamingEvaluator(gt_segm, iou_type="segm")
+    ev = BackgroundEvaluator(gt_segm, iou_type="segm")
     with pytest.raises(ValueError, match="rles"):
-        ev.update(_bbox_payload())  # type: ignore[arg-type]
+        ev.submit(_bbox_payload())  # type: ignore[arg-type]
 
 
 @pytest.mark.parity
 def test_keypoints_requires_keypoints_field() -> None:
     gt_kp = (FIXTURES / "keypoints_perfect_match" / "gt.json").read_bytes()
-    ev = StreamingEvaluator(gt_kp, iou_type="keypoints")
+    ev = BackgroundEvaluator(gt_kp, iou_type="keypoints")
     with pytest.raises(ValueError, match="keypoints"):
-        ev.update(_bbox_payload())  # type: ignore[arg-type]
+        ev.submit(_bbox_payload())  # type: ignore[arg-type]
 
 
 @pytest.mark.parity
@@ -107,7 +107,7 @@ def test_cast_inputs_true_accepts_f32_and_emits_one_warning() -> None:
     # Use a 2-image GT so we can submit two batches without tripping the
     # duplicate-image_id guard.
     gt_bytes = (FIXTURES / "missing_dt_image" / "gt.json").read_bytes()
-    ev = StreamingEvaluator(gt_bytes, iou_type="bbox", cast_inputs=True)
+    ev = BackgroundEvaluator(gt_bytes, iou_type="bbox", cast_inputs=True)
     payload_a: dict[str, Any] = {
         "image_id": 1,
         "boxes": np.array([[10.0, 10.0, 50.0, 50.0]], dtype=np.float32),
@@ -122,8 +122,8 @@ def test_cast_inputs_true_accepts_f32_and_emits_one_warning() -> None:
     }
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        ev.update(payload_a)  # type: ignore[arg-type]
-        ev.update(payload_b)  # type: ignore[arg-type]
+        ev.submit(payload_a)  # type: ignore[arg-type]
+        ev.submit(payload_b)  # type: ignore[arg-type]
     msgs = [str(w.message) for w in caught if "cast_inputs" in str(w.message)]
     assert len(msgs) == 1, f"expected exactly one cast warning, got {msgs!r}"
 
@@ -143,7 +143,7 @@ class _FakeGPUArray:
 
 @pytest.mark.parity
 def test_gpu_dlpack_rejected_with_greppable_message() -> None:
-    ev = StreamingEvaluator(_gt_bbox_bytes(), iou_type="bbox")
+    ev = BackgroundEvaluator(_gt_bbox_bytes(), iou_type="bbox")
     # `Detections.boxes` is typed as `NDArray[float64]`; the FakeGPUArray
     # stand-in covers the `__dlpack__` protocol so the FFI dispatcher
     # receives the rejection at the device-screen step. The payload is
@@ -156,7 +156,7 @@ def test_gpu_dlpack_rejected_with_greppable_message() -> None:
         "labels": np.array([1], dtype=np.int64),
     }
     with pytest.raises(TypeError, match="vernier-0030 does not accept GPU-resident detections"):
-        ev.update(payload)  # type: ignore[arg-type]
+        ev.submit(payload)  # type: ignore[arg-type]
 
 
 @pytest.mark.parity
@@ -165,8 +165,8 @@ def test_legacy_bytes_path_still_works() -> None:
     leave the bytes path bit-identical."""
     gt = _gt_bbox_bytes()
     dt = (FIXTURES / "perfect_match" / "dt.json").read_bytes()
-    ev1 = StreamingEvaluator(gt, iou_type="bbox", parity_mode="strict")
-    ev1.update(dt)
+    ev1 = BackgroundEvaluator(gt, iou_type="bbox", parity_mode="strict")
+    ev1.submit(dt)
     s1 = ev1.finalize().stats
 
     payload: Detections = {
@@ -175,7 +175,7 @@ def test_legacy_bytes_path_still_works() -> None:
         "scores": np.array([0.9], dtype=np.float64),
         "labels": np.array([1], dtype=np.int64),
     }
-    ev2 = StreamingEvaluator(gt, iou_type="bbox", parity_mode="strict")
-    ev2.update(payload)
+    ev2 = BackgroundEvaluator(gt, iou_type="bbox", parity_mode="strict")
+    ev2.submit(payload)
     s2 = ev2.finalize().stats
     assert s1 == pytest.approx(s2, rel=0, abs=1e-12)
