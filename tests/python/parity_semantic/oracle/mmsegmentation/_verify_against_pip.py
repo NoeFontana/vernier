@@ -76,30 +76,12 @@ def _build_fixture():
 
 def _run(mode: str) -> dict[str, object]:
     if mode == "vendored":
-        # Match the conftest stub-injection so this script can be run
-        # directly (no pytest involvement).
-        oracle_path = Path(__file__).parent
-        sys.path.insert(0, str(oracle_path))
-        import types
+        # Use the same loader the pytest conftest uses, so this script
+        # exercises the exact stub-injection path the test suite does.
+        sys.path.insert(0, str(Path(__file__).parent))
+        from _loader import install_stubs  # pyright: ignore[reportMissingImports]
 
-        import _mmengine_stub
-
-        def _install(name: str, attrs: dict[str, object]) -> None:
-            mod = types.ModuleType(name)
-            for k, v in attrs.items():
-                setattr(mod, k, v)
-            sys.modules[name] = mod
-
-        _install("mmengine", {})
-        _install("mmengine.dist", {"is_main_process": _mmengine_stub.is_main_process})
-        _install("mmengine.evaluator", {"BaseMetric": _mmengine_stub.BaseMetric})
-        _install(
-            "mmengine.logging",
-            {"MMLogger": _mmengine_stub.MMLogger, "print_log": _mmengine_stub.print_log},
-        )
-        _install("mmengine.utils", {"mkdir_or_exist": _mmengine_stub.mkdir_or_exist})
-        _install("mmseg.registry", {"METRICS": _mmengine_stub.METRICS})
-        _install("prettytable", {"PrettyTable": _mmengine_stub.PrettyTable})
+        install_stubs()
     elif mode == "pip":
         # Trust the active venv: `mmsegmentation==1.2.2` is pip-installed.
         # No sys.modules fiddling — the real packages resolve normally.

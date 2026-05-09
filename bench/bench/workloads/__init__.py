@@ -54,6 +54,7 @@ from bench.harness.schema import IouType
 from bench.workloads import (
     coco_panoptic_val2017,
     coco_val2017,
+    coco_val2017_semantic,
     jittered_predictions,
     lvis_v1,
     real_predictions,
@@ -174,7 +175,7 @@ _SYNTHETIC_ALLOWED: frozenset[str] = (
 # so an unknown workload in a registered namespace surfaces a
 # paradigm-specific error message.
 _PANOPTIC_PREFIXES: tuple[str, ...] = ("coco_panoptic_val2017",)
-_SEMANTIC_PREFIXES: tuple[str, ...] = ("ade20k_val",)
+_SEMANTIC_PREFIXES: tuple[str, ...] = ("ade20k_val", "coco_val2017_semantic")
 _SYNTHETIC_SEMANTIC_PREFIX = "synthetic_semantic:"
 _SYNTHETIC_SEMANTIC_REQUIRED: frozenset[str] = frozenset({"n_images", "n_classes", "seed"})
 _SYNTHETIC_SEMANTIC_INT_OPTIONAL: frozenset[str] = frozenset({"ignore_label"})
@@ -406,6 +407,15 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             dt_label_maps=dt_dir,
             n_classes=int_params["n_classes"],
             ignore_label=ignore_label,
+        )
+    if workload_name == coco_val2017_semantic.PERFECT_WORKLOAD_ID:
+        gt_dir, dt_dir, n_classes, _ = coco_val2017_semantic.perfect_workload_paths()
+        return SemanticWorkload(
+            workload_id=workload_name,
+            gt_label_maps=gt_dir,
+            dt_label_maps=dt_dir,
+            n_classes=n_classes,
+            ignore_label=coco_val2017_semantic.IGNORE_LABEL,
         )
     if any(workload_name.startswith(p) for p in _SEMANTIC_PREFIXES):
         raise NotImplementedError(
