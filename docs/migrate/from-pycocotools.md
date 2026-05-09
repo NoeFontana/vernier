@@ -59,6 +59,69 @@ ADR-0002 documents the three tiers (`strict` / `aligned` /
 patch raises `ImportError` if pycocotools is not installed, rather
 than silently no-oping.
 
+## Pytest integration
+
+To run an unmodified pycocotools-based test suite (mmdetection,
+ultralytics, detectron2, etc.) under vernier, drop a five-line
+`conftest.py` at the test root:
+
+```python
+# conftest.py
+import pytest
+from vernier import patch_pycocotools
+
+@pytest.fixture(autouse=True, scope="session")
+def _vernier_strict():
+    unpatch = patch_pycocotools(parity_mode="strict")
+    yield
+    unpatch()
+```
+
+`autouse=True` and `scope="session"` are the only non-obvious bits.
+Session scope guarantees the patch fires once, before any test
+module is collected and imported — which is the window pycocotools-
+shaped imports need (see Troubleshooting below). Autouse means no
+test has to opt in by parameter.
+
+The same pattern translates to any framework with setup / teardown
+hooks: `unittest.TestCase.setUpClass` / `tearDownClass`, a
+`nose`-style module-level fixture, or a script-level `try` /
+`finally` around the run. There is no `vernier[pytest]` extra and
+no plugin entry point on purpose — the shim is the whole product;
+making it more invisible would just slow the migration to the
+native `Evaluator` API.
+
+## Troubleshooting: my patch had no effect
+
+Symptom: you called `patch_pycocotools()` (or installed the
+`conftest.py` fixture above), the call ran without error, but the
+numbers your suite produces are byte-identical to a run *without*
+vernier.
+
+Cause: a module that imports `pycocotools.cocoeval` was loaded
+*before* `patch_pycocotools` fired. Python's `from … import name`
+binds `name` to whatever object the source module exposes at that
+moment — patching `sys.modules["pycocotools.cocoeval"].COCOeval`
+later does not retroactively rewrite already-bound names. The
+patch is live for any *subsequent* `from pycocotools.cocoeval import
+COCOeval`, but the downstream test module captured the original
+class at its own import time and that binding wins.
+
+The rule: `patch_pycocotools()` must run before any module that
+imports `pycocotools.cocoeval`. In practice that means one of:
+
+- A session-scoped `conftest.py` fixture (above) — pytest collects
+  and runs `conftest.py` before importing test modules.
+- A direct call at the top of a top-level script, before the first
+  `import` of a module that pulls in pycocotools.
+- The context-manager form (`patched_pycocotools()`) wrapping the
+  invocation that triggers the eval-using imports.
+
+The patch is intentionally not an import side-effect of `import
+vernier` (ADR-0007 §"Discoverability"): a silent rewrite would make
+unexpected score differences untraceable. The cost of that policy is
+that ordering is the user's responsibility, hence this section.
+
 ## Worked example
 
 Native `Evaluator` form, end-to-end:

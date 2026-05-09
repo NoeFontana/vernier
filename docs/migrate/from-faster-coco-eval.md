@@ -69,6 +69,18 @@ The context-manager form is `patched_pycocotools()` and nests
 correctly (ADR-0007 §"Reentrancy"). For test setups, prefer the
 context manager — the unwind is automatic on test failure.
 
+## Pytest integration and import-order pitfall
+
+`init_as_pycocotools()` and `patch_pycocotools()` share the same
+mechanism (`sys.modules["pycocotools.cocoeval"].COCOeval` swap),
+which means they share the same import-order pitfall: any module
+that already imported `pycocotools.cocoeval.COCOeval` before the
+patch fires keeps its original binding. The session-scoped
+`conftest.py` snippet and the diagnosis recipe live in
+[`from-pycocotools.md`](from-pycocotools.md#pytest-integration) —
+the failure mode and fix are identical regardless of which tool
+you're migrating from.
+
 ## Per-image AP
 
 `faster-coco-eval` exposes per-image AP. vernier does not, by

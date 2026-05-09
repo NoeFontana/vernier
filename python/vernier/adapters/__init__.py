@@ -51,7 +51,10 @@ def patch_pycocotools(parity_mode: ParityMode = "strict") -> Callable[[], None]:
       pycocotools class.
 
     Not thread-safe — call once at process or test setup, unwind at
-    teardown.
+    teardown. The patch must fire before any module that imports
+    ``pycocotools.cocoeval`` — see ``docs/migrate/from-pycocotools.md``
+    §"Troubleshooting" for the import-order pitfall and the
+    session-scoped pytest fixture that side-steps it.
     """
     global _original_cocoeval
 
