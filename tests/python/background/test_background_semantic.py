@@ -126,4 +126,4 @@ def test_finalize_then_use_raises() -> None:
     bg = sem.BackgroundEvaluator(3, "corrected")
     bg.finalize()
     with pytest.raises(Exception, match="already been finalized"):
-        bg.snapshot()
+        bg.finalize()

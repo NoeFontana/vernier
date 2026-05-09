@@ -32,7 +32,7 @@ use std::time::Duration;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
 
 use vernier_partial::PartialError;
 use vernier_semantic::kernel::accumulate_confusion;
@@ -828,20 +828,6 @@ impl PyBackgroundSemanticEvaluator {
         })
     }
 
-    /// Compute a `SemanticSummary` against the worker's current state.
-    fn snapshot(&self, py: Python<'_>) -> PyResult<PySemanticSummary> {
-        let lifecycle = &self.lifecycle;
-        let summary = py
-            .detach(|| -> Result<SemanticSummary, SemanticError> {
-                let guard = lifecycle
-                    .lock()
-                    .map_err(|_| StreamingSemanticEvaluator::worker_disconnected())?;
-                guard.active()?.snapshot()
-            })
-            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
-        Ok(PySemanticSummary { inner: summary })
-    }
-
     /// Drain the queue, finalize the evaluator, and join the worker.
     fn finalize(&self, py: Python<'_>) -> PyResult<PySemanticSummary> {
         let lifecycle = &self.lifecycle;
@@ -856,23 +842,8 @@ impl PyBackgroundSemanticEvaluator {
         Ok(PySemanticSummary { inner: summary })
     }
 
-    /// ADR-0032: serialize the worker's current state as a partial
-    /// blob without consuming the evaluator.
-    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let lifecycle = &self.lifecycle;
-        let blob = py
-            .detach(|| -> Result<Vec<u8>, SemanticError> {
-                let guard = lifecycle
-                    .lock()
-                    .map_err(|_| StreamingSemanticEvaluator::worker_disconnected())?;
-                guard.active()?.snapshot_to_partial()
-            })
-            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
-        Ok(PyBytes::new(py, &blob))
-    }
-
-    /// ADR-0032: drain, serialize the final state, and shut the
-    /// worker down.
+    /// ADR-0032 / ADR-0035: drain, serialize the final state, and
+    /// shut the worker down.
     fn finalize_to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
         let lifecycle = &self.lifecycle;
         let blob = py
@@ -884,30 +855,6 @@ impl PyBackgroundSemanticEvaluator {
             })
             .map_err(|e| semantic_error_to_pyerr(py, &e))?;
         Ok(PyBytes::new(py, &blob))
-    }
-
-    /// `from_partials` classmethod inherited from the streaming
-    /// surface. Constructs a `StreamingSemanticEvaluator` (not a
-    /// background one) — the merged state is paradigm-shaped, not
-    /// re-spawned on a worker. Mirrors the instance pattern.
-    #[classmethod]
-    #[pyo3(signature = (n_classes, partials, parity_mode, *, ignore_label = None))]
-    fn from_partials(
-        cls: &Bound<'_, PyType>,
-        py: Python<'_>,
-        n_classes: u32,
-        partials: &Bound<'_, PyList>,
-        parity_mode: &str,
-        ignore_label: Option<u32>,
-    ) -> PyResult<PyStreamingSemanticEvaluator> {
-        PyStreamingSemanticEvaluator::from_partials(
-            cls,
-            py,
-            n_classes,
-            partials,
-            parity_mode,
-            ignore_label,
-        )
     }
 
     /// Context-manager entry. Returns `self` so `with ev as e:`

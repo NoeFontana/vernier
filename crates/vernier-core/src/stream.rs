@@ -630,16 +630,6 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         self.compute_summary()
     }
 
-    /// "Fast" snapshot. v0: identical to [`Self::snapshot`].
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as [`Self::snapshot`].
-    pub fn snapshot_running(&mut self) -> Result<Summary, EvalError> {
-        // TODO(ADR-0013): running-mode PR-curve approximation.
-        self.snapshot()
-    }
-
     /// Consume the evaluator and return its final [`Summary`].
     ///
     /// # Errors
@@ -873,36 +863,6 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     }
 
     /// Equivalent to [`Self::snapshot_to_partial`]. Retained for
-    /// ADR-0013 API stability — the public surface ships under both
-    /// names so users tracking either ADR find the call they expect.
-    ///
-    /// # Errors
-    ///
-    /// Same as [`Self::snapshot_to_partial`].
-    pub fn checkpoint(&self) -> Result<Vec<u8>, EvalError> {
-        self.snapshot_to_partial()
-    }
-
-    /// Reconstruct an evaluator from a single
-    /// [`Self::checkpoint`] / [`Self::snapshot_to_partial`] blob.
-    /// Thin wrapper over [`Self::from_partials`] with a
-    /// single-element slice; preserves the ADR-0013 signature for
-    /// crash-recovery callers.
-    ///
-    /// # Errors
-    ///
-    /// All variants of [`Self::from_partials`].
-    pub fn restore(
-        dataset: CocoDataset,
-        kernel: K,
-        params: OwnedEvaluateParams,
-        parity_mode: ParityMode,
-        budget: MemoryBudget,
-        bytes: &[u8],
-    ) -> Result<Self, EvalError> {
-        Self::from_partials(dataset, kernel, params, parity_mode, budget, &[bytes])
-    }
-
     /// Construct an evaluator equivalent to a batch run over the
     /// union of all partials' submitted detections (ADR-0031).
     ///
@@ -1370,38 +1330,6 @@ mod tests {
             bbox.0, bbox.1, bbox.2, bbox.3
         );
         body.into_bytes()
-    }
-
-    #[test]
-    fn checkpoint_round_trip_yields_equal_summary() {
-        let ds = tiny_dataset();
-        let mut ev = StreamingEvaluator::new(
-            ds.clone(),
-            BboxIou,
-            default_params(),
-            ParityMode::Corrected,
-            MemoryBudget::auto_default(),
-        )
-        .unwrap();
-        ev.update(&dt_json(1, 0.9, (0.0, 0.0, 10.0, 10.0))).unwrap();
-        ev.update(&dt_json(2, 0.8, (50.0, 50.0, 10.0, 10.0)))
-            .unwrap();
-
-        let blob = ev.checkpoint().unwrap();
-        let summary_a = ev.finalize().unwrap();
-
-        let restored = StreamingEvaluator::<BboxIou>::restore(
-            ds,
-            BboxIou,
-            default_params(),
-            ParityMode::Corrected,
-            MemoryBudget::auto_default(),
-            &blob,
-        )
-        .unwrap();
-        let summary_b = restored.finalize().unwrap();
-
-        assert_eq!(summary_a.stats(), summary_b.stats());
     }
 
     #[test]
