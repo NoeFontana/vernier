@@ -44,9 +44,7 @@ def _iou_kernel(iou_type: IouType) -> IouKind:
 @pytest.mark.parity
 @pytest.mark.parametrize(("fixture", "iou_type"), _PARITY_CASES)
 @pytest.mark.parametrize("n_shards", [1, 4])
-def test_background_finalize_equals_batch(
-    fixture: str, iou_type: IouType, n_shards: int
-) -> None:
+def test_background_finalize_equals_batch(fixture: str, iou_type: IouType, n_shards: int) -> None:
     gt_path = FIXTURES / fixture / "gt.json"
     dt_path = FIXTURES / fixture / "dt.json"
     gt_bytes = gt_path.read_bytes()

@@ -373,12 +373,8 @@ def test_empty_rank_merges_cleanly() -> None:
     populated = _evaluator_partial(n_classes, "corrected", 0, gt_maps, dt_maps)
     empty = _evaluator_partial(n_classes, "corrected", 1, {}, {})
 
-    merged = sem.Evaluator.from_partials(
-        n_classes, [populated, empty], parity_mode="corrected"
-    )
-    only_populated = sem.Evaluator.from_partials(
-        n_classes, [populated], parity_mode="corrected"
-    )
+    merged = sem.Evaluator.from_partials(n_classes, [populated, empty], parity_mode="corrected")
+    only_populated = sem.Evaluator.from_partials(n_classes, [populated], parity_mode="corrected")
 
     np.testing.assert_array_equal(
         merged.confusion_matrix.counts(),

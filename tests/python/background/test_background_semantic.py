@@ -81,9 +81,7 @@ def test_background_to_partial_round_trips_through_from_partials() -> None:
         bg.submit(image_id, gt_maps[image_id], dt_maps[image_id])
     blob = bg.finalize_to_partial()
 
-    restored_summary = sem.Evaluator.from_partials(
-        n_classes, [blob], parity_mode="strict"
-    )
+    restored_summary = sem.Evaluator.from_partials(n_classes, [blob], parity_mode="strict")
     direct_summary = sem.Evaluator(parity_mode="strict").evaluate(
         sem.Dataset.from_arrays(gt_maps, n_classes=n_classes),
         sem.Predictions.from_arrays(dt_maps),

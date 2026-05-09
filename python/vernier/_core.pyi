@@ -18,12 +18,6 @@ LvisFrequencyLiteral: TypeAlias = Literal["r", "c", "f"]
 
 __version__: str
 
-class _UpdateReportDict(TypedDict):
-    new_images: int
-    new_detections: int
-    memory_used_bytes: int
-    soft_warn_triggered: bool
-
 _TablesResult: TypeAlias = tuple[
     Summary,
     ArrowRecordBatch | None,  # per_image
@@ -31,76 +25,6 @@ _TablesResult: TypeAlias = tuple[
     ArrowRecordBatch | None,  # per_detection
     ArrowRecordBatch | None,  # per_pair
 ]
-
-class StreamingEvaluator:
-    def __init__(
-        self,
-        gt_json: bytes,
-        *,
-        iou_type: Literal["bbox", "segm", "boundary", "keypoints"] = ...,
-        parity_mode: Literal["strict", "corrected"] = ...,
-        max_dets: list[int] = ...,
-        use_cats: bool = ...,
-        memory_budget_bytes: int | None = ...,
-        dilation_ratio: float = ...,
-        sigmas: dict[int, list[float]] | None = ...,
-        retain_iou: bool = ...,
-        cast_inputs: bool = ...,
-        rank_id: int | None = ...,
-    ) -> None: ...
-    def update(self, detections: DetectionsInput) -> _UpdateReportDict: ...
-    def snapshot(self, *, running: bool = ...) -> Summary: ...
-    def snapshot_with_tables(
-        self,
-        *,
-        per_image: bool = ...,
-        per_class: bool = ...,
-        per_detection: bool = ...,
-        per_pair: bool = ...,
-        per_pair_iou_floor: float = ...,
-        per_pair_max_rows: int = ...,
-        per_detection_with_geometry: bool = ...,
-    ) -> _TablesResult: ...
-    def finalize(self) -> Summary: ...
-    def finalize_with_tables(
-        self,
-        *,
-        per_image: bool = ...,
-        per_class: bool = ...,
-        per_detection: bool = ...,
-        per_pair: bool = ...,
-        per_pair_iou_floor: float = ...,
-        per_pair_max_rows: int = ...,
-        per_detection_with_geometry: bool = ...,
-    ) -> _TablesResult: ...
-    def to_partial(self) -> bytes: ...
-    def finalize_to_partial(self) -> bytes: ...
-    @classmethod
-    def from_partials(
-        cls,
-        gt_json: bytes,
-        partials: Sequence[bytes],
-        *,
-        iou_type: Literal["bbox", "segm", "boundary", "keypoints"] = ...,
-        parity_mode: Literal["strict", "corrected"] = ...,
-        max_dets: list[int] = ...,
-        use_cats: bool = ...,
-        memory_budget_bytes: int | None = ...,
-        dilation_ratio: float = ...,
-        sigmas: dict[int, list[float]] | None = ...,
-        retain_iou: bool = ...,
-        cast_inputs: bool = ...,
-    ) -> Self: ...
-    @property
-    def images_seen(self) -> int: ...
-    @property
-    def detections_seen(self) -> int: ...
-    @property
-    def images_pending(self) -> int: ...
-    @property
-    def memory_used_bytes(self) -> int: ...
-    @property
-    def memory_budget_bytes(self) -> int: ...
 
 class OutOfBudgetError(RuntimeError):
     used_bytes: int
@@ -163,21 +87,8 @@ class BackgroundEvaluator:
         rank_id: int | None = ...,
         record_latency_samples: bool = ...,
     ) -> None: ...
-    def to_partial(self) -> bytes: ...
     def finalize_to_partial(self) -> bytes: ...
     def submit(self, detections: DetectionsInput, *, timeout: float | None = ...) -> None: ...
-    def snapshot(self, *, peek: bool = ...) -> Summary: ...
-    def snapshot_with_tables(
-        self,
-        *,
-        per_image: bool = ...,
-        per_class: bool = ...,
-        per_detection: bool = ...,
-        per_pair: bool = ...,
-        per_pair_iou_floor: float = ...,
-        per_pair_max_rows: int = ...,
-        per_detection_with_geometry: bool = ...,
-    ) -> _TablesResult: ...
     def finalize(self) -> Summary: ...
     def finalize_with_tables(
         self,
@@ -608,51 +519,6 @@ class PanopticPredictions:
     @property
     def num_images(self) -> int: ...
 
-class StreamingPanopticEvaluator:
-    def __init__(
-        self,
-        categories: bytes,
-        parity_mode: str,
-        *,
-        things_stuff_split: bool = ...,
-        retain_per_image_deltas: bool = ...,
-        rank_id: int | None = ...,
-    ) -> None: ...
-    @property
-    def n_images(self) -> int: ...
-    @property
-    def n_categories(self) -> int: ...
-    def update(
-        self,
-        image_id: int,
-        gt_label_map: NDArray[np.uint32],
-        gt_segments_info: bytes,
-        dt_label_map: NDArray[np.uint32],
-        dt_segments_info: bytes,
-    ) -> None: ...
-    def update_png(
-        self,
-        image_id: int,
-        gt_png_bytes: bytes,
-        gt_segments_info: bytes,
-        dt_png_bytes: bytes,
-        dt_segments_info: bytes,
-    ) -> None: ...
-    def snapshot(self) -> PanopticSummary: ...
-    def finalize(self) -> PanopticSummary: ...
-    def to_partial(self) -> bytes: ...
-    def finalize_to_partial(self) -> bytes: ...
-    @classmethod
-    def from_partials(
-        cls,
-        categories: bytes,
-        partials: Sequence[bytes],
-        parity_mode: str,
-        *,
-        things_stuff_split: bool = ...,
-        retain_per_image_deltas: bool = ...,
-    ) -> StreamingPanopticEvaluator: ...
-
 def evaluate_panoptic(
     gt: PanopticDataset,
     dt: PanopticPredictions,
@@ -744,39 +610,6 @@ def merge_semantic_partials(
     ignore_label: int | None = ...,
 ) -> SemanticSummary: ...
 
-class StreamingSemanticEvaluator:
-    def __init__(
-        self,
-        n_classes: int,
-        parity_mode: str,
-        *,
-        ignore_label: int | None = ...,
-        rank_id: int | None = ...,
-    ) -> None: ...
-    @property
-    def n_images(self) -> int: ...
-    @property
-    def n_classes(self) -> int: ...
-    def update(
-        self,
-        image_id: int,
-        gt: NDArray[np.uint32],
-        dt: NDArray[np.uint32],
-    ) -> None: ...
-    def snapshot(self) -> SemanticSummary: ...
-    def finalize(self) -> SemanticSummary: ...
-    def to_partial(self) -> bytes: ...
-    def finalize_to_partial(self) -> bytes: ...
-    @classmethod
-    def from_partials(
-        cls,
-        n_classes: int,
-        partials: Sequence[bytes],
-        parity_mode: str,
-        *,
-        ignore_label: int | None = ...,
-    ) -> StreamingSemanticEvaluator: ...
-
 class BackgroundSemanticEvaluator:
     def __init__(
         self,
@@ -804,19 +637,8 @@ class BackgroundSemanticEvaluator:
         *,
         timeout: float | None = ...,
     ) -> None: ...
-    def snapshot(self) -> SemanticSummary: ...
     def finalize(self) -> SemanticSummary: ...
-    def to_partial(self) -> bytes: ...
     def finalize_to_partial(self) -> bytes: ...
-    @classmethod
-    def from_partials(
-        cls,
-        n_classes: int,
-        partials: Sequence[bytes],
-        parity_mode: str,
-        *,
-        ignore_label: int | None = ...,
-    ) -> StreamingSemanticEvaluator: ...
     def __enter__(self) -> Self: ...
     def __exit__(
         self,
@@ -865,20 +687,8 @@ class BackgroundPanopticEvaluator:
         *,
         timeout: float | None = ...,
     ) -> None: ...
-    def snapshot(self) -> PanopticSummary: ...
     def finalize(self) -> PanopticSummary: ...
-    def to_partial(self) -> bytes: ...
     def finalize_to_partial(self) -> bytes: ...
-    @classmethod
-    def from_partials(
-        cls,
-        categories: bytes,
-        partials: Sequence[bytes],
-        parity_mode: str,
-        *,
-        things_stuff_split: bool = ...,
-        retain_per_image_deltas: bool = ...,
-    ) -> StreamingPanopticEvaluator: ...
     def __enter__(self) -> Self: ...
     def __exit__(
         self,

@@ -116,9 +116,7 @@ def test_corrected_merge_within_envelope(n_ranks: int) -> None:
     seeds = list(range(8))
     shards = [seeds[i::n_ranks] for i in range(n_ranks)]
     partials = [_evaluator_partial("corrected", rank, shard) for rank, shard in enumerate(shards)]
-    merged = pq.Evaluator.from_partials(
-        THREE_CLASS_CATS_JSON, partials, parity_mode="corrected"
-    )
+    merged = pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, partials, parity_mode="corrected")
 
     # 4-ULP envelope: ulp(1.0) = 2^-52, so 4-ULP at PQ=1.0 is ~9e-16.
     # Use a generous tolerance; corrected-mode values stay well within.
@@ -142,9 +140,7 @@ def test_strict_merge_bit_equals_batch_with_deltas(n_ranks: int) -> None:
     """
     seeds = list(range(8))
     # Single-rank baseline via evaluate_to_partial + from_partials.
-    baseline_partial = _evaluator_partial(
-        "strict", 0, seeds, retain_per_image_deltas=True
-    )
+    baseline_partial = _evaluator_partial("strict", 0, seeds, retain_per_image_deltas=True)
     batch_summary = pq.Evaluator.from_partials(
         THREE_CLASS_CATS_JSON,
         [baseline_partial],
@@ -158,7 +154,10 @@ def test_strict_merge_bit_equals_batch_with_deltas(n_ranks: int) -> None:
         _evaluator_partial("strict", rank, shard, retain_per_image_deltas=True)
         for rank, shard in enumerate(shards)
     ]
-    merged = pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, partials, parity_mode="strict",
+    merged = pq.Evaluator.from_partials(
+        THREE_CLASS_CATS_JSON,
+        partials,
+        parity_mode="strict",
         retain_per_image_deltas=True,
     )
 
@@ -198,16 +197,12 @@ def test_n_way_equals_pairwise_reduction() -> None:
     shards = [seeds[i::3] for i in range(3)]
     a, b, c = (_evaluator_partial("corrected", rank, shard) for rank, shard in enumerate(shards))
 
-    one_shot = pq.Evaluator.from_partials(
-        THREE_CLASS_CATS_JSON, [a, b, c], parity_mode="corrected"
-    )
+    one_shot = pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, [a, b, c], parity_mode="corrected")
     # The public from_partials returns a Summary, not an evaluator,
     # so a true pairwise reduction (merge ab → use its bytes alongside
     # c) isn't expressible. Compare against a redundant 3-way to pin
     # the input-order property (commutative across permutations).
-    pairwise = pq.Evaluator.from_partials(
-        THREE_CLASS_CATS_JSON, [a, b, c], parity_mode="corrected"
-    )
+    pairwise = pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, [a, b, c], parity_mode="corrected")
 
     # Integer counters in per_class are exact; f64 PQ may differ
     # slightly due to reorder.
@@ -283,7 +278,8 @@ def test_parity_mode_mismatch_rejected() -> None:
 def test_things_stuff_split_mismatch_rejected() -> None:
     a = _evaluator_partial("corrected", 0, [1], things_stuff_split=False)
     with pytest.raises(pq.PartialParamsMismatch):
-        pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, [a], parity_mode="corrected", things_stuff_split=True
+        pq.Evaluator.from_partials(
+            THREE_CLASS_CATS_JSON, [a], parity_mode="corrected", things_stuff_split=True
         )
 
 
@@ -299,7 +295,10 @@ def test_retain_per_image_deltas_mismatch_rejected() -> None:
     """
     a = _evaluator_partial("strict", 0, [1], retain_per_image_deltas=False)
     with pytest.raises(pq.PartialParamsMismatch):
-        pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, [a], parity_mode="strict",
+        pq.Evaluator.from_partials(
+            THREE_CLASS_CATS_JSON,
+            [a],
+            parity_mode="strict",
             retain_per_image_deltas=True,
         )
 
@@ -321,7 +320,8 @@ def test_paradigm_mismatch_rejected() -> None:
     )
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, [instance_partial], parity_mode="corrected"
+        pq.Evaluator.from_partials(
+            THREE_CLASS_CATS_JSON, [instance_partial], parity_mode="corrected"
         )
     assert exc_info.value.kind == "paradigm_mismatch"
 
@@ -376,8 +376,7 @@ def test_crc_corruption_detected() -> None:
     partial[20] ^= 0xFF
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, [bytes(partial)], parity_mode="corrected"
-        )
+        pq.Evaluator.from_partials(THREE_CLASS_CATS_JSON, [bytes(partial)], parity_mode="corrected")
     assert exc_info.value.kind in {"crc", "rkyv_decode"}
 
 
