@@ -110,3 +110,70 @@ def test_evaluate_from_pngs_rejects_label_remap(tmp_path: Path) -> None:
         vsem.Evaluator(parity_mode="strict", label_remap={0: 1}).evaluate_from_pngs(
             {0: p}, {0: p}, n_classes=3
         )
+
+
+@pytest.mark.parity_semantic
+def test_submit_png_matches_submit_array(tmp_path: Path) -> None:
+    """`BackgroundEvaluator.submit_png` must produce a confusion matrix
+    bit-equal to the array-input `submit` path on the same fixtures
+    (ADR-0037)."""
+    rng = np.random.default_rng(0xCAFEBABE)
+    n_classes = 4
+    ignore_label = 255
+
+    gt_arrays = _make_fixture(rng, n_images=8, height=32, width=48)
+    dt_arrays = _make_fixture(rng, n_images=8, height=32, width=48)
+
+    array_evaluator = vsem.Evaluator(parity_mode="strict")
+    with array_evaluator.background(n_classes, ignore_label=ignore_label) as bg_array:
+        for iid in sorted(gt_arrays):
+            bg_array.submit(
+                iid,
+                gt_arrays[iid].astype(np.uint32, copy=False),
+                dt_arrays[iid].astype(np.uint32, copy=False),
+            )
+        array_summary = bg_array.finalize()
+
+    gt_dir = tmp_path / "gt"
+    dt_dir = tmp_path / "dt"
+    gt_dir.mkdir()
+    dt_dir.mkdir()
+    gt_bytes_map: dict[int, bytes] = {}
+    dt_bytes_map: dict[int, bytes] = {}
+    for iid, arr in gt_arrays.items():
+        p = gt_dir / f"{iid}.png"
+        _write_grayscale8(p, arr)
+        gt_bytes_map[iid] = p.read_bytes()
+    for iid, arr in dt_arrays.items():
+        p = dt_dir / f"{iid}.png"
+        _write_grayscale8(p, arr)
+        dt_bytes_map[iid] = p.read_bytes()
+
+    png_evaluator = vsem.Evaluator(parity_mode="strict")
+    with png_evaluator.background(n_classes, ignore_label=ignore_label) as bg_png:
+        for iid in sorted(gt_bytes_map):
+            bg_png.submit_png(iid, gt_bytes_map[iid], dt_bytes_map[iid])
+        png_summary = bg_png.finalize()
+
+    np.testing.assert_array_equal(
+        png_summary.confusion_matrix.counts(),
+        array_summary.confusion_matrix.counts(),
+        err_msg="submit_png must produce a bit-equal confusion matrix vs submit(array)",
+    )
+    assert png_summary.miou == array_summary.miou
+
+
+@pytest.mark.parity_semantic
+def test_submit_png_rejects_rgb_png(tmp_path: Path) -> None:
+    from PIL import Image
+
+    rgb = np.zeros((4, 4, 3), dtype=np.uint8)
+    p = tmp_path / "rgb.png"
+    Image.fromarray(rgb, mode="RGB").save(p, format="PNG")
+    bytes_ = p.read_bytes()
+
+    with (
+        vsem.Evaluator(parity_mode="strict").background(3, ignore_label=255) as bg,
+        pytest.raises(ValueError, match="unsupported PNG format"),
+    ):
+        bg.submit_png(0, bytes_, bytes_)

@@ -35,7 +35,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList};
 
 use vernier_partial::PartialError;
-use vernier_semantic::decode::evaluate_from_pngs;
+use vernier_semantic::decode::{decode_grayscale8, evaluate_from_pngs};
 use vernier_semantic::kernel::accumulate_confusion;
 use vernier_semantic::{
     summarize, ClassSemanticStats, ConfusionMatrix, SemanticError, SemanticSummary,
@@ -635,12 +635,23 @@ pub(crate) fn merge_semantic_partials<'py>(
 // ---------------------------------------------------------------------------
 
 /// Per-image payload carried over the worker channel. Owned data —
-/// the FFI thread builds this from the user's numpy arrays before
-/// dropping the GIL.
-pub(crate) struct SemanticUpdate {
-    image_id: ImageId,
-    gt: Vec<u32>,
-    dt: Vec<u32>,
+/// the FFI thread builds this from the user's numpy arrays (or
+/// PNG-decoded `u8` buffer) before dropping the GIL.
+pub(crate) enum SemanticUpdate {
+    /// Pre-decoded `u32` label maps from the array-input `submit` path.
+    U32 {
+        image_id: ImageId,
+        gt: Vec<u32>,
+        dt: Vec<u32>,
+    },
+    /// Native-width `u8` label maps from the `submit_png` path. The
+    /// FFI thread runs the libpng decode synchronously before sending
+    /// (per ADR-0037 the kernel walks at native dtype).
+    U8 {
+        image_id: ImageId,
+        gt: Vec<u8>,
+        dt: Vec<u8>,
+    },
 }
 
 impl BackgroundCapable for StreamingSemanticEvaluator {
@@ -649,7 +660,10 @@ impl BackgroundCapable for StreamingSemanticEvaluator {
     type Error = SemanticError;
 
     fn apply_update(&mut self, u: SemanticUpdate) -> Result<(), SemanticError> {
-        self.update(u.image_id, &u.gt, &u.dt)
+        match u {
+            SemanticUpdate::U32 { image_id, gt, dt } => self.update(image_id, &gt, &dt),
+            SemanticUpdate::U8 { image_id, gt, dt } => self.update(image_id, &gt, &dt),
+        }
     }
 
     fn finalize(self) -> Result<SemanticSummary, SemanticError> {
@@ -821,7 +835,7 @@ impl PyBackgroundSemanticEvaluator {
             }
         };
 
-        let payload = SemanticUpdate {
+        let payload = SemanticUpdate::U32 {
             image_id,
             gt: gt_view.iter().copied().collect(),
             dt: dt_view.iter().copied().collect(),
@@ -829,6 +843,76 @@ impl PyBackgroundSemanticEvaluator {
 
         let lifecycle = &self.lifecycle;
         let result = py.detach(move || -> Result<(), SubmitError<SemanticError>> {
+            let guard = lifecycle.lock().map_err(|_| {
+                SubmitError::Eval(StreamingSemanticEvaluator::worker_disconnected())
+            })?;
+            let core = guard.active().map_err(SubmitError::Eval)?;
+            match timeout_dur {
+                None => core.submit_blocking(payload).map_err(SubmitError::Eval),
+                Some(t) => core.submit_timeout(payload, t),
+            }
+        });
+        result.map_err(|e| match e {
+            SubmitError::Eval(inner) => semantic_error_to_pyerr(py, &inner),
+            SubmitError::Full(full) => queue_full_to_pyerr(py, full),
+        })
+    }
+
+    /// Submit one image's `(gt_png_bytes, dt_png_bytes)` 8-bit grayscale
+    /// PNG pair to the worker (ADR-0037). Decodes synchronously on the
+    /// FFI thread (under `py.detach`) and sends the native-width `u8`
+    /// label maps across the channel; the worker folds at native width
+    /// without a 4× upcast.
+    ///
+    /// Strictly equivalent to
+    /// ``submit(image_id, decode_label_map_png(gt_path).astype(uint32),
+    /// decode_label_map_png(dt_path).astype(uint32), ...)``; the diff
+    /// is wall-time, not correctness.
+    ///
+    /// Format contract: 8-bit grayscale only. `timeout` mirrors `submit`.
+    #[pyo3(signature = (image_id, gt_png_bytes, dt_png_bytes, *, timeout = None))]
+    fn submit_png(
+        &self,
+        py: Python<'_>,
+        image_id: i64,
+        gt_png_bytes: &[u8],
+        dt_png_bytes: &[u8],
+        timeout: Option<f64>,
+    ) -> PyResult<()> {
+        let timeout_dur = match timeout {
+            None => None,
+            Some(t) => {
+                if !t.is_finite() || t < 0.0 {
+                    return Err(PyValueError::new_err(format!(
+                        "timeout must be a non-negative finite float or None, got {t}"
+                    )));
+                }
+                Some(Duration::from_secs_f64(t))
+            }
+        };
+
+        // Decode + send happen GIL-released so the user's main thread
+        // is free to fan out the next image.
+        let owned_gt_bytes = gt_png_bytes.to_vec();
+        let owned_dt_bytes = dt_png_bytes.to_vec();
+        let lifecycle = &self.lifecycle;
+        let result = py.detach(move || -> Result<(), SubmitError<SemanticError>> {
+            let (gt_buf, gt_dims) =
+                decode_grayscale8(image_id, &owned_gt_bytes).map_err(SubmitError::Eval)?;
+            let (dt_buf, dt_dims) =
+                decode_grayscale8(image_id, &owned_dt_bytes).map_err(SubmitError::Eval)?;
+            if gt_dims != dt_dims {
+                return Err(SubmitError::Eval(SemanticError::ShapeMismatch {
+                    image_id,
+                    gt_shape: gt_dims,
+                    dt_shape: dt_dims,
+                }));
+            }
+            let payload = SemanticUpdate::U8 {
+                image_id,
+                gt: gt_buf,
+                dt: dt_buf,
+            };
             let guard = lifecycle.lock().map_err(|_| {
                 SubmitError::Eval(StreamingSemanticEvaluator::worker_disconnected())
             })?;

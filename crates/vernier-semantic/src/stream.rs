@@ -27,6 +27,7 @@ use vernier_partial::RankId;
 
 use crate::distributed::{encode, semantic_expectation, EncodeInput, SemanticMergeAccumulator};
 use crate::error::{ImageId, SemanticError};
+use crate::kernel;
 use crate::kernel::{accumulate_confusion, ConfusionMatrix};
 use crate::parity::ParityMode;
 use crate::summarize::{summarize, SemanticSummary};
@@ -122,15 +123,19 @@ impl StreamingSemanticEvaluator {
     /// confusion matrix. `image_id` is recorded for error attribution
     /// only — the kernel does not key by image id.
     ///
+    /// Generic over [`kernel::ClassId`] (`u8` / `u16` / `u32`) per
+    /// ADR-0037: the streaming path can accept native-width PNG-decoded
+    /// buffers without a 4× upcast at the boundary.
+    ///
     /// Returns [`SemanticError::ShapeMismatch`] if the GT and DT
     /// slices have different lengths (the streaming evaluator is
     /// the load-bearing place for this check; the kernel itself
     /// `debug_assert!`s but does not return).
-    pub fn update(
+    pub fn update<T: kernel::ClassId>(
         &mut self,
         image_id: ImageId,
-        gt: &[u32],
-        dt: &[u32],
+        gt: &[T],
+        dt: &[T],
     ) -> Result<(), SemanticError> {
         if gt.len() != dt.len() {
             // Surface as ShapeMismatch with synthetic (h, w) shapes.
@@ -233,8 +238,8 @@ mod tests {
         // Two images, both perfect match. Streaming finalize must
         // bit-equal the batch summarize over the same images.
         let mut ev = StreamingSemanticEvaluator::new(3, None, ParityMode::Corrected);
-        ev.update(1, &[0, 1, 2], &[0, 1, 2])?;
-        ev.update(2, &[0, 0, 1, 2], &[0, 0, 1, 2])?;
+        ev.update(1, &[0u32, 1, 2], &[0u32, 1, 2])?;
+        ev.update(2, &[0u32, 0, 1, 2], &[0u32, 0, 1, 2])?;
         let stream_summary = ev.finalize();
 
         let mut batch_cm = ConfusionMatrix::zeros(3);
@@ -257,7 +262,7 @@ mod tests {
     #[test]
     fn streaming_snapshot_equals_finalize_when_idempotent() -> Result<(), SemanticError> {
         let mut ev = StreamingSemanticEvaluator::new(2, None, ParityMode::Corrected);
-        ev.update(1, &[0, 1, 0, 1], &[0, 1, 1, 1])?;
+        ev.update(1, &[0u32, 1, 0, 1], &[0u32, 1, 1, 1])?;
         let snap = ev.snapshot();
         let fin = ev.finalize();
         assert_eq!(snap.miou.to_bits(), fin.miou.to_bits());
@@ -267,10 +272,10 @@ mod tests {
     #[test]
     fn snapshot_does_not_consume_evaluator() -> Result<(), SemanticError> {
         let mut ev = StreamingSemanticEvaluator::new(2, None, ParityMode::Corrected);
-        ev.update(1, &[0], &[0])?;
+        ev.update(1, &[0u32], &[0u32])?;
         let _ = ev.snapshot();
         // Evaluator is still usable.
-        ev.update(2, &[1], &[1])?;
+        ev.update(2, &[1u32], &[1u32])?;
         assert_eq!(ev.n_images(), 2);
         Ok(())
     }
@@ -278,7 +283,7 @@ mod tests {
     #[test]
     fn shape_mismatch_returns_typed_error() {
         let mut ev = StreamingSemanticEvaluator::new(2, None, ParityMode::Corrected);
-        let err = ev.update(7, &[0, 1], &[0]).unwrap_err();
+        let err = ev.update(7, &[0u32, 1], &[0u32]).unwrap_err();
         assert!(matches!(
             err,
             SemanticError::ShapeMismatch { image_id: 7, .. }
@@ -290,7 +295,7 @@ mod tests {
     #[test]
     fn ignore_label_propagates_through_streaming() -> Result<(), SemanticError> {
         let mut ev = StreamingSemanticEvaluator::new(2, Some(255), ParityMode::Corrected);
-        ev.update(1, &[0, 255, 1], &[0, 99, 1])?;
+        ev.update(1, &[0u32, 255, 1], &[0u32, 99, 1])?;
         let summary = ev.finalize();
         // Two non-ignore pixels, both diagonal → mIoU = 1.0.
         assert!(approx_eq(summary.miou, 1.0, 0.0));
