@@ -1,6 +1,11 @@
 # ADR-0032: Distributed evaluation across paradigms
 
-- **Status:** accepted
+- **Status:** accepted (amended by [ADR-0035](0035-api-surface-consolidation.md))
+  — the wire envelope, paradigm enum, per-paradigm strict-mode determinism
+  rows, and the shared ``Partial*`` exception family are all unchanged.
+  ``to_partial`` / ``from_partials`` move from ``Streaming{,Panoptic,Semantic}Evaluator``
+  to ``Evaluator`` on each paradigm namespace; the streaming classes remain
+  available privately at ``vernier._impl``.
 - **Date:** 2026-05-05
 - **Deciders:** @NoeFontana
 - **Consulted:** —

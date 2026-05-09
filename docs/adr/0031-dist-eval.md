@@ -1,6 +1,11 @@
 # ADR-0031: Distributed evaluation — `from_partials` and the partial wire format
 
-- **Status:** accepted
+- **Status:** accepted (amended by [ADR-0035](0035-api-surface-consolidation.md))
+  — the wire format, ``FORMAT_VERSION``, partition-disjointness invariant,
+  and the five paradigm-shared ``Partial*`` exceptions are unchanged. Only
+  the Python entry class moved: ``to_partial`` / ``from_partials`` now live
+  on ``vernier.{instance,panoptic,semantic}.Evaluator`` instead of on
+  ``StreamingEvaluator`` (which is now private at ``vernier._impl``).
 - **Date:** 2026-05-05
 - **Deciders:** @NoeFontana
 - **Consulted:** —

@@ -1,6 +1,12 @@
 # ADR-0013: Streaming evaluator — store per-image evals, fold on snapshot and finalize
 
-- **Status:** accepted
+- **Status:** superseded by [ADR-0035](0035-api-surface-consolidation.md)
+  (the public ``StreamingEvaluator`` class is demoted to ``vernier._impl``
+  and the DDP entry points move to ``Evaluator``; the streaming substrate
+  itself continues to exist below the FFI). The ``snapshot(running=True)``
+  and ``checkpoint``/``restore`` sections of this ADR are no longer
+  load-bearing.
+- **Original status:** accepted
 - **Date:** 2026-04-28
 - **Deciders:** @NoeFontana
 - **Consulted:** —
