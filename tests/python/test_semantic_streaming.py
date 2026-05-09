@@ -109,7 +109,7 @@ def test_streaming_n_classes_zero_rejected() -> None:
 
 def test_streaming_unknown_parity_mode_rejected() -> None:
     with pytest.raises(ValueError, match="parity_mode"):
-        StreamingEvaluator(3, "aligned")  # type: ignore[arg-type]
+        StreamingEvaluator(3, "aligned")
 
 
 def test_streaming_finalize_resets_state() -> None:

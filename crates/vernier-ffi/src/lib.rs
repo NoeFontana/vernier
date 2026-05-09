@@ -2471,30 +2471,6 @@ impl BackgroundEvalState {
         }
     }
 
-    fn snapshot(&self, peek: bool) -> Result<Summary, EvalError> {
-        match self {
-            Self::Bbox(ev) => ev.snapshot(peek),
-            Self::Segm(ev) => ev.snapshot(peek),
-            Self::Boundary(ev) => ev.snapshot(peek),
-            Self::Keypoints(ev) => ev.snapshot(peek),
-            Self::Finalized => Err(background_finalized_error()),
-        }
-    }
-
-    fn snapshot_with_tables(
-        &self,
-        request: TablesRequest,
-        config: TablesConfig,
-    ) -> Result<(Summary, Tables), EvalError> {
-        match self {
-            Self::Bbox(ev) => ev.snapshot_with_tables(request, config),
-            Self::Segm(ev) => ev.snapshot_with_tables(request, config),
-            Self::Boundary(ev) => ev.snapshot_with_tables(request, config),
-            Self::Keypoints(ev) => ev.snapshot_with_tables(request, config),
-            Self::Finalized => Err(background_finalized_error()),
-        }
-    }
-
     fn take_and_finalize(&mut self) -> Result<Summary, EvalError> {
         let prev = std::mem::replace(self, Self::Finalized);
         match prev {
@@ -2517,16 +2493,6 @@ impl BackgroundEvalState {
             Self::Segm(ev) => ev.finalize_with_tables(request, config),
             Self::Boundary(ev) => ev.finalize_with_tables(request, config),
             Self::Keypoints(ev) => ev.finalize_with_tables(request, config),
-            Self::Finalized => Err(background_finalized_error()),
-        }
-    }
-
-    fn snapshot_to_partial(&self) -> Result<Vec<u8>, EvalError> {
-        match self {
-            Self::Bbox(ev) => ev.snapshot_to_partial(),
-            Self::Segm(ev) => ev.snapshot_to_partial(),
-            Self::Boundary(ev) => ev.snapshot_to_partial(),
-            Self::Keypoints(ev) => ev.snapshot_to_partial(),
             Self::Finalized => Err(background_finalized_error()),
         }
     }

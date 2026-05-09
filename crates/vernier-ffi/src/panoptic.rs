@@ -881,16 +881,8 @@ impl BackgroundCapable for StreamingPanopticEvaluator {
         self.update(u.image_id, &u.gt, &u.dt)
     }
 
-    fn snapshot(&self) -> Result<PanopticSummary, PanopticError> {
-        StreamingPanopticEvaluator::snapshot(self)
-    }
-
     fn finalize(self) -> Result<PanopticSummary, PanopticError> {
         StreamingPanopticEvaluator::finalize(self)
-    }
-
-    fn snapshot_to_partial(&self) -> Result<Vec<u8>, PanopticError> {
-        StreamingPanopticEvaluator::snapshot_to_partial(self)
     }
 
     fn finalize_to_partial(self) -> Result<Vec<u8>, PanopticError> {

@@ -59,46 +59,7 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   `finalize` / `finalize_with_tables` / `finalize_to_partial` only.
 - `BackgroundPanopticEvaluator.from_partials` /
   `BackgroundSemanticEvaluator.from_partials` — vestigial (return-
-  type bug carried them; no caller used them). The classmethod lives
-  on `Evaluator`; the underlying machinery lives on
-  `vernier._impl.Streaming{Panoptic,Semantic}Evaluator`.
-
-### Migration
-
-```python
-# Before
-from vernier.instance import StreamingEvaluator
-ev = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=rank)
-ev.update(dt_bytes)
-partial = ev.finalize_to_partial()
-merged = StreamingEvaluator.from_partials(gt_bytes, partials, iou_type="bbox").finalize()
-
-# After
-from vernier.instance import Evaluator, Bbox
-ev = Evaluator(iou=Bbox())
-partial = ev.evaluate_to_partial(gt_bytes, dt_bytes, rank_id=rank)
-merged = Evaluator.from_partials(gt_bytes, partials, iou=Bbox())  # Summary
-```
-
-For training-loop submit-then-finalize:
-
-```python
-# Before
-ev = StreamingEvaluator(gt_bytes, iou_type="bbox")
-for batch in val_loader:
-    ev.update(batch)
-    if step % 100 == 0:
-        log(ev.snapshot(running=True))   # biased; removed
-final = ev.finalize()
-
-# After
-with BackgroundEvaluator(gt_bytes, iou_type="bbox") as ev:
-    for batch in val_loader:
-        ev.submit(batch)
-    final = ev.finalize()
-# For unbiased mid-epoch readouts, accumulate dt and call
-# Evaluator.evaluate(gt, accumulated_dt) every N steps.
-```
+  type bug carried them; no caller used them).
 
 - **Semantic-segmentation user docs** (ADR-0028 PR-B10) — three new
   pages in `docs/`: `migrate/from-mmsegmentation.md` (semantic-side

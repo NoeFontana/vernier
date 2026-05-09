@@ -27,8 +27,6 @@ import numpy as np
 import pytest
 from PIL import Image as PILImage
 
-import vernier
-import vernier.panoptic
 from vernier._impl import StreamingPanopticEvaluator
 
 from .harness import (

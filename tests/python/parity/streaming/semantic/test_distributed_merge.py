@@ -76,7 +76,9 @@ def _evaluator_partial(
     ignore_label: int | None = None,
 ) -> bytes:
     """Build a partial blob for one rank's shard."""
-    ev = StreamingSemanticEvaluator(n_classes, parity_mode, ignore_label=ignore_label, rank_id=rank_id)
+    ev = StreamingSemanticEvaluator(
+        n_classes, parity_mode, ignore_label=ignore_label, rank_id=rank_id
+    )
     for image_id in sorted(gt_shard):
         ev.update(image_id, gt_shard[image_id], dt_shard[image_id])
     return ev.finalize_to_partial()
@@ -142,7 +144,9 @@ def test_roundtrip_single_partial_equals_finalize() -> None:
     direct = ev.snapshot()
 
     partial = ev.finalize_to_partial()
-    restored = StreamingSemanticEvaluator.from_partials(n_classes, [partial], "corrected").finalize()
+    restored = StreamingSemanticEvaluator.from_partials(
+        n_classes, [partial], "corrected"
+    ).finalize()
 
     np.testing.assert_array_equal(
         direct.confusion_matrix.counts(),
@@ -169,9 +173,13 @@ def test_n_way_equals_pairwise_reduction() -> None:
         for rank, (g, d) in enumerate(zip(gt_shards, dt_shards))
     )
 
-    one_shot = StreamingSemanticEvaluator.from_partials(n_classes, [a, b, c], "corrected").finalize()
+    one_shot = StreamingSemanticEvaluator.from_partials(
+        n_classes, [a, b, c], "corrected"
+    ).finalize()
 
-    ab = StreamingSemanticEvaluator.from_partials(n_classes, [a, b], "corrected").finalize_to_partial()
+    ab = StreamingSemanticEvaluator.from_partials(
+        n_classes, [a, b], "corrected"
+    ).finalize_to_partial()
     pairwise = StreamingSemanticEvaluator.from_partials(n_classes, [ab, c], "corrected").finalize()
 
     np.testing.assert_array_equal(

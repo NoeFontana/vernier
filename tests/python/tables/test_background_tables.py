@@ -129,5 +129,3 @@ def test_background_finalize_per_detection_matches_batch() -> None:
     from polars.testing import assert_frame_equal
 
     assert_frame_equal(batch_df, bg_df)
-
-
