@@ -25,7 +25,7 @@ Surface:
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Literal
@@ -54,6 +54,7 @@ from vernier._core import (
 from vernier._core import (
     SemanticSummary as Summary,
 )
+from vernier._impl import StreamingSemanticEvaluator as _StreamingSemanticEvaluator
 from vernier._types import ParityMode
 
 __all__ = [
@@ -395,6 +396,64 @@ class Evaluator:
             ignore_label=gt.ignore_label,
             label_remap=dict(self.label_remap) if self.label_remap is not None else None,
         )
+
+    def evaluate_to_partial(
+        self,
+        gt: Dataset,
+        dt: Predictions,
+        *,
+        rank_id: int,
+    ) -> bytes:
+        """Run the evaluation as a per-rank streaming submit and return
+        the serialized partial bytes (ADR-0032, ADR-0035).
+
+        ``rank_id`` identifies this evaluator's rank in a multi-process
+        eval. The partial bytes can be gathered across ranks and merged
+        with :meth:`from_partials` to produce a global :class:`Summary`
+        bit-equal to a batch :meth:`evaluate` over the union (semantic
+        confusion-matrix sums are u64-additive, so strict-mode
+        bit-equality is unconditional per ADR-0032).
+
+        ``label_remap`` does not propagate to the streaming path —
+        callers needing remap apply it on the DT arrays themselves
+        before passing the dataset in.
+        """
+        if self.label_remap is not None:
+            raise NotImplementedError(
+                "Evaluator.evaluate_to_partial does not yet propagate label_remap; "
+                "apply the remap on the DT arrays before constructing Predictions."
+            )
+        ev = _StreamingSemanticEvaluator(
+            gt.n_classes,
+            self.parity_mode,
+            ignore_label=gt.ignore_label,
+            rank_id=rank_id,
+        )
+        for image_id, gt_arr in gt.label_maps.items():
+            ev.update(image_id, gt_arr, dt.label_maps[image_id])
+        return ev.finalize_to_partial()
+
+    @classmethod
+    def from_partials(
+        cls,
+        n_classes: int,
+        partials: Sequence[bytes],
+        /,
+        *,
+        parity_mode: ParityMode = "corrected",
+        ignore_label: int | None = None,
+    ) -> Summary:
+        """Merge ``partials`` (one per rank) into a global :class:`Summary`
+        (ADR-0032, ADR-0035).
+
+        ``n_classes``, ``parity_mode``, and ``ignore_label`` must match
+        what each rank used to produce its partial. Mismatches raise
+        the structured ``Partial*`` errors re-exported on this module.
+        """
+        merged = _StreamingSemanticEvaluator.from_partials(
+            n_classes, partials, parity_mode, ignore_label=ignore_label
+        )
+        return merged.finalize()
 
     def background(
         self,
