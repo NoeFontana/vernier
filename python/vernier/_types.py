@@ -44,6 +44,56 @@ PARITY_CORRECTED: Final[ParityMode] = "corrected"
 #: default.
 DEFAULT_DILATION_RATIO: Final[float] = 0.02
 
+
+class InvalidEvalParams(ValueError):  # noqa: N818 — ADR-0039 ratifies this exact name
+    """Base for paradigm-specific ``Evaluator`` construction errors.
+
+    Raised at ``Evaluator.__post_init__`` time by every paradigm in
+    response to invalid parameter values (out of range, wrong shape,
+    duplicate, conflicting, etc.). Per ADR-0039, validation runs at
+    construction so misconfiguration surfaces fast — ``evaluate()``
+    cannot fail on misconfigured params, only on bad data.
+
+    Each subclass carries the offending field name, the offending
+    value, and a one-line remediation pointer (typically the relevant
+    ADR or doc page).
+    """
+
+    def __init__(self, *, field: str, value: object, remediation: str) -> None:
+        self.field = field
+        self.value = value
+        self.remediation = remediation
+        super().__init__(f"invalid {field}={value!r}: {remediation}")
+
+
+# Subclasses need an explicit ``__init__`` even though they only call
+# super: pyright won't propagate ``InvalidEvalParams.__init__`` through
+# ``ValueError`` in the MRO, so direct construction
+# (``InvalidInstanceParams(field=..., value=..., remediation=...)``)
+# would otherwise type-check as ``ValueError(*args)``.
+
+
+class InvalidInstanceParams(InvalidEvalParams):
+    """Invalid ``vernier.instance.Evaluator`` parameter (ADR-0040)."""
+
+    def __init__(self, *, field: str, value: object, remediation: str) -> None:
+        super().__init__(field=field, value=value, remediation=remediation)
+
+
+class InvalidSemanticParams(InvalidEvalParams):
+    """Invalid ``vernier.semantic.Evaluator`` parameter (ADR-0041)."""
+
+    def __init__(self, *, field: str, value: object, remediation: str) -> None:
+        super().__init__(field=field, value=value, remediation=remediation)
+
+
+class InvalidPanopticParams(InvalidEvalParams):
+    """Invalid ``vernier.panoptic.Evaluator`` parameter (ADR-0042)."""
+
+    def __init__(self, *, field: str, value: object, remediation: str) -> None:
+        super().__init__(field=field, value=value, remediation=remediation)
+
+
 #: The set of result-table identifiers ``Evaluator.evaluate(tables=...)``
 #: accepts. Used in the keyword's :class:`tuple` form
 #: (``tables=("per_image", "per_class")``); the literal alias

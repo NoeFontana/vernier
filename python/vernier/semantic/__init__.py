@@ -64,7 +64,12 @@ from vernier._core import (
     merge_semantic_partials as _merge_semantic_partials,
 )
 from vernier._tables import arrow_to_dataframe
-from vernier._types import ParityMode, normalize_tables_arg
+from vernier._types import (
+    InvalidEvalParams,
+    InvalidSemanticParams,
+    ParityMode,
+    normalize_tables_arg,
+)
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker only
     import polars as pl
@@ -89,6 +94,8 @@ __all__ = [
     "Dataset",
     "EvalResult",
     "Evaluator",
+    "InvalidEvalParams",
+    "InvalidSemanticParams",
     "ParityMode",
     "PartialDatasetMismatch",
     "PartialFormatMismatch",
