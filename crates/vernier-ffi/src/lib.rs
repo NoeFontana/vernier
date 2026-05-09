@@ -1291,7 +1291,7 @@ fn require_nonempty_max_dets(max_dets: &[usize]) -> PyResult<()> {
     }
 }
 
-fn parse_parity_mode(s: &str) -> PyResult<ParityMode> {
+pub(crate) fn parse_parity_mode(s: &str) -> PyResult<ParityMode> {
     match s {
         "strict" => Ok(ParityMode::Strict),
         "corrected" => Ok(ParityMode::Corrected),
