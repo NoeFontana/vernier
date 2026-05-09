@@ -54,10 +54,13 @@ We are at 0.0.x. This is the moment to collapse the surface — before
 2. **Merge `StreamingEvaluator` into `Evaluator` as a stateful
    handle.** Frozen-dataclass `Evaluator` becomes a mutable streaming
    evaluator; `evaluate(...)` mutates internal accumulator state.
-3. **Demote `StreamingEvaluator` to a private substrate; lift DDP
-   methods onto the existing frozen `Evaluator` as new methods.**
-   `BackgroundEvaluator` stays public. `snapshot(running=True)`,
-   `BackgroundEvaluator.snapshot*`, `checkpoint`, `restore` go away.
+3. **Remove the `StreamingEvaluator` pyclass from Python entirely;
+   lift DDP onto `Evaluator` as new methods.** The streaming substrate
+   stays in Rust (`vernier_core::stream`) where the FFI orchestrators
+   and `BackgroundEvaluator`'s worker thread own it; the Python wheel
+   never sees a streaming class. `BackgroundEvaluator` stays public.
+   `snapshot(running=True)`, `BackgroundEvaluator.snapshot*`,
+   `checkpoint`, `restore` go away.
 
 ## Decision outcome
 
@@ -65,10 +68,14 @@ Chosen option: **Option 3.** The frozen-dataclass shape of `Evaluator`
 is preserved (ADR-0006 immutable-config invariant survives). DDP
 methods sit naturally on the batch entry point: `evaluate_to_partial`
 mirrors `evaluate`, and `from_partials` is a classmethod that
-constructs and finalizes in one shot. The streaming class becomes a
-private implementation detail at `vernier._impl`, where the
-`BackgroundEvaluator` wrapper and the new `Evaluator` DDP methods both
-reach it.
+constructs and finalizes in one shot. The streaming class is removed
+from the Python module entirely; six new PyO3 functions
+(`evaluate_*_to_partial` / `merge_*_partials`, two per paradigm) wrap
+the Rust streaming substrate (`StreamingEvaluator<K>`,
+`StreamingPanopticEvaluator`, `StreamingSemanticEvaluator`) which
+remains the implementation. `BackgroundEvaluator` keeps its public
+shape and continues to wrap the same Rust substrate via its worker
+thread.
 
 `BackgroundEvaluator` keeps a small, sharp surface — `submit`,
 `finalize`, `finalize_to_partial`, `finalize_with_tables`, context
@@ -98,13 +105,18 @@ class BackgroundEvaluator:       # worker-thread wrapper (FFI pyclass)
 ```
 
 `StreamingEvaluator`, `StreamingPanopticEvaluator`,
-`StreamingSemanticEvaluator` move to `vernier._impl`. `Evaluator.stream(...)`
-factories on semantic/panoptic are removed (they returned the now-private
+`StreamingSemanticEvaluator` are removed from the Python module
+entirely (no `_impl` shim, no FFI re-export). The Rust substrate
+remains; the new pyfunctions construct it internally. `Evaluator.stream(...)`
+factories on semantic/panoptic are removed (they returned the now-removed
 class).
 
 ### Removed surface
 
-- `StreamingEvaluator` from each paradigm's `__all__`.
+- `StreamingEvaluator`, `StreamingPanopticEvaluator`,
+  `StreamingSemanticEvaluator` removed from `vernier._core` and from
+  every paradigm's `__all__`. No private import path; the Rust struct
+  is unreachable from Python.
 - `StreamingEvaluator.snapshot(running=True)` and the underlying
   `vernier_core::stream::StreamingEvaluator::snapshot_running` method.
 - `StreamingEvaluator.checkpoint` / `restore` (Rust core stubs).
@@ -132,14 +144,15 @@ above delegate down to it.
   features (running/peek/checkpoint) and one return-type bug exit
   the public API.
 - **Negative:** existing users of `vernier.instance.StreamingEvaluator`
-  must change one import to `vernier._impl.StreamingEvaluator` —
-  flagged by `AttributeError` at the public namespace. Users of
-  `Evaluator.stream(...)` (semantic/panoptic) must construct the
-  background variant or reach into `_impl`. Panoptic
-  `evaluate_to_partial` takes per-image tuples rather than the
-  `Dataset/Predictions` pair `evaluate` consumes — `PanopticDataset`
-  doesn't yet expose per-image accessors. A future ADR may close
-  that asymmetry.
+  must rewrite call sites against `Evaluator.evaluate_to_partial`
+  (DDP submit) or `BackgroundEvaluator.submit` (training-loop
+  submit). The streaming class has no Python-side replacement.
+  `Evaluator.stream(...)` factories on semantic/panoptic are gone —
+  use `BackgroundEvaluator(...)` directly or `Evaluator.evaluate_to_partial`
+  for DDP. Panoptic `evaluate_to_partial` takes per-image tuples
+  rather than the `Dataset/Predictions` pair `evaluate` consumes —
+  `PanopticDataset` doesn't yet expose per-image accessors. A future
+  ADR may close that asymmetry.
 - **Neutral:** the streaming substrate, the `vernier-partial` wire
   format, `FORMAT_VERSION = 2`, paradigm enum, partition-disjointness,
   and the five paradigm-shared `Partial*` exception classes are
@@ -175,8 +188,10 @@ above delegate down to it.
 ## Links and references
 
 - ADR-0006 — immutable evaluator config.
-- ADR-0013 — streaming evaluator (this ADR supersedes it; the
-  substrate continues to exist privately at `vernier._impl`).
+- ADR-0013 — streaming evaluator (this ADR supersedes it; the Rust
+  streaming substrate continues to exist as
+  `vernier_core::stream::StreamingEvaluator<K>` and is reachable only
+  via the new PyO3 functions and `BackgroundEvaluator`).
 - ADR-0014 — background evaluator (this ADR amends the public
   surface: snapshot/peek paths removed; resource discipline unchanged).
 - ADR-0029 — namespace restructure (per-paradigm submodules).

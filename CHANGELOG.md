@@ -30,17 +30,22 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   (frozen config dataclass; batch + DDP entry points) and
   `BackgroundEvaluator` (in-training entry point; `submit` /
   `finalize` / `finalize_with_tables` / `finalize_to_partial` /
-  context manager). The streaming substrate continues to exist
-  privately at `vernier._impl`; the public class is gone from the
-  per-paradigm namespaces.
+  context manager). The streaming pyclasses are removed from Python
+  entirely; the Rust substrate stays and is reachable via new
+  PyO3 functions (`evaluate_*_to_partial`, `merge_*_partials`) and
+  via `BackgroundEvaluator`.
 
 ### Removed
 
 - `vernier.{instance,panoptic,semantic}.StreamingEvaluator` — the
-  three streaming pyclasses are now private at `vernier._impl`.
-  Internal callers and tests use `from vernier._impl import
-  StreamingEvaluator` (instance) / `StreamingPanopticEvaluator` /
-  `StreamingSemanticEvaluator`. No public deprecation shim — pre-1.0
+  three streaming pyclasses are removed from Python entirely. They no
+  longer appear on `vernier._core`, on any paradigm namespace, or
+  under a `vernier._impl` shim. The Rust streaming substrate
+  (`vernier_core::stream::StreamingEvaluator<K>`,
+  `StreamingPanopticEvaluator`, `StreamingSemanticEvaluator`) remains
+  as the implementation behind the new
+  `evaluate_*_to_partial` / `merge_*_partials` PyO3 functions and
+  `BackgroundEvaluator`'s worker. No public deprecation shim — pre-1.0
   hard break.
 - `Evaluator.stream(...)` factory on `vernier.{panoptic,semantic}` —
   removed alongside the public streaming class. Use

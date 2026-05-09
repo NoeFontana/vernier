@@ -1,9 +1,11 @@
 # ADR-0013: Streaming evaluator — store per-image evals, fold on snapshot and finalize
 
 - **Status:** superseded by [ADR-0035](0035-api-surface-consolidation.md)
-  (the public ``StreamingEvaluator`` class is demoted to ``vernier._impl``
-  and the DDP entry points move to ``Evaluator``; the streaming substrate
-  itself continues to exist below the FFI). The ``snapshot(running=True)``
+  (the public ``StreamingEvaluator`` pyclass is removed from Python
+  entirely; DDP entry points move to ``Evaluator``; the Rust streaming
+  substrate continues to exist below the FFI and is driven by the new
+  ``evaluate_*_to_partial`` / ``merge_*_partials`` pyfunctions and by
+  ``BackgroundEvaluator``'s worker). The ``snapshot(running=True)``
   and ``checkpoint``/``restore`` sections of this ADR are no longer
   load-bearing.
 - **Original status:** accepted
