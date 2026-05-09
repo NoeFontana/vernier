@@ -27,7 +27,7 @@ import numpy as np
 import pytest
 from PIL import Image as PILImage
 
-from vernier._impl import StreamingPanopticEvaluator
+import vernier.panoptic as pq
 
 from .harness import (
     _oracle_snapshot,
@@ -321,14 +321,14 @@ def test_submit_png_matches_array_path_perfect_match() -> None:
     dt_png = _label_map_to_png_bytes(dt_lm)
 
     # Array path: pre-decoded uint32 arrays via update.
-    ev_array = StreamingPanopticEvaluator(cats_bytes, "strict")
-    ev_array.update(1, gt_lm, gt_segs_bytes, dt_lm, dt_segs_bytes)
+    ev_array = pq.BackgroundEvaluator(cats_bytes, "strict")
+    ev_array.submit(1, gt_lm, gt_segs_bytes, dt_lm, dt_segs_bytes)
     summary_array = ev_array.finalize()
 
     # PNG path: raw bytes via update_png; Rust does decode + RGB→id +
     # S3 area fold + S1/S11 validation in one pass.
-    ev_png = StreamingPanopticEvaluator(cats_bytes, "strict")
-    ev_png.update_png(1, gt_png, gt_segs_bytes, dt_png, dt_segs_bytes)
+    ev_png = pq.BackgroundEvaluator(cats_bytes, "strict")
+    ev_png.submit_png(1, gt_png, gt_segs_bytes, dt_png, dt_segs_bytes)
     summary_png = ev_png.finalize()
 
     snap_array = summary_to_snapshot(summary_array)
@@ -359,12 +359,12 @@ def test_submit_png_matches_array_path_with_void_and_jitter() -> None:
     # Single-thing fixture: switch to corrected mode to skip the W6
     # strict-mode raise on the empty stuff bucket. Equivalence between
     # array and PNG paths is the property under test, not strict-W6.
-    ev_array = StreamingPanopticEvaluator(cats_bytes, "corrected")
-    ev_array.update(1, gt_lm, gt_segs_bytes, dt_lm, dt_segs_bytes)
+    ev_array = pq.BackgroundEvaluator(cats_bytes, "corrected")
+    ev_array.submit(1, gt_lm, gt_segs_bytes, dt_lm, dt_segs_bytes)
     summary_array = ev_array.finalize()
 
-    ev_png = StreamingPanopticEvaluator(cats_bytes, "corrected")
-    ev_png.update_png(1, gt_png, gt_segs_bytes, dt_png, dt_segs_bytes)
+    ev_png = pq.BackgroundEvaluator(cats_bytes, "corrected")
+    ev_png.submit_png(1, gt_png, gt_segs_bytes, dt_png, dt_segs_bytes)
     summary_png = ev_png.finalize()
 
     snap_array = summary_to_snapshot(summary_array)
@@ -402,12 +402,12 @@ def test_submit_png_matches_oracle_strict() -> None:
     oracle = _oracle_snapshot(gt, gt_segs, dt, dt_segs, cats)
 
     cats_bytes = json.dumps(cats).encode()
-    ev = StreamingPanopticEvaluator(cats_bytes, "strict")
+    ev = pq.BackgroundEvaluator(cats_bytes, "strict")
     for image_id, gt_lm in gt.items():
         dt_lm = dt[image_id]
         gt_png = _label_map_to_png_bytes(gt_lm)
         dt_png = _label_map_to_png_bytes(dt_lm)
-        ev.update_png(
+        ev.submit_png(
             int(image_id),
             gt_png,
             json.dumps(gt_segs[image_id]).encode(),

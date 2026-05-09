@@ -14,8 +14,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from vernier._impl import StreamingEvaluator
-from vernier.instance import BackgroundEvaluator, Detections, QueueFullError
+from vernier.instance import BackgroundEvaluator, Bbox, Detections, Evaluator, QueueFullError
 
 from ..parity.conftest import loadres_to_detections
 
@@ -30,20 +29,18 @@ def test_submit_arrays_matches_streaming_bytes() -> None:
     gt_records = json.loads(gt_bytes)
     dt_records = json.loads(dt_bytes)
 
-    # Streaming JSON path as the reference (per the existing async-equals-
-    # sync convention in test_background_async_equals_sync.py).
-    streaming = StreamingEvaluator(gt_bytes, iou_type="bbox", parity_mode="strict")
-    streaming.update(dt_bytes)
-    s_stream = streaming.finalize().stats
+    # Batch JSON path as the reference: same kernel as the background
+    # path, just one shot.
+    s_batch = Evaluator(iou=Bbox(), parity_mode="strict").evaluate(gt_bytes, dt_bytes).stats
 
     bg = BackgroundEvaluator(gt_bytes, iou_type="bbox", parity_mode="strict")
     bg.submit(loadres_to_detections(gt_records, dt_records, "bbox"))
     s_bg = bg.finalize().stats
 
-    assert len(s_stream) == len(s_bg)
-    for i, (s, b) in enumerate(zip(s_stream, s_bg, strict=True)):
+    assert len(s_batch) == len(s_bg)
+    for i, (s, b) in enumerate(zip(s_batch, s_bg, strict=True)):
         assert b == pytest.approx(s, rel=0, abs=1e-12), (
-            f"stat[{i}] diverged: streaming={s!r} bg_arrays={b!r}"
+            f"stat[{i}] diverged: batch={s!r} bg_arrays={b!r}"
         )
 
 

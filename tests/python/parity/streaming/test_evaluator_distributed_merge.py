@@ -165,25 +165,27 @@ def _panoptic_image_pair(seed: int) -> tuple[int, np.ndarray, bytes, np.ndarray,
     return seed, gt_lm, gt_si, dt_lm, dt_si
 
 
-def test_panoptic_evaluate_to_partial_strict_bit_equals_streaming() -> None:
-    """With ``retain_per_image_deltas=True``, the merged Summary is
-    bit-equal to a single-rank streaming finalize over the union.
-    Pinned against the streaming substrate (not batch) because batch
-    panoptic uses a different code path and its f64 ordering doesn't
-    match streaming-merge ordering bit-equally — that's expected and
-    documented in ADR-0032.
+def test_panoptic_evaluate_to_partial_strict_bit_equals_one_shot() -> None:
+    """With ``retain_per_image_deltas=True``, the sharded merge is
+    bit-equal to a one-shot single-rank evaluate_to_partial +
+    from_partials cycle. Pinned against this single-rank baseline
+    (not the panoptic batch path) because batch uses a different f64
+    summation order — see ADR-0032.
     """
-    from vernier._impl import StreamingPanopticEvaluator
-
     seeds = list(range(8))
     images = [_panoptic_image_pair(s) for s in seeds]
 
-    baseline = StreamingPanopticEvaluator(_PANOPTIC_CATS, "strict", retain_per_image_deltas=True)
-    for image in images:
-        baseline.update(*image)
-    baseline_summary = baseline.finalize()
-
     ev = pq.Evaluator(parity_mode="strict")
+    baseline_partial = ev.evaluate_to_partial(
+        images, categories=_PANOPTIC_CATS, rank_id=0, retain_per_image_deltas=True
+    )
+    baseline_summary = pq.Evaluator.from_partials(
+        _PANOPTIC_CATS,
+        [baseline_partial],
+        parity_mode="strict",
+        retain_per_image_deltas=True,
+    )
+
     shard_a = images[::2]
     shard_b = images[1::2]
     p_a = ev.evaluate_to_partial(
