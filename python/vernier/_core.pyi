@@ -456,6 +456,12 @@ def per_pair_to_arrow_pycapsule(
     iou_floor: float = ...,
     max_rows: int = ...,
 ) -> ArrowRecordBatch: ...
+def panoptic_per_class_to_arrow_pycapsule(
+    summary: PanopticSummary,
+) -> ArrowRecordBatch: ...
+def semantic_per_class_to_arrow_pycapsule(
+    summary: SemanticSummary,
+) -> ArrowRecordBatch: ...
 
 # Panoptic-quality (ADR-0025).
 
@@ -472,6 +478,8 @@ class ClassPanopticStats:
     def n_fp(self) -> int: ...
     @property
     def n_fn(self) -> int: ...
+    @property
+    def iou_sum(self) -> float: ...
 
 class PanopticSummary:
     @property

@@ -62,6 +62,7 @@ from vernier._tide import (
 )
 from vernier._types import (
     DEFAULT_DILATION_RATIO,
+    SUPPORTED_TABLES,
     EvalResult,
     ParityMode,
     TableName,
@@ -344,7 +345,7 @@ class Evaluator:
         """Tables-enabled evaluate path. Builds the EvalGrid, runs
         accumulate + summarize, then dispatches per-table FFI builders
         for the requested set."""
-        requested = normalize_tables_arg(tables)
+        requested = normalize_tables_arg(tables, SUPPORTED_TABLES)
 
         # The tables= path needs JSON bytes today; pre-parsed CocoDataset
         # handles aren't threaded through yet.

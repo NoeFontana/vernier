@@ -282,16 +282,21 @@ impl PyClassPanopticStats {
     fn n_fn(&self) -> u64 {
         self.inner.n_fn
     }
+    #[getter]
+    fn iou_sum(&self) -> f64 {
+        self.inner.iou_sum
+    }
 
     fn __repr__(&self) -> String {
         format!(
-            "ClassPanopticStats(pq={:.4}, sq={:.4}, rq={:.4}, n_tp={}, n_fp={}, n_fn={})",
+            "ClassPanopticStats(pq={:.4}, sq={:.4}, rq={:.4}, n_tp={}, n_fp={}, n_fn={}, iou_sum={:.4})",
             self.inner.pq,
             self.inner.sq,
             self.inner.rq,
             self.inner.n_tp,
             self.inner.n_fp,
             self.inner.n_fn,
+            self.inner.iou_sum,
         )
     }
 }
@@ -429,6 +434,12 @@ impl PyPanopticSummary {
             "PanopticSummary(pq={:.4}, sq={:.4}, rq={:.4}, n={})",
             self.inner.pq, self.inner.sq, self.inner.rq, self.inner.n
         )
+    }
+}
+
+impl PyPanopticSummary {
+    pub(crate) fn summary_ref(&self) -> &PanopticSummary {
+        &self.inner
     }
 }
 

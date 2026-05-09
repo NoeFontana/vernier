@@ -31,6 +31,7 @@ pub mod kernel;
 pub mod parity;
 pub mod stream;
 pub mod summarize;
+pub mod tables;
 
 // Each item lives at exactly one path — its home module. Adding a
 // re-export here widens the headline; treat it as a deliberate

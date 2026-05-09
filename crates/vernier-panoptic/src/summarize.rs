@@ -48,6 +48,8 @@ pub struct ClassPanopticStats {
     pub n_fp: u64,
     /// Raw FN count (vernier-only).
     pub n_fn: u64,
+    /// Sum of IoU across the TP segments for this category.
+    pub iou_sum: f64,
 }
 
 /// Top-level panoptic evaluation result.
@@ -120,6 +122,7 @@ fn class_stats(stat: PqStat) -> ClassPanopticStats {
         n_tp: stat.n_tp,
         n_fp: stat.n_fp,
         n_fn: stat.n_fn,
+        iou_sum: stat.sum_iou,
     }
 }
 
@@ -335,6 +338,7 @@ mod tests {
         assert_eq!(row.n_tp, 3);
         assert_eq!(row.n_fp, 1);
         assert_eq!(row.n_fn, 1);
+        assert_eq!(row.iou_sum, 2.4);
     }
 
     #[test]
@@ -363,6 +367,7 @@ mod tests {
             n_tp: 3,
             n_fp: 1,
             n_fn: 1,
+            iou_sum: 2.4,
         };
         let real_b = ClassPanopticStats {
             pq: 0.4,
@@ -371,6 +376,7 @@ mod tests {
             n_tp: 2,
             n_fp: 1,
             n_fn: 0,
+            iou_sum: 1.0,
         };
         let zero = ClassPanopticStats::default();
         let (pq, sq, rq, n) = average([real_a, real_b, zero].into_iter());
