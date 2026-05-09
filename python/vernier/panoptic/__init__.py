@@ -40,9 +40,6 @@ from vernier._core import (
 from vernier._core import (
     PanopticSummary as Summary,
 )
-from vernier._core import (
-    StreamingPanopticEvaluator as StreamingEvaluator,
-)
 from vernier._types import ParityMode
 
 __all__ = [
@@ -57,7 +54,6 @@ __all__ = [
     "PartialPartitionOverlap",
     "PartialRankCollision",
     "Predictions",
-    "StreamingEvaluator",
     "Summary",
     "decode_label_map_png",
 ]
@@ -143,37 +139,6 @@ class Evaluator:
         (file-loading helpers ship in a follow-up).
         """
         return evaluate_panoptic(gt, dt, self.parity_mode, self.things_stuff_split)
-
-    def stream(
-        self,
-        categories: bytes,
-        *,
-        retain_per_image_deltas: bool = False,
-        rank_id: int | None = None,
-    ) -> StreamingEvaluator:
-        """Build a :class:`StreamingEvaluator` that shares this
-        evaluator's ``parity_mode`` and ``things_stuff_split``.
-
-        ``categories`` is a JSON byte string of the form
-        ``[{"id": int, "isthing": bool}, ...]`` — same shape as the
-        ``categories`` argument to :meth:`Dataset.from_arrays`.
-
-        ``retain_per_image_deltas=True`` enables strict-mode bit-
-        equality across distributed-eval ranks (ADR-0032 PR-E
-        §"Determinism") at ~2x streaming memory cost. Default off
-        keeps the single-rank path lean.
-
-        ``rank_id``, when set, identifies this evaluator's rank in
-        a multi-process eval. Required for strict-mode cross-rank
-        merge via :meth:`StreamingEvaluator.from_partials`.
-        """
-        return StreamingEvaluator(
-            categories,
-            self.parity_mode,
-            things_stuff_split=self.things_stuff_split,
-            retain_per_image_deltas=retain_per_image_deltas,
-            rank_id=rank_id,
-        )
 
     def background(
         self,

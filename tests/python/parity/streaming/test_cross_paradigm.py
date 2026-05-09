@@ -28,6 +28,11 @@ import pytest
 import vernier.instance as inst
 import vernier.panoptic as pq
 import vernier.semantic as sem
+from vernier._impl import (
+    StreamingEvaluator,
+    StreamingPanopticEvaluator,
+    StreamingSemanticEvaluator,
+)
 
 # ---------------------------------------------------------------------------
 # Paradigm-shared exception identity (Contract 2).
@@ -72,7 +77,7 @@ _PERFECT_MATCH_DT = (_FIXTURES / "perfect_match" / "dt.json").read_bytes()
 
 def _instance_partial() -> bytes:
     """Build a one-rank instance partial from the perfect_match fixture."""
-    ev = inst.StreamingEvaluator(
+    ev = StreamingEvaluator(
         _PERFECT_MATCH_GT,
         iou_type="bbox",
         parity_mode="corrected",
@@ -87,7 +92,7 @@ def _semantic_partial() -> bytes:
     rng = np.random.default_rng(0)
     gt = rng.integers(0, 3, size=(4, 4), dtype=np.uint32)
     dt = gt.copy()
-    ev = sem.StreamingEvaluator(3, "corrected", rank_id=0)
+    ev = StreamingSemanticEvaluator(3, "corrected", rank_id=0)
     ev.update(0, gt, dt)
     return ev.finalize_to_partial()
 
@@ -104,7 +109,7 @@ def _panoptic_partial() -> bytes:
             {"id": 2, "category_id": 2, "iscrowd": 0, "area": 4},
         ]
     ).encode()
-    ev = pq.StreamingEvaluator(_PANOPTIC_CATS, "corrected", rank_id=0)
+    ev = StreamingPanopticEvaluator(_PANOPTIC_CATS, "corrected", rank_id=0)
     ev.update(0, label_map, segs, label_map, segs)
     return ev.finalize_to_partial()
 
@@ -115,17 +120,17 @@ def _panoptic_partial() -> bytes:
 
 
 def _load_into_instance(partial: bytes) -> None:
-    inst.StreamingEvaluator.from_partials(
+    StreamingEvaluator.from_partials(
         _PERFECT_MATCH_GT, [partial], iou_type="bbox", parity_mode="corrected"
     )
 
 
 def _load_into_semantic(partial: bytes) -> None:
-    sem.StreamingEvaluator.from_partials(3, [partial], "corrected")
+    StreamingSemanticEvaluator.from_partials(3, [partial], "corrected")
 
 
 def _load_into_panoptic(partial: bytes) -> None:
-    pq.StreamingEvaluator.from_partials(_PANOPTIC_CATS, [partial], "corrected")
+    StreamingPanopticEvaluator.from_partials(_PANOPTIC_CATS, [partial], "corrected")
 
 
 @pytest.mark.parametrize(

@@ -14,7 +14,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from vernier.instance import BackgroundEvaluator, Detections, QueueFullError, StreamingEvaluator
+from vernier._impl import StreamingEvaluator
+from vernier.instance import BackgroundEvaluator, Detections, QueueFullError
 
 from ..parity.conftest import loadres_to_detections
 

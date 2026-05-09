@@ -16,7 +16,7 @@ from typing import Any, Literal
 
 import pytest
 
-from vernier.instance import StreamingEvaluator
+from vernier._impl import StreamingEvaluator
 
 from ..conftest import loadres_to_detections
 from ..test_parity import BBOX_FIXTURES, KEYPOINTS_FIXTURES, SEGM_FIXTURES

@@ -19,7 +19,8 @@ from typing import Literal
 
 import pytest
 
-from vernier.instance import Bbox, Evaluator, IouKind, Segm, StreamingEvaluator
+from vernier._impl import StreamingEvaluator
+from vernier.instance import Bbox, Evaluator, IouKind, Segm
 
 from ..conftest import shard_dt_bytes
 from ..test_parity import BBOX_FIXTURES, SEGM_FIXTURES

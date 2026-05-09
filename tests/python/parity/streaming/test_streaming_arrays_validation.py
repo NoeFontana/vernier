@@ -17,7 +17,8 @@ from typing import Any
 import numpy as np
 import pytest
 
-from vernier.instance import Detections, StreamingEvaluator
+from vernier._impl import StreamingEvaluator
+from vernier.instance import Detections
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
