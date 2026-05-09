@@ -31,7 +31,7 @@ use crate::summarize::{summarize, SemanticSummary};
 /// `u8` label map. Errors carry `image_id` so the FFI layer can
 /// surface the offending file's id even though this primitive doesn't
 /// know its filesystem path.
-fn decode_grayscale8(
+pub fn decode_grayscale8(
     image_id: ImageId,
     bytes: &[u8],
 ) -> Result<(Vec<u8>, (u32, u32)), SemanticError> {
