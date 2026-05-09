@@ -18,7 +18,6 @@ from numpy.typing import NDArray
 from vernier._core import (
     BackgroundPanopticEvaluator as BackgroundEvaluator,
 )
-from vernier._impl import StreamingPanopticEvaluator as _StreamingPanopticEvaluator
 
 # Re-export the five distributed-eval exception types under the
 # panoptic namespace so callers catching `vernier.panoptic.PartialFormatMismatch`
@@ -42,6 +41,7 @@ from vernier._core import (
 from vernier._core import (
     PanopticSummary as Summary,
 )
+from vernier._impl import StreamingPanopticEvaluator as _StreamingPanopticEvaluator
 from vernier._types import ParityMode
 
 __all__ = [

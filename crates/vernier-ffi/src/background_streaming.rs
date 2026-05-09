@@ -59,17 +59,11 @@ pub(crate) trait BackgroundCapable: Send + 'static {
     /// error.
     fn apply_update(&mut self, update: Self::Update) -> Result<(), Self::Error>;
 
-    /// Snapshot the current state. Non-consuming.
-    fn snapshot(&self) -> Result<Self::Summary, Self::Error>;
-
     /// Drain and finalize. Consumes the evaluator.
     fn finalize(self) -> Result<Self::Summary, Self::Error>;
 
-    /// Serialize the current state as an opaque partial blob
-    /// (ADR-0032). Non-consuming.
-    fn snapshot_to_partial(&self) -> Result<Vec<u8>, Self::Error>;
-
-    /// Consuming variant of [`Self::snapshot_to_partial`].
+    /// Drain and serialize the final state as an opaque partial blob
+    /// (ADR-0032). Consumes the evaluator.
     fn finalize_to_partial(self) -> Result<Vec<u8>, Self::Error>;
 
     /// Mirrored into [`BackgroundState::images_seen`] after each
@@ -98,17 +92,14 @@ pub(crate) trait BackgroundCapable: Send + 'static {
 }
 
 /// Wire protocol between the FFI surface and the worker. Generic over
-/// the implementor's `Update`, `Summary`, and `Error` types.
+/// the implementor's `Update`, `Summary`, and `Error` types. Per
+/// ADR-0035, the public surface is submit/finalize/finalize_to_partial;
+/// mid-flight snapshot variants were removed alongside the public
+/// methods.
 enum WorkerMessage<E: BackgroundCapable> {
     Update(E::Update),
-    Snapshot {
-        reply: SyncSender<Result<E::Summary, E::Error>>,
-    },
     Finalize {
         reply: SyncSender<Result<E::Summary, E::Error>>,
-    },
-    SnapshotToPartial {
-        reply: SyncSender<Result<Vec<u8>, E::Error>>,
     },
     FinalizeToPartial {
         reply: SyncSender<Result<Vec<u8>, E::Error>>,
@@ -325,24 +316,6 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
         }
     }
 
-    /// Request a snapshot. Blocks on the worker reply.
-    pub(crate) fn snapshot(&self) -> Result<E::Summary, E::Error> {
-        if let Some(err) = self.take_last_error() {
-            return Err(err);
-        }
-        let (reply_tx, reply_rx) = sync_channel(1);
-        if self
-            .sender
-            .send(WorkerMessage::Snapshot { reply: reply_tx })
-            .is_err()
-        {
-            return Err(E::worker_disconnected());
-        }
-        reply_rx
-            .recv()
-            .unwrap_or_else(|_| Err(E::worker_disconnected()))
-    }
-
     /// Drain and finalize. Consumes the wrapper.
     pub(crate) fn finalize(self) -> Result<E::Summary, E::Error> {
         if let Some(err) = self.take_last_error() {
@@ -361,24 +334,6 @@ impl<E: BackgroundCapable> BackgroundCore<E> {
             .unwrap_or_else(|_| Err(E::worker_disconnected()));
         self.join_after_consuming();
         summary
-    }
-
-    /// Snapshot to a partial blob (ADR-0032). Non-consuming.
-    pub(crate) fn snapshot_to_partial(&self) -> Result<Vec<u8>, E::Error> {
-        if let Some(err) = self.take_last_error() {
-            return Err(err);
-        }
-        let (reply_tx, reply_rx) = sync_channel(1);
-        if self
-            .sender
-            .send(WorkerMessage::SnapshotToPartial { reply: reply_tx })
-            .is_err()
-        {
-            return Err(E::worker_disconnected());
-        }
-        reply_rx
-            .recv()
-            .unwrap_or_else(|_| Err(E::worker_disconnected()))
     }
 
     /// Finalize to a partial blob (ADR-0032). Consumes the wrapper.
@@ -642,18 +597,10 @@ fn worker_loop<E: BackgroundCapable>(
                     }
                 }
             }
-            Ok(WorkerMessage::Snapshot { reply }) => {
-                let s = evaluator.snapshot();
-                let _ = reply.send(s);
-            }
             Ok(WorkerMessage::Finalize { reply }) => {
                 let s = evaluator.finalize();
                 let _ = reply.send(s);
                 return;
-            }
-            Ok(WorkerMessage::SnapshotToPartial { reply }) => {
-                let p = evaluator.snapshot_to_partial();
-                let _ = reply.send(p);
             }
             Ok(WorkerMessage::FinalizeToPartial { reply }) => {
                 let p = evaluator.finalize_to_partial();
@@ -699,16 +646,8 @@ mod tests {
             Ok(())
         }
 
-        fn snapshot(&self) -> Result<usize, String> {
-            Ok(self.applied)
-        }
-
         fn finalize(self) -> Result<usize, String> {
             Ok(self.applied)
-        }
-
-        fn snapshot_to_partial(&self) -> Result<Vec<u8>, String> {
-            Ok(Vec::new())
         }
 
         fn finalize_to_partial(self) -> Result<Vec<u8>, String> {

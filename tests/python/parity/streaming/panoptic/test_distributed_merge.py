@@ -324,7 +324,9 @@ def test_paradigm_mismatch_rejected() -> None:
     instance_partial = inst_ev.finalize_to_partial()
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        StreamingPanopticEvaluator.from_partials(THREE_CLASS_CATS_JSON, [instance_partial], "corrected")
+        StreamingPanopticEvaluator.from_partials(
+            THREE_CLASS_CATS_JSON, [instance_partial], "corrected"
+        )
     assert exc_info.value.kind == "paradigm_mismatch"
 
 
@@ -378,7 +380,9 @@ def test_crc_corruption_detected() -> None:
     partial[20] ^= 0xFF
 
     with pytest.raises(pq.PartialFormatMismatch) as exc_info:
-        StreamingPanopticEvaluator.from_partials(THREE_CLASS_CATS_JSON, [bytes(partial)], "corrected")
+        StreamingPanopticEvaluator.from_partials(
+            THREE_CLASS_CATS_JSON, [bytes(partial)], "corrected"
+        )
     assert exc_info.value.kind in {"crc", "rkyv_decode"}
 
 

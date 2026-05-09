@@ -628,16 +628,8 @@ impl BackgroundCapable for StreamingSemanticEvaluator {
         self.update(u.image_id, &u.gt, &u.dt)
     }
 
-    fn snapshot(&self) -> Result<SemanticSummary, SemanticError> {
-        Ok(StreamingSemanticEvaluator::snapshot(self))
-    }
-
     fn finalize(self) -> Result<SemanticSummary, SemanticError> {
         Ok(StreamingSemanticEvaluator::finalize(self))
-    }
-
-    fn snapshot_to_partial(&self) -> Result<Vec<u8>, SemanticError> {
-        StreamingSemanticEvaluator::snapshot_to_partial(self)
     }
 
     fn finalize_to_partial(self) -> Result<Vec<u8>, SemanticError> {

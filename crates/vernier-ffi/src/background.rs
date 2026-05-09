@@ -72,30 +72,16 @@ impl Default for BackgroundConfig {
 
 /// Wire protocol between the FFI surface and the background worker.
 ///
-/// `Snapshot` and `Finalize` carry their own reply channels so callers
-/// can block on the worker producing the result. The worker drops the
-/// reply sender on send failure (caller went away) without touching
-/// any other state.
+/// Per ADR-0035, `BackgroundEvaluator`'s public surface is
+/// submit / finalize / finalize_with_tables / finalize_to_partial.
+/// The worker handles those four request shapes plus cooperative
+/// shutdown; mid-flight snapshot variants were removed alongside the
+/// public method.
 pub(crate) enum WorkerMessage<K: EvalKernel + Send + 'static> {
     /// Hand a parsed detection batch to the worker. The worker either
     /// applies it or stashes the resulting [`EvalError`] in
     /// `BackgroundState::last_error` for the next FFI entry to surface.
     Update(ParsedDetections<K>),
-    /// Request a [`Summary`]. `peek=true` calls
-    /// [`StreamingEvaluator::snapshot_running`]; otherwise
-    /// [`StreamingEvaluator::snapshot`].
-    Snapshot {
-        reply: SyncSender<Result<Summary, EvalError>>,
-        peek: bool,
-    },
-    /// Snapshot variant that also builds the requested result tables.
-    /// `peek` is unused (tables don't have a "running" approximation —
-    /// the tables represent committed state).
-    SnapshotWithTables {
-        reply: SyncSender<Result<(Summary, Tables), EvalError>>,
-        request: TablesRequest,
-        config: TablesConfig,
-    },
     /// Drain and finalize. The worker replies and exits the loop.
     Finalize {
         reply: SyncSender<Result<Summary, EvalError>>,
@@ -106,11 +92,6 @@ pub(crate) enum WorkerMessage<K: EvalKernel + Send + 'static> {
         reply: SyncSender<Result<(Summary, Tables), EvalError>>,
         request: TablesRequest,
         config: TablesConfig,
-    },
-    /// ADR-0031: serialize evaluator state to a partial blob without
-    /// consuming the evaluator. Worker stays alive on this path.
-    SnapshotToPartial {
-        reply: SyncSender<Result<Vec<u8>, EvalError>>,
     },
     /// ADR-0031: drain and serialize as a partial blob. Worker exits
     /// after sending the reply.
@@ -376,73 +357,6 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
                     }));
                 }
             }
-        }
-    }
-
-    /// Request a snapshot. `peek=true` allows the worker to use a
-    /// cheaper, possibly-stale path; `peek=false` returns the same
-    /// result as a fully-finalized evaluation up to this point.
-    pub(crate) fn snapshot(&self, peek: bool) -> Result<Summary, EvalError> {
-        self.take_last_error()?;
-        let (reply_tx, reply_rx) = sync_channel::<Result<Summary, EvalError>>(1);
-        self.sender
-            .send(WorkerMessage::Snapshot {
-                reply: reply_tx,
-                peek,
-            })
-            .map_err(|_| EvalError::InvalidConfig {
-                detail: "background worker is no longer accepting snapshot requests".to_string(),
-            })?;
-        match reply_rx.recv() {
-            Ok(result) => result,
-            Err(_) => Err(EvalError::InvalidConfig {
-                detail: "background worker dropped snapshot reply channel".to_string(),
-            }),
-        }
-    }
-
-    /// Tables-aware snapshot. `peek` is ignored — tables only have a
-    /// committed-state interpretation.
-    pub(crate) fn snapshot_with_tables(
-        &self,
-        request: TablesRequest,
-        config: TablesConfig,
-    ) -> Result<(Summary, Tables), EvalError> {
-        self.take_last_error()?;
-        let (reply_tx, reply_rx) = sync_channel::<Result<(Summary, Tables), EvalError>>(1);
-        self.sender
-            .send(WorkerMessage::SnapshotWithTables {
-                reply: reply_tx,
-                request,
-                config,
-            })
-            .map_err(|_| EvalError::InvalidConfig {
-                detail: "background worker is no longer accepting snapshot requests".to_string(),
-            })?;
-        match reply_rx.recv() {
-            Ok(result) => result,
-            Err(_) => Err(EvalError::InvalidConfig {
-                detail: "background worker dropped snapshot reply channel".to_string(),
-            }),
-        }
-    }
-
-    /// ADR-0031: ask the worker to serialize its state as a partial
-    /// blob without consuming the evaluator. The worker stays alive
-    /// after replying.
-    pub(crate) fn snapshot_to_partial(&self) -> Result<Vec<u8>, EvalError> {
-        self.take_last_error()?;
-        let (reply_tx, reply_rx) = sync_channel::<Result<Vec<u8>, EvalError>>(1);
-        self.sender
-            .send(WorkerMessage::SnapshotToPartial { reply: reply_tx })
-            .map_err(|_| EvalError::InvalidConfig {
-                detail: "background worker is no longer accepting partial requests".to_string(),
-            })?;
-        match reply_rx.recv() {
-            Ok(result) => result,
-            Err(_) => Err(EvalError::InvalidConfig {
-                detail: "background worker dropped partial reply channel".to_string(),
-            }),
         }
     }
 
@@ -739,18 +653,6 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
                     }
                 }
             }
-            Ok(WorkerMessage::Snapshot { reply, peek: _ }) => {
-                let s = evaluator.snapshot();
-                let _ = reply.send(s);
-            }
-            Ok(WorkerMessage::SnapshotWithTables {
-                reply,
-                request,
-                config,
-            }) => {
-                let s = evaluator.snapshot_with_tables(request, &config);
-                let _ = reply.send(s);
-            }
             Ok(WorkerMessage::Finalize { reply }) => {
                 // `finalize()` consumes the evaluator. The local binding
                 // owns it outright, so the move out of the loop body is
@@ -767,10 +669,6 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
                 let s = evaluator.finalize_with_tables(request, &config);
                 let _ = reply.send(s);
                 return Ok(());
-            }
-            Ok(WorkerMessage::SnapshotToPartial { reply }) => {
-                let p = evaluator.snapshot_to_partial();
-                let _ = reply.send(p);
             }
             Ok(WorkerMessage::FinalizeToPartial { reply }) => {
                 let p = evaluator.finalize_to_partial();

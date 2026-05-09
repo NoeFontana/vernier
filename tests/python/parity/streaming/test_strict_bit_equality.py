@@ -28,7 +28,6 @@ import json
 import numpy as np
 import pytest
 
-import vernier.panoptic as pq
 import vernier.semantic as sem
 from vernier._impl import StreamingPanopticEvaluator, StreamingSemanticEvaluator
 

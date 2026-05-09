@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Final, Literal, NoReturn, overload
+from typing import Any, Final, Literal, NoReturn, overload
 
 from vernier._array_types import RLE, Detections, DetectionsInput
 from vernier._confusion import confusion_matrix
@@ -499,16 +499,14 @@ class Evaluator:
             use_cats=use_cats,
             cast_inputs=cast_inputs,
         )
-        merged = _StreamingEvaluator.from_partials(
-            gt, partials, **config._streaming_kwargs()
-        )
+        merged = _StreamingEvaluator.from_partials(gt, partials, **config._streaming_kwargs())
         return merged.finalize()
 
-    def _streaming_kwargs(self) -> dict[str, object]:
+    def _streaming_kwargs(self) -> dict[str, Any]:
         """Translate this evaluator's config into the keyword arguments
         accepted by :class:`vernier._impl.StreamingEvaluator`."""
         max_dets_list = self._resolve_max_dets()
-        kwargs: dict[str, object] = {
+        kwargs: dict[str, Any] = {
             "parity_mode": self.parity_mode,
             "max_dets": max_dets_list,
             "use_cats": self.use_cats,

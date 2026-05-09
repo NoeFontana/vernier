@@ -23,7 +23,6 @@ import vernier.instance as inst
 import vernier.panoptic as pq
 import vernier.semantic as sem
 
-
 # ---------------------------------------------------------------------------
 # Instance: corrected-mode shard-and-merge stays within 4-ULP of batch
 # (strict-mode rank-order tiebreak is pending per ADR-0013, same as the
@@ -105,9 +104,7 @@ def _split_dataset(
     shards: list[tuple[sem.Dataset, sem.Predictions]] = []
     for rank in range(n_ranks):
         rank_ids = image_ids[rank::n_ranks]
-        rank_gt = sem.Dataset.from_arrays(
-            {iid: gt_maps[iid] for iid in rank_ids}, n_classes=3
-        )
+        rank_gt = sem.Dataset.from_arrays({iid: gt_maps[iid] for iid in rank_ids}, n_classes=3)
         rank_dt = sem.Predictions.from_arrays({iid: dt_maps[iid] for iid in rank_ids})
         shards.append((rank_gt, rank_dt))
     return shards
@@ -181,9 +178,7 @@ def test_panoptic_evaluate_to_partial_strict_bit_equals_streaming() -> None:
     seeds = list(range(8))
     images = [_panoptic_image_pair(s) for s in seeds]
 
-    baseline = StreamingPanopticEvaluator(
-        _PANOPTIC_CATS, "strict", retain_per_image_deltas=True
-    )
+    baseline = StreamingPanopticEvaluator(_PANOPTIC_CATS, "strict", retain_per_image_deltas=True)
     for image in images:
         baseline.update(*image)
     baseline_summary = baseline.finalize()
