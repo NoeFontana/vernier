@@ -9,6 +9,97 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **Distributed-eval entry points on `Evaluator`** (ADR-0035) — each
+  paradigm's public `Evaluator` gains
+  `evaluate_to_partial(..., *, rank_id) -> bytes` and a
+  classmethod `from_partials(...) -> Summary`. Per-paradigm shapes:
+  instance takes JSON bytes, semantic takes `Dataset/Predictions`,
+  panoptic takes per-image tuples + `categories=` (the one
+  asymmetry — `PanopticDataset` doesn't yet expose per-image
+  accessors; closing that gap is a follow-up). The streaming
+  substrate, the `vernier-partial` wire format, `FORMAT_VERSION`,
+  partition-disjointness invariant, and the five paradigm-shared
+  `Partial*` exception classes are all unchanged. The same DDP
+  recipe works on instance, semantic, and panoptic.
+
+### Changed
+
+- **Public-surface consolidation** (ADR-0035, supersedes the public
+  `StreamingEvaluator` portion of ADR-0013; amends ADR-0014, ADR-0031,
+  ADR-0032). Each paradigm now exposes two classes: `Evaluator`
+  (frozen config dataclass; batch + DDP entry points) and
+  `BackgroundEvaluator` (in-training entry point; `submit` /
+  `finalize` / `finalize_with_tables` / `finalize_to_partial` /
+  context manager). The streaming substrate continues to exist
+  privately at `vernier._impl`; the public class is gone from the
+  per-paradigm namespaces.
+
+### Removed
+
+- `vernier.{instance,panoptic,semantic}.StreamingEvaluator` — the
+  three streaming pyclasses are now private at `vernier._impl`.
+  Internal callers and tests use `from vernier._impl import
+  StreamingEvaluator` (instance) / `StreamingPanopticEvaluator` /
+  `StreamingSemanticEvaluator`. No public deprecation shim — pre-1.0
+  hard break.
+- `Evaluator.stream(...)` factory on `vernier.{panoptic,semantic}` —
+  removed alongside the public streaming class. Use
+  `BackgroundEvaluator(...)` directly, or `Evaluator.evaluate_to_partial`
+  / `Evaluator.from_partials` for DDP.
+- `StreamingEvaluator.snapshot(running=True)` and its Rust-side
+  `snapshot_running()` method — the biased fast path that ADR-0013
+  itself flagged as inappropriate for quality gates.
+- `StreamingEvaluator.checkpoint()` / `restore()` — these were
+  `NotImplemented` thin wrappers around `snapshot_to_partial` /
+  `from_partials`. The persistence story is now exclusively
+  `evaluate_to_partial` → store bytes → `from_partials` on resume.
+- `BackgroundEvaluator.snapshot()`, `snapshot(peek=True)`,
+  `snapshot_with_tables()`, and the non-finalize `to_partial()` on
+  all three paradigms. Public surface is the consuming
+  `finalize` / `finalize_with_tables` / `finalize_to_partial` only.
+- `BackgroundPanopticEvaluator.from_partials` /
+  `BackgroundSemanticEvaluator.from_partials` — vestigial (return-
+  type bug carried them; no caller used them). The classmethod lives
+  on `Evaluator`; the underlying machinery lives on
+  `vernier._impl.Streaming{Panoptic,Semantic}Evaluator`.
+
+### Migration
+
+```python
+# Before
+from vernier.instance import StreamingEvaluator
+ev = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=rank)
+ev.update(dt_bytes)
+partial = ev.finalize_to_partial()
+merged = StreamingEvaluator.from_partials(gt_bytes, partials, iou_type="bbox").finalize()
+
+# After
+from vernier.instance import Evaluator, Bbox
+ev = Evaluator(iou=Bbox())
+partial = ev.evaluate_to_partial(gt_bytes, dt_bytes, rank_id=rank)
+merged = Evaluator.from_partials(gt_bytes, partials, iou=Bbox())  # Summary
+```
+
+For training-loop submit-then-finalize:
+
+```python
+# Before
+ev = StreamingEvaluator(gt_bytes, iou_type="bbox")
+for batch in val_loader:
+    ev.update(batch)
+    if step % 100 == 0:
+        log(ev.snapshot(running=True))   # biased; removed
+final = ev.finalize()
+
+# After
+with BackgroundEvaluator(gt_bytes, iou_type="bbox") as ev:
+    for batch in val_loader:
+        ev.submit(batch)
+    final = ev.finalize()
+# For unbiased mid-epoch readouts, accumulate dt and call
+# Evaluator.evaluate(gt, accumulated_dt) every N steps.
+```
+
 - **Semantic-segmentation user docs** (ADR-0028 PR-B10) — three new
   pages in `docs/`: `migrate/from-mmsegmentation.md` (semantic-side
   migration recipe with preset / streaming / NaN-vs-0.0 /
