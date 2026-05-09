@@ -20,10 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 import pytest
-
-from vernier.instance import Evaluator, Keypoints
 
 from ..coco_val_paths import (
     DT_ENV,
@@ -73,16 +70,13 @@ def test_coco_val2017_keypoints_parity() -> None:
     """Real keypoint detector predictions: bring your own JSON via env vars.
 
     Per ADR-0012 the OKS kernel surfaces a 10-stat summary (re-indexed
-    A-axis, no ``_S`` row — quirk D5). The vernier ``Evaluator`` runs
-    in strict mode and we assert byte-identical equality against
-    pycocotools' ``keypoints`` summary.
+    A-axis, no ``_S`` row — quirk D5). Strict-mode tensor parity on the
+    full snapshot (eval_imgs + precision/recall/scores + 10-stat summary)
+    mirrors the bbox/segm tracks; the harness routes the candidate
+    through ``evaluate_keypoints_grid → accumulate → summarize``.
     """
-    gt = require_env_path(GT_KEYPOINTS_ENV)
-    dt = require_env_path(DT_KEYPOINTS_ENV)
-    cand = Evaluator(iou=Keypoints(), parity_mode="strict").evaluate(
-        gt.read_bytes(), dt.read_bytes()
+    _assert_parity(
+        require_env_path(GT_KEYPOINTS_ENV),
+        require_env_path(DT_KEYPOINTS_ENV),
+        "keypoints",
     )
-    cand_stats = np.asarray(cand.stats, dtype=np.float64)
-    ref_stats = snapshot("pycocotools", gt, dt, "keypoints").stats
-    assert cand_stats.shape == (10,), f"expected 10-stat kp summary, got {cand_stats.shape}"
-    np.testing.assert_array_equal(cand_stats, ref_stats, err_msg="kp stats")

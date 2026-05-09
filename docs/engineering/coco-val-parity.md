@@ -151,14 +151,14 @@ All seven tests pass without xfail:
   bowenc0221 oracle, env-gated on `VERNIER_COCO_DT_SEGM_PATH`.
 - `test_coco_val2017_keypoints_parity` — real kp predictions vs
   pycocotools, env-gated on `VERNIER_COCO_GT_KEYPOINTS_PATH` and
-  `VERNIER_COCO_DT_KEYPOINTS_PATH`. Asserts byte-identical 10-stat
-  summary (ADR-0012).
+  `VERNIER_COCO_DT_KEYPOINTS_PATH`. Asserts byte-identical eval_imgs,
+  precision/recall/scores tensors, and the 10-stat summary (ADR-0012).
 
-Bit-exact parity holds on all 5000 val2017 images for the bbox / segm
-/ boundary iou_types: every `evalImgs` cell, the precision/recall/scores
-tensors, and the 12-element stats vector match the respective reference
-oracle. Keypoints asserts byte-equality on the 10-stat summary against
-pycocotools.
+Bit-exact parity holds on all 5000 val2017 images for every iou_type
+(bbox / segm / boundary / keypoints): every `evalImgs` cell, the
+precision/recall/scores tensors, and the stats vector (12 elements for
+det iou_types, 10 for keypoints per ADR-0012) match the respective
+reference oracle.
 
 The earlier perfect-DT divergence on overlapping crowd/non-crowd ties
 (quirk **A4**) was rooted in `f32` IoU intermediates losing
@@ -176,13 +176,6 @@ to file.
 - **Modes other than strict.** ADR-0002's `corrected` disposition is
   intentionally divergent and exercised by the per-quirk fixtures, not
   by this smoke.
-- **Keypoints intermediates beyond the 10-stat summary.** The
-  keypoints test asserts byte-equality on the summary array only; the
-  full eval-imgs / precision / recall / scores tensor diff that the
-  bbox/segm tracks do is intentionally deferred until the harness's
-  vernier-side keypoints accumulator is wired (today's harness falls
-  back to pycocotools for keypoints, which would make a snapshot-level
-  parity claim tautological).
 - **Pycocotools/bowenc0221 internal divergences from themselves.** The
   boundary track pins the vendored oracle at the snapshot in
   `tests/python/parity_boundary/oracle/`. Bumping it follows the same
