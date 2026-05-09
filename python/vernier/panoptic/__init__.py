@@ -8,6 +8,7 @@ Per ADR-0029, the panoptic-segmentation evaluation paradigm lives under
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from numpy.typing import NDArray
 from vernier._core import (
     BackgroundPanopticEvaluator as BackgroundEvaluator,
 )
+from vernier._impl import StreamingPanopticEvaluator as _StreamingPanopticEvaluator
 
 # Re-export the five distributed-eval exception types under the
 # panoptic namespace so callers catching `vernier.panoptic.PartialFormatMismatch`
@@ -139,6 +141,75 @@ class Evaluator:
         (file-loading helpers ship in a follow-up).
         """
         return evaluate_panoptic(gt, dt, self.parity_mode, self.things_stuff_split)
+
+    def evaluate_to_partial(
+        self,
+        images: Iterable[tuple[int, NDArray[np.uint32], bytes, NDArray[np.uint32], bytes]],
+        *,
+        categories: bytes,
+        rank_id: int,
+        retain_per_image_deltas: bool = False,
+    ) -> bytes:
+        """Run the panoptic evaluation as a per-rank streaming submit
+        and return the serialized partial bytes (ADR-0032, ADR-0035).
+
+        ``images`` is an iterable of per-image tuples of the form
+        ``(image_id, gt_label_map, gt_segments_info, dt_label_map,
+        dt_segments_info)`` — the same shape the streaming substrate's
+        ``update`` consumes. The asymmetry with :meth:`evaluate`
+        (which takes pre-built :class:`Dataset` / :class:`Predictions`)
+        is intentional: ``PanopticDataset`` does not yet expose
+        per-image accessors, so the streaming path consumes per-image
+        records directly. A future ADR may close the gap by adding
+        :class:`Dataset` accessors.
+
+        ``rank_id`` identifies this evaluator's rank in a multi-process
+        eval. ``retain_per_image_deltas=True`` is required on every
+        rank for strict-mode bit-equality across the merge (ADR-0032
+        §"Determinism") at ~2x streaming memory cost.
+
+        The partial bytes can be gathered across ranks and merged on
+        the head rank with :meth:`from_partials` to produce a global
+        :class:`Summary`.
+        """
+        ev = _StreamingPanopticEvaluator(
+            categories,
+            self.parity_mode,
+            things_stuff_split=self.things_stuff_split,
+            retain_per_image_deltas=retain_per_image_deltas,
+            rank_id=rank_id,
+        )
+        for image_id, gt_lm, gt_si, dt_lm, dt_si in images:
+            ev.update(image_id, gt_lm, gt_si, dt_lm, dt_si)
+        return ev.finalize_to_partial()
+
+    @classmethod
+    def from_partials(
+        cls,
+        categories: bytes,
+        partials: Sequence[bytes],
+        /,
+        *,
+        parity_mode: ParityMode = "corrected",
+        things_stuff_split: bool = True,
+        retain_per_image_deltas: bool = False,
+    ) -> Summary:
+        """Merge ``partials`` (one per rank) into a global :class:`Summary`
+        (ADR-0032, ADR-0035).
+
+        ``categories``, ``parity_mode``, ``things_stuff_split``, and
+        ``retain_per_image_deltas`` must match what each rank used to
+        produce its partial. Mismatches raise the structured
+        ``Partial*`` errors re-exported on this module.
+        """
+        merged = _StreamingPanopticEvaluator.from_partials(
+            categories,
+            partials,
+            parity_mode,
+            things_stuff_split=things_stuff_split,
+            retain_per_image_deltas=retain_per_image_deltas,
+        )
+        return merged.finalize()
 
     def background(
         self,

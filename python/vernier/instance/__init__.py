@@ -7,7 +7,7 @@ keypoints) lives under ``vernier.instance``. Sibling to
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Final, Literal, NoReturn, overload
 
@@ -41,6 +41,7 @@ from vernier._core import (
     per_image_to_arrow_pycapsule,
     per_pair_to_arrow_pycapsule,
 )
+from vernier._impl import StreamingEvaluator as _StreamingEvaluator
 from vernier._tide import (
     FpIouHistogram,
     TideConfig,
@@ -446,6 +447,93 @@ class Evaluator:
                 )
             case _:
                 _reject_unknown_iou(self.iou)
+
+    def evaluate_to_partial(
+        self,
+        gt: bytes,
+        dt: DetectionsInput,
+        *,
+        rank_id: int,
+    ) -> bytes:
+        """Run the evaluation as a per-rank streaming submit and return
+        the serialized partial bytes (ADR-0031, ADR-0035).
+
+        ``rank_id`` identifies this evaluator's rank in a multi-process
+        eval. The partial bytes can be gathered across ranks (e.g. via
+        ``torch.distributed.all_gather_object``) and merged on the head
+        rank with :meth:`from_partials` to produce a global Summary
+        bit-equal to a batch :meth:`evaluate` over the union (in
+        ``parity_mode="strict"`` once the ``(score, rank_id,
+        local_position)`` tiebreak lands; under ADR-0004's 4-ULP
+        envelope today).
+        """
+        ev = self._build_streaming(gt, rank_id=rank_id)
+        ev.update(dt)
+        return ev.finalize_to_partial()
+
+    @classmethod
+    def from_partials(
+        cls,
+        gt: bytes,
+        partials: Sequence[bytes],
+        /,
+        *,
+        iou: IouKind | None = None,
+        parity_mode: ParityMode = "corrected",
+        max_dets: tuple[int, ...] | None = None,
+        use_cats: bool = True,
+        cast_inputs: bool = False,
+    ) -> Summary:
+        """Merge ``partials`` (one per rank) into a global :class:`Summary`
+        (ADR-0031, ADR-0035).
+
+        The kwargs mirror :class:`Evaluator`'s config fields and must
+        match what each rank used to produce its partial. Mismatches
+        raise the structured ``Partial*`` errors (re-exported on this
+        module).
+        """
+        config = cls(
+            iou=iou if iou is not None else Bbox(),
+            parity_mode=parity_mode,
+            max_dets=max_dets,
+            use_cats=use_cats,
+            cast_inputs=cast_inputs,
+        )
+        merged = _StreamingEvaluator.from_partials(
+            gt, partials, **config._streaming_kwargs()
+        )
+        return merged.finalize()
+
+    def _streaming_kwargs(self) -> dict[str, object]:
+        """Translate this evaluator's config into the keyword arguments
+        accepted by :class:`vernier._impl.StreamingEvaluator`."""
+        max_dets_list = self._resolve_max_dets()
+        kwargs: dict[str, object] = {
+            "parity_mode": self.parity_mode,
+            "max_dets": max_dets_list,
+            "use_cats": self.use_cats,
+            "cast_inputs": self.cast_inputs,
+        }
+        match self.iou:
+            case Bbox():
+                kwargs["iou_type"] = "bbox"
+            case Segm():
+                kwargs["iou_type"] = "segm"
+            case Boundary(dilation_ratio=r):
+                kwargs["iou_type"] = "boundary"
+                kwargs["dilation_ratio"] = r
+            case Keypoints(sigmas=s):
+                kwargs["iou_type"] = "keypoints"
+                kwargs["sigmas"] = _normalize_sigmas(s)
+            case _:
+                _reject_unknown_iou(self.iou)
+        return kwargs
+
+    def _build_streaming(self, gt: bytes, *, rank_id: int | None) -> _StreamingEvaluator:
+        kwargs = self._streaming_kwargs()
+        if rank_id is not None:
+            kwargs["rank_id"] = rank_id
+        return _StreamingEvaluator(gt, **kwargs)
 
 
 def _normalize_sigmas(
