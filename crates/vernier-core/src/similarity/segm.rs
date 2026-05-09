@@ -322,14 +322,6 @@ mod tests {
         }
     }
 
-    fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle {
-            h,
-            w,
-            counts: counts.into(),
-        }
-    }
-
     fn compute(gts: &[SegmAnn], dts: &[SegmAnn]) -> Array2<f64> {
         let mut out = Array2::<f64>::zeros((gts.len(), dts.len()));
         SegmIou.compute(gts, dts, &mut out.view_mut()).unwrap();
@@ -338,7 +330,7 @@ mod tests {
 
     #[test]
     fn perfect_overlap_is_one() {
-        let r = rle(2, 2, vec![0, 4]);
+        let r = Rle::from_counts(2, 2, vec![0, 4]);
         let m = compute(&[ann(r.clone(), false)], &[ann(r, false)]);
         assert_eq!(m[[0, 0]].to_bits(), 1.0_f64.to_bits());
     }
@@ -348,8 +340,8 @@ mod tests {
         // GT covers the upper-left pixel; DT covers the lower-right
         // pixel. Their bboxes don't overlap, so I1 short-circuits to 0
         // without invoking the RLE sweep.
-        let g = rle(2, 2, vec![0, 1, 3]);
-        let d = rle(2, 2, vec![3, 1]);
+        let g = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let d = Rle::from_counts(2, 2, vec![3, 1]);
         let m = compute(&[ann(g, false)], &[ann(d, false)]);
         assert_eq!(m[[0, 0]].to_bits(), 0.0_f64.to_bits());
     }
@@ -357,8 +349,8 @@ mod tests {
     #[test]
     fn partial_overlap_matches_hand_traced_ratio() {
         // GT area 1, DT area 2, inter 1 → IoU = 1 / (1 + 2 - 1) = 1/2.
-        let g = rle(2, 2, vec![0, 1, 3]);
-        let d = rle(2, 2, vec![0, 2, 2]);
+        let g = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let d = Rle::from_counts(2, 2, vec![0, 2, 2]);
         let m = compute(&[ann(g, false)], &[ann(d, false)]);
         assert_eq!(m[[0, 0]].to_bits(), (1.0_f64 / 2.0_f64).to_bits());
     }
@@ -368,8 +360,8 @@ mod tests {
         // GT covers the whole 4×4 image (area 16) as crowd.
         // DT is a single pixel inside (area 1).
         // Symmetric IoU = 1/16; crowd IoU = 1/1 = 1.0.
-        let gt_full = rle(4, 4, vec![0, 16]);
-        let dt_pixel = rle(4, 4, vec![5, 1, 10]);
+        let gt_full = Rle::from_counts(4, 4, vec![0, 16]);
+        let dt_pixel = Rle::from_counts(4, 4, vec![5, 1, 10]);
         let crowd_m = compute(
             &[ann(gt_full.clone(), true)],
             &[ann(dt_pixel.clone(), false)],
@@ -391,8 +383,8 @@ mod tests {
         // there is no DT-side crowd input the kernel could branch on.
         // This runtime check pins the observable behavior; the type
         // system covers the structural side.
-        let g = rle(2, 2, vec![0, 1, 3]);
-        let d = rle(2, 2, vec![0, 2, 2]);
+        let g = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let d = Rle::from_counts(2, 2, vec![0, 2, 2]);
         let with_flag = compute(&[ann(g.clone(), false)], &[ann(d.clone(), true)]);
         let without = compute(&[ann(g, false)], &[ann(d, false)]);
         assert_eq!(with_flag[[0, 0]].to_bits(), without[[0, 0]].to_bits());
@@ -402,8 +394,8 @@ mod tests {
     fn empty_gt_or_dt_pair_is_zero_not_nan() {
         // Empty mask has area 0. Non-crowd: denom = 0 + d_area - 0;
         // if d_area is also 0, denom=0 and the guard returns 0.0.
-        let empty = rle(2, 2, vec![4]);
-        let dt_one = rle(2, 2, vec![0, 1, 3]);
+        let empty = Rle::from_counts(2, 2, vec![4]);
+        let dt_one = Rle::from_counts(2, 2, vec![0, 1, 3]);
         let m = compute(&[ann(empty.clone(), false)], &[ann(dt_one, false)]);
         assert!(m[[0, 0]].is_finite());
         assert_eq!(m[[0, 0]].to_bits(), 0.0_f64.to_bits());
@@ -413,8 +405,8 @@ mod tests {
 
     #[test]
     fn rle_dimension_mismatch_returns_typed_error() {
-        let g = ann(rle(4, 4, vec![16]), false);
-        let d = ann(rle(8, 8, vec![64]), false);
+        let g = ann(Rle::from_counts(4, 4, vec![16]), false);
+        let d = ann(Rle::from_counts(8, 8, vec![64]), false);
         let mut out = Array2::<f64>::zeros((1, 1));
         let err = SegmIou
             .compute(&[g], &[d], &mut out.view_mut())
@@ -430,8 +422,8 @@ mod tests {
 
     #[test]
     fn output_shape_mismatch_returns_typed_error() {
-        let g = ann(rle(2, 2, vec![4]), false);
-        let d = ann(rle(2, 2, vec![4]), false);
+        let g = ann(Rle::from_counts(2, 2, vec![4]), false);
+        let d = ann(Rle::from_counts(2, 2, vec![4]), false);
         let mut out = Array2::<f64>::zeros((2, 3));
         let err = SegmIou
             .compute(&[g], &[d], &mut out.view_mut())
@@ -441,7 +433,9 @@ mod tests {
 
     #[test]
     fn empty_inputs_return_unchanged_matrix() {
-        let dts: Vec<SegmAnn> = (0..3).map(|_| ann(rle(2, 2, vec![4]), false)).collect();
+        let dts: Vec<SegmAnn> = (0..3)
+            .map(|_| ann(Rle::from_counts(2, 2, vec![4]), false))
+            .collect();
         let mut out = Array2::<f64>::from_elem((0, 3), 7.0);
         SegmIou.compute(&[], &dts, &mut out.view_mut()).unwrap();
         assert_eq!(out.shape(), &[0, 3]);
@@ -456,12 +450,12 @@ mod tests {
         // - d0: pixel (0,0) — equals g0.
         // - d1: pixels (0,0) and (1,0) — partial overlap with g0.
         // - d2: pixel (3,3) — equals g1.
-        let g0 = rle(4, 4, vec![0, 1, 15]);
-        let g1 = rle(4, 4, vec![15, 1]);
-        let g2 = rle(4, 4, vec![0, 16]);
-        let d0 = rle(4, 4, vec![0, 1, 15]);
-        let d1 = rle(4, 4, vec![0, 1, 3, 1, 11]);
-        let d2 = rle(4, 4, vec![15, 1]);
+        let g0 = Rle::from_counts(4, 4, vec![0, 1, 15]);
+        let g1 = Rle::from_counts(4, 4, vec![15, 1]);
+        let g2 = Rle::from_counts(4, 4, vec![0, 16]);
+        let d0 = Rle::from_counts(4, 4, vec![0, 1, 15]);
+        let d1 = Rle::from_counts(4, 4, vec![0, 1, 3, 1, 11]);
+        let d2 = Rle::from_counts(4, 4, vec![15, 1]);
 
         let m = compute(
             &[ann(g0, false), ann(g1, false), ann(g2, true)],
