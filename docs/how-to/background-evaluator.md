@@ -41,20 +41,12 @@ thread on exit. Without it, call `evaluator.finalize()` directly
   `Evaluator.from_partials(...)` on the head rank for distributed
   evaluation — see [`distributed-eval.md`](distributed-eval.md).
 
-`BackgroundEvaluator` is a single-finalize contract by design (per
-ADR-0035): it does not expose a mid-epoch snapshot path. If you need
-a periodic AP readout during validation, accumulate detections and
-call `Evaluator.evaluate(gt, accumulated_dt)` every N steps — the
-recipe in [`tutorials/training-loop.md`](../tutorials/training-loop.md)
-shows the pattern.
-
 ## When to use it vs `Evaluator.evaluate`
 
 | Scenario | Pick |
 |---|---|
 | End-of-epoch evaluation only. | `Evaluator.evaluate(gt, dt)`. Simplest path; no thread to manage. |
 | Each `evaluate(...)` call adds visible latency to the training loop. | `BackgroundEvaluator`. Frees the calling thread; same kernel. |
-| You log metrics every N steps. | `Evaluator.evaluate(gt, accumulated_dt)` from the loop, or `BackgroundEvaluator` plus an end-of-epoch finalize — see the training-loop tutorial. |
 | Multi-rank distributed eval. | `Evaluator.evaluate_to_partial` per rank + `Evaluator.from_partials` on the head, or the `BackgroundEvaluator` variant if eval is in-loop. See [`distributed-eval.md`](distributed-eval.md). |
 
 In a typical PyTorch training loop on a single GPU, the GPU is the

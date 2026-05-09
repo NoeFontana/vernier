@@ -2,10 +2,9 @@
 
 Most users want `Evaluator(...).evaluate(...)` at end-of-epoch — that
 path is fine, has no streaming overhead, and is the default in every
-migration guide. This tutorial covers the smaller case where you
-specifically need a periodic AP readout mid-epoch: a long validation
-pass you want to log every N steps, or a smoke check that fires before
-the last batch lands. `BackgroundEvaluator`
+migration guide. This tutorial covers the case where you want
+validation to overlap with the rest of the training step rather than
+block on the kernel at end-of-epoch. `BackgroundEvaluator`
 ([ADR-0014](../adr/0014-background-evaluator.md)) runs the kernel on a
 worker thread; `submit(detections)` enqueues and returns immediately,
 keeping the training loop unblocked.
@@ -57,35 +56,6 @@ Two things to know:
   defaults to capacity 8 batches.
 - **`finalize()`** drains the queue, joins the worker, and produces the
   canonical end-of-epoch Summary. Subsequent calls raise.
-
-## Mid-epoch readout
-
-`BackgroundEvaluator` is a single-finalize contract — it does not
-expose a mid-epoch snapshot path. If you need a periodic AP readout
-during validation, accumulate detections in a list and call
-`Evaluator.evaluate(gt, accumulated_dt)` every N steps:
-
-```python
-from vernier.instance import Evaluator, Bbox
-
-batch_evaluator = Evaluator(iou=Bbox(), parity_mode="corrected")
-accumulated = []
-
-for step, (images, targets) in enumerate(val_loader):
-    detections = model(images)
-    accumulated.extend(detections)
-
-    if step % 100 == 0:
-        snapshot = batch_evaluator.evaluate(gt_bytes, json.dumps(accumulated).encode())
-        log_metrics(step, ap=snapshot.stats[0], ap50=snapshot.stats[1])
-
-final = batch_evaluator.evaluate(gt_bytes, json.dumps(accumulated).encode())
-log_metrics(step, ap=final.stats[0], ap50=final.stats[1], final=True)
-```
-
-This is unbiased (it's the same code path as end-of-epoch) but pays
-the full re-eval cost every N steps — fine for COCO val2017 every
-100 steps, probably not for LVIS-scale every 10 steps.
 
 ## Logger integration
 
