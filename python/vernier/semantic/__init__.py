@@ -54,7 +54,12 @@ from vernier._core import (
 from vernier._core import (
     SemanticSummary as Summary,
 )
-from vernier._impl import StreamingSemanticEvaluator as _StreamingSemanticEvaluator
+from vernier._core import (
+    evaluate_semantic_to_partial as _evaluate_semantic_to_partial,
+)
+from vernier._core import (
+    merge_semantic_partials as _merge_semantic_partials,
+)
 from vernier._types import ParityMode
 
 __all__ = [
@@ -423,15 +428,14 @@ class Evaluator:
                 "Evaluator.evaluate_to_partial does not yet propagate label_remap; "
                 "apply the remap on the DT arrays before constructing Predictions."
             )
-        ev = _StreamingSemanticEvaluator(
-            gt.n_classes,
-            self.parity_mode,
-            ignore_label=gt.ignore_label,
+        return _evaluate_semantic_to_partial(
+            dict(gt.label_maps),
+            dict(dt.label_maps),
+            n_classes=gt.n_classes,
+            parity_mode=self.parity_mode,
             rank_id=rank_id,
+            ignore_label=gt.ignore_label,
         )
-        for image_id, gt_arr in gt.label_maps.items():
-            ev.update(image_id, gt_arr, dt.label_maps[image_id])
-        return ev.finalize_to_partial()
 
     @classmethod
     def from_partials(
@@ -450,10 +454,9 @@ class Evaluator:
         what each rank used to produce its partial. Mismatches raise
         the structured ``Partial*`` errors re-exported on this module.
         """
-        merged = _StreamingSemanticEvaluator.from_partials(
-            n_classes, partials, parity_mode, ignore_label=ignore_label
+        return _merge_semantic_partials(
+            n_classes, list(partials), parity_mode, ignore_label=ignore_label
         )
-        return merged.finalize()
 
     def background(
         self,
