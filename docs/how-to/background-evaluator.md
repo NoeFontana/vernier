@@ -1,11 +1,11 @@
 # How to evaluate on a background thread
 
-`BackgroundEvaluator` runs the same kernel as `StreamingEvaluator`
-on a worker thread; `submit()` enqueues a batch and returns
-immediately, so the calling thread (typically a training loop) does
-not stall waiting for the matching kernel to finish.
+`BackgroundEvaluator` runs the evaluation kernel on a worker thread;
+`submit()` enqueues a batch and returns immediately, so the calling
+thread (typically a training loop) does not stall waiting for the
+matching kernel to finish.
 
-## Submit and snapshot
+## Submit and finalize
 
 ```python
 from pathlib import Path
@@ -15,45 +15,51 @@ from vernier.instance import BackgroundEvaluator
 gt_bytes = Path("instances_val2017.json").read_bytes()
 
 with BackgroundEvaluator(gt_bytes, iou_type="bbox") as evaluator:
-    for step, (images, _) in enumerate(val_loader):
+    for images, _ in val_loader:
         detections = model(images)
         evaluator.submit(json.dumps(detections).encode())
-
-        if step % 100 == 0:
-            running = evaluator.snapshot(peek=True)
-            log_metrics(step, ap=running.stats[0])
-
     summary = evaluator.finalize()
 print("final AP:", summary.stats[0])
 ```
 
 The context-manager form drains the worker queue and joins the
-thread on exit. Without it, call `evaluator.finalize()` (which
-also drains and joins).
+thread on exit. Without it, call `evaluator.finalize()` directly
+(which also drains and joins).
 
 - **`submit(detections, *, timeout=None)`** enqueues a batch (either
   loadRes-shaped JSON bytes or a `Detections` dict / sequence of
   dicts — see [array ingest](array-ingest.md)); returns immediately on
   success or raises `QueueFullError` if the queue is at capacity
   (default queue size is set at construction via `queue_capacity=`).
-- **`snapshot(peek=True)`** returns the current Summary against
-  everything consumed so far without blocking the worker;
-  `peek=False` waits for outstanding batches to drain first.
-- **`finalize()`** drains the queue, finishes evaluation, and
-  shuts the worker down. The returned Summary is canonical.
+- **`finalize()`** drains the queue, finishes evaluation, and shuts
+  the worker down. The returned Summary is canonical. Subsequent
+  calls raise.
+- **`finalize_with_tables(...)`** is the tables-aware variant; same
+  drain-and-join semantics.
+- **`finalize_to_partial()`** drains, serializes the worker's final
+  state as a partial blob, and shuts down. Combine with
+  `Evaluator.from_partials(...)` on the head rank for distributed
+  evaluation — see [`distributed-eval.md`](distributed-eval.md).
 
-## When to use it vs `StreamingEvaluator`
+`BackgroundEvaluator` is a single-finalize contract by design (per
+ADR-0035): it does not expose a mid-epoch snapshot path. If you need
+a periodic AP readout during validation, accumulate detections and
+call `Evaluator.evaluate(gt, accumulated_dt)` every N steps — the
+recipe in [`tutorials/training-loop.md`](../tutorials/training-loop.md)
+shows the pattern.
+
+## When to use it vs `Evaluator.evaluate`
 
 | Scenario | Pick |
 |---|---|
-| The kernel does not stall the training loop. | `StreamingEvaluator`. Simpler; no thread to manage. |
-| Each `update(...)` call adds visible latency. | `BackgroundEvaluator`. Frees the calling thread. |
-| You need exact per-step timing of the kernel. | `StreamingEvaluator`. Background timing depends on queue scheduling. |
-| You log metrics every N steps, not every step. | Either. `StreamingEvaluator` is the lower-overhead default. |
+| End-of-epoch evaluation only. | `Evaluator.evaluate(gt, dt)`. Simplest path; no thread to manage. |
+| Each `evaluate(...)` call adds visible latency to the training loop. | `BackgroundEvaluator`. Frees the calling thread; same kernel. |
+| You log metrics every N steps. | `Evaluator.evaluate(gt, accumulated_dt)` from the loop, or `BackgroundEvaluator` plus an end-of-epoch finalize — see the training-loop tutorial. |
+| Multi-rank distributed eval. | `Evaluator.evaluate_to_partial` per rank + `Evaluator.from_partials` on the head, or the `BackgroundEvaluator` variant if eval is in-loop. See [`distributed-eval.md`](distributed-eval.md). |
 
 In a typical PyTorch training loop on a single GPU, the GPU is the
-bottleneck and `StreamingEvaluator` adds negligible CPU stall time.
-`BackgroundEvaluator` is the right choice when the validation
+bottleneck and a plain `Evaluator.evaluate` call at end-of-epoch is
+fine. `BackgroundEvaluator` is the right choice when the validation
 batch size is large enough that JSON-encoding and matching show up
 in the profiler.
 
@@ -77,17 +83,17 @@ batch cadence.
 
 ## Memory budget
 
-`BackgroundEvaluator` honors the same `memory_budget_bytes=` knob
-as `StreamingEvaluator`. Exceeding the budget surfaces as an
-`OutOfBudgetError` from the calling thread on the next `submit`,
-not silently from the worker.
+`BackgroundEvaluator` honors the `memory_budget_bytes=` knob.
+Exceeding the budget surfaces as an `OutOfBudgetError` from the
+calling thread on the next `submit`, not silently from the worker.
 
 ## See also
 
-- [ADR-0013](../adr/0013-streaming-evaluator.md) — the streaming
-  surface design; explains the snapshot/finalize split and the
-  parity contract for streaming-vs-batch numbers.
+- [ADR-0014](../adr/0014-background-evaluator.md) — the worker-thread
+  resource discipline (single worker, bounded queue, GIL drop).
+- [ADR-0035](../adr/0035-api-surface-consolidation.md) — why the
+  public surface is `submit` / `finalize` / `finalize_to_partial`
+  with no snapshot path.
 - [`tutorials/training-loop.md`](../tutorials/training-loop.md) —
-  the streaming counterpart, with the W&B / TensorBoard logger
-  sketch. Same Summary shape; same call style minus the worker
-  thread.
+  end-to-end training-loop recipe with logger integration.
+- [`distributed-eval.md`](distributed-eval.md) — multi-rank pattern.

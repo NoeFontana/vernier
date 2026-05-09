@@ -176,10 +176,10 @@ A short, honest list:
   [fiftyone](https://github.com/voxel51/fiftyone) cover that ground.
 - **Training-loop integration beyond two supported entry points.**
   `Evaluator.evaluate()` at end-of-epoch is the default; the
-  `StreamingEvaluator` surface
-  ([ADR-0013](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0013-streaming-evaluator.md))
-  is the secondary one for *mid-epoch* AP logging. Multi-rank
-  rank-local + gather is the
+  `BackgroundEvaluator` surface
+  ([ADR-0014](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0014-background-evaluator.md))
+  is the secondary one for in-loop submission without GIL stalls.
+  Multi-rank rank-local + gather lives at
   [distributed-eval how-to](how-to/distributed-eval.md). Full
   callbacks-and-loggers integration is downstream-framework territory.
 - **Pretty HTML reports.** The CLI emits text and JSON; HTML report

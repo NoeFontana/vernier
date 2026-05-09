@@ -3,11 +3,12 @@
 Most users want `Evaluator(...).evaluate(...)` at end-of-epoch — that
 path is fine, has no streaming overhead, and is the default in every
 migration guide. This tutorial covers the smaller case where you
-specifically need a *running* AP mid-epoch: a long validation pass you
-want to log every N steps, or a smoke check that fires before the last
-batch lands. `StreamingEvaluator`
-([ADR-0013](../adr/0013-streaming-evaluator.md)) accepts predictions in
-batches and yields a running summary at any point.
+specifically need a periodic AP readout mid-epoch: a long validation
+pass you want to log every N steps, or a smoke check that fires before
+the last batch lands. `BackgroundEvaluator`
+([ADR-0014](../adr/0014-background-evaluator.md)) runs the kernel on a
+worker thread; `submit(detections)` enqueues and returns immediately,
+keeping the training loop unblocked.
 
 If your need is multi-rank distributed eval (rank-local + gather), that
 is a separate topic — see
@@ -15,54 +16,76 @@ is a separate topic — see
 
 ## Construct it
 
-`StreamingEvaluator` lives at `vernier.instance.StreamingEvaluator`:
+`BackgroundEvaluator` lives at `vernier.instance.BackgroundEvaluator`:
 
 ```python
 from pathlib import Path
-from vernier.instance import StreamingEvaluator
+from vernier.instance import BackgroundEvaluator
 
 gt_bytes = Path("instances_val2017.json").read_bytes()
-evaluator = StreamingEvaluator(
+evaluator = BackgroundEvaluator(
     gt_bytes,
     iou_type="bbox",
     parity_mode="corrected",
 )
 ```
 
-The constructor takes the GT JSON once. Subsequent calls feed it
-detections; the GT side is parsed and held internally for the lifetime
-of the evaluator.
+The constructor takes the GT JSON once. Subsequent `submit` calls feed
+it detections from the training thread; the worker thread does the
+kernel work without holding the GIL.
 
-## Feed batches and log periodically
+## Feed batches and finalize at end-of-epoch
 
 ```python
 import json
+from vernier.instance import BackgroundEvaluator, Evaluator, Bbox
+
+with BackgroundEvaluator(gt_bytes, iou_type="bbox") as evaluator:
+    for images, targets in val_loader:
+        detections = model(images)  # list of dicts: {image_id, category_id, bbox, score}
+        evaluator.submit(json.dumps(detections).encode())
+    final = evaluator.finalize()
+
+log_metrics(ap=final.stats[0], ap50=final.stats[1])
+```
+
+Two things to know:
+
+- **`submit(detections)`** enqueues a batch on the worker thread. The
+  argument is the same JSON shape `evaluate(...)` accepts — a list of
+  detection dicts, encoded as bytes. Returns immediately; the queue
+  defaults to capacity 8 batches.
+- **`finalize()`** drains the queue, joins the worker, and produces the
+  canonical end-of-epoch Summary. Subsequent calls raise.
+
+## Mid-epoch readout
+
+`BackgroundEvaluator` is a single-finalize contract — it does not
+expose a mid-epoch snapshot path. If you need a periodic AP readout
+during validation, accumulate detections in a list and call
+`Evaluator.evaluate(gt, accumulated_dt)` every N steps:
+
+```python
+from vernier.instance import Evaluator, Bbox
+
+batch_evaluator = Evaluator(iou=Bbox(), parity_mode="corrected")
+accumulated = []
 
 for step, (images, targets) in enumerate(val_loader):
-    detections = model(images)  # list of dicts: {image_id, category_id, bbox, score}
-    evaluator.update(json.dumps(detections).encode())
+    detections = model(images)
+    accumulated.extend(detections)
 
     if step % 100 == 0:
-        snapshot = evaluator.snapshot(running=True)
+        snapshot = batch_evaluator.evaluate(gt_bytes, json.dumps(accumulated).encode())
         log_metrics(step, ap=snapshot.stats[0], ap50=snapshot.stats[1])
 
-final = evaluator.finalize()
+final = batch_evaluator.evaluate(gt_bytes, json.dumps(accumulated).encode())
 log_metrics(step, ap=final.stats[0], ap50=final.stats[1], final=True)
 ```
 
-Three things to know:
-
-- **`update(bytes)`** appends a batch of detections. The argument is the
-  same JSON shape `evaluate(...)` accepts — a list of detection dicts,
-  encoded as bytes. Returns a small dict with running counts (images
-  and detections seen so far).
-- **`snapshot(running=True)`** computes a Summary against everything
-  consumed so far without finalizing — cheap to call from the logging
-  hook. `running=False` is the post-finalize shape (matches what
-  `finalize()` returns); use it after the last `update` if you want
-  canonical numbers without closing the evaluator.
-- **`finalize()`** produces the canonical end-of-epoch Summary and
-  closes the evaluator (no further `update` calls accepted).
+This is unbiased (it's the same code path as end-of-epoch) but pays
+the full re-eval cost every N steps — fine for COCO val2017 every
+100 steps, probably not for LVIS-scale every 10 steps.
 
 ## Logger integration
 
@@ -85,24 +108,10 @@ Python `float`.
 
 ## Memory budget
 
-Streaming holds the matched-pair grid in memory; on full COCO val2017
-that is ~hundreds of MB at peak. The constructor accepts a
-`memory_budget_bytes=` knob; exceeding the budget raises a typed
-`OutOfBudgetError` rather than silently spilling. Memory state is
-queryable:
-
-```python
-print(evaluator.memory_used_bytes, "/", evaluator.memory_budget_bytes)
-print(evaluator.images_seen, evaluator.detections_seen)
-```
+The background worker holds the matched-pair grid in memory; on full
+COCO val2017 that is ~hundreds of MB at peak. The constructor accepts
+a `memory_budget_bytes=` knob; exceeding the budget surfaces a typed
+`OutOfBudgetError` from `submit()` rather than silently spilling.
 
 Running on COCO val2017 with the default kernel and no budget override
 keeps under 1 GB; LVIS-scale workloads warrant the explicit budget.
-
-## When to use `BackgroundEvaluator` instead
-
-`StreamingEvaluator` runs in the same thread as `update()` calls. For
-training loops where the kernel work measurably stalls the main thread,
-`BackgroundEvaluator` runs the same kernel on a worker thread;
-`submit(detections)` enqueues and returns immediately. Recipe:
-[`../how-to/background-evaluator.md`](../how-to/background-evaluator.md).

@@ -1,108 +1,112 @@
 # Distributed evaluation across ranks
 
-Per [ADR-0031](../adr/0031-dist-eval.md) (instance) and
-[ADR-0032](../adr/0032-dist-eval-paradigms.md) (semantic + panoptic),
-every rank evaluates its own slice locally, gathers a small bytes payload
-via the user's transport (`torch.distributed.all_gather_object`,
-`mpi4py.comm.gather`, etc.), and the head rank reconstructs an evaluator
-equivalent to a batch run over the union of the partials. The same idiom
-works in all three paradigms.
+Per [ADR-0031](../adr/0031-dist-eval.md) (instance),
+[ADR-0032](../adr/0032-dist-eval-paradigms.md) (semantic + panoptic), and
+[ADR-0035](../adr/0035-api-surface-consolidation.md) (the public entry
+class), every rank evaluates its own slice locally, gathers a small bytes
+payload via the user's transport (`torch.distributed.all_gather_object`,
+`mpi4py.comm.gather`, etc.), and the head rank reconstructs a
+`Summary` equivalent to a batch run over the union of the partials.
+The same idiom works in all three paradigms.
 
 vernier ships a bytes interface; the transport is the user's problem (no
 `import torch` inside vernier and no torch-version pin to chase). `rank_id`
 is the user's responsibility — vernier doesn't try to discover it.
-`from_partials()` returns an evaluator, not a `Summary`, so the same
-instance can be checkpointed via `finalize_to_partial` or queried for
-memory state; merge is a constructor, not a terminal operation.
 
 ## Instance — bbox / segm / boundary / keypoints
 
 ```python
 import torch.distributed as dist
-from vernier.instance import StreamingEvaluator
+from vernier.instance import Evaluator, Bbox
 
-ev = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=dist.get_rank())
-for batch in val_loader_for_this_rank:
-    ev.update(model(batch["images"]))
+ev = Evaluator(iou=Bbox(), parity_mode="corrected")
+partial = ev.evaluate_to_partial(
+    gt_bytes, dt_for_this_rank, rank_id=dist.get_rank()
+)  # bytes
 
-partial = ev.finalize_to_partial()  # bytes
 gathered: list[bytes | None] = [None] * dist.get_world_size()
 dist.all_gather_object(gathered, partial)
 
 if dist.get_rank() == 0:
-    merged = StreamingEvaluator.from_partials(
-        gt_bytes, gathered, iou_type="bbox"
+    summary = Evaluator.from_partials(
+        gt_bytes, gathered, iou=Bbox(), parity_mode="corrected"
     )
-    log_metrics(merged.finalize())
+    log_metrics(summary)
 ```
+
+If your validation loop submits image-by-image (rather than handing a
+single per-rank batch to `evaluate_to_partial`), use
+`BackgroundEvaluator` and call `finalize_to_partial()` instead — the
+gather + `Evaluator.from_partials(...)` step on the head rank is the
+same.
 
 ## Semantic — mIoU / FWIoU / pAcc / mAcc
 
-`vernier.semantic.StreamingEvaluator` ships the same surface. The headline
-difference: confusion-matrix sums are u64-additive, so strict-mode merge
-is **unconditionally bit-equal** to a batch run over the union — no
-`pytest.skip`, no tiebreak caveat:
+The headline difference for semantic: confusion-matrix sums are u64-
+additive, so strict-mode merge is **unconditionally bit-equal** to a
+batch run over the union — no tiebreak caveat:
 
 ```python
 import torch.distributed as dist
 import vernier.semantic as sem
 
-ev = sem.StreamingEvaluator(
-    n_classes=19,                    # Cityscapes
-    parity_mode="strict",
-    rank_id=dist.get_rank(),
-)
-for batch in val_loader_for_this_rank:
-    for image_id, gt, dt in batch:
-        ev.update(image_id, gt, dt)
+rank_gt = sem.Dataset.from_arrays(rank_gt_maps, n_classes=19)  # Cityscapes
+rank_dt = sem.Predictions.from_arrays(rank_dt_maps)
 
-partial = ev.finalize_to_partial()
+ev = sem.Evaluator(parity_mode="strict")
+partial = ev.evaluate_to_partial(rank_gt, rank_dt, rank_id=dist.get_rank())
+
 gathered: list[bytes | None] = [None] * dist.get_world_size()
 dist.all_gather_object(gathered, partial)
 
 if dist.get_rank() == 0:
-    merged = sem.StreamingEvaluator.from_partials(
+    summary = sem.Evaluator.from_partials(
         n_classes=19, partials=gathered, parity_mode="strict",
     )
-    log_metrics(merged.finalize())
+    log_metrics(summary)
 ```
 
 ## Panoptic — PQ
 
-`vernier.panoptic.StreamingEvaluator` ships the same surface plus one
-additional knob — `retain_per_image_deltas` — that is the *flagship*
-determinism control. Default `False` keeps single-rank streaming memory
-lean (per-category PqStat fold only). Set it to `True` on every rank when
-you need strict-mode bit-equality across the merge boundary; the merge
-accumulator re-sorts per-image deltas by `image_id` and re-sums in batch
-order, recovering bit-equality despite f64 non-associativity:
+Panoptic has one additional knob — `retain_per_image_deltas` — that is
+the *flagship* determinism control. Default `False` keeps single-rank
+memory lean (per-category PqStat fold only). Set it to `True` on every
+rank when you need strict-mode bit-equality across the merge boundary;
+the merge accumulator re-sorts per-image deltas by `image_id` and
+re-sums in batch order, recovering bit-equality despite f64 non-
+associativity.
+
+The panoptic `evaluate_to_partial` takes per-image tuples directly
+(`PanopticDataset` does not yet expose per-image accessors — closing
+that gap is a follow-up to ADR-0035):
 
 ```python
 import torch.distributed as dist
 import vernier.panoptic as pq
 
-ev = pq.StreamingEvaluator(
-    categories_json,
-    parity_mode="strict",
-    retain_per_image_deltas=True,    # opt-in for deterministic CI gate
-    rank_id=dist.get_rank(),
-)
-for batch in val_loader_for_this_rank:
-    for image_id, gt_lm, gt_si, dt_lm, dt_si in batch:
-        ev.update(image_id, gt_lm, gt_si, dt_lm, dt_si)
+ev = pq.Evaluator(parity_mode="strict")
 
-partial = ev.finalize_to_partial()
+# Per-image tuples: (image_id, gt_label_map, gt_segments_info,
+#                   dt_label_map, dt_segments_info)
+images_for_this_rank = [...]
+
+partial = ev.evaluate_to_partial(
+    images_for_this_rank,
+    categories=categories_json,
+    rank_id=dist.get_rank(),
+    retain_per_image_deltas=True,    # opt-in for deterministic CI gate
+)
+
 gathered: list[bytes | None] = [None] * dist.get_world_size()
 dist.all_gather_object(gathered, partial)
 
 if dist.get_rank() == 0:
-    merged = pq.StreamingEvaluator.from_partials(
+    summary = pq.Evaluator.from_partials(
         categories_json,
         gathered,
-        "strict",
+        parity_mode="strict",
         retain_per_image_deltas=True,
     )
-    summary = merged.finalize()
     log_metrics(pq=summary.pq, sq=summary.sq, rq=summary.rq)
 ```
 
@@ -124,7 +128,9 @@ handler catches the same condition across all three paradigms.
 
 ## See also
 
-- [ADR-0031](../adr/0031-dist-eval.md) — instance
-  streaming determinism + merge contract.
-- [ADR-0032](../adr/0032-dist-eval-paradigms.md) — full
-  determinism contract and validation surface across paradigms.
+- [ADR-0031](../adr/0031-dist-eval.md) — instance streaming
+  determinism + merge contract.
+- [ADR-0032](../adr/0032-dist-eval-paradigms.md) — full determinism
+  contract and validation surface across paradigms.
+- [ADR-0035](../adr/0035-api-surface-consolidation.md) — why the
+  entry class is `Evaluator` (not `StreamingEvaluator`).
