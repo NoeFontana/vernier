@@ -82,10 +82,10 @@ for the cross-codebase comparison.
   for OKS (ADR-0012). Recipes:
   [`how-to/boundary-iou.md`](../how-to/boundary-iou.md),
   [`how-to/keypoints-oks.md`](../how-to/keypoints-oks.md).
-- **Log AP mid-epoch.** End-of-epoch `Evaluator(...).evaluate(...)` is
-  the default. If validation pass timing matters,
-  `BackgroundEvaluator.submit(...)` runs the kernel on a worker thread
-  so the training thread doesn't stall. Tutorial:
+- **Log AP during training.** End-of-epoch
+  `Evaluator(...).evaluate(...)` is the default. If validation pass
+  timing matters, `BackgroundEvaluator.submit(...)` runs the kernel on
+  a worker thread so the training thread doesn't stall. Tutorial:
   [`training-loop.md`](training-loop.md).
 - **Migrate from a competing tool.** The TL;DR table in
   [`migrate/from-pycocotools.md`](../migrate/from-pycocotools.md)
