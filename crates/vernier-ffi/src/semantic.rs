@@ -35,6 +35,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList};
 
 use vernier_partial::PartialError;
+use vernier_semantic::decode::evaluate_from_pngs;
 use vernier_semantic::kernel::accumulate_confusion;
 use vernier_semantic::{
     summarize, ClassSemanticStats, ConfusionMatrix, SemanticError, SemanticSummary,
@@ -407,6 +408,91 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     });
 
     Ok(PySemanticSummary { inner: summary })
+}
+
+/// Run the semantic-segmentation evaluation directly against PNG label
+/// maps on disk (ADR-0037). The fused libpng decode + confusion-matrix
+/// fold runs inside `py.detach`, so the GIL is released for the whole
+/// batch and only one `(gt, dt)` pair of decoded buffers is in flight
+/// at a time.
+///
+/// Format contract: 8-bit grayscale PNGs only. RGB / paletted /
+/// 16-bit grayscale are rejected with `UnsupportedPngFormat`. Callers
+/// with wider class-id ranges should use `evaluate_semantic_from_arrays`
+/// with `np.uint16` / `np.uint32` ndarrays instead.
+#[pyfunction]
+#[pyo3(signature = (
+    gt_paths,
+    dt_paths,
+    n_classes,
+    parity_mode,
+    *,
+    ignore_label = None,
+))]
+pub(crate) fn evaluate_semantic_from_pngs<'py>(
+    py: Python<'py>,
+    gt_paths: &Bound<'py, PyDict>,
+    dt_paths: &Bound<'py, PyDict>,
+    n_classes: u32,
+    parity_mode: &str,
+    ignore_label: Option<u32>,
+) -> PyResult<PySemanticSummary> {
+    if n_classes == 0 {
+        return Err(PyValueError::new_err(
+            "evaluate_semantic_from_pngs requires n_classes >= 1",
+        ));
+    }
+    let mode = crate::parse_parity_mode(parity_mode)?;
+
+    let gt_pairs = parse_path_dict(gt_paths, "semantic gt")?;
+    let dt_map = parse_path_dict_to_hashmap(dt_paths, "semantic dt")?;
+
+    let summary = py
+        .detach(move || -> Result<SemanticSummary, SemanticError> {
+            evaluate_from_pngs(&gt_pairs, &dt_map, n_classes, ignore_label, mode)
+        })
+        .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+    Ok(PySemanticSummary { inner: summary })
+}
+
+/// Extract a `dict[image_id: int, path: str | os.PathLike]` into a
+/// sorted `Vec<(image_id, PathBuf)>` (iteration order is deterministic
+/// per quirk **AM5**).
+fn parse_path_dict(
+    d: &Bound<'_, PyDict>,
+    label: &str,
+) -> PyResult<Vec<(ImageId, std::path::PathBuf)>> {
+    let mut out: Vec<(ImageId, std::path::PathBuf)> = Vec::with_capacity(d.len());
+    for (k, v) in d.iter() {
+        let image_id: ImageId = k.extract().map_err(|e| {
+            PyValueError::new_err(format!("{label}: image_id keys must be int: {e}"))
+        })?;
+        let path: std::path::PathBuf = v.extract().map_err(|e| {
+            PyValueError::new_err(format!("{label}: values must be str or os.PathLike: {e}"))
+        })?;
+        out.push((image_id, path));
+    }
+    out.sort_unstable_by_key(|(iid, _)| *iid);
+    Ok(out)
+}
+
+/// Same shape as [`parse_path_dict`] but lands in a [`HashMap`] for
+/// O(1) prediction lookup keyed by image_id.
+fn parse_path_dict_to_hashmap(
+    d: &Bound<'_, PyDict>,
+    label: &str,
+) -> PyResult<HashMap<ImageId, std::path::PathBuf>> {
+    let mut out: HashMap<ImageId, std::path::PathBuf> = HashMap::with_capacity(d.len());
+    for (k, v) in d.iter() {
+        let image_id: ImageId = k.extract().map_err(|e| {
+            PyValueError::new_err(format!("{label}: image_id keys must be int: {e}"))
+        })?;
+        let path: std::path::PathBuf = v.extract().map_err(|e| {
+            PyValueError::new_err(format!("{label}: values must be str or os.PathLike: {e}"))
+        })?;
+        out.insert(image_id, path);
+    }
+    Ok(out)
 }
 
 /// One-shot per-rank streaming submit + serialize partial (ADR-0035).
@@ -858,6 +944,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySemanticSummary>()?;
     m.add_class::<PyBackgroundSemanticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_semantic_from_pngs, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_to_partial, m)?)?;
     m.add_function(wrap_pyfunction!(merge_semantic_partials, m)?)?;
     Ok(())

@@ -186,6 +186,23 @@ pub enum SemanticError {
         source: std::io::Error,
     },
 
+    /// PNG color type or bit depth unsupported by
+    /// [`crate::decode::evaluate_from_pngs`]. The fused-decode path
+    /// accepts 8-bit grayscale only — RGB / paletted / 16-bit
+    /// grayscale are rejected with this typed variant. (Use the
+    /// array-input path with `np.uint16` / `np.uint32` if your
+    /// label maps are encoded otherwise.)
+    #[error(
+        "image_id={image_id}: unsupported PNG format {mode}; \
+         evaluate_from_pngs requires 8-bit grayscale label maps"
+    )]
+    UnsupportedPngFormat {
+        /// Image id of the offending file.
+        image_id: ImageId,
+        /// Color-type / bit-depth label, e.g. `"Rgb/Eight"` or `"Grayscale/Sixteen"`.
+        mode: String,
+    },
+
     /// Distributed-eval partial wire format / merge policy rejected
     /// the partial (ADR-0032). Wraps [`vernier_partial::PartialError`]
     /// so the FFI layer can map back to the same Python exception

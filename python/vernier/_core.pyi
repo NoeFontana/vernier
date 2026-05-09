@@ -1,3 +1,4 @@
+import os
 from collections.abc import Mapping, Sequence
 from types import TracebackType
 from typing import Any, Literal, TypeAlias, TypedDict
@@ -592,6 +593,14 @@ def evaluate_semantic_from_arrays(
     *,
     ignore_label: int | None = ...,
     label_remap: dict[int, int] | None = ...,
+) -> SemanticSummary: ...
+def evaluate_semantic_from_pngs(
+    gt_paths: dict[int, str | os.PathLike[str]],
+    dt_paths: dict[int, str | os.PathLike[str]],
+    n_classes: int,
+    parity_mode: str,
+    *,
+    ignore_label: int | None = ...,
 ) -> SemanticSummary: ...
 def evaluate_semantic_to_partial(
     gt_label_maps: dict[int, NDArray[np.uint32]],
