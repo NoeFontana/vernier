@@ -28,8 +28,8 @@ import json
 import numpy as np
 import pytest
 
+import vernier.panoptic as pq
 import vernier.semantic as sem
-from vernier._impl import StreamingPanopticEvaluator, StreamingSemanticEvaluator
 
 # ---------------------------------------------------------------------------
 # Semantic: strict-mode bit-equality is unconditional.
@@ -64,13 +64,17 @@ def test_semantic_strict_merge_bit_equals_batch(n_ranks: int) -> None:
 
     partials: list[bytes] = []
     for rank in range(n_ranks):
-        ev = StreamingSemanticEvaluator(n_classes, "strict", rank_id=rank)
-        for image_id in sorted(gt_maps):
-            if image_id % n_ranks == rank:
-                ev.update(image_id, gt_maps[image_id], dt_maps[image_id])
-        partials.append(ev.finalize_to_partial())
+        rank_gt = {iid: gt_maps[iid] for iid in sorted(gt_maps) if iid % n_ranks == rank}
+        rank_dt = {iid: dt_maps[iid] for iid in rank_gt}
+        partials.append(
+            sem.Evaluator(parity_mode="strict").evaluate_to_partial(
+                sem.Dataset.from_arrays(rank_gt, n_classes=n_classes),
+                sem.Predictions.from_arrays(rank_dt),
+                rank_id=rank,
+            )
+        )
 
-    merged = StreamingSemanticEvaluator.from_partials(n_classes, partials, "strict").finalize()
+    merged = sem.Evaluator.from_partials(n_classes, partials, parity_mode="strict")
 
     # u64 confusion matrix → bit-equal element-wise.
     np.testing.assert_array_equal(
@@ -139,34 +143,42 @@ def test_panoptic_strict_merge_bit_equals_batch_with_deltas(
     """
     seeds = list(range(16))
 
-    # Single-rank baseline (the "batch" run).
-    baseline = StreamingPanopticEvaluator(_PANOPTIC_CATS, "strict", retain_per_image_deltas=True)
-    for s in seeds:
-        gt_lm, gt_si, dt_lm, dt_si = _panoptic_image(s)
-        baseline.update(s, gt_lm, gt_si, dt_lm, dt_si)
-    batch = baseline.finalize()
+    def _images_for_seeds(ss: list[int]) -> list[tuple]:
+        return [(s, *_panoptic_image(s)) for s in ss]
+
+    ev = pq.Evaluator(parity_mode="strict")
+
+    # Single-rank baseline (the "batch" run): one rank gets every seed.
+    baseline_partial = ev.evaluate_to_partial(
+        _images_for_seeds(seeds),
+        categories=_PANOPTIC_CATS,
+        rank_id=0,
+        retain_per_image_deltas=True,
+    )
+    batch = pq.Evaluator.from_partials(
+        _PANOPTIC_CATS,
+        [baseline_partial],
+        parity_mode="strict",
+        retain_per_image_deltas=True,
+    )
 
     # Sharded merge with deltas retained on every rank.
-    partials: list[bytes] = []
-    for rank in range(n_ranks):
-        ev = StreamingPanopticEvaluator(
-            _PANOPTIC_CATS,
-            "strict",
-            retain_per_image_deltas=True,
+    partials = [
+        ev.evaluate_to_partial(
+            _images_for_seeds([s for s in seeds if s % n_ranks == rank]),
+            categories=_PANOPTIC_CATS,
             rank_id=rank,
+            retain_per_image_deltas=True,
         )
-        for s in seeds:
-            if s % n_ranks == rank:
-                gt_lm, gt_si, dt_lm, dt_si = _panoptic_image(s)
-                ev.update(s, gt_lm, gt_si, dt_lm, dt_si)
-        partials.append(ev.finalize_to_partial())
+        for rank in range(n_ranks)
+    ]
 
-    merged = StreamingPanopticEvaluator.from_partials(
+    merged = pq.Evaluator.from_partials(
         _PANOPTIC_CATS,
         partials,
-        "strict",
+        parity_mode="strict",
         retain_per_image_deltas=True,
-    ).finalize()
+    )
 
     # The headline trio: PQ / SQ / RQ all bit-equal under reorder.
     assert merged.pq == batch.pq

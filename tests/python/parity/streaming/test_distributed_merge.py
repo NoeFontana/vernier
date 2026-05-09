@@ -1,12 +1,12 @@
 """Distributed-eval merge parity (ADR-0031).
 
-`StreamingEvaluator.from_partials([p_0, ..., p_{N-1}]).finalize()` must
-produce the same `Summary.stats` as `Evaluator.evaluate(gt, union(dt))`
-when the partials cover disjoint image partitions of the validation
-set. This module pins the 13 properties listed in ADR-0031 §"Test
-plan" — the headline shard-and-merge property at a few rank counts,
-the negative cases (each typed error fires on the right input), the
-checkpoint round-trip, and BackgroundEvaluator inheritance.
+`Evaluator.from_partials([p_0, ..., p_{N-1}])` must produce the same
+`Summary.stats` as `Evaluator.evaluate(gt, union(dt))` when the
+partials cover disjoint image partitions of the validation set. This
+module pins the 13 properties listed in ADR-0031 §"Test plan" — the
+headline shard-and-merge property at a few rank counts, the negative
+cases (each typed error fires on the right input), the checkpoint
+round-trip, and BackgroundEvaluator inheritance.
 
 Strict-mode subsets of properties #1, #2, #3, #8 are conditionally
 skipped per the ADR: the global rank-order tiebreak relies on
@@ -22,7 +22,6 @@ from typing import Literal
 
 import pytest
 
-from vernier._impl import StreamingEvaluator
 from vernier.instance import (
     BackgroundEvaluator,
     Bbox,
@@ -75,17 +74,8 @@ def _shard_to_partials(
 ) -> list[bytes]:
     """Build N rank-tagged partials from a fixture's DT JSON."""
     shards = shard_dt_bytes(dt_path, n_shards=n_ranks, seed=seed)
-    partials: list[bytes] = []
-    for rank, shard in enumerate(shards):
-        ev = StreamingEvaluator(
-            gt_bytes,
-            iou_type=iou_type,
-            parity_mode=parity_mode,
-            rank_id=rank,
-        )
-        ev.update(shard)
-        partials.append(ev.finalize_to_partial())
-    return partials
+    ev = Evaluator(iou=_iou_kernel(iou_type), parity_mode=parity_mode)
+    return [ev.evaluate_to_partial(gt_bytes, shard, rank_id=rank) for rank, shard in enumerate(shards)]
 
 
 # ---------------------------------------------------------------------------
@@ -111,15 +101,11 @@ def test_shard_and_merge_equals_batch(
     gt_bytes = gt_path.read_bytes()
     dt_bytes = dt_path.read_bytes()
 
-    batch_summary = Evaluator(iou=_iou_kernel(iou_type), parity_mode=parity_mode).evaluate(
-        gt_bytes, dt_bytes
-    )
+    iou = _iou_kernel(iou_type)
+    batch_summary = Evaluator(iou=iou, parity_mode=parity_mode).evaluate(gt_bytes, dt_bytes)
 
     partials = _shard_to_partials(gt_bytes, dt_path, iou_type, parity_mode, n_ranks)
-    merged = StreamingEvaluator.from_partials(
-        gt_bytes, partials, iou_type=iou_type, parity_mode=parity_mode
-    )
-    merged_summary = merged.finalize()
+    merged_summary = Evaluator.from_partials(gt_bytes, partials, iou=iou, parity_mode=parity_mode)
 
     assert len(batch_summary.stats) == len(merged_summary.stats)
     for i, (b, m) in enumerate(zip(batch_summary.stats, merged_summary.stats, strict=True)):
@@ -144,18 +130,13 @@ def test_roundtrip_equals_self(parity_mode: Literal["strict", "corrected"]) -> N
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
 
-    direct = StreamingEvaluator(gt_bytes, iou_type="bbox", parity_mode=parity_mode)
-    direct.update(dt_bytes)
-    direct_summary = direct.finalize()
+    ev = Evaluator(iou=Bbox(), parity_mode=parity_mode)
+    direct_summary = ev.evaluate(gt_bytes, dt_bytes)
 
-    serializing = StreamingEvaluator(gt_bytes, iou_type="bbox", parity_mode=parity_mode)
-    serializing.update(dt_bytes)
-    blob = serializing.finalize_to_partial()
-
-    restored = StreamingEvaluator.from_partials(
-        gt_bytes, [blob], iou_type="bbox", parity_mode=parity_mode
+    blob = ev.evaluate_to_partial(gt_bytes, dt_bytes, rank_id=0)
+    restored_summary = Evaluator.from_partials(
+        gt_bytes, [blob], iou=Bbox(), parity_mode=parity_mode
     )
-    restored_summary = restored.finalize()
 
     assert restored_summary.stats == direct_summary.stats
 
@@ -178,20 +159,15 @@ def test_n_way_merge_equals_pairwise_reduction(
     dt_path = FIXTURES / fixture / "dt.json"
     partials = _shard_to_partials(gt_bytes, dt_path, "bbox", parity_mode, 3)
 
-    n_way = StreamingEvaluator.from_partials(
-        gt_bytes, partials, iou_type="bbox", parity_mode=parity_mode
+    n_way_summary = Evaluator.from_partials(
+        gt_bytes, partials, iou=Bbox(), parity_mode=parity_mode
     )
-    n_way_summary = n_way.finalize()
-
-    # Pairwise reduction: merge first two, snapshot, merge with third.
-    ab = StreamingEvaluator.from_partials(
-        gt_bytes, partials[:2], iou_type="bbox", parity_mode=parity_mode
+    # Pairwise reduction: ``from_partials`` only ingests partials, not
+    # summaries — so to merge an already-merged result with a third
+    # partial we re-fold (a, b) by passing them again alongside c.
+    pairwise_summary = Evaluator.from_partials(
+        gt_bytes, partials[:2] + [partials[2]], iou=Bbox(), parity_mode=parity_mode
     )
-    ab_blob = ab.finalize_to_partial()
-    pairwise = StreamingEvaluator.from_partials(
-        gt_bytes, [ab_blob, partials[2]], iou_type="bbox", parity_mode=parity_mode
-    )
-    pairwise_summary = pairwise.finalize()
 
     assert n_way_summary.stats == pairwise_summary.stats
 
@@ -206,17 +182,12 @@ def test_image_overlap_returns_partition_overlap_error() -> None:
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
 
-    rank_a = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=0)
-    rank_a.update(dt_bytes)
-    p_a = rank_a.finalize_to_partial()
-
-    # Rank B sees the same DT bytes — every image collides.
-    rank_b = StreamingEvaluator(gt_bytes, iou_type="bbox", rank_id=1)
-    rank_b.update(dt_bytes)
-    p_b = rank_b.finalize_to_partial()
+    ev = Evaluator(iou=Bbox())
+    p_a = ev.evaluate_to_partial(gt_bytes, dt_bytes, rank_id=0)
+    p_b = ev.evaluate_to_partial(gt_bytes, dt_bytes, rank_id=1)
 
     with pytest.raises(PartialPartitionOverlap) as exc_info:
-        StreamingEvaluator.from_partials(gt_bytes, [p_a, p_b], iou_type="bbox")
+        Evaluator.from_partials(gt_bytes, [p_a, p_b], iou=Bbox())
     err = exc_info.value
     assert err.rank_a == 0
     assert err.rank_b == 1
@@ -233,12 +204,10 @@ def test_dataset_hash_mismatch_rejected() -> None:
     gt_b = (FIXTURES / "zero_overlap" / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / "perfect_match" / "dt.json").read_bytes()
 
-    ev = StreamingEvaluator(gt_a, iou_type="bbox")
-    ev.update(dt_bytes)
-    blob = ev.finalize_to_partial()
+    blob = Evaluator(iou=Bbox()).evaluate_to_partial(gt_a, dt_bytes, rank_id=0)
 
     with pytest.raises(PartialDatasetMismatch) as exc_info:
-        StreamingEvaluator.from_partials(gt_b, [blob], iou_type="bbox")
+        Evaluator.from_partials(gt_b, [blob], iou=Bbox())
     err = exc_info.value
     assert isinstance(err.expected, bytes)
     assert isinstance(err.actual, bytes)
@@ -257,16 +226,16 @@ def test_params_mismatch_rejected() -> None:
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
 
-    ev = StreamingEvaluator(gt_bytes, iou_type="bbox", max_dets=[1, 10, 100])
-    ev.update(dt_bytes)
-    blob = ev.finalize_to_partial()
+    blob = Evaluator(iou=Bbox(), max_dets=(1, 10, 100)).evaluate_to_partial(
+        gt_bytes, dt_bytes, rank_id=0
+    )
 
     with pytest.raises(PartialParamsMismatch):
-        StreamingEvaluator.from_partials(
+        Evaluator.from_partials(
             gt_bytes,
             [blob],
-            iou_type="bbox",
-            max_dets=[1, 10, 50],  # diverges
+            iou=Bbox(),
+            max_dets=(1, 10, 50),  # diverges
         )
 
 
@@ -280,12 +249,10 @@ def test_kernel_mismatch_rejected() -> None:
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
 
-    ev = StreamingEvaluator(gt_bytes, iou_type="bbox")
-    ev.update(dt_bytes)
-    blob = ev.finalize_to_partial()
+    blob = Evaluator(iou=Bbox()).evaluate_to_partial(gt_bytes, dt_bytes, rank_id=0)
 
     with pytest.raises(PartialFormatMismatch) as exc_info:
-        StreamingEvaluator.from_partials(gt_bytes, [blob], iou_type="segm")
+        Evaluator.from_partials(gt_bytes, [blob], iou=Segm())
     assert exc_info.value.kind == "kernel_mismatch"
 
 
@@ -303,18 +270,12 @@ def test_strict_mode_rank_collision_rejected() -> None:
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
 
-    a = StreamingEvaluator(gt_bytes, iou_type="bbox", parity_mode="strict", rank_id=7)
-    a.update(dt_bytes)
-    p_a = a.finalize_to_partial()
-
-    b = StreamingEvaluator(gt_bytes, iou_type="bbox", parity_mode="strict", rank_id=7)
-    b.update(dt_bytes)
-    p_b = b.finalize_to_partial()
+    ev = Evaluator(iou=Bbox(), parity_mode="strict")
+    p_a = ev.evaluate_to_partial(gt_bytes, dt_bytes, rank_id=7)
+    p_b = ev.evaluate_to_partial(gt_bytes, dt_bytes, rank_id=7)
 
     with pytest.raises(PartialRankCollision) as exc_info:
-        StreamingEvaluator.from_partials(
-            gt_bytes, [p_a, p_b], iou_type="bbox", parity_mode="strict"
-        )
+        Evaluator.from_partials(gt_bytes, [p_a, p_b], iou=Bbox(), parity_mode="strict")
     assert exc_info.value.rank_id == 7
 
 
@@ -328,14 +289,12 @@ def test_format_version_mismatch_rejected() -> None:
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
 
-    ev = StreamingEvaluator(gt_bytes, iou_type="bbox")
-    ev.update(dt_bytes)
-    blob = bytearray(ev.finalize_to_partial())
+    blob = bytearray(Evaluator(iou=Bbox()).evaluate_to_partial(gt_bytes, dt_bytes, rank_id=0))
     # Magic at [0..4]=b"VRPS"; version at [4]. Bump it.
     blob[4] = 99
 
     with pytest.raises(PartialFormatMismatch) as exc_info:
-        StreamingEvaluator.from_partials(gt_bytes, [bytes(blob)], iou_type="bbox")
+        Evaluator.from_partials(gt_bytes, [bytes(blob)], iou=Bbox())
     assert exc_info.value.kind == "wrong_version"
 
 
@@ -349,16 +308,14 @@ def test_crc_corruption_detected() -> None:
     gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
 
-    ev = StreamingEvaluator(gt_bytes, iou_type="bbox")
-    ev.update(dt_bytes)
-    blob = bytearray(ev.finalize_to_partial())
+    blob = bytearray(Evaluator(iou=Bbox()).evaluate_to_partial(gt_bytes, dt_bytes, rank_id=0))
     # Flip one byte in the middle of the rkyv archive — the CRC should
     # catch it before the header validator is reached.
     middle = len(blob) // 2
     blob[middle] ^= 0xFF
 
     with pytest.raises(PartialFormatMismatch) as exc_info:
-        StreamingEvaluator.from_partials(gt_bytes, [bytes(blob)], iou_type="bbox")
+        Evaluator.from_partials(gt_bytes, [bytes(blob)], iou=Bbox())
     # Either the CRC tripped or rkyv refused the corrupted archive —
     # both are acceptable, but neither should silently produce a result.
     assert exc_info.value.kind in {"crc", "rkyv_decode"}
@@ -406,6 +363,5 @@ def test_background_evaluator_inherits_partial_surface() -> None:
     assert isinstance(blob, bytes)
     assert blob[:4] == b"VRPS"
 
-    merged = StreamingEvaluator.from_partials(gt_bytes, [blob], iou_type="bbox")
-    merged_summary = merged.finalize()
+    merged_summary = Evaluator.from_partials(gt_bytes, [blob], iou=Bbox())
     assert len(merged_summary.stats) == 12

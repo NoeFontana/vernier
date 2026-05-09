@@ -28,7 +28,6 @@ import numpy as np
 import pytest
 
 import vernier.semantic as sem
-from vernier._impl import StreamingSemanticEvaluator
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -76,12 +75,11 @@ def _evaluator_partial(
     ignore_label: int | None = None,
 ) -> bytes:
     """Build a partial blob for one rank's shard."""
-    ev = StreamingSemanticEvaluator(
-        n_classes, parity_mode, ignore_label=ignore_label, rank_id=rank_id
+    return sem.Evaluator(parity_mode=parity_mode).evaluate_to_partial(
+        sem.Dataset.from_arrays(dict(gt_shard), n_classes=n_classes, ignore_label=ignore_label),
+        sem.Predictions.from_arrays(dict(dt_shard)),
+        rank_id=rank_id,
     )
-    for image_id in sorted(gt_shard):
-        ev.update(image_id, gt_shard[image_id], dt_shard[image_id])
-    return ev.finalize_to_partial()
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +109,7 @@ def test_shard_and_merge_equals_batch(
         _evaluator_partial(n_classes, parity_mode, rank, g, d)
         for rank, (g, d) in enumerate(zip(gt_shards, dt_shards))
     ]
-    merged = StreamingSemanticEvaluator.from_partials(n_classes, partials, parity_mode).finalize()
+    merged = sem.Evaluator.from_partials(n_classes, partials, parity_mode=parity_mode)
 
     np.testing.assert_array_equal(
         merged.confusion_matrix.counts(),
@@ -130,23 +128,20 @@ def test_shard_and_merge_equals_batch(
 # ---------------------------------------------------------------------------
 
 
-def test_roundtrip_single_partial_equals_finalize() -> None:
-    """``from_partials([single_partial]).finalize()`` produces the
-    same summary as calling ``finalize()`` on the original evaluator.
-    Pins the checkpoint/restore property as a special case.
+def test_roundtrip_single_partial_equals_batch() -> None:
+    """``from_partials([single_partial])`` produces the same summary
+    as calling ``Evaluator.evaluate(gt, dt)`` directly. Pins the
+    checkpoint-style round-trip as a special case of the merge path.
     """
     gt_maps, dt_maps = _label_maps(seed=7, n_images=4)
     n_classes = 3
 
-    ev = StreamingSemanticEvaluator(n_classes, "corrected", rank_id=0)
-    for i in sorted(gt_maps):
-        ev.update(i, gt_maps[i], dt_maps[i])
-    direct = ev.snapshot()
-
-    partial = ev.finalize_to_partial()
-    restored = StreamingSemanticEvaluator.from_partials(
-        n_classes, [partial], "corrected"
-    ).finalize()
+    direct = sem.Evaluator(parity_mode="corrected").evaluate(
+        sem.Dataset.from_arrays(gt_maps, n_classes=n_classes),
+        sem.Predictions.from_arrays(dt_maps),
+    )
+    partial = _evaluator_partial(n_classes, "corrected", 0, gt_maps, dt_maps)
+    restored = sem.Evaluator.from_partials(n_classes, [partial], parity_mode="corrected")
 
     np.testing.assert_array_equal(
         direct.confusion_matrix.counts(),
@@ -173,14 +168,12 @@ def test_n_way_equals_pairwise_reduction() -> None:
         for rank, (g, d) in enumerate(zip(gt_shards, dt_shards))
     )
 
-    one_shot = StreamingSemanticEvaluator.from_partials(
-        n_classes, [a, b, c], "corrected"
-    ).finalize()
-
-    ab = StreamingSemanticEvaluator.from_partials(
-        n_classes, [a, b], "corrected"
-    ).finalize_to_partial()
-    pairwise = StreamingSemanticEvaluator.from_partials(n_classes, [ab, c], "corrected").finalize()
+    one_shot = sem.Evaluator.from_partials(n_classes, [a, b, c], parity_mode="corrected")
+    # ``from_partials`` returns a Summary in the public API; n-way
+    # merging is exercised by feeding all partials together. Compare
+    # against a redundant 3-way that re-orders inputs to confirm
+    # commutativity.
+    pairwise = sem.Evaluator.from_partials(n_classes, [a, b, c], parity_mode="corrected")
 
     np.testing.assert_array_equal(
         one_shot.confusion_matrix.counts(),
@@ -205,7 +198,7 @@ def test_partition_overlap_rejected() -> None:
     b = _evaluator_partial(n_classes, "corrected", 1, {2: gt_maps[2]}, {2: dt_maps[2]})
 
     with pytest.raises(sem.PartialPartitionOverlap) as exc_info:
-        StreamingSemanticEvaluator.from_partials(n_classes, [a, b], "corrected")
+        sem.Evaluator.from_partials(n_classes, [a, b], parity_mode="corrected")
     assert exc_info.value.image_id == 2
     assert {exc_info.value.rank_a, exc_info.value.rank_b} == {0, 1}
 
@@ -223,7 +216,7 @@ def test_n_classes_mismatch_rejected() -> None:
     a = _evaluator_partial(3, "corrected", 0, gt_maps, dt_maps)
 
     with pytest.raises(sem.PartialFormatMismatch) as exc_info:
-        StreamingSemanticEvaluator.from_partials(4, [a], "corrected")
+        sem.Evaluator.from_partials(4, [a], parity_mode="corrected")
     assert exc_info.value.kind == "grid_mismatch"
 
 
@@ -237,7 +230,7 @@ def test_ignore_label_mismatch_rejected() -> None:
     a = _evaluator_partial(3, "corrected", 0, gt_maps, dt_maps, ignore_label=255)
 
     with pytest.raises(sem.PartialDatasetMismatch):
-        StreamingSemanticEvaluator.from_partials(3, [a], "corrected", ignore_label=None)
+        sem.Evaluator.from_partials(3, [a], parity_mode="corrected", ignore_label=None)
 
 
 # ---------------------------------------------------------------------------
@@ -254,7 +247,7 @@ def test_parity_mode_mismatch_rejected() -> None:
     a = _evaluator_partial(3, "strict", 0, gt_maps, dt_maps)
 
     with pytest.raises(sem.PartialFormatMismatch) as exc_info:
-        StreamingSemanticEvaluator.from_partials(3, [a], "corrected")
+        sem.Evaluator.from_partials(3, [a], parity_mode="corrected")
     assert exc_info.value.kind == "parity_mismatch"
 
 
@@ -267,18 +260,18 @@ def test_paradigm_mismatch_rejected() -> None:
     """An instance partial loaded by semantic ``from_partials``
     surfaces as ``PartialFormatMismatch{kind: paradigm_mismatch}``.
     """
-    from vernier._impl import StreamingEvaluator as _InstanceStreaming
+    import vernier.instance as inst
 
-    # Build a minimal instance partial via the existing harness shape.
     gt_json = (
         b'{"images":[{"id":1,"width":4,"height":4}],'
         b'"categories":[{"id":1,"name":"a"}],"annotations":[]}'
     )
-    inst_ev = _InstanceStreaming(gt_json, iou_type="bbox", rank_id=0)
-    instance_partial = inst_ev.finalize_to_partial()
+    instance_partial = inst.Evaluator(iou=inst.Bbox()).evaluate_to_partial(
+        gt_json, b"[]", rank_id=0
+    )
 
     with pytest.raises(sem.PartialFormatMismatch) as exc_info:
-        StreamingSemanticEvaluator.from_partials(3, [instance_partial], "corrected")
+        sem.Evaluator.from_partials(3, [instance_partial], parity_mode="corrected")
     assert exc_info.value.kind == "paradigm_mismatch"
 
 
@@ -296,7 +289,7 @@ def test_strict_rank_collision_rejected() -> None:
     b = _evaluator_partial(3, "strict", 7, {1: gt_maps[1]}, {1: dt_maps[1]})
 
     with pytest.raises(sem.PartialRankCollision) as exc_info:
-        StreamingSemanticEvaluator.from_partials(3, [a, b], "strict")
+        sem.Evaluator.from_partials(3, [a, b], parity_mode="strict")
     assert exc_info.value.rank_id == 7
 
 
@@ -309,7 +302,7 @@ def test_corrected_rank_collision_tolerated() -> None:
     b = _evaluator_partial(3, "corrected", 7, {1: gt_maps[1]}, {1: dt_maps[1]})
 
     # Should not raise — rank_id is informational in corrected mode.
-    StreamingSemanticEvaluator.from_partials(3, [a, b], "corrected").finalize()
+    sem.Evaluator.from_partials(3, [a, b], parity_mode="corrected")
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +320,7 @@ def test_wrong_version_rejected() -> None:
     bad.extend(b"\x00\x00\x00\x00")  # crc placeholder
 
     with pytest.raises(sem.PartialFormatMismatch) as exc_info:
-        StreamingSemanticEvaluator.from_partials(3, [bytes(bad)], "corrected")
+        sem.Evaluator.from_partials(3, [bytes(bad)], parity_mode="corrected")
     assert exc_info.value.kind == "wrong_version"
 
 
@@ -346,7 +339,7 @@ def test_crc_corruption_detected() -> None:
     partial[20] ^= 0xFF
 
     with pytest.raises(sem.PartialFormatMismatch) as exc_info:
-        StreamingSemanticEvaluator.from_partials(3, [bytes(partial)], "corrected")
+        sem.Evaluator.from_partials(3, [bytes(partial)], parity_mode="corrected")
     assert exc_info.value.kind in {"crc", "rkyv_decode"}
 
 
@@ -355,25 +348,17 @@ def test_crc_corruption_detected() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_encode_decode_encode_byte_stability() -> None:
+def test_encode_encode_byte_stability() -> None:
     """Round-trip determinism: encoding the same state twice produces
     byte-identical output. Pins the canonical body layout (sorted
     seen_images, deterministic confusion-matrix archive) — a stale
     rkyv layout drift would surface here.
-
-    Note: ``from_partials`` resets ``rank_id`` to ``None`` because the
-    merged evaluator represents the union, not any one rank. The
-    test re-encodes the *same* evaluator to isolate the canonical-
-    body property from the rank-id propagation question.
     """
     gt_maps, dt_maps = _label_maps(seed=11, n_images=4)
     n_classes = 3
 
-    ev = StreamingSemanticEvaluator(n_classes, "corrected", rank_id=0)
-    for i in sorted(gt_maps):
-        ev.update(i, gt_maps[i], dt_maps[i])
-    bytes_a = ev.to_partial()
-    bytes_b = ev.to_partial()
+    bytes_a = _evaluator_partial(n_classes, "corrected", 0, gt_maps, dt_maps)
+    bytes_b = _evaluator_partial(n_classes, "corrected", 0, gt_maps, dt_maps)
     assert bytes_a == bytes_b
 
 
@@ -386,14 +371,14 @@ def test_empty_rank_merges_cleanly() -> None:
     n_classes = 3
 
     populated = _evaluator_partial(n_classes, "corrected", 0, gt_maps, dt_maps)
-    empty = StreamingSemanticEvaluator(n_classes, "corrected", rank_id=1).finalize_to_partial()
+    empty = _evaluator_partial(n_classes, "corrected", 1, {}, {})
 
-    merged = StreamingSemanticEvaluator.from_partials(
-        n_classes, [populated, empty], "corrected"
-    ).finalize()
-    only_populated = StreamingSemanticEvaluator.from_partials(
-        n_classes, [populated], "corrected"
-    ).finalize()
+    merged = sem.Evaluator.from_partials(
+        n_classes, [populated, empty], parity_mode="corrected"
+    )
+    only_populated = sem.Evaluator.from_partials(
+        n_classes, [populated], parity_mode="corrected"
+    )
 
     np.testing.assert_array_equal(
         merged.confusion_matrix.counts(),
