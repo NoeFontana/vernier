@@ -1,6 +1,11 @@
 # ADR-0014: `BackgroundEvaluator` — single-worker, bounded-queue async wrapper around `StreamingEvaluator`
 
-- **Status:** accepted
+- **Status:** accepted (amended by [ADR-0035](0035-api-surface-consolidation.md))
+  — the public surface is trimmed to ``submit`` / ``finalize`` /
+  ``finalize_with_tables`` / ``finalize_to_partial`` / context manager.
+  ``snapshot``, ``snapshot(peek=True)``, and the non-finalize
+  ``to_partial`` are removed. The single-worker resource discipline is
+  unchanged.
 - **Date:** 2026-04-28
 - **Deciders:** @NoeFontana
 - **Consulted:** —
