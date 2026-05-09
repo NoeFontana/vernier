@@ -30,7 +30,7 @@ use std::time::Duration;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList};
 use serde::Deserialize;
 use vernier_partial::PartialError;
 
@@ -659,10 +659,15 @@ pub(crate) fn evaluate_panoptic_to_partial<'py>(
 ) -> PyResult<Bound<'py, PyBytes>> {
     let mode = parse_panoptic_parity_mode(parity_mode)?;
     let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    let mut ev =
+        StreamingPanopticEvaluator::new(cats, mode, things_stuff_split, retain_per_image_deltas)
+            .with_rank(rank_id)
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
 
-    // Eagerly extract owned per-image data on the Python thread so the
-    // GIL-free closure has only owned data.
-    let mut entries: Vec<(ImageId, ImageEntry, ImageEntry)> = Vec::with_capacity(images.len());
+    // Process per image so we never hold the full label-map corpus in
+    // memory at once (PR #187 streaming-runner property; the eager
+    // Vec<ImageEntry> form regressed from ~120 MiB to ~12 GiB on
+    // COCO panoptic val).
     for item in images.iter() {
         let tup = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
             PyValueError::new_err(
@@ -683,23 +688,12 @@ pub(crate) fn evaluate_panoptic_to_partial<'py>(
         let dt_segs_bytes: Vec<u8> = tup.get_item(4)?.extract()?;
         let gt_entry = build_image_entry(py, image_id, &gt_label_map, &gt_segs_bytes, "gt")?;
         let dt_entry = build_image_entry(py, image_id, &dt_label_map, &dt_segs_bytes, "dt")?;
-        entries.push((image_id, gt_entry, dt_entry));
+        py.detach(|| ev.update(image_id, &gt_entry, &dt_entry))
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     }
 
     let bytes = py
-        .detach(move || -> Result<Vec<u8>, PanopticError> {
-            let mut ev = StreamingPanopticEvaluator::new(
-                cats,
-                mode,
-                things_stuff_split,
-                retain_per_image_deltas,
-            )
-            .with_rank(rank_id)?;
-            for (image_id, gt_entry, dt_entry) in &entries {
-                ev.update(*image_id, gt_entry, dt_entry)?;
-            }
-            ev.finalize_to_partial()
-        })
+        .detach(move || ev.finalize_to_partial())
         .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     Ok(PyBytes::new(py, &bytes))
 }
@@ -748,234 +742,6 @@ pub(crate) fn merge_panoptic_partials<'py>(
         })
         .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     Ok(PyPanopticSummary { inner: summary })
-}
-
-/// Streaming panoptic-quality evaluator (ADR-0032 PR-E).
-///
-/// Construct with the categories taxonomy, call `update(image_id,
-/// gt_label_map, gt_segments_info, dt_label_map, dt_segments_info)`
-/// per image, then `snapshot()` (non-consuming) or `finalize()`
-/// (consuming) to read the [`PyPanopticSummary`].
-///
-/// `retain_per_image_deltas=True` enables the strict-mode bit-
-/// equality property at merge time (ADR-0032 PR-E §"Determinism")
-/// at the cost of ~2× streaming memory.
-#[pyclass(module = "vernier._core", name = "StreamingPanopticEvaluator")]
-pub(crate) struct PyStreamingPanopticEvaluator {
-    inner: StreamingPanopticEvaluator,
-}
-
-#[pymethods]
-impl PyStreamingPanopticEvaluator {
-    #[new]
-    #[pyo3(signature = (
-        categories,
-        parity_mode,
-        *,
-        things_stuff_split = true,
-        retain_per_image_deltas = false,
-        rank_id = None,
-    ))]
-    fn new(
-        py: Python<'_>,
-        categories: &[u8],
-        parity_mode: &str,
-        things_stuff_split: bool,
-        retain_per_image_deltas: bool,
-        rank_id: Option<u32>,
-    ) -> PyResult<Self> {
-        let mode = parse_panoptic_parity_mode(parity_mode)?;
-        let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        let mut inner = StreamingPanopticEvaluator::new(
-            cats,
-            mode,
-            things_stuff_split,
-            retain_per_image_deltas,
-        );
-        if let Some(rid) = rank_id {
-            inner = inner
-                .with_rank(rid)
-                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        }
-        Ok(Self { inner })
-    }
-
-    /// Number of `update` calls accepted so far.
-    #[getter]
-    fn n_images(&self) -> usize {
-        self.inner.n_images()
-    }
-
-    /// Number of categories in the taxonomy.
-    #[getter]
-    fn n_categories(&self) -> usize {
-        self.inner.n_categories()
-    }
-
-    /// Fold one image's GT/DT pair into the running PqStat
-    /// accumulator. Drops the GIL via `py.detach` (ADR-0006) for the
-    /// duration of the kernel walk + attribute pass.
-    #[allow(
-        clippy::needless_pass_by_value,
-        reason = "PyO3 requires `PyReadonlyArray2` by value as a pyfunction argument; \
-                  the borrow lives only for the call's duration"
-    )]
-    fn update<'py>(
-        &mut self,
-        py: Python<'py>,
-        image_id: i64,
-        gt_label_map: PyReadonlyArray2<'py, u32>,
-        gt_segments_info: &[u8],
-        dt_label_map: PyReadonlyArray2<'py, u32>,
-        dt_segments_info: &[u8],
-    ) -> PyResult<()> {
-        let gt_entry = build_image_entry(py, image_id, &gt_label_map, gt_segments_info, "gt")?;
-        let dt_entry = build_image_entry(py, image_id, &dt_label_map, dt_segments_info, "dt")?;
-        py.detach(move || self.inner.update(image_id, &gt_entry, &dt_entry))
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(())
-    }
-
-    /// Variant of [`Self::update`] that takes panoptic PNG byte blobs
-    /// instead of pre-decoded uint32 ndarrays. Fuses libpng decode +
-    /// RGB→id + (DT side) S3 area marginals in one Rust pass; skips
-    /// the Pillow → numpy → uint32 round-trip the Python wrapper
-    /// would otherwise drive. Strictly equivalent to
-    /// `update(decode_label_map_png(p), ...)` on the result; the diff
-    /// is wall-time, not correctness.
-    fn update_png(
-        &mut self,
-        py: Python<'_>,
-        image_id: i64,
-        gt_png_bytes: &[u8],
-        gt_segments_info: &[u8],
-        dt_png_bytes: &[u8],
-        dt_segments_info: &[u8],
-    ) -> PyResult<()> {
-        let gt_entry =
-            build_image_entry_from_png(py, image_id, gt_png_bytes, gt_segments_info, "gt")?;
-        let dt_entry =
-            build_image_entry_from_png(py, image_id, dt_png_bytes, dt_segments_info, "dt")?;
-        py.detach(move || self.inner.update(image_id, &gt_entry, &dt_entry))
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(())
-    }
-
-    /// Compute the [`PyPanopticSummary`] from the current state
-    /// without consuming the evaluator.
-    fn snapshot(&self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
-        let summary = py
-            .detach(|| self.inner.snapshot())
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(PyPanopticSummary { inner: summary })
-    }
-
-    /// Consume the evaluator's state and produce the final
-    /// [`PyPanopticSummary`]. After this call the evaluator is in a
-    /// reset state with the same categories taxonomy but zero
-    /// accumulation; callers wanting strict consume-once semantics
-    /// drop the Python reference.
-    fn finalize(&mut self, py: Python<'_>) -> PyResult<PyPanopticSummary> {
-        let placeholder = StreamingPanopticEvaluator::new(
-            self.inner.categories().clone(),
-            ParityMode::default(),
-            false,
-            false,
-        );
-        let consumed = std::mem::replace(&mut self.inner, placeholder);
-        let summary = py
-            .detach(move || consumed.finalize())
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(PyPanopticSummary { inner: summary })
-    }
-
-    /// Serialize the current state to an opaque byte blob (ADR-0032).
-    /// Non-consuming. The body carries `per_image_deltas` iff
-    /// `retain_per_image_deltas=True` was set at construction.
-    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let bytes = py
-            .detach(|| self.inner.snapshot_to_partial())
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    /// Consume the evaluator and produce a partial blob.
-    fn finalize_to_partial<'py>(&mut self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let placeholder = StreamingPanopticEvaluator::new(
-            self.inner.categories().clone(),
-            ParityMode::default(),
-            false,
-            false,
-        );
-        let consumed = std::mem::replace(&mut self.inner, placeholder);
-        let bytes = py
-            .detach(move || consumed.finalize_to_partial())
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(PyBytes::new(py, &bytes))
-    }
-
-    /// Construct an evaluator equivalent to a batch run over the
-    /// union of all partials' submitted images (ADR-0032).
-    ///
-    /// All partials must share `categories`, `parity_mode`,
-    /// `things_stuff_split`, and `retain_per_image_deltas`. With
-    /// `retain_per_image_deltas=True`, strict-mode merge is bit-
-    /// equal to a batch run over the union (the per-image deltas
-    /// are re-sorted by `image_id` and re-summed in that order).
-    /// Without deltas, corrected-mode merge stays within the 4-ULP
-    /// envelope from ADR-0004.
-    #[classmethod]
-    #[pyo3(signature = (
-        categories,
-        partials,
-        parity_mode,
-        *,
-        things_stuff_split = true,
-        retain_per_image_deltas = false,
-    ))]
-    fn from_partials(
-        _cls: &Bound<'_, PyType>,
-        py: Python<'_>,
-        categories: &[u8],
-        partials: &Bound<'_, pyo3::types::PyList>,
-        parity_mode: &str,
-        things_stuff_split: bool,
-        retain_per_image_deltas: bool,
-    ) -> PyResult<Self> {
-        let mode = parse_panoptic_parity_mode(parity_mode)?;
-        let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        let owned: Vec<Vec<u8>> = partials
-            .iter()
-            .map(|item| {
-                item.cast::<PyBytes>()
-                    .map_err(|_| {
-                        PyValueError::new_err("from_partials expects a list of bytes objects")
-                    })
-                    .map(|b| b.as_bytes().to_vec())
-            })
-            .collect::<PyResult<_>>()?;
-        let inner = py
-            .detach(move || {
-                let slices: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
-                StreamingPanopticEvaluator::from_partials(
-                    cats,
-                    mode,
-                    things_stuff_split,
-                    retain_per_image_deltas,
-                    &slices,
-                )
-            })
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-        Ok(Self { inner })
-    }
-
-    fn __repr__(&self) -> String {
-        format!(
-            "StreamingPanopticEvaluator(n_categories={}, n_images={})",
-            self.inner.n_categories(),
-            self.inner.n_images(),
-        )
-    }
 }
 
 // ---------------------------------------------------------------------------
