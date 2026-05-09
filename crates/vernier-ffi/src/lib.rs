@@ -1539,16 +1539,6 @@ impl StreamingState {
         }
     }
 
-    fn snapshot(&mut self) -> Result<Summary, EvalError> {
-        match self {
-            Self::Bbox(ev) => ev.snapshot(),
-            Self::Segm(ev) => ev.snapshot(),
-            Self::Boundary(ev) => ev.snapshot(),
-            Self::Keypoints(ev) => ev.snapshot(),
-            Self::Finalized => Err(finalized_error()),
-        }
-    }
-
     fn take_and_finalize(&mut self) -> Result<Summary, EvalError> {
         // Swap a [`Self::Finalized`] sentinel into place so we can move
         // out of the variant by value. If the inner finalize errors, the
@@ -1560,51 +1550,6 @@ impl StreamingState {
             Self::Segm(ev) => ev.finalize(),
             Self::Boundary(ev) => ev.finalize(),
             Self::Keypoints(ev) => ev.finalize(),
-            Self::Finalized => Err(finalized_error()),
-        }
-    }
-
-    /// ADR-0019 Week 2.5: snapshot/finalize variant that builds the
-    /// requested result tables alongside the Summary. Per_detection
-    /// and per_pair on streaming return `NotImplemented` (the cells
-    /// store does not retain `EvalImageMeta` in v0.5).
-    fn snapshot_with_tables(
-        &mut self,
-        request: TablesRequest,
-        config: &TablesConfig,
-    ) -> Result<(Summary, Tables), EvalError> {
-        match self {
-            Self::Bbox(ev) => ev.snapshot_with_tables(request, config),
-            Self::Segm(ev) => ev.snapshot_with_tables(request, config),
-            Self::Boundary(ev) => ev.snapshot_with_tables(request, config),
-            Self::Keypoints(ev) => ev.snapshot_with_tables(request, config),
-            Self::Finalized => Err(finalized_error()),
-        }
-    }
-
-    fn take_and_finalize_with_tables(
-        &mut self,
-        request: TablesRequest,
-        config: &TablesConfig,
-    ) -> Result<(Summary, Tables), EvalError> {
-        let prev = std::mem::replace(self, Self::Finalized);
-        match prev {
-            Self::Bbox(ev) => ev.finalize_with_tables(request, config),
-            Self::Segm(ev) => ev.finalize_with_tables(request, config),
-            Self::Boundary(ev) => ev.finalize_with_tables(request, config),
-            Self::Keypoints(ev) => ev.finalize_with_tables(request, config),
-            Self::Finalized => Err(finalized_error()),
-        }
-    }
-
-    /// ADR-0031: serialize spine state to a partial blob without
-    /// consuming the evaluator.
-    fn snapshot_to_partial(&self) -> Result<Vec<u8>, EvalError> {
-        match self {
-            Self::Bbox(ev) => ev.snapshot_to_partial(),
-            Self::Segm(ev) => ev.snapshot_to_partial(),
-            Self::Boundary(ev) => ev.snapshot_to_partial(),
-            Self::Keypoints(ev) => ev.snapshot_to_partial(),
             Self::Finalized => Err(finalized_error()),
         }
     }
@@ -1622,52 +1567,12 @@ impl StreamingState {
         }
     }
 
-    fn images_seen(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.images_seen(),
-            Self::Segm(ev) => ev.images_seen(),
-            Self::Boundary(ev) => ev.images_seen(),
-            Self::Keypoints(ev) => ev.images_seen(),
-            Self::Finalized => 0,
-        }
-    }
-
-    fn detections_seen(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.detections_seen(),
-            Self::Segm(ev) => ev.detections_seen(),
-            Self::Boundary(ev) => ev.detections_seen(),
-            Self::Keypoints(ev) => ev.detections_seen(),
-            Self::Finalized => 0,
-        }
-    }
-
-    fn images_pending(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.images_pending(),
-            Self::Segm(ev) => ev.images_pending(),
-            Self::Boundary(ev) => ev.images_pending(),
-            Self::Keypoints(ev) => ev.images_pending(),
-            Self::Finalized => 0,
-        }
-    }
-
     fn memory_used_bytes(&self) -> usize {
         match self {
             Self::Bbox(ev) => ev.memory_used_bytes(),
             Self::Segm(ev) => ev.memory_used_bytes(),
             Self::Boundary(ev) => ev.memory_used_bytes(),
             Self::Keypoints(ev) => ev.memory_used_bytes(),
-            Self::Finalized => 0,
-        }
-    }
-
-    fn memory_budget_bytes(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.budget().bytes,
-            Self::Segm(ev) => ev.budget().bytes,
-            Self::Boundary(ev) => ev.budget().bytes,
-            Self::Keypoints(ev) => ev.budget().bytes,
             Self::Finalized => 0,
         }
     }
@@ -1782,10 +1687,12 @@ fn prepare_dt_payload<'py>(
     build_update_payload(py, dt, iou_type.into(), &cast_state)
 }
 
-/// Streaming evaluator surface (ADR-0013). Single-writer per the runtime
-/// `owner_thread` check; mutable state guarded by an internal `Mutex` so
-/// the pyclass can stay non-frozen and accept `&self` on its methods.
-#[pyclass(module = "vernier._core", name = "StreamingEvaluator")]
+/// Internal Rust orchestrator for the per-rank distributed-eval flow
+/// (ADR-0035). Not exposed to Python: the `evaluate_instance_to_partial`
+/// and `merge_instance_partials` pyfunctions drive it through one
+/// construct + update + finalize-to-partial cycle. Single-writer per the
+/// runtime `owner_thread` check; mutable state guarded by an internal
+/// `Mutex` so methods can take `&self`.
 struct PyStreamingEvaluator {
     state: Mutex<StreamingState>,
     owner_thread: Mutex<Option<std::thread::ThreadId>>,
@@ -1799,12 +1706,6 @@ struct PyStreamingEvaluator {
 }
 
 impl PyStreamingEvaluator {
-    fn lock_state(&self) -> PyResult<std::sync::MutexGuard<'_, StreamingState>> {
-        self.state
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("StreamingEvaluator state mutex poisoned"))
-    }
-
     /// Single-writer guard. The first `update()` call records the
     /// calling thread; later calls verify it. Mismatch raises a
     /// `RuntimeError` that names both threads.
@@ -1824,25 +1725,7 @@ impl PyStreamingEvaluator {
             ))),
         }
     }
-}
 
-#[pymethods]
-impl PyStreamingEvaluator {
-    #[new]
-    #[pyo3(signature = (
-        gt_json,
-        *,
-        iou_type = "bbox",
-        parity_mode = "corrected",
-        max_dets = vec![1, 10, 100],
-        use_cats = true,
-        memory_budget_bytes = None,
-        dilation_ratio = 0.02,
-        sigmas = None,
-        retain_iou = false,
-        cast_inputs = false,
-        rank_id = None,
-    ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
         gt_json: &Bound<'_, PyBytes>,
@@ -2033,22 +1916,6 @@ impl PyStreamingEvaluator {
         Ok(dict)
     }
 
-    /// Compute a `Summary` over the current store without consuming
-    /// the evaluator (ADR-0035). The evaluator can keep accepting
-    /// updates after this call.
-    fn snapshot(&self, py: Python<'_>) -> PyResult<PySummary> {
-        let state_mutex = &self.state;
-        let summary = py
-            .detach(move || {
-                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "StreamingEvaluator state mutex poisoned".into(),
-                })?;
-                guard.snapshot()
-            })
-            .map_err(|e| eval_error_to_pyerr(py, e))?;
-        Ok(PySummary { inner: summary })
-    }
-
     /// Consume the evaluator and return the final summary. Subsequent
     /// calls on this object error out with the "already finalized"
     /// message.
@@ -2063,24 +1930,6 @@ impl PyStreamingEvaluator {
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         Ok(PySummary { inner: summary })
-    }
-
-    /// ADR-0031: serialize the evaluator's spine state to an opaque
-    /// byte blob without consuming the evaluator. The bytes can be
-    /// gathered across ranks (e.g. via `torch.distributed.all_gather_object`)
-    /// and reconstructed via [`Self::from_partials`]. Equivalent to
-    /// [`Self::checkpoint`].
-    fn to_partial<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyBytes>> {
-        let state_mutex = &self.state;
-        let blob = py
-            .detach(move || {
-                let guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "StreamingEvaluator state mutex poisoned".into(),
-                })?;
-                guard.snapshot_to_partial()
-            })
-            .map_err(|e| eval_error_to_pyerr(py, e))?;
-        Ok(PyBytes::new(py, &blob))
     }
 
     /// ADR-0031: consume the evaluator and serialize its final state
@@ -2108,24 +1957,8 @@ impl PyStreamingEvaluator {
     /// hash, and params hash. In strict mode every partial must
     /// declare a distinct `rank_id`. Image-id sets across partials
     /// must be disjoint.
-    #[classmethod]
-    #[pyo3(signature = (
-        gt_json,
-        partials,
-        *,
-        iou_type = "bbox",
-        parity_mode = "corrected",
-        max_dets = vec![1, 10, 100],
-        use_cats = true,
-        memory_budget_bytes = None,
-        dilation_ratio = 0.02,
-        sigmas = None,
-        retain_iou = false,
-        cast_inputs = false,
-    ))]
     #[allow(clippy::too_many_arguments)]
     fn from_partials(
-        _cls: &Bound<'_, pyo3::types::PyType>,
         py: Python<'_>,
         gt_json: &Bound<'_, PyBytes>,
         partials: &Bound<'_, pyo3::types::PyList>,
@@ -2262,136 +2095,6 @@ impl PyStreamingEvaluator {
             array_iou_type,
             cast_state: array_ingest::new_cast_state(cast_inputs),
         })
-    }
-
-    /// Snapshot variant that builds the requested result tables
-    /// alongside the Summary. `per_detection` and `per_pair` require
-    /// `retain_iou=True` at construction; otherwise the call returns
-    /// `ValueError`.
-    ///
-    /// Returns
-    /// `(Summary, per_image_batch_or_None, per_class_batch_or_None,
-    /// per_detection_batch_or_None, per_pair_batch_or_None)`.
-    #[pyo3(signature = (
-        per_image=false,
-        per_class=false,
-        per_detection=false,
-        per_pair=false,
-        per_pair_iou_floor=0.1,
-        per_pair_max_rows=10_000_000,
-        per_detection_with_geometry=false,
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn snapshot_with_tables(
-        &self,
-        py: Python<'_>,
-        per_image: bool,
-        per_class: bool,
-        per_detection: bool,
-        per_pair: bool,
-        per_pair_iou_floor: f64,
-        per_pair_max_rows: usize,
-        per_detection_with_geometry: bool,
-    ) -> PyResult<StreamingTablesResult> {
-        let request = TablesRequest {
-            per_image,
-            per_class,
-            per_detection,
-            per_pair,
-        };
-        let cfg = TablesConfig {
-            per_pair_iou_floor,
-            per_pair_max_rows,
-            per_detection_with_geometry,
-        };
-        let state_mutex = &self.state;
-        let (summary, tables) = py
-            .detach(move || {
-                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "StreamingEvaluator state mutex poisoned".into(),
-                })?;
-                guard.snapshot_with_tables(request, &cfg)
-            })
-            .map_err(|e| eval_error_to_pyerr(py, e))?;
-        streaming_tables_result(summary, tables)
-    }
-
-    /// Tables-aware finalize. Same shape as
-    /// [`Self::snapshot_with_tables`]; consumes the evaluator.
-    #[pyo3(signature = (
-        per_image=false,
-        per_class=false,
-        per_detection=false,
-        per_pair=false,
-        per_pair_iou_floor=0.1,
-        per_pair_max_rows=10_000_000,
-        per_detection_with_geometry=false,
-    ))]
-    #[allow(clippy::too_many_arguments)]
-    fn finalize_with_tables(
-        &self,
-        py: Python<'_>,
-        per_image: bool,
-        per_class: bool,
-        per_detection: bool,
-        per_pair: bool,
-        per_pair_iou_floor: f64,
-        per_pair_max_rows: usize,
-        per_detection_with_geometry: bool,
-    ) -> PyResult<StreamingTablesResult> {
-        let request = TablesRequest {
-            per_image,
-            per_class,
-            per_detection,
-            per_pair,
-        };
-        let cfg = TablesConfig {
-            per_pair_iou_floor,
-            per_pair_max_rows,
-            per_detection_with_geometry,
-        };
-        let state_mutex = &self.state;
-        let (summary, tables) = py
-            .detach(move || {
-                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
-                    detail: "StreamingEvaluator state mutex poisoned".into(),
-                })?;
-                guard.take_and_finalize_with_tables(request, &cfg)
-            })
-            .map_err(|e| eval_error_to_pyerr(py, e))?;
-        streaming_tables_result(summary, tables)
-    }
-
-    /// Distinct images that have received at least one detection.
-    #[getter]
-    fn images_seen(&self) -> PyResult<usize> {
-        Ok(self.lock_state()?.images_seen())
-    }
-
-    /// Cumulative number of detections accepted across all batches.
-    #[getter]
-    fn detections_seen(&self) -> PyResult<usize> {
-        Ok(self.lock_state()?.detections_seen())
-    }
-
-    /// GT images that have not yet received any detection.
-    #[getter]
-    fn images_pending(&self) -> PyResult<usize> {
-        Ok(self.lock_state()?.images_pending())
-    }
-
-    /// Bytes the evaluator currently holds across cells, scores, and
-    /// match flags.
-    #[getter]
-    fn memory_used_bytes(&self) -> PyResult<usize> {
-        Ok(self.lock_state()?.memory_used_bytes())
-    }
-
-    /// Configured hard cap; an `update()` whose insert would push past
-    /// this number raises `OutOfBudgetError`.
-    #[getter]
-    fn memory_budget_bytes(&self) -> PyResult<usize> {
-        Ok(self.lock_state()?.memory_budget_bytes())
     }
 }
 
@@ -2776,9 +2479,7 @@ fn merge_instance_partials<'py>(
     retain_iou: bool,
     cast_inputs: bool,
 ) -> PyResult<PySummary> {
-    let cls = py.get_type::<PyStreamingEvaluator>();
     let merged = PyStreamingEvaluator::from_partials(
-        &cls,
         py,
         gt_json,
         partials,
