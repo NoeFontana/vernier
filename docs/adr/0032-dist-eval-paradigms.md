@@ -4,8 +4,9 @@
   — the wire envelope, paradigm enum, per-paradigm strict-mode determinism
   rows, and the shared ``Partial*`` exception family are all unchanged.
   ``to_partial`` / ``from_partials`` move from ``Streaming{,Panoptic,Semantic}Evaluator``
-  to ``Evaluator`` on each paradigm namespace; the streaming classes remain
-  available privately at ``vernier._impl``.
+  to ``Evaluator`` on each paradigm namespace; the streaming pyclasses are
+  removed from Python entirely (their Rust counterparts remain as the
+  implementation substrate behind the new pyfunctions).
 - **Date:** 2026-05-05
 - **Deciders:** @NoeFontana
 - **Consulted:** —

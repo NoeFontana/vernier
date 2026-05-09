@@ -4,8 +4,11 @@
   — the wire format, ``FORMAT_VERSION``, partition-disjointness invariant,
   and the five paradigm-shared ``Partial*`` exceptions are unchanged. Only
   the Python entry class moved: ``to_partial`` / ``from_partials`` now live
-  on ``vernier.{instance,panoptic,semantic}.Evaluator`` instead of on
-  ``StreamingEvaluator`` (which is now private at ``vernier._impl``).
+  on ``vernier.{instance,panoptic,semantic}.Evaluator``. The
+  ``StreamingEvaluator`` pyclass is removed from Python entirely;
+  the Rust streaming substrate is driven by new
+  ``evaluate_*_to_partial`` / ``merge_*_partials`` pyfunctions that
+  the public ``Evaluator`` methods wrap.
 - **Date:** 2026-05-05
 - **Deciders:** @NoeFontana
 - **Consulted:** —
