@@ -467,7 +467,7 @@ class Evaluator:
         local_position)`` tiebreak lands; under ADR-0004's 4-ULP
         envelope today).
         """
-        ev = self._build_streaming(gt, rank_id=rank_id)
+        ev = _StreamingEvaluator(gt, rank_id=rank_id, **self._streaming_kwargs())
         ev.update(dt)
         return ev.finalize_to_partial()
 
@@ -503,8 +503,10 @@ class Evaluator:
         return merged.finalize()
 
     def _streaming_kwargs(self) -> dict[str, Any]:
-        """Translate this evaluator's config into the keyword arguments
-        accepted by :class:`vernier._impl.StreamingEvaluator`."""
+        # iou/dilation_ratio/sigmas live in this dict because the FFI
+        # constructor takes a stringly-typed `iou_type=` plus discriminated
+        # extras, not the typed IouKind union. Bridging is owned here so
+        # callers stay typed.
         max_dets_list = self._resolve_max_dets()
         kwargs: dict[str, Any] = {
             "parity_mode": self.parity_mode,
@@ -526,12 +528,6 @@ class Evaluator:
             case _:
                 _reject_unknown_iou(self.iou)
         return kwargs
-
-    def _build_streaming(self, gt: bytes, *, rank_id: int | None) -> _StreamingEvaluator:
-        kwargs = self._streaming_kwargs()
-        if rank_id is not None:
-            kwargs["rank_id"] = rank_id
-        return _StreamingEvaluator(gt, **kwargs)
 
 
 def _normalize_sigmas(
