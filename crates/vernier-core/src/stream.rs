@@ -12,10 +12,6 @@
 //!
 //! ## v0 deferrals
 //!
-//! - `checkpoint`/`restore` return [`EvalError::NotImplemented`] (scope
-//!   decision; a future ADR adds rkyv-based serialization).
-//! - `snapshot_running` delegates to `snapshot()` (TODO: running-mode
-//!   PR-curve approximation per ADR-0013 §"Fast snapshot mode").
 //! - Strict-mode `(score, stream_position)` tiebreak is not yet wired
 //!   through the matching path; `next_dt_id` carries the monotonic
 //!   counter for the future implementation.
@@ -862,7 +858,6 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         }
     }
 
-    /// Equivalent to [`Self::snapshot_to_partial`]. Retained for
     /// Construct an evaluator equivalent to a batch run over the
     /// union of all partials' submitted detections (ADR-0031).
     ///
