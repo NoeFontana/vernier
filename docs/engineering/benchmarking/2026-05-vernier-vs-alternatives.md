@@ -193,16 +193,15 @@ panopticapi also pays.
 
 ## Semantic — `synthetic_semantic:*` and `ade20k_val_*`
 
-**Vernier-only baseline runnable this phase.** The bench harness now
+**Vernier-only baseline runnable this phase.** The bench harness
 dispatches `--paradigm semantic`: `IMPL_PARADIGM_SUPPORT["semantic"] =
 {"vernier_semantic": {"miou"}}`, the workload resolver takes
 `synthetic_semantic:n_images=,n_classes=,seed=` (deterministic uint8
-PNG label-map pairs cached under `bench/.cache/synthetic_semantic/`),
-and `bench/bench/runners/vernier_semantic_runner.py` streams via
-`vernier.semantic.Evaluator.stream()`. No oracle yet — the
-`mmsegmentation` env (PR-B6/B7/B8) and ADE20K val cache (academic
-license, no auto-download) are external blockers, so parity is
-skipped while only one impl is registered.
+PNG label-map pairs cached under `bench/.cache/synthetic_semantic/`)
+plus `coco_val2017_semantic_perfect` (panoptic-derived, ADR-0036), and
+`bench/bench/runners/vernier_semantic_runner.py` drives the cell via
+`vernier.semantic.Evaluator.evaluate_from_pngs` (ADR-0037: fused
+libpng decode + confusion-matrix fold in Rust under `py.detach`).
 
 A 200-image / 19-class / `jitter_rate=0.1` synthetic cell on this
 host:
@@ -211,10 +210,20 @@ host:
 | ----------------- | ---------: | --------: | ------: |
 | vernier_semantic  |   200 ms   |  93.8 MiB |  0.8180 |
 
-This is a measurement loop, not a comparison — the synthetic workload
-is for iterating on the kernel under realistic-shaped data, not for
-calibrating against a third party. ADE20K + mmseg parity (S3-B) is
-where the comparable numbers will live.
+The val2017 perfect-DT cell (5000 images, 133 classes, ignore=255)
+through the same runner, release wheel:
+
+| impl                          |   wall  | RSS (max) | mIoU |
+| ----------------------------- | ------: | --------: | ---: |
+| oracle (mmsegmentation 1.2.2) | 26.6 s  | 666 MB    |  1.0 |
+| vernier_semantic (PR-B7)      | 18.2 s  | 638 MB    |  1.0 |
+| **vernier_semantic (this)**   | **5.2 s** | **75 MB** | 1.0 |
+
+5.1× over the array-input baseline / 6.0× over the oracle, with ~10×
+less RSS — single-threaded, no rayon. Whole-dataset parity vs
+mmsegmentation lands via the val2017 smoke (ADR-0036, PR-B7);
+ADE20K + mmseg cross-impl numbers are still gated on the external
+ADE20K val cache.
 
 **`ade20k_val_*` still raises** `NotImplementedError` from the
 resolver, with an updated message pointing at the external blockers.

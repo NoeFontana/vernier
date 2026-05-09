@@ -1,19 +1,14 @@
 """vernier_semantic runner — invoked as a subprocess in
 ``bench/envs/vernier`` (ADR-0033 §B2).
 
-Streams per-image GT/DT label-map PNG pairs through
-:meth:`vernier.semantic.Evaluator.stream`: PNG decode runs on the main
-thread and the Rust confusion-matrix fold runs synchronously per
-image (the matrix is too cheap to warrant a worker thread; the
-`background()` path is the option for users who want it). RSS stays
-constant in the image count by construction — only one decoded
-label-map array is in flight at a time.
+Drives the val2017-scale semantic-mIoU cell through
+:meth:`vernier.semantic.Evaluator.evaluate_from_pngs` (ADR-0037): the
+fused libpng decode + confusion-matrix fold runs in Rust under
+`py.detach`, no Pillow on the main thread, no `astype(uint32)` cast.
+RSS is bounded by one decoded label-map per side at a time.
 
 Emits a :class:`bench.harness.parity.SemanticSnapshot` JSON + a
 per-class ``.npy`` table mirroring the panoptic two-artifact bundle.
-There is no oracle today (S3-B / mmsegmentation env pending), so the
-parity comparator is a no-op for now; the cell still gates on the
-runner contract (per-rep snapshot + per-class sha bit-equality).
 """
 
 from __future__ import annotations
@@ -80,26 +75,26 @@ def main() -> int:
     with stages.stage("load"):
         gt_paths = _scan_label_map_dir(args.gt_label_map_dir)
         dt_paths = _scan_label_map_dir(args.dt_label_map_dir)
-        common_ids = sorted(set(gt_paths) & set(dt_paths))
-        if not common_ids:
+        common = set(gt_paths) & set(dt_paths)
+        if not common:
             raise RuntimeError(
                 f"semantic runner found no overlapping image_ids between "
                 f"{args.gt_label_map_dir} and {args.dt_label_map_dir}"
             )
+        gt_for_ids = {iid: gt_paths[iid] for iid in common}
+        dt_for_ids = {iid: dt_paths[iid] for iid in common}
         ignore_label = args.ignore_label if args.ignore_label >= 0 else None
 
-    with stages.stage("stream_miou"):
+    with stages.stage("evaluate_from_pngs"):
         # parity_mode="strict" pins bit-exact reproduction of
-        # mmsegmentation's mIoU once the S3-B oracle lands. RSS stays
-        # bounded by one decoded label map at a time.
-        ev = vernier.semantic.Evaluator(parity_mode="strict").stream(
-            n_classes=args.n_classes, ignore_label=ignore_label
+        # mmsegmentation's mIoU; the fused libpng path holds peak RSS
+        # at one decoded label-map per side at a time.
+        summary = vernier.semantic.Evaluator(parity_mode="strict").evaluate_from_pngs(
+            gt_for_ids,
+            dt_for_ids,
+            n_classes=args.n_classes,
+            ignore_label=ignore_label,
         )
-        for image_id in common_ids:
-            gt_arr = vernier.semantic.decode_label_map_png(gt_paths[image_id])
-            dt_arr = vernier.semantic.decode_label_map_png(dt_paths[image_id])
-            ev.update(image_id, gt_arr, dt_arr)
-        summary = ev.finalize()
 
     with stages.stage("aggregate"):
         snap = _summary_to_snapshot(summary)
