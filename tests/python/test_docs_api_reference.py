@@ -27,9 +27,7 @@ REFERENCE_DIR = Path(__file__).resolve().parents[2] / "docs" / "reference" / "py
 # corresponding reference page: submodule re-exports that have their own
 # canonical pages, and aliases that mkdocstrings would otherwise duplicate.
 _IGNORE: dict[str, frozenset[str]] = {
-    "vernier": frozenset(
-        {"instance", "panoptic", "semantic", "patch_pycocotools", "__version__"}
-    ),
+    "vernier": frozenset({"instance", "panoptic", "semantic", "patch_pycocotools", "__version__"}),
     "vernier.instance": frozenset(),
     "vernier.panoptic": frozenset(),
     "vernier.semantic": frozenset(),
