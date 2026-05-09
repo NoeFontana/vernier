@@ -1346,7 +1346,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPanopticPredictions>()?;
     m.add_class::<PyPanopticSummary>()?;
     m.add_class::<PyClassPanopticStats>()?;
-    m.add_class::<PyStreamingPanopticEvaluator>()?;
     m.add_class::<PyBackgroundPanopticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic_to_partial, m)?)?;

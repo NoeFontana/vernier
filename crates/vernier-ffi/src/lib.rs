@@ -3297,7 +3297,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
     m.add_class::<PyDataset>()?;
-    m.add_class::<PyStreamingEvaluator>()?;
     m.add_class::<PyBackgroundEvaluator>()?;
     m.add_class::<tables::ArrowRecordBatchPy>()?;
     m.add("OutOfBudgetError", m.py().get_type::<OutOfBudgetError>())?;

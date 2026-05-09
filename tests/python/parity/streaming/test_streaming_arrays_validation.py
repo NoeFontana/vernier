@@ -17,8 +17,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from vernier.instance import BackgroundEvaluator
-from vernier.instance import Detections
+from vernier.instance import BackgroundEvaluator, Detections
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 

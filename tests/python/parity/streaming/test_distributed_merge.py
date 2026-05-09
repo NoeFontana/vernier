@@ -75,7 +75,9 @@ def _shard_to_partials(
     """Build N rank-tagged partials from a fixture's DT JSON."""
     shards = shard_dt_bytes(dt_path, n_shards=n_ranks, seed=seed)
     ev = Evaluator(iou=_iou_kernel(iou_type), parity_mode=parity_mode)
-    return [ev.evaluate_to_partial(gt_bytes, shard, rank_id=rank) for rank, shard in enumerate(shards)]
+    return [
+        ev.evaluate_to_partial(gt_bytes, shard, rank_id=rank) for rank, shard in enumerate(shards)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -159,14 +161,12 @@ def test_n_way_merge_equals_pairwise_reduction(
     dt_path = FIXTURES / fixture / "dt.json"
     partials = _shard_to_partials(gt_bytes, dt_path, "bbox", parity_mode, 3)
 
-    n_way_summary = Evaluator.from_partials(
-        gt_bytes, partials, iou=Bbox(), parity_mode=parity_mode
-    )
+    n_way_summary = Evaluator.from_partials(gt_bytes, partials, iou=Bbox(), parity_mode=parity_mode)
     # Pairwise reduction: ``from_partials`` only ingests partials, not
     # summaries — so to merge an already-merged result with a third
     # partial we re-fold (a, b) by passing them again alongside c.
     pairwise_summary = Evaluator.from_partials(
-        gt_bytes, partials[:2] + [partials[2]], iou=Bbox(), parity_mode=parity_mode
+        gt_bytes, [*partials[:2], partials[2]], iou=Bbox(), parity_mode=parity_mode
     )
 
     assert n_way_summary.stats == pairwise_summary.stats

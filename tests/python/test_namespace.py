@@ -197,23 +197,26 @@ def test_ffi_reexport_identities() -> None:
     assert vernier.semantic.Summary is FfiSemanticSummary
 
 
-def test_streaming_evaluator_is_not_publicly_exposed() -> None:
-    """ADR-0035: ``StreamingEvaluator`` lives at ``vernier._impl``, not on
-    any paradigm namespace. Internal callers reach it via the private path.
+def test_streaming_evaluator_is_not_exposed_anywhere() -> None:
+    """ADR-0035: the streaming pyclasses are Rust-internal. They do not
+    appear on any paradigm namespace, on the FFI module, or under a
+    private ``vernier._impl`` shim.
     """
-    assert not hasattr(vernier.instance, "StreamingEvaluator")
-    assert not hasattr(vernier.panoptic, "StreamingEvaluator")
-    assert not hasattr(vernier.semantic, "StreamingEvaluator")
+    import vernier._core as _core
+    import vernier.instance as inst
+    import vernier.panoptic as pq
+    import vernier.semantic as sem
 
-    from vernier._impl import (
-        StreamingEvaluator,
-        StreamingPanopticEvaluator,
-        StreamingSemanticEvaluator,
-    )
+    assert not hasattr(inst, "StreamingEvaluator")
+    assert not hasattr(pq, "StreamingEvaluator")
+    assert not hasattr(sem, "StreamingEvaluator")
 
-    assert StreamingEvaluator is not None
-    assert StreamingPanopticEvaluator is not None
-    assert StreamingSemanticEvaluator is not None
+    assert not hasattr(_core, "StreamingEvaluator")
+    assert not hasattr(_core, "StreamingPanopticEvaluator")
+    assert not hasattr(_core, "StreamingSemanticEvaluator")
+
+    with pytest.raises(ModuleNotFoundError):
+        import vernier._impl  # type: ignore[import-not-found]  # noqa: F401
 
 
 def test_iou_kind_discriminator_identity_preserved() -> None:

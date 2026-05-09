@@ -1041,7 +1041,6 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyConfusionMatrix>()?;
     m.add_class::<PyClassSemanticStats>()?;
     m.add_class::<PySemanticSummary>()?;
-    m.add_class::<PyStreamingSemanticEvaluator>()?;
     m.add_class::<PyBackgroundSemanticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_to_partial, m)?)?;
