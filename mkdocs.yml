@@ -49,6 +49,13 @@ plugins:
           options:
             show_source: false
             docstring_style: google
+            members_order: alphabetical
+            heading_level: 2
+            docstring_section_style: table
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            merge_init_into_class: true
   - redirects:
       redirect_maps:
         explanation/lvis-migration.md: migrate/from-lvis-api.md
@@ -82,6 +89,12 @@ nav:
       - Evaluate on a background thread: how-to/background-evaluator.md
   - Reference:
       - reference/README.md
+      - Python API:
+          - vernier: reference/python/vernier.md
+          - vernier.instance: reference/python/instance.md
+          - vernier.panoptic: reference/python/panoptic.md
+          - vernier.semantic: reference/python/semantic.md
+          - vernier.adapters: reference/python/adapters.md
       - CLI output schema: reference/cli-output-schema.md
       - COCO summary stats: reference/coco-summary-stats.md
   - Explanation:
