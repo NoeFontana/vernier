@@ -51,6 +51,10 @@ const DL_DEVICE_CPU_PINNED: i32 = 3;
 const DL_DTYPE_INT: u8 = 0;
 const DL_DTYPE_UINT: u8 = 1;
 const DL_DTYPE_FLOAT: u8 = 2;
+// numpy 2.x emits `(code=6, bits=8)` with bytes `0` or `1`; the bitmask
+// path treats this identically to `(UINT, 8)` since `Rle::from_raster_bytes`
+// binarizes non-zero bytes (quirk G6).
+const DL_DTYPE_BOOL: u8 = 6;
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -200,6 +204,84 @@ pub(crate) fn extract_u32_1d<'py>(
     extract_1d::<u32>(obj, field, DL_DTYPE_UINT, 32)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Order {
+    C,
+    F,
+}
+
+/// Extract a column-major (F-contiguous) `(h, w)` byte slice for the
+/// bitmask ingest path. Accepts both `(BOOL, 8)` and `(UINT, 8)` (numpy
+/// 2.x emits the former for `dtype=bool`). C-contiguous input is copied
+/// once via `asfortranarray` before the slice is returned.
+pub(crate) fn extract_u8_or_bool_2d_fortran<'py>(
+    obj: &Bound<'py, PyAny>,
+    field: &str,
+    asfortranarray: &Bound<'py, PyAny>,
+) -> PyResult<(DLPackView<'py, u8>, u32, u32)> {
+    let (view, h, w, order) = open_u8_or_bool_2d(obj, field)?;
+    match order {
+        Order::F => Ok((view, h, w)),
+        Order::C => {
+            // Drop the original capsule before holding a second one on
+            // the F-order copy, so the producer's deleter runs first.
+            drop(view);
+            let f_obj = asfortranarray.call1((obj,)).map_err(|e| {
+                PyTypeError::new_err(format!(
+                    "detections.{field}: numpy.asfortranarray copy failed: {e}"
+                ))
+            })?;
+            let (view, _, _, _) = open_u8_or_bool_2d(&f_obj, field)?;
+            Ok((view, h, w))
+        }
+    }
+}
+
+fn open_u8_or_bool_2d<'py>(
+    obj: &Bound<'py, PyAny>,
+    field: &str,
+) -> PyResult<(DLPackView<'py, u8>, u32, u32, Order)> {
+    let (capsule, meta) = open_cpu_tensor(obj, field)?;
+    expect_byte_dtype(&meta, field)?;
+    expect_ndim(&meta, field, 2)?;
+
+    let order = if is_contiguous(&meta, Order::C) {
+        Order::C
+    } else if is_contiguous(&meta, Order::F) {
+        Order::F
+    } else {
+        return Err(PyTypeError::new_err(format!(
+            "detections.{field}: array is not contiguous \
+             (fix: pass np.ascontiguousarray(arr) or np.asfortranarray(arr))"
+        )));
+    };
+
+    let h_i64 = meta.shape[0];
+    let w_i64 = meta.shape[1];
+    let h = u32::try_from(h_i64).map_err(|_| {
+        PyValueError::new_err(format!(
+            "detections.{field}: height {h_i64} does not fit in u32"
+        ))
+    })?;
+    let w = u32::try_from(w_i64).map_err(|_| {
+        PyValueError::new_err(format!(
+            "detections.{field}: width {w_i64} does not fit in u32"
+        ))
+    })?;
+
+    // `into_view` enforces C-contiguity, so build the view manually for
+    // the F-order branch. Element-size check is implicit (bool/uint8 = 1).
+    let len = n_elements(&meta).ok_or_else(|| {
+        PyValueError::new_err(format!("detections.{field}: shape product overflows usize"))
+    })?;
+    let view = DLPackView {
+        _capsule: capsule,
+        data_ptr: meta.data_ptr.cast::<u8>(),
+        len,
+    };
+    Ok((view, h, w, order))
+}
+
 fn extract_1d<'py, T>(
     obj: &Bound<'py, PyAny>,
     field: &str,
@@ -308,7 +390,7 @@ fn into_view<'py, T>(
     meta: &CpuTensorMeta,
     field: &str,
 ) -> PyResult<DLPackView<'py, T>> {
-    if !is_c_contiguous(meta) {
+    if !is_contiguous(meta, Order::C) {
         return Err(PyTypeError::new_err(format!(
             "detections.{field}: array is not C-contiguous \
              (fix: pass np.ascontiguousarray(arr))"
@@ -403,20 +485,28 @@ fn gpu_rejection_error(field: &str, device_type: i32) -> PyErr {
     ))
 }
 
-/// C-contiguity check: `strides == None` is contiguous by contract;
-/// otherwise verify `strides[i] == product(shape[i+1..])` (in elements).
-fn is_c_contiguous(meta: &CpuTensorMeta) -> bool {
+/// Contiguity check for either layout. `None` strides means default
+/// C-layout per the DLPack contract; for F we then return `true` only
+/// when C and F coincide (≤1 non-degenerate axis).
+fn is_contiguous(meta: &CpuTensorMeta, order: Order) -> bool {
     let strides = match &meta.strides {
-        None => return true,
+        None => {
+            return matches!(order, Order::C)
+                || meta.shape.iter().filter(|&&d| d != 1).take(2).count() <= 1;
+        }
         Some(s) => s,
     };
+    let n = meta.shape.len();
     let mut expected: i64 = 1;
-    for i in (0..meta.shape.len()).rev() {
+    for k in 0..n {
+        let i = match order {
+            Order::C => n - 1 - k,
+            Order::F => k,
+        };
         // Zero-length axes don't constrain stride.
         if meta.shape[i] != 0 && strides[i] != expected {
             return false;
         }
-        // Treat overflow as non-contiguous rather than masking it as a match.
         match expected.checked_mul(meta.shape[i]) {
             Some(next) => expected = next,
             None => return false,
@@ -452,6 +542,24 @@ fn expect_dtype(
     )))
 }
 
+/// Accept either `(BOOL, 8)` or `(UINT, 8)` for the form-3 bitmask
+/// path. Bool and uint8 have the same byte-level representation in
+/// numpy / torch / jax, and `Rle::from_raster_bytes` binarizes
+/// non-zero bytes (quirk G6, `strict`), so the encoder is dtype-blind
+/// once the input is one of these two.
+fn expect_byte_dtype(meta: &CpuTensorMeta, field: &str) -> PyResult<()> {
+    if meta.dtype.lanes == 1
+        && meta.dtype.bits == 8
+        && (meta.dtype.code == DL_DTYPE_BOOL || meta.dtype.code == DL_DTYPE_UINT)
+    {
+        return Ok(());
+    }
+    let got = describe_dtype(meta.dtype);
+    Err(PyTypeError::new_err(format!(
+        "detections.{field}: expected 2-D bool or uint8 array, got {got}"
+    )))
+}
+
 fn expect_ndim(meta: &CpuTensorMeta, field: &str, expected: usize) -> PyResult<()> {
     if meta.shape.len() == expected {
         return Ok(());
@@ -477,7 +585,60 @@ fn describe_dtype_code(code: u8, bits: u8) -> String {
         DL_DTYPE_INT => "int",
         DL_DTYPE_UINT => "uint",
         DL_DTYPE_FLOAT => "float",
+        DL_DTYPE_BOOL => return "bool".to_string(),
         other => return format!("dtype(code={other}, bits={bits})"),
     };
     format!("{prefix}{bits}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Build a `CpuTensorMeta` with synthetic shape/strides for the
+    /// contiguity unit tests. The `data_ptr` is a dangling non-null
+    /// `NonNull<u8>` because no test in this module dereferences it —
+    /// these checks only walk shape/stride metadata.
+    fn fake_meta(shape: Vec<i64>, strides: Option<Vec<i64>>) -> CpuTensorMeta {
+        CpuTensorMeta {
+            shape,
+            strides,
+            dtype: DLDataType {
+                code: DL_DTYPE_UINT,
+                bits: 8,
+                lanes: 1,
+            },
+            data_ptr: NonNull::<u8>::dangling(),
+        }
+    }
+
+    #[test]
+    fn f_contiguous_2d_strides_recognized() {
+        let meta = fake_meta(vec![4, 3], Some(vec![1, 4]));
+        assert!(is_contiguous(&meta, Order::F));
+        assert!(!is_contiguous(&meta, Order::C));
+    }
+
+    #[test]
+    fn c_contiguous_2d_strides_recognized() {
+        let meta = fake_meta(vec![4, 3], Some(vec![3, 1]));
+        assert!(is_contiguous(&meta, Order::C));
+        assert!(!is_contiguous(&meta, Order::F));
+    }
+
+    #[test]
+    fn neither_c_nor_f_strides_rejected() {
+        let meta = fake_meta(vec![4, 3], Some(vec![6, 2]));
+        assert!(!is_contiguous(&meta, Order::C));
+        assert!(!is_contiguous(&meta, Order::F));
+    }
+
+    #[test]
+    fn null_strides_treated_as_c_contiguous() {
+        // DLPack contract: NULL strides mean default C-layout. F is
+        // rejected unless ≤1 non-degenerate axis collapses the orderings.
+        let meta = fake_meta(vec![4, 3], None);
+        assert!(is_contiguous(&meta, Order::C));
+        assert!(!is_contiguous(&meta, Order::F));
+    }
 }

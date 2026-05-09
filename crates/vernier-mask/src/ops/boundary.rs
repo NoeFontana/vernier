@@ -137,20 +137,16 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
-    }
-
     #[test]
     fn empty_shape_round_trips_unchanged() {
-        let r = rle(0, 0, vec![]);
+        let r = Rle::from_counts(0, 0, vec![]);
         assert_eq!(boundary_band(&r, 0.02).unwrap(), r);
     }
 
     #[test]
     fn empty_foreground_yields_empty_band() {
         // P2: band of an empty mask is empty.
-        let r = rle(8, 8, vec![64]);
+        let r = Rle::from_counts(8, 8, vec![64]);
         let band = boundary_band(&r, 0.02).unwrap();
         assert_eq!(band.area(), 0);
         assert_eq!((band.h, band.w), (8, 8));
@@ -162,7 +158,7 @@ mod tests {
         // the outer frame of width d. For 5×5 at d=1 the frame is the
         // 16 perimeter pixels. Ratio 0.15 → round_ties_even(0.15 *
         // sqrt(50)) = round(1.0606) = 1.
-        let r = rle(5, 5, vec![0, 25]);
+        let r = Rle::from_counts(5, 5, vec![0, 25]);
         let band = boundary_band(&r, 0.15).unwrap();
         assert_eq!(band.area(), 16);
     }
@@ -258,7 +254,7 @@ mod tests {
     fn boundary_band_segments_into_empty_shape() {
         // Zero-shape RLE → empty row, area 0 (matches boundary_band_into
         // returning the empty mask unchanged).
-        let r = rle(0, 0, vec![]);
+        let r = Rle::from_counts(0, 0, vec![]);
         let mut erode = ErodeScratch::new();
         let mut segments = SegmentTable::new();
         let area = boundary_band_segments_into(&r, 0.02, &mut erode, &mut segments).unwrap();

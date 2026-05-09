@@ -202,7 +202,7 @@ impl Rle {
             return Ok(Rle {
                 h: 0,
                 w: 0,
-                counts: vec![],
+                counts: Vec::<u32>::new().into(),
             });
         };
         let (h, w) = (first.h, first.w);
@@ -221,7 +221,11 @@ impl Rle {
         for r in &rles[2..] {
             acc = merge_pair(&acc, &r.counts, intersect)?;
         }
-        Ok(Rle { h, w, counts: acc })
+        Ok(Rle {
+            h,
+            w,
+            counts: acc.into(),
+        })
     }
 }
 
@@ -676,90 +680,86 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
-    }
-
     #[test]
     fn area_empty_is_zero() {
-        assert_eq!(rle(0, 0, vec![]).area(), 0);
-        assert_eq!(rle(2, 2, vec![]).area(), 0);
+        assert_eq!(Rle::from_counts(0, 0, vec![]).area(), 0);
+        assert_eq!(Rle::from_counts(2, 2, vec![]).area(), 0);
     }
 
     #[test]
     fn area_all_background_is_zero() {
-        assert_eq!(rle(2, 2, vec![4]).area(), 0);
+        assert_eq!(Rle::from_counts(2, 2, vec![4]).area(), 0);
     }
 
     #[test]
     fn area_all_foreground_is_full() {
-        assert_eq!(rle(2, 2, vec![0, 4]).area(), 4);
+        assert_eq!(Rle::from_counts(2, 2, vec![0, 4]).area(), 4);
     }
 
     #[test]
     fn area_sums_odd_indexed_runs() {
-        assert_eq!(rle(10, 10, vec![3, 2, 1, 4, 90]).area(), 6);
+        assert_eq!(Rle::from_counts(10, 10, vec![3, 2, 1, 4, 90]).area(), 6);
     }
 
     #[test]
     fn bbox_empty_mask() {
-        assert_eq!(rle(0, 0, vec![]).bbox(), [0, 0, 0, 0]);
+        assert_eq!(Rle::from_counts(0, 0, vec![]).bbox(), [0, 0, 0, 0]);
     }
 
     #[test]
     fn bbox_all_background() {
-        assert_eq!(rle(2, 2, vec![4]).bbox(), [0, 0, 0, 0]);
+        assert_eq!(Rle::from_counts(2, 2, vec![4]).bbox(), [0, 0, 0, 0]);
     }
 
     #[test]
     fn bbox_all_zero_length_foreground() {
         // bg=4, fg=0 — the only foreground run has zero length (G4).
         // C version underflows; vernier returns the empty bbox.
-        assert_eq!(rle(2, 2, vec![4, 0]).bbox(), [0, 0, 0, 0]);
+        assert_eq!(Rle::from_counts(2, 2, vec![4, 0]).bbox(), [0, 0, 0, 0]);
     }
 
     #[test]
     fn bbox_full_image() {
-        assert_eq!(rle(2, 3, vec![0, 6]).bbox(), [0, 0, 3, 2]);
+        assert_eq!(Rle::from_counts(2, 3, vec![0, 6]).bbox(), [0, 0, 3, 2]);
     }
 
     #[test]
     fn bbox_single_pixel_column_major() {
         // 2x3 image, single fg pixel at flat idx 3: y=3%2=1, x=3/2=1.
-        assert_eq!(rle(2, 3, vec![3, 1, 2]).bbox(), [1, 1, 1, 1]);
+        assert_eq!(Rle::from_counts(2, 3, vec![3, 1, 2]).bbox(), [1, 1, 1, 1]);
     }
 
     #[test]
     fn bbox_run_spans_columns() {
         // 2x3 image, fg from idx 1 to idx 4 inclusive (length 4).
         // x_start = 0, x_end = 2 → spans cols → y covers full 0..h-1.
-        assert_eq!(rle(2, 3, vec![1, 4, 1]).bbox(), [0, 0, 3, 2]);
+        assert_eq!(Rle::from_counts(2, 3, vec![1, 4, 1]).bbox(), [0, 0, 3, 2]);
     }
 
     #[test]
     fn bbox_run_within_single_column() {
         // 4x3, fg from idx 5 to 6 (col 1, rows 1 and 2).
-        let bb = rle(4, 3, vec![5, 2, 5]).bbox();
+        let bb = Rle::from_counts(4, 3, vec![5, 2, 5]).bbox();
         assert_eq!(bb, [1, 1, 1, 2]);
     }
 
     #[test]
     fn merge_empty_slice_returns_empty_rle() {
         let m = Rle::merge(&[], false).unwrap();
-        assert_eq!(m, rle(0, 0, vec![]));
+        assert_eq!(m, Rle::from_counts(0, 0, vec![]));
     }
 
     #[test]
     fn merge_singleton_returns_clone() {
-        let r = rle(2, 2, vec![1, 2, 1]);
+        let r = Rle::from_counts(2, 2, vec![1, 2, 1]);
         assert_eq!(Rle::merge(std::slice::from_ref(&r), false).unwrap(), r);
         assert_eq!(Rle::merge(std::slice::from_ref(&r), true).unwrap(), r);
     }
 
     #[test]
     fn merge_dimension_mismatch_errors() {
-        let a = rle(2, 2, vec![4]);
-        let b = rle(3, 3, vec![9]);
+        let a = Rle::from_counts(2, 2, vec![4]);
+        let b = Rle::from_counts(3, 3, vec![9]);
         let err = Rle::merge(&[a, b], false).unwrap_err();
         assert!(matches!(
             err,
@@ -775,35 +775,35 @@ mod tests {
         // A: 2x2 mask [1,0,0,0] = [0,1,3].
         // B: 2x2 mask [1,1,0,0] = [0,2,2].
         // Union [1,1,0,0] = [0,2,2].
-        let a = rle(2, 2, vec![0, 1, 3]);
-        let b = rle(2, 2, vec![0, 2, 2]);
+        let a = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let b = Rle::from_counts(2, 2, vec![0, 2, 2]);
         let u = Rle::merge(&[a, b], false).unwrap();
-        assert_eq!(u, rle(2, 2, vec![0, 2, 2]));
+        assert_eq!(u, Rle::from_counts(2, 2, vec![0, 2, 2]));
     }
 
     #[test]
     fn merge_intersection_two_overlapping() {
         // Intersection of [1,0,0,0] and [1,1,0,0] = [1,0,0,0] = [0,1,3].
-        let a = rle(2, 2, vec![0, 1, 3]);
-        let b = rle(2, 2, vec![0, 2, 2]);
+        let a = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let b = Rle::from_counts(2, 2, vec![0, 2, 2]);
         let i = Rle::merge(&[a, b], true).unwrap();
-        assert_eq!(i, rle(2, 2, vec![0, 1, 3]));
+        assert_eq!(i, Rle::from_counts(2, 2, vec![0, 1, 3]));
     }
 
     #[test]
     fn merge_disjoint_union() {
         // A: [1,0,0,0] = [0,1,3]. B: [0,0,0,1] = [3,1].
         // Union: [1,0,0,1] = [0,1,2,1].
-        let a = rle(2, 2, vec![0, 1, 3]);
-        let b = rle(2, 2, vec![3, 1]);
+        let a = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let b = Rle::from_counts(2, 2, vec![3, 1]);
         let u = Rle::merge(&[a, b], false).unwrap();
-        assert_eq!(u, rle(2, 2, vec![0, 1, 2, 1]));
+        assert_eq!(u, Rle::from_counts(2, 2, vec![0, 1, 2, 1]));
     }
 
     #[test]
     fn merge_disjoint_intersection_is_empty_foreground() {
-        let a = rle(2, 2, vec![0, 1, 3]);
-        let b = rle(2, 2, vec![3, 1]);
+        let a = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let b = Rle::from_counts(2, 2, vec![3, 1]);
         let i = Rle::merge(&[a, b], true).unwrap();
         // No overlap → all background. Sum must equal h*w=4.
         assert_eq!(i.counts.iter().map(|&c| c as u64).sum::<u64>(), 4);
@@ -812,18 +812,18 @@ mod tests {
 
     #[test]
     fn merge_three_way_union() {
-        let a = rle(2, 2, vec![0, 1, 3]); // [1,0,0,0]
-        let b = rle(2, 2, vec![1, 1, 2]); // [0,1,0,0]
-        let c = rle(2, 2, vec![3, 1]); //   [0,0,0,1]
+        let a = Rle::from_counts(2, 2, vec![0, 1, 3]); // [1,0,0,0]
+        let b = Rle::from_counts(2, 2, vec![1, 1, 2]); // [0,1,0,0]
+        let c = Rle::from_counts(2, 2, vec![3, 1]); //   [0,0,0,1]
         let u = Rle::merge(&[a, b, c], false).unwrap();
         // Union = [1,1,0,1] = [0,2,1,1].
-        assert_eq!(u, rle(2, 2, vec![0, 2, 1, 1]));
+        assert_eq!(u, Rle::from_counts(2, 2, vec![0, 2, 1, 1]));
     }
 
     #[test]
     fn intersect_area_matches_merge_then_area_for_overlap() {
-        let a = rle(2, 2, vec![0, 1, 3]);
-        let b = rle(2, 2, vec![0, 2, 2]);
+        let a = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let b = Rle::from_counts(2, 2, vec![0, 2, 2]);
         let via_merge = Rle::merge(&[a.clone(), b.clone()], true).unwrap().area();
         let direct = a.intersect_area(&b).unwrap();
         assert_eq!(direct, via_merge);
@@ -832,15 +832,15 @@ mod tests {
 
     #[test]
     fn intersect_area_disjoint_is_zero() {
-        let a = rle(2, 2, vec![0, 1, 3]);
-        let b = rle(2, 2, vec![3, 1]);
+        let a = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let b = Rle::from_counts(2, 2, vec![3, 1]);
         assert_eq!(a.intersect_area(&b).unwrap(), 0);
     }
 
     #[test]
     fn intersect_area_dimension_mismatch_errors() {
-        let a = rle(2, 2, vec![4]);
-        let b = rle(3, 3, vec![9]);
+        let a = Rle::from_counts(2, 2, vec![4]);
+        let b = Rle::from_counts(3, 3, vec![9]);
         let err = a.intersect_area(&b).unwrap_err();
         assert!(matches!(
             err,
@@ -855,7 +855,7 @@ mod tests {
     fn decode_fg_offsets_drops_zero_length_runs() {
         // counts = [bg=2, fg=0, bg=2] — a zero-length fg run (G4).
         // Decoded segments must be empty.
-        let r = rle(2, 2, vec![2, 0, 2]);
+        let r = Rle::from_counts(2, 2, vec![2, 0, 2]);
         let mut out = Vec::new();
         r.decode_fg_offsets_into(&mut out);
         assert!(out.is_empty());
@@ -865,7 +865,7 @@ mod tests {
     fn decode_fg_offsets_layout_is_alternating_start_end() {
         // 2x3 col-major image, fg at flat idx 1..=2 and 4..=4:
         // counts = [bg=1, fg=2, bg=1, fg=1, bg=1].
-        let r = rle(2, 3, vec![1, 2, 1, 1, 1]);
+        let r = Rle::from_counts(2, 3, vec![1, 2, 1, 1, 1]);
         let mut out = Vec::new();
         r.decode_fg_offsets_into(&mut out);
         assert_eq!(out, vec![1, 3, 4, 5]);
@@ -899,14 +899,14 @@ mod tests {
     #[test]
     fn intersect_area_zero_shape_or_empty_counts_is_zero() {
         assert_eq!(
-            rle(0, 0, vec![])
-                .intersect_area(&rle(0, 0, vec![]))
+            Rle::from_counts(0, 0, vec![])
+                .intersect_area(&Rle::from_counts(0, 0, vec![]))
                 .unwrap(),
             0
         );
         assert_eq!(
-            rle(2, 2, vec![])
-                .intersect_area(&rle(2, 2, vec![0, 4]))
+            Rle::from_counts(2, 2, vec![])
+                .intersect_area(&Rle::from_counts(2, 2, vec![0, 4]))
                 .unwrap(),
             0
         );
@@ -914,8 +914,8 @@ mod tests {
 
     #[test]
     fn segment_table_push_from_rle_matches_decode_fg_offsets_into() {
-        let r1 = rle(2, 2, vec![0, 1, 3]);
-        let r2 = rle(2, 2, vec![0, 4]);
+        let r1 = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let r2 = Rle::from_counts(2, 2, vec![0, 4]);
         let mut table = SegmentTable::new();
         table.push_from_rle(&r1);
         table.push_from_rle(&r2);
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn segment_table_clear_resets_rows_but_keeps_capacity() {
         let mut table = SegmentTable::new();
-        table.push_from_rle(&rle(2, 2, vec![0, 4]));
+        table.push_from_rle(&Rle::from_counts(2, 2, vec![0, 4]));
         let cap_before = table.flat.capacity();
         table.clear();
         assert!(table.is_empty());

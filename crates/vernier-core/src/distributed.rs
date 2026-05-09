@@ -272,7 +272,7 @@ fn pack_segmentation(seg: &Segmentation) -> WireSegmentation {
                     WireSegmentationCounts::Compressed(s.clone())
                 }
                 SegmentationRleCounts::Uncompressed(c) => {
-                    WireSegmentationCounts::Uncompressed(c.clone())
+                    WireSegmentationCounts::Uncompressed(c.to_vec())
                 }
             },
         }),
@@ -317,7 +317,8 @@ fn unpack_segmentation(archived: &ArchivedWireSegmentation) -> Result<Segmentati
                     SegmentationRleCounts::Compressed(s.as_str().to_string())
                 }
                 ArchivedWireSegmentationCounts::Uncompressed(c) => {
-                    SegmentationRleCounts::Uncompressed(c.iter().map(|v| v.to_native()).collect())
+                    let v: Vec<u32> = c.iter().map(|v| v.to_native()).collect();
+                    SegmentationRleCounts::Uncompressed(v.into())
                 }
             };
             Ok(Segmentation::Rle(SegmentationRle {

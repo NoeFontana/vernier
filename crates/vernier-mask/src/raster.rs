@@ -43,11 +43,7 @@ impl Rle {
             });
         }
         if expected == 0 {
-            return Ok(Rle {
-                h,
-                w,
-                counts: vec![],
-            });
+            return Ok(Rle::empty(h, w));
         }
         let mut counts: Vec<u32> =
             Vec::with_capacity((mask.len() + 1).min(ENCODE_COUNTS_CAPACITY_HINT));
@@ -69,7 +65,7 @@ impl Rle {
             u32::try_from(run)
                 .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?,
         );
-        Ok(Rle { h, w, counts })
+        Ok(Rle::from_counts(h, w, counts))
     }
 
     /// Decodes the RLE into a freshly allocated column-major byte
@@ -98,7 +94,7 @@ impl Rle {
         let total = (self.h as usize).saturating_mul(self.w as usize);
         buf.reserve(total);
         let mut v: u8 = 0;
-        for &len in &self.counts {
+        for &len in self.counts.iter() {
             buf.resize(buf.len() + len as usize, v);
             v ^= 1;
         }
@@ -142,7 +138,7 @@ impl Rle {
         // bbox columns and rows, and fill the surviving slice.
         let mut is_fg = false;
         let mut cum: usize = 0;
-        for &len in &self.counts {
+        for &len in self.counts.iter() {
             let run_len = len as usize;
             if !is_fg || run_len == 0 {
                 cum += run_len;
@@ -185,14 +181,10 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
-    }
-
     #[test]
     fn empty_zero_zero_round_trips() {
         let r = Rle::from_raster_bytes(&[], 0, 0).unwrap();
-        assert_eq!(r, rle(0, 0, vec![]));
+        assert_eq!(r, Rle::from_counts(0, 0, vec![]));
         assert_eq!(r.to_raster_bytes(), Vec::<u8>::new());
     }
 
@@ -227,14 +219,14 @@ mod tests {
     #[test]
     fn all_background_encodes_to_single_run() {
         let r = Rle::from_raster_bytes(&[0; 4], 2, 2).unwrap();
-        assert_eq!(r, rle(2, 2, vec![4]));
+        assert_eq!(r, Rle::from_counts(2, 2, vec![4]));
         assert_eq!(r.to_raster_bytes(), vec![0; 4]);
     }
 
     #[test]
     fn all_foreground_starts_with_zero_length_background() {
         let r = Rle::from_raster_bytes(&[1; 4], 2, 2).unwrap();
-        assert_eq!(r, rle(2, 2, vec![0, 4]));
+        assert_eq!(r, Rle::from_counts(2, 2, vec![0, 4]));
         assert_eq!(r.to_raster_bytes(), vec![1; 4]);
     }
 
@@ -242,7 +234,7 @@ mod tests {
     fn nonzero_bytes_binarize_per_g6() {
         // Mixed values 0/2/255/0 → binarized as 0/1/1/0 → counts [1,2,1].
         let r = Rle::from_raster_bytes(&[0, 2, 255, 0], 2, 2).unwrap();
-        assert_eq!(r, rle(2, 2, vec![1, 2, 1]));
+        assert_eq!(r, Rle::from_counts(2, 2, vec![1, 2, 1]));
         assert_eq!(r.to_raster_bytes(), vec![0, 1, 1, 0]);
     }
 
@@ -252,7 +244,7 @@ mod tests {
         let mut mask = vec![0u8; 6];
         mask[3] = 1;
         let r = Rle::from_raster_bytes(&mask, 2, 3).unwrap();
-        assert_eq!(r, rle(2, 3, vec![3, 1, 2]));
+        assert_eq!(r, Rle::from_counts(2, 3, vec![3, 1, 2]));
         assert_eq!(r.bbox(), [1, 1, 1, 1]);
     }
 
@@ -261,7 +253,7 @@ mod tests {
         // 2x3 mask, fg from idx 1..=4 (length 4): [0,1,1,1,1,0].
         let mask = vec![0, 1, 1, 1, 1, 0];
         let r = Rle::from_raster_bytes(&mask, 2, 3).unwrap();
-        assert_eq!(r, rle(2, 3, vec![1, 4, 1]));
+        assert_eq!(r, Rle::from_counts(2, 3, vec![1, 4, 1]));
         assert_eq!(r.to_raster_bytes(), mask);
     }
 

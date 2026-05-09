@@ -912,7 +912,7 @@ fn hash_segmentation(h: &mut blake3::Hasher, seg: Option<&Segmentation>) {
                     hash_u32(h, rh);
                     hash_u32(h, rw);
                     hash_u64(h, counts.len() as u64);
-                    for &c in counts {
+                    for &c in counts.iter() {
                         hash_u32(h, c);
                     }
                 }

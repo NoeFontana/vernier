@@ -657,19 +657,15 @@ mod tests {
         out
     }
 
-    fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
-    }
-
     #[test]
     fn empty_mask_round_trips_unchanged() {
-        let r = rle(0, 0, vec![]);
+        let r = Rle::from_counts(0, 0, vec![]);
         assert_eq!(erode_chebyshev_ball(&r, 5).unwrap(), r);
     }
 
     #[test]
     fn radius_zero_is_identity() {
-        let r = rle(2, 2, vec![1, 2, 1]);
+        let r = Rle::from_counts(2, 2, vec![1, 2, 1]);
         assert_eq!(erode_chebyshev_ball(&r, 0).unwrap(), r);
     }
 
@@ -680,11 +676,11 @@ mod tests {
         // Chebyshev ball (d=1) leaves only the center pixel: M5
         // (square not cross) is what makes this a single pixel rather
         // than a + shape.
-        let r = rle(3, 3, vec![0, 9]);
+        let r = Rle::from_counts(3, 3, vec![0, 9]);
         let eroded = erode_chebyshev_ball(&r, 1).unwrap();
         // Center pixel at (x=1, y=1) → flat idx 1*3 + 1 = 4. RLE
         // canonicalises as [bg=4, fg=1, bg=4].
-        assert_eq!(eroded.counts, vec![4, 1, 4]);
+        assert_eq!(&eroded.counts[..], &[4u32, 1, 4][..]);
     }
 
     #[test]
@@ -693,7 +689,7 @@ mod tests {
         // (1..=3, 1..=3) of foreground = 9 fg pixels. Frames the
         // metric: the boundary band of a fully-fg image is a frame of
         // width d (P3).
-        let r = rle(5, 5, vec![0, 25]);
+        let r = Rle::from_counts(5, 5, vec![0, 25]);
         let eroded = erode_chebyshev_ball(&r, 1).unwrap();
         let fg_count: u32 = eroded.to_raster_bytes().iter().map(|&b| u32::from(b)).sum();
         assert_eq!(fg_count, 9);
@@ -704,7 +700,7 @@ mod tests {
         // Quirk P1: when (2d+1) > min(h, w), erosion of fully-fg
         // yields fully-zero — the structuring element cannot fit
         // inside the foreground anywhere.
-        let r = rle(3, 3, vec![0, 9]);
+        let r = Rle::from_counts(3, 3, vec![0, 9]);
         let eroded = erode_chebyshev_ball(&r, 10).unwrap();
         assert_eq!(eroded.area(), 0);
     }
@@ -712,7 +708,7 @@ mod tests {
     #[test]
     fn empty_foreground_erosion_is_empty() {
         // P2: erosion of an empty mask is empty.
-        let r = rle(4, 4, vec![16]);
+        let r = Rle::from_counts(4, 4, vec![16]);
         let eroded = erode_chebyshev_ball(&r, 2).unwrap();
         assert_eq!(eroded.area(), 0);
         assert_eq!(eroded.h, 4);

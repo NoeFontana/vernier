@@ -86,7 +86,7 @@ else is detail.
 | [0016](0016-generalized-breakdown-axis.md) | Generalize the A-axis as a value-typed `Breakdown` | accepted |
 | [0019](0019-result-tables.md) | Result tables — opt-in, Arrow-backed, zero-overhead by default | accepted |
 | [0020](0020-parsed-once-dataset-handle.md) | Parsed-once `Dataset` handle as the GT-side derivation cache | accepted |
-| [0030](0030-buffer-protocol.md) | Accept detection arrays alongside JSON bytes in streaming update | accepted |
+| [0030](0030-buffer-protocol.md) | Accept detection arrays alongside JSON bytes in streaming update | accepted (amended 2026-05-09 — bitmask + compressed-bytes ingest readmitted) |
 
 ### Sibling paradigms
 

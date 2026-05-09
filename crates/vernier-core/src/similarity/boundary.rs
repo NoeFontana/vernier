@@ -457,10 +457,6 @@ mod tests {
         }
     }
 
-    fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
-    }
-
     fn compute(gts: &[SegmAnn], dts: &[SegmAnn]) -> Array2<f64> {
         let mut out = Array2::<f64>::zeros((gts.len(), dts.len()));
         BoundaryIou::default()
@@ -485,7 +481,7 @@ mod tests {
     #[test]
     fn perfect_overlap_is_one() {
         // Identical masks → mask IoU = 1, band IoU = 1, min = 1.
-        let r = rle(2, 2, vec![0, 4]);
+        let r = Rle::from_counts(2, 2, vec![0, 4]);
         let m = compute(&[ann(r.clone(), false)], &[ann(r, false)]);
         assert_eq!(m[[0, 0]].to_bits(), 1.0_f64.to_bits());
     }
@@ -495,8 +491,8 @@ mod tests {
         // GT covers the upper-left pixel; DT covers the lower-right
         // pixel. Their bboxes don't overlap, so I1 short-circuits to 0
         // without computing band intersections.
-        let g = rle(2, 2, vec![0, 1, 3]);
-        let d = rle(2, 2, vec![3, 1]);
+        let g = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let d = Rle::from_counts(2, 2, vec![3, 1]);
         let m = compute(&[ann(g, false)], &[ann(d, false)]);
         assert_eq!(m[[0, 0]].to_bits(), 0.0_f64.to_bits());
     }
@@ -508,8 +504,8 @@ mod tests {
         // of a 1×1 mask is empty, so the band equals the mask. With
         // both bands == masks, boundary_iou == mask_iou and `min` is a
         // no-op. GT area 1, DT area 2, inter 1 → IoU = 1/2.
-        let g = rle(4, 4, vec![0, 1, 15]);
-        let d = rle(4, 4, vec![0, 2, 14]);
+        let g = Rle::from_counts(4, 4, vec![0, 1, 15]);
+        let d = Rle::from_counts(4, 4, vec![0, 2, 14]);
         let m = compute(&[ann(g, false)], &[ann(d, false)]);
         assert_eq!(m[[0, 0]].to_bits(), (1.0_f64 / 2.0_f64).to_bits());
     }
@@ -568,8 +564,8 @@ mod tests {
         // crowd GT. If the kernel mistakenly folded the band term in,
         // the cell would be < 1.0 (the bands would not be identical),
         // so this fixture pins both quirks at once.
-        let gt_full = rle(4, 4, vec![0, 16]);
-        let dt_pixel = rle(4, 4, vec![5, 1, 10]);
+        let gt_full = Rle::from_counts(4, 4, vec![0, 16]);
+        let dt_pixel = Rle::from_counts(4, 4, vec![5, 1, 10]);
         let m = compute(&[ann(gt_full, true)], &[ann(dt_pixel, false)]);
         assert_eq!(m[[0, 0]].to_bits(), 1.0_f64.to_bits());
     }
@@ -578,8 +574,8 @@ mod tests {
     fn dt_iscrowd_flag_is_ignored() {
         // E2/J4: DT iscrowd is enforced 0 at load. A smuggled
         // is_crowd=true on the DT side must not change the answer.
-        let g = rle(2, 2, vec![0, 1, 3]);
-        let d = rle(2, 2, vec![0, 2, 2]);
+        let g = Rle::from_counts(2, 2, vec![0, 1, 3]);
+        let d = Rle::from_counts(2, 2, vec![0, 2, 2]);
         let with_flag = compute(&[ann(g.clone(), false)], &[ann(d.clone(), true)]);
         let without = compute(&[ann(g, false)], &[ann(d, false)]);
         assert_eq!(with_flag[[0, 0]].to_bits(), without[[0, 0]].to_bits());
@@ -589,8 +585,8 @@ mod tests {
     fn empty_masks_pair_is_zero_not_nan() {
         // Empty GT and DT: areas all zero, denominators all zero,
         // guards return 0.0 on both mask and band terms; min is 0.
-        let empty = rle(2, 2, vec![4]);
-        let dt_one = rle(2, 2, vec![0, 1, 3]);
+        let empty = Rle::from_counts(2, 2, vec![4]);
+        let dt_one = Rle::from_counts(2, 2, vec![0, 1, 3]);
         let m = compute(&[ann(empty.clone(), false)], &[ann(dt_one, false)]);
         assert!(m[[0, 0]].is_finite());
         assert_eq!(m[[0, 0]].to_bits(), 0.0_f64.to_bits());
@@ -600,7 +596,9 @@ mod tests {
 
     #[test]
     fn empty_inputs_return_unchanged_matrix() {
-        let dts: Vec<SegmAnn> = (0..3).map(|_| ann(rle(2, 2, vec![4]), false)).collect();
+        let dts: Vec<SegmAnn> = (0..3)
+            .map(|_| ann(Rle::from_counts(2, 2, vec![4]), false))
+            .collect();
         let mut out = Array2::<f64>::from_elem((0, 3), 7.0);
         BoundaryIou::default()
             .compute(&[], &dts, &mut out.view_mut())
@@ -610,8 +608,8 @@ mod tests {
 
     #[test]
     fn output_shape_mismatch_returns_typed_error() {
-        let g = ann(rle(2, 2, vec![4]), false);
-        let d = ann(rle(2, 2, vec![4]), false);
+        let g = ann(Rle::from_counts(2, 2, vec![4]), false);
+        let d = ann(Rle::from_counts(2, 2, vec![4]), false);
         let mut out = Array2::<f64>::zeros((2, 3));
         let err = BoundaryIou::default()
             .compute(&[g], &[d], &mut out.view_mut())
@@ -621,8 +619,8 @@ mod tests {
 
     #[test]
     fn rle_dimension_mismatch_returns_typed_error() {
-        let g = ann(rle(4, 4, vec![16]), false);
-        let d = ann(rle(8, 8, vec![64]), false);
+        let g = ann(Rle::from_counts(4, 4, vec![16]), false);
+        let d = ann(Rle::from_counts(8, 8, vec![64]), false);
         let mut out = Array2::<f64>::zeros((1, 1));
         let err = BoundaryIou::default()
             .compute(&[g], &[d], &mut out.view_mut())

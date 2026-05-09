@@ -36,6 +36,8 @@
 //!   [`EvalError::DimensionMismatch`] instead of silently emitting an
 //!   empty `0x0` RLE the way pycocotools does.
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
 use vernier_mask::Rle;
 
@@ -77,10 +79,24 @@ pub struct SegmentationRle {
 pub enum SegmentationRleCounts {
     /// Compressed 6-bit char string per ADR-0002 / quirk **G1–G3**.
     Compressed(String),
-    /// Raw run-length array. Used for GT round-tripping where the
-    /// dataset author stored uncompressed counts (rare on COCO,
-    /// common on synthetic fixtures).
-    Uncompressed(Vec<u32>),
+    /// Raw run-length array. Stored as [`Arc<[u32]>`] so the
+    /// dataset-cached value can be cloned cheaply into the per-eval
+    /// [`Rle`] without an O(N) memcpy.
+    Uncompressed(#[serde(with = "arc_u32_serde")] Arc<[u32]>),
+}
+
+mod arc_u32_serde {
+    use std::sync::Arc;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(value: &Arc<[u32]>, ser: S) -> Result<S::Ok, S::Error> {
+        value.as_ref().serialize(ser)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Arc<[u32]>, D::Error> {
+        Vec::<u32>::deserialize(de).map(Arc::from)
+    }
 }
 
 impl Segmentation {
@@ -111,7 +127,7 @@ impl Segmentation {
                     SegmentationRleCounts::Uncompressed(counts) => Ok(Rle {
                         h,
                         w,
-                        counts: counts.clone(),
+                        counts: Arc::clone(counts),
                     }),
                 }
             }
@@ -158,7 +174,9 @@ mod tests {
             Segmentation::Rle(rle) => {
                 assert_eq!(rle.size, [2, 2]);
                 match rle.counts {
-                    SegmentationRleCounts::Uncompressed(c) => assert_eq!(c, vec![0, 4]),
+                    SegmentationRleCounts::Uncompressed(c) => {
+                        assert_eq!(&c[..], &[0u32, 4][..]);
+                    }
                     other => panic!("expected Uncompressed, got {other:?}"),
                 }
             }
@@ -187,7 +205,7 @@ mod tests {
         let original = Rle {
             h: 4,
             w: 4,
-            counts: vec![0, 4, 4, 4, 4],
+            counts: vec![0u32, 4, 4, 4, 4].into(),
         };
         let counts = String::from_utf8(original.to_string_bytes()).unwrap();
         let json = format!(r#"{{"size": [4, 4], "counts": "{counts}"}}"#);
@@ -202,7 +220,7 @@ mod tests {
         let rle = s.to_rle(2, 2).unwrap();
         assert_eq!(rle.h, 2);
         assert_eq!(rle.w, 2);
-        assert_eq!(rle.counts, vec![0, 4]);
+        assert_eq!(&rle.counts[..], &[0u32, 4][..]);
         assert_eq!(rle.area(), 4);
     }
 

@@ -77,11 +77,7 @@ impl Rle {
             }
         }
         if h == 0 || w == 0 {
-            return Ok(Rle {
-                h,
-                w,
-                counts: vec![],
-            });
+            return Ok(Rle::empty(h, w));
         }
 
         // Closing vertex appended so each edge is `[j, j+1]` for `j ∈ 0..k`.
@@ -176,7 +172,7 @@ impl Rle {
             }
         }
 
-        Ok(Rle { h, w, counts })
+        Ok(Rle::from_counts(h, w, counts))
     }
 
     /// Rasterizes a multi-polygon segmentation into a single RLE
@@ -192,13 +188,12 @@ impl Rle {
         }
         if polys.is_empty() {
             let total = u64::from(h) * u64::from(w);
-            let counts = if total == 0 {
-                vec![]
-            } else {
-                vec![u32::try_from(total)
-                    .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?]
-            };
-            return Ok(Rle { h, w, counts });
+            if total == 0 {
+                return Ok(Rle::empty(h, w));
+            }
+            let run = u32::try_from(total)
+                .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?;
+            return Ok(Rle::from_counts(h, w, vec![run]));
         }
         let rles: Vec<Rle> = polys
             .iter()
@@ -277,10 +272,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
-    }
-
     #[test]
     fn rejects_odd_coordinate_count() {
         let err = Rle::from_polygon(&[0.0, 0.0, 1.0], 4, 4).unwrap_err();
@@ -323,11 +314,11 @@ mod tests {
     #[test]
     fn empty_image_returns_empty_rle() {
         let r = Rle::from_polygon(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0], 0, 0).unwrap();
-        assert_eq!(r, rle(0, 0, vec![]));
+        assert_eq!(r, Rle::from_counts(0, 0, vec![]));
         let r = Rle::from_polygon(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0], 0, 4).unwrap();
-        assert_eq!(r, rle(0, 4, vec![]));
+        assert_eq!(r, Rle::from_counts(0, 4, vec![]));
         let r = Rle::from_polygon(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0], 4, 0).unwrap();
-        assert_eq!(r, rle(4, 0, vec![]));
+        assert_eq!(r, Rle::from_counts(4, 0, vec![]));
     }
 
     #[test]
@@ -335,7 +326,7 @@ mod tests {
         // Polygon (0,0)-(2,0)-(2,2)-(0,2): traced by hand below in the
         // module docs. Expected: bg=0, fg=2, bg=2, fg=2, bg=10.
         let r = Rle::from_polygon(&[0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0], 4, 4).unwrap();
-        assert_eq!(r.counts, vec![0, 2, 2, 2, 10]);
+        assert_eq!(&r.counts[..], &[0u32, 2, 2, 2, 10][..]);
         // Round-trip through the raster codec to confirm the FG
         // pixel set: (0,0), (0,1), (1,0), (1,1) in column-major.
         let mask = r.to_raster_bytes();
@@ -361,7 +352,7 @@ mod tests {
         // All vertices to the left of the image — every crossing
         // gets dropped by the H5 in-bounds filter.
         let r = Rle::from_polygon(&[-5.0, -5.0, -3.0, -5.0, -3.0, -3.0, -5.0, -3.0], 4, 4).unwrap();
-        assert_eq!(r.counts, vec![16]);
+        assert_eq!(&r.counts[..], &[16u32][..]);
         assert_eq!(r.area(), 0);
     }
 
@@ -384,10 +375,10 @@ mod tests {
     #[test]
     fn from_polygons_empty_yields_all_background_at_requested_shape() {
         let r = Rle::from_polygons(&[], 4, 4).unwrap();
-        assert_eq!(r, rle(4, 4, vec![16]));
+        assert_eq!(r, Rle::from_counts(4, 4, vec![16]));
         assert_eq!(r.area(), 0);
         let r = Rle::from_polygons(&[], 0, 0).unwrap();
-        assert_eq!(r, rle(0, 0, vec![]));
+        assert_eq!(r, Rle::from_counts(0, 0, vec![]));
     }
 
     #[test]

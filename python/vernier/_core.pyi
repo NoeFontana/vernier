@@ -7,9 +7,11 @@ import numpy as np
 from numpy.typing import NDArray
 from typing_extensions import Self
 
-from vernier._array_types import RLE as RLE
+from vernier._array_types import CompressedRLE as CompressedRLE
 from vernier._array_types import Detections as Detections
 from vernier._array_types import DetectionsInput as DetectionsInput
+from vernier._array_types import RLEInput as RLEInput
+from vernier._array_types import UncompressedRLE as UncompressedRLE
 
 #: LVIS category-frequency tier as a single-letter string (ADR-0026
 #: AB1). The `CocoDataset.category_frequency` accessor returns these

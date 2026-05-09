@@ -33,6 +33,8 @@ bench-histogram = ["vernier-core/bench-histogram"]
 
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.0.1" }
+# Mask kernels (ADR-0009): bitmask ingest calls `Rle::from_raster_bytes`.
+vernier-mask = { path = "../vernier-mask", version = "0.0.1" }
 # Panoptic-quality evaluation crate (ADR-0025). Sibling to vernier-core;
 # the FFI layer wires both through `_core` while keeping their kernels
 # independent.

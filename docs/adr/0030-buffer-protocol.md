@@ -1,7 +1,7 @@
 # ADR-0030: Accept detection arrays alongside JSON bytes in streaming update
 
 - **Status:** accepted
-- **Date:** 2026-05-04
+- **Date:** 2026-05-04 (amended 2026-05-09 — `rles[i]` now accepts compressed-RLE bytes and 2-D bool/uint8 bitmasks alongside the existing uncompressed dict; see §"Mask handling" and validation rules table)
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
@@ -65,10 +65,18 @@ class Detections(TypedDict, total=False):
     rles: Sequence[RLE]                 # for iou_type in {"segm", "boundary"}
     keypoints: NDArray[np.float64]      # (N, K, 3) for iou_type == "keypoints"
 
-class RLE(TypedDict):
+class UncompressedRLE(TypedDict):
     counts: NDArray[np.uint32]          # contiguous
     size: tuple[int, int]               # (height, width)
+
+class CompressedRLE(TypedDict):
+    counts: bytes                       # COCO 6-bit ASCII (pycocotools.mask.encode output)
+    size: tuple[int, int]               # (height, width)
+
+# Bitmask form: NDArray[np.bool_ | np.uint8] of shape (H, W), C- or F-order.
 ```
+
+`Detections.rles` accepts `Sequence[UncompressedRLE | CompressedRLE | NDArray[np.bool_ | np.uint8]]` — the dispatcher discriminates per item (dict vs. ndarray, then `counts` is bytes vs. uint32 array). Mixed forms within a single sequence are supported.
 
 Updated method signatures:
 
@@ -106,8 +114,10 @@ impl<K: EvalKernel> ParsedDetections<K> {
 | `boxes` | `float64` | `(N, 4)` C-contiguous | `TypeError` naming `np.ascontiguousarray` and `astype(np.float64)` as the fix |
 | `scores` | `float64` | `(N,)` contiguous | same |
 | `labels` | `int64` | `(N,)` contiguous | same |
-| `rles[i].counts` | `uint32` | contiguous | same |
-| `keypoints` | `float64` | `(N, K, 3)` C-contiguous | same |
+| `rles[i]` (uncompressed dict) | `counts: uint32` | 1-D contiguous | `TypeError` naming `astype(np.uint32)` as the fix |
+| `rles[i]` (compressed dict) | `counts: bytes` (COCO 6-bit ASCII) | length-2 `size` | `TypeError` on dict shape; `ValueError` if `counts` not UTF-8 |
+| `rles[i]` (bitmask) | 2-D `bool` or `uint8` | `(H, W)`, C- or F-order | `TypeError` enumerating the three accepted forms; `TypeError` if neither C- nor F-contiguous |
+| `keypoints` | `float64` | `(N, K, 3)` C-contiguous | `TypeError` naming `np.ascontiguousarray` and `astype(np.float64)` as the fix |
 
 `f32` is rejected, not silently promoted, in line with ADR-0004 and ADR-0008. A documented opt-in `cast_inputs=True` constructor flag promotes-and-copies with a one-shot `UserWarning`, for users who genuinely want the convenience. Default off.
 
@@ -115,15 +125,17 @@ DLPack tensors with `device_type != kCPU` raise `TypeError("vernier-0030 does no
 
 ### Mask handling
 
-`iou_type="bbox"` ignores all mask fields. `iou_type="segm"` and `"boundary"` require `rles`. `iou_type="keypoints"` requires `keypoints`.
+`iou_type="segm"` and `"boundary"` accept three per-item shapes in the `rles` sequence — choose the one closest to your model output:
 
-We do **not** accept polygons or HxW bitmasks on the detection-array path. Reasoning:
+- **Uncompressed dict** `{"counts": NDArray[uint32], "size": (h, w)}` — for tooling that already computes runs in numpy.
+- **Compressed dict** `{"counts": bytes, "size": (h, w)}` — pass `pycocotools.mask.encode(...)["counts"]` (or `vernier.mask.encode(...)`) verbatim, no decode/re-encode round-trip.
+- **Bitmask** `NDArray[bool|uint8]` of shape `(H, W)`, C- or F-order — a per-pixel mask thresholded once; `size` is taken from the array shape. F-order is fed to the column-major encoder directly; C-order is `np.asfortranarray`-copied at ingest (one per-detection memcpy, same order of magnitude as the existing JSON path's pre-decode allocation).
 
-- **GT polygons are not detection-side.** `CocoDataset` parses GT once at construction (gt_bytes), and any polygon-in-GT is rasterized to RLE there (ADR-0020 territory). Detections never carry GT polygons.
-- **DT polygons are not a real workflow.** No production detection or instance-segmentation model emits polygons; they emit per-pixel masks that downstream code RLE-encodes. The COCO `loadRes` JSON shape itself only specifies RLE for detection masks.
-- **DT bitmasks are bulky and ambiguous at the boundary.** A `(H, W) bool` array per detection would dominate the per-image submit cost (a single 640×480 mask is 300 KB raw), and the right thing to do with it is RLE-encode it — which the user can do once at the dataloader boundary with `pycocotools.mask.encode` or `vernier.mask.encode`, in parallel with everything else dataloader workers do. Pulling that into the eval ingest path adds work to the critical path.
+Polygon DT remains rejected at this surface. Detection models do not emit polygons; pycocotools' `loadRes` shape itself only specifies RLE for detection masks. The GT-side polygon→RLE rasterization (ADR-0020) is unaffected.
 
-If a user has bitmasks and wants to skip the encode, the right place to add that affordance is `vernier.mask.encode_batch` returning a `Sequence[RLE]` shape this surface accepts — an additive helper, not an evaluator overload. Out of scope here.
+Mixed forms are allowed within a single `rles` sequence — the dispatcher discriminates per item (dict vs. ndarray, then `counts` is bytes vs. uint32 array).
+
+The earlier rejection of bitmask ingest in this ADR rested on a faulty cost argument: a 640×480 mask is 300 KB raw, but the IoU kernel walks those pixels regardless, so the encode cost is paid either way. Doing the encode in Rust (one `Rle::from_raster_bytes` call, ~150 lines, already shipped in `vernier-mask`) is faster than asking the user to write a column-major run encoder by hand.
 
 ### Memory ownership
 
@@ -147,7 +159,6 @@ Per-image matching, accumulate, snapshot/finalize, and the single-writer rule ar
 ## Future work
 
 - **GPU-resident detections (separate ADR).** DLPack already carries device info; the dispatch site can route GPU tensors to a future CUDA matching kernel without changing this Python surface. The current ADR rejects GPU inputs explicitly so the future extension does not break callers.
-- **`vernier.mask.encode_batch` helper for users with bitmask outputs.** Additive, kernel-internal, no surface impact on the evaluators.
 - **`from_arrays` parity oracle test against `from_json_bytes`.** Lands as part of this ADR's CI; called out here so it doesn't get lost in implementation.
 
 ## Links and references
