@@ -2683,6 +2683,118 @@ pub(crate) fn queue_full_to_pyerr(py: Python<'_>, full: background::QueueFull) -
     exc
 }
 
+// ---------------------------------------------------------------------------
+// One-shot streaming partial functions (ADR-0035).
+//
+// These pyfunctions are the public entry points for the per-rank
+// distributed-eval flow on the instance paradigm. The streaming
+// `PyStreamingEvaluator` pyclass above is no longer registered on the
+// Python module; it survives only as an internal Rust orchestrator that
+// the functions below drive through one construct + update +
+// finalize-to-partial cycle.
+// ---------------------------------------------------------------------------
+
+/// Construct a streaming evaluator, submit one batch, and serialize a
+/// partial blob (ADR-0031, ADR-0035).
+#[pyfunction]
+#[pyo3(signature = (
+    gt_json,
+    detections,
+    iou_type,
+    rank_id,
+    *,
+    parity_mode = "corrected",
+    max_dets = vec![1, 10, 100],
+    use_cats = true,
+    memory_budget_bytes = None,
+    dilation_ratio = 0.02,
+    sigmas = None,
+    retain_iou = false,
+    cast_inputs = false,
+))]
+#[allow(clippy::too_many_arguments)]
+fn evaluate_instance_to_partial<'py>(
+    py: Python<'py>,
+    gt_json: &Bound<'py, PyBytes>,
+    detections: &Bound<'py, PyAny>,
+    iou_type: &str,
+    rank_id: u32,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    memory_budget_bytes: Option<usize>,
+    dilation_ratio: f64,
+    sigmas: Option<&Bound<'py, PyDict>>,
+    retain_iou: bool,
+    cast_inputs: bool,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let ev = PyStreamingEvaluator::new(
+        gt_json,
+        iou_type,
+        parity_mode,
+        max_dets,
+        use_cats,
+        memory_budget_bytes,
+        dilation_ratio,
+        sigmas,
+        retain_iou,
+        cast_inputs,
+        Some(rank_id),
+    )?;
+    let _report = ev.update(py, detections)?;
+    ev.finalize_to_partial(py)
+}
+
+/// Merge per-rank partials into a final summary (ADR-0031, ADR-0035).
+#[pyfunction]
+#[pyo3(signature = (
+    gt_json,
+    partials,
+    iou_type,
+    *,
+    parity_mode = "corrected",
+    max_dets = vec![1, 10, 100],
+    use_cats = true,
+    memory_budget_bytes = None,
+    dilation_ratio = 0.02,
+    sigmas = None,
+    retain_iou = false,
+    cast_inputs = false,
+))]
+#[allow(clippy::too_many_arguments)]
+fn merge_instance_partials<'py>(
+    py: Python<'py>,
+    gt_json: &Bound<'py, PyBytes>,
+    partials: &Bound<'py, pyo3::types::PyList>,
+    iou_type: &str,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    memory_budget_bytes: Option<usize>,
+    dilation_ratio: f64,
+    sigmas: Option<&Bound<'py, PyDict>>,
+    retain_iou: bool,
+    cast_inputs: bool,
+) -> PyResult<PySummary> {
+    let cls = py.get_type::<PyStreamingEvaluator>();
+    let merged = PyStreamingEvaluator::from_partials(
+        &cls,
+        py,
+        gt_json,
+        partials,
+        iou_type,
+        parity_mode,
+        max_dets,
+        use_cats,
+        memory_budget_bytes,
+        dilation_ratio,
+        sigmas,
+        retain_iou,
+        cast_inputs,
+    )?;
+    merged.finalize(py)
+}
+
 /// Background-evaluator surface (ADR-0014). Wraps a worker thread that
 /// owns the `StreamingEvaluator<K>`; every public method either sends on
 /// the channel or reads atomic counters. Not frozen — `finalize()` and
@@ -3179,6 +3291,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(confusion::confusion_matrix_bbox, m)?)?;
     m.add_function(wrap_pyfunction!(confusion::confusion_matrix_segm, m)?)?;
     m.add_function(wrap_pyfunction!(confusion::confusion_matrix_boundary, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_instance_to_partial, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_instance_partials, m)?)?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;

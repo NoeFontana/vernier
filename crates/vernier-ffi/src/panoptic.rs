@@ -30,7 +30,7 @@ use std::time::Duration;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
 use serde::Deserialize;
 use vernier_partial::PartialError;
 
@@ -629,6 +629,125 @@ fn build_image_entry_from_png(
         .collect();
     decode_panoptic_png(image_id, png_bytes, segments, side)
         .map_err(|e| panoptic_error_to_pyerr(py, e))
+}
+
+/// One-shot per-rank streaming submit + serialize partial (ADR-0035).
+///
+/// Functionally equivalent to constructing a `StreamingPanopticEvaluator`,
+/// calling `update` per image, then `finalize_to_partial`. Each
+/// per-image entry in ``images`` is a 5-tuple
+/// ``(image_id, gt_label_map, gt_segments_info, dt_label_map, dt_segments_info)``
+/// matching the streaming substrate's `update` signature.
+#[pyfunction]
+#[pyo3(signature = (
+    images,
+    categories,
+    parity_mode,
+    rank_id,
+    *,
+    things_stuff_split = true,
+    retain_per_image_deltas = false,
+))]
+pub(crate) fn evaluate_panoptic_to_partial<'py>(
+    py: Python<'py>,
+    images: &Bound<'py, PyList>,
+    categories: &[u8],
+    parity_mode: &str,
+    rank_id: u32,
+    things_stuff_split: bool,
+    retain_per_image_deltas: bool,
+) -> PyResult<Bound<'py, PyBytes>> {
+    let mode = parse_panoptic_parity_mode(parity_mode)?;
+    let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+
+    // Eagerly extract owned per-image data on the Python thread so the
+    // GIL-free closure has only owned data.
+    let mut entries: Vec<(ImageId, ImageEntry, ImageEntry)> = Vec::with_capacity(images.len());
+    for item in images.iter() {
+        let tup = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
+            PyValueError::new_err(
+                "evaluate_panoptic_to_partial expects a list of 5-tuples \
+                 (image_id, gt_label_map, gt_segments_info, dt_label_map, dt_segments_info)",
+            )
+        })?;
+        if tup.len() != 5 {
+            return Err(PyValueError::new_err(format!(
+                "evaluate_panoptic_to_partial expects 5-tuples; got {}-tuple",
+                tup.len()
+            )));
+        }
+        let image_id: ImageId = tup.get_item(0)?.extract()?;
+        let gt_label_map: PyReadonlyArray2<'py, u32> = tup.get_item(1)?.extract()?;
+        let gt_segs_bytes: Vec<u8> = tup.get_item(2)?.extract()?;
+        let dt_label_map: PyReadonlyArray2<'py, u32> = tup.get_item(3)?.extract()?;
+        let dt_segs_bytes: Vec<u8> = tup.get_item(4)?.extract()?;
+        let gt_entry = build_image_entry(py, image_id, &gt_label_map, &gt_segs_bytes, "gt")?;
+        let dt_entry = build_image_entry(py, image_id, &dt_label_map, &dt_segs_bytes, "dt")?;
+        entries.push((image_id, gt_entry, dt_entry));
+    }
+
+    let bytes = py
+        .detach(move || -> Result<Vec<u8>, PanopticError> {
+            let mut ev = StreamingPanopticEvaluator::new(
+                cats,
+                mode,
+                things_stuff_split,
+                retain_per_image_deltas,
+            )
+            .with_rank(rank_id)?;
+            for (image_id, gt_entry, dt_entry) in &entries {
+                ev.update(*image_id, gt_entry, dt_entry)?;
+            }
+            ev.finalize_to_partial()
+        })
+        .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    Ok(PyBytes::new(py, &bytes))
+}
+
+/// Merge per-rank partials into a final summary (ADR-0035).
+#[pyfunction]
+#[pyo3(signature = (
+    categories,
+    partials,
+    parity_mode,
+    *,
+    things_stuff_split = true,
+    retain_per_image_deltas = false,
+))]
+pub(crate) fn merge_panoptic_partials<'py>(
+    py: Python<'py>,
+    categories: &[u8],
+    partials: &Bound<'py, PyList>,
+    parity_mode: &str,
+    things_stuff_split: bool,
+    retain_per_image_deltas: bool,
+) -> PyResult<PyPanopticSummary> {
+    let mode = parse_panoptic_parity_mode(parity_mode)?;
+    let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    let owned: Vec<Vec<u8>> = partials
+        .iter()
+        .map(|item| {
+            item.cast::<PyBytes>()
+                .map_err(|_| {
+                    PyValueError::new_err("merge_panoptic_partials expects a list of bytes objects")
+                })
+                .map(|b| b.as_bytes().to_vec())
+        })
+        .collect::<PyResult<_>>()?;
+    let summary = py
+        .detach(move || -> Result<PanopticSummary, PanopticError> {
+            let slices: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
+            let merged = StreamingPanopticEvaluator::from_partials(
+                cats,
+                mode,
+                things_stuff_split,
+                retain_per_image_deltas,
+                &slices,
+            )?;
+            merged.finalize()
+        })
+        .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    Ok(PyPanopticSummary { inner: summary })
 }
 
 /// Streaming panoptic-quality evaluator (ADR-0032 PR-E).
@@ -1230,5 +1349,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStreamingPanopticEvaluator>()?;
     m.add_class::<PyBackgroundPanopticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_panoptic_to_partial, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_panoptic_partials, m)?)?;
     Ok(())
 }

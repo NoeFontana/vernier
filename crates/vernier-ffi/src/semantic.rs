@@ -32,7 +32,7 @@ use std::time::Duration;
 use numpy::PyReadonlyArray2;
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyType};
+use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList, PyType};
 
 use vernier_partial::PartialError;
 use vernier_semantic::kernel::accumulate_confusion;
@@ -416,6 +416,129 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
         summarize(confusion, mode)
     });
 
+    Ok(PySemanticSummary { inner: summary })
+}
+
+/// One-shot per-rank streaming submit + serialize partial (ADR-0035).
+///
+/// Functionally equivalent to constructing a `StreamingSemanticEvaluator`,
+/// calling `update` per image in sorted `image_id` order, then
+/// `finalize_to_partial`. Exposed as a single pyfunction so the streaming
+/// pyclass stays Rust-internal.
+#[pyfunction]
+#[pyo3(signature = (
+    gt_label_maps,
+    dt_label_maps,
+    n_classes,
+    parity_mode,
+    rank_id,
+    *,
+    ignore_label = None,
+))]
+pub(crate) fn evaluate_semantic_to_partial<'py>(
+    py: Python<'py>,
+    gt_label_maps: &Bound<'py, PyDict>,
+    dt_label_maps: &Bound<'py, PyDict>,
+    n_classes: u32,
+    parity_mode: &str,
+    rank_id: u32,
+    ignore_label: Option<u32>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    if n_classes == 0 {
+        return Err(PyValueError::new_err(
+            "evaluate_semantic_to_partial requires n_classes >= 1",
+        ));
+    }
+    let mode = parse_parity_mode(parity_mode)?;
+    let mut gt_maps = parse_uint32_label_maps(gt_label_maps, "semantic gt")?;
+    let mut dt_maps = parse_uint32_label_maps(dt_label_maps, "semantic dt")?;
+
+    for image_id in gt_maps.keys() {
+        if !dt_maps.contains_key(image_id) {
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::MissingPrediction {
+                    image_id: *image_id,
+                },
+            ));
+        }
+    }
+
+    let mut image_ids: Vec<ImageId> = gt_maps.keys().copied().collect();
+    image_ids.sort_unstable();
+
+    let mut work: Vec<(ImageId, LabelMap, LabelMap)> = Vec::with_capacity(image_ids.len());
+    for image_id in &image_ids {
+        let gt = gt_maps.remove(image_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "internal: missing gt label_map for image_id={image_id}"
+            ))
+        })?;
+        let dt = dt_maps.remove(image_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "internal: missing dt label_map for image_id={image_id}"
+            ))
+        })?;
+        if gt.0 != dt.0 || gt.1 != dt.1 {
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::ShapeMismatch {
+                    image_id: *image_id,
+                    gt_shape: (gt.0, gt.1),
+                    dt_shape: (dt.0, dt.1),
+                },
+            ));
+        }
+        work.push((*image_id, gt, dt));
+    }
+
+    let bytes = py
+        .detach(move || -> Result<Vec<u8>, SemanticError> {
+            let mut ev = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode)
+                .with_rank(rank_id)?;
+            for (image_id, gt, dt) in &work {
+                ev.update(*image_id, &gt.2, &dt.2)?;
+            }
+            ev.finalize_to_partial()
+        })
+        .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+    Ok(PyBytes::new(py, &bytes))
+}
+
+/// Merge per-rank partials into a final summary (ADR-0035).
+#[pyfunction]
+#[pyo3(signature = (n_classes, partials, parity_mode, *, ignore_label = None))]
+pub(crate) fn merge_semantic_partials<'py>(
+    py: Python<'py>,
+    n_classes: u32,
+    partials: &Bound<'py, PyList>,
+    parity_mode: &str,
+    ignore_label: Option<u32>,
+) -> PyResult<PySemanticSummary> {
+    if n_classes == 0 {
+        return Err(PyValueError::new_err(
+            "merge_semantic_partials requires n_classes >= 1",
+        ));
+    }
+    let mode = parse_parity_mode(parity_mode)?;
+    let owned: Vec<Vec<u8>> = partials
+        .iter()
+        .map(|item| {
+            item.cast::<PyBytes>()
+                .map_err(|_| {
+                    PyValueError::new_err("merge_semantic_partials expects a list of bytes objects")
+                })
+                .map(|b| b.as_bytes().to_vec())
+        })
+        .collect::<PyResult<_>>()?;
+    let summary = py
+        .detach(move || -> Result<SemanticSummary, SemanticError> {
+            let slices: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
+            let merged =
+                StreamingSemanticEvaluator::from_partials(n_classes, ignore_label, mode, &slices)?;
+            Ok(StreamingSemanticEvaluator::finalize(merged))
+        })
+        .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     Ok(PySemanticSummary { inner: summary })
 }
 
@@ -921,5 +1044,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyStreamingSemanticEvaluator>()?;
     m.add_class::<PyBackgroundSemanticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_arrays, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_semantic_to_partial, m)?)?;
+    m.add_function(wrap_pyfunction!(merge_semantic_partials, m)?)?;
     Ok(())
 }
