@@ -539,6 +539,12 @@ fn panoptic_error_to_pyerr(py: Python<'_>, e: PanopticError) -> PyErr {
 // Streaming evaluator (ADR-0028 §"Streaming"; ADR-0032 distributed merge)
 // ---------------------------------------------------------------------------
 
+// Local copy of the parser: ADR-0025 firewalls `vernier-panoptic` from
+// `vernier-core` (no edge in either direction), so `ParityMode` here is
+// `vernier_panoptic::ParityMode` — a distinct nominal type from the
+// canonical `vernier_core::ParityMode` that `crate::parse_parity_mode`
+// returns. Sharing the parser would force adapter code that breaks the
+// firewall.
 fn parse_panoptic_parity_mode(s: &str) -> PyResult<ParityMode> {
     match s {
         "strict" => Ok(ParityMode::Strict),
