@@ -138,7 +138,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
+        Rle {
+            h,
+            w,
+            counts: counts.into(),
+        }
     }
 
     #[test]

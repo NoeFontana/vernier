@@ -33,6 +33,7 @@ impl Rle {
     ///
     /// Returns the empty `0x0` RLE for `h == 0 || w == 0`.
     pub fn from_raster_bytes(mask: &[u8], h: u32, w: u32) -> Result<Self, MaskError> {
+        use std::sync::Arc;
         let expected = (h as u64) * (w as u64);
         if mask.len() as u64 != expected {
             return Err(MaskError::RasterLengthMismatch {
@@ -46,7 +47,7 @@ impl Rle {
             return Ok(Rle {
                 h,
                 w,
-                counts: vec![],
+                counts: Arc::from(Vec::<u32>::new()),
             });
         }
         let mut counts: Vec<u32> =
@@ -69,7 +70,11 @@ impl Rle {
             u32::try_from(run)
                 .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?,
         );
-        Ok(Rle { h, w, counts })
+        Ok(Rle {
+            h,
+            w,
+            counts: counts.into(),
+        })
     }
 
     /// Decodes the RLE into a freshly allocated column-major byte
@@ -98,7 +103,7 @@ impl Rle {
         let total = (self.h as usize).saturating_mul(self.w as usize);
         buf.reserve(total);
         let mut v: u8 = 0;
-        for &len in &self.counts {
+        for &len in self.counts.iter() {
             buf.resize(buf.len() + len as usize, v);
             v ^= 1;
         }
@@ -142,7 +147,7 @@ impl Rle {
         // bbox columns and rows, and fill the surviving slice.
         let mut is_fg = false;
         let mut cum: usize = 0;
-        for &len in &self.counts {
+        for &len in self.counts.iter() {
             let run_len = len as usize;
             if !is_fg || run_len == 0 {
                 cum += run_len;
@@ -186,7 +191,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
+        Rle {
+            h,
+            w,
+            counts: counts.into(),
+        }
     }
 
     #[test]

@@ -323,7 +323,11 @@ mod tests {
     }
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
+        Rle {
+            h,
+            w,
+            counts: counts.into(),
+        }
     }
 
     fn compute(gts: &[SegmAnn], dts: &[SegmAnn]) -> Array2<f64> {

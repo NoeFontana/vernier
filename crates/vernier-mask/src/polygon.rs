@@ -80,7 +80,7 @@ impl Rle {
             return Ok(Rle {
                 h,
                 w,
-                counts: vec![],
+                counts: Vec::<u32>::new().into(),
             });
         }
 
@@ -176,7 +176,11 @@ impl Rle {
             }
         }
 
-        Ok(Rle { h, w, counts })
+        Ok(Rle {
+            h,
+            w,
+            counts: counts.into(),
+        })
     }
 
     /// Rasterizes a multi-polygon segmentation into a single RLE
@@ -192,13 +196,17 @@ impl Rle {
         }
         if polys.is_empty() {
             let total = u64::from(h) * u64::from(w);
-            let counts = if total == 0 {
+            let counts: Vec<u32> = if total == 0 {
                 vec![]
             } else {
                 vec![u32::try_from(total)
                     .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?]
             };
-            return Ok(Rle { h, w, counts });
+            return Ok(Rle {
+                h,
+                w,
+                counts: counts.into(),
+            });
         }
         let rles: Vec<Rle> = polys
             .iter()
@@ -278,7 +286,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
+        Rle {
+            h,
+            w,
+            counts: counts.into(),
+        }
     }
 
     #[test]
@@ -335,7 +347,7 @@ mod tests {
         // Polygon (0,0)-(2,0)-(2,2)-(0,2): traced by hand below in the
         // module docs. Expected: bg=0, fg=2, bg=2, fg=2, bg=10.
         let r = Rle::from_polygon(&[0.0, 0.0, 2.0, 0.0, 2.0, 2.0, 0.0, 2.0], 4, 4).unwrap();
-        assert_eq!(r.counts, vec![0, 2, 2, 2, 10]);
+        assert_eq!(&r.counts[..], &[0u32, 2, 2, 2, 10][..]);
         // Round-trip through the raster codec to confirm the FG
         // pixel set: (0,0), (0,1), (1,0), (1,1) in column-major.
         let mask = r.to_raster_bytes();
@@ -361,7 +373,7 @@ mod tests {
         // All vertices to the left of the image — every crossing
         // gets dropped by the H5 in-bounds filter.
         let r = Rle::from_polygon(&[-5.0, -5.0, -3.0, -5.0, -3.0, -3.0, -5.0, -3.0], 4, 4).unwrap();
-        assert_eq!(r.counts, vec![16]);
+        assert_eq!(&r.counts[..], &[16u32][..]);
         assert_eq!(r.area(), 0);
     }
 

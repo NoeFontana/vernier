@@ -359,7 +359,7 @@ fn extract_rle_dict(dict: &Bound<'_, PyDict>, i: usize) -> PyResult<Segmentation
     } else {
         let counts_field = format!("rles[{i}].counts");
         let counts_view = dlpack::extract_u32_1d(&counts_obj, &counts_field)?;
-        SegmentationRleCounts::Uncompressed(counts_view.as_slice().to_vec())
+        SegmentationRleCounts::Uncompressed(counts_view.as_slice().into())
     };
 
     Ok(Segmentation::Rle(SegmentationRle {

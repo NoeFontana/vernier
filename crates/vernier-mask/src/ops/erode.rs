@@ -658,7 +658,11 @@ mod tests {
     }
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
+        Rle {
+            h,
+            w,
+            counts: counts.into(),
+        }
     }
 
     #[test]
@@ -684,7 +688,7 @@ mod tests {
         let eroded = erode_chebyshev_ball(&r, 1).unwrap();
         // Center pixel at (x=1, y=1) → flat idx 1*3 + 1 = 4. RLE
         // canonicalises as [bg=4, fg=1, bg=4].
-        assert_eq!(eroded.counts, vec![4, 1, 4]);
+        assert_eq!(&eroded.counts[..], &[4u32, 1, 4][..]);
     }
 
     #[test]

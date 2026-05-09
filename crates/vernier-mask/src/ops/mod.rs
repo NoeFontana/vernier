@@ -202,7 +202,7 @@ impl Rle {
             return Ok(Rle {
                 h: 0,
                 w: 0,
-                counts: vec![],
+                counts: Vec::<u32>::new().into(),
             });
         };
         let (h, w) = (first.h, first.w);
@@ -221,7 +221,11 @@ impl Rle {
         for r in &rles[2..] {
             acc = merge_pair(&acc, &r.counts, intersect)?;
         }
-        Ok(Rle { h, w, counts: acc })
+        Ok(Rle {
+            h,
+            w,
+            counts: acc.into(),
+        })
     }
 }
 
@@ -677,7 +681,11 @@ mod tests {
     use proptest::prelude::*;
 
     fn rle(h: u32, w: u32, counts: Vec<u32>) -> Rle {
-        Rle { h, w, counts }
+        Rle {
+            h,
+            w,
+            counts: counts.into(),
+        }
     }
 
     #[test]

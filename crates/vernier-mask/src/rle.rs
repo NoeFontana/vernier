@@ -4,6 +4,8 @@
 //! (`maskApi.h`'s `RLE { siz h, w, m; uint *cnts; }`). The `m`
 //! field is implicit — `counts.len()`.
 
+use std::sync::Arc;
+
 use crate::codec::{decode_counts, encode_counts};
 use crate::error::MaskError;
 
@@ -13,8 +15,9 @@ use crate::error::MaskError;
 /// run (possibly zero-length); foreground runs sit at odd indices
 /// of [`Rle::counts`].
 ///
-/// Layout matches `pycocotools` so that consumers porting from the
-/// C / Cython side can reuse mental models.
+/// `counts` is shared via [`Arc`] so the dataset-level cache and the
+/// per-pair kernel call can share the same buffer without an O(N)
+/// memcpy on each clone (ADR-0030 amendment, 2026-05-09).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rle {
     /// Mask height in pixels.
@@ -23,7 +26,7 @@ pub struct Rle {
     pub w: u32,
     /// Run lengths. `counts[0]` is a background run (per **G5**);
     /// runs alternate background / foreground from there.
-    pub counts: Vec<u32>,
+    pub counts: Arc<[u32]>,
 }
 
 impl Rle {
@@ -43,7 +46,11 @@ impl Rle {
     /// behavior.
     pub fn from_string_bytes(bytes: &[u8], h: u32, w: u32) -> Result<Self, MaskError> {
         let counts = decode_counts(bytes)?;
-        Ok(Self { h, w, counts })
+        Ok(Self {
+            h,
+            w,
+            counts: counts.into(),
+        })
     }
 }
 
@@ -56,7 +63,7 @@ mod tests {
         let rle = Rle {
             h: 10,
             w: 10,
-            counts: vec![3, 2, 1, 4, 90],
+            counts: vec![3u32, 2, 1, 4, 90].into(),
         };
         let s = rle.to_string_bytes();
         let parsed = Rle::from_string_bytes(&s, 10, 10).unwrap();
@@ -68,7 +75,7 @@ mod tests {
         let rle = Rle {
             h: 0,
             w: 0,
-            counts: vec![],
+            counts: Vec::<u32>::new().into(),
         };
         assert_eq!(rle.to_string_bytes(), b"");
         assert_eq!(Rle::from_string_bytes(b"", 0, 0).unwrap(), rle);
