@@ -313,6 +313,9 @@ fn extract_rles<'py>(
         let seg = if let Ok(dict) = item.cast::<PyDict>() {
             extract_rle_dict(dict, i)?
         } else if item.hasattr("__dlpack_device__")? {
+            // Cheap protocol probe: lets us name all three accepted forms
+            // in the dispatch error below instead of falling through into
+            // a DLPack-specific message that hides forms 1 + 2.
             extract_rle_bitmask(&item, i, ctx)?
         } else {
             let type_name = item

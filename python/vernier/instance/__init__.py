@@ -11,7 +11,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, NoReturn, overload
 
-from vernier._array_types import RLE, Detections, DetectionsInput
+from vernier._array_types import (
+    CompressedRLE,
+    Detections,
+    DetectionsInput,
+    RLEInput,
+    UncompressedRLE,
+)
 from vernier._confusion import confusion_matrix
 from vernier._core import (
     BackgroundEvaluator,
@@ -64,11 +70,11 @@ from vernier._types import (
 )
 
 __all__ = [
-    "RLE",
     "BackgroundEvaluator",
     "Bbox",
     "Boundary",
     "CocoDataset",
+    "CompressedRLE",
     "Detections",
     "DetectionsInput",
     "EvalResult",
@@ -84,12 +90,14 @@ __all__ = [
     "PartialPartitionOverlap",
     "PartialRankCollision",
     "QueueFullError",
+    "RLEInput",
     "Segm",
     "Summary",
     "TableName",
     "TablesConfig",
     "TideConfig",
     "TideReport",
+    "UncompressedRLE",
     "confusion_matrix",
     "error_decomposition",
     "fp_iou_histogram",

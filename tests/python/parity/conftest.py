@@ -19,8 +19,8 @@ import numpy as np
 import pytest
 from pycocotools import mask as pmask
 
-from vernier._array_types import CompressedRLE
-from vernier.instance import RLE, Detections
+from vernier._array_types import CompressedRLE, UncompressedRLE
+from vernier.instance import Detections
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -106,7 +106,7 @@ def _decode_seg_to_binary(seg: object, h: int, w: int) -> np.ndarray:
     return np.asarray(pmask.decode(pmask.merge(encoded_list)))
 
 
-def _segmentation_to_rle(seg: object, h: int, w: int) -> RLE:
+def _segmentation_to_rle(seg: object, h: int, w: int) -> UncompressedRLE:
     if isinstance(seg, dict) and isinstance(seg["counts"], list):
         return {
             "counts": np.asarray(seg["counts"], dtype=np.uint32),

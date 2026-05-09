@@ -44,10 +44,6 @@ class CompressedRLE(TypedDict):
 #: at ingest).
 RLEInput: TypeAlias = UncompressedRLE | CompressedRLE | NDArray[np.bool_] | NDArray[np.uint8]
 
-#: Back-compat alias: ``RLE`` is still exported and equals the original
-#: uncompressed shape.
-RLE: TypeAlias = UncompressedRLE
-
 
 class Detections(TypedDict, total=False):
     """One per-image detection batch in array form.
@@ -84,7 +80,6 @@ DetectionsInput: TypeAlias = bytes | Detections | Sequence[Detections]
 
 
 __all__ = [
-    "RLE",
     "CompressedRLE",
     "Detections",
     "DetectionsInput",

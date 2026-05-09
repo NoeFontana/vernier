@@ -11,12 +11,12 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
 
-from vernier.instance import Evaluator, Segm
+from vernier.instance import Detections, Evaluator, Segm
 
 from .conftest import (
     _segmentation_to_bitmask,
@@ -101,7 +101,7 @@ def test_form_matches_json(
     detections = _build_detections(gt_records, dt_records, _ignore_index(factory))
     if not detections:
         pytest.skip("fixture has no detections")
-    s_arr = ev.evaluate(gt_bytes, detections)  # type: ignore[arg-type]
+    s_arr = ev.evaluate(gt_bytes, cast(list[Detections], detections))
     _assert_stats_match(s_json, s_arr)
 
 
@@ -127,5 +127,5 @@ def test_mixed_rle_forms_in_one_sequence_match_json(
     detections = _build_detections(gt_records, dt_records, factory)
     if not detections:
         pytest.skip("fixture has no detections")
-    s_arr = ev.evaluate(gt_bytes, detections)  # type: ignore[arg-type]
+    s_arr = ev.evaluate(gt_bytes, cast(list[Detections], detections))
     _assert_stats_match(s_json, s_arr)
