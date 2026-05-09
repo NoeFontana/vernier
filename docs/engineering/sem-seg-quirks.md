@@ -219,7 +219,7 @@ oracles and `vernier.semantic.Evaluator`.
 | AP2 | cityscapesScripts has a top-level `evaluatePair(predictionImg, groundTruthImg, args)` function plus a global `args` object holding configuration. The `args`-as-global pattern conflicts with vernier's frozen-evaluator (ADR-0006). | cs:~70 (function), cs:~30 (args) | **n/a** | **corrected** (vernier surfaces all configuration as constructor parameters; no globals) | **n/a** |
 | AP3 | mmsegmentation prints metrics via `mmengine.runner.runner.Runner._log_metrics`, which formats a structured table. cityscapesScripts prints a plain-text table to stdout. ADE20K reference prints with `print()` calls. | ms:~180, cs:~115, ade:~35 | **corrected** (vernier returns structured `SemanticSummary`; CLI subcommand reproduces the print format under `--format text` per ADR-0015 verb extensibility) | **corrected** | **corrected** |
 | AP4 | Errors raised mid-evaluation are bare `Exception` / `KeyError` / `ValueError` with f-string messages, parallel to pycocotools / panopticapi / lvis-api. | ms:~75, cs:~80, ade:~25 | **corrected** (vernier raises typed `SemanticError` variants matching each upstream raise site) | **corrected** | **corrected** |
-| AP5 | mmsegmentation transitively pulls PyTorch (~3 GB on a clean install) via `mmengine`. The test-only dep size is real and noted in ADR-0028 §"Negative consequences". A future cleanup vendors only `IoUMetric` + dependencies (a slim subset, ~50 KB) if PyTorch becomes a CI bottleneck. | ms (package metadata) | **informational** | **n/a** (cs is small, no PyTorch dep) | **n/a** |
+| AP5 | mmsegmentation transitively pulls PyTorch (~3 GB on a clean install) via `mmengine`. ADR-0036 vendors `mmseg/evaluation/metrics/iou_metric.py` standalone at v1.2.2 (`c685fe6767c4cadf6b051983ca6208f1b9d1ccb8`) plus a hand-written `mmengine` / `mmseg.registry` / `prettytable` stub layer in `tests/python/parity_semantic/oracle/mmsegmentation/_mmengine_stub.py`. PyTorch remains a real test-only dep (`IoUMetric.intersect_and_union` calls `torch.histc`, no bit-exact numpy equivalent) but mmcv / mmengine / the mmsegmentation package itself never enter the test environment. | ms (package metadata) | **resolved (vendored)** | **n/a** (cs is small, no PyTorch dep) | **n/a** |
 | AP6 | cityscapesScripts ships a `csCreateTrainIdLabelImgs.py` preprocessing tool to convert the dataset's full-class PNGs into trainId-space PNGs. Many users feed the tool's output directly to evaluation. | cs:tools | **n/a** | **strict** for the trainId convention; the `cityscapes()` preset accepts both raw and preprocessed PNGs and applies the canonical remap (AK1) at load if needed. | **n/a** |
 | AP7 | mmsegmentation accepts a `format_only` flag that builds the metric structure without actually computing the metrics. Used during inference pipelines that emit predictions but defer evaluation. | ms:~60 | **n/a** for vernier (the `Evaluator.evaluate()` path always evaluates; no format-only mode) | **n/a** | **n/a** |
 
@@ -253,7 +253,7 @@ venue where each cell is signed off. A short cheat-sheet:
   shape mismatch), AM2 vs cs (silent-ignore divergence), AN2-AN4
   (binary-mask merge selector), AP1-AP4 (typed errors,
   structured return, no globals).
-- **Informational:** AP5 (PyTorch transitive pin).
+- **Resolved (vendored):** AP5 (mmsegmentation `IoUMetric` vendored at v1.2.2; ADR-0036 closed the PyTorch transitive concern).
 - **Out-of-scope:** the boundary-mIoU rows AO1-AO5 are
   deferred to ADR-0030; the row dispositions are sketched but
   apply only when the boundary subsystem ships.
@@ -313,15 +313,20 @@ write a small reproducer before signing off.
    the expected delta. The selector being explicit is what
    prevents this from being an invisible footgun.
 
-6. **AP5 PyTorch dep avoidance.** Investigate whether
-   mmsegmentation's `IoUMetric` can be exercised without
-   importing the rest of `mmengine` / PyTorch. If the
-   `IoUMetric` class is genuinely standalone (just NumPy
-   arithmetic on confusion matrices), vendoring just its source
-   plus a stub `BaseMetric` parent would reduce the test-only
-   dep footprint by ~3 GB. The result of this investigation
-   affects whether ADR-0028 §"Negative consequences" needs
-   revising.
+6. **AP5 PyTorch dep avoidance.** *(Resolved 2026-05-09 — ADR-0036.)*
+   `IoUMetric` cannot be exercised without `torch` —
+   `intersect_and_union` calls `torch.histc(input.float(),
+   bins=N, min=0, max=N-1)` for label binning, and `torch.histc`
+   has no bit-exact numpy equivalent. **However**, mmcv +
+   mmengine + the mmsegmentation package itself (which together
+   account for the bulk of the ~3 GB transitive) are entirely
+   stubbable. ADR-0036 vendors `iou_metric.py` standalone with
+   hand-written `mmengine` / `mmseg.registry` / `prettytable`
+   stubs in `tests/python/parity_semantic/oracle/mmsegmentation/`;
+   `torch` remains a real test-only dep. Net result: from
+   ~3 GB transitive to a ~600 MB CPU torch wheel, no rewrite of
+   ADR-0028 §"Negative consequences" needed (the mitigation is
+   the new ADR, not a change to the original cost analysis).
 
 7. **MS and CS pycocotools transitive pin.** Cross-check whether
    mmsegmentation and cityscapesScripts pull `pycocotools` (they

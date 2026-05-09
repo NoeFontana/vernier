@@ -14,11 +14,13 @@
 //! it corresponds to. Changes here are an ADR-level decision; the
 //! canonical decision record is ADR-0028 itself.
 //!
-//! Vendored oracles will live at
+//! Vendored oracles live at
 //! `tests/python/parity_semantic/oracle/{mmsegmentation,cityscapesscripts,...}/`;
 //! provenance, modification policy, and fork plans land in adjacent
-//! `VENDORING.md` files alongside the parity harness in PR-B6 / PR-B7
-//! / PR-B8. Drift between any constant here and `VENDORING.md` is a
+//! `VENDORING.md` files alongside the parity harness. mmsegmentation
+//! is vendored as of ADR-0036 (this module's `ORACLE_MMSEGMENTATION_COMMIT_SHA`
+//! is now a real 40-char SHA); cityscapesScripts is still gated on
+//! PR-B7. Drift between any constant here and `VENDORING.md` is a
 //! build failure — see the unit tests below.
 //!
 //! Unlike [`vernier_panoptic::parity::ParityMode`] (which duplicates
@@ -67,10 +69,10 @@ pub const PASCAL_VOC_N_CLASSES: u32 = 21;
 /// Placeholder value `1e-9` matches the magnitude of the LVIS,
 /// boundary-IoU, and panoptic eps constants. Final value pinned by
 /// measuring max ULP distance against mmsegmentation `IoUMetric` on
-/// Cityscapes val (procedure documented in PR-B6's parity harness).
-/// When that measurement lands, both this constant and the relevant
-/// `VENDORING.md` update atomically; the unit test below catches
-/// drift.
+/// Cityscapes val once that fixture lands; the vendored oracle is now
+/// in place (ADR-0036) but the val-measured ULP ceiling is a separate
+/// follow-up. Drift between this constant and the parity harness is
+/// caught by the unit test below.
 pub const SEMANTIC_PARITY_EPS: f64 = 1e-9;
 
 /// Frozen commit SHA of the vendored `open-mmlab/mmsegmentation`
@@ -78,11 +80,12 @@ pub const SEMANTIC_PARITY_EPS: f64 = 1e-9;
 /// keyed to this commit by default (mmsegmentation is the de-facto
 /// research reference per ADR-0028 §"Decision drivers").
 ///
-/// Placeholder until PR-B6 vendors the oracle and pins the SHA in
-/// `tests/python/parity_semantic/oracle/mmsegmentation/VENDORING.md`.
-/// The unit test below tripwires drift between this constant and the
+/// Vendored at upstream tag `v1.2.2` (2023-12-14) per ADR-0036. The
+/// adjacent `VENDORING.md` records the byte-equality SHA-256 hashes
+/// for `mmseg/evaluation/metrics/iou_metric.py` and `LICENSE`. The
+/// unit test below tripwires drift between this constant and the
 /// `VENDORING.md` file.
-pub const ORACLE_MMSEGMENTATION_COMMIT_SHA: &str = "PR-B6-pending";
+pub const ORACLE_MMSEGMENTATION_COMMIT_SHA: &str = "c685fe6767c4cadf6b051983ca6208f1b9d1ccb8";
 
 /// Frozen commit SHA of the vendored `mcordts/cityscapesScripts`
 /// dataset-author oracle. The `SemanticDataset.cityscapes(...)` preset
@@ -104,6 +107,22 @@ pub const ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA: &str = "PR-B7-pending";
 /// Drift between this constant and `bench/envs/cityscapes/pyproject.toml`
 /// is a build failure — see `bench/tests/test_cityscapes_env_pin.py`.
 pub const CITYSCAPESSCRIPTS_PIN: &str = "cityscapesScripts==2.2.4";
+
+/// Minimum supported PyTorch version for the vendored mmsegmentation
+/// `IoUMetric` parity oracle. `IoUMetric.intersect_and_union` calls
+/// `torch.histc` for label binning (line 190 of `iou_metric.py` at the
+/// pinned SHA) — `torch.histc`'s float-edge bin semantics do not have
+/// a bit-exact numpy equivalent, so the parity claim depends on a real
+/// torch installation.
+///
+/// The floor matches the project's
+/// `[project.optional-dependencies].torch` extra (`torch>=2.4`); the
+/// mmsegmentation oracle reuses that constraint rather than introducing
+/// a separate pin. `torch.histc`'s API has been stable since PyTorch 1.x.
+/// Bumping the floor is an ADR-level decision only if upstream changes
+/// `histc`'s rounding or boundary behavior — see ADR-0036 §"How to
+/// refresh".
+pub const ORACLE_TORCH_FLOOR: &str = "torch>=2.4";
 
 #[cfg(test)]
 mod tests {
@@ -156,22 +175,51 @@ mod tests {
     }
 
     #[test]
-    fn oracle_shas_are_placeholders_until_vendored() {
-        // PR-B6 / PR-B7 vendor the oracles and replace these
-        // placeholders with real commit SHAs in lock-step with the
-        // adjacent VENDORING.md files. Until then, the placeholder
-        // string is the structural signal that the oracle isn't
-        // wired yet — a build that lands here without flipping the
-        // SHA fails the parity harness in PR-B6/B7.
-        assert!(
-            ORACLE_MMSEGMENTATION_COMMIT_SHA.starts_with("PR-B6-")
-                || ORACLE_MMSEGMENTATION_COMMIT_SHA.len() == 40,
-            "expected placeholder or 40-char SHA, got {ORACLE_MMSEGMENTATION_COMMIT_SHA:?}",
+    fn mmsegmentation_oracle_sha_is_pinned() {
+        // ADR-0036: vendored at v1.2.2. Drift between this constant and
+        // `tests/python/parity_semantic/oracle/mmsegmentation/VENDORING.md`
+        // is a build failure — refreshing the SHA is an ADR-level
+        // operation that updates this constant and the VENDORING.md
+        // provenance table in the same commit.
+        assert_eq!(
+            ORACLE_MMSEGMENTATION_COMMIT_SHA, "c685fe6767c4cadf6b051983ca6208f1b9d1ccb8",
+            "ORACLE_MMSEGMENTATION_COMMIT_SHA must match VENDORING.md",
         );
+        assert!(
+            ORACLE_MMSEGMENTATION_COMMIT_SHA
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
+            "expected 40-char hex SHA, got {ORACLE_MMSEGMENTATION_COMMIT_SHA:?}",
+        );
+        assert_eq!(ORACLE_MMSEGMENTATION_COMMIT_SHA.len(), 40);
+    }
+
+    #[test]
+    fn cityscapesscripts_oracle_sha_is_placeholder_until_vendored() {
+        // PR-B7 vendors the cityscapesScripts oracle and replaces this
+        // placeholder with the real commit SHA in lock-step with the
+        // adjacent VENDORING.md file. Until then, the placeholder
+        // string is the structural signal that the oracle isn't wired
+        // yet.
         assert!(
             ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA.starts_with("PR-B7-")
                 || ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA.len() == 40,
             "expected placeholder or 40-char SHA, got {ORACLE_CITYSCAPESSCRIPTS_COMMIT_SHA:?}",
+        );
+    }
+
+    #[test]
+    fn torch_floor_is_pep440_constraint() {
+        // ADR-0036: `IoUMetric.intersect_and_union` calls torch.histc;
+        // the floor must match the project's
+        // `[project.optional-dependencies].torch` extra in
+        // `pyproject.toml`. Drift defeats the parity claim — torch
+        // versions below the floor may not implement histc's bin-edge
+        // semantics consistently with the vendored oracle.
+        assert_eq!(ORACLE_TORCH_FLOOR, "torch>=2.4");
+        assert!(
+            ORACLE_TORCH_FLOOR.contains(">="),
+            "expected `name>=version` floor, got {ORACLE_TORCH_FLOOR:?}",
         );
     }
 

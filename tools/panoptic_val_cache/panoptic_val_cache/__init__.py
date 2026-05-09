@@ -32,6 +32,10 @@ import urllib.request
 import zipfile
 from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
 
 GT_URL = "http://images.cocodataset.org/annotations/panoptic_annotations_trainval2017.zip"
 GT_INNER_JSON = "annotations/panoptic_val2017.json"
@@ -53,6 +57,18 @@ DEFAULT_CACHE_DIR = _REPO_ROOT / ".cache" / "panoptic-val2017"
 
 PERFECT_DT_JSON_FILENAME = "perfect_dt.json"
 PERFECT_DT_PNG_DIRNAME = "perfect_dt_pngs"
+
+# Semantic-derivation artifacts — produced by :func:`ensure_semantic_gt`
+# and :func:`ensure_semantic_perfect_dt`. The semantic class set is the
+# 133 panoptic categories (80 thing + 53 stuff) mapped to a contiguous
+# 0..132 train-id by ascending sort of upstream ``category_id``.
+SEMANTIC_GT_DIRNAME = "semantic_val2017_gt"
+SEMANTIC_DT_DIRNAME = "semantic_val2017_perfect_dt"
+SEMANTIC_MAPPING_FILENAME = "semantic_train_id_to_category_id.json"
+#: Sentinel for unlabeled pixels (panoptic ``segment_id == 0``). Matches
+#: the Cityscapes / Pascal VOC convention; safely outside the 0..132
+#: train-id range.
+SEMANTIC_IGNORE_LABEL = 255
 
 _COPY_BUF_SIZE = 1 << 20
 
@@ -168,18 +184,157 @@ def ensure_perfect_dt(*, cache: Path | None = None) -> tuple[Path, Path]:
     with dt_json.open("w") as f:
         json.dump(dt_data, f)
 
-    # Symlink each GT PNG into the DT dir. Symlinks are zero-cost vs
-    # full copies (~3 GB on COCO panoptic val2017) and the panopticapi
-    # oracle reads via PIL.Image.open which follows symlinks.
-    for png in png_dir.iterdir():
-        if not png.is_file():
-            continue
-        target = dt_png_dir / png.name
-        if target.is_symlink() or target.exists():
-            continue
-        target.symlink_to(png.resolve())
+    # Symlinks (vs full copies, ~3 GB on COCO panoptic val2017) — the
+    # panopticapi oracle reads via PIL.Image.open, which follows them.
+    _symlink_pngs(png_dir, dt_png_dir)
 
     return dt_json, dt_png_dir
+
+
+def _symlink_pngs(src_dir: Path, dst_dir: Path) -> None:
+    """Symlink every regular file in ``src_dir`` into ``dst_dir``.
+
+    Idempotent: pre-existing entries (symlink or otherwise) are left
+    untouched. Caller mkdirs ``dst_dir``.
+    """
+    for entry in src_dir.iterdir():
+        if not entry.is_file():
+            continue
+        target = dst_dir / entry.name
+        if target.is_symlink() or target.exists():
+            continue
+        target.symlink_to(entry.resolve())
+
+
+def scan_label_map_pngs(directory: Path) -> dict[int, Path]:
+    """Index ``<int>.png`` files in ``directory`` by parsed image_id.
+
+    Single source of truth shared by parity tests and bench runners
+    over the cached label-map dirs. Filenames not matching the
+    ``<int>.png`` convention raise :class:`ValueError`.
+    """
+    out: dict[int, Path] = {}
+    for entry in sorted(directory.iterdir()):
+        if entry.suffix.lower() != ".png":
+            continue
+        try:
+            image_id = int(entry.stem)
+        except ValueError as e:
+            raise ValueError(
+                f"label-map dir {directory!s} contains {entry.name!r}; expected '<int>.png'."
+            ) from e
+        out[image_id] = entry
+    return out
+
+
+def _build_semantic_train_id_map(categories: list[dict[str, object]]) -> dict[int, int]:
+    """Map upstream ``category_id`` → contiguous ``train_id`` by ascending sort.
+
+    The mapping is independent of JSON key ordering — the cache identity
+    is the cache directory, so a re-sort of ``categories`` upstream must
+    not change the train-id assignment.
+    """
+    cat_ids = sorted(int(c["id"]) for c in categories)  # type: ignore[arg-type]
+    return {cat_id: train_id for train_id, cat_id in enumerate(cat_ids)}
+
+
+def _convert_panoptic_to_semantic(
+    panoptic_png: Path,
+    segments_info: list[dict[str, object]],
+    cat_id_to_train_id: dict[int, int],
+) -> np.ndarray:
+    """Decode a panoptic RGB PNG into a uint8 semantic label-map.
+
+    ``segment_id == 0`` (unlabeled) maps to :data:`SEMANTIC_IGNORE_LABEL`.
+    Other segment ids look up their ``category_id`` in ``segments_info``
+    and convert to the contiguous train-id. Segment ids absent from
+    ``segments_info`` get ignore_label too — fail-safe against
+    malformed annotations.
+    """
+    import numpy as np
+    from PIL import Image
+
+    rgb = np.asarray(Image.open(panoptic_png), dtype=np.uint32)
+    if rgb.ndim != 3 or rgb.shape[2] < 3:
+        raise ValueError(
+            f"panoptic PNG {panoptic_png!s} must be RGB (3 channels); got shape {rgb.shape!r}"
+        )
+    segment_ids = rgb[..., 0] + rgb[..., 1] * 256 + rgb[..., 2] * 65536
+
+    max_id = int(segment_ids.max(initial=0))
+    lut = np.full(max_id + 1, SEMANTIC_IGNORE_LABEL, dtype=np.uint8)
+    for seg in segments_info:
+        seg_id = int(seg["id"])  # type: ignore[arg-type]
+        if seg_id > max_id or seg_id == 0:
+            continue
+        cat_id = int(seg["category_id"])  # type: ignore[arg-type]
+        train_id = cat_id_to_train_id.get(cat_id)
+        if train_id is None:
+            continue
+        lut[seg_id] = np.uint8(train_id)
+    return lut[segment_ids]
+
+
+def ensure_semantic_gt(*, cache: Path | None = None) -> tuple[Path, int, dict[int, int]]:
+    """Materialize the semantic GT label-map PNGs derived from panoptic GT.
+
+    Returns ``(gt_dir, n_classes, train_id_to_category_id)``. The
+    reverse map is the on-disk artifact for downstream consumers
+    (parity tests + bench runners) that need to label per-class
+    metric rows. Idempotent: subsequent calls skip work when the
+    output dir is populated and the mapping JSON exists.
+
+    Calls :func:`ensure_gt` to satisfy the panoptic GT cache before
+    deriving — the caller does not need to call it directly.
+    """
+    from PIL import Image
+
+    json_path, png_dir = ensure_gt(cache=cache)
+    cache_dir = json_path.parent
+    out_dir = cache_dir / SEMANTIC_GT_DIRNAME
+    mapping_path = cache_dir / SEMANTIC_MAPPING_FILENAME
+
+    if out_dir.is_dir() and mapping_path.is_file() and any(out_dir.iterdir()):
+        with mapping_path.open() as f:
+            mapping = {int(k): int(v) for k, v in json.load(f).items()}
+        return out_dir, len(mapping), mapping
+
+    with json_path.open() as f:
+        gt = json.load(f)
+    cat_id_to_train_id = _build_semantic_train_id_map(gt["categories"])
+    train_id_to_cat_id = {tid: cid for cid, tid in cat_id_to_train_id.items()}
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for ann in gt["annotations"]:
+        image_id = int(ann["image_id"])
+        src_png = png_dir / ann["file_name"]
+        label_map = _convert_panoptic_to_semantic(src_png, ann["segments_info"], cat_id_to_train_id)
+        Image.fromarray(label_map, mode="L").save(out_dir / f"{image_id}.png")
+
+    mapping_path.write_text(
+        json.dumps({str(k): v for k, v in train_id_to_cat_id.items()}, indent=2)
+    )
+    return out_dir, len(cat_id_to_train_id), train_id_to_cat_id
+
+
+def ensure_semantic_perfect_dt(*, cache: Path | None = None) -> Path:
+    """Symlink the semantic GT into a perfect-DT directory.
+
+    Returns the DT directory path. Perfect DT == GT, so each output PNG
+    is a symlink to its GT counterpart (zero-cost vs full copy on a
+    val2017-scale 25 MB tree). Idempotent: skips work when ``dt_dir``
+    is already populated.
+    """
+    gt_dir, _, _ = ensure_semantic_gt(cache=cache)
+    cache_dir = gt_dir.parent
+    dt_dir = cache_dir / SEMANTIC_DT_DIRNAME
+
+    if dt_dir.is_dir() and any(dt_dir.iterdir()):
+        return dt_dir
+
+    dt_dir.mkdir(parents=True, exist_ok=True)
+    _symlink_pngs(gt_dir, dt_dir)
+    return dt_dir
 
 
 def main(argv: Sequence[str] | None = None) -> int:

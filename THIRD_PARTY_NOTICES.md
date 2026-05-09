@@ -76,6 +76,27 @@ licensing implications first.
   module load; pin mirrored by `ORACLE_PILLOW_PIN` in
   [`crates/vernier-panoptic/src/parity.rs`](crates/vernier-panoptic/src/parity.rs)).
 
+## mmsegmentation
+
+- **Role:** bit-exact parity oracle for semantic-segmentation
+  evaluation (ADR-0036). Only the single file
+  `mmseg/evaluation/metrics/iou_metric.py` is vendored — `mmcv`,
+  `mmengine`, and the rest of the mmsegmentation package are
+  satisfied by hand-written stubs in
+  [`tests/python/parity_semantic/oracle/mmsegmentation/_mmengine_stub.py`](tests/python/parity_semantic/oracle/mmsegmentation/_mmengine_stub.py).
+  Consumed only by `tests/python/parity_semantic/`; not imported by
+  `python/vernier/` or any code that ships in the wheel.
+- **Path:** [`tests/python/parity_semantic/oracle/mmsegmentation/`](tests/python/parity_semantic/oracle/mmsegmentation/)
+- **Upstream:** <https://github.com/open-mmlab/mmsegmentation>
+- **Pinned commit:** `c685fe6767c4cadf6b051983ca6208f1b9d1ccb8` (2023-12-14, tag `v1.2.2`)
+- **Primary license:** Apache-2.0. Copyright 2020 The MMSegmentation Authors.
+- **License text:** [`tests/python/parity_semantic/oracle/mmsegmentation/LICENSE`](tests/python/parity_semantic/oracle/mmsegmentation/LICENSE)
+- **Vendoring details:** [`tests/python/parity_semantic/oracle/mmsegmentation/VENDORING.md`](tests/python/parity_semantic/oracle/mmsegmentation/VENDORING.md)
+- **Runtime dep:** `torch>=2.4` (oracle calls `torch.histc` for label
+  binning; floor mirrored by `ORACLE_TORCH_FLOOR` in
+  [`crates/vernier-semantic/src/parity.rs`](crates/vernier-semantic/src/parity.rs)).
+  `Pillow==12.2.0` is shared with the panopticapi vendor (ADR-0025).
+
 ## pycocotools
 
 - **Role:** the canonical parity oracle for COCO-style evaluation
