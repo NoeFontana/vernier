@@ -17,6 +17,7 @@ import numpy as np
 import pytest
 
 import vernier.semantic as sem
+from vernier._impl import StreamingSemanticEvaluator
 
 
 def _label_maps(
@@ -48,7 +49,7 @@ def test_background_finalize_equals_streaming() -> None:
     gt_maps, dt_maps = _label_maps(seed=42, n_images=6)
     n_classes = 3
 
-    streaming = sem.StreamingEvaluator(n_classes, "strict")
+    streaming = StreamingSemanticEvaluator(n_classes, "strict")
     for image_id in sorted(gt_maps):
         streaming.update(image_id, gt_maps[image_id], dt_maps[image_id])
     streaming_summary = streaming.finalize()
@@ -81,10 +82,10 @@ def test_background_to_partial_round_trips_through_from_partials() -> None:
         bg.submit(image_id, gt_maps[image_id], dt_maps[image_id])
     blob = bg.finalize_to_partial()
 
-    restored = sem.StreamingEvaluator.from_partials(n_classes, [blob], "strict")
+    restored = StreamingSemanticEvaluator.from_partials(n_classes, [blob], "strict")
     restored_summary = restored.finalize()
 
-    streaming = sem.StreamingEvaluator(n_classes, "strict")
+    streaming = StreamingSemanticEvaluator(n_classes, "strict")
     for image_id in sorted(gt_maps):
         streaming.update(image_id, gt_maps[image_id], dt_maps[image_id])
     direct_summary = streaming.finalize()

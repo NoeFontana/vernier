@@ -88,7 +88,6 @@ INSTANCE_NAMES: tuple[str, ...] = (
     "OutOfBudgetError",
     "QueueFullError",
     "Segm",
-    "StreamingEvaluator",
     "Summary",
     "TableName",
     "TablesConfig",
@@ -113,7 +112,6 @@ SEMANTIC_NAMES: tuple[str, ...] = (
     "Dataset",
     "Evaluator",
     "Predictions",
-    "StreamingEvaluator",
     "Summary",
 )
 
@@ -157,15 +155,11 @@ def test_ffi_reexport_identities() -> None:
         CocoDataset as FfiDataset,
     )
     from vernier._core import (
-        StreamingEvaluator as FfiStreaming,
-    )
-    from vernier._core import (
         Summary as FfiSummary,
     )
 
     assert vernier.instance.BackgroundEvaluator is FfiBackground
     assert vernier.instance.CocoDataset is FfiDataset
-    assert vernier.instance.StreamingEvaluator is FfiStreaming
     assert vernier.instance.Summary is FfiSummary
 
     # Panoptic re-exports
@@ -197,14 +191,29 @@ def test_ffi_reexport_identities() -> None:
     from vernier._core import (
         SemanticSummary as FfiSemanticSummary,
     )
-    from vernier._core import (
-        StreamingSemanticEvaluator as FfiSemanticStreaming,
-    )
 
     assert vernier.semantic.ClassSemanticStats is FfiSemanticStats
     assert vernier.semantic.ConfusionMatrix is FfiConfusion
     assert vernier.semantic.Summary is FfiSemanticSummary
-    assert vernier.semantic.StreamingEvaluator is FfiSemanticStreaming
+
+
+def test_streaming_evaluator_is_not_publicly_exposed() -> None:
+    """ADR-0035: ``StreamingEvaluator`` lives at ``vernier._impl``, not on
+    any paradigm namespace. Internal callers reach it via the private path.
+    """
+    assert not hasattr(vernier.instance, "StreamingEvaluator")
+    assert not hasattr(vernier.panoptic, "StreamingEvaluator")
+    assert not hasattr(vernier.semantic, "StreamingEvaluator")
+
+    from vernier._impl import (
+        StreamingEvaluator,
+        StreamingPanopticEvaluator,
+        StreamingSemanticEvaluator,
+    )
+
+    assert StreamingEvaluator is not None
+    assert StreamingPanopticEvaluator is not None
+    assert StreamingSemanticEvaluator is not None
 
 
 def test_iou_kind_discriminator_identity_preserved() -> None:

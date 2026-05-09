@@ -22,6 +22,7 @@ from typing import Literal
 
 import pytest
 
+from vernier._impl import StreamingEvaluator
 from vernier.instance import (
     BackgroundEvaluator,
     Bbox,
@@ -33,7 +34,6 @@ from vernier.instance import (
     PartialPartitionOverlap,
     PartialRankCollision,
     Segm,
-    StreamingEvaluator,
 )
 
 from ..conftest import shard_dt_bytes

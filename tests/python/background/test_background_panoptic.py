@@ -22,6 +22,7 @@ import numpy as np
 import pytest
 
 import vernier.panoptic as pq
+from vernier._impl import StreamingPanopticEvaluator
 
 _CATS = json.dumps(
     [
@@ -66,7 +67,7 @@ def test_background_finalize_equals_streaming() -> None:
     """
     seeds = list(range(6))
 
-    streaming = pq.StreamingEvaluator(_CATS, "strict", retain_per_image_deltas=True)
+    streaming = StreamingPanopticEvaluator(_CATS, "strict", retain_per_image_deltas=True)
     for s in seeds:
         gt_lm, gt_si, dt_lm, dt_si = _image(s)
         streaming.update(s, gt_lm, gt_si, dt_lm, dt_si)
@@ -95,7 +96,7 @@ def test_background_strict_partial_merges_bit_equal_to_batch() -> None:
     seeds = list(range(8))
 
     # Single-rank batch baseline (no background, no shards).
-    batch = pq.StreamingEvaluator(_CATS, "strict", retain_per_image_deltas=True)
+    batch = StreamingPanopticEvaluator(_CATS, "strict", retain_per_image_deltas=True)
     for s in seeds:
         gt_lm, gt_si, dt_lm, dt_si = _image(s)
         batch.update(s, gt_lm, gt_si, dt_lm, dt_si)
@@ -108,7 +109,7 @@ def test_background_strict_partial_merges_bit_equal_to_batch() -> None:
         bg.submit(s, gt_lm, gt_si, dt_lm, dt_si)
     blob = bg.finalize_to_partial()
 
-    merged = pq.StreamingEvaluator.from_partials(
+    merged = StreamingPanopticEvaluator.from_partials(
         _CATS, [blob], "strict", retain_per_image_deltas=True
     ).finalize()
 

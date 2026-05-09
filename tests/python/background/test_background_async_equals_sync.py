@@ -17,7 +17,8 @@ from typing import Literal
 
 import pytest
 
-from vernier.instance import BackgroundEvaluator, StreamingEvaluator
+from vernier._impl import StreamingEvaluator
+from vernier.instance import BackgroundEvaluator
 
 from ..parity.conftest import shard_dt_bytes
 

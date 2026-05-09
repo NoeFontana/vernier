@@ -30,6 +30,7 @@ import pytest
 
 import vernier.panoptic as pq
 import vernier.semantic as sem
+from vernier._impl import StreamingPanopticEvaluator, StreamingSemanticEvaluator
 
 # ---------------------------------------------------------------------------
 # Semantic: strict-mode bit-equality is unconditional.
@@ -64,13 +65,13 @@ def test_semantic_strict_merge_bit_equals_batch(n_ranks: int) -> None:
 
     partials: list[bytes] = []
     for rank in range(n_ranks):
-        ev = sem.StreamingEvaluator(n_classes, "strict", rank_id=rank)
+        ev = StreamingSemanticEvaluator(n_classes, "strict", rank_id=rank)
         for image_id in sorted(gt_maps):
             if image_id % n_ranks == rank:
                 ev.update(image_id, gt_maps[image_id], dt_maps[image_id])
         partials.append(ev.finalize_to_partial())
 
-    merged = sem.StreamingEvaluator.from_partials(n_classes, partials, "strict").finalize()
+    merged = StreamingSemanticEvaluator.from_partials(n_classes, partials, "strict").finalize()
 
     # u64 confusion matrix → bit-equal element-wise.
     np.testing.assert_array_equal(
@@ -140,7 +141,7 @@ def test_panoptic_strict_merge_bit_equals_batch_with_deltas(
     seeds = list(range(16))
 
     # Single-rank baseline (the "batch" run).
-    baseline = pq.StreamingEvaluator(_PANOPTIC_CATS, "strict", retain_per_image_deltas=True)
+    baseline = StreamingPanopticEvaluator(_PANOPTIC_CATS, "strict", retain_per_image_deltas=True)
     for s in seeds:
         gt_lm, gt_si, dt_lm, dt_si = _panoptic_image(s)
         baseline.update(s, gt_lm, gt_si, dt_lm, dt_si)
@@ -149,7 +150,7 @@ def test_panoptic_strict_merge_bit_equals_batch_with_deltas(
     # Sharded merge with deltas retained on every rank.
     partials: list[bytes] = []
     for rank in range(n_ranks):
-        ev = pq.StreamingEvaluator(
+        ev = StreamingPanopticEvaluator(
             _PANOPTIC_CATS,
             "strict",
             retain_per_image_deltas=True,
@@ -161,7 +162,7 @@ def test_panoptic_strict_merge_bit_equals_batch_with_deltas(
                 ev.update(s, gt_lm, gt_si, dt_lm, dt_si)
         partials.append(ev.finalize_to_partial())
 
-    merged = pq.StreamingEvaluator.from_partials(
+    merged = StreamingPanopticEvaluator.from_partials(
         _PANOPTIC_CATS,
         partials,
         "strict",

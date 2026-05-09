@@ -1,12 +1,12 @@
-"""Streaming-evaluator tests for ``vernier.semantic`` (ADR-0028).
+"""Streaming-evaluator tests for the ``vernier.semantic`` substrate.
 
-The Rust kernel is exercised by ``crates/vernier-semantic`` unit tests
-(`stream.rs`). This file's job is to prove the Python-side streaming
-surface — `Evaluator.stream(...)` -> `StreamingEvaluator` — drives the
-FFI correctly, and that streaming-`finalize()` bit-equals the
-batch-`evaluate(...)` over the same images (the load-bearing
-invariant for downstream tooling that mixes batch and streaming
-evaluation).
+Per ADR-0035, the streaming class lives at ``vernier._impl`` (not on the
+public ``vernier.semantic`` namespace). This file pins the FFI-level
+contract — that the streaming substrate computes per-image confusion
+matrices correctly and that streaming-``finalize()`` bit-equals the
+batch-``Evaluator.evaluate(...)`` over the same images. That equality is
+what lets ``vernier.semantic.Evaluator.evaluate_to_partial`` /
+``from_partials`` ride on the same kernel without divergence.
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from vernier._impl import StreamingSemanticEvaluator as StreamingEvaluator
 from vernier.semantic import (
     Dataset,
     Evaluator,
     Predictions,
-    StreamingEvaluator,
     Summary,
 )
 
@@ -41,8 +41,8 @@ def _toy_pair(
     return images, gt, dt
 
 
-def test_stream_constructs_through_evaluator() -> None:
-    ev = Evaluator(parity_mode="corrected").stream(n_classes=3)
+def test_stream_constructs() -> None:
+    ev = StreamingEvaluator(3, "corrected")
     assert isinstance(ev, StreamingEvaluator)
     assert ev.n_classes == 3
     assert ev.n_images == 0
@@ -55,7 +55,7 @@ def test_streaming_finalize_bit_equals_batch_evaluate() -> None:
 
     batch_summary = Evaluator(parity_mode="strict").evaluate(gt, dt)
 
-    stream_ev = Evaluator(parity_mode="strict").stream(n_classes=3)
+    stream_ev = StreamingEvaluator(3, "strict")
     for image_id, gt_arr, dt_arr in images:
         stream_ev.update(image_id, gt_arr, dt_arr)
     assert stream_ev.n_images == len(images)
@@ -70,7 +70,7 @@ def test_streaming_finalize_bit_equals_batch_evaluate() -> None:
 
 
 def test_streaming_snapshot_does_not_consume() -> None:
-    ev = Evaluator().stream(n_classes=2)
+    ev = StreamingEvaluator(2, "corrected")
     ev.update(1, np.array([[0, 1]], dtype=np.uint32), np.array([[0, 1]], dtype=np.uint32))
     snap = ev.snapshot()
     assert snap.miou == pytest.approx(1.0)
@@ -80,7 +80,7 @@ def test_streaming_snapshot_does_not_consume() -> None:
 
 
 def test_streaming_with_ignore_label() -> None:
-    ev = Evaluator().stream(n_classes=2, ignore_label=255)
+    ev = StreamingEvaluator(2, "corrected", ignore_label=255)
     ev.update(
         1,
         np.array([[0, 255, 1, 1]], dtype=np.uint32),
@@ -93,7 +93,7 @@ def test_streaming_with_ignore_label() -> None:
 
 
 def test_streaming_shape_mismatch_raises() -> None:
-    ev = Evaluator().stream(n_classes=2)
+    ev = StreamingEvaluator(2, "corrected")
     gt = np.array([[0, 1]], dtype=np.uint32)
     dt = np.array([[0, 1, 0]], dtype=np.uint32)
     with pytest.raises(ValueError, match="shape mismatch"):
@@ -104,27 +104,19 @@ def test_streaming_shape_mismatch_raises() -> None:
 
 def test_streaming_n_classes_zero_rejected() -> None:
     with pytest.raises(ValueError, match="n_classes"):
-        Evaluator().stream(n_classes=0)
+        StreamingEvaluator(0, "corrected")
 
 
 def test_streaming_unknown_parity_mode_rejected() -> None:
     with pytest.raises(ValueError, match="parity_mode"):
-        Evaluator(parity_mode="aligned").stream(n_classes=3)  # type: ignore[arg-type]
-
-
-def test_streaming_label_remap_not_yet_supported() -> None:
-    # ADR-0028 §"Streaming" scopes the streaming surface tight: no
-    # label_remap propagation today. Users with a remap apply it on
-    # the DT arrays themselves before each update call.
-    with pytest.raises(NotImplementedError, match="label_remap"):
-        Evaluator(label_remap={1: 0}).stream(n_classes=3)
+        StreamingEvaluator(3, "aligned")  # type: ignore[arg-type]
 
 
 def test_streaming_finalize_resets_state() -> None:
     # finalize() consumes the inner state but leaves the pyobject
     # usable in a reset shape. snapshot() on the post-finalize state
     # returns zeros (defensive — empty confusion matrix → 0.0 means).
-    ev = Evaluator().stream(n_classes=3)
+    ev = StreamingEvaluator(3, "corrected")
     ev.update(1, np.array([[0, 1]], dtype=np.uint32), np.array([[0, 1]], dtype=np.uint32))
     _ = ev.finalize()
     # Post-finalize: n_images is reset to 0, confusion is empty.
@@ -134,7 +126,7 @@ def test_streaming_finalize_resets_state() -> None:
 
 
 def test_streaming_repr_carries_progress() -> None:
-    ev = Evaluator().stream(n_classes=5)
+    ev = StreamingEvaluator(5, "corrected")
     assert "StreamingSemanticEvaluator" in repr(ev)
     assert "n_classes=5" in repr(ev)
     assert "n_images=0" in repr(ev)

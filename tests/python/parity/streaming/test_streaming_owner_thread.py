@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-import vernier
+from vernier._impl import StreamingEvaluator
 
 FIXTURES = Path(__file__).parent.parent / "fixtures"
 
@@ -22,7 +22,7 @@ FIXTURES = Path(__file__).parent.parent / "fixtures"
 @pytest.mark.parity
 def test_streaming_evaluator_rejects_other_thread() -> None:
     gt_bytes = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
-    ev = vernier.instance.StreamingEvaluator(gt_bytes)
+    ev = StreamingEvaluator(gt_bytes)
 
     # Establish the owning thread.
     ev.update(b"[]")

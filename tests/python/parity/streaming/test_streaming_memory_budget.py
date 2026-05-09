@@ -21,7 +21,8 @@ import warnings
 
 import pytest
 
-from vernier.instance import MemoryBudgetWarning, OutOfBudgetError, StreamingEvaluator
+from vernier._impl import StreamingEvaluator
+from vernier.instance import MemoryBudgetWarning, OutOfBudgetError
 
 
 def _make_gt(n_images: int) -> bytes:
