@@ -43,6 +43,7 @@ from vernier._core import (
 # match the same class object as `vernier.instance.PartialFormatMismatch`
 # (ADR-0032: shared paradigm-agnostic error classes).
 from vernier._core import (
+    Breakdown,
     ClassSemanticStats,
     ConfusionMatrix,
     PartialDatasetMismatch,
@@ -89,6 +90,7 @@ __all__ = [
     "PASCAL_VOC_IGNORE_LABEL",
     "PASCAL_VOC_N_CLASSES",
     "BackgroundEvaluator",
+    "Breakdown",
     "ClassSemanticStats",
     "ConfusionMatrix",
     "Dataset",

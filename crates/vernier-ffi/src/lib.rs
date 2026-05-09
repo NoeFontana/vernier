@@ -61,6 +61,7 @@ mod array_ingest;
 mod arrow_helpers;
 mod background;
 mod background_streaming;
+mod breakdown;
 mod confusion;
 mod dataset;
 mod dlpack;
@@ -2962,6 +2963,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyDataset>()?;
     m.add_class::<PyBackgroundEvaluator>()?;
     m.add_class::<arrow_helpers::ArrowRecordBatchPy>()?;
+    m.add_class::<breakdown::PyBreakdown>()?;
     m.add("OutOfBudgetError", m.py().get_type::<OutOfBudgetError>())?;
     m.add("QueueFullError", m.py().get_type::<QueueFullError>())?;
     m.add(

@@ -21,6 +21,7 @@ from vernier._array_types import (
 from vernier._confusion import confusion_matrix
 from vernier._core import (
     BackgroundEvaluator,
+    Breakdown,
     CocoDataset,
     MemoryBudgetWarning,
     OutOfBudgetError,
@@ -76,6 +77,7 @@ __all__ = [
     "BackgroundEvaluator",
     "Bbox",
     "Boundary",
+    "Breakdown",
     "CocoDataset",
     "CompressedRLE",
     "Detections",

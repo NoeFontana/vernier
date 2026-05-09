@@ -26,6 +26,7 @@ from vernier._core import (
 # match the same class object as `vernier.instance.PartialFormatMismatch`
 # (ADR-0032: shared paradigm-agnostic error classes).
 from vernier._core import (
+    Breakdown,
     ClassPanopticStats,
     PartialDatasetMismatch,
     PartialFormatMismatch,
@@ -69,6 +70,7 @@ SUPPORTED_TABLES: frozenset[TableName] = frozenset({"per_class"})
 
 __all__ = [
     "BackgroundEvaluator",
+    "Breakdown",
     "ClassPanopticStats",
     "Dataset",
     "EvalResult",
