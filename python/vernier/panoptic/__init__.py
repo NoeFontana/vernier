@@ -41,7 +41,12 @@ from vernier._core import (
 from vernier._core import (
     PanopticSummary as Summary,
 )
-from vernier._impl import StreamingPanopticEvaluator as _StreamingPanopticEvaluator
+from vernier._core import (
+    evaluate_panoptic_to_partial as _evaluate_panoptic_to_partial,
+)
+from vernier._core import (
+    merge_panoptic_partials as _merge_panoptic_partials,
+)
 from vernier._types import ParityMode
 
 __all__ = [
@@ -172,16 +177,14 @@ class Evaluator:
         the head rank with :meth:`from_partials` to produce a global
         :class:`Summary`.
         """
-        ev = _StreamingPanopticEvaluator(
+        return _evaluate_panoptic_to_partial(
+            list(images),
             categories,
             self.parity_mode,
+            rank_id,
             things_stuff_split=self.things_stuff_split,
             retain_per_image_deltas=retain_per_image_deltas,
-            rank_id=rank_id,
         )
-        for image_id, gt_lm, gt_si, dt_lm, dt_si in images:
-            ev.update(image_id, gt_lm, gt_si, dt_lm, dt_si)
-        return ev.finalize_to_partial()
 
     @classmethod
     def from_partials(
@@ -202,14 +205,13 @@ class Evaluator:
         produce its partial. Mismatches raise the structured
         ``Partial*`` errors re-exported on this module.
         """
-        merged = _StreamingPanopticEvaluator.from_partials(
+        return _merge_panoptic_partials(
             categories,
-            partials,
+            list(partials),
             parity_mode,
             things_stuff_split=things_stuff_split,
             retain_per_image_deltas=retain_per_image_deltas,
         )
-        return merged.finalize()
 
     def background(
         self,

@@ -274,6 +274,35 @@ def evaluate_bbox_summary(
     use_cats: bool,
     cast_inputs: bool = ...,
 ) -> Summary: ...
+def evaluate_instance_to_partial(
+    gt_json: bytes,
+    detections: DetectionsInput,
+    iou_type: Literal["bbox", "segm", "boundary", "keypoints"],
+    rank_id: int,
+    *,
+    parity_mode: Literal["strict", "corrected"] = ...,
+    max_dets: list[int] = ...,
+    use_cats: bool = ...,
+    memory_budget_bytes: int | None = ...,
+    dilation_ratio: float = ...,
+    sigmas: dict[int, list[float]] | None = ...,
+    retain_iou: bool = ...,
+    cast_inputs: bool = ...,
+) -> bytes: ...
+def merge_instance_partials(
+    gt_json: bytes,
+    partials: Sequence[bytes],
+    iou_type: Literal["bbox", "segm", "boundary", "keypoints"],
+    *,
+    parity_mode: Literal["strict", "corrected"] = ...,
+    max_dets: list[int] = ...,
+    use_cats: bool = ...,
+    memory_budget_bytes: int | None = ...,
+    dilation_ratio: float = ...,
+    sigmas: dict[int, list[float]] | None = ...,
+    retain_iou: bool = ...,
+    cast_inputs: bool = ...,
+) -> Summary: ...
 def evaluate_bbox_summary_with_dataset(
     gt: CocoDataset,
     dt: DetectionsInput,
@@ -630,6 +659,23 @@ def evaluate_panoptic(
     parity_mode: str,
     things_stuff_split: bool = ...,
 ) -> PanopticSummary: ...
+def evaluate_panoptic_to_partial(
+    images: Sequence[tuple[int, NDArray[np.uint32], bytes, NDArray[np.uint32], bytes]],
+    categories: bytes,
+    parity_mode: str,
+    rank_id: int,
+    *,
+    things_stuff_split: bool = ...,
+    retain_per_image_deltas: bool = ...,
+) -> bytes: ...
+def merge_panoptic_partials(
+    categories: bytes,
+    partials: Sequence[bytes],
+    parity_mode: str,
+    *,
+    things_stuff_split: bool = ...,
+    retain_per_image_deltas: bool = ...,
+) -> PanopticSummary: ...
 
 # ---------------------------------------------------------------------------
 # Semantic-segmentation surface (ADR-0028).
@@ -680,6 +726,22 @@ def evaluate_semantic_from_arrays(
     *,
     ignore_label: int | None = ...,
     label_remap: dict[int, int] | None = ...,
+) -> SemanticSummary: ...
+def evaluate_semantic_to_partial(
+    gt_label_maps: dict[int, NDArray[np.uint32]],
+    dt_label_maps: dict[int, NDArray[np.uint32]],
+    n_classes: int,
+    parity_mode: str,
+    rank_id: int,
+    *,
+    ignore_label: int | None = ...,
+) -> bytes: ...
+def merge_semantic_partials(
+    n_classes: int,
+    partials: Sequence[bytes],
+    parity_mode: str,
+    *,
+    ignore_label: int | None = ...,
 ) -> SemanticSummary: ...
 
 class StreamingSemanticEvaluator:

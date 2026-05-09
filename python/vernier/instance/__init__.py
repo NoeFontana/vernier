@@ -41,7 +41,12 @@ from vernier._core import (
     per_image_to_arrow_pycapsule,
     per_pair_to_arrow_pycapsule,
 )
-from vernier._impl import StreamingEvaluator as _StreamingEvaluator
+from vernier._core import (
+    evaluate_instance_to_partial as _evaluate_instance_to_partial,
+)
+from vernier._core import (
+    merge_instance_partials as _merge_instance_partials,
+)
 from vernier._tide import (
     FpIouHistogram,
     TideConfig,
@@ -467,9 +472,9 @@ class Evaluator:
         local_position)`` tiebreak lands; under ADR-0004's 4-ULP
         envelope today).
         """
-        ev = _StreamingEvaluator(gt, rank_id=rank_id, **self._streaming_kwargs())
-        ev.update(dt)
-        return ev.finalize_to_partial()
+        kwargs = self._streaming_kwargs()
+        iou_type = kwargs.pop("iou_type")
+        return _evaluate_instance_to_partial(gt, dt, iou_type, rank_id, **kwargs)
 
     @classmethod
     def from_partials(
@@ -499,8 +504,9 @@ class Evaluator:
             use_cats=use_cats,
             cast_inputs=cast_inputs,
         )
-        merged = _StreamingEvaluator.from_partials(gt, partials, **config._streaming_kwargs())
-        return merged.finalize()
+        kwargs = config._streaming_kwargs()
+        iou_type = kwargs.pop("iou_type")
+        return _merge_instance_partials(gt, list(partials), iou_type, **kwargs)
 
     def _streaming_kwargs(self) -> dict[str, Any]:
         # iou/dilation_ratio/sigmas live in this dict because the FFI
