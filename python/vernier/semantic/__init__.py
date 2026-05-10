@@ -467,6 +467,58 @@ def _validate_semantic_class_filter(cf: CategoryFilter, class_grouping: Breakdow
             )
 
 
+def _resolve_class_filter(
+    cf: CategoryFilter | None,
+    class_grouping: Breakdown | None,
+) -> list[int] | None:
+    """Resolve an ADR-0041 ``class_filter`` to the kernel's class-id form.
+
+    ``None`` and :class:`CategoryFilterAll` produce ``None`` (no
+    filtering at the kernel). :class:`CategoryFilterByIds` returns a
+    sorted list of its ids. :class:`CategoryFilterByGrouping` resolves
+    the label against the active ``class_grouping`` partition and
+    returns the union of that group's class ids.
+
+    The construction-time validator (:func:`_validate_semantic_class_filter`)
+    has already rejected :class:`CategoryFilterFrequency` and
+    cross-checked the grouping label, so this function trusts inputs.
+    """
+    if cf is None or isinstance(cf, CategoryFilterAll):
+        return None
+    if isinstance(cf, CategoryFilterByIds):
+        return sorted(cf.ids)
+    if isinstance(cf, CategoryFilterByGrouping):
+        # __post_init__ guarantees class_grouping is set and the label
+        # exists when the filter is ByGrouping.
+        assert class_grouping is not None
+        for label, ids in class_grouping.class_groups:
+            if label == cf.label:
+                return list(ids)
+        # Should not reach here — validator runs at construction.
+        raise InvalidSemanticParams(
+            field="class_filter",
+            value=cf,
+            remediation=f"label {cf.label!r} disappeared from class_grouping",
+        )
+    # Frequency was rejected at construction; this branch is defensive.
+    raise InvalidSemanticParams(
+        field="class_filter",
+        value=cf,
+        remediation="unsupported CategoryFilter variant",
+    )
+
+
+def _resolve_class_grouping(
+    bd: Breakdown | None,
+) -> list[tuple[str, list[int]]] | None:
+    """Resolve a ``class_grouping`` :class:`Breakdown` to the kernel's
+    list-of-pairs form. ``None`` passes through; the kernel skips the
+    per-group rollup when this is ``None``."""
+    if bd is None:
+        return None
+    return [(label, list(ids)) for label, ids in bd.class_groups]
+
+
 @dataclass(frozen=True, slots=True)
 class Evaluator:
     """Semantic-segmentation evaluator (ADR-0028, ADR-0041).
@@ -563,15 +615,11 @@ class Evaluator:
         behavior). Pass ``"all"`` or a tuple of :data:`TableName`
         values to opt into the wider :class:`EvalResult` return type.
         """
-        if self._has_custom_class_params():
-            raise NotImplementedError(
-                "evaluate() with custom class_filter / class_grouping is "
-                "deferred to a follow-up to ADR-0041 (kernel-side per_group "
-                "rollups land alongside the ADR-0039 params_hash split). "
-                "The surface — fields, validation, with_options threading — "
-                "is in place; use the default (set custom fields to None) "
-                "until the kernel plumbing ships."
-            )
+        # ADR-0041 custom axes resolve Python-side. ByGrouping → ByIds
+        # via the active class_grouping (the kernel's filter primitive
+        # is class-id-keyed; group labels live in user-space).
+        resolved_filter = _resolve_class_filter(self.class_filter, self.class_grouping)
+        resolved_groups = _resolve_class_grouping(self.class_grouping)
         summary = evaluate_semantic_from_arrays(
             dict(gt.label_maps),
             dict(dt.label_maps),
@@ -579,6 +627,8 @@ class Evaluator:
             parity_mode=self.parity_mode,
             ignore_label=gt.ignore_label,
             label_remap=dict(self.label_remap) if self.label_remap is not None else None,
+            class_filter=resolved_filter,
+            class_grouping=resolved_groups,
         )
         if tables is None:
             return summary

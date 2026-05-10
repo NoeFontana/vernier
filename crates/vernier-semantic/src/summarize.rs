@@ -75,6 +75,55 @@ pub struct ClassSemanticStats {
     pub n_dt_pixels: u64,
 }
 
+/// Per-group semantic-segmentation rollup (ADR-0041).
+///
+/// Built when [`SummarizeOptions::class_groups`] is set: each group
+/// fold reduces over its member class ids only. The rollup mirrors
+/// the headline scalars in shape so per-group output is comparable
+/// across groups.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupSemanticStats {
+    /// Group label, as passed in by the caller (typically a taxonomy
+    /// name like `"vehicles"` / `"surfaces"`).
+    pub label: String,
+    /// Class ids that compose this group, sorted ascending.
+    pub member_class_ids: Vec<u32>,
+    /// Mean IoU restricted to this group's classes (skipping
+    /// zero-support members per quirk **AL3**).
+    pub miou: f64,
+    /// Mean per-class recall restricted to this group's classes
+    /// (zero-support skipped, same as the headline `mean_accuracy`).
+    pub mean_accuracy: f64,
+    /// Pixel accuracy over this group's classes only —
+    /// `sum_c TP_c / sum_c (TP_c + FN_c)` for `c` in members.
+    pub pixel_accuracy: f64,
+    /// Frequency-weighted IoU over the group's classes.
+    pub fwiou: f64,
+}
+
+/// Optional axes for [`summarize_with_options`] (ADR-0041).
+///
+/// Both fields default to `None`; the unparametrized
+/// [`summarize`] is the `Default` shape and produces the headline
+/// scalars over every class in the confusion matrix.
+#[derive(Debug, Clone, Default)]
+pub struct SummarizeOptions<'a> {
+    /// Subset of class ids that contribute to the headline scalars
+    /// (`miou` / `fwiou` / `mean_accuracy` / `pixel_accuracy`). The
+    /// per-class breakdown remains complete regardless of this
+    /// filter; only the reductions are restricted.
+    ///
+    /// `None` means "every class contributes" (the COCO default).
+    pub class_filter: Option<&'a [u32]>,
+    /// Class-id partitions to roll up into per-group stats. Each
+    /// `(label, class_ids)` pair contributes one
+    /// [`GroupSemanticStats`] entry on
+    /// [`SemanticSummary::per_group`].
+    ///
+    /// `None` leaves `per_group` empty.
+    pub class_groups: Option<&'a [(String, Vec<u32>)]>,
+}
+
 /// Top-level semantic-evaluation result.
 ///
 /// Sibling to [`vernier_core::summary::Summary`] (instance) and
@@ -110,6 +159,12 @@ pub struct SemanticSummary {
     /// decomposition / model-diff tools consume it directly without
     /// re-running the kernel.
     pub confusion_matrix: ConfusionMatrix,
+    /// Per-group rollup (ADR-0041). Populated only when the caller
+    /// passes [`SummarizeOptions::class_groups`]; empty for the
+    /// canonical no-grouping path. Keyed by group label in
+    /// construction order via the `BTreeMap`'s sorted iteration —
+    /// stable across runs for any given grouping definition.
+    pub per_group: BTreeMap<String, GroupSemanticStats>,
 }
 
 /// Derive a [`SemanticSummary`] from a fully-accumulated
@@ -125,6 +180,27 @@ pub struct SemanticSummary {
 /// `confusion_matrix` field). If the caller needs to keep a copy,
 /// clone before calling.
 pub fn summarize(confusion: ConfusionMatrix, parity_mode: ParityMode) -> SemanticSummary {
+    summarize_with_options(confusion, parity_mode, &SummarizeOptions::default())
+}
+
+/// Like [`summarize`] but with optional [`SummarizeOptions`] for the
+/// ADR-0041 `class_filter` / `class_grouping` axes.
+///
+/// Filtering restricts the headline scalars (mIoU / FWIoU / pixel
+/// accuracy / mean accuracy) to the supplied class subset; the
+/// per-class breakdown remains complete. Grouping populates
+/// [`SemanticSummary::per_group`] with one entry per `(label, ids)`
+/// partition.
+///
+/// Both axes are post-summarize aggregations: the confusion matrix
+/// is class-keyed, so distributed-eval ranks accumulate identically
+/// regardless of filter / grouping choice. Ranks may diverge on
+/// these without affecting `from_partials_to_summary`.
+pub fn summarize_with_options(
+    confusion: ConfusionMatrix,
+    parity_mode: ParityMode,
+    options: &SummarizeOptions<'_>,
+) -> SemanticSummary {
     let n_classes = confusion.n_classes();
     let n = n_classes as usize;
     let counts = confusion.counts();
@@ -231,6 +307,78 @@ pub fn summarize(confusion: ConfusionMatrix, parity_mode: ParityMode) -> Semanti
     // Empty-dataset case (no class with support) → 0.0 to avoid NaN
     // in downstream means; vernier rejects empty datasets upstream so
     // this branch is defensive.
+    let (miou, mean_accuracy, fwiou, pixel_accuracy) = match options.class_filter {
+        None => {
+            let mu = if iou_n > 0 {
+                iou_sum / iou_n as f64
+            } else {
+                0.0
+            };
+            let ma = if acc_n > 0 {
+                acc_sum / acc_n as f64
+            } else {
+                0.0
+            };
+            (mu, ma, fwiou, pixel_accuracy)
+        }
+        Some(filter) => filtered_headlines(filter, n, &diag, &row_sum, &col_sum),
+    };
+
+    let per_group = options
+        .class_groups
+        .map(|groups| build_per_group(groups, n, &diag, &row_sum, &col_sum))
+        .unwrap_or_default();
+
+    SemanticSummary {
+        miou,
+        fwiou,
+        pixel_accuracy,
+        mean_accuracy,
+        per_class,
+        confusion_matrix: confusion,
+        per_group,
+    }
+}
+
+/// Compute the four headline scalars over a subset of class ids.
+/// Out-of-range or duplicate ids in `filter` are skipped silently
+/// (the FFI layer validates against `n_classes` before this call).
+fn filtered_headlines(
+    filter: &[u32],
+    n: usize,
+    diag: &[u64],
+    row_sum: &[u64],
+    col_sum: &[u64],
+) -> (f64, f64, f64, f64) {
+    let mut iou_sum = 0.0f64;
+    let mut iou_n = 0usize;
+    let mut acc_sum = 0.0f64;
+    let mut acc_n = 0usize;
+    let mut tp_total: u64 = 0;
+    let mut row_total: u64 = 0;
+    for &cid in filter {
+        let c = cid as usize;
+        if c >= n {
+            continue;
+        }
+        let tp = diag[c];
+        let n_gt = row_sum[c];
+        let n_dt = col_sum[c];
+        let fp = n_dt - tp;
+        let fn_ = n_gt - tp;
+        let iou_denom = tp + fp + fn_;
+        if iou_denom > 0 {
+            iou_sum += (tp as f64) / (iou_denom as f64);
+            iou_n += 1;
+        }
+        let acc_denom = tp + fn_;
+        if acc_denom > 0 {
+            acc_sum += (tp as f64) / (acc_denom as f64);
+            acc_n += 1;
+        }
+        tp_total += tp;
+        row_total += n_gt;
+    }
     let miou = if iou_n > 0 {
         iou_sum / iou_n as f64
     } else {
@@ -241,15 +389,66 @@ pub fn summarize(confusion: ConfusionMatrix, parity_mode: ParityMode) -> Semanti
     } else {
         0.0
     };
-
-    SemanticSummary {
-        miou,
-        fwiou,
-        pixel_accuracy,
-        mean_accuracy,
-        per_class,
-        confusion_matrix: confusion,
+    let pixel_accuracy = if row_total > 0 {
+        (tp_total as f64) / (row_total as f64)
+    } else {
+        0.0
+    };
+    // FWIoU restricted to the filter subset uses each class's
+    // freq within the filter (n_gt_c / row_total) so the weights
+    // sum to 1 and the result is interpretable as "FWIoU within
+    // the filter scope" rather than "FWIoU on a fragment of the
+    // full dataset".
+    let mut fwiou = 0.0f64;
+    if row_total > 0 {
+        for &cid in filter {
+            let c = cid as usize;
+            if c >= n {
+                continue;
+            }
+            let tp = diag[c];
+            let n_gt = row_sum[c];
+            let n_dt = col_sum[c];
+            let fp = n_dt - tp;
+            let fn_ = n_gt - tp;
+            let iou_denom = tp + fp + fn_;
+            if n_gt > 0 && iou_denom > 0 {
+                let iou = (tp as f64) / (iou_denom as f64);
+                fwiou += (n_gt as f64 / row_total as f64) * iou;
+            }
+        }
     }
+    (miou, mean_accuracy, fwiou, pixel_accuracy)
+}
+
+/// Roll up per-group stats over the supplied class-id partitions.
+fn build_per_group(
+    groups: &[(String, Vec<u32>)],
+    n: usize,
+    diag: &[u64],
+    row_sum: &[u64],
+    col_sum: &[u64],
+) -> BTreeMap<String, GroupSemanticStats> {
+    let mut out = BTreeMap::new();
+    for (label, ids) in groups {
+        let (miou, mean_accuracy, fwiou, pixel_accuracy) =
+            filtered_headlines(ids, n, diag, row_sum, col_sum);
+        let mut members: Vec<u32> = ids.iter().copied().filter(|&c| (c as usize) < n).collect();
+        members.sort_unstable();
+        members.dedup();
+        out.insert(
+            label.clone(),
+            GroupSemanticStats {
+                label: label.clone(),
+                member_class_ids: members,
+                miou,
+                mean_accuracy,
+                pixel_accuracy,
+                fwiou,
+            },
+        );
+    }
+    out
 }
 
 /// Per-class metric value when `TP + FP + FN == 0` (or the analogous
