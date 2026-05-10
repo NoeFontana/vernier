@@ -62,7 +62,7 @@ const RKYV_ALIGN: usize = 16;
 /// [`FORMAT_VERSION`].
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize, Debug, Clone)]
 pub struct WireEnvelopeHeader {
-    /// [`ParadigmKind::as_u8`].
+    /// [`ParadigmKind::as_u8`](crate::traits::ParadigmKind::as_u8).
     pub paradigm_kind: u8,
     /// Paradigm-defined sub-kind. Instance: `KernelKind` discriminant.
     /// Semantic: `0`. Panoptic: `0`.
@@ -134,7 +134,8 @@ pub struct ValidatedView<'a> {
 ///
 /// **Validation order** (cheapest-first; same as ADR-0031):
 ///
-/// 1. Length: at least [`MIN_PARTIAL_BYTES`].
+/// 1. Length: at least the framing-overhead minimum (magic + version
+///    byte + header-length prefix + CRC trailer = 13 bytes).
 /// 2. Magic: `bytes[..4] == MAGIC`.
 /// 3. Version: `bytes[4] == FORMAT_VERSION`.
 /// 4. CRC: stored CRC matches `crc32(bytes[..len-4])`.

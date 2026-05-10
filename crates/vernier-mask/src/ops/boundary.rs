@@ -59,16 +59,16 @@ pub(crate) fn boundary_band_into(
 /// Computes the boundary band of `rle` and pushes its foreground
 /// segment offsets onto `segments` while returning the band area.
 ///
-/// Same erosion + N5 XOR semantics as [`boundary_band_into`], but
-/// skips the intermediate band-`Rle` encode and the two follow-up
-/// `counts` walks (one for `area`, one for the offsets decode) that
-/// the boundary-IoU kernel performs after `boundary_band_into`. The
-/// XOR'd band raster — already in `scratch.raster` — is walked once
-/// via [`SegmentTable::push_from_raster`].
+/// Same erosion + N5 XOR semantics as the (private) `boundary_band_into`
+/// helper, but skips the intermediate band-`Rle` encode and the two
+/// follow-up `counts` walks (one for `area`, one for the offsets
+/// decode) that the boundary-IoU kernel performs after
+/// `boundary_band_into`. The XOR'd band raster — already in
+/// `scratch.raster` — is walked once via [`SegmentTable::push_from_raster`].
 ///
-/// Use this on the boundary-IoU hot path; keep
-/// [`boundary_band_into`] for callers that need the band as an
-/// `Rle` (e.g. round-tripping through serialization).
+/// Use this on the boundary-IoU hot path; keep [`boundary_band`] for
+/// callers that need the band as an `Rle` (e.g. round-tripping through
+/// serialization).
 pub fn boundary_band_segments_into(
     rle: &Rle,
     dilation_ratio: f64,
