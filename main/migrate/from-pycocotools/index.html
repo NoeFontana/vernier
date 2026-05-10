@@ -1855,7 +1855,7 @@
 
 <h1 id="migrating-from-pycocotools-to-vernier">Migrating from <code>pycocotools</code> to vernier</h1>
 <p>vernier reproduces <code>pycocotools==2.0.11</code>'s evaluation semantics
-bit-for-bit in strict parity mode. ADR-0002 (three-tier parity) and
+bit-for-bit in strict parity mode. ADR-0002 (parity model) and
 ADR-0007 (drop-in policy) are the design records; this guide is the
 user-facing migration path. Audience: anyone moving an existing
 <code>COCOeval</code>-based evaluation pipeline onto vernier.</p>
@@ -1926,10 +1926,10 @@ correctly. <code>patch_pycocotools</code> defaults to <code>parity_mode="strict"
 because migration intent is bit-exactness with pycocotools; the
 native <code>Evaluator</code> constructor defaults to <code>parity_mode="corrected"</code>
 because new code does not need pycocotools' historical quirks.
-ADR-0002 documents the three tiers (<code>strict</code> / <code>aligned</code> /
-<code>corrected</code>); ADR-0007 §"Behavior" pins the helper's default. The
-patch raises <code>ImportError</code> if pycocotools is not installed, rather
-than silently no-oping.</p>
+ADR-0002 documents the two dispositions (<code>strict</code> / <code>corrected</code>);
+ADR-0007 §"Behavior" pins the helper's default. The patch raises
+<code>ImportError</code> if pycocotools is not installed, rather than silently
+no-oping.</p>
 <h2 id="pytest-integration">Pytest integration</h2>
 <p>To run an unmodified pycocotools-based test suite (mmdetection,
 ultralytics, detectron2, etc.) under vernier, drop a five-line

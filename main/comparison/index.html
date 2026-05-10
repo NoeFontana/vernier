@@ -1899,9 +1899,9 @@ rasterization, and the <code>COCO</code> GT loader.</p>
 <p>vernier reproduces <code>pycocotools==2.0.11</code> semantics bit-for-bit in strict
 parity mode (the default). Every quirk — float casting in IoU computation,
 the <code>setDetParams()</code> defaults, the <code>&lt;</code> vs <code>&lt;=</code> comparison in score-tied
-matches — is filed under one of three dispositions in
-<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md">ADR-0002</a>:
-<code>strict</code> (bit-equal), <code>aligned</code> (within tolerance), or <code>corrected</code> (opt-in
+matches — is filed in
+<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md">ADR-0002</a>
+as either <code>strict</code> (bit-equal output) or <code>corrected</code> (opt-in opinionated
 fix). The full table lives in
 <a href="https://github.com/NoeFontana/vernier/blob/main/docs/engineering/pycocotools-quirks.md"><code>docs/engineering/pycocotools-quirks.md</code></a>.</p>
 <p>vernier is ~7–18× faster on val2017 across bbox / segm / keypoints (see the

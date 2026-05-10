@@ -1911,9 +1911,10 @@ differences (quirk <strong>X2</strong>).</p>
 <p>vernier evaluates single-threaded by design (ADR-0006). <strong>Strict-mode
 parity is bit-equal against <code>pq_compute_single_core(proc_id=0)</code>
 invoked with the full annotation list</strong>, bypassing the pool entirely.
-Multi-process panopticapi traces match vernier under
-<code>ParityMode::Aligned</code> only, with a tolerance pinned by
-<code>PANOPTIC_PARITY_EPS</code> (<code>crates/vernier-panoptic/src/parity.rs</code>).</p>
+Multi-process panopticapi traces match vernier within a cross-oracle
+tolerance pinned by <code>PANOPTIC_PARITY_EPS</code>
+(<code>crates/vernier-panoptic/src/parity.rs</code>) — a harness-side comparison
+budget, not a runtime mode.</p>
 <p>If you are migrating from a CI pipeline that ran <code>pq_compute</code> with
 the implicit pool: expect last-bit PQ drift on the first run (your
 prior numbers are host-dependent; vernier's are not). The strict-mode
@@ -2001,11 +2002,14 @@ shape exactly matches panopticapi's <code>pq_compute</code> return; default
 <code>strict=False</code> keeps them.</p>
 <h2 id="multi-process-tolerance">Multi-process tolerance</h2>
 <p>If you need to compare against an existing <code>pq_compute_multi_core</code>
-run (a deployed CI pipeline using the pool default), use
-<code>ParityMode::Aligned</code> with the host's <code>cpu_count</code>. The
-<code>PANOPTIC_PARITY_EPS</code> constant pins the bound; bumping it is an
-ADR-level decision (the source of truth is the val-measured ULP
-ceiling on COCO panoptic val2017 — see Q6 closure procedure in
+run (a deployed CI pipeline using the pool default), the parity
+harness offers a cross-oracle tolerance bound via
+<code>PANOPTIC_PARITY_EPS</code> and the host's <code>cpu_count</code> — applied at the
+comparison step, not via a runtime mode (the runtime
+<a href="../../adr/0002-three-tier-parity-model/"><code>ParityMode</code></a> is two-valued
+per the 2026-05-10 amendment). Bumping the eps is an ADR-level
+decision (the source of truth is the val-measured ULP ceiling on
+COCO panoptic val2017 — see Q6 closure procedure in
 <code>tests/python/parity_panoptic/panoptic_val_paths.py</code>).</p>
 <p>For a green-field pipeline, prefer single-threaded vernier and the
 strict-mode bit-equal claim against <code>pq_compute_single_core</code>. The
@@ -2015,8 +2019,8 @@ existing host-dependent baselines.</p>
 <ul>
 <li>ADR-0025 (panoptic-quality evaluation as a sibling crate).</li>
 <li>ADR-0026 (LVIS support — sentinel-vs-zero migration trap).</li>
-<li>ADR-0010 (boundary IoU — same vendored-oracle + three-tier parity
-  model that ADR-0025 follows).</li>
+<li>ADR-0010 (boundary IoU — same vendored-oracle + parity model that
+  ADR-0025 follows).</li>
 <li><code>tests/python/parity_panoptic/oracle/VENDORING.md</code> — pinned
   panopticapi commit, byte-equality SHA-256s, fork plan.</li>
 <li><code>tests/python/parity_panoptic/test_parity_panoptic.py</code> — Q1-Q5

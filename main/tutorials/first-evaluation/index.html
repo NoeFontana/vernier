@@ -1971,7 +1971,7 @@ for the cross-codebase comparison.</p>
   <code>"corrected"</code> — vernier applies its documented quirk fixes (see
   <a href="../../engineering/pycocotools-quirks/"><code>engineering/pycocotools-quirks.md</code></a>).
   For bit-exact pycocotools numbers, pass <code>parity_mode="strict"</code>.
-  ADR-0002 has the three-tier rationale.</li>
+  ADR-0002 has the strict-vs-corrected rationale.</li>
 <li><strong>Custom IoU kernels or category folds.</strong> vernier's kernels are
   the <code>Bbox</code> / <code>Segm</code> / <code>Boundary</code> / <code>Keypoints</code> discriminated
   union (ADR-0011). Adding a new kernel is an ADR-level decision,
