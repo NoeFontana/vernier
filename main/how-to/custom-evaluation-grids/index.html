@@ -8,13 +8,13 @@
       
       
       
-        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/how-to/result-tables/">
+        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/how-to/custom-evaluation-grids/">
       
       
-        <link rel="prev" href="../cli-eval/">
+        <link rel="prev" href="../configure-evaluator/">
       
       
-        <link rel="next" href="../boundary-iou/">
+        <link rel="next" href="../cli-eval/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>Inspect result tables - vernier</title>
+        <title>Custom evaluation grids - vernier</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#how-to-use-result-tables" class="md-skip">
+        <a href="#how-to-evaluate-on-a-custom-iou-recall-area-grid" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Inspect result tables
+              Custom evaluation grids
             
           </span>
         </div>
@@ -991,10 +991,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../custom-evaluation-grids/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom evaluation grids
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1010,6 +1037,103 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-headline-footgun" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The headline footgun
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sensitivity-analysis-on-iou-thresholds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sensitivity analysis on IoU thresholds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#domain-specific-area-buckets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Domain-specific area buckets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#denser-recall-sampling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Denser recall sampling
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#composing-custom-grids-with-the-rest-of-the-evaluator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Composing custom grids with the rest of the evaluator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#distributed-eval-and-backgroundevaluator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Distributed eval and BackgroundEvaluator
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1047,37 +1171,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Inspect result tables
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../result-tables/" class="md-nav__link">
         
   
   
@@ -1093,136 +1190,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#quick-start" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quick start
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#find-the-worst-performing-images" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Find the worst-performing images
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#per-class-drill-down" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Per-class drill-down
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#hardest-matched-detections" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Hardest matched detections
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#confusion-pair-analysis-within-class" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Confusion-pair analysis (within-class)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#export-to-parquet-for-offline-analysis" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Export to Parquet for offline analysis
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#convert-to-pandas" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Convert to pandas
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#memory-budget-for-per_pair" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Memory budget for per_pair
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#whats-not-in-the-table" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        What's not in the table
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See also
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1909,184 +1876,178 @@
   
 
 
-<h1 id="how-to-use-result-tables">How to use result tables</h1>
-<p>Recipe-style guide for the per-image / per-class / per-detection / per-pair
-result tables shipped by <a href="../../adr/0019-result-tables/">ADR-0019</a>. Each
-recipe is a short heading, a copy-paste snippet, and one paragraph of
-context. The schema is pinned in ADR-0019 §"Schemas"; the rationale for
-the deliberately absent per-image AP column lives in
-<a href="../../explanation/why-no-per-image-ap/"><code>why-no-per-image-ap.md</code></a>. Tables
-are the extended-API surface; the <code>patch_pycocotools</code> drop-in (ADR-0007)
-does not gain them.</p>
-<h2 id="quick-start">Quick start</h2>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span><span class="s1">&#39;vernier[tables]&#39;</span>
+<h1 id="how-to-evaluate-on-a-custom-iou-recall-area-grid">How to evaluate on a custom IoU / recall / area grid</h1>
+<p><code>vernier.instance.Evaluator</code> exposes three fields per ADR-0040 that
+override the canonical pycocotools-shaped evaluation grid:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>What it sweeps</th>
+<th>Default (when <code>None</code>)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>iou_thresholds: tuple[float, ...] \| None</code></td>
+<td>The matching IoU ladder</td>
+<td><code>(0.50, 0.55, …, 0.95)</code> (10 points)</td>
+</tr>
+<tr>
+<td><code>recall_thresholds: tuple[float, ...] \| None</code></td>
+<td>The AP-integration recall samples</td>
+<td><code>(0.0, 0.01, …, 1.0)</code> (101 points)</td>
+</tr>
+<tr>
+<td><code>area_ranges: Breakdown \| None</code></td>
+<td>The <code>(all / small / medium / large)</code> area buckets</td>
+<td>COCO 4-bucket detection / 3-bucket keypoints</td>
+</tr>
+</tbody>
+</table>
+<p>Use them for sensitivity analysis (does AP@0.5 disagree with
+AP@0.75?), domain area buckets (robotics distance ranges, medical
+size ranges), or denser recall sampling near <code>R=1.0</code> for
+extreme-recall regimes.</p>
+<h2 id="the-headline-footgun">The headline footgun</h2>
+<p>The canonical 12-stat / 10-stat / 13-stat summary plans address
+hardcoded slot indices in the <code>(T, R, K, A, M)</code> accumulator tensor
+— <code>AP_S</code> is <em>the second area-bucket entry of the all-IoU slice at
+maxDet=100</em>, not "the small-area slot". Custom grids break that
+index assumption silently.</p>
+<p>So <code>Evaluator.evaluate(gt, dt)</code> raises <code>IncompatibleSummaryPlan</code>
+the moment any of the three fields is set. The exception names the
+remediation: call <code>evaluate_tables(gt, dt)</code> instead, which returns
+an <code>EvalResult</code> whose per-row tables carry explicit labels.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">Evaluator</span><span class="p">,</span> <span class="n">IncompatibleSummaryPlan</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">iou_thresholds</span><span class="o">=</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">,</span> <span class="mf">0.7</span><span class="p">,</span> <span class="mf">0.8</span><span class="p">,</span> <span class="mf">0.9</span><span class="p">))</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="k">try</span><span class="p">:</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">ev</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="k">except</span> <span class="n">IncompatibleSummaryPlan</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">field</span><span class="p">)</span>        <span class="c1"># &quot;iou_thresholds&quot;</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">plan</span><span class="p">)</span>         <span class="c1"># &quot;COCO 12-stat / keypoints 10-stat / LVIS 13-stat&quot;</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">remediation</span><span class="p">)</span>  <span class="c1"># &quot;...Use evaluate_tables(...) for tabular output...&quot;</span>
 </span></code></pre></div>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Evaluator</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;instances_val2017.json&quot;</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>    <span class="n">gt</span> <span class="o">=</span> <span class="n">f</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">with</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;detections.json&quot;</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">f</span><span class="p">:</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">dt</span> <span class="o">=</span> <span class="n">f</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="n">result</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">()</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">tables</span><span class="o">=</span><span class="s2">&quot;all&quot;</span><span class="p">)</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>       <span class="c1"># headline AP, same as Summary.stats</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">per_image</span><span class="p">)</span>      <span class="c1"># polars.DataFrame</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">per_class</span><span class="p">)</span>      <span class="c1"># polars.DataFrame</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">per_detection</span><span class="p">)</span>  <span class="c1"># polars.DataFrame</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">per_pair</span><span class="p">)</span>       <span class="c1"># polars.DataFrame</span>
+<p>The fix is a one-line swap to <code>evaluate_tables</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">result</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">iou_thresholds</span><span class="o">=</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.6</span><span class="p">,</span> <span class="mf">0.7</span><span class="p">,</span> <span class="mf">0.8</span><span class="p">,</span> <span class="mf">0.9</span><span class="p">))</span> \
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="o">.</span><span class="n">evaluate_tables</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># `result.summary` is None on a custom-grid run — slot indices don&#39;t generalise.</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="c1"># `result.per_class`, `result.per_image`, etc. carry explicit labels.</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="nb">print</span><span class="p">(</span><span class="n">result</span><span class="o">.</span><span class="n">per_class</span><span class="p">)</span>
 </span></code></pre></div>
-<p><code>tables="all"</code> requests every table the active build supports. The
-return type widens from <code>Summary</code> to <code>EvalResult</code>; <code>result.stats</code> is a
-pass-through that preserves the existing summary-shape API. polars is
-imported lazily on the first DataFrame attribute access — <code>import
-vernier</code> does not pay the cost. Pass a tuple
-(<code>tables=("per_image", "per_class")</code>) when you only want a subset.</p>
-<h2 id="find-the-worst-performing-images">Find the worst-performing images</h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">worst</span> <span class="o">=</span> <span class="p">(</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>    <span class="n">result</span><span class="o">.</span><span class="n">per_image</span>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>    <span class="o">.</span><span class="n">with_columns</span><span class="p">((</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;fp_at_50&quot;</span><span class="p">)</span> <span class="o">+</span> <span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;fn_at_50&quot;</span><span class="p">))</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="s2">&quot;err_at_50&quot;</span><span class="p">))</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>    <span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">&quot;err_at_50&quot;</span><span class="p">,</span> <span class="n">descending</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="o">.</span><span class="n">head</span><span class="p">(</span><span class="mi">20</span><span class="p">)</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;image_id&quot;</span><span class="p">,</span> <span class="s2">&quot;n_gt&quot;</span><span class="p">,</span> <span class="s2">&quot;n_dt&quot;</span><span class="p">,</span> <span class="s2">&quot;tp_at_50&quot;</span><span class="p">,</span> <span class="s2">&quot;fp_at_50&quot;</span><span class="p">,</span> <span class="s2">&quot;fn_at_50&quot;</span><span class="p">)</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="p">)</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">worst</span><span class="p">)</span>
+<h2 id="sensitivity-analysis-on-iou-thresholds">Sensitivity analysis on IoU thresholds</h2>
+<p>A four-point ladder bracketing the COCO defaults — useful for
+"is AP@0.5 telling me the same thing as AP@0.9?":</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">iou_thresholds</span><span class="o">=</span><span class="p">(</span><span class="mf">0.50</span><span class="p">,</span> <span class="mf">0.75</span><span class="p">,</span> <span class="mf">0.85</span><span class="p">,</span> <span class="mf">0.95</span><span class="p">))</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">result</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">evaluate_tables</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
 </span></code></pre></div>
-<p><code>per_image</code> carries TP/FP/FN counts at IoU 0.50 and 0.75. Sorting by
-<code>fp_at_50 + fn_at_50</code> surfaces the images contributing most error at
-the loose threshold; swap in <code>_at_75</code> for the strict threshold. The
-table deliberately omits per-image AP; see
-<a href="../../explanation/why-no-per-image-ap/"><code>why-no-per-image-ap.md</code></a>.</p>
-<h2 id="per-class-drill-down">Per-class drill-down</h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="n">weak_classes</span> <span class="o">=</span> <span class="p">(</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">result</span><span class="o">.</span><span class="n">per_class</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;ap&quot;</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mf">0.3</span><span class="p">)</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">&quot;ap&quot;</span><span class="p">)</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;category_id&quot;</span><span class="p">,</span> <span class="s2">&quot;category_name&quot;</span><span class="p">,</span> <span class="s2">&quot;ap&quot;</span><span class="p">,</span> <span class="s2">&quot;ap50&quot;</span><span class="p">,</span> <span class="s2">&quot;n_gt&quot;</span><span class="p">,</span> <span class="s2">&quot;n_dt&quot;</span><span class="p">)</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="nb">print</span><span class="p">(</span><span class="n">weak_classes</span><span class="p">)</span>
+<p>Each <code>iou_thresholds</code> value must lie in <code>[0.0, 1.0]</code>, be finite,
+and the tuple must be non-empty, sorted ascending, and free of
+duplicates. Validation runs at construction time and raises
+<code>InvalidInstanceParams</code> with a remediation pointer:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">InvalidInstanceParams</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">try</span><span class="p">:</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">iou_thresholds</span><span class="o">=</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.5</span><span class="p">))</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="k">except</span> <span class="n">InvalidInstanceParams</span> <span class="k">as</span> <span class="n">e</span><span class="p">:</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">e</span><span class="o">.</span><span class="n">field</span><span class="p">,</span> <span class="n">e</span><span class="o">.</span><span class="n">value</span><span class="p">,</span> <span class="n">e</span><span class="o">.</span><span class="n">remediation</span><span class="p">)</span>
 </span></code></pre></div>
-<p><code>per_class</code> mirrors the 12 stats <code>summarize_detection</code> reports per
-category, plus support counts (<code>n_gt</code>, <code>n_dt</code>). Cells with no GTs in a
-category surface as Arrow nulls — the <code>-1</code> sentinel pycocotools uses
-internally (quirk <strong>C5</strong>) is translated rather than leaked.</p>
-<h2 id="hardest-matched-detections">Hardest matched detections</h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="n">hard_tps</span> <span class="o">=</span> <span class="p">(</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">result</span><span class="o">.</span><span class="n">per_detection</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="o">.</span><span class="n">filter</span><span class="p">((</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;match_status_at_50&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;tp&quot;</span><span class="p">)</span> <span class="o">&amp;</span> <span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;best_iou&quot;</span><span class="p">)</span> <span class="o">&lt;</span> <span class="mf">0.6</span><span class="p">))</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">&quot;best_iou&quot;</span><span class="p">)</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="o">.</span><span class="n">select</span><span class="p">(</span><span class="s2">&quot;detection_id&quot;</span><span class="p">,</span> <span class="s2">&quot;image_id&quot;</span><span class="p">,</span> <span class="s2">&quot;category_id&quot;</span><span class="p">,</span> <span class="s2">&quot;score&quot;</span><span class="p">,</span> <span class="s2">&quot;best_iou&quot;</span><span class="p">)</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="nb">print</span><span class="p">(</span><span class="n">hard_tps</span><span class="o">.</span><span class="n">head</span><span class="p">(</span><span class="mi">50</span><span class="p">))</span>
+<h2 id="domain-specific-area-buckets">Domain-specific area buckets</h2>
+<p><code>area_ranges</code> takes a <code>Breakdown</code> built with
+<code>Breakdown.from_ranges(axis, buckets)</code>. Each bucket is a
+<code>(label, lo, hi)</code> tuple with <code>lo &lt;= hi</code>, both finite and non-negative.
+Use <code>1e10</code> for the unbounded upper end (the COCO sentinel):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">Breakdown</span><span class="p">,</span> <span class="n">Evaluator</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># Robotics distance buckets (m²; &quot;all&quot; + three domain buckets, mirrors</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="c1"># the canonical 4-bucket count so per_class / per_image tables build).</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">area</span> <span class="o">=</span> <span class="n">Breakdown</span><span class="o">.</span><span class="n">from_ranges</span><span class="p">(</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>    <span class="s2">&quot;distance&quot;</span><span class="p">,</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>    <span class="p">[</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>        <span class="p">(</span><span class="s2">&quot;all&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1e10</span><span class="p">),</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>        <span class="p">(</span><span class="s2">&quot;near&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">25.0</span><span class="p">),</span>       <span class="c1"># 0-5 m</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>        <span class="p">(</span><span class="s2">&quot;mid&quot;</span><span class="p">,</span> <span class="mf">25.0</span><span class="p">,</span> <span class="mf">225.0</span><span class="p">),</span>      <span class="c1"># 5-15 m</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a>        <span class="p">(</span><span class="s2">&quot;far&quot;</span><span class="p">,</span> <span class="mf">225.0</span><span class="p">,</span> <span class="mf">1e10</span><span class="p">),</span>      <span class="c1"># 15 m+</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>    <span class="p">],</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="p">)</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">area_ranges</span><span class="o">=</span><span class="n">area</span><span class="p">)</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="n">result</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">evaluate_tables</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
 </span></code></pre></div>
-<p><code>per_detection</code> carries one row per detection with its match status
-at IoU 0.50, the matched GT id when applicable, and <code>best_iou</code> (the
-maximum IoU to any same-class GT in the same image). Filtering to
-true positives with low <code>best_iou</code> surfaces the detections that
-<em>just barely</em> matched — the natural mining target for hard-example
-fine-tuning. <code>best_iou</code> is null when there were no same-class GTs in
-the image.</p>
-<h2 id="confusion-pair-analysis-within-class">Confusion-pair analysis (within-class)</h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Evaluator</span><span class="p">,</span> <span class="n">TablesConfig</span>
+<p>Bucket-count constraint: the canonical <code>per_class</code> and <code>per_image</code>
+table schemas pin a 4-bucket layout (<code>all</code> + three domain buckets)
+inherited from pycocotools. Bucket counts other than 4 still
+evaluate, but <code>per_class</code> / <code>per_image</code> will raise from the table
+builder; reach for <code>per_pair</code> / <code>per_detection</code> instead, which are
+label-keyed and tolerate any bucket count.</p>
+<p>Bucket-boundary semantics follow pycocotools quirks <strong>D6/D7</strong> —
+both bounds are inclusive (<code>lo &lt;= area &lt;= hi</code>), so an annotation
+with area exactly equal to a boundary lands in <em>both</em> adjacent
+buckets. Use distinct boundaries if that's not what you want.</p>
+<p>The <code>area_ranges</code> field accepts only the range variant of
+<code>Breakdown</code>. Class-group breakdowns belong on the
+<code>vernier.semantic</code> / <code>vernier.panoptic</code> <code>class_grouping</code> parameter,
+not here; passing one raises <code>InvalidInstanceParams</code>.</p>
+<h2 id="denser-recall-sampling">Denser recall sampling</h2>
+<p>For extreme-recall regimes (autonomous-driving safety, medical
+screening), the canonical 101-point linspace is too sparse near
+<code>R=1.0</code>. Densify the tail:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">()</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">tables</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;per_pair&quot;</span><span class="p">,),</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>    <span class="n">tables_config</span><span class="o">=</span><span class="n">TablesConfig</span><span class="p">(</span><span class="n">per_pair_iou_floor</span><span class="o">=</span><span class="mf">0.0</span><span class="p">),</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="p">)</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">per_class_pairs</span> <span class="o">=</span> <span class="p">(</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>    <span class="n">result</span><span class="o">.</span><span class="n">per_pair</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>    <span class="o">.</span><span class="n">group_by</span><span class="p">(</span><span class="s2">&quot;category_id&quot;</span><span class="p">)</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>    <span class="o">.</span><span class="n">agg</span><span class="p">(</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>        <span class="n">pl</span><span class="o">.</span><span class="n">len</span><span class="p">()</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="s2">&quot;n_pairs&quot;</span><span class="p">),</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>        <span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;iou&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="s2">&quot;mean_iou&quot;</span><span class="p">),</span>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a>        <span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;iou&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">quantile</span><span class="p">(</span><span class="mf">0.1</span><span class="p">)</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="s2">&quot;p10_iou&quot;</span><span class="p">),</span>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a>    <span class="p">)</span>
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>    <span class="o">.</span><span class="n">sort</span><span class="p">(</span><span class="s2">&quot;p10_iou&quot;</span><span class="p">)</span>
-</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="p">)</span>
-</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="nb">print</span><span class="p">(</span><span class="n">per_class_pairs</span><span class="p">)</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="n">dense_tail</span> <span class="o">=</span> <span class="nb">tuple</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">concatenate</span><span class="p">([</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.9</span><span class="p">,</span> <span class="mi">91</span><span class="p">),</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>    <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mf">0.901</span><span class="p">,</span> <span class="mf">1.0</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>  <span class="c1"># 10× density on the last decile</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="p">])</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="mi">4</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">())</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">recall_thresholds</span><span class="o">=</span><span class="n">dense_tail</span><span class="p">)</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="n">result</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">evaluate_tables</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
 </span></code></pre></div>
-<p><code>per_pair</code> is <strong>class-restricted today</strong>: every row has the same
-<code>category_id</code> for DT and GT, matching the matching engine's
-behavior. Cross-class confusion (a DT of class A overlapping a GT of
-class B) is explicitly deferred per ADR-0019 §"What this ADR
-explicitly does <em>not</em> decide". Within-class
-mining (low-IoU true positives, near-miss pairs) works today; pair
-the <code>per_pair</code> IoU stream with <code>per_detection.score</code> joined on
-<code>detection_id</code> to reconstruct the per-class PR shape.</p>
-<h2 id="export-to-parquet-for-offline-analysis">Export to Parquet for offline analysis</h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="n">result</span><span class="o">.</span><span class="n">per_pair</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">&quot;pairs.parquet&quot;</span><span class="p">)</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="n">result</span><span class="o">.</span><span class="n">per_detection</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">&quot;detections.parquet&quot;</span><span class="p">)</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">result</span><span class="o">.</span><span class="n">per_image</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">&quot;images.parquet&quot;</span><span class="p">)</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="n">result</span><span class="o">.</span><span class="n">per_class</span><span class="o">.</span><span class="n">write_parquet</span><span class="p">(</span><span class="s2">&quot;classes.parquet&quot;</span><span class="p">)</span>
+<p>Same validation rule as <code>iou_thresholds</code>: non-empty, sorted, no
+duplicates, every element finite and in <code>[0.0, 1.0]</code>.</p>
+<h2 id="composing-custom-grids-with-the-rest-of-the-evaluator">Composing custom grids with the rest of the evaluator</h2>
+<p>The grid axes are orthogonal to the rest of the <code>Evaluator</code>
+configuration:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Boundary</span><span class="p">,</span> <span class="n">Breakdown</span><span class="p">,</span> <span class="n">Evaluator</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    <span class="n">iou</span><span class="o">=</span><span class="n">Boundary</span><span class="p">(</span><span class="n">dilation_ratio</span><span class="o">=</span><span class="mf">0.02</span><span class="p">),</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    <span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>    <span class="n">max_dets</span><span class="o">=</span><span class="p">(</span><span class="mi">100</span><span class="p">,</span> <span class="mi">300</span><span class="p">),</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>    <span class="n">iou_thresholds</span><span class="o">=</span><span class="p">(</span><span class="mf">0.5</span><span class="p">,</span> <span class="mf">0.75</span><span class="p">,</span> <span class="mf">0.9</span><span class="p">),</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    <span class="n">area_ranges</span><span class="o">=</span><span class="n">Breakdown</span><span class="o">.</span><span class="n">from_ranges</span><span class="p">(</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>        <span class="s2">&quot;area&quot;</span><span class="p">,</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>        <span class="p">[(</span><span class="s2">&quot;all&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">1e10</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;tiny&quot;</span><span class="p">,</span> <span class="mf">0.0</span><span class="p">,</span> <span class="mf">64.0</span><span class="p">),</span> <span class="p">(</span><span class="s2">&quot;small&quot;</span><span class="p">,</span> <span class="mf">64.0</span><span class="p">,</span> <span class="mf">1024.0</span><span class="p">)],</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>    <span class="p">),</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="p">)</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="n">result</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">evaluate_tables</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
 </span></code></pre></div>
-<p>Parquet emit is polars-native, not a vernier method. ADR-0019
-§"What this ADR explicitly does <em>not</em> decide" deliberately punts
-on-disk emit to the user's DataFrame library — we ship the Arrow
-PyCapsule producer and let the consumer pick the file format.</p>
-<h2 id="convert-to-pandas">Convert to pandas</h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="n">df</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">per_image</span><span class="o">.</span><span class="n">to_pandas</span><span class="p">()</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nb">print</span><span class="p">(</span><span class="n">df</span><span class="o">.</span><span class="n">describe</span><span class="p">())</span>
-</span></code></pre></div>
-<p><code>to_pandas()</code> is built into polars; we do not reimplement it. The
-same applies for duckdb (<code>duckdb.from_arrow(...)</code>) and pyarrow
-(<code>pyarrow.table(...)</code>) — every ADR-0019 result table is a
-PyCapsule-backed Arrow <code>RecordBatch</code> underneath, and any
-PyCapsule-aware consumer reads it zero-copy.</p>
-<h2 id="memory-budget-for-per_pair">Memory budget for <code>per_pair</code></h2>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Evaluator</span><span class="p">,</span> <span class="n">TablesConfig</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="n">result</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">()</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    <span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>    <span class="n">tables</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;per_pair&quot;</span><span class="p">,),</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="n">tables_config</span><span class="o">=</span><span class="n">TablesConfig</span><span class="p">(</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>        <span class="n">per_pair_iou_floor</span><span class="o">=</span><span class="mf">0.3</span><span class="p">,</span>      <span class="c1"># default 0.1; raise to keep fewer rows</span>
-</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="n">per_pair_max_rows</span><span class="o">=</span><span class="mi">5_000_000</span><span class="p">,</span> <span class="c1"># default 10_000_000; lower to fail faster</span>
-</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="p">),</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="p">)</span>
-</span></code></pre></div>
-<p><code>per_pair</code> row count is the dominant memory cost. For COCO val2017
-the default <code>iou_floor=0.1</code> keeps it under ~1 M rows (~40 MB Arrow);
-LVIS-scale workloads with the same floor can exceed hundreds of
-millions of rows, which is why the cap exists. Exceeding
-<code>per_pair_max_rows</code> raises <code>ValueError</code> rather than silently
-truncating; ADR-0019 tracks the typed <code>PerPairOverflowError</code>
-follow-up.</p>
-<h2 id="whats-not-in-the-table">What's not in the table</h2>
-<p><code>EvalResult</code> deliberately omits the following surfaces; each is
-documented at its own anchor:</p>
+<p><code>max_dets</code>, <code>parity_mode</code>, <code>iou</code>, <code>use_cats</code>, <code>cast_inputs</code>, and
+the GT-handle path (<code>evaluate_tables(dataset, dt)</code>) all behave
+identically to canonical-grid runs.</p>
+<h2 id="distributed-eval-and-backgroundevaluator">Distributed eval and <code>BackgroundEvaluator</code></h2>
+<p>The wire format and worker-thread plumbing for ADR-0040 grids are a
+follow-up to the streaming substrate. Until that lands, custom-grid
+configurations are batch-only:</p>
 <ul>
-<li><strong>Per-image <code>ap</code> / <code>ap_50</code> columns.</strong> PR curves from a single image
-  are degenerate. See
-  <a href="../../explanation/why-no-per-image-ap/"><code>why-no-per-image-ap.md</code></a>.</li>
-<li><strong>Cross-class <code>per_pair</code> confusion.</strong> Pairs are class-restricted
-  today; cross-class confusion is deferred per ADR-0019 §"What this
-  ADR explicitly does <em>not</em> decide".</li>
-<li><strong>Chunked Arrow IPC for very-large <code>per_pair</code>.</strong> Today vernier
-  emits a single <code>RecordBatch</code> per table; workloads beyond ~10 M
-  <code>per_pair</code> rows motivate a follow-up ADR for streaming IPC. Until
-  then, raise <code>per_pair_iou_floor</code> or fail loud via
-  <code>per_pair_max_rows</code>.</li>
-<li><strong>On-disk Parquet emit as a vernier method.</strong> Free via polars
-  (<code>df.write_parquet(...)</code>); we ship the data, the user picks the
-  serializer.</li>
-<li><strong><code>tables=</code> on the <code>COCOeval</code> drop-in.</strong> Out of scope per ADR-0007;
-  the drop-in is the migration shim, not the extended API.</li>
+<li><code>Evaluator.evaluate_to_partial(gt, dt, rank_id=...)</code> raises
+  <code>InvalidInstanceParams</code> with a pointer to <code>evaluate_tables</code>.</li>
+<li><code>BackgroundEvaluator</code> accepts only canonical grids today; build a
+  single-rank custom-grid run and call <code>evaluate_tables(...)</code> on
+  the gathered detections instead.</li>
 </ul>
 <h2 id="see-also">See also</h2>
 <ul>
-<li><a href="../../adr/0019-result-tables/"><code>docs/adr/0019-result-tables.md</code></a> —
-  the table design, schemas, and the zero-overhead-by-default
-  contract on the unparameterized <code>evaluate()</code> path.</li>
-<li><a href="../../explanation/why-no-per-image-ap/"><code>docs/explanation/why-no-per-image-ap.md</code></a>
-  — rationale for the per-image AP omission.</li>
-<li><a href="../../adr/0007-patch-pycocotools-policy/"><code>docs/adr/0007-patch-pycocotools-policy.md</code></a>
-  — why the <code>COCOeval</code> drop-in stays narrow.</li>
-<li><a href="../../adr/0014-background-evaluator/"><code>docs/adr/0014-background-evaluator.md</code></a>
-  — <code>BackgroundEvaluator.finalize_with_tables(...)</code> shape and the
-  detection-id caveat that propagates into <code>per_detection</code>.</li>
+<li><a href="../../adr/0040-user-parametrizable-instance-evaluation-grid/">ADR-0040</a>
+  — the surface ratification.</li>
+<li><a href="../../adr/0019-result-tables/">ADR-0019</a> — the result-tables surface
+  custom grids route through.</li>
+<li><a href="../../adr/0016-generalized-breakdown-axis/">ADR-0016</a> — the
+  value-typed <code>Breakdown</code> used for <code>area_ranges</code>.</li>
+<li><a href="../result-tables/">How to use result tables</a> — consuming the
+  <code>EvalResult</code> polars DataFrames.</li>
+<li><a href="../configure-evaluator/">How to configure the evaluator</a> — the
+  rest of the evaluator's surface.</li>
 </ul>
 
 

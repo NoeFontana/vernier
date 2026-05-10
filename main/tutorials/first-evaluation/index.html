@@ -1079,6 +1079,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../../how-to/configure-evaluator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configure the evaluator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/custom-evaluation-grids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom evaluation grids
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../how-to/cli-eval/" class="md-nav__link">
         
   
@@ -1950,6 +2006,11 @@ Empty buckets surface as <code>-1.0</code> (quirk <strong>C5</strong>); see
 for the cross-codebase comparison.</p>
 <h2 id="where-to-go-next">Where to go next</h2>
 <ul>
+<li><strong>Tune the evaluator.</strong> <code>parity_mode</code>, <code>max_dets</code>, <code>use_cats</code>,
+  <code>cast_inputs</code>, the GT-handle reuse pattern, and how they compose:
+  <a href="../../how-to/configure-evaluator/"><code>how-to/configure-evaluator.md</code></a>.
+  Custom IoU / recall / area grids (ADR-0040) live in
+  <a href="../../how-to/custom-evaluation-grids/"><code>how-to/custom-evaluation-grids.md</code></a>.</li>
 <li><strong>Drill into the numbers.</strong> Pass <code>tables="all"</code> to
   <code>evaluate(...)</code> to get per-image / per-class / per-detection /
   per-pair polars DataFrames. Recipe:

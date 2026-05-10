@@ -14,7 +14,7 @@
         <link rel="prev" href="../migrate/from-panopticapi/">
       
       
-        <link rel="next" href="cli-eval/">
+        <link rel="next" href="configure-evaluator/">
       
       
         
@@ -976,6 +976,62 @@
   
   
     <li class="md-nav__item">
+      <a href="configure-evaluator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configure the evaluator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="custom-evaluation-grids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom evaluation grids
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="cli-eval/" class="md-nav__link">
         
   
@@ -1719,6 +1775,12 @@ accomplish.</p>
   kernel and its dilation knob.</li>
 <li><a href="cli-eval/">Evaluate with <code>vernier eval</code></a> — the static CLI binary
   for CI pipelines without a Python interpreter.</li>
+<li><a href="configure-evaluator/">Configure the evaluator</a> — the entry-point
+  survey of <code>iou</code> / <code>parity_mode</code> / <code>max_dets</code> / <code>use_cats</code> /
+  <code>cast_inputs</code> and how they compose.</li>
+<li><a href="custom-evaluation-grids/">Custom evaluation grids</a> — the
+  ADR-0040 axes (<code>iou_thresholds</code>, <code>recall_thresholds</code>,
+  <code>area_ranges</code>) and the <code>evaluate_tables</code> route.</li>
 <li><a href="distributed-eval/">Distributed evaluation across ranks</a> —
   rank-local + gather across instance / semantic / panoptic.</li>
 <li><a href="keypoints-oks/">Evaluate keypoints with OKS</a> — <code>Keypoints()</code> with
