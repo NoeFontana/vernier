@@ -171,6 +171,36 @@ class _Params:
         self.useSegm: int | None = None
         self.iouType: IouType = iouType
 
+    def __setattr__(self, name: str, value: object) -> None:
+        # Per ADR-0039 §"Drop-in shim non-exposure" + ADR-0040: the
+        # snake_case grid fields belong on `vernier.instance.Evaluator`,
+        # not on this pycocotools-shaped shim. Surfacing AttributeError
+        # here keeps users from silently configuring a custom grid that
+        # the shim cannot honor. The pycocotools-shaped camelCase names
+        # (iouThrs, recThrs, areaRng) still mutate normally.
+        if name in _ADR_0040_NATIVE_FIELDS:
+            raise AttributeError(
+                f"{name!r} belongs on vernier.instance.Evaluator (ADR-0040), "
+                f"not the pycocotools-shaped COCOeval shim. The shim mirrors "
+                f"pycocotools' surface for migration; for custom IoU / recall "
+                f"thresholds or area ranges, use the native Evaluator: "
+                f"`vernier.instance.Evaluator({name}=...)`. "
+                f"(Pycocotools-shaped {_ADR_0040_NATIVE_FIELDS[name]!r} on this "
+                f"shim still mutates normally.)"
+            )
+        object.__setattr__(self, name, value)
+
+
+# Maps snake_case Evaluator field names to the pycocotools-shaped
+# camelCase shim attribute that mutates normally. Used by the
+# `_Params.__setattr__` guard above to point migrating users at the
+# native `vernier.instance.Evaluator` surface.
+_ADR_0040_NATIVE_FIELDS: Final[dict[str, str]] = {
+    "iou_thresholds": "iouThrs",
+    "recall_thresholds": "recThrs",
+    "area_ranges": "areaRng",
+}
+
 
 class PycocotoolsCOCOeval:
     """Drop-in for ``pycocotools.cocoeval.COCOeval`` (bbox / segm / boundary / keypoints).

@@ -7,6 +7,7 @@ keypoints) lives under ``vernier.instance``. Sibling to
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any, Final, Literal, NoReturn, overload
@@ -199,6 +200,94 @@ class _UnsetType:
 _UNSET: Final[_UnsetType] = _UnsetType()
 
 
+def _first_custom_grid_field_and_value(ev: Evaluator) -> tuple[str, object] | None:
+    """Return ``(name, value)`` for the first custom-grid field set in
+    field-declaration order, or ``None`` if none are set. Used by the
+    :class:`IncompatibleSummaryPlan` redirect to point at *one* offending
+    field even when multiple are set."""
+    if ev.iou_thresholds is not None:
+        return ("iou_thresholds", ev.iou_thresholds)
+    if ev.recall_thresholds is not None:
+        return ("recall_thresholds", ev.recall_thresholds)
+    if ev.area_ranges is not None:
+        return ("area_ranges", ev.area_ranges)
+    return None
+
+
+_INCOMPATIBLE_SUMMARY_REMEDIATION: Final[str] = (
+    "the canonical summary plans are keyed on hardcoded slot indices in the "
+    "(T, R, K, A, M) tensor — AP_S is 'the second area-bucket entry of the "
+    "all-IoU slice at maxDet=100', not 'the small-area slot'. Your custom "
+    "grid breaks this index assumption. Use evaluate_tables(...) for tabular "
+    "output that carries explicit labels per row, or remove the custom grid "
+    "(set the field back to None) to use evaluate(). See ADR-0040."
+)
+
+
+def _validate_threshold_ladder(ladder: tuple[float, ...], *, field_name: str) -> None:
+    """Validate an IoU or recall threshold ladder per ADR-0040.
+
+    Non-empty, every element finite and in ``[0.0, 1.0]``, sorted
+    ascending, no duplicates. Raises :class:`InvalidInstanceParams`
+    with a remediation pointer on any violation.
+    """
+    if len(ladder) == 0:
+        raise InvalidInstanceParams(
+            field=field_name,
+            value=ladder,
+            remediation="must be non-empty (ADR-0040). Default canonical ladder applies when None.",
+        )
+    prev: float | None = None
+    seen: set[float] = set()
+    for v in ladder:
+        if not math.isfinite(v):
+            raise InvalidInstanceParams(
+                field=field_name,
+                value=ladder,
+                remediation=f"every element must be finite (got {v!r}; ADR-0040)",
+            )
+        if not 0.0 <= v <= 1.0:
+            raise InvalidInstanceParams(
+                field=field_name,
+                value=ladder,
+                remediation=f"every element must lie in [0.0, 1.0] (got {v!r}; ADR-0040)",
+            )
+        if v in seen:
+            raise InvalidInstanceParams(
+                field=field_name,
+                value=ladder,
+                remediation=f"duplicate value {v!r}; ADR-0040 requires distinct entries",
+            )
+        if prev is not None and v < prev:
+            raise InvalidInstanceParams(
+                field=field_name,
+                value=ladder,
+                remediation="must be sorted ascending; ADR-0040",
+            )
+        seen.add(v)
+        prev = v
+
+
+def _validate_area_ranges_breakdown(bd: Breakdown) -> None:
+    """Validate the ``area_ranges`` Breakdown per ADR-0040.
+
+    Must be a range-keyed Breakdown (built via
+    :meth:`Breakdown.from_ranges`); class-group breakdowns are rejected.
+    The Breakdown's own constructor already enforced
+    non-empty / finite / lo <= hi / unique-label invariants — this
+    function only adds the variant-shape check.
+    """
+    if bd.kind != "range":
+        raise InvalidInstanceParams(
+            field="area_ranges",
+            value=bd,
+            remediation=(
+                "must be a range Breakdown (Breakdown.from_ranges(...)); "
+                "class-group Breakdowns belong on semantic / panoptic class_grouping (ADR-0040)"
+            ),
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class Evaluator:
     """Extended-API COCO-style evaluator.
@@ -230,8 +319,23 @@ class Evaluator:
     iou: IouKind = field(default_factory=Bbox)
     parity_mode: ParityMode = "corrected"
     max_dets: tuple[int, ...] | None = None
+    iou_thresholds: tuple[float, ...] | None = None
+    recall_thresholds: tuple[float, ...] | None = None
+    area_ranges: Breakdown | None = None
     use_cats: bool = True
     cast_inputs: bool = False
+
+    def __post_init__(self) -> None:
+        if self.iou_thresholds is not None:
+            _validate_threshold_ladder(self.iou_thresholds, field_name="iou_thresholds")
+        if self.recall_thresholds is not None:
+            _validate_threshold_ladder(self.recall_thresholds, field_name="recall_thresholds")
+        if self.area_ranges is not None:
+            _validate_area_ranges_breakdown(self.area_ranges)
+
+    def _has_custom_grid(self) -> bool:
+        """``True`` when any of the ADR-0040 custom-grid fields is set."""
+        return _first_custom_grid_field_and_value(self) is not None
 
     def _resolve_max_dets(self) -> list[int]:
         """Materialize the effective ``max_dets`` ladder for this evaluator.
@@ -251,14 +355,19 @@ class Evaluator:
         iou: IouKind | None = None,
         parity_mode: ParityMode | None = None,
         max_dets: tuple[int, ...] | None | _UnsetType = _UNSET,
+        iou_thresholds: tuple[float, ...] | None | _UnsetType = _UNSET,
+        recall_thresholds: tuple[float, ...] | None | _UnsetType = _UNSET,
+        area_ranges: Breakdown | None | _UnsetType = _UNSET,
         use_cats: bool | None = None,
         cast_inputs: bool | None = None,
     ) -> Evaluator:
         """Return a copy of this evaluator with the given fields overridden.
 
-        ``max_dets`` is three-valued: the default sentinel leaves the
-        field unchanged, ``None`` resets to the kernel-canonical ladder,
-        and a tuple sets an explicit override.
+        Sentinel-keyed fields (``max_dets``, ``iou_thresholds``,
+        ``recall_thresholds``, ``area_ranges``) are three-valued:
+        the default ``_UNSET`` leaves the field unchanged, ``None``
+        resets to the kernel-canonical default, and a value sets an
+        explicit override.
         """
         kwargs: dict[str, object] = {}
         if iou is not None:
@@ -267,6 +376,12 @@ class Evaluator:
             kwargs["parity_mode"] = parity_mode
         if not isinstance(max_dets, _UnsetType):
             kwargs["max_dets"] = max_dets
+        if not isinstance(iou_thresholds, _UnsetType):
+            kwargs["iou_thresholds"] = iou_thresholds
+        if not isinstance(recall_thresholds, _UnsetType):
+            kwargs["recall_thresholds"] = recall_thresholds
+        if not isinstance(area_ranges, _UnsetType):
+            kwargs["area_ranges"] = area_ranges
         if use_cats is not None:
             kwargs["use_cats"] = use_cats
         if cast_inputs is not None:
@@ -318,7 +433,23 @@ class Evaluator:
         bit-identical to 0.0.1). Pass ``"all"`` or a tuple of
         :data:`TableName`\\ s to opt into the wider :class:`EvalResult`
         return type.
+
+        Per ADR-0040, raises :class:`IncompatibleSummaryPlan` when
+        ``iou_thresholds`` / ``recall_thresholds`` / ``area_ranges``
+        is set explicitly: the canonical 12-stat summary plan is keyed
+        on hardcoded slot indices that don't generalize. Use
+        :meth:`evaluate_tables` for tabular output that carries
+        explicit labels per row.
         """
+        offender = _first_custom_grid_field_and_value(self)
+        if offender is not None:
+            field_name, value = offender
+            raise IncompatibleSummaryPlan(
+                field=field_name,
+                value=value,
+                plan="COCO 12-stat / keypoints 10-stat / LVIS 13-stat",
+                remediation=_INCOMPATIBLE_SUMMARY_REMEDIATION,
+            )
         max_dets_list = self._resolve_max_dets()
         if tables is not None:
             return self._evaluate_with_tables(
@@ -351,6 +482,44 @@ class Evaluator:
                 )
             case _:
                 _reject_unknown_iou(self.iou)
+
+    def evaluate_tables(
+        self,
+        gt: bytes | CocoDataset,
+        dt: DetectionsInput,
+        *,
+        tables: Literal["all"] | tuple[TableName, ...] = "all",
+        tables_config: TablesConfig | None = None,
+    ) -> EvalResult:
+        """Tables-only evaluate path (ADR-0040 redirect target).
+
+        Equivalent to :meth:`evaluate` with ``tables=`` set, but
+        bypasses the :class:`IncompatibleSummaryPlan` redirect so
+        custom-grid users can reach the result tables.
+
+        **Note (PR scope):** the kernel-side plumbing for custom
+        ``iou_thresholds`` / ``recall_thresholds`` / ``area_ranges``
+        is a follow-up to the ADR-0039 distributed-eval phase. Until
+        that lands, calling ``evaluate_tables`` with any custom-grid
+        field set raises :class:`NotImplementedError` — the surface is
+        in place; the kernel-side honoring of custom values is
+        deferred. Default-grid callers (no custom fields) get the
+        same :class:`EvalResult` as ``evaluate(tables="all")``.
+        """
+        if self._has_custom_grid():
+            raise NotImplementedError(
+                "evaluate_tables() with a custom iou_thresholds / "
+                "recall_thresholds / area_ranges grid is deferred to a "
+                "follow-up to ADR-0040 (kernel-side custom-grid plumbing "
+                "lands alongside the ADR-0039 params_hash split). "
+                "The surface — fields, validation, evaluate() redirect — is "
+                "in place; use the default grid (set custom fields to None) "
+                "until the kernel plumbing ships."
+            )
+        max_dets_list = self._resolve_max_dets()
+        return self._evaluate_with_tables(
+            gt, dt, max_dets_list, tables, tables_config or TablesConfig()
+        )
 
     def _evaluate_with_tables(
         self,
