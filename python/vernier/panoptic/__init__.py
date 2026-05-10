@@ -8,6 +8,7 @@ Per ADR-0029, the panoptic-segmentation evaluation paradigm lives under
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -94,6 +95,7 @@ __all__ = [
     "PartialPartitionOverlap",
     "PartialRankCollision",
     "Predictions",
+    "StuffThingPartition",
     "Summary",
     "TableName",
     "decode_label_map_png",
@@ -146,8 +148,96 @@ def decode_label_map_png(path: str | Path) -> NDArray[np.uint32]:
 
 
 @dataclass(frozen=True, slots=True)
+class StuffThingPartition:
+    """User-supplied override of the GT-derived stuff/thing split
+    (ADR-0042).
+
+    Setting this on :class:`Evaluator.stuff_thing_partition` overrides
+    the dataset's `isthing` flag per category for the purpose of the
+    `PQ_St` / `PQ_Th` rollup. ``stuff`` and ``things`` must be disjoint
+    and both non-empty (validated at construction). Membership against
+    the dataset's category set is checked at ``evaluate()`` time once
+    the Dataset is in scope.
+    """
+
+    stuff: frozenset[int]
+    things: frozenset[int]
+
+    def __post_init__(self) -> None:
+        if not self.stuff:
+            raise InvalidPanopticParams(
+                field="stuff_thing_partition.stuff",
+                value=self.stuff,
+                remediation="must contain at least one category id (ADR-0042)",
+            )
+        if not self.things:
+            raise InvalidPanopticParams(
+                field="stuff_thing_partition.things",
+                value=self.things,
+                remediation="must contain at least one category id (ADR-0042)",
+            )
+        overlap = self.stuff & self.things
+        if overlap:
+            raise InvalidPanopticParams(
+                field="stuff_thing_partition",
+                value=self,
+                remediation=(
+                    f"stuff and things must be disjoint; overlap={sorted(overlap)!r} (ADR-0042)"
+                ),
+            )
+
+
+def _validate_panoptic_class_filter(cf: CategoryFilter, class_grouping: Breakdown | None) -> None:
+    """Validate a ``category_filter`` for the panoptic paradigm
+    (ADR-0042).
+
+    ``Frequency`` is rejected (panoptic has no per-class frequency tag
+    analogous to LVIS r/c/f). ``ByIds`` requires non-empty unique ids;
+    bounds against the dataset's category set are checked at evaluate
+    time. ``ByGrouping`` requires that ``class_grouping`` is configured
+    and that the named label exists in it.
+    """
+    if isinstance(cf, CategoryFilterFrequency):
+        raise InvalidPanopticParams(
+            field="category_filter",
+            value=cf,
+            remediation=(
+                "Frequency is LVIS-only - panoptic has no per-class frequency "
+                "tag analogous to r/c/f. Use ByIds or ByGrouping instead "
+                "(ADR-0026 lines 178-182, ADR-0042)"
+            ),
+        )
+    if isinstance(cf, CategoryFilterByIds) and len(cf.ids) == 0:
+        raise InvalidPanopticParams(
+            field="category_filter",
+            value=cf,
+            remediation="ByIds must contain at least one category id (ADR-0042)",
+        )
+    if isinstance(cf, CategoryFilterByGrouping):
+        if class_grouping is None:
+            raise InvalidPanopticParams(
+                field="category_filter",
+                value=cf,
+                remediation=(
+                    "ByGrouping requires class_grouping to also be set; "
+                    "the label is resolved against the grouping's labels (ADR-0042)"
+                ),
+            )
+        labels = {label for label, _ in class_grouping.class_groups}
+        if cf.label not in labels:
+            raise InvalidPanopticParams(
+                field="category_filter",
+                value=cf,
+                remediation=(
+                    f"ByGrouping label {cf.label!r} is not a label of class_grouping "
+                    f"(known labels: {sorted(labels)!r}); ADR-0042"
+                ),
+            )
+
+
+@dataclass(frozen=True, slots=True)
 class Evaluator:
-    """Panoptic-quality (PQ) evaluator (ADR-0025).
+    """Panoptic-quality (PQ) evaluator (ADR-0025, ADR-0042).
 
     Sibling to :class:`vernier.instance.Evaluator`. Per category,
     ``PQ_c`` is computed directly as
@@ -168,11 +258,30 @@ class Evaluator:
     decide" Q3 / Z1). The composition rule in the bowenc0221 fork is
     not the instance-case ``min(mask_iou, boundary_iou)`` and resolving
     it requires its own pass.
+
+    The four ADR-0042 fields parameterize the evaluation scope and
+    rollup: ``pq_iou_threshold`` overrides the canonical 0.5 PQ match
+    threshold (single float, not a ladder); ``category_filter`` and
+    ``class_grouping`` mirror the semantic surface (ADR-0041);
+    ``stuff_thing_partition`` overrides the dataset-derived
+    stuff/thing split for the ``PQ_St`` / ``PQ_Th`` rollup.
+
+    **PR scope cut:** kernel-side plumbing for honoring the four
+    custom fields (per_group rollups, threshold-aware matching,
+    partition override) lands alongside the ADR-0039 distributed-eval
+    phase. Until then, ``evaluate()`` raises
+    :class:`NotImplementedError` when any custom field is set; the
+    surface — fields, validation, ``StuffThingPartition`` value type —
+    is in place.
     """
 
     parity_mode: ParityMode = "corrected"
     things_stuff_split: bool = True
     boundary: bool = False
+    pq_iou_threshold: float | None = None
+    category_filter: CategoryFilter | None = None
+    class_grouping: Breakdown | None = None
+    stuff_thing_partition: StuffThingPartition | None = None
 
     def __post_init__(self) -> None:
         if self.boundary:
@@ -183,6 +292,43 @@ class Evaluator:
                 "instance-case min(mask_iou, boundary_iou) and resolving it "
                 "requires its own pass."
             )
+        if self.pq_iou_threshold is not None:
+            t = self.pq_iou_threshold
+            if not math.isfinite(t):
+                raise InvalidPanopticParams(
+                    field="pq_iou_threshold",
+                    value=t,
+                    remediation="must be finite (ADR-0042)",
+                )
+            if not 0.0 < t <= 1.0:
+                raise InvalidPanopticParams(
+                    field="pq_iou_threshold",
+                    value=t,
+                    remediation=(
+                        "must lie in (0.0, 1.0]; strict-zero is rejected as a footgun (ADR-0042)"
+                    ),
+                )
+        if self.class_grouping is not None and self.class_grouping.kind != "class_groups":
+            raise InvalidPanopticParams(
+                field="class_grouping",
+                value=self.class_grouping,
+                remediation=(
+                    "must be a class-groups Breakdown "
+                    "(Breakdown.from_class_groups(...)); range Breakdowns "
+                    "belong on instance.Evaluator.area_ranges (ADR-0042)"
+                ),
+            )
+        if self.category_filter is not None:
+            _validate_panoptic_class_filter(self.category_filter, self.class_grouping)
+
+    def _has_custom_class_params(self) -> bool:
+        """``True`` when any ADR-0042 custom field is set."""
+        return (
+            self.pq_iou_threshold is not None
+            or self.category_filter is not None
+            or self.class_grouping is not None
+            or self.stuff_thing_partition is not None
+        )
 
     @overload
     def evaluate(
@@ -221,6 +367,17 @@ class Evaluator:
         ``"all"`` or a tuple of :data:`TableName` values to opt into
         the wider :class:`EvalResult` return type.
         """
+        if self._has_custom_class_params():
+            raise NotImplementedError(
+                "evaluate() with custom pq_iou_threshold / category_filter / "
+                "class_grouping / stuff_thing_partition is deferred to a "
+                "follow-up to ADR-0042 (kernel-side per_group rollups, "
+                "threshold-aware matching, and partition override land "
+                "alongside the ADR-0039 params_hash split). The surface — "
+                "fields, validation, StuffThingPartition value type — is in "
+                "place; use the defaults (set custom fields to None) until "
+                "the kernel plumbing ships."
+            )
         summary = evaluate_panoptic(gt, dt, self.parity_mode, self.things_stuff_split)
         if tables is None:
             return summary
