@@ -60,7 +60,7 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         (None, IouTypeArg::Keypoints) => KEYPOINTS_MAX_DETS_DEFAULT.to_vec(),
         (None, _) => DETECTION_MAX_DETS_DEFAULT.to_vec(),
     };
-    // Quirk A2 (aligned): pycocotools sorts max_dets ascending, and
+    // Quirk A2 (strict): pycocotools sorts max_dets ascending, and
     // the accumulator's M-axis depends on that order. Mirror it here
     // before any kernel call.
     sort_max_dets(&mut max_dets);

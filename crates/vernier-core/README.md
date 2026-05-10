@@ -60,12 +60,11 @@ A worked example is in [`examples/cache_speedup_val2017.rs`](examples/cache_spee
 
 ## Parity contract
 
-`vernier-core` reproduces `pycocotools==2.0.11` semantics under the three-tier
-parity model in
+`vernier-core` reproduces `pycocotools==2.0.11` semantics under the parity
+model in
 [ADR-0002](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md).
-Each documented quirk is dispositioned as `strict` (bit-equal),
-`aligned` (within tolerance), or `corrected` (opt-in fix). The full disposition
-table lives in
+Each documented quirk is dispositioned as `strict` (bit-equal output) or
+`corrected` (opt-in opinionated fix). The full disposition table lives in
 [`docs/engineering/pycocotools-quirks.md`](https://github.com/NoeFontana/vernier/blob/main/docs/engineering/pycocotools-quirks.md).
 
 ## License

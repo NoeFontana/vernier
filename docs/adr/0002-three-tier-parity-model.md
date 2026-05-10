@@ -1,10 +1,62 @@
 # ADR-0002: Adopt a three-tier parity model against pycocotools
 
-- **Status:** accepted
+- **Status:** accepted (amended 2026-05-10)
 - **Date:** 2026-04-26
+- **Amended:** 2026-05-10
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
+
+## Amendment (2026-05-10): collapse `aligned` into `strict`
+
+The user-facing contract is now **two-tier — `strict` / `corrected`**.
+The original three-tier model (below) ratified `aligned` as a third
+disposition; in practice the runtime had already shrunk to two valid
+values (`vernier_core::parity::ParityMode` ships `Strict` and
+`Corrected` only; the Python `Literal["strict", "corrected"]` rejects
+`"aligned"` with `ValueError`, regression-pinned in
+`tests/python/test_evaluator.py::test_evaluator_rejects_invalid_parity_mode`),
+and the only place a user could still type `aligned` was the
+`vernier-cli` flag, where it collapses to `Strict`. This amendment
+makes the documented contract match the code.
+
+The third tier didn't earn its keep because the 4-ULP envelope
+ADR-0004 budgeted for aligned-tier deviations was never spent: every
+row tagged `aligned` in `docs/engineering/pycocotools-quirks.md` is
+asserted **bit-equal** in tests (e.g. the C6 vectorized
+recall-threshold sweep — a textbook aligned candidate — matches
+pycocotools' Python loop bit-for-bit, not within a tolerance). The
+label was doing review-time annotation work ("vernier's
+implementation is structurally different but outputs match exactly")
+which belongs in the row's rationale, not in the disposition
+vocabulary. Collapsing it into `strict` loses no information: the
+row rationale keeps its structural-difference note. If a future
+kernel genuinely cannot meet bit-equality, reviving the tier is a
+new ADR with an explicit per-row argument, not a passive default.
+
+### What changes in this PR
+
+- The disposition vocabulary in this ADR is two-tier. The original
+  three-tier reasoning is preserved below as the historical record
+  at the time of acceptance.
+- The 15 rows previously dispositioned `aligned` in
+  `docs/engineering/pycocotools-quirks.md` (A2, B5, C6, C8, D3, F2,
+  F5, G3, I3, I5, J1, K3, K4, L4, L8) are reclassified `strict`.
+  Existing row rationale already documents the bit-equality; no
+  behavior changes.
+- Doc / docstring drift is fixed across `README`, `docs/index.md`,
+  `parity.rs`, `_types.py`, and the engineering quirks legends.
+
+### Follow-ups (not in this PR)
+
+- A new ADR (per ADR-0015's CLI-flag-change rule) deprecates and
+  removes `--parity-mode aligned` from `vernier-cli`.
+- Per-row `aligned` cell-values in the sibling quirks surveys
+  (boundary-iou, sem-seg, panopticapi, lvis) are pending re-audit
+  against this amendment. Their legends now point at this ADR.
+- Other accepted ADRs that cite three tiers (0008, 0010, 0013, 0025,
+  0033, 0036, 0040, 0042) remain in place as historical records;
+  new ADRs use the two-tier vocabulary.
 
 ## Context and problem statement
 
@@ -169,15 +221,14 @@ flagged as corrected — a regression test for the disposition table itself.
 The disposition column of `docs/engineering/pycocotools-quirks.md` is the
 authoritative table. As of this ADR's date, the proposed dispositions are
 ratified as follows. Dispositions cited by quirk ID; full text in the
-survey.
+survey. Per the [2026-05-10 amendment](#amendment-2026-05-10-collapse-aligned-into-strict),
+the previously-separate aligned list is folded into strict.
 
 **Strict (most rows; the default).** A1 (default — opt-in `corrected`
-tiebreaker available), A4, B1, B2, B3, B4, B6, B7, C1, C2, C4, C5, C7, D2,
-D4, D5, D6, D7, E1, E2, E3, F3, F4, G1, G2, G4, G5, G6, H1, H3, H4, H5, H6,
-I4, J2, J3, J4, J5, K2, L1, L2.
-
-**Aligned (semantic match, cleaner implementation).** A2, B5, C6, C8, D3,
-F2, F5, G3, I3, I5, J1, K3, K4, L4, L8.
+tiebreaker available), A2, A4, B1, B2, B3, B4, B5, B6, B7, C1, C2, C4, C5,
+C6, C7, C8, D2, D3, D4, D5, D6, D7, E1, E2, E3, F2, F3, F4, F5, G1, G2, G3,
+G4, G5, G6, H1, H3, H4, H5, H6, I3, I4, I5, J1, J2, J3, J4, J5, K2, K3, K4,
+L1, L2, L4, L8.
 
 **Corrected (opinionated fix; strict mode reproduces original).** A3, C3,
 D1, F1, H2, H7, I2, I6, J6, K1, L3, L5, L6, L7.

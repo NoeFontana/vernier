@@ -19,12 +19,12 @@
 /// it at the call site (M4 disposition `corrected` for the API).
 pub const BOUNDARY_DILATION_RATIO_DEFAULT: f64 = 0.02;
 
-/// IoU-equality tolerance applied under [`crate::parity::ParityMode::Aligned`]
-/// when comparing vernier's boundary-IoU output against the vendored
-/// oracle. Stricter checks live in `Strict` mode (bit-equal). The
-/// `1e-9` value is the same magnitude pycocotools' `np.testing` defaults
-/// use for IoU comparisons; pinned here so the boundary parity harness
-/// has a single knob to tune as the oracle stabilises.
+/// Cross-oracle IoU-equality tolerance for the parity harness when
+/// comparing vernier's boundary-IoU output against the vendored
+/// oracle. Harness-side comparison budget, not a runtime mode (see
+/// [`crate::parity::ParityMode`] for the runtime contract). The
+/// `1e-9` value matches the magnitude pycocotools' `np.testing`
+/// defaults use for IoU comparisons.
 pub const BOUNDARY_PARITY_EPS: f64 = 1e-9;
 
 /// Frozen commit SHA of the vendored `bowenc0221/boundary-iou-api`

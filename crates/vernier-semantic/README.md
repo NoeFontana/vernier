@@ -23,8 +23,8 @@ per-image confusion matrix accumulator, not a per-detection matching loop.
 
 ## Parity oracles
 
-vernier-semantic targets three reference implementations under the three-tier
-parity model:
+vernier-semantic targets three reference implementations under the parity
+model in [ADR-0002][adr2]:
 
 - [open-mmlab/mmsegmentation](https://github.com/open-mmlab/mmsegmentation)
   (ADE20K, Pascal VOC, Cityscapes presets)

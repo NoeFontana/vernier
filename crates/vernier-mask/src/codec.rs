@@ -20,7 +20,7 @@
 //! 64; we use `i64` directly. The C left-shift of a negative value
 //! (`-1 << 5*k`) is implementation-defined; we use the explicit
 //! Rust formulation `!0_i64 << shift` which is the same bit pattern
-//! in two's complement (quirk **G3** disposition: `aligned`).
+//! in two's complement (quirk **G3** disposition: `strict`).
 
 use crate::error::{MalformedRleReason, MaskError};
 
