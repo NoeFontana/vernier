@@ -84,6 +84,8 @@ nav:
       - From panopticapi: migrate/from-panopticapi.md
   - How-to:
       - how-to/README.md
+      - Configure the evaluator: how-to/configure-evaluator.md
+      - Custom evaluation grids: how-to/custom-evaluation-grids.md
       - Evaluate with the CLI: how-to/cli-eval.md
       - Inspect result tables: how-to/result-tables.md
       - Evaluate with boundary IoU: how-to/boundary-iou.md

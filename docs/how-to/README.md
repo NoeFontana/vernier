@@ -12,6 +12,12 @@ accomplish.
   kernel and its dilation knob.
 - [Evaluate with `vernier eval`](cli-eval.md) — the static CLI binary
   for CI pipelines without a Python interpreter.
+- [Configure the evaluator](configure-evaluator.md) — the entry-point
+  survey of `iou` / `parity_mode` / `max_dets` / `use_cats` /
+  `cast_inputs` and how they compose.
+- [Custom evaluation grids](custom-evaluation-grids.md) — the
+  ADR-0040 axes (`iou_thresholds`, `recall_thresholds`,
+  `area_ranges`) and the `evaluate_tables` route.
 - [Distributed evaluation across ranks](distributed-eval.md) —
   rank-local + gather across instance / semantic / panoptic.
 - [Evaluate keypoints with OKS](keypoints-oks.md) — `Keypoints()` with
