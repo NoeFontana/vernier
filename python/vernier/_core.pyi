@@ -252,6 +252,9 @@ def evaluate_bbox_grid(
     use_cats: bool,
     retain_iou: bool = ...,
     cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
 ) -> EvalGrid: ...
 def evaluate_bbox_grid_with_dataset(
     gt: CocoDataset,
@@ -261,6 +264,9 @@ def evaluate_bbox_grid_with_dataset(
     use_cats: bool,
     retain_iou: bool = ...,
     cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
@@ -286,6 +292,9 @@ def evaluate_segm_grid(
     use_cats: bool,
     retain_iou: bool = ...,
     cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
     gt_json: bytes,
@@ -314,6 +323,9 @@ def evaluate_boundary_grid(
     dilation_ratio: float,
     retain_iou: bool = ...,
     cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
     gt_json: bytes,
@@ -341,6 +353,9 @@ def evaluate_keypoints_grid(
     use_cats: bool,
     sigmas: dict[int, list[float]],
     cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
 ) -> EvalGrid: ...
 
 class _TideDeltaDict(TypedDict):

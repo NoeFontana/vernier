@@ -15,7 +15,6 @@ use arrow_schema::{DataType, Field, Schema};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use vernier_core::parity::iou_thresholds;
 use vernier_core::tables::{
     aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
     build_per_pair, BboxColumns, MatchStatus, PerClassTable, PerDetectionTable, PerImageTable,
@@ -42,16 +41,13 @@ pub(crate) fn per_class_to_arrow_pycapsule(
     let inner_accum = accum.accumulated_ref();
     let max_dets = accum.max_dets_slice().to_vec();
     let dataset_arc = dataset.dataset_ref();
+    // ADR-0040: reuse the grid's resolved IoU ladder so t50 / t75
+    // lookups land on the same T-axis the matcher saw.
+    let iou_thr = grid.iou_thresholds();
     let table = py
         .detach(move || -> Result<PerClassTable, EvalError> {
             let support = aggregate_per_class_support(inner_grid, 0);
-            build_per_class(
-                inner_accum,
-                &dataset_arc,
-                iou_thresholds(),
-                &max_dets,
-                &support,
-            )
+            build_per_class(inner_accum, &dataset_arc, iou_thr, &max_dets, &support)
         })
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let batch = per_class_record_batch(&table).map_err(|e| arrow_err(&e))?;
@@ -108,9 +104,10 @@ pub(crate) fn per_image_to_arrow_pycapsule(
 ) -> PyResult<ArrowRecordBatchPy> {
     let inner_grid = grid.eval_grid_ref();
     let dataset_arc = dataset.dataset_ref();
+    let iou_thr = grid.iou_thresholds();
     let table = py
         .detach(move || -> Result<PerImageTable, EvalError> {
-            build_per_image(inner_grid, &dataset_arc, iou_thresholds())
+            build_per_image(inner_grid, &dataset_arc, iou_thr)
         })
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
     let batch = per_image_record_batch(&table).map_err(|e| arrow_err(&e))?;
@@ -206,12 +203,13 @@ pub(crate) fn per_detection_to_arrow_pycapsule(
         per_detection_with_geometry: with_geometry,
         ..TablesConfig::default()
     };
+    let iou_thr = grid.iou_thresholds();
     let table = py
         .detach(move || -> Result<PerDetectionTable, EvalError> {
             build_per_detection(
                 inner_grid,
                 dets,
-                iou_thresholds(),
+                iou_thr,
                 inner_grid.retained_ious.as_ref(),
                 &cfg,
             )

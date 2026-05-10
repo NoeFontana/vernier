@@ -142,6 +142,10 @@ def test_evaluator_array_dt_with_tables_per_detection() -> None:
     json_result = ev.evaluate(gt_bytes, dt_bytes, tables=("per_detection",))
     arr_result = ev.evaluate(gt_bytes, detections, tables=("per_detection",))
 
+    # Default-grid evaluator → summary is always populated (the
+    # ADR-0040 custom-grid `summary=None` path doesn't apply here).
+    assert json_result.summary is not None
+    assert arr_result.summary is not None
     for i, (j, a) in enumerate(
         zip(json_result.summary.stats, arr_result.summary.stats, strict=True)
     ):

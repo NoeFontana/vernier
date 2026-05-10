@@ -202,6 +202,17 @@ struct PyEvalGrid {
     /// of `(gt, boundary_cache, segm_cache)`; reused by [`Self::dataset`]
     /// so the result-tables Python wrapper doesn't re-parse GT JSON.
     retained_dataset: dataset::DatasetSnapshot,
+    /// Resolved IoU threshold ladder used to build this grid (ADR-0040).
+    /// Carried on the grid so [`Self::accumulate`] reuses the same
+    /// ladder the matcher saw — pairing a custom grid with the canonical
+    /// ladder at accumulate time would silently misindex the T-axis.
+    iou_thresholds: Vec<f64>,
+    /// Resolved recall threshold ladder. Threaded into
+    /// [`AccumulateParams::recall_thresholds`] by [`Self::accumulate`].
+    /// Independent from the eval-time ladder; lives here so the user's
+    /// custom value flows from `evaluate_*_grid` through accumulate
+    /// without re-asking on the second call.
+    recall_thresholds: Vec<f64>,
 }
 
 #[pymethods]
@@ -270,13 +281,15 @@ impl PyEvalGrid {
         let n_area_ranges = self.inner.n_area_ranges;
         let n_images = self.inner.n_images;
         let eval_imgs = &self.inner.eval_imgs;
+        let iou_thr = self.iou_thresholds.clone();
+        let recall_thr = self.recall_thresholds.clone();
         let acc = py
             .detach(|| {
                 accumulate(
                     eval_imgs,
                     AccumulateParams {
-                        iou_thresholds: iou_thresholds(),
-                        recall_thresholds: recall_thresholds(),
+                        iou_thresholds: &iou_thr,
+                        recall_thresholds: &recall_thr,
                         max_dets: &max_dets,
                         n_categories,
                         n_area_ranges,
@@ -289,6 +302,7 @@ impl PyEvalGrid {
         Ok(PyAccumulated {
             inner: acc,
             max_dets,
+            iou_thresholds: iou_thr,
         })
     }
 
@@ -312,6 +326,14 @@ impl PyEvalGrid {
     pub(crate) fn retained_dt(&self) -> Option<&CocoDetections> {
         self.retained_dt.as_ref()
     }
+
+    /// Resolved IoU threshold ladder this grid was built with (ADR-0040).
+    /// Used by the result-tables module so its T-axis indexing matches
+    /// the matcher's; reads as the kernel-canonical ladder when no
+    /// custom value was supplied at evaluate-time.
+    pub(crate) fn iou_thresholds(&self) -> &[f64] {
+        &self.iou_thresholds
+    }
 }
 
 /// Frozen wrapper around [`vernier_core::Accumulated`]. Carries the
@@ -320,6 +342,12 @@ impl PyEvalGrid {
 struct PyAccumulated {
     inner: Accumulated,
     max_dets: Vec<usize>,
+    /// Resolved IoU threshold ladder propagated from the source
+    /// [`PyEvalGrid`] (ADR-0040). [`Self::summarize`] indexes into the
+    /// 5-D `precision` tensor along this ladder; pairing it with the
+    /// canonical ladder when the grid was built on a custom one would
+    /// silently mis-slice.
+    iou_thresholds: Vec<f64>,
 }
 
 #[pymethods]
@@ -378,12 +406,12 @@ impl PyAccumulated {
         // `PyEvalGrid::accumulate`), so the unwrap_or branch is a no-op.
         sort_max_dets(&mut dets);
         let acc = &self.inner;
-        let iou_thr = iou_thresholds();
+        let iou_thr = self.iou_thresholds.clone();
         let summary = py
             .detach(|| match plan {
-                SummarizePlan::Detection => summarize_detection(acc, iou_thr, &dets),
+                SummarizePlan::Detection => summarize_detection(acc, &iou_thr, &dets),
                 SummarizePlan::Keypoints => {
-                    summarize_with(acc, &StatRequest::coco_keypoints_default(), iou_thr, &dets)
+                    summarize_with(acc, &StatRequest::coco_keypoints_default(), &iou_thr, &dets)
                 }
             })
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -412,7 +440,7 @@ impl PyAccumulated {
         require_nonempty_max_dets(&dets)?;
         sort_max_dets(&mut dets);
         let acc = &self.inner;
-        let iou_thr = iou_thresholds();
+        let iou_thr = self.iou_thresholds.clone();
         let dataset = gt.dataset_ref();
         let summary = py
             .detach(move || -> Result<vernier_core::Summary, EvalError> {
@@ -422,7 +450,7 @@ impl PyAccumulated {
                 summarize_with_lvis(
                     acc,
                     &StatRequest::lvis_default(),
-                    iou_thr,
+                    &iou_thr,
                     &dets,
                     &category_ids,
                     dataset.category_frequency(),
@@ -575,8 +603,17 @@ fn evaluate_grid_impl(
     use_cats: bool,
     retain_iou: bool,
     cast_inputs: bool,
+    iou_thresholds_arg: Option<Vec<f64>>,
+    recall_thresholds_arg: Option<Vec<f64>>,
+    area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
+    let (iou_thr, recall_thr, area) = resolve_grid_axes(
+        &iou_type,
+        iou_thresholds_arg,
+        recall_thresholds_arg,
+        area_ranges_arg,
+    )?;
     // Zero-copy borrow over the GT bytes — `PyBackedBytes` keeps the
     // underlying `Py<PyBytes>` alive across `py.detach` while exposing
     // `&[u8]` via `Deref`. Saves a 20 MB `to_vec()` per call on val2017
@@ -584,8 +621,8 @@ fn evaluate_grid_impl(
     // (the underlying object is Python-immutable and refcount-pinned).
     let gt_bytes = pyo3::pybacked::PyBackedBytes::from(gt_json.clone());
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
-    let area: Vec<AreaRange> = area_ranges_for(&iou_type);
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
+    let iou_for_run = iou_thr.clone();
     let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
         let gt = parse_gt(&gt_bytes)?;
         let dt = realize_dt(dt_payload)?;
@@ -594,7 +631,7 @@ fn evaluate_grid_impl(
                 &gt,
                 &dt,
                 EvaluateParams {
-                    iou_thresholds: iou_thresholds(),
+                    iou_thresholds: &iou_for_run,
                     area_ranges: &area,
                     max_dets_per_image,
                     use_cats,
@@ -614,6 +651,8 @@ fn evaluate_grid_impl(
         parity,
         retained_dt,
         retained_dataset,
+        iou_thresholds: iou_thr,
+        recall_thresholds: recall_thr,
     })
 }
 
@@ -633,12 +672,21 @@ fn evaluate_grid_with_dataset_impl(
     use_cats: bool,
     retain_iou: bool,
     cast_inputs: bool,
+    iou_thresholds_arg: Option<Vec<f64>>,
+    recall_thresholds_arg: Option<Vec<f64>>,
+    area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
+    let (iou_thr, recall_thr, area) = resolve_grid_axes(
+        &iou_type,
+        iou_thresholds_arg,
+        recall_thresholds_arg,
+        area_ranges_arg,
+    )?;
     let snapshot = gt.snapshot();
     let retained_dataset = snapshot.clone();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
-    let area: Vec<AreaRange> = area_ranges_for(&iou_type);
+    let iou_for_run = iou_thr.clone();
     let (grid, retained_dt) =
         py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
             let dt = realize_dt(dt_payload)?;
@@ -660,7 +708,7 @@ fn evaluate_grid_with_dataset_impl(
                     &snapshot.gt,
                     &dt,
                     EvaluateParams {
-                        iou_thresholds: iou_thresholds(),
+                        iou_thresholds: &iou_for_run,
                         area_ranges: &area,
                         max_dets_per_image,
                         use_cats,
@@ -677,6 +725,8 @@ fn evaluate_grid_with_dataset_impl(
         parity,
         retained_dt,
         retained_dataset,
+        iou_thresholds: iou_thr,
+        recall_thresholds: recall_thr,
     })
 }
 
@@ -691,23 +741,58 @@ fn area_ranges_for(iou_type: &EvalIouType) -> Vec<AreaRange> {
     }
 }
 
+/// Resolve the three optional ADR-0040 grid axes against the
+/// kernel-canonical defaults. `None` falls back to the canonical
+/// ladder / area grid; an explicit value is taken verbatim.
+///
+/// `area_ranges` is supplied as a [`PyBreakdown`] (a range Breakdown
+/// validated by the Python wrapper), unpacked here via
+/// [`vernier_core::breakdown::Breakdown::area_ranges`]. The class-groups
+/// variant is rejected — instance area_ranges accepts only range
+/// breakdowns per ADR-0040.
+fn resolve_grid_axes(
+    iou_type: &EvalIouType,
+    iou_thresholds_arg: Option<Vec<f64>>,
+    recall_thresholds_arg: Option<Vec<f64>>,
+    area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
+) -> PyResult<(Vec<f64>, Vec<f64>, Vec<AreaRange>)> {
+    let iou = iou_thresholds_arg.unwrap_or_else(|| iou_thresholds().to_vec());
+    let recall = recall_thresholds_arg.unwrap_or_else(|| recall_thresholds().to_vec());
+    let area = match area_ranges_arg {
+        None => area_ranges_for(iou_type),
+        Some(bd) => match &bd.borrow().inner {
+            breakdown::BreakdownInner::Range(b) => b.area_ranges(),
+            breakdown::BreakdownInner::ClassGroups(_) => {
+                return Err(PyValueError::new_err(
+                    "area_ranges must be a range Breakdown (Breakdown.from_ranges); \
+                     class-groups breakdowns belong on semantic / panoptic class_grouping (ADR-0040)",
+                ));
+            }
+        },
+    };
+    Ok((iou, recall, area))
+}
+
 /// Bbox per-image evaluation pass — see [`evaluate_grid_impl`].
 /// `retain_iou` (per ADR-0019 Week 2.3) keeps the per-`(category,
 /// image)` IoU matrix on the returned grid for later table
 /// construction; defaults to `False` so existing callers pay no extra
 /// allocation.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
 #[allow(clippy::too_many_arguments)]
-fn evaluate_bbox_grid(
-    py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
-    dt: &Bound<'_, PyAny>,
+fn evaluate_bbox_grid<'py>(
+    py: Python<'py>,
+    gt_json: &Bound<'py, PyBytes>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
     retain_iou: bool,
     cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -719,6 +804,9 @@ fn evaluate_bbox_grid(
         use_cats,
         retain_iou,
         cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
     )
 }
 
@@ -728,17 +816,20 @@ fn evaluate_bbox_grid(
 /// strips ADR-0026 federated metadata at GT load, so the
 /// orchestrator's AA3/AA4 branches never fire on that path.
 #[pyfunction]
-#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false))]
+#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
 #[allow(clippy::too_many_arguments)]
-fn evaluate_bbox_grid_with_dataset(
-    py: Python<'_>,
+fn evaluate_bbox_grid_with_dataset<'py>(
+    py: Python<'py>,
     gt: &PyDataset,
-    dt: &Bound<'_, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
     retain_iou: bool,
     cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_with_dataset_impl(
         py,
@@ -750,6 +841,9 @@ fn evaluate_bbox_grid_with_dataset(
         use_cats,
         retain_iou,
         cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
     )
 }
 
@@ -757,17 +851,20 @@ fn evaluate_bbox_grid_with_dataset(
 /// `segmentation` field on every entry; absent fields raise a typed
 /// `ValueError` instead of being silently treated as empty.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
 #[allow(clippy::too_many_arguments)]
-fn evaluate_segm_grid(
-    py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
-    dt: &Bound<'_, PyAny>,
+fn evaluate_segm_grid<'py>(
+    py: Python<'py>,
+    gt_json: &Bound<'py, PyBytes>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
     retain_iou: bool,
     cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -779,6 +876,9 @@ fn evaluate_segm_grid(
         use_cats,
         retain_iou,
         cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
     )
 }
 
@@ -787,18 +887,21 @@ fn evaluate_segm_grid(
 /// `dilation_ratio` is the boundary band width as a fraction of the
 /// image diagonal (`0.02` COCO default; `0.008` LVIS variant).
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
 #[allow(clippy::too_many_arguments)]
-fn evaluate_boundary_grid(
-    py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
-    dt: &Bound<'_, PyAny>,
+fn evaluate_boundary_grid<'py>(
+    py: Python<'py>,
+    gt_json: &Bound<'py, PyBytes>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
     dilation_ratio: f64,
     retain_iou: bool,
     cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
     evaluate_grid_impl(
@@ -811,6 +914,9 @@ fn evaluate_boundary_grid(
         use_cats,
         retain_iou,
         cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
     )
 }
 
@@ -1130,17 +1236,20 @@ fn evaluate_summary_with_dataset_impl(
 /// carry `keypoints` fields. `sigmas` matches
 /// [`evaluate_keypoints_summary`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
 #[allow(clippy::too_many_arguments)]
-fn evaluate_keypoints_grid(
-    py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
-    dt: &Bound<'_, PyAny>,
+fn evaluate_keypoints_grid<'py>(
+    py: Python<'py>,
+    gt_json: &Bound<'py, PyBytes>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
     use_cats: bool,
-    sigmas: &Bound<'_, PyDict>,
+    sigmas: &Bound<'py, PyDict>,
     cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
@@ -1155,6 +1264,9 @@ fn evaluate_keypoints_grid(
         use_cats,
         false,
         cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
     )
 }
 

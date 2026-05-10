@@ -183,4 +183,5 @@ def test_per_class_table_alignes_with_summary_ap() -> None:
     table_ap_values = [v for v in result.per_class["ap"].to_list() if v is not None]
     assert table_ap_values
     table_mean = sum(table_ap_values) / len(table_ap_values)
+    assert result.summary is not None
     assert table_mean == pytest.approx(result.summary.stats[0])
