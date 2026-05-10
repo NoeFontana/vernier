@@ -495,27 +495,10 @@ class Evaluator:
 
         Equivalent to :meth:`evaluate` with ``tables=`` set, but
         bypasses the :class:`IncompatibleSummaryPlan` redirect so
-        custom-grid users can reach the result tables.
-
-        **Note (PR scope):** the kernel-side plumbing for custom
+        custom-grid users can reach the result tables. Honors
         ``iou_thresholds`` / ``recall_thresholds`` / ``area_ranges``
-        is a follow-up to the ADR-0039 distributed-eval phase. Until
-        that lands, calling ``evaluate_tables`` with any custom-grid
-        field set raises :class:`NotImplementedError` — the surface is
-        in place; the kernel-side honoring of custom values is
-        deferred. Default-grid callers (no custom fields) get the
-        same :class:`EvalResult` as ``evaluate(tables="all")``.
+        when set, falling through to the canonical COCO grid otherwise.
         """
-        if self._has_custom_grid():
-            raise NotImplementedError(
-                "evaluate_tables() with a custom iou_thresholds / "
-                "recall_thresholds / area_ranges grid is deferred to a "
-                "follow-up to ADR-0040 (kernel-side custom-grid plumbing "
-                "lands alongside the ADR-0039 params_hash split). "
-                "The surface — fields, validation, evaluate() redirect — is "
-                "in place; use the default grid (set custom fields to None) "
-                "until the kernel plumbing ships."
-            )
         max_dets_list = self._resolve_max_dets()
         return self._evaluate_with_tables(
             gt, dt, max_dets_list, tables, tables_config or TablesConfig()
@@ -546,6 +529,12 @@ class Evaluator:
         # retain its IoU matrices.
         need_retention = bool(requested & {"per_detection", "per_pair"})
 
+        # ADR-0040 custom-grid axes (None → kernel canonical, resolved
+        # in `vernier_ffi::resolve_grid_axes`).
+        custom_iou = None if self.iou_thresholds is None else list(self.iou_thresholds)
+        custom_recall = None if self.recall_thresholds is None else list(self.recall_thresholds)
+        custom_areas = self.area_ranges
+
         match self.iou:
             case Bbox():
                 grid = evaluate_bbox_grid(
@@ -556,6 +545,9 @@ class Evaluator:
                     self.use_cats,
                     need_retention,
                     self.cast_inputs,
+                    iou_thresholds=custom_iou,
+                    recall_thresholds=custom_recall,
+                    area_ranges=custom_areas,
                 )
             case Segm():
                 grid = evaluate_segm_grid(
@@ -566,6 +558,9 @@ class Evaluator:
                     self.use_cats,
                     need_retention,
                     self.cast_inputs,
+                    iou_thresholds=custom_iou,
+                    recall_thresholds=custom_recall,
+                    area_ranges=custom_areas,
                 )
             case Boundary(dilation_ratio=r):
                 grid = evaluate_boundary_grid(
@@ -577,6 +572,9 @@ class Evaluator:
                     r,
                     need_retention,
                     self.cast_inputs,
+                    iou_thresholds=custom_iou,
+                    recall_thresholds=custom_recall,
+                    area_ranges=custom_areas,
                 )
             case Keypoints():
                 raise NotImplementedError(
@@ -587,7 +585,12 @@ class Evaluator:
                 _reject_unknown_iou(self.iou)
 
         accum = grid.accumulate(max_dets_list)
-        summary = accum.summarize(max_dets_list)
+        # ADR-0040: the canonical 12-stat detection summary is keyed on
+        # hardcoded slot indices (AP, AP_50, AP_75, AP_S, ...) that
+        # assume the canonical grid; pairing it with a user-defined
+        # grid would silently misindex. evaluate_tables() with a
+        # custom grid emits per-axis tables and `summary=None`.
+        summary = None if self._has_custom_grid() else accum.summarize(max_dets_list)
         # `evaluate_*_grid` parsed `gt` once and retained the dataset on
         # the grid; reuse instead of paying a second JSON parse.
         dataset = grid.dataset()
@@ -667,7 +670,31 @@ class Evaluator:
         ``parity_mode="strict"`` once the ``(score, rank_id,
         local_position)`` tiebreak lands; under ADR-0004's 4-ULP
         envelope today).
+
+        Per ADR-0040, raises :class:`InvalidInstanceParams` when any
+        of ``iou_thresholds`` / ``recall_thresholds`` / ``area_ranges``
+        is set: extending the ADR-0031 wire format to carry the
+        resolved custom grid + bumping ``params_hash`` to cover the
+        new fields is a follow-up. Batch :meth:`evaluate_tables`
+        already honors the custom grid; pair it with a single-rank
+        run until the streaming follow-up ships.
         """
+        offender = _first_custom_grid_field_and_value(self)
+        if offender is not None:
+            field_name, value = offender
+            raise InvalidInstanceParams(
+                field=field_name,
+                value=value,
+                remediation=(
+                    "evaluate_to_partial() with a custom iou_thresholds / "
+                    "recall_thresholds / area_ranges grid is deferred to a "
+                    "follow-up to ADR-0040 (extends the ADR-0031 wire format "
+                    "and the params_hash hash to cover the resolved custom "
+                    "grid). Use evaluate_tables(...) for single-rank custom "
+                    "grids today; multi-rank custom grids land in the next "
+                    "phase."
+                ),
+            )
         kwargs = self._streaming_kwargs()
         iou_type = kwargs.pop("iou_type")
         return _evaluate_instance_to_partial(gt, dt, iou_type, rank_id, **kwargs)

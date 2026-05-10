@@ -191,13 +191,70 @@ def test_evaluate_tables_default_grid_returns_eval_result() -> None:
     assert len(result.summary.stats) == 12
 
 
-def test_evaluate_tables_custom_grid_raises_not_implemented_for_now() -> None:
-    """PR 2 ships the surface; kernel plumbing for custom grids is a
-    follow-up (params_hash split lands first). The redirect target
-    raises a clear message until that lands."""
+def test_evaluate_tables_custom_iou_thresholds_returns_eval_result() -> None:
+    """Custom IoU ladder runs end-to-end via evaluate_tables(); the
+    canonical 12-stat summary is omitted (slot indices don't fit
+    user-defined ladders) and the per-axis tables remain available.
+
+    The 0.5 and 0.75 reference points are required because the
+    canonical per_class / per_image table schemas emit AP_50 / AP_75
+    columns. Ladders missing these surface a typed ``ValueError`` from
+    the table builder pointing at the missing reference point.
+    """
+    # 6 entries vs canonical 10 — proves T-axis sizing is honored
+    # downstream. Includes 0.5 and 0.75 so per_class / per_image build.
+    e = Evaluator(iou=Bbox(), iou_thresholds=(0.5, 0.6, 0.7, 0.75, 0.85, 0.95))
+    result = e.evaluate_tables(_FIXTURE_GT, _FIXTURE_DT)
+    assert result.summary is None
+    assert result.per_class is not None
+    assert result.per_image is not None
+
+
+def test_evaluate_tables_custom_recall_thresholds_returns_eval_result() -> None:
+    """Custom recall ladder feeds AccumulateParams.recall_thresholds.
+    Doesn't affect canonical-table schema (they don't index into the
+    R-axis directly), so per_class / per_image still build."""
+    e = Evaluator(iou=Bbox(), recall_thresholds=(0.0, 0.25, 0.5, 0.75, 1.0))
+    result = e.evaluate_tables(_FIXTURE_GT, _FIXTURE_DT)
+    assert result.summary is None
+    assert result.per_class is not None
+
+
+def test_evaluate_tables_custom_area_ranges_returns_eval_result() -> None:
+    """Custom 4-bucket area ranges propagate through the eval pass.
+    The canonical per_class / per_image schema requires 4 buckets
+    (all / small / medium / large) — non-canonical bucket counts will
+    surface a typed error from the table builder."""
+    bd = Breakdown.from_ranges(
+        "area",
+        [
+            ("all", 0.0, 1e10),
+            ("small", 0.0, 16.0 * 16.0),
+            ("medium", 16.0 * 16.0, 64.0 * 64.0),
+            ("large", 64.0 * 64.0, 1e10),
+        ],
+    )
+    e = Evaluator(iou=Bbox(), area_ranges=bd)
+    result = e.evaluate_tables(_FIXTURE_GT, _FIXTURE_DT)
+    assert result.summary is None
+    assert result.per_class is not None
+
+
+def test_evaluate_tables_custom_grid_stats_property_raises() -> None:
+    """The .stats convenience accessor signals that custom-grid
+    EvalResults don't carry the slot-indexed summary."""
+    e = Evaluator(iou=Bbox(), iou_thresholds=(0.5, 0.6, 0.7, 0.75, 0.85, 0.95))
+    result = e.evaluate_tables(_FIXTURE_GT, _FIXTURE_DT)
+    with pytest.raises(AttributeError, match="custom-grid"):
+        _ = result.stats
+
+
+def test_evaluate_to_partial_with_custom_grid_raises() -> None:
+    """ADR-0040 streaming kernel plumbing is a follow-up; gate at the
+    Python boundary with a clear remediation pointing at evaluate_tables."""
     e = Evaluator(iou=Bbox(), iou_thresholds=(0.5,))
-    with pytest.raises(NotImplementedError, match="kernel-side custom-grid plumbing"):
-        e.evaluate_tables(_FIXTURE_GT, _FIXTURE_DT)
+    with pytest.raises(InvalidInstanceParams, match="evaluate_to_partial"):
+        e.evaluate_to_partial(_FIXTURE_GT, _FIXTURE_DT, rank_id=0)
 
 
 # --- with_options threading -------------------------------------------------

@@ -228,7 +228,14 @@ class EvalResult:
     directly — the leading-underscore name signals implementation detail.
     """
 
-    summary: Summary
+    #: Canonical pycocotools-shaped summary. ``None`` when the
+    #: evaluator was configured with an ADR-0040 custom grid
+    #: (``iou_thresholds`` / ``recall_thresholds`` / ``area_ranges``):
+    #: the canonical 12-stat / 10-stat / 13-stat plans are keyed on
+    #: hardcoded slot indices that don't generalize to user-defined
+    #: grids. Custom-grid callers consume the per-axis result tables
+    #: directly. The default-grid path always populates this field.
+    summary: Summary | None
     # Underlying Arrow producers (PyCapsule-emitting). `None` for tables
     # the caller didn't request. Leading underscore: implementation
     # detail; the supported access path is the cached_property below.
@@ -239,8 +246,14 @@ class EvalResult:
 
     @property
     def stats(self) -> list[float]:
-        """Pass-through to ``self.summary.stats`` for callers who keep
-        the existing ``result.stats`` shape."""
+        """Pass-through to ``self.summary.stats``. Raises
+        :class:`AttributeError` on ADR-0040 custom-grid results — the
+        slot-indexed summary doesn't apply; read per-axis tables instead."""
+        if self.summary is None:
+            raise AttributeError(
+                "EvalResult.stats is unavailable for custom-grid evaluations; "
+                "read result.per_class / result.per_image instead."
+            )
         return self.summary.stats
 
     @cached_property
