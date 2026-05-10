@@ -44,13 +44,10 @@ pub const LVIS_DEFAULT_MAX_DETS: usize = 300;
 /// codebase.
 pub const LVIS_BOUNDARY_DILATION_RATIO_DEFAULT: f64 = 0.008;
 
-/// IoU/AP-equality tolerance applied under
-/// [`crate::parity::ParityMode::Aligned`] when comparing vernier's LVIS
-/// output against the vendored oracle. Stricter checks live in `Strict`
-/// mode (bit-equal). The `1e-9` value matches
-/// [`crate::boundary_parity::BOUNDARY_PARITY_EPS`]; pinned here so the
-/// LVIS parity harness has a single knob to tune as the oracle
-/// stabilises.
+/// Cross-oracle IoU/AP-equality tolerance for the parity harness
+/// when comparing vernier's LVIS output against the vendored oracle.
+/// Same shape as [`crate::boundary_parity::BOUNDARY_PARITY_EPS`]
+/// (harness-side comparison budget, not a runtime mode).
 pub const LVIS_PARITY_EPS: f64 = 1e-9;
 
 /// Pinned PyPI release of the vendored `lvis-dataset/lvis-api`

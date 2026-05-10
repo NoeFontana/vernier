@@ -5,7 +5,9 @@
 interleaves every ``(impl, rep)`` pair across the cell's impl list,
 spawns each runner subprocess in randomized order per rep (deterministic
 given ``run_seed``), assembles a per-impl ``BenchResult``, then runs the
-three-tier parity check from ADR-0002. Release mode adds a governor
+parity comparator (per-paradigm cross-impl tolerance taxonomy in
+``parity.py``; runtime ADR-0002 ``ParityMode`` is two-valued).
+Release mode adds a governor
 pre-flight and an IQR-relative-to-median gate on the ``total`` stage
 (ADR-0017 §"Run modes").
 

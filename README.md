@@ -17,14 +17,15 @@ reimplementations exist, but each silently fixes some quirks and not
 others, so you discover the divergences empirically. vernier takes a
 third path:
 
-- **Auditable parity.** Every divergence from pycocotools is filed in a
-  three-tier quirks survey under
-  [ADR-0002](docs/adr/0002-three-tier-parity-model.md): `strict`
-  (bit-equal), `aligned` (within tolerance), or `corrected` (opt-in
-  fix). Strict is the default; corrected fixes are itemized so you
-  always know when your numbers diverge from a reference run. A
-  drop-in shim (`vernier.patch_pycocotools()`) keeps existing
-  pycocotools-based scripts working with one line.
+- **Auditable parity.** Every divergence from pycocotools is filed in
+  the quirks survey under
+  [ADR-0002](docs/adr/0002-three-tier-parity-model.md) as either
+  `strict` (bit-equal output, even when vernier's implementation is
+  structurally different) or `corrected` (opt-in opinionated fix).
+  Strict is the default; corrected fixes are itemized so you always
+  know when your numbers diverge from a reference run. A drop-in shim
+  (`vernier.patch_pycocotools()`) keeps existing pycocotools-based
+  scripts working with one line.
 - **One toolkit instead of five.** bbox / segm / boundary / keypoints
   AP, panoptic PQ, semantic mIoU, and LVIS federated all live behind
   one Python API and one CLI. Per-paradigm migration guides under

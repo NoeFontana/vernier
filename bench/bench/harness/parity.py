@@ -5,8 +5,9 @@ After every cell finishes, every runner has written its result
 artifacts to disk. The comparator for that cell's paradigm loads them
 and asserts the cross-impl invariants documented in the parity ADRs:
 
-- **instance** — three-tier strict / aligned / boundary contract from
-  ADR-0002:
+- **instance** — the comparator's own three-tier cross-impl tolerance
+  taxonomy (independent of the runtime ADR-0002 ``ParityMode``,
+  which is two-valued):
     - *strict* — vernier reproduces pycocotools bit-exactly
       (``np.array_equal``).
     - *aligned* — vernier matches faster-coco-eval within a small

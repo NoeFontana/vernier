@@ -17,13 +17,13 @@ silently fix or silently inherit. Faster reimplementations exist, but each
 chooses its own quirk dispositions, leaving users to discover the divergences
 empirically. vernier takes a third path:
 
-- **Auditable parity.** Every divergence from `pycocotools` is filed in a
-  three-tier quirks survey under
-  [ADR-0002](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md):
-  `strict` (bit-equal reproduction), `aligned` (within a documented
-  tolerance), or `corrected` (opt-in opinionated fix). The default is
-  strict; corrected fixes are itemized so you know exactly when your numbers
-  diverge from a reference run.
+- **Auditable parity.** Every divergence from `pycocotools` is filed in the
+  quirks survey under
+  [ADR-0002](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md)
+  as either `strict` (bit-equal output, even when vernier's implementation
+  is structurally different) or `corrected` (opt-in opinionated fix). The
+  default is strict; corrected fixes are itemized so you know exactly when
+  your numbers diverge from a reference run.
 - **A unified evaluation toolkit.** bbox / segm / keypoints AP, boundary IoU,
   panoptic PQ, semantic mIoU, and LVIS federated evaluation all live in one
   package, behind one Python API and one CLI. No more wrestling with

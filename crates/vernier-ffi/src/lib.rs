@@ -266,7 +266,7 @@ impl PyEvalGrid {
     /// `max_dets_per_image` used to build the grid.
     fn accumulate(&self, py: Python<'_>, max_dets: Vec<usize>) -> PyResult<PyAccumulated> {
         require_nonempty_max_dets(&max_dets)?;
-        // Quirk A2 (aligned): mirror pycocotools' `cocoeval.py:137`
+        // Quirk A2 (strict): mirror pycocotools' `cocoeval.py:137`
         // `p.maxDets = sorted(p.maxDets)`. The accumulator's M-axis and
         // the summarizer's positional `AR_*` slots both depend on
         // ascending order; normalize at the FFI boundary.
@@ -395,7 +395,7 @@ impl PyAccumulated {
         let plan = parse_summarize_plan(plan.unwrap_or("detection"))?;
         let mut dets = max_dets.unwrap_or_else(|| self.max_dets.clone());
         require_nonempty_max_dets(&dets)?;
-        // Quirk A2 (aligned): the accumulator was built with a sorted
+        // Quirk A2 (strict): the accumulator was built with a sorted
         // ladder; an explicit override here must follow the same
         // contract or the M-axis lookups in the summarizer would
         // silently misalign. `self.max_dets` is already sorted (set by
@@ -938,7 +938,7 @@ fn evaluate_summary_impl(
 ) -> PyResult<PySummary> {
     let parity = parse_parity_mode(parity_mode)?;
     require_nonempty_max_dets(&max_dets)?;
-    // Quirk A2 (aligned): mirror pycocotools' `cocoeval.py:137`
+    // Quirk A2 (strict): mirror pycocotools' `cocoeval.py:137`
     // `p.maxDets = sorted(p.maxDets)`. Sort once here so the eval
     // pipeline's `max_dets_per_image` cap (the largest entry) and the
     // summarizer's positional `AR_*` lookups both see the canonical
@@ -1834,7 +1834,7 @@ impl InstanceStreamOrchestrator {
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
-        // Quirk A2 (aligned): same sort the batch path applies — the
+        // Quirk A2 (strict): same sort the batch path applies — the
         // largest entry caps `max_dets_per_image`; smaller entries are
         // sliced downstream by `accumulate`.
         let mut max_dets = max_dets;
@@ -2624,7 +2624,7 @@ impl PyBackgroundEvaluator {
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
-        // Quirk A2 (aligned): same sort the streaming/batch paths apply.
+        // Quirk A2 (strict): same sort the streaming/batch paths apply.
         let mut max_dets = max_dets;
         sort_max_dets(&mut max_dets);
         let max_dets_per_image = max_dets.iter().copied().max().unwrap_or(100);

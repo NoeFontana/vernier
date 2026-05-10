@@ -15,10 +15,11 @@ editing in place.
 Five themes explain the project's load-bearing decisions; everything
 else is detail.
 
-1. **[0002 — three-tier parity model](0002-three-tier-parity-model.md).**
+1. **[0002 — parity model](0002-three-tier-parity-model.md).**
    The contract that distinguishes vernier from every other fast COCO
-   evaluator: each pycocotools quirk gets a `strict`, `aligned`, or
-   `corrected` disposition.
+   evaluator: each pycocotools quirk gets a `strict` or `corrected`
+   disposition. (Originally three-tier; `aligned` was folded into
+   `strict` by the 2026-05-10 amendment.)
 2. **[0005 — Similarity trait + matching engine API](0005-similarity-trait-and-matching-engine-api.md).**
    The kernel-vs-engine split that lets bbox / segm / boundary /
    keypoints share one matching loop.
@@ -48,7 +49,7 @@ else is detail.
 
 | #    | Title                                                       | Status   |
 | ---- | ----------------------------------------------------------- | -------- |
-| [0002](0002-three-tier-parity-model.md) | Three-tier parity model — `strict` / `aligned` / `corrected` | accepted |
+| [0002](0002-three-tier-parity-model.md) | Parity model — `strict` / `corrected` | accepted (amended 2026-05-10) |
 | [0007](0007-patch-pycocotools-policy.md) | `patch_pycocotools` — opt-in `sys.modules` monkey-patch shim | accepted |
 
 ### Numerics

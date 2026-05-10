@@ -91,7 +91,7 @@ pub struct AccumulateParams<'p> {
     /// *largest* of these — the accumulator slices to smaller caps via
     /// `[..max_det]`.
     ///
-    /// Must be sorted ascending (quirk **A2** — aligned). Pycocotools
+    /// Must be sorted ascending (quirk **A2** — strict). Pycocotools
     /// silently overwrites `p.maxDets = sorted(p.maxDets)` at
     /// `cocoeval.py:137`, so the M-axis is always laid out
     /// smallest-to-largest. The summarizer's `AR_1 / AR_10 / AR_100`
@@ -117,7 +117,7 @@ pub struct AccumulateParams<'p> {
 /// p.maxDets = sorted(p.maxDets)
 /// ```
 ///
-/// Quirk **A2** (aligned). The accumulator's M-axis is laid out in the
+/// Quirk **A2** (strict). The accumulator's M-axis is laid out in the
 /// order of the ladder it receives, and the summarizer's
 /// `AR_1 / AR_10 / AR_100` slot mapping is positional — sorting at the
 /// param-construction boundary keeps user input order from silently

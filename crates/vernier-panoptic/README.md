@@ -17,8 +17,8 @@ the PQ fold from accidentally drifting toward each other.
 
 vernier-panoptic reproduces
 [`cocodataset/panopticapi`](https://github.com/cocodataset/panopticapi)
-semantics under the three-tier parity model
-([ADR-0002](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md)):
+semantics under the parity model in
+[ADR-0002](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md):
 strict mode is bit-equal at the per-class TP/FP/FN counts. The strict-mode
 parity harness in `tests/python/parity_panoptic/` runs both libraries on every
 fixture and diffs every intermediate.

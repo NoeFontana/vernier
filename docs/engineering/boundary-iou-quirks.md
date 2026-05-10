@@ -8,13 +8,16 @@ disposition column below is ratified.
 This survey is intentionally **independent of**
 `docs/engineering/pycocotools-quirks.md`. The two documents share no
 quirks, no fixtures, no parity harness, and no oracle. They share only
-the `ParityMode` enum (`strict` / `aligned` / `corrected`) defined in
-`crates/vernier-core/src/parity.rs`, which is the user-facing semantic
-common to all of vernier's parity stories. The boundary-specific
-constants live in `crates/vernier-core/src/boundary_parity.rs`:
+the `ParityMode` enum (`strict` / `corrected`, per ADR-0002 amended
+2026-05-10) defined in `crates/vernier-core/src/parity.rs`, which is
+the user-facing semantic common to all of vernier's parity stories.
+The boundary-specific constants live in
+`crates/vernier-core/src/boundary_parity.rs`:
 `BOUNDARY_DILATION_RATIO_DEFAULT = 0.02`,
-`BOUNDARY_PARITY_EPS = 1e-9` (IoU equality tolerance under
-`ParityMode::Aligned`), `ORACLE_COMMIT_SHA`, `ORACLE_OPENCV_PIN`.
+`BOUNDARY_PARITY_EPS = 1e-9` (cross-oracle comparison budget for the
+parity harness, not a runtime mode), `ORACLE_COMMIT_SHA`,
+`ORACLE_OPENCV_PIN`. Per-row `aligned` cell-values in the survey
+below are pending re-audit against the amended ADR-0002.
 
 Each row below was discovered by reading the oracle line-by-line. The
 disposition column is one of:

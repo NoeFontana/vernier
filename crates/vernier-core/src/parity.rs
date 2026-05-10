@@ -13,15 +13,12 @@
 use std::cmp::Ordering;
 use std::sync::OnceLock;
 
-/// Three-tier parity mode (per ADR-0002).
+/// Parity mode (per ADR-0002, amended 2026-05-10).
 ///
 /// Picks which disposition vernier honors for each row of the
 /// pycocotools quirks survey. `Strict` is the canonical migration path
 /// for users with downstream tooling calibrated to pycocotools' exact
 /// numerical behavior; `Corrected` is the default for net-new users.
-///
-/// `Aligned` does not appear here because aligned-tier changes are, by
-/// definition, output-equivalent to strict — they ship in every mode.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParityMode {
     /// Reproduce every pycocotools behavior bit-exactly, including known
@@ -36,7 +33,7 @@ pub enum ParityMode {
 }
 
 /// Substitute for `numpy.spacing(1)` in pycocotools' precision/recall
-/// arithmetic. (Quirk **C8** — aligned.) On every supported platform
+/// arithmetic. (Quirk **C8** — strict.) On every supported platform
 /// `f64::EPSILON == 2.220446049250313e-16`, identical to `np.spacing(1)`
 /// to all bits.
 pub const PARITY_EPS: f64 = f64::EPSILON;

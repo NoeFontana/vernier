@@ -1,6 +1,6 @@
 """Core public types and result-table surface.
 
-Holds :data:`ParityMode` (the three-tier parity selector) and its
+Holds :data:`ParityMode` (the two-tier parity selector) and its
 associated constants, as well as :class:`EvalResult` (cached polars
 views over the locked-spine outputs) and :class:`TablesConfig` (knobs
 for the expensive tables).
@@ -23,7 +23,8 @@ from vernier._tables import arrow_to_dataframe
 if TYPE_CHECKING:  # pragma: no cover — type-checker only
     import polars as pl
 
-#: Three-tier parity mode (ADR-0002).
+#: Parity mode (ADR-0002, amended 2026-05-10 — `aligned` collapsed
+#: into `strict`).
 #:
 #: - ``"strict"`` — bit-exact parity with pycocotools / panopticapi /
 #:   mmsegmentation. Reproduces upstream quirks and floating-point

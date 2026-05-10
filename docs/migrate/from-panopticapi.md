@@ -45,9 +45,10 @@ differences (quirk **X2**).
 vernier evaluates single-threaded by design (ADR-0006). **Strict-mode
 parity is bit-equal against `pq_compute_single_core(proc_id=0)`
 invoked with the full annotation list**, bypassing the pool entirely.
-Multi-process panopticapi traces match vernier under
-`ParityMode::Aligned` only, with a tolerance pinned by
-`PANOPTIC_PARITY_EPS` (`crates/vernier-panoptic/src/parity.rs`).
+Multi-process panopticapi traces match vernier within a cross-oracle
+tolerance pinned by `PANOPTIC_PARITY_EPS`
+(`crates/vernier-panoptic/src/parity.rs`) — a harness-side comparison
+budget, not a runtime mode.
 
 If you are migrating from a CI pipeline that ran `pq_compute` with
 the implicit pool: expect last-bit PQ drift on the first run (your
@@ -132,11 +133,14 @@ shape exactly matches panopticapi's `pq_compute` return; default
 ## Multi-process tolerance
 
 If you need to compare against an existing `pq_compute_multi_core`
-run (a deployed CI pipeline using the pool default), use
-`ParityMode::Aligned` with the host's `cpu_count`. The
-`PANOPTIC_PARITY_EPS` constant pins the bound; bumping it is an
-ADR-level decision (the source of truth is the val-measured ULP
-ceiling on COCO panoptic val2017 — see Q6 closure procedure in
+run (a deployed CI pipeline using the pool default), the parity
+harness offers a cross-oracle tolerance bound via
+`PANOPTIC_PARITY_EPS` and the host's `cpu_count` — applied at the
+comparison step, not via a runtime mode (the runtime
+[`ParityMode`](../adr/0002-three-tier-parity-model.md) is two-valued
+per the 2026-05-10 amendment). Bumping the eps is an ADR-level
+decision (the source of truth is the val-measured ULP ceiling on
+COCO panoptic val2017 — see Q6 closure procedure in
 `tests/python/parity_panoptic/panoptic_val_paths.py`).
 
 For a green-field pipeline, prefer single-threaded vernier and the
@@ -148,8 +152,8 @@ existing host-dependent baselines.
 
 - ADR-0025 (panoptic-quality evaluation as a sibling crate).
 - ADR-0026 (LVIS support — sentinel-vs-zero migration trap).
-- ADR-0010 (boundary IoU — same vendored-oracle + three-tier parity
-  model that ADR-0025 follows).
+- ADR-0010 (boundary IoU — same vendored-oracle + parity model that
+  ADR-0025 follows).
 - `tests/python/parity_panoptic/oracle/VENDORING.md` — pinned
   panopticapi commit, byte-equality SHA-256s, fork plan.
 - `tests/python/parity_panoptic/test_parity_panoptic.py` — Q1-Q5

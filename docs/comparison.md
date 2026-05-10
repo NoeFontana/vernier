@@ -31,9 +31,9 @@ rasterization, and the `COCO` GT loader.
 vernier reproduces `pycocotools==2.0.11` semantics bit-for-bit in strict
 parity mode (the default). Every quirk — float casting in IoU computation,
 the `setDetParams()` defaults, the `<` vs `<=` comparison in score-tied
-matches — is filed under one of three dispositions in
-[ADR-0002](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md):
-`strict` (bit-equal), `aligned` (within tolerance), or `corrected` (opt-in
+matches — is filed in
+[ADR-0002](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0002-three-tier-parity-model.md)
+as either `strict` (bit-equal output) or `corrected` (opt-in opinionated
 fix). The full table lives in
 [`docs/engineering/pycocotools-quirks.md`](https://github.com/NoeFontana/vernier/blob/main/docs/engineering/pycocotools-quirks.md).
 

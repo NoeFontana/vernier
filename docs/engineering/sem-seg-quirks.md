@@ -20,8 +20,8 @@ This survey is intentionally **independent of**
 `docs/engineering/panopticapi-quirks.md`, and
 `docs/engineering/lvis-quirks.md`. The five documents share no
 quirks, no fixtures, no parity harness, and no oracle. They share
-only the `ParityMode` enum (`strict` / `aligned` / `corrected`)
-defined in `crates/vernier-core/src/parity.rs`.
+only the `ParityMode` enum (`strict` / `corrected`, per ADR-0002
+amended 2026-05-10) defined in `crates/vernier-core/src/parity.rs`.
 
 ## What's structurally new in this survey
 
@@ -42,14 +42,17 @@ Each row has up to three disposition cells, one per oracle:
   oracle; the `SemanticDataset.cityscapes(...)` preset claims
   parity against this).
 - **PA** — Pascal VOC / ADE20K reference scripts (documentation
-  oracles; aligned-mode parity claims, not strict, per ADR-0028
-  §"Parity strategy").
+  oracles; cross-oracle-tolerance parity claims, not bit-equal, per
+  ADR-0028 §"Parity strategy").
 
 A cell value is one of:
 
 - **strict** — vernier reproduces this oracle's behavior bit-exactly.
-- **aligned** — vernier matches the *semantics* but may differ in
-  incidental details (4-ULP tolerance under `ParityMode::Aligned`).
+- **aligned** — survey-row annotation for "vernier matches the
+  *semantics* but may differ in incidental details" (cross-oracle
+  tolerance, not the runtime `ParityMode`). Per-row `aligned`
+  cell-values below are pending re-audit against the amended
+  ADR-0002.
 - **corrected** — vernier opts to fix this. Default behavior
   diverges from the oracle and the divergence is documented as an
   opinionated improvement.
@@ -285,9 +288,9 @@ write a small reproducer before signing off.
    to FN for the GT class but not FP for any pred class.
    (b) cityscapesScripts: errors out at load.
    (c) vernier `parity_mode="strict"` against MS: matches (a).
-   (d) vernier `cityscapes()` preset: matches (b) by default;
-   `parity_mode="aligned"` overrides to (a). The dual mode is
-   the surprising part; the fixture pins it.
+   (d) vernier `cityscapes()` preset: matches (b) by default; the
+   dual-oracle disposition is captured at the row level (the survey
+   below). The fixture pins both observable behaviors.
 
 3. **AK4 `reduce_zero_label` equivalence with `label_remap`.**
    Run mmsegmentation `IoUMetric(reduce_zero_label=True)` on
