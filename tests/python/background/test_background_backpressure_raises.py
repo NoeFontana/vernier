@@ -18,11 +18,9 @@ from pathlib import Path
 
 import vernier
 
-FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
 
-
-def test_queue_full_raises_with_structured_attrs() -> None:
-    gt = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
+def test_queue_full_raises_with_structured_attrs(fixtures_dir: Path) -> None:
+    gt = (fixtures_dir / "perfect_match" / "gt.json").read_bytes()
     # `worker_nice=19` (lowest priority) gives the calling thread a
     # better chance at filling the queue before the worker drains it.
     ev = vernier.instance.BackgroundEvaluator(gt, queue_capacity=1, worker_nice=19)

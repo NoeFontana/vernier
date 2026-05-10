@@ -1,14 +1,28 @@
 """Phase G fixtures and helpers (ADR-0014 BackgroundEvaluator).
 
 The shard helper lives in `tests/python/parity/conftest.py`; this
-module exports the worker-quiescence helper that is unique to the
-background suite.
+module exports the worker-quiescence helper and the shared
+`fixtures_dir` fixture that are unique to the background suite.
 """
 
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Any
+
+import pytest
+
+
+@pytest.fixture(scope="session")
+def fixtures_dir() -> Path:
+    """Path to the shared parity fixtures tree (`tests/python/parity/fixtures`).
+
+    Mirrors the precedent in `tests/python/parity/conftest.py:fixtures_dir`;
+    background tests reuse the same per-quirk gt.json / dt.json corpus
+    so we do not maintain a parallel fixture set.
+    """
+    return Path(__file__).parent.parent / "parity" / "fixtures"
 
 
 def drain_until_idle(ev: Any, timeout: float = 5.0) -> None:

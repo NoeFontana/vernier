@@ -18,14 +18,12 @@ from vernier.instance import BackgroundEvaluator, Bbox, Detections, Evaluator, Q
 
 from ..parity.conftest import loadres_to_detections
 
-FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
-
 
 @pytest.mark.parity
-def test_submit_arrays_matches_streaming_bytes() -> None:
+def test_submit_arrays_matches_streaming_bytes(fixtures_dir: Path) -> None:
     fixture = "missing_dt_image"
-    gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
-    dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
+    gt_bytes = (fixtures_dir / fixture / "gt.json").read_bytes()
+    dt_bytes = (fixtures_dir / fixture / "dt.json").read_bytes()
     gt_records = json.loads(gt_bytes)
     dt_records = json.loads(dt_bytes)
 
@@ -45,12 +43,12 @@ def test_submit_arrays_matches_streaming_bytes() -> None:
 
 
 @pytest.mark.parity
-def test_queue_full_error_carries_through_arrays() -> None:
+def test_queue_full_error_carries_through_arrays(fixtures_dir: Path) -> None:
     """Same backpressure semantics as the JSON path. Capacity=1 + a
     blocked first send (no draining) means the second attempt with
     timeout=0 raises ``QueueFullError``.
     """
-    gt_bytes = (FIXTURES / "missing_dt_image" / "gt.json").read_bytes()
+    gt_bytes = (fixtures_dir / "missing_dt_image" / "gt.json").read_bytes()
     bg = BackgroundEvaluator(
         gt_bytes,
         iou_type="bbox",

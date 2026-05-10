@@ -23,9 +23,6 @@ from ..parity.conftest import shard_dt_bytes
 
 IouType = Literal["bbox", "segm", "boundary", "keypoints"]
 
-FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
-
-
 # A representative slice of the streaming corpus: bbox + segm, mixing
 # perfect-match, missing-image, and crowd cases. Full coverage already
 # lives in tests/python/parity/streaming/test_streaming_finalize_equals_batch.py.
@@ -44,9 +41,11 @@ def _iou_kernel(iou_type: IouType) -> IouKind:
 @pytest.mark.parity
 @pytest.mark.parametrize(("fixture", "iou_type"), _PARITY_CASES)
 @pytest.mark.parametrize("n_shards", [1, 4])
-def test_background_finalize_equals_batch(fixture: str, iou_type: IouType, n_shards: int) -> None:
-    gt_path = FIXTURES / fixture / "gt.json"
-    dt_path = FIXTURES / fixture / "dt.json"
+def test_background_finalize_equals_batch(
+    fixture: str, iou_type: IouType, n_shards: int, fixtures_dir: Path
+) -> None:
+    gt_path = fixtures_dir / fixture / "gt.json"
+    dt_path = fixtures_dir / fixture / "dt.json"
     gt_bytes = gt_path.read_bytes()
     dt_bytes = dt_path.read_bytes()
 

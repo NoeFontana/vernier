@@ -27,11 +27,9 @@ pytestmark = pytest.mark.skipif(
     reason="requires --features test-poison build of vernier-ffi",
 )
 
-FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
 
-
-def test_worker_panic_surfaces_as_runtime_error() -> None:
-    gt = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
+def test_worker_panic_surfaces_as_runtime_error(fixtures_dir: Path) -> None:
+    gt = (fixtures_dir / "perfect_match" / "gt.json").read_bytes()
     ev = vernier.instance.BackgroundEvaluator(gt)
     # Inject the poison message; the worker pulls it off the channel and
     # panics. The channel is then closed (sender side is fine; the worker
