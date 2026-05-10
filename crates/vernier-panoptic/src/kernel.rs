@@ -175,11 +175,30 @@ pub fn pq_image(gt: &ImageEntry, dt: &ImageEntry) -> Result<PqImageReport, Panop
 
 /// Variant of [`pq_image`] that carries the offending image id so a
 /// shape-mismatch error attributes correctly. The orchestrator threads
-/// the GT image id in.
+/// the GT image id in. Uses the canonical [`PANOPTIC_IOU_THRESHOLD`]
+/// (0.5); see [`pq_image_at_threshold`] for the ADR-0042 path that
+/// carries a user-supplied threshold.
 pub fn pq_image_with_id(
     image_id: ImageId,
     gt: &ImageEntry,
     dt: &ImageEntry,
+) -> Result<PqImageReport, PanopticError> {
+    pq_image_at_threshold(image_id, gt, dt, PANOPTIC_IOU_THRESHOLD)
+}
+
+/// Match GT and DT segments at a user-supplied IoU threshold (ADR-0042).
+///
+/// Identical semantics to [`pq_image_with_id`] except the matching
+/// gate is `iou > threshold` rather than the canonical 0.5. Used by
+/// the orchestrator and the streaming evaluator when the user
+/// configured a custom `pq_iou_threshold`. `0.0 < threshold <= 1.0`
+/// is the only guarantee — bounds checking happens at the
+/// evaluator-construction boundary.
+pub fn pq_image_at_threshold(
+    image_id: ImageId,
+    gt: &ImageEntry,
+    dt: &ImageEntry,
+    threshold: f64,
 ) -> Result<PqImageReport, PanopticError> {
     if gt.height != dt.height || gt.width != dt.width {
         return Err(PanopticError::ShapeMismatch {
@@ -242,7 +261,7 @@ pub fn pq_image_with_id(
                 continue; // pathological; would be NaN under U8
             }
             let iou = (intersection as f64) / (union as f64);
-            if iou > PANOPTIC_IOU_THRESHOLD {
+            if iou > threshold {
                 tp_pairs.push(TpPair {
                     gt_id,
                     dt_id,

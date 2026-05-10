@@ -235,6 +235,55 @@ def _validate_panoptic_class_filter(cf: CategoryFilter, class_grouping: Breakdow
             )
 
 
+def _resolve_category_filter(
+    cf: CategoryFilter | None,
+    class_grouping: Breakdown | None,
+) -> list[int] | None:
+    """Resolve an ADR-0042 ``category_filter`` to the kernel's id-list
+    form. Mirrors the semantic resolver shape; ``ByGrouping`` looks up
+    the label against the active partition."""
+    if cf is None or isinstance(cf, CategoryFilterAll):
+        return None
+    if isinstance(cf, CategoryFilterByIds):
+        return sorted(cf.ids)
+    if isinstance(cf, CategoryFilterByGrouping):
+        assert class_grouping is not None
+        for label, ids in class_grouping.class_groups:
+            if label == cf.label:
+                return list(ids)
+        raise InvalidPanopticParams(
+            field="category_filter",
+            value=cf,
+            remediation=f"label {cf.label!r} disappeared from class_grouping",
+        )
+    raise InvalidPanopticParams(
+        field="category_filter",
+        value=cf,
+        remediation="unsupported CategoryFilter variant",
+    )
+
+
+def _resolve_class_grouping(
+    bd: Breakdown | None,
+) -> list[tuple[str, list[int]]] | None:
+    """Resolve a ``class_grouping`` :class:`Breakdown` to the kernel's
+    list-of-pairs form."""
+    if bd is None:
+        return None
+    return [(label, list(ids)) for label, ids in bd.class_groups]
+
+
+def _resolve_stuff_thing_partition(
+    p: StuffThingPartition | None,
+) -> tuple[list[int], list[int]] | None:
+    """Resolve a :class:`StuffThingPartition` to the FFI's
+    ``(stuff_ids, things_ids)`` tuple; ``None`` passes through and the
+    kernel uses the dataset's ``isthing`` flags."""
+    if p is None:
+        return None
+    return (sorted(p.stuff), sorted(p.things))
+
+
 @dataclass(frozen=True, slots=True)
 class Evaluator:
     """Panoptic-quality (PQ) evaluator (ADR-0025, ADR-0042).
@@ -367,18 +416,21 @@ class Evaluator:
         ``"all"`` or a tuple of :data:`TableName` values to opt into
         the wider :class:`EvalResult` return type.
         """
-        if self._has_custom_class_params():
-            raise NotImplementedError(
-                "evaluate() with custom pq_iou_threshold / category_filter / "
-                "class_grouping / stuff_thing_partition is deferred to a "
-                "follow-up to ADR-0042 (kernel-side per_group rollups, "
-                "threshold-aware matching, and partition override land "
-                "alongside the ADR-0039 params_hash split). The surface — "
-                "fields, validation, StuffThingPartition value type — is in "
-                "place; use the defaults (set custom fields to None) until "
-                "the kernel plumbing ships."
-            )
-        summary = evaluate_panoptic(gt, dt, self.parity_mode, self.things_stuff_split)
+        # ADR-0042 custom axes resolve Python-side. ByGrouping → ByIds;
+        # the kernel's category-filter primitive is id-keyed only.
+        resolved_filter = _resolve_category_filter(self.category_filter, self.class_grouping)
+        resolved_groups = _resolve_class_grouping(self.class_grouping)
+        resolved_partition = _resolve_stuff_thing_partition(self.stuff_thing_partition)
+        summary = evaluate_panoptic(
+            gt,
+            dt,
+            self.parity_mode,
+            self.things_stuff_split,
+            pq_iou_threshold=self.pq_iou_threshold,
+            category_filter=resolved_filter,
+            class_grouping=resolved_groups,
+            stuff_thing_partition=resolved_partition,
+        )
         if tables is None:
             return summary
         requested = normalize_tables_arg(tables, SUPPORTED_TABLES)
@@ -416,7 +468,26 @@ class Evaluator:
         The partial bytes can be gathered across ranks and merged on
         the head rank with :meth:`from_partials` to produce a global
         :class:`Summary`.
+
+        Per ADR-0042, raises :class:`InvalidPanopticParams` when any
+        of ``pq_iou_threshold`` / ``category_filter`` / ``class_grouping``
+        / ``stuff_thing_partition`` is set: extending the ADR-0032
+        wire format to carry the resolved custom axes is a follow-up.
+        Single-rank custom-params eval works today via :meth:`evaluate`.
         """
+        if self._has_custom_class_params():
+            raise InvalidPanopticParams(
+                field="custom_panoptic_params",
+                value=self,
+                remediation=(
+                    "evaluate_to_partial() with a custom pq_iou_threshold / "
+                    "category_filter / class_grouping / stuff_thing_partition "
+                    "is deferred to a follow-up to ADR-0042 (extends the "
+                    "ADR-0032 wire format to carry the resolved axes). Use "
+                    "evaluate(...) for single-rank custom panoptic eval "
+                    "today; multi-rank custom params land in the next phase."
+                ),
+            )
         return _evaluate_panoptic_to_partial(
             list(images),
             categories,

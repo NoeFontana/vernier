@@ -44,8 +44,9 @@ use vernier_panoptic::dataset::{CategoryId, CategoryMeta, ImageEntry, ImageId, S
 use vernier_panoptic::decode::decode_panoptic_png;
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
-    evaluate, ClassPanopticStats, PanopticDataset, PanopticError, PanopticPredictions,
-    PanopticSummary, ParityMode,
+    evaluate_with_options, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
+    PanopticDataset, PanopticError, PanopticPredictions, PanopticSummary, ParityMode,
+    SummarizeOptions,
 };
 
 // ---------------------------------------------------------------------------
@@ -301,6 +302,56 @@ impl PyClassPanopticStats {
     }
 }
 
+/// Per-group rollup row (ADR-0042).
+///
+/// Mirrors [`vernier_panoptic::GroupPanopticStats`] one-to-one. Built
+/// only when `class_grouping=` is passed to `evaluate_panoptic`.
+#[pyclass(
+    module = "vernier._core",
+    name = "GroupPanopticStats",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+pub(crate) struct PyGroupPanopticStats {
+    inner: GroupPanopticStats,
+}
+
+#[pymethods]
+impl PyGroupPanopticStats {
+    #[getter]
+    fn label(&self) -> &str {
+        &self.inner.label
+    }
+    #[getter]
+    fn member_category_ids(&self) -> Vec<i64> {
+        self.inner.member_category_ids.clone()
+    }
+    #[getter]
+    fn pq(&self) -> f64 {
+        self.inner.pq
+    }
+    #[getter]
+    fn sq(&self) -> f64 {
+        self.inner.sq
+    }
+    #[getter]
+    fn rq(&self) -> f64 {
+        self.inner.rq
+    }
+    #[getter]
+    fn n(&self) -> usize {
+        self.inner.n
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GroupPanopticStats(label={:?}, pq={:.4}, sq={:.4}, rq={:.4}, n={})",
+            self.inner.label, self.inner.pq, self.inner.sq, self.inner.rq, self.inner.n,
+        )
+    }
+}
+
 /// Top-level panoptic evaluation result. Read via field accessors.
 #[pyclass(module = "vernier._core", name = "PanopticSummary", frozen)]
 pub(crate) struct PyPanopticSummary {
@@ -364,6 +415,17 @@ impl PyPanopticSummary {
         let dict = PyDict::new(py);
         for (cat, row) in &self.inner.per_class {
             dict.set_item(*cat, PyClassPanopticStats { inner: *row })?;
+        }
+        Ok(dict)
+    }
+
+    /// Per-group rollup keyed by group label (ADR-0042). Empty when
+    /// the evaluator was run without `class_grouping`. Returns a fresh
+    /// dict on each call.
+    fn per_group<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (label, row) in &self.inner.per_group {
+            dict.set_item(label, PyGroupPanopticStats { inner: row.clone() })?;
         }
         Ok(dict)
     }
@@ -452,13 +514,28 @@ impl PyPanopticSummary {
 /// Drops the GIL via `py.detach` for the duration of the kernel walk
 /// (ADR-0006).
 #[pyfunction]
-#[pyo3(signature = (gt, dt, parity_mode, things_stuff_split=true))]
+#[pyo3(signature = (
+    gt,
+    dt,
+    parity_mode,
+    things_stuff_split=true,
+    *,
+    pq_iou_threshold=None,
+    category_filter=None,
+    class_grouping=None,
+    stuff_thing_partition=None,
+))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_panoptic(
     py: Python<'_>,
     gt: &PyPanopticDataset,
     dt: &PyPanopticPredictions,
     parity_mode: &str,
     things_stuff_split: bool,
+    pq_iou_threshold: Option<f64>,
+    category_filter: Option<Vec<u32>>,
+    class_grouping: Option<Vec<(String, Vec<u32>)>>,
+    stuff_thing_partition: Option<(Vec<u32>, Vec<u32>)>,
 ) -> PyResult<PyPanopticSummary> {
     let mode = match parity_mode {
         "strict" => ParityMode::Strict,
@@ -471,8 +548,37 @@ pub(crate) fn evaluate_panoptic(
     };
     let gt_arc = Arc::clone(&gt.inner);
     let dt_arc = Arc::clone(&dt.inner);
+    // Build the isthing-overridden categories map up front so the
+    // closure captures an owned value with the right lifetime.
+    // ADR-0042 §"stuff_thing_partition": user-supplied membership
+    // wins over dataset-derived `isthing` flags.
+    let categories_override = stuff_thing_partition.map(|(stuff, things)| {
+        let mut overridden = gt_arc.categories.clone();
+        for cat in stuff {
+            overridden
+                .entry(CategoryId::from(cat))
+                .and_modify(|m| m.isthing = false);
+        }
+        for cat in things {
+            overridden
+                .entry(CategoryId::from(cat))
+                .and_modify(|m| m.isthing = true);
+        }
+        overridden
+    });
     let summary = py
-        .detach(move || evaluate(&gt_arc, &dt_arc, mode, things_stuff_split))
+        .detach(move || {
+            let summarize_opts = SummarizeOptions {
+                category_filter: category_filter.as_deref(),
+                class_groups: class_grouping.as_deref(),
+            };
+            let opts = EvaluateOptions {
+                pq_iou_threshold,
+                categories_override: categories_override.as_ref(),
+                summarize: summarize_opts,
+            };
+            evaluate_with_options(&gt_arc, &dt_arc, mode, things_stuff_split, &opts)
+        })
         .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     Ok(PyPanopticSummary { inner: summary })
 }
@@ -1129,6 +1235,7 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyPanopticPredictions>()?;
     m.add_class::<PyPanopticSummary>()?;
     m.add_class::<PyClassPanopticStats>()?;
+    m.add_class::<PyGroupPanopticStats>()?;
     m.add_class::<PyBackgroundPanopticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic_to_partial, m)?)?;

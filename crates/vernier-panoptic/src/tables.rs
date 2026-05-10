@@ -85,6 +85,7 @@ mod tests {
             n: 0,
             n_things: None,
             n_stuff: None,
+            per_group: BTreeMap::new(),
         }
     }
 

@@ -13,15 +13,16 @@
 //!   filter is empty; **strict** raises [`PanopticError::EmptyCategoryFilter`]
 //!   to match panopticapi's `ZeroDivisionError` shape.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attribute::{attribute_image, PqStat};
 use crate::dataset::{
     CategoryId, CategoryMeta, ImageEntry, ImageId, PanopticDataset, PanopticPredictions,
 };
 use crate::error::PanopticError;
-use crate::kernel::pq_image_with_id;
+use crate::kernel::{pq_image_at_threshold, pq_image_with_id};
 use crate::parity::ParityMode;
+use crate::parity::PANOPTIC_IOU_THRESHOLD;
 
 /// Per-class PQ row. Strict superset of panopticapi's `{pq, sq, rq}`
 /// shape (quirk **W8**); the count fields are vernier-only and the
@@ -50,6 +51,46 @@ pub struct ClassPanopticStats {
     pub n_fn: u64,
     /// Sum of IoU across the TP segments for this category.
     pub iou_sum: f64,
+}
+
+/// Per-group panoptic rollup (ADR-0042).
+///
+/// Built when [`SummarizeOptions::class_groups`] is set: each group
+/// fold averages PQ / SQ / RQ over its member category ids using the
+/// quirk **W6** convention (skip categories with `n_tp + n_fp + n_fn
+/// == 0`). The rollup is a post-summarize aggregation over the
+/// per-class table; the kernel and accumulator are unaffected.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupPanopticStats {
+    /// Group label, as passed in by the caller.
+    pub label: String,
+    /// Category ids that compose this group, sorted ascending.
+    pub member_category_ids: Vec<CategoryId>,
+    /// PQ averaged over the group's contributing members.
+    pub pq: f64,
+    /// SQ averaged over the group's contributing members.
+    pub sq: f64,
+    /// RQ averaged over the group's contributing members.
+    pub rq: f64,
+    /// Number of contributing categories in the group (W5 / W6).
+    pub n: usize,
+}
+
+/// Optional axes for [`summarize_from_acc_with_options`] (ADR-0042).
+///
+/// `category_filter` restricts the global PQ/SQ/RQ averages to the
+/// supplied category subset; the per-class breakdown remains
+/// complete. `class_groups` populates [`PanopticSummary::per_group`]
+/// with one entry per `(label, ids)` partition. Both default to
+/// `None`; the unparametrized [`summarize_from_acc`] uses defaults.
+#[derive(Debug, Clone, Default)]
+pub struct SummarizeOptions<'a> {
+    /// Subset of category ids that contribute to the global PQ / SQ /
+    /// RQ averages and to the things / stuff buckets. `None` means
+    /// "every category contributes" (the panopticapi default).
+    pub category_filter: Option<&'a [u32]>,
+    /// Class-id partitions for the per-group rollup.
+    pub class_groups: Option<&'a [(String, Vec<u32>)]>,
 }
 
 /// Top-level panoptic evaluation result.
@@ -94,6 +135,10 @@ pub struct PanopticSummary {
     /// Number of contributing stuff categories (`None` when split
     /// is disabled).
     pub n_stuff: Option<usize>,
+    /// Per-group rollup (ADR-0042). Populated only when the caller
+    /// passes [`SummarizeOptions::class_groups`]; empty for the
+    /// canonical no-grouping path. Sorted by label via `BTreeMap`.
+    pub per_group: BTreeMap<String, GroupPanopticStats>,
 }
 
 /// Convert one accumulated [`PqStat`] into a [`ClassPanopticStats`]
@@ -183,6 +228,47 @@ pub fn evaluate(
     mode: ParityMode,
     things_stuff_split: bool,
 ) -> Result<PanopticSummary, PanopticError> {
+    evaluate_with_options(
+        gt,
+        dt,
+        mode,
+        things_stuff_split,
+        &EvaluateOptions::default(),
+    )
+}
+
+/// Optional ADR-0042 axes for [`evaluate_with_options`].
+///
+/// `pq_iou_threshold` overrides the canonical 0.5 matching gate.
+/// `categories_override` replaces the dataset's `isthing` flags
+/// (used by `stuff_thing_partition` to override the dataset-derived
+/// classification). The summarize-time axes (`category_filter`,
+/// `class_groups`) live on [`SummarizeOptions`] and flow through
+/// `summarize`.
+#[derive(Default)]
+pub struct EvaluateOptions<'a> {
+    /// Custom IoU threshold for the matching gate (`iou >
+    /// threshold`). `None` falls back to the canonical
+    /// [`crate::parity::PANOPTIC_IOU_THRESHOLD`] = 0.5.
+    pub pq_iou_threshold: Option<f64>,
+    /// Replacement categories map. When `Some`, the things / stuff
+    /// split keys off this rather than `gt.categories`. Used to
+    /// honor a user-supplied `stuff_thing_partition`.
+    pub categories_override: Option<&'a HashMap<CategoryId, CategoryMeta>>,
+    /// Summarize-time options (filter + grouping).
+    pub summarize: SummarizeOptions<'a>,
+}
+
+/// Like [`evaluate`] but with optional ADR-0042 axes
+/// ([`EvaluateOptions`]). The default-options form is bit-identical
+/// to `evaluate(...)`.
+pub fn evaluate_with_options(
+    gt: &PanopticDataset,
+    dt: &PanopticPredictions,
+    mode: ParityMode,
+    things_stuff_split: bool,
+    options: &EvaluateOptions<'_>,
+) -> Result<PanopticSummary, PanopticError> {
     // Per-image fold: kernel + attribute + sum into per-category accumulators.
     let mut acc: HashMap<CategoryId, PqStat> = HashMap::new();
     // Sort references in image-id order so the f64 summation across
@@ -192,6 +278,7 @@ pub fn evaluate(
     // strict-mode parity claim.
     let mut sorted_gt: Vec<(&ImageId, &ImageEntry)> = gt.images.iter().collect();
     sorted_gt.sort_unstable_by_key(|(id, _)| *id);
+    let threshold = options.pq_iou_threshold.unwrap_or(PANOPTIC_IOU_THRESHOLD);
     for (image_id, gt_entry) in sorted_gt {
         let dt_entry =
             dt.images
@@ -199,14 +286,25 @@ pub fn evaluate(
                 .ok_or(PanopticError::MissingPredictionsForImage {
                     image_id: *image_id,
                 })?;
-        let report = pq_image_with_id(*image_id, gt_entry, dt_entry)?;
+        let report = if options.pq_iou_threshold.is_some() {
+            pq_image_at_threshold(*image_id, gt_entry, dt_entry, threshold)?
+        } else {
+            pq_image_with_id(*image_id, gt_entry, dt_entry)?
+        };
         let per_image = attribute_image(gt_entry, dt_entry, &report, mode);
         for (cat, stat) in per_image {
             acc.entry(cat).or_default().add_assign(&stat);
         }
     }
 
-    summarize_from_acc(acc, &gt.categories, mode, things_stuff_split)
+    let categories = options.categories_override.unwrap_or(&gt.categories);
+    summarize_from_acc_with_options(
+        acc,
+        categories,
+        mode,
+        things_stuff_split,
+        &options.summarize,
+    )
 }
 
 /// Build a [`PanopticSummary`] from an already-aggregated per-category
@@ -224,28 +322,77 @@ pub fn summarize_from_acc(
     mode: ParityMode,
     things_stuff_split: bool,
 ) -> Result<PanopticSummary, PanopticError> {
+    summarize_from_acc_with_options(
+        acc,
+        categories,
+        mode,
+        things_stuff_split,
+        &SummarizeOptions::default(),
+    )
+}
+
+/// Like [`summarize_from_acc`] but with optional [`SummarizeOptions`]
+/// for the ADR-0042 `category_filter` / `class_grouping` axes.
+///
+/// `category_filter`, when set, restricts the global PQ/SQ/RQ averages
+/// (and the things / stuff buckets when `things_stuff_split=true`) to
+/// the supplied category subset. The per-class breakdown remains
+/// complete. `class_groups` populates
+/// [`PanopticSummary::per_group`] with per-partition rollups.
+///
+/// Both axes are post-summarize aggregations: the per-category
+/// accumulator is class-keyed, so distributed-eval ranks accumulate
+/// identically regardless of filter / grouping choice.
+pub fn summarize_from_acc_with_options(
+    acc: HashMap<CategoryId, PqStat>,
+    categories: &HashMap<CategoryId, CategoryMeta>,
+    mode: ParityMode,
+    things_stuff_split: bool,
+    options: &SummarizeOptions<'_>,
+) -> Result<PanopticSummary, PanopticError> {
     // Per-class summary, sorted by category id (BTreeMap).
     let per_class: BTreeMap<CategoryId, ClassPanopticStats> = acc
         .into_iter()
         .map(|(cat, stat)| (cat, class_stats(stat)))
         .collect();
 
-    // Global means.
-    let (pq, sq, rq, n) = finalize_average(average(per_class.values().copied()), mode, "all")?;
+    // The user-facing CategoryId space is u32-keyed (ADR-0042); the
+    // kernel's CategoryId is an i64 alias. Filter / grouping conversion
+    // happens once here so the inner loops stay typed.
+    let filter_set: Option<HashSet<CategoryId>> = options
+        .category_filter
+        .map(|f| f.iter().map(|c| CategoryId::from(*c)).collect());
 
-    // Things/stuff (W4).
+    // Global means — restricted to category_filter if provided.
+    let (pq, sq, rq, n) = match &filter_set {
+        None => finalize_average(average(per_class.values().copied()), mode, "all")?,
+        Some(filter_ids) => finalize_average(
+            average(
+                per_class
+                    .iter()
+                    .filter_map(|(cat, s)| filter_ids.contains(cat).then_some(*s)),
+            ),
+            mode,
+            "all",
+        )?,
+    };
+
+    // Things/stuff (W4) — applied within the filter scope when one is set.
     let (pq_things, sq_things, rq_things, n_things, pq_stuff, sq_stuff, rq_stuff, n_stuff) =
         if things_stuff_split {
-            let things = average(
-                per_class
-                    .iter()
-                    .filter_map(|(cat, s)| categories.get(cat).filter(|m| m.isthing).map(|_| *s)),
-            );
-            let stuff = average(
-                per_class
-                    .iter()
-                    .filter_map(|(cat, s)| categories.get(cat).filter(|m| !m.isthing).map(|_| *s)),
-            );
+            let in_filter = |cat: &CategoryId| filter_set.as_ref().is_none_or(|f| f.contains(cat));
+            let things = average(per_class.iter().filter_map(|(cat, s)| {
+                categories
+                    .get(cat)
+                    .filter(|m| m.isthing && in_filter(cat))
+                    .map(|_| *s)
+            }));
+            let stuff = average(per_class.iter().filter_map(|(cat, s)| {
+                categories
+                    .get(cat)
+                    .filter(|m| !m.isthing && in_filter(cat))
+                    .map(|_| *s)
+            }));
             // Things/stuff buckets are independent; an empty things
             // bucket on a stuff-only dataset is a real downstream
             // surface and should not poison the all-bucket result.
@@ -267,6 +414,11 @@ pub fn summarize_from_acc(
             (None, None, None, None, None, None, None, None)
         };
 
+    let per_group = options
+        .class_groups
+        .map(|groups| build_per_group(groups, &per_class))
+        .unwrap_or_default();
+
     Ok(PanopticSummary {
         pq,
         sq,
@@ -281,7 +433,40 @@ pub fn summarize_from_acc(
         n,
         n_things,
         n_stuff,
+        per_group,
     })
+}
+
+/// Roll up per-group panoptic stats. Mirrors the `average()` reduction
+/// applied to a category subset; categories absent from `per_class`
+/// are skipped (no contribution; not an error).
+fn build_per_group(
+    groups: &[(String, Vec<u32>)],
+    per_class: &BTreeMap<CategoryId, ClassPanopticStats>,
+) -> BTreeMap<String, GroupPanopticStats> {
+    let mut out = BTreeMap::new();
+    for (label, ids) in groups {
+        let id_set: HashSet<CategoryId> = ids.iter().map(|c| CategoryId::from(*c)).collect();
+        let (pq, sq, rq, n) = average(
+            per_class
+                .iter()
+                .filter_map(|(cat, s)| id_set.contains(cat).then_some(*s)),
+        );
+        let mut members: Vec<CategoryId> = id_set.into_iter().collect();
+        members.sort_unstable();
+        out.insert(
+            label.clone(),
+            GroupPanopticStats {
+                label: label.clone(),
+                member_category_ids: members,
+                pq,
+                sq,
+                rq,
+                n,
+            },
+        );
+    }
+    out
 }
 
 #[cfg(test)]
