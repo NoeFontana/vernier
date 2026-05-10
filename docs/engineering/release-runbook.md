@@ -189,6 +189,10 @@ cargo update --workspace
 uv lock
 # Add a CHANGELOG.md entry under the new version heading.
 just lint && just test && just audit
+# docs.rs dry-run — catches feature-flag combinations CI's docs-rust
+# job won't see. Excludes vernier-ffi (publish = false; docs.rs never
+# builds it). Cheap insurance before the tag pushes.
+RUSTDOCFLAGS="--cfg docsrs" cargo doc --workspace --exclude vernier-ffi --no-deps --all-features --target-dir /tmp/docs-check
 git commit -am "chore(release): bump workspace and wheel to X.Y.Z"
 git push -u origin chore/release-X.Y.Z
 gh pr create --title "chore(release): X.Y.Z"
