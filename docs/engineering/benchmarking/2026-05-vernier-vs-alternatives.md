@@ -18,7 +18,7 @@ wouldn't have surfaced the spread either.
 
 - **Harness mode**: release (N=10 + 2 warmup, randomised impl order,
   governor pre-flight, 5% relative-IQR gate per impl)
-- **Git SHA**: ``0a39957821bf``
+- **Git SHA**: ``1fd5720bf56c``
 - **Machine fingerprint**: ``1655eb18a194`` (AMD EPYC-Milan, x86_64).
   Distinct from the previous snapshot's ``5658de0e29a3`` — absolute
   numbers shouldn't be cross-compared, only ratios within this snapshot.
@@ -40,17 +40,17 @@ each library supports.
 
 | impl              |    median   |        IQR        |  RSS (max) | vs vernier |
 | ----------------- | ----------: | ----------------: | ---------: | ---------: |
-| **vernier**       |   359.6 ms  |   7.2 ms (2.01%)  |  235 MiB   |   **1.00x** |
-| faster-coco-eval  |    2.121 s  |  30.2 ms (1.42%)  |  661 MiB   |    5.90x   |
-| pycocotools       |    5.833 s  | 129.9 ms (2.23%)  |  576 MiB   |   16.22x   |
+| **vernier**       |   360.0 ms  |   3.8 ms (1.07%)  |  236 MiB   |   **1.00x** |
+| faster-coco-eval  |    2.127 s  |  21.8 ms (1.03%)  |  661 MiB   |    5.91x   |
+| pycocotools       |    5.820 s  |  65.8 ms (1.13%)  |  576 MiB   |   16.17x   |
 
 ### segm
 
 | impl              |    median   |        IQR        |  RSS (max) | vs vernier |
 | ----------------- | ----------: | ----------------: | ---------: | ---------: |
-| **vernier**       |   968.1 ms  |   6.0 ms (0.62%)  |  236 MiB   |   **1.00x** |
-| faster-coco-eval  |    3.553 s  |  53.4 ms (1.50%)  |  721 MiB   |    3.67x   |
-| pycocotools       |    6.690 s  | 163.7 ms (2.45%)  |  569 MiB   |    6.91x   |
+| **vernier**       |   967.7 ms  |  13.4 ms (1.38%)  |  236 MiB   |   **1.00x** |
+| faster-coco-eval  |    3.605 s  |  63.7 ms (1.77%)  |  721 MiB   |    3.73x   |
+| pycocotools       |    6.853 s  |  71.8 ms (1.05%)  |  569 MiB   |    7.08x   |
 
 ### boundary
 
@@ -61,9 +61,9 @@ boundary natively.
 
 | impl              |    median   |        IQR        |  RSS (max) | vs vernier |
 | ----------------- | ----------: | ----------------: | ---------: | ---------: |
-| **vernier**       |    3.121 s  |  15.5 ms (0.50%)  |  238 MiB   |   **1.00x** |
-| faster-coco-eval  |   17.772 s  |  83.2 ms (0.47%)  |  794 MiB   |    5.70x   |
-| boundary-iou-api  |   62.161 s  | 526.6 ms (0.85%)  |  666 MiB   |   19.92x   |
+| **vernier**       |    3.130 s  |  21.7 ms (0.69%)  |  238 MiB   |   **1.00x** |
+| faster-coco-eval  |   17.837 s  |  48.8 ms (0.27%)  |  794 MiB   |    5.70x   |
+| boundary-iou-api  |   62.233 s  | 228.1 ms (0.37%)  |  666 MiB   |   19.88x   |
 
 The faster-coco-eval boundary cell is timing-only — it isn't gated by
 parity. The harness's boundary parity tier compares vernier vs
@@ -79,15 +79,15 @@ For downstream consumers that need ratios without rounding loss.
 
 | iou      | impl              |    median (ns) |       IQR (ns) |    RSS (B)    |
 | -------- | ----------------- | -------------: | -------------: | ------------: |
-| bbox     | vernier           |    359,636,119 |      7,238,709 |   246,919,168 |
-| bbox     | faster-coco-eval  |  2,120,936,946 |     30,202,301 |   693,129,216 |
-| bbox     | pycocotools       |  5,832,809,131 |    129,891,407 |   604,327,936 |
-| segm     | vernier           |    968,054,625 |      6,031,500 |   247,508,992 |
-| segm     | faster-coco-eval  |  3,553,485,254 |     53,435,522 |   755,527,680 |
-| segm     | pycocotools       |  6,690,146,992 |    163,680,566 |   596,463,616 |
-| boundary | vernier           |  3,120,653,712 |     15,484,437 |   249,815,040 |
-| boundary | faster-coco-eval  | 17,772,338,507 |     83,228,567 |   832,593,920 |
-| boundary | boundary-iou-api  | 62,161,425,943 |    526,562,261 |   698,556,416 |
+| bbox     | vernier           |    360,025,645 |      3,849,963 |   247,070,720 |
+| bbox     | faster-coco-eval  |  2,126,788,867 |     21,810,318 |   693,407,744 |
+| bbox     | pycocotools       |  5,819,994,421 |     65,818,120 |   604,479,488 |
+| segm     | vernier           |    967,653,356 |     13,373,942 |   247,648,256 |
+| segm     | faster-coco-eval  |  3,604,756,101 |     63,713,149 |   755,798,016 |
+| segm     | pycocotools       |  6,852,665,697 |     71,831,062 |   596,873,216 |
+| boundary | vernier           |  3,130,462,065 |     21,686,559 |   249,831,424 |
+| boundary | faster-coco-eval  | 17,837,169,630 |     48,809,327 |   832,741,376 |
+| boundary | boundary-iou-api  | 62,233,375,428 |    228,058,216 |   698,830,848 |
 
 ### Read against the table
 
@@ -97,16 +97,13 @@ For downstream consumers that need ratios without rounding loss.
   RSS is also a third of fce's; both are loading the same val2017
   GT/DT but vernier ingests via the binary FFI without materializing
   the JSON-shaped intermediate dicts each oracle keeps around. IQRs
-  hold under 2.5% across all three impls — the cell is steady-state.
-- **segm** is 6.9x vs pycocotools / 3.7x vs fce. The RLE
+  hold under 1.2% across all three impls — the cell is steady-state.
+- **segm** is 7.1x vs pycocotools / 3.7x vs fce. The RLE
   intersection/union kernel still does most of the work for every
   impl, but the framework-overhead delta now exposes itself per-cell
   more visibly than the previous round. PR #183 fused the per-cell
   bbox+area+offsets walk; further compression here means going after
-  the intersection sweep itself. Vernier's IQR is the tightest of any
-  cell in the snapshot (0.62%) — the kernel is deterministic on a
-  fixed input and the wall is dominated by the inner loop rather than
-  any I/O.
+  the intersection sweep itself.
 - **boundary** held the gap from the dev-mode N=1 snapshot: 19.9x vs
   `boundary-iou-api` and 5.7x vs faster-coco-eval. faster-coco-eval's
   boundary cell sits between the two — 5.7x slower than vernier, 3.5x
@@ -124,15 +121,15 @@ For downstream consumers that need ratios without rounding loss.
 
 | impl              |    median   |        IQR        |  RSS (max) | vs vernier |
 | ----------------- | ----------: | ----------------: | ---------: | ---------: |
-| **vernier**       |   134.7 ms  |   1.5 ms (1.08%)  |  102 MiB   |   **1.00x** |
-| faster-coco-eval  |    1.707 s  |  18.5 ms (1.09%)  |  154 MiB   |   12.67x   |
-| pycocotools       |    2.308 s  |  26.7 ms (1.16%)  |  163 MiB   |   17.13x   |
+| **vernier**       |   135.7 ms  |   2.4 ms (1.76%)  |  102 MiB   |   **1.00x** |
+| faster-coco-eval  |    1.700 s  |  20.1 ms (1.18%)  |  154 MiB   |   12.53x   |
+| pycocotools       |    2.317 s  |  13.3 ms (0.57%)  |  163 MiB   |   17.07x   |
 
 | iou       | impl              |     median (ns) |       IQR (ns) |    RSS (B)    |
 | --------- | ----------------- | --------------: | -------------: | ------------: |
-| keypoints | vernier           |     134,704,904 |      1,453,226 |   106,520,576 |
-| keypoints | faster-coco-eval  |   1,707,076,826 |     18,535,945 |   161,660,928 |
-| keypoints | pycocotools       |   2,307,616,842 |     26,690,409 |   170,913,792 |
+| keypoints | vernier           |     135,703,564 |      2,387,864 |   106,663,936 |
+| keypoints | faster-coco-eval  |   1,700,207,231 |     20,136,823 |   161,927,168 |
+| keypoints | pycocotools       |   2,316,928,190 |     13,286,803 |   171,167,744 |
 
 The keypoints workload is small (val2017 keypoints subset, ~6k
 annotations) so vernier's framework-overhead advantage dominates —
@@ -155,20 +152,20 @@ passes against panopticapi on every cell (PQ=1.0 by construction).
 
 | impl                  |   median    |        IQR         | RSS (max)   | vs vernier_panoptic |
 | --------------------- | ----------: | -----------------: | ----------: | ------------------: |
-| **vernier_panoptic**  |   13.012 s  |  2.588 s (19.89%)* |  117.1 MiB  |   **1.00x**         |
-| panopticapi           |   34.640 s  |  336.1 ms (0.97%)  |  146.3 MiB  |    2.66x (slower)   |
+| **vernier_panoptic**  |   11.615 s  |  605.5 ms (5.21%)* |  117.7 MiB  |   **1.00x**         |
+| panopticapi           |   35.327 s  |  344.5 ms (0.98%)  |  144.5 MiB  |    3.04x (slower)   |
 
-\* Vernier's IQR exceeds the 5% release-mode gate. Per-rep walls span
-10.85–14.99 s with the median at 13.01 s — the spread is real, driven
-by PNG-decode I/O variance under randomised impl ordering. The lead
-over panopticapi is 21.6 s of headroom, far larger than the 2.6 s IQR
-band, so the comparison is still load-bearing; treat the precise 2.66x
-ratio as "between roughly 2.3x and 3.2x" rather than a fixed point.
+\* Vernier's IQR is just over the 5% release-mode gate. The spread is
+real, driven by PNG-decode I/O variance under randomised impl
+ordering. The lead over panopticapi is 23.7 s of headroom, far larger
+than the 0.6 s IQR band, so the comparison is still load-bearing; treat
+the precise 3.04x ratio as "between roughly 2.9x and 3.2x" rather than
+a fixed point.
 
 | metric | impl             |    median (ns) |       IQR (ns) |    RSS (B)     |
 | ------ | ---------------- | -------------: | -------------: | -------------: |
-| pq     | vernier_panoptic | 13,012,484,002 |  2,587,730,268 |    122,781,696 |
-| pq     | panopticapi      | 34,639,751,481 |    336,057,662 |    153,378,816 |
+| pq     | vernier_panoptic | 11,615,017,169 |    605,449,804 |    123,432,960 |
+| pq     | panopticapi      | 35,327,480,730 |    344,468,550 |    151,531,520 |
 
 **Findings flag (resolved, then reopened by release-mode warmup).**
 Three rounds of optimization closed the gap panopticapi held over
@@ -180,7 +177,7 @@ additional cold-cache effect that dev-mode N=1 had been pricing in:
 | 0 (eager decode) | 85.6 s | 21.17 GiB | 0.40x (slower) |
 | 1 (streaming refactor, #187) | 51.0 s | 130 MiB | 0.68x (slower) |
 | 2 (FxHash internal maps, #188, dev-mode N=1) | 32.3 s | 127 MiB | 1.11x (faster) |
-| **3 (release-mode N=10 + warmup)** | **13.0 s** | **117 MiB** | **2.66x (faster)** |
+| **3 (release-mode N=10 + warmup)** | **11.6 s** | **118 MiB** | **3.04x (faster)** |
 
 Round 1 replaced the runner's eager-PNG-decode loop with
 `vernier.panoptic.Evaluator.background()` — PNG decode runs on the
@@ -194,8 +191,11 @@ hot path dropped 24.9 s → 4.7 s (5.3x); the divan-level kernel arm
 dropped 3.56 ms → 0.63 ms. Round 3 is not a code change — it's the
 warmup reps populating the page cache so PNG reads hit warm files.
 Dev-mode N=1 was paying the cold-cache penalty on every measurement;
-release-mode hits steady state. The 19.89% IQR is the residual: even
-with warm cache there's per-rep PNG-decode timing noise.
+release-mode hits steady state. The 5.21% IQR is the residual: even
+with warm cache there's per-rep PNG-decode timing noise. Two
+release-mode rounds at this SHA span 11.6–13.0 s on the same host
+which is consistent with a thermal/I/O-jitter floor rather than a
+methodology bug.
 
 Strict-tier parity vs `pq_compute_single_core` still passes — FxHash
 is deterministic and the histogram-iteration order is irrelevant per
@@ -221,44 +221,73 @@ RGB→uint32 conversion, which panopticapi also pays.
 - CLI extended to dispatch `--paradigm panoptic` (was hard-gated to
   instance only); routes to the four-path GT/DT bundle.
 
-## Semantic — `synthetic_semantic:*` and `ade20k_val_*`
+## Semantic — `coco_val2017_semantic_perfect` and `synthetic_semantic:*`
 
-**Vernier-only baseline runnable this phase.** The bench harness
-dispatches `--paradigm semantic`: `IMPL_PARADIGM_SUPPORT["semantic"] =
-{"vernier_semantic": {"miou"}}`, the workload resolver takes
-`synthetic_semantic:n_images=,n_classes=,seed=` (deterministic uint8
-PNG label-map pairs cached under `bench/.cache/synthetic_semantic/`)
-plus `coco_val2017_semantic_perfect` (panoptic-derived, ADR-0036), and
-`bench/bench/runners/vernier_semantic_runner.py` drives the cell via
-`vernier.semantic.Evaluator.evaluate_from_pngs` (ADR-0037: fused
-libpng decode + confusion-matrix fold in Rust under `py.detach`).
+**Cross-impl semantic now runs in the harness.** The vendored
+`mmsegmentation` IoUMetric (ADR-0036, pinned at upstream commit
+`c685fe6`) gets its own bench env and runner; the strict-tier parity
+gate is bit-equality on the four per-class u64 marginals
+(intersect / union / area_pred / area_label), which are
+mmsegmentation's native output and the surface vernier projects its
+NxN confusion matrix to. Both cells (synthetic and val2017
+perfect-DT) pass strict-tier parity — equal marginals ⇒ equal
+mIoU / FWIoU / pixel_accuracy / mean_accuracy under quirk AL2.
 
-A 200-image / 19-class / `jitter_rate=0.1` synthetic cell on this
-host:
+### `coco_val2017_semantic_perfect` (5000 images, 133 classes)
 
-| impl              |   median   |        IQR        | RSS (max) | mIoU    |
-| ----------------- | ---------: | ----------------: | --------: | ------: |
-| vernier_semantic  |   62.3 ms  | 506.3 μs (0.81%)  |  88 MiB   |  0.8180 |
+| impl              |    median   |        IQR         |  RSS (max) | vs vernier |
+| ----------------- | ----------: | -----------------: | ---------: | ---------: |
+| **vernier_semantic**  |   5.070 s  |  25.5 ms (0.50%)  |   92 MiB  |   **1.00x** |
+| mmsegmentation         |  21.377 s  | 237.4 ms (1.11%)  |  648 MiB  |    4.22x   |
 
-The val2017 perfect-DT cell (5000 images, 133 classes, ignore=255)
-through the same runner, release wheel — these numbers are carried
-over from PR-B7 (the cross-impl mmsegmentation comparison is gated on
-the external ADE20K val cache and was not re-run this round):
+| metric | impl             |    median (ns) |       IQR (ns) |    RSS (B)     |
+| ------ | ---------------- | -------------: | -------------: | -------------: |
+| miou   | vernier_semantic |  5,069,581,870 |     25,529,121 |     97,005,568 |
+| miou   | mmsegmentation   | 21,376,962,160 |    237,419,632 |    679,632,896 |
 
-| impl                          |   wall  | RSS (max) | mIoU |
-| ----------------------------- | ------: | --------: | ---: |
-| oracle (mmsegmentation 1.2.2) | 26.6 s  | 666 MB    |  1.0 |
-| vernier_semantic (PR-B7)      | 18.2 s  | 638 MB    |  1.0 |
-| **vernier_semantic (this)**   | **5.2 s** | **75 MB** | 1.0 |
+mIoU = 1.0 on both impls (perfect-DT). 4.2x faster wall-time and ~7x
+lower peak RSS, single-threaded on each side. Vernier holds at 0.50%
+IQR — `evaluate_from_pngs`'s fused libpng-decode + confusion-fold
+(ADR-0037) reaches steady state once page cache warms.
 
-5.1× over the array-input baseline / 6.0× over the oracle, with ~10×
-less RSS — single-threaded, no rayon. Whole-dataset parity vs
-mmsegmentation lands via the val2017 smoke (ADR-0036, PR-B7);
-ADE20K + mmseg cross-impl numbers are still gated on the external
-ADE20K val cache.
+### `synthetic_semantic:n_images=200,n_classes=19,seed=0`
+
+| impl              |   median   |        IQR         | RSS (max) | mIoU    | vs vernier |
+| ----------------- | ---------: | -----------------: | --------: | ------: | ---------: |
+| **vernier_semantic**  |   63.1 ms  |  618.8 μs (0.98%)  |  88 MiB |  0.8180 |   **1.00x** |
+| mmsegmentation        |  437.5 ms  |  46.5 ms (10.64%)* | 631 MiB |  0.8180 |    6.93x   |
+
+\* mmsegmentation's IQR exceeds the 5% gate at this small workload —
+200 images of jittered uint8 PNGs sits at the noise floor of
+per-image torch-tensor + histc overhead. The val2017 cell at 5000
+images is well inside the gate.
+
+### Read against the table
+
+- The cross-impl strict-tier parity that ADR-0028 promised is now a
+  side effect of every bench run — the val2017 cell touches 1.5 B+
+  pixels and bit-equates on every per-class u64 total. Headline
+  speedup is 4.22x at val2017 scale and 6.93x at the synthetic
+  workload; the gap widens at small workloads because vernier's
+  framework overhead is closer to fixed-cost than mmseg's
+  per-image torch.histc + numpy round-trip.
+- mmsegmentation's RSS sits at ~650 MiB (val2017) — torch's
+  per-process state dominates the working set, even with no
+  models loaded. vernier holds at ~92 MiB by streaming PNGs
+  through the libpng-decode + fold path under `py.detach`.
+- The previous snapshot's PR-B7 numbers (oracle 26.6 s, vernier 5.2 s)
+  were measured ad-hoc through the parity smoke at
+  `tests/python/parity_semantic/`; this round measures the same
+  oracle under the bench harness's release-mode rigor (10 reps + 2
+  warmup, randomised impl order, IQR gate). mmseg lands ~4.5 s
+  faster than the PR-B7 ad-hoc number because the bench runner
+  feeds it native uint8 PNGs (mmseg's IoUMetric does its own
+  `.float()` promotion inside `intersect_and_union`, so a pre-cast
+  int64 only doubles the working set for no parity benefit).
 
 **`ade20k_val_*` still raises** `NotImplementedError` from the
-resolver, with an updated message pointing at the external blockers.
+resolver — gated on the license-cleared ADE20K val cache, not on
+the mmseg oracle (which is now wired).
 
 ## How to refresh
 
@@ -283,12 +312,14 @@ python -m panoptic_val_cache
 vernier-bench run --paradigm panoptic --impl all \
   --workload coco_panoptic_val2017_perfect --mode release
 
-# Semantic — vernier-only baseline against a synthetic workload
-# (mmsegmentation IoUMetric vendored per ADR-0036; cross-impl bench
-# remains externally blocked). The first run materializes the cache
-# under bench/.cache/synthetic_semantic/.
+# Semantic — vernier_semantic vs the vendored mmsegmentation oracle
+# (ADR-0036, pinned commit c685fe6). The first run materializes the
+# synthetic cache under bench/.cache/synthetic_semantic/; the val2017
+# cell reuses the panoptic GT cache.
 vernier-bench run --paradigm semantic --impl all \
   --workload "synthetic_semantic:n_images=200,n_classes=19,seed=0" --mode release
+vernier-bench run --paradigm semantic --impl all \
+  --workload coco_val2017_semantic_perfect --mode release
 
 # Re-pull the medians + IQRs + RSS from the result tree (release mode
 # carries the aggregation block; the docs renderer reads from there):

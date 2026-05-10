@@ -1,0 +1,43 @@
+[project]
+name = "vernier-bench-env-mmsegmentation"
+version = "0.0.0"
+description = "uv env for the mmsegmentation runner subprocess (ADR-0017 / ADR-0033 §B2 / ADR-0036)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# Hosts only the mmsegmentation runner. The vendored IoUMetric copy
+# lives under ``tests/python/parity_semantic/oracle/mmsegmentation/``
+# (ADR-0036) and is loaded via ``_loader.install_stubs()`` — we do not
+# pip-install ``mmsegmentation`` because the upstream package pulls in
+# ~3 GB transitive (mmcv, mmengine). The pinned SHA / Apache-2.0
+# attribution travels with the vendored bytes, not with this env.
+#
+# Why not co-locate with ``bench/envs/vernier``: the vernier env stays
+# torch-free so the vernier-only runners (instance, vernier_semantic,
+# vernier_streaming, vernier_bg) start fast. mmseg's
+# ``IoUMetric.intersect_and_union`` calls ``torch.histc`` for label
+# binning — the torch dep travels with mmseg, not with vernier.
+#
+# Pillow is pinned to match panopticapi's ``ORACLE_PILLOW_PIN``; the
+# runner uses Pillow's PNG decode for label-map ingestion (mmseg's
+# native flow expects torch tensors, but we feed it numpy arrays
+# decoded from PNGs). torch is pinned at the floor mirrored from
+# ``crates/vernier-semantic/src/parity.rs::ORACLE_TORCH_FLOOR``.
+dependencies = [
+    "vernier-bench",
+    "vernier-panoptic-val-cache",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+    "Pillow==12.2.0",
+    "torch>=2.4",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# vernier-bench is pure Python — editable so harness edits show up
+# without re-sync.
+vernier-bench = { path = "../..", editable = true }
+# panoptic_val_cache provides the val2017 semantic GT/DT helpers.
+vernier-panoptic-val-cache = { path = "../../../tools/panoptic_val_cache", editable = true }

@@ -37,12 +37,14 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         "vernier_panoptic": frozenset({"pq"}),
         "panopticapi": frozenset({"pq"}),
     },
-    # Semantic paradigm: vernier_semantic-only baseline against a
-    # synthetic workload until the S3-B oracle (ADE20K + mmseg) lands.
-    # The Cityscapes oracle cell stays out of the public bench tree
-    # (license restricts redistribution of derivative outputs).
+    # Semantic paradigm: vernier_semantic + the vendored
+    # mmsegmentation IoUMetric oracle (ADR-0036). The Cityscapes
+    # oracle cell stays out of the public bench tree (license
+    # restricts redistribution of derivative outputs); ADE20K is
+    # gated on its own license-cleared val cache.
     "semantic": {
         "vernier_semantic": frozenset({"miou"}),
+        "mmsegmentation": frozenset({"miou"}),
     },
     "streaming": {
         "vernier_streaming": frozenset({"throughput", "vs_naive", "dlpack"}),
@@ -71,9 +73,11 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     "vernier_panoptic": "panopticapi",
     "panopticapi": "panopticapi",
     # vernier_semantic runs in the vernier env so it can import
-    # vernier.semantic directly. No oracle env yet (S3-B / ADR-0028
-    # PR-B6+ for mmseg).
+    # vernier.semantic directly. mmsegmentation gets its own env —
+    # the vendored IoUMetric needs torch (~2 GB) which we don't want
+    # to drag into the vernier env shared by every vernier runner.
     "vernier_semantic": "vernier",
+    "mmsegmentation": "mmsegmentation",
     # ``vernier_streaming`` runs in the vernier env so it can import
     # ``vernier.instance.StreamingEvaluator``; ``naive_python`` runs
     # in the pycocotools env so it can call cocoeval directly.
