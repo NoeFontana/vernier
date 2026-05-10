@@ -619,34 +619,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../tutorials/training-loop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Logging AP during training
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../tutorials/debugging-with-tide/" class="md-nav__link">
         
   
@@ -1109,6 +1081,62 @@
     
   
     Evaluate on a background thread
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/array-ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest detection arrays
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/distributed-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed evaluation
   
 
     
@@ -1844,7 +1872,7 @@
 
 <h1 id="tide-what-it-answers-and-what-it-doesnt">TIDE: what it answers, and what it doesn't</h1>
 <p>vernier ships a TIDE error decomposition (Bolya et al. 2020) via
-<code>vernier.error_decomposition</code>. Six bins — Cls, Loc, Both, Dupe, Bkg,
+<code>vernier.instance.error_decomposition</code>. Six bins — Cls, Loc, Both, Dupe, Bkg,
 Missed — together account for the gap between a model's headline mAP
 and the perfect-mAP upper bound. The tutorial
 (<a href="../../tutorials/debugging-with-tide/"><code>docs/tutorials/debugging-with-tide.md</code></a>)
@@ -1927,9 +1955,10 @@ low-confidence ones because they elevate first in the PR curve). A
 1.0% Cls bin can mean "many low-cost classification errors" or "few
 high-cost ones." The decomposition is silent on which, and that
 matters when picking the right intervention.</p>
-<p>If the distinction matters, read the per-class table when 0.5.x lands
-the per-class drill-down (mentioned in the tutorial), or read the
-confusion matrix output of <code>vernier.confusion_matrix</code>. Confusion gives
+<p>If the distinction matters, the per-class TIDE drill-down is the
+right shape (mentioned in the tutorial as a deferred follow-up), or
+read the confusion matrix output of
+<code>vernier.instance.confusion_matrix</code>. Confusion gives
 you raw counts of <code>(true_class, predicted_class)</code> pairs, which is the
 frequency view; TIDE's Cls bin is the cost view. They answer different
 questions and ideally you read both.</p>
@@ -1971,9 +2000,9 @@ keypoints (OKS) entirely. The structural reasons:</p>
   literature.</li>
 </ul>
 <p>The path forward is a per-keypoint OKS drill-down (a different
-metric, not TIDE-shaped), planned for a future minor release.
-<code>vernier.error_decomposition(..., iou=Keypoints(...))</code> raises
-<code>NotImplementedError</code> with a pointer to ADR-0024 today.</p>
+metric, not TIDE-shaped), tracked as a follow-up to ADR-0024.
+<code>vernier.instance.error_decomposition(..., iou=Keypoints(...))</code>
+raises <code>NotImplementedError</code> with a pointer to ADR-0024 today.</p>
 <h2 id="where-the-validation-comes-from">Where the validation comes from</h2>
 <p>The Rust core is gated against a numpy oracle on 13 synthetic
 fixtures (one per dispositioned bin per kernel; see

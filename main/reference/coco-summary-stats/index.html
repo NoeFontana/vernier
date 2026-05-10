@@ -619,34 +619,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../tutorials/training-loop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Logging AP during training
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../tutorials/debugging-with-tide/" class="md-nav__link">
         
   
@@ -1109,6 +1081,62 @@
     
   
     Evaluate on a background thread
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/array-ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest detection arrays
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/distributed-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed evaluation
   
 
     
@@ -1933,9 +1961,9 @@
 <p><code>MaxDetSelector::Largest</code> picks the trailing entry of the supplied <code>max_dets</code>; <code>MaxDetSelector::Value(n)</code> looks the value up. This preserves the cocoeval intent ("AR_1 means maxDets=1") without binding to fixed positional indices, so callers passing non-default <code>max_dets</code> (e.g. keypoint <code>[20]</code>) still get sensible plans.</p>
 <h2 id="custom-area-buckets">Custom area buckets</h2>
 <p><code>AreaRng</code> is a <code>(index, label)</code> value type, not a closed enum. The canonical pycocotools layout is exposed as <code>AreaRng::ALL</code> / <code>SMALL</code> / <code>MEDIUM</code> / <code>LARGE</code> (constants matching <code>[all, small, medium, large]</code> at A-axis indices <code>0..4</code>). Callers that build an <code>Accumulated</code> with a different number of A-axis buckets — finer breakdowns (e.g. add a "tiny" bucket below "small") or robotics-relevant axes — construct <code>AreaRng::new(index, label)</code> and address them in their plan; the label flows through to <code>pretty_lines</code>.</p>
-<p>Note: the <em>bounds</em> that turn an annotation's area into a bucket index live upstream, on the orchestrator that builds <code>PerImageEval</code> cells (not yet implemented — Phase 1 Week 5). When that lands, it will accept an <code>AreaBucketing</code> config that pairs each label with its <code>[min_area, max_area]</code> bounds and emits the matching A-axis indices to the accumulator. The summarizer-side flexibility added here is the consumer of that config.</p>
+<p>Note: the <em>bounds</em> that turn an annotation's area into a bucket index live upstream, on the orchestrator that builds <code>PerImageEval</code> cells. ADR-0040 ships the user-parametrizable evaluation grid (<code>Evaluator.area_ranges</code>); the summarizer-side flexibility documented here is the consumer of that config.</p>
 <h2 id="keypoint-summary">Keypoint summary</h2>
-<p>The 10-stat <code>_summarizeKps</code> table is not yet implemented (Phase 3). Its layout differs only in <code>maxDets = [20]</code> and a 2-bucket area range (<code>medium</code>, <code>large</code>); the slicing is otherwise the same. With the plan/execution split, this is a custom plan, not a new entry point.</p>
+<p>The 10-stat <code>_summarizeKps</code> table is shipped (ADR-0012). Its layout differs from the detection 12-stat table only in <code>maxDets = [20]</code> and a 2-bucket area range (<code>medium</code>, <code>large</code>); the slicing is otherwise the same. With the plan/execution split, this is a custom plan, not a new entry point.</p>
 
 
 

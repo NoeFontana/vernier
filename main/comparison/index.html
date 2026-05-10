@@ -754,34 +754,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../tutorials/training-loop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Logging AP during training
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../tutorials/debugging-with-tide/" class="md-nav__link">
         
   
@@ -1244,6 +1216,62 @@
     
   
     Evaluate on a background thread
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/array-ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest detection arrays
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/distributed-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed evaluation
   
 
     
@@ -1855,7 +1883,7 @@ provide. For mechanical "rewrite my imports" instructions, see the
 <td><code>mmsegmentation</code></td>
 <td>semantic</td>
 <td>One of three references vernier targets</td>
-<td>Vernier is faster (S3-B mmseg env still landing)</td>
+<td>Vernier-only baseline today; cross-impl bench externally blocked</td>
 <td>You need the full <code>mmseg.evaluation</code> registry surface (it's a training framework, not just an evaluator)</td>
 </tr>
 </tbody>
@@ -1970,11 +1998,11 @@ calibrates against (the other two are
 <a href="https://github.com/mcordts/cityscapesScripts"><code>mcordts/cityscapesScripts</code></a>
 and the Pascal VOC / ADE20K reference scripts).</p>
 <p><a href="https://github.com/NoeFontana/vernier/tree/main/crates/vernier-semantic">vernier-semantic</a>
-ships per-class IoU, mIoU, FWIoU, pAcc, and mAcc. The S3-B
-mmsegmentation environment that closes the strict-mode oracle loop is
-still landing; until it does, parity is asserted against in-tree
-synthetic fixtures
-(<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0028-sem-seg.md">ADR-0028</a>).</p>
+ships per-class IoU, mIoU, FWIoU, pAcc, and mAcc. The vendored oracle
+harness lands under
+<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0036-vendor-mmsegmentation-ioumetric.md">ADR-0036</a>
+(still <code>proposed</code>); per-paradigm parity status lives in
+<a href="https://github.com/NoeFontana/vernier/#status--validation">README §Status &amp; validation</a>.</p>
 <p><strong>Pick <code>mmsegmentation</code> instead</strong> when you need the broader training
 framework: model registry, training loop, dataset pipelines, config
 system. vernier-semantic is the evaluation half only; the training half

@@ -619,34 +619,6 @@
   
   
     <li class="md-nav__item">
-      <a href="../../tutorials/training-loop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Logging AP during training
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="../../tutorials/debugging-with-tide/" class="md-nav__link">
         
   
@@ -1271,6 +1243,62 @@
     
   
     Evaluate on a background thread
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array-ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest detection arrays
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed evaluation
   
 
     
@@ -1924,11 +1952,11 @@ the image.</p>
 </span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="p">)</span>
 </span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="nb">print</span><span class="p">(</span><span class="n">per_class_pairs</span><span class="p">)</span>
 </span></code></pre></div>
-<p><code>per_pair</code> is <strong>class-restricted in v0.5</strong>: every row has the same
+<p><code>per_pair</code> is <strong>class-restricted today</strong>: every row has the same
 <code>category_id</code> for DT and GT, matching the matching engine's
 behavior. Cross-class confusion (a DT of class A overlapping a GT of
-class B) is on the 2026-Q3 roadmap and is explicitly deferred per
-ADR-0019 §"What this ADR explicitly does <em>not</em> decide". Within-class
+class B) is explicitly deferred per ADR-0019 §"What this ADR
+explicitly does <em>not</em> decide". Within-class
 mining (low-IoU true positives, near-miss pairs) works today; pair
 the <code>per_pair</code> IoU stream with <code>per_detection.score</code> joined on
 <code>detection_id</code> to reconstruct the per-class PR shape.</p>
@@ -1967,24 +1995,24 @@ PyCapsule-aware consumer reads it zero-copy.</p>
 the default <code>iou_floor=0.1</code> keeps it under ~1 M rows (~40 MB Arrow);
 LVIS-scale workloads with the same floor can exceed hundreds of
 millions of rows, which is why the cap exists. Exceeding
-<code>per_pair_max_rows</code> raises an exception rather than silently
-truncating — <code>ValueError</code> in v0.5 (the typed <code>PerPairOverflowError</code>
-shipped on the public surface in Week 2.4 of the phased landing
-plan; check the ADR for the current state).</p>
+<code>per_pair_max_rows</code> raises <code>ValueError</code> rather than silently
+truncating; ADR-0019 tracks the typed <code>PerPairOverflowError</code>
+follow-up.</p>
 <h2 id="whats-not-in-the-table">What's not in the table</h2>
-<p>The v0.5 <code>EvalResult</code> deliberately omits the following surfaces; each
-is documented at its own anchor:</p>
+<p><code>EvalResult</code> deliberately omits the following surfaces; each is
+documented at its own anchor:</p>
 <ul>
 <li><strong>Per-image <code>ap</code> / <code>ap_50</code> columns.</strong> PR curves from a single image
   are degenerate. See
   <a href="../../explanation/why-no-per-image-ap/"><code>why-no-per-image-ap.md</code></a>.</li>
-<li><strong>Cross-class <code>per_pair</code> confusion.</strong> Pairs are class-restricted in
-  v0.5; cross-class confusion lands in 2026-Q3 per ADR-0019 §"What
-  this ADR explicitly does <em>not</em> decide".</li>
-<li><strong>Chunked Arrow IPC for very-large <code>per_pair</code>.</strong> v0.5 emits a single
-  <code>RecordBatch</code> per table; workloads beyond ~10 M <code>per_pair</code> rows
-  motivate a follow-up ADR for streaming IPC. Until then, raise
-  <code>per_pair_iou_floor</code> or fail loud via <code>per_pair_max_rows</code>.</li>
+<li><strong>Cross-class <code>per_pair</code> confusion.</strong> Pairs are class-restricted
+  today; cross-class confusion is deferred per ADR-0019 §"What this
+  ADR explicitly does <em>not</em> decide".</li>
+<li><strong>Chunked Arrow IPC for very-large <code>per_pair</code>.</strong> Today vernier
+  emits a single <code>RecordBatch</code> per table; workloads beyond ~10 M
+  <code>per_pair</code> rows motivate a follow-up ADR for streaming IPC. Until
+  then, raise <code>per_pair_iou_floor</code> or fail loud via
+  <code>per_pair_max_rows</code>.</li>
 <li><strong>On-disk Parquet emit as a vernier method.</strong> Free via polars
   (<code>df.write_parquet(...)</code>); we ship the data, the user picks the
   serializer.</li>

@@ -719,34 +719,6 @@
   
   
     <li class="md-nav__item">
-      <a href="tutorials/training-loop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Logging AP during training
-  
-
-    
-  </span>
-  
-  
-
-      </a>
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
       <a href="tutorials/debugging-with-tide/" class="md-nav__link">
         
   
@@ -1209,6 +1181,62 @@
     
   
     Evaluate on a background thread
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to/array-ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest detection arrays
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to/distributed-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed evaluation
   
 
     
@@ -1767,12 +1795,11 @@
 <p>A parity-preserving COCO-style evaluator for instance segmentation, panoptic
 segmentation, boundary IoU, OKS keypoints, semantic segmentation, and LVIS
 federated evaluation. Bit-exact against <code>pycocotools==2.0.11</code>, <code>panopticapi</code>,
-and <code>lvis-api</code> in strict parity mode; semantic mIoU is <strong>provisional</strong> within
-the patch line until the vendored <code>mmsegmentation</code> oracle lands. See the
-per-paradigm matrix in the
+and <code>lvis-api</code> in strict parity mode; semantic mIoU is calibrated against
+a vendored <code>mmsegmentation</code> <code>IoUMetric</code>. See the per-paradigm matrix in the
 <a href="https://github.com/NoeFontana/vernier/#status--validation">README §Status &amp; validation</a>
-for the full picture, plus a documented quirks survey for every place the
-reference implementations disagree with themselves.</p>
+for the full per-paradigm picture, plus a documented quirks survey for every
+place the reference implementations disagree with themselves.</p>
 <h2 id="why-vernier">Why vernier</h2>
 <p><code>pycocotools==2.0.11</code> is the reference for COCO evaluation and it is slow,
 unmaintained, and full of edge-case quirks that downstream tools either

@@ -14,7 +14,7 @@
         <link rel="prev" href="../">
       
       
-        <link rel="next" href="../training-loop/">
+        <link rel="next" href="../debugging-with-tide/">
       
       
         
@@ -667,10 +667,21 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#run-it" class="md-nav__link">
+  <a href="#path-a-one-shot-evaluation-from-json" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Run it
+        Path A — one-shot evaluation from JSON
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#path-b-during-a-training-loop" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path B — during a training loop
       
     </span>
   </a>
@@ -714,34 +725,6 @@
   
 </nav>
       
-    </li>
-  
-
-              
-            
-              
-                
-  
-  
-  
-  
-    <li class="md-nav__item">
-      <a href="../training-loop/" class="md-nav__link">
-        
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Logging AP during training
-  
-
-    
-  </span>
-  
-  
-
-      </a>
     </li>
   
 
@@ -1216,6 +1199,62 @@
     
   
     Evaluate on a background thread
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/array-ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest detection arrays
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/distributed-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed evaluation
   
 
     
@@ -1771,10 +1810,18 @@
 
 
 <h1 id="your-first-evaluation">Your first evaluation</h1>
-<p>This tutorial runs vernier end-to-end on COCO val2017 and prints the
-12-line pycocotools-shaped summary. By the end you will have a
-working evaluation pipeline, know how to read the output, and know
-where to go next.</p>
+<p>This tutorial runs vernier end-to-end on COCO val2017 in the two
+shapes most users start with:</p>
+<ul>
+<li><strong>Path A — one-shot evaluation from JSON.</strong> Predictions are already
+  serialized to a file. Used for end-of-epoch checkpoints, CI gates,
+  and post-training inspection.</li>
+<li><strong>Path B — during a training loop.</strong> A <code>val_loader</code> produces
+  predictions step by step; the kernel runs on a worker thread so the
+  training thread does not stall.</li>
+</ul>
+<p>Both paths produce the same 12-line <code>pycocotools</code>-shaped summary —
+pick the one that matches your harness.</p>
 <h2 id="prerequisites">Prerequisites</h2>
 <div class="language-sh highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>vernier
 </span></code></pre></div>
@@ -1794,7 +1841,7 @@ where to go next.</p>
 </ul>
 <p>These files are not redistributable through this site (COCO terms of
 use); download them locally before continuing.</p>
-<h2 id="run-it">Run it</h2>
+<h2 id="path-a-one-shot-evaluation-from-json">Path A — one-shot evaluation from JSON</h2>
 <!-- needs-coco -->
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">CocoDataset</span><span class="p">,</span> <span class="n">Evaluator</span>
@@ -1807,11 +1854,37 @@ use); download them locally before continuing.</p>
 </span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
 </span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">summary</span><span class="o">.</span><span class="n">pretty_lines</span><span class="p">():</span>
 </span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;AP =&quot;</span><span class="p">,</span> <span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
 </span></code></pre></div>
-<p>That's the full evaluation. On a 2024-era laptop this completes in
-a few seconds; the bottleneck is JSON parsing on the GT side, not
-the matching kernel.</p>
+<p>That is the full evaluation. On a 2024-era laptop it completes in a
+few seconds; the bottleneck is JSON parsing on the GT side, not the
+matching kernel. <code>CocoDataset.from_json(gt_bytes)</code> parses the GT
+once so subsequent <code>evaluate(...)</code> calls reuse the cache
+(<a href="../../adr/0020-parsed-once-dataset-handle/">ADR-0020</a>).</p>
+<h2 id="path-b-during-a-training-loop">Path B — during a training loop</h2>
+<p><code>BackgroundEvaluator</code>
+(<a href="../../adr/0014-background-evaluator/">ADR-0014</a>) runs the matching
+kernel on a worker thread; <code>submit(detections)</code> enqueues a batch and
+returns immediately, so the training thread is not blocked.</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">BackgroundEvaluator</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">gt_bytes</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;instances_val2017.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="k">with</span> <span class="n">BackgroundEvaluator</span><span class="p">(</span><span class="n">gt_bytes</span><span class="p">,</span> <span class="n">iou_type</span><span class="o">=</span><span class="s2">&quot;bbox&quot;</span><span class="p">)</span> <span class="k">as</span> <span class="n">evaluator</span><span class="p">:</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="k">for</span> <span class="n">images</span><span class="p">,</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">val_loader</span><span class="p">:</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        <span class="n">detections</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">images</span><span class="p">)</span>  <span class="c1"># list[{image_id, category_id, bbox, score}]</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="n">evaluator</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">detections</span><span class="p">)</span><span class="o">.</span><span class="n">encode</span><span class="p">())</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>    <span class="n">summary</span> <span class="o">=</span> <span class="n">evaluator</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="nb">print</span><span class="p">(</span><span class="s2">&quot;AP =&quot;</span><span class="p">,</span> <span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="s2">&quot;AP50 =&quot;</span><span class="p">,</span> <span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+</span></code></pre></div>
+<p><code>submit(detections)</code> accepts the same loadRes-shaped JSON bytes that
+<code>evaluate(...)</code> accepts and blocks if the bounded worker queue is
+full; pass <code>timeout=</code> to surface back-pressure as a typed
+<code>QueueFullError</code> instead. The full API surface — queue sizing,
+memory budget, array-form ingest, multi-rank — lives in
+<a href="../../how-to/background-evaluator/"><code>how-to/background-evaluator.md</code></a>.</p>
 <h2 id="what-the-output-means">What the output means</h2>
 <p><code>pretty_lines()</code> returns the 12-line block pycocotools'
 <code>COCOeval.summarize()</code> prints to stdout. Each line maps to one cell
@@ -1873,12 +1946,13 @@ for the cross-codebase comparison.</p>
   for OKS (ADR-0012). Recipes:
   <a href="../../how-to/boundary-iou/"><code>how-to/boundary-iou.md</code></a>,
   <a href="../../how-to/keypoints-oks/"><code>how-to/keypoints-oks.md</code></a>.</li>
-<li><strong>Log AP during training.</strong> End-of-epoch
-  <code>Evaluator(...).evaluate(...)</code> is the default. If validation pass
-  timing matters, <code>BackgroundEvaluator.submit(...)</code> runs the kernel on
-  a worker thread so the training thread doesn't stall. Tutorial:
-  <a href="../training-loop/"><code>training-loop.md</code></a>.</li>
-<li><strong>Migrate from a competing tool.</strong> The TL;DR table in
+<li><strong>Tune <code>BackgroundEvaluator</code>.</strong> Queue capacity, memory budget,
+  array-form ingest, and the back-pressure contract:
+  <a href="../../how-to/background-evaluator/"><code>how-to/background-evaluator.md</code></a>.</li>
+<li><strong>Run multi-rank.</strong> <code>Evaluator.evaluate_to_partial</code> per rank +
+  <code>Evaluator.from_partials</code> on the head:
+  <a href="../../how-to/distributed-eval/"><code>how-to/distributed-eval.md</code></a>.</li>
+<li><strong>Migrate from other tools.</strong> The TL;DR table in
   <a href="../../migrate/from-pycocotools/"><code>migrate/from-pycocotools.md</code></a>
   maps the <code>COCOeval(...).evaluate().accumulate().summarize()</code>
   call sequence onto vernier's <code>Evaluator(...).evaluate(...)</code>.</li>
