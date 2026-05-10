@@ -14,8 +14,8 @@ per-class ``.npy`` table mirroring the panoptic two-artifact bundle.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
 
+import numpy as np
 import vernier
 
 from bench.harness.parity import SemanticSnapshot
@@ -23,27 +23,9 @@ from bench.harness.timing import StageTable
 from bench.runners._protocol import (
     parse_semantic_runner_args,
     per_class_uint64_table,
+    scan_label_map_dir,
     write_semantic_outputs,
 )
-
-
-def _scan_label_map_dir(directory: Path) -> dict[int, Path]:
-    """Index PNGs in ``directory`` by integer image_id parsed from the
-    stem. Filenames must match ``<int>.png``.
-    """
-    out: dict[int, Path] = {}
-    for entry in sorted(directory.iterdir()):
-        if entry.suffix.lower() != ".png":
-            continue
-        try:
-            image_id = int(entry.stem)
-        except ValueError as e:
-            raise ValueError(
-                f"semantic runner expects label-map filenames of the form "
-                f"'<int>.png'; got {entry.name!r} under {directory!s}."
-            ) from e
-        out[image_id] = entry
-    return out
 
 
 def _summary_to_snapshot(summary: vernier.semantic.Summary) -> SemanticSnapshot:
@@ -68,13 +50,36 @@ def _summary_to_snapshot(summary: vernier.semantic.Summary) -> SemanticSnapshot:
     )
 
 
+def _confusion_marginals(summary: vernier.semantic.Summary) -> np.ndarray:
+    """Project vernier's NxN confusion matrix to the (4, N) marginals
+    that are the cross-impl strict-tier parity surface.
+
+    Convention (counts[gt_class, dt_class], same as
+    :mod:`tests.python.parity_semantic.harness`):
+
+    - ``intersect[i] = counts[i, i]`` — pixels where pred == gt == i.
+    - ``area_label[i] = counts[i, :].sum()`` — total GT pixels in class i.
+    - ``area_pred[i]  = counts[:, i].sum()`` — total predicted pixels in class i.
+    - ``union[i]      = area_pred[i] + area_label[i] - intersect[i]``.
+
+    These are exactly mmsegmentation ``IoUMetric.intersect_and_union``'s
+    return values; equal marginals ⇒ equal mIoU under quirk AL2.
+    """
+    counts = summary.confusion_matrix.counts().astype(np.uint64, copy=False)
+    intersect = np.diagonal(counts).astype(np.uint64, copy=True)
+    area_label = counts.sum(axis=1, dtype=np.uint64)
+    area_pred = counts.sum(axis=0, dtype=np.uint64)
+    union = area_pred + area_label - intersect
+    return np.stack((intersect, union, area_pred, area_label), axis=0)
+
+
 def main() -> int:
     args = parse_semantic_runner_args()
     stages = StageTable()
 
     with stages.stage("load"):
-        gt_paths = _scan_label_map_dir(args.gt_label_map_dir)
-        dt_paths = _scan_label_map_dir(args.dt_label_map_dir)
+        gt_paths = scan_label_map_dir(args.gt_label_map_dir)
+        dt_paths = scan_label_map_dir(args.dt_label_map_dir)
         common = set(gt_paths) & set(dt_paths)
         if not common:
             raise RuntimeError(
@@ -101,6 +106,7 @@ def main() -> int:
         per_class_array = per_class_uint64_table(
             snap.per_class, columns=("iou", "accuracy", "precision")
         )
+        confusion_array = _confusion_marginals(summary)
         snap_json = snap.model_dump_json().encode()
 
     stages.record("total", stages.total_so_far_ns())
@@ -112,6 +118,7 @@ def main() -> int:
         stages=stages.to_dict(),
         snapshot_json_bytes=snap_json,
         per_class_array=per_class_array,
+        confusion_array=confusion_array,
     )
     return 0
 

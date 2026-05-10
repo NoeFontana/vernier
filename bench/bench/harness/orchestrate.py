@@ -43,6 +43,7 @@ from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.migrations.v1_to_v2 import TENSOR_KEY
 from bench.harness.parity import (
     CellParityReport,
+    ConfusionMatrix,
     PanopticSnapshot,
     SemanticSnapshot,
     compare_cell,
@@ -66,6 +67,7 @@ from bench.harness.stats import (
     aggregate_reps,
     iqr_gate,
 )
+from bench.runners._protocol import PANOPTIC_ARTIFACT_KEYS, SEMANTIC_ARTIFACT_KEYS
 
 # (n_warmup, n_measurement) per ADR-0017 §"Run modes".
 MODE_REPS: dict[Mode, tuple[int, int]] = {
@@ -344,6 +346,7 @@ def _spawn_one_rep_semantic(
     rep_json = intermediate_dir / f"{impl}-rep{rep_index}.json"
     rep_snapshot = intermediate_dir / f"{impl}-rep{rep_index}-snapshot.json"
     rep_per_class = intermediate_dir / f"{impl}-rep{rep_index}-per_class.npy"
+    rep_confusion = intermediate_dir / f"{impl}-rep{rep_index}-confusion.npy"
     cmd = uv_run_argv(
         bench_root,
         impl,
@@ -369,11 +372,13 @@ def _spawn_one_rep_semantic(
         str(rep_snapshot),
         "--per-class-output",
         str(rep_per_class),
+        "--confusion-output",
+        str(rep_confusion),
     )
     status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
-    for required in (rep_json, rep_snapshot, rep_per_class):
+    for required in (rep_json, rep_snapshot, rep_per_class, rep_confusion):
         if not required.exists():
             raise RuntimeError(
                 f"semantic runner {impl} succeeded but did not produce {required.name}"
@@ -391,7 +396,11 @@ def _spawn_one_rep_semantic(
     return _SpawnResult(
         rep=rep_result,
         runner_out=runner_out,
-        artifact_paths={"snapshot": rep_snapshot, "per_class": rep_per_class},
+        artifact_paths={
+            "snapshot": rep_snapshot,
+            "per_class": rep_per_class,
+            "confusion": rep_confusion,
+        },
     )
 
 
@@ -485,12 +494,6 @@ def _assemble_impl_result(
     return out_json, np.load(canonical.tensor_path), tensor_sha256, gate_result
 
 
-# Panoptic and semantic both emit a snapshot JSON + per-class npy
-# table, so the artifact-key set is the same for both. Keep it under
-# one name; the spawn/assemble functions stay paradigm-specific.
-_TWO_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class"})
-
-
 def _assemble_impl_result_panoptic(
     *,
     impl: str,
@@ -513,7 +516,7 @@ def _assemble_impl_result_panoptic(
     Returns ``(out_json, canonical_snapshot, sha_by_key, gate_result)``.
     """
     canonical_shas = _validate_artifacts(
-        impl=impl, spawned=spawned, expected_keys=set(_TWO_ARTIFACT_KEYS)
+        impl=impl, spawned=spawned, expected_keys=set(PANOPTIC_ARTIFACT_KEYS)
     )
     canonical = spawned[0]
     snapshot_src = canonical.artifact_paths.get("snapshot")
@@ -603,22 +606,26 @@ def _assemble_impl_result_semantic(
     reps_count: int,
     warmup_discarded: int,
     iqr_threshold: float,
-) -> tuple[Path, SemanticSnapshot, dict[str, str], IqrGateResult | None]:
+) -> tuple[Path, SemanticSnapshot, ConfusionMatrix, dict[str, str], IqrGateResult | None]:
     """Semantic assembler. Mirrors :func:`_assemble_impl_result_panoptic`:
     validates per-rep snapshot + per-class sha bit-equality, promotes
     rep 0's artifacts to the canonical ``<impl>.json`` /
-    ``<impl>_per_class.npy`` pair, aggregates rep timings, writes the
-    ``BenchResult``.
+    ``<impl>_per_class.npy`` / ``<impl>_confusion.npy`` triple,
+    aggregates rep timings, writes the ``BenchResult``, and loads the
+    confusion-marginals into a :class:`ConfusionMatrix` artifact for
+    the strict-tier parity comparator.
 
-    Returns ``(out_json, canonical_snapshot, sha_by_key, gate_result)``.
+    Returns ``(out_json, canonical_snapshot, confusion_matrix,
+    sha_by_key, gate_result)``.
     """
     canonical_shas = _validate_artifacts(
-        impl=impl, spawned=spawned, expected_keys=set(_TWO_ARTIFACT_KEYS)
+        impl=impl, spawned=spawned, expected_keys=set(SEMANTIC_ARTIFACT_KEYS)
     )
     canonical = spawned[0]
     snapshot_src = canonical.artifact_paths.get("snapshot")
     per_class_src = canonical.artifact_paths.get("per_class")
-    if snapshot_src is None or per_class_src is None:
+    confusion_src = canonical.artifact_paths.get("confusion")
+    if snapshot_src is None or per_class_src is None or confusion_src is None:
         raise RuntimeError(
             f"semantic spawn for impl {impl!r} missing artifact paths; "
             f"got: {sorted(canonical.artifact_paths)}"
@@ -626,18 +633,29 @@ def _assemble_impl_result_semantic(
 
     snapshot_dst = out_dir / f"{impl}.json"
     per_class_dst = out_dir / f"{impl}_per_class.npy"
+    confusion_dst = out_dir / f"{impl}_confusion.npy"
     shutil.copyfile(snapshot_src, snapshot_dst.with_suffix(".snapshot.json"))
     shutil.copyfile(per_class_src, per_class_dst)
+    shutil.copyfile(confusion_src, confusion_dst)
 
     snapshot_sha = file_sha256(snapshot_dst.with_suffix(".snapshot.json"))
     per_class_sha = file_sha256(per_class_dst)
+    confusion_sha = file_sha256(confusion_dst)
     if snapshot_sha != canonical_shas["snapshot"]:
         raise RuntimeError("semantic snapshot sha mismatch between runner and orchestrator copy")
     if per_class_sha != canonical_shas["per_class"]:
         raise RuntimeError("semantic per_class sha mismatch between runner and orchestrator copy")
+    if confusion_sha != canonical_shas["confusion"]:
+        raise RuntimeError("semantic confusion sha mismatch between runner and orchestrator copy")
 
     canonical_snapshot = SemanticSnapshot.model_validate_json(
         snapshot_dst.with_suffix(".snapshot.json").read_bytes()
+    )
+    confusion_counts = np.load(confusion_dst, allow_pickle=False)
+    confusion_artifact = ConfusionMatrix(
+        n_classes=int(canonical_snapshot.n_classes),
+        counts=confusion_counts,
+        counts_sha256=confusion_sha,
     )
 
     rep_results = [s.rep for s in spawned]
@@ -665,10 +683,12 @@ def _assemble_impl_result_semantic(
         artifact_paths={
             "snapshot": f"{impl}.snapshot.json",
             "per_class": per_class_dst.name,
+            "confusion": confusion_dst.name,
         },
         artifact_sha256={
             "snapshot": snapshot_sha,
             "per_class": per_class_sha,
+            "confusion": confusion_sha,
         },
         warnings=list(canonical.runner_out.warnings),
     )
@@ -676,7 +696,12 @@ def _assemble_impl_result_semantic(
     return (
         snapshot_dst,
         canonical_snapshot,
-        {"snapshot": snapshot_sha, "per_class": per_class_sha},
+        confusion_artifact,
+        {
+            "snapshot": snapshot_sha,
+            "per_class": per_class_sha,
+            "confusion": confusion_sha,
+        },
         gate_result,
     )
 
@@ -908,6 +933,7 @@ def run_cell(
     impl_sha256: dict[str, str] = {}
     impl_panoptic_snapshots: dict[str, PanopticSnapshot] = {}
     impl_semantic_snapshots: dict[str, SemanticSnapshot] = {}
+    impl_semantic_confusion: dict[str, ConfusionMatrix] = {}
     iqr_outcomes: dict[str, IqrGateResult] = {}
     for impl_name in cell.impls:
         results = [r for r in spawned[impl_name] if r is not None]
@@ -928,7 +954,13 @@ def run_cell(
             impl_jsons[impl_name] = out_json
             impl_panoptic_snapshots[impl_name] = snapshot
         elif cell.paradigm == "semantic":
-            out_json, sem_snapshot, _shas, iqr_outcome = _assemble_impl_result_semantic(
+            (
+                out_json,
+                sem_snapshot,
+                sem_confusion,
+                _shas,
+                iqr_outcome,
+            ) = _assemble_impl_result_semantic(
                 impl=impl_name,
                 out_dir=out_dir,
                 spawned=results,
@@ -943,6 +975,7 @@ def run_cell(
             )
             impl_jsons[impl_name] = out_json
             impl_semantic_snapshots[impl_name] = sem_snapshot
+            impl_semantic_confusion[impl_name] = sem_confusion
         else:
             out_json, tensor, tensor_sha, iqr_outcome = _assemble_impl_result(
                 impl=impl_name,
@@ -981,10 +1014,16 @@ def run_cell(
                 iou_type=cell.iou_type,
                 impl_outputs=dict(impl_panoptic_snapshots),
             )
-        # Semantic has no oracle yet (S3-B / mmseg pending) so
-        # ``parity_report`` stays None for semantic cells; the CLI
-        # also short-circuits ``parity=False`` when only the
-        # vernier_semantic impl is registered.
+        elif cell.paradigm == "semantic":
+            # The semantic strict tier compares ``ConfusionMatrix``
+            # artifacts (the (4, n_classes) marginals — see
+            # `_SemanticComparator` and ADR-0036). The CLI also
+            # short-circuits parity when only one impl is registered.
+            parity_report = get_comparator("semantic").compare(
+                workload_id=cell.workload_id,
+                iou_type=cell.iou_type,
+                impl_outputs=dict(impl_semantic_confusion),
+            )
         if parity_report is not None and not parity_report.passed:
             divergence_report_path = write_report(parity_report, out_dir)
 

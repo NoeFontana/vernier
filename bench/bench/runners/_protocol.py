@@ -142,6 +142,34 @@ def parse_panoptic_runner_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+# Artifact-slot names emitted by the panoptic + semantic ``write_*_outputs``
+# helpers below. Single source of truth — the orchestrator's per-paradigm
+# assemblers import these so the producer and consumer sides can't drift.
+PANOPTIC_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class"})
+SEMANTIC_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class", "confusion"})
+
+
+def scan_label_map_dir(directory: Path) -> dict[int, Path]:
+    """Index PNGs in ``directory`` by integer image_id parsed from the
+    stem. Filenames must match ``<int>.png``. Shared by every semantic
+    runner — both vernier_semantic and the mmsegmentation oracle index
+    label-map directories the same way.
+    """
+    out: dict[int, Path] = {}
+    for entry in sorted(directory.iterdir()):
+        if entry.suffix.lower() != ".png":
+            continue
+        try:
+            image_id = int(entry.stem)
+        except ValueError as e:
+            raise ValueError(
+                f"semantic runner expects label-map filenames of the form "
+                f"'<int>.png'; got {entry.name!r} under {directory!s}."
+            ) from e
+        out[image_id] = entry
+    return out
+
+
 def per_class_uint64_table(
     per_class: dict[str, dict[str, float]],
     columns: tuple[str, ...],
@@ -197,6 +225,19 @@ def parse_semantic_runner_args() -> argparse.Namespace:
     p.add_argument("--snapshot-output", type=Path, required=True)
     p.add_argument("--per-class-output", type=Path, required=True)
     p.add_argument(
+        "--confusion-output",
+        type=Path,
+        required=True,
+        help=(
+            "Path for the per-class strict-tier parity surface — a "
+            "(4, n_classes) uint64 array with rows "
+            "(intersect, union, area_pred, area_label). Both the "
+            "vendored mmsegmentation oracle and vernier_semantic emit "
+            "this shape so the comparator's `np.array_equal` check is "
+            "well-defined across impls (ADR-0036)."
+        ),
+    )
+    p.add_argument(
         "--paradigm",
         type=str,
         default="semantic",
@@ -223,22 +264,34 @@ def write_semantic_outputs(
     stages: dict[str, StageTimings],
     snapshot_json_bytes: bytes,
     per_class_array: np.ndarray,
+    confusion_array: np.ndarray,
     warnings: list[BenchWarning] | None = None,
 ) -> None:
-    """Persist a semantic runner's two-artifact bundle.
+    """Persist a semantic runner's three-artifact bundle.
 
     - ``snapshot.json`` — the ``SemanticSnapshot`` Pydantic JSON; the
-      comparator reads this back and dispatches per-tier comparisons.
+      report layer reads this back for the headline scalars + the
+      per-class derived floats.
     - ``per_class.npy`` — uint64 ``N x 4`` array (rows sorted by class id)
       holding ``[iou, accuracy, precision, support]`` as f64 bit-cast
       into uint64. ``np.save`` with ``allow_pickle=False``; readers cast
       back via ``arr.view(np.float64)``.
+    - ``confusion.npy`` — the strict-tier parity surface — uint64
+      ``(4, n_classes)`` array with rows
+      ``(intersect, union, area_pred, area_label)``. The four marginals
+      are mmsegmentation ``IoUMetric.intersect_and_union``'s native
+      output; vernier_semantic projects its NxN confusion matrix to
+      the same shape so cross-impl ``np.array_equal`` is well-defined.
+      Equal marginals ⇒ equal mIoU / FWIoU / pixel_accuracy /
+      mean_accuracy by ADR-0028's quirk-AL2 (bit-deterministic float
+      arithmetic on integer totals).
 
-    The ``RunnerRepOutput`` records both artifacts under the canonical
-    ``"snapshot"`` and ``"per_class"`` slots. The ``summary_stats``
-    slot carries the four headline scalars (mIoU / FWIoU /
-    pixel_accuracy / mean_accuracy) so downstream report aggregation
-    has scalar columns without re-parsing the snapshot.
+    The ``RunnerRepOutput`` records all three artifacts under the
+    canonical ``"snapshot"`` / ``"per_class"`` / ``"confusion"`` slots.
+    The ``summary_stats`` slot carries the four headline scalars
+    (mIoU / FWIoU / pixel_accuracy / mean_accuracy) so downstream
+    report aggregation has scalar columns without re-parsing the
+    snapshot.
     """
     from bench.harness.parity import SemanticSnapshot
 
@@ -251,6 +304,16 @@ def write_semantic_outputs(
     per_class_path: Path = args.per_class_output
     per_class_path.parent.mkdir(parents=True, exist_ok=True)
     np.save(per_class_path, per_class_array, allow_pickle=False)
+
+    confusion_path: Path = args.confusion_output
+    confusion_path.parent.mkdir(parents=True, exist_ok=True)
+    if confusion_array.dtype != np.uint64:
+        raise TypeError(f"semantic confusion array must be uint64; got {confusion_array.dtype}")
+    if confusion_array.ndim != 2 or confusion_array.shape[0] != 4:
+        raise ValueError(
+            f"semantic confusion array must be shape (4, n_classes); got {confusion_array.shape}"
+        )
+    np.save(confusion_path, confusion_array, allow_pickle=False)
 
     summary_stats: dict[str, float] = {
         "mIoU": float(snap.miou),
@@ -274,10 +337,12 @@ def write_semantic_outputs(
         artifact_paths={
             "snapshot": snapshot_path.name,
             "per_class": per_class_path.name,
+            "confusion": confusion_path.name,
         },
         artifact_sha256={
             "snapshot": file_sha256(snapshot_path),
             "per_class": file_sha256(per_class_path),
+            "confusion": file_sha256(confusion_path),
         },
         warnings=list(warnings or []),
     )

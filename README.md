@@ -64,10 +64,11 @@ per-library comparison: [`docs/comparison.md`](docs/comparison.md).
 | Workload (val2017) | vernier median | Speedup vs alternatives |
 | --- | ---: | --- |
 | Instance — bbox AP | 360 ms | **5.9×** faster-coco-eval · **16.2×** pycocotools |
-| Instance — segm AP | 968 ms | **3.7×** faster-coco-eval · **6.9×** pycocotools |
+| Instance — segm AP | 968 ms | **3.7×** faster-coco-eval · **7.1×** pycocotools |
 | Instance — boundary AP | 3.1 s | **5.7×** faster-coco-eval · **19.9×** boundary-iou-api |
-| Instance — keypoints AP (OKS) | 135 ms | **12.7×** faster-coco-eval · **17.1×** pycocotools |
-| Panoptic — PQ | 13.0 s | **2.66×** panopticapi |
+| Instance — keypoints AP (OKS) | 136 ms | **12.5×** faster-coco-eval · **17.1×** pycocotools |
+| Panoptic — PQ | 11.6 s | **3.04×** panopticapi |
+| Semantic — mIoU | 5.1 s | **4.2×** mmsegmentation |
 
 Median total-stage wall time on a KVM VPS (AMD EPYC-Milan, 4 cores ×
 2 threads = 8 logical CPUs, `x86_64` — not a bare-metal Milan box),
@@ -83,8 +84,9 @@ when to pick which in [`docs/comparison.md`](docs/comparison.md).
 [`pycocotools==2.0.11`](https://pypi.org/project/pycocotools/2.0.11/),
 [`faster-coco-eval==1.7.2`](https://pypi.org/project/faster-coco-eval/1.7.2/),
 [`panopticapi` @ `7bb4655`](https://github.com/cocodataset/panopticapi/commit/7bb4655548f9),
-[`boundary-iou-api` @ `37d2558`](https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677).
-vernier is at HEAD `0a39957821bf`. Each baseline is locked in its own
+[`boundary-iou-api` @ `37d2558`](https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677),
+[`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8) (vendored).
+vernier is at HEAD `1fd5720bf56c`. Each baseline is locked in its own
 uv-managed venv per
 [ADR-0017](docs/adr/0017-local-bench-harness.md).
 

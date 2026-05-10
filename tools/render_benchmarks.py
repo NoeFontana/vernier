@@ -390,10 +390,15 @@ def render_paradigm_section(
     return "\n".join(out)
 
 
-_PYPI_BASELINES: frozenset[str] = frozenset({"pycocotools", "faster-coco-eval", "mmsegmentation"})
+_PYPI_BASELINES: frozenset[str] = frozenset({"pycocotools", "faster-coco-eval"})
 _GH_BASELINES: dict[str, str] = {
     "panopticapi": "cocodataset/panopticapi",
     "boundary-iou-api": "bowenc0221/boundary-iou-api",
+    # mmsegmentation is vendored at a pinned upstream SHA per ADR-0036
+    # rather than pip-installed; the runner emits the SHA as
+    # impl_version so the renderer links to the upstream commit, not
+    # the PyPI release.
+    "mmsegmentation": "open-mmlab/mmsegmentation",
 }
 assert set(IMPL_ORDER) >= _PYPI_BASELINES
 assert set(IMPL_ORDER) >= _GH_BASELINES.keys()

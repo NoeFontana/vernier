@@ -688,12 +688,21 @@ class _PanopticComparator:
 
 
 # Per-paradigm parity-tier metadata (ADR-0033 §"Comparator registry").
-# Empty until S3-B lands ADE20K + mmseg as an ``aligned``-tier pair
-# (rtol=1e-9, mirroring SEMANTIC_PARITY_EPS in
-# crates/vernier-semantic/src/parity.rs). The Cityscapes pair was
-# dropped — Cityscapes' license restricts redistribution of derivative
-# outputs, which doesn't fit the public bench-result tree.
-_SEMANTIC_TIER_PAIRS: tuple[tuple[Tier, str, str], ...] = ()
+# Strict-tier pair: vernier_semantic vs the vendored mmsegmentation
+# IoUMetric oracle (ADR-0036). The bench surface is bit-equality on
+# the ``(4, n_classes)`` marginals (intersect / union / area_pred /
+# area_label) — those are mmseg's native output shape and vernier
+# projects its NxN confusion matrix to the same shape so
+# ``np.array_equal`` is well-defined. Equal marginals ⇒ equal mIoU /
+# FWIoU / pixel_accuracy / mean_accuracy by quirk AL2 (NaN-on-zero
+# arithmetic shared between impls).
+#
+# The Cityscapes pair was dropped — Cityscapes' license restricts
+# redistribution of derivative outputs, which doesn't fit the public
+# bench-result tree.
+_SEMANTIC_TIER_PAIRS: tuple[tuple[Tier, str, str], ...] = (
+    ("strict", "vernier_semantic", "mmsegmentation"),
+)
 
 
 class _SemanticComparator:
