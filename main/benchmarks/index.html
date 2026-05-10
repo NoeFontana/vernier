@@ -596,6 +596,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#workload-coco_val2017_semantic_perfect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workload: coco_val2017_semantic_perfect
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#workload-synthetic_semantic_n200_c19_s0" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1910,12 +1921,12 @@ extended cross-paradigm in
 The IQR column reports the spread (Q3 - Q1) across the 10 measurement
 reps and the same value as a percentage of the median; release mode
 gates each cell at 5% relative IQR.</p>
-<p><strong>Provenance</strong> — git SHA <code>0a39957821bf</code> · machine fingerprint <code>1655eb18a194</code> · CPU AMD EPYC-Milan Processor (x86_64) · harness
+<p><strong>Provenance</strong> — git SHA <code>1fd5720bf56c</code> · machine fingerprint <code>1655eb18a194</code> · CPU AMD EPYC-Milan Processor (x86_64) · harness
 mode <code>release</code> · build profile = cargo release defaults
 (<code>opt-level=3</code>, <code>lto=thin</code>, <code>codegen-units=1</code>, no <code>target-cpu</code>). The
 release wheel on PyPI is built with the same profile — no
 benchmarking-only flags.</p>
-<p><strong>Baselines pinned for these numbers</strong> — <a href="https://pypi.org/project/faster-coco-eval/1.7.2/"><code>faster-coco-eval==1.7.2</code></a> · <a href="https://pypi.org/project/pycocotools/2.0.11/"><code>pycocotools==2.0.11</code></a> · <a href="https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677"><code>boundary-iou-api</code> @ <code>37d2558</code></a> · <a href="https://github.com/cocodataset/panopticapi/commit/7bb4655548f9"><code>panopticapi</code> @ <code>7bb4655</code></a>. Each baseline is locked in its own uv-managed venv per ADR-0017.</p>
+<p><strong>Baselines pinned for these numbers</strong> — <a href="https://pypi.org/project/faster-coco-eval/1.7.2/"><code>faster-coco-eval==1.7.2</code></a> · <a href="https://pypi.org/project/pycocotools/2.0.11/"><code>pycocotools==2.0.11</code></a> · <a href="https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677"><code>boundary-iou-api</code> @ <code>37d2558</code></a> · <a href="https://github.com/cocodataset/panopticapi/commit/7bb4655548f9"><code>panopticapi</code> @ <code>7bb4655</code></a> · <a href="https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8"><code>mmsegmentation</code> @ <code>c685fe6</code></a>. Each baseline is locked in its own uv-managed venv per ADR-0017.</p>
 <p>For the full per-cell deep-dive (per-stage breakdown, RSS evolution,
 parity gating, narrative on what moved each round), see
 <a href="https://github.com/NoeFontana/vernier/tree/main/docs/engineering/benchmarking"><code>docs/engineering/benchmarking/</code></a>.</p>
@@ -1939,24 +1950,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">359.6 ms</td>
-<td style="text-align: right;">7.2 ms (2.01%)</td>
-<td style="text-align: right;">235 MiB</td>
+<td style="text-align: right;">360.0 ms</td>
+<td style="text-align: right;">3.8 ms (1.07%)</td>
+<td style="text-align: right;">236 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">2.121 s</td>
-<td style="text-align: right;">30.2 ms (1.42%)</td>
+<td style="text-align: right;">2.127 s</td>
+<td style="text-align: right;">21.8 ms (1.03%)</td>
 <td style="text-align: right;">661 MiB</td>
-<td style="text-align: right;">5.90×</td>
+<td style="text-align: right;">5.91×</td>
 </tr>
 <tr>
 <td>pycocotools</td>
-<td style="text-align: right;">5.833 s</td>
-<td style="text-align: right;">129.9 ms (2.23%)</td>
+<td style="text-align: right;">5.820 s</td>
+<td style="text-align: right;">65.8 ms (1.13%)</td>
 <td style="text-align: right;">576 MiB</td>
-<td style="text-align: right;">16.22×</td>
+<td style="text-align: right;">16.17×</td>
 </tr>
 </tbody>
 </table>
@@ -1974,24 +1985,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">968.1 ms</td>
-<td style="text-align: right;">6.0 ms (0.62%)</td>
+<td style="text-align: right;">967.7 ms</td>
+<td style="text-align: right;">13.4 ms (1.38%)</td>
 <td style="text-align: right;">236 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">3.553 s</td>
-<td style="text-align: right;">53.4 ms (1.50%)</td>
+<td style="text-align: right;">3.605 s</td>
+<td style="text-align: right;">63.7 ms (1.77%)</td>
 <td style="text-align: right;">721 MiB</td>
-<td style="text-align: right;">3.67×</td>
+<td style="text-align: right;">3.73×</td>
 </tr>
 <tr>
 <td>pycocotools</td>
-<td style="text-align: right;">6.690 s</td>
-<td style="text-align: right;">163.7 ms (2.45%)</td>
+<td style="text-align: right;">6.853 s</td>
+<td style="text-align: right;">71.8 ms (1.05%)</td>
 <td style="text-align: right;">569 MiB</td>
-<td style="text-align: right;">6.91×</td>
+<td style="text-align: right;">7.08×</td>
 </tr>
 </tbody>
 </table>
@@ -2009,24 +2020,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">3.121 s</td>
-<td style="text-align: right;">15.5 ms (0.50%)</td>
+<td style="text-align: right;">3.130 s</td>
+<td style="text-align: right;">21.7 ms (0.69%)</td>
 <td style="text-align: right;">238 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">17.772 s</td>
-<td style="text-align: right;">83.2 ms (0.47%)</td>
+<td style="text-align: right;">17.837 s</td>
+<td style="text-align: right;">48.8 ms (0.27%)</td>
 <td style="text-align: right;">794 MiB</td>
 <td style="text-align: right;">5.70×</td>
 </tr>
 <tr>
 <td>boundary-iou-api</td>
-<td style="text-align: right;">62.161 s</td>
-<td style="text-align: right;">526.6 ms (0.85%)</td>
+<td style="text-align: right;">62.233 s</td>
+<td style="text-align: right;">228.1 ms (0.37%)</td>
 <td style="text-align: right;">666 MiB</td>
-<td style="text-align: right;">19.92×</td>
+<td style="text-align: right;">19.88×</td>
 </tr>
 </tbody>
 </table>
@@ -2045,24 +2056,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">134.7 ms</td>
-<td style="text-align: right;">1.5 ms (1.08%)</td>
+<td style="text-align: right;">135.7 ms</td>
+<td style="text-align: right;">2.4 ms (1.76%)</td>
 <td style="text-align: right;">102 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">1.707 s</td>
-<td style="text-align: right;">18.5 ms (1.09%)</td>
+<td style="text-align: right;">1.700 s</td>
+<td style="text-align: right;">20.1 ms (1.18%)</td>
 <td style="text-align: right;">154 MiB</td>
-<td style="text-align: right;">12.67×</td>
+<td style="text-align: right;">12.53×</td>
 </tr>
 <tr>
 <td>pycocotools</td>
-<td style="text-align: right;">2.308 s</td>
-<td style="text-align: right;">26.7 ms (1.16%)</td>
+<td style="text-align: right;">2.317 s</td>
+<td style="text-align: right;">13.3 ms (0.57%)</td>
 <td style="text-align: right;">163 MiB</td>
-<td style="text-align: right;">17.13×</td>
+<td style="text-align: right;">17.07×</td>
 </tr>
 </tbody>
 </table>
@@ -2082,21 +2093,50 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">13.012 s</td>
-<td style="text-align: right;">2.588 s (19.89%) *</td>
-<td style="text-align: right;">117 MiB</td>
+<td style="text-align: right;">11.615 s</td>
+<td style="text-align: right;">605.4 ms (5.21%) *</td>
+<td style="text-align: right;">118 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>panopticapi</td>
-<td style="text-align: right;">34.640 s</td>
-<td style="text-align: right;">336.1 ms (0.97%)</td>
-<td style="text-align: right;">146 MiB</td>
-<td style="text-align: right;">2.66×</td>
+<td style="text-align: right;">35.327 s</td>
+<td style="text-align: right;">344.5 ms (0.98%)</td>
+<td style="text-align: right;">145 MiB</td>
+<td style="text-align: right;">3.04×</td>
 </tr>
 </tbody>
 </table>
 <h2 id="semantic-miou">Semantic — mIoU</h2>
+<h3 id="workload-coco_val2017_semantic_perfect">Workload: <code>coco_val2017_semantic_perfect</code></h3>
+<p><strong><code>miou</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">5.070 s</td>
+<td style="text-align: right;">25.5 ms (0.50%)</td>
+<td style="text-align: right;">92 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>mmsegmentation</td>
+<td style="text-align: right;">21.377 s</td>
+<td style="text-align: right;">237.4 ms (1.11%)</td>
+<td style="text-align: right;">648 MiB</td>
+<td style="text-align: right;">4.22×</td>
+</tr>
+</tbody>
+</table>
 <h3 id="workload-synthetic_semantic_n200_c19_s0">Workload: <code>synthetic_semantic_n200_c19_s0</code></h3>
 <p><strong><code>miou</code></strong></p>
 <table>
@@ -2112,10 +2152,17 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">62.3 ms</td>
-<td style="text-align: right;">506.3 μs (0.81%)</td>
+<td style="text-align: right;">63.1 ms</td>
+<td style="text-align: right;">618.8 μs (0.98%)</td>
 <td style="text-align: right;">88 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>mmsegmentation</td>
+<td style="text-align: right;">437.5 ms</td>
+<td style="text-align: right;">46.5 ms (10.64%) *</td>
+<td style="text-align: right;">631 MiB</td>
+<td style="text-align: right;">6.93×</td>
 </tr>
 </tbody>
 </table>
