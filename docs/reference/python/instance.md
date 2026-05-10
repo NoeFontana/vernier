@@ -11,6 +11,10 @@ variant for overlapping the kernel with the rest of the training step.
 
 ## Type aliases
 
+::: vernier.instance.CategoryFilter
+    options:
+      heading_level: 3
+
 ::: vernier.instance.DetectionsInput
     options:
       heading_level: 3

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import TYPE_CHECKING, Final, Literal, TypeVar
+from typing import TYPE_CHECKING, Final, Literal, TypeAlias, TypeVar
 
 from vernier._core import Summary
 from vernier._tables import arrow_to_dataframe
@@ -92,6 +92,100 @@ class InvalidPanopticParams(InvalidEvalParams):
 
     def __init__(self, *, field: str, value: object, remediation: str) -> None:
         super().__init__(field=field, value=value, remediation=remediation)
+
+
+class IncompatibleSummaryPlan(ValueError):  # noqa: N818 — ADR-0040 ratifies this exact name
+    """Raised when a custom evaluation grid is incompatible with the
+    canonical fixed-shape summary plan.
+
+    The COCO 12-stat / keypoints 10-stat / LVIS 13-stat summary plans
+    address slots in the ``(T, R, K, A, M)`` accumulator by hardcoded
+    indices — ``AP_S`` is "the second area-bucket entry of the all-IoU
+    slice at maxDet=100", not "the small-area slot". A custom
+    ``iou_thresholds`` ladder, ``recall_thresholds`` ladder, or
+    ``area_ranges`` breakdown breaks this index assumption.
+
+    Per ADR-0040, custom-grid users get the result-tables surface
+    (``Evaluator.evaluate_tables(...)``, ADR-0019), which carries
+    explicit labels per row and composes cleanly with arbitrary grid
+    layouts. The ``remediation`` field on this exception names the
+    method to call.
+    """
+
+    def __init__(self, *, field: str, value: object, plan: str, remediation: str) -> None:
+        self.field = field
+        self.value = value
+        self.plan = plan
+        self.remediation = remediation
+        super().__init__(
+            f"custom {field}={value!r} is incompatible with the {plan} summary plan: {remediation}"
+        )
+
+
+# --- CategoryFilter discriminated union (ADR-0026 + ADR-0041 extension) -------
+#
+# Mirrors the Rust ``CategoryFilter`` enum at
+# ``crates/vernier-core/src/summarize.rs``. Exposed as a Python-side
+# discriminated union of frozen dataclasses (the ``IouKind`` precedent
+# in ``vernier.instance``), letting paradigm validators do
+# ``isinstance`` discrimination cleanly.
+#
+# - ``CategoryFilterAll`` — every category contributes (the COCO
+#   default; the Rust ``CategoryFilter::All`` variant).
+# - ``CategoryFilterFrequency`` — LVIS-only; rejected on semantic /
+#   panoptic per ADR-0026's frequency-vs-breakdown distinction (ADR-0041).
+# - ``CategoryFilterByIds`` — explicit subset of class / category ids.
+# - ``CategoryFilterByGrouping`` — name-of-a-group from the active
+#   ``class_grouping`` breakdown (ADR-0041 extension consumed by
+#   ADR-0042). Resolution maps the label against
+#   ``class_grouping.class_groups`` at evaluator boundary; the kernel
+#   never sees this variant directly.
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryFilterAll:
+    """Match every category. The COCO default."""
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryFilterFrequency:
+    """Match by LVIS frequency tag (``"r"``, ``"c"``, ``"f"``).
+
+    Valid only on instance evaluation against an LVIS-shaped dataset
+    (ADR-0026). Semantic and panoptic Evaluators reject this variant
+    at construction time per ADR-0041 / ADR-0042 — frequency tags are
+    a sum type that doesn't generalize to non-numeric axes; class
+    groupings carry the user's per-group rollup intent on those
+    paradigms.
+    """
+
+    tag: Literal["r", "c", "f"]
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryFilterByIds:
+    """Match an explicit set of class / category ids."""
+
+    ids: frozenset[int]
+
+
+@dataclass(frozen=True, slots=True)
+class CategoryFilterByGrouping:
+    """Match every class id in the named group of the active
+    ``class_grouping`` breakdown.
+
+    Only meaningful when the Evaluator's ``class_grouping`` is also
+    set; the validator at ``__post_init__`` rejects ``ByGrouping``
+    when no grouping is configured or when ``label`` is not a
+    grouping label.
+    """
+
+    label: str
+
+
+CategoryFilter: TypeAlias = (
+    CategoryFilterAll | CategoryFilterFrequency | CategoryFilterByIds | CategoryFilterByGrouping
+)
 
 
 #: The set of result-table identifiers ``Evaluator.evaluate(tables=...)``

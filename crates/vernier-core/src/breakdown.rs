@@ -41,6 +41,7 @@
 //! [`AreaRng`]: crate::AreaRng
 
 use std::borrow::Cow;
+use std::collections::BTreeSet;
 
 use crate::evaluate::{AreaRange, AREA_UNBOUNDED};
 use crate::summarize::{AreaRng, MaxDetSelector, Metric, StatRequest};
@@ -341,6 +342,160 @@ impl Breakdown {
     }
 }
 
+/// One group on a [`ClassGroupBreakdown`].
+///
+/// Class-group breakdowns partition the class-id space into named
+/// subsets — e.g., `{"vehicles": [3, 6, 8], "animals": [16, 17, 18]}`
+/// for a semantic-segmentation rollup. Unlike [`Bucket`] (closed
+/// `[lo, hi]` over `f64`), a [`ClassGroup`] is a discrete set of
+/// class ids with strict partition discipline at the breakdown level.
+///
+/// `class_ids` is private behind [`Self::class_ids`] so the
+/// sorted-unique invariant established by [`Self::new`] is preserved
+/// post-construction — it's load-bearing for the binary search in
+/// [`ClassGroupBreakdown::group_of`] and for deterministic hashing in
+/// the future per-paradigm `params_hash`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassGroup {
+    /// Position on the group axis. Dense `0..groups.len()`.
+    pub index: usize,
+    /// Human-readable label (e.g., `"vehicles"`).
+    pub label: Cow<'static, str>,
+    class_ids: Vec<u32>,
+}
+
+impl ClassGroup {
+    /// Constructor that sorts and dedups `class_ids`. The user-facing
+    /// validators (FFI / Python `__post_init__`) reject duplicates
+    /// up-front; this dedup is defensive belt-and-suspenders for
+    /// internal callers.
+    pub fn new(
+        index: usize,
+        label: impl Into<Cow<'static, str>>,
+        class_ids: impl IntoIterator<Item = u32>,
+    ) -> Self {
+        let mut ids: Vec<u32> = class_ids.into_iter().collect();
+        ids.sort_unstable();
+        ids.dedup();
+        Self {
+            index,
+            label: label.into(),
+            class_ids: ids,
+        }
+    }
+
+    /// Class ids in this group, sorted ascending and deduplicated.
+    pub fn class_ids(&self) -> &[u32] {
+        &self.class_ids
+    }
+}
+
+/// A class-id-keyed slice axis: a name plus a list of [`ClassGroup`]s.
+///
+/// The sibling of [`Breakdown`] for class-id partitions. Used by
+/// semantic (ADR-0041) and panoptic (ADR-0042) `class_grouping`
+/// fields. Carries strict partition discipline — no class id may
+/// appear in two groups.
+///
+/// ## Invariants (debug-checked at construction)
+///
+/// - `groups` is non-empty.
+/// - Every `ClassGroup::index` is unique and lies in
+///   `0..groups.len()`.
+/// - No class id appears in two groups (partition discipline).
+/// - Group labels are unique.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassGroupBreakdown {
+    axis: Cow<'static, str>,
+    groups: Vec<ClassGroup>,
+}
+
+impl ClassGroupBreakdown {
+    /// Construct from an axis name and a list of groups.
+    ///
+    /// # Panics
+    ///
+    /// In debug builds, panics if `groups` is empty, has duplicate /
+    /// out-of-range indices, has duplicate labels, or has a class id
+    /// appearing in two groups. Release builds silently accept the
+    /// degenerate input — no memory safety risk under
+    /// `#![forbid(unsafe_code)]`.
+    pub fn new(axis: impl Into<Cow<'static, str>>, groups: Vec<ClassGroup>) -> Self {
+        let out = Self {
+            axis: axis.into(),
+            groups,
+        };
+        debug_assert!(
+            !out.groups.is_empty(),
+            "ClassGroupBreakdown must have >= 1 group",
+        );
+        let n = out.groups.len();
+        debug_assert!(
+            out.groups.iter().all(|g| g.index < n),
+            "ClassGroupBreakdown group index out of range",
+        );
+        let mut seen_idx = vec![false; n];
+        let mut seen_labels: BTreeSet<&str> = BTreeSet::new();
+        let mut seen_ids: BTreeSet<u32> = BTreeSet::new();
+        for g in &out.groups {
+            if g.index < n {
+                debug_assert!(
+                    !seen_idx[g.index],
+                    "ClassGroupBreakdown duplicate group index",
+                );
+                seen_idx[g.index] = true;
+            }
+            debug_assert!(
+                seen_labels.insert(g.label.as_ref()),
+                "ClassGroupBreakdown duplicate group label",
+            );
+            for &cid in g.class_ids() {
+                debug_assert!(
+                    seen_ids.insert(cid),
+                    "ClassGroupBreakdown class id {cid} appears in multiple groups",
+                );
+            }
+        }
+        out
+    }
+
+    /// Axis name (e.g., `"object_size"`, `"vehicle_taxonomy"`).
+    pub fn axis(&self) -> &str {
+        &self.axis
+    }
+
+    /// All groups, in construction order.
+    pub fn groups(&self) -> &[ClassGroup] {
+        &self.groups
+    }
+
+    /// Number of groups — the size of the group axis the summarizer
+    /// emits one row per.
+    pub fn len(&self) -> usize {
+        self.groups.len()
+    }
+
+    /// `true` when [`Self::len`] is `0` (degenerate; only reachable in
+    /// release builds with a malformed [`Self::new`] call).
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    /// Group at axis position `index`, or `None` if absent.
+    pub fn group_at(&self, index: usize) -> Option<&ClassGroup> {
+        self.groups.iter().find(|g| g.index == index)
+    }
+
+    /// Look up the group containing `class_id`. `None` if no group
+    /// covers it (partition allows un-grouped ids — they're simply
+    /// excluded from per-group rollups).
+    pub fn group_of(&self, class_id: u32) -> Option<&ClassGroup> {
+        self.groups
+            .iter()
+            .find(|g| g.class_ids().binary_search(&class_id).is_ok())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -628,6 +783,78 @@ mod tests {
             vec![
                 Bucket::from_static(0, "a", 0.0, 1.0),
                 Bucket::from_static(0, "b", 1.0, 2.0),
+            ],
+        );
+    }
+
+    #[test]
+    fn class_group_new_sorts_and_dedups_class_ids() {
+        let g = ClassGroup::new(0, "vehicles", vec![8, 3, 6, 3, 8]);
+        assert_eq!(g.class_ids(), &[3, 6, 8]);
+        assert_eq!(g.index, 0);
+        assert_eq!(g.label, "vehicles");
+    }
+
+    #[test]
+    fn class_group_breakdown_basic_shape() {
+        let bd = ClassGroupBreakdown::new(
+            "vehicle_taxonomy",
+            vec![
+                ClassGroup::new(0, "small", [3, 4]),
+                ClassGroup::new(1, "large", [6, 8]),
+            ],
+        );
+        assert_eq!(bd.axis(), "vehicle_taxonomy");
+        assert_eq!(bd.len(), 2);
+        assert!(!bd.is_empty());
+    }
+
+    #[test]
+    fn class_group_breakdown_lookup_by_index_and_class_id() {
+        let bd = ClassGroupBreakdown::new(
+            "g",
+            vec![
+                ClassGroup::new(0, "a", [1, 2, 3]),
+                ClassGroup::new(1, "b", [10, 20]),
+            ],
+        );
+        assert_eq!(bd.group_at(0).unwrap().label, "a");
+        assert_eq!(bd.group_at(1).unwrap().label, "b");
+        assert!(bd.group_at(2).is_none());
+        assert_eq!(bd.group_of(2).unwrap().label, "a");
+        assert_eq!(bd.group_of(20).unwrap().label, "b");
+        assert!(bd.group_of(99).is_none());
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "ClassGroupBreakdown must have >= 1 group")]
+    fn class_group_breakdown_empty_panics_in_debug() {
+        let _ = ClassGroupBreakdown::new("g", vec![]);
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "ClassGroupBreakdown duplicate group label")]
+    fn class_group_breakdown_duplicate_label_panics_in_debug() {
+        let _ = ClassGroupBreakdown::new(
+            "g",
+            vec![
+                ClassGroup::new(0, "vehicles", [1]),
+                ClassGroup::new(1, "vehicles", [2]),
+            ],
+        );
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "appears in multiple groups")]
+    fn class_group_breakdown_partition_violation_panics_in_debug() {
+        let _ = ClassGroupBreakdown::new(
+            "g",
+            vec![
+                ClassGroup::new(0, "a", [1, 2, 3]),
+                ClassGroup::new(1, "b", [3, 4]),
             ],
         );
     }

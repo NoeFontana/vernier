@@ -1,44 +1,68 @@
-//! Python binding for [`vernier_core::breakdown::Breakdown`].
+//! Python binding for [`vernier_core::breakdown::Breakdown`] and
+//! [`vernier_core::breakdown::ClassGroupBreakdown`].
 //!
-//! ADR-0039 lifts the Rust-only `Breakdown` to the Python surface. The
-//! first consumer is `vernier.instance.Evaluator.area_ranges` (ADR-0040);
-//! semantic and panoptic class grouping (ADRs 0041 / 0042) will add a
-//! parallel `from_class_groups(...)` factory in their respective phases
-//! when class-id-keyed storage lands on the Rust side.
+//! ADR-0039 lifts the Rust-only breakdown machinery to the Python
+//! surface. The wrapper unifies two flavors under one Python type:
 //!
-//! The PyO3 surface is intentionally lean: a `from_ranges(...)`
-//! classmethod for f64-keyed area-style breakdowns, plus read-only
-//! getters mirroring the Rust accessors. Construction validates inputs
-//! and raises `ValueError` on degenerate shape (empty buckets, NaN /
-//! infinite bounds, `lo > hi`, duplicate labels). The closed-on-both-ends
-//! inclusion semantics from ADR-0016 (quirk D6) carry over verbatim —
-//! the Python type does not expose a `Range`-style alternative.
+//! - **Range** (PR #217 / ADR-0040) — the `from_ranges(...)` factory
+//!   for f64-keyed area-style buckets. First consumer is
+//!   `vernier.instance.Evaluator.area_ranges`.
+//! - **Class groups** (ADR-0041 / ADR-0042) — the
+//!   `from_class_groups(...)` factory for class-id partitions. First
+//!   consumers are `vernier.semantic.Evaluator.class_grouping` and
+//!   `vernier.panoptic.Evaluator.class_grouping`.
+//!
+//! The two flavors are kept structurally distinct on the Rust side —
+//! `Breakdown` (range) and `ClassGroupBreakdown` (class groups) are
+//! sibling structs in `vernier-core` — but funnel through one Python
+//! type so callers see a single `Breakdown` import. Variant
+//! discrimination is exposed via the `kind` property.
+//!
+//! Construction validates inputs and raises `ValueError` on degenerate
+//! shape (empty buckets, NaN / infinite bounds, `lo > hi`, duplicate
+//! labels, partition violations). The closed-on-both-ends inclusion
+//! semantics from ADR-0016 (quirk D6) carry over verbatim for ranges;
+//! class groups enforce strict partition (no class id in two groups).
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyAttributeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::PyType;
 use std::collections::HashSet;
 
-use vernier_core::breakdown::{Breakdown, Bucket};
+use vernier_core::breakdown::{Breakdown, Bucket, ClassGroup, ClassGroupBreakdown};
 
-/// Python wrapper around [`vernier_core::breakdown::Breakdown`].
+/// Internal storage variant for [`PyBreakdown`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum BreakdownInner {
+    /// Range-keyed (f64 buckets) — instance area ranges.
+    Range(Breakdown),
+    /// Class-id-keyed (named groups partitioning class ids) —
+    /// semantic / panoptic class groupings.
+    ClassGroups(ClassGroupBreakdown),
+}
+
+/// Python wrapper around [`Breakdown`] / [`ClassGroupBreakdown`].
 #[pyclass(module = "vernier._core", name = "Breakdown", frozen, eq)]
 #[pyo3(skip_from_py_object)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PyBreakdown {
-    pub(crate) inner: Breakdown,
+    pub(crate) inner: BreakdownInner,
 }
 
 impl PyBreakdown {
-    /// Construct from a Rust `Breakdown`. Used by sentinel-resolution
-    /// paths that materialize the kernel-canonical layout.
+    /// Construct from a Rust range `Breakdown`. Used by sentinel-
+    /// resolution paths that materialize the kernel-canonical layout.
     pub fn from_inner(inner: Breakdown) -> Self {
-        Self { inner }
+        Self {
+            inner: BreakdownInner::Range(inner),
+        }
     }
 
-    /// Borrow the underlying Rust `Breakdown`.
-    pub fn inner(&self) -> &Breakdown {
-        &self.inner
+    /// Construct from a Rust `ClassGroupBreakdown`.
+    pub fn from_inner_class_groups(inner: ClassGroupBreakdown) -> Self {
+        Self {
+            inner: BreakdownInner::ClassGroups(inner),
+        }
     }
 }
 
@@ -100,34 +124,138 @@ impl PyBreakdown {
             converted.push(Bucket::new(idx, label, lo, hi));
         }
         Ok(Self {
-            inner: Breakdown::new(axis, converted),
+            inner: BreakdownInner::Range(Breakdown::new(axis, converted)),
         })
     }
 
-    /// Axis name (e.g., `"area"`).
-    #[getter]
-    fn axis(&self) -> String {
-        self.inner.axis().to_string()
+    /// Construct from class-id-keyed groups.
+    ///
+    /// `groups` is a sequence of `(label, class_ids)` pairs, one per
+    /// group. Group order on input determines the group axis index
+    /// (first pair is index 0). Strict partition discipline is enforced
+    /// — no class id may appear in two groups.
+    ///
+    /// Raises `ValueError` on:
+    ///
+    /// - empty `groups`;
+    /// - any group with empty `class_ids`;
+    /// - duplicate group labels;
+    /// - the same class id appearing in more than one group.
+    #[classmethod]
+    fn from_class_groups(
+        _cls: &Bound<'_, PyType>,
+        axis: String,
+        groups: Vec<(String, Vec<u32>)>,
+    ) -> PyResult<Self> {
+        if groups.is_empty() {
+            return Err(PyValueError::new_err(
+                "Breakdown.from_class_groups: groups must be non-empty",
+            ));
+        }
+        let mut seen_labels: HashSet<String> = HashSet::with_capacity(groups.len());
+        let mut seen_ids: HashSet<u32> = HashSet::new();
+        let mut converted: Vec<ClassGroup> = Vec::with_capacity(groups.len());
+        for (idx, (label, class_ids)) in groups.into_iter().enumerate() {
+            if class_ids.is_empty() {
+                return Err(PyValueError::new_err(format!(
+                    "Breakdown.from_class_groups: group[{idx}] {label:?} has empty class_ids"
+                )));
+            }
+            if !seen_labels.insert(label.clone()) {
+                return Err(PyValueError::new_err(format!(
+                    "Breakdown.from_class_groups: duplicate group label {label:?}"
+                )));
+            }
+            for &cid in &class_ids {
+                if !seen_ids.insert(cid) {
+                    return Err(PyValueError::new_err(format!(
+                        "Breakdown.from_class_groups: class id {cid} appears in multiple \
+                         groups (partition discipline)"
+                    )));
+                }
+            }
+            converted.push(ClassGroup::new(idx, label, class_ids));
+        }
+        Ok(Self {
+            inner: BreakdownInner::ClassGroups(ClassGroupBreakdown::new(axis, converted)),
+        })
     }
 
-    /// Buckets as a list of `(label, lo, hi)` triples in construction
-    /// order.
+    /// Axis name (e.g., `"area"`, `"vehicle_taxonomy"`).
     #[getter]
-    fn buckets(&self) -> Vec<(String, f64, f64)> {
-        self.inner
-            .buckets()
-            .iter()
-            .map(|b| (b.label.to_string(), b.lo, b.hi))
-            .collect()
+    fn axis(&self) -> String {
+        match &self.inner {
+            BreakdownInner::Range(b) => b.axis().to_string(),
+            BreakdownInner::ClassGroups(g) => g.axis().to_string(),
+        }
+    }
+
+    /// Variant discriminator: `"range"` for `from_ranges`-constructed
+    /// breakdowns, `"class_groups"` for `from_class_groups`-constructed
+    /// ones. Use this to dispatch in validators that accept a
+    /// `Breakdown` of a specific shape.
+    #[getter]
+    fn kind(&self) -> &'static str {
+        match &self.inner {
+            BreakdownInner::Range(_) => "range",
+            BreakdownInner::ClassGroups(_) => "class_groups",
+        }
+    }
+
+    /// Range buckets as a list of `(label, lo, hi)` triples in
+    /// construction order.
+    ///
+    /// Raises `AttributeError` if this Breakdown was built via
+    /// `from_class_groups`. Use `class_groups` instead.
+    #[getter]
+    fn buckets(&self) -> PyResult<Vec<(String, f64, f64)>> {
+        match &self.inner {
+            BreakdownInner::Range(b) => Ok(b
+                .buckets()
+                .iter()
+                .map(|b| (b.label.to_string(), b.lo, b.hi))
+                .collect()),
+            BreakdownInner::ClassGroups(_) => Err(PyAttributeError::new_err(
+                "Breakdown.buckets is only available on range breakdowns; \
+                 this breakdown was built via from_class_groups — use \
+                 .class_groups instead",
+            )),
+        }
+    }
+
+    /// Class-id groups as a list of `(label, class_ids)` pairs in
+    /// construction order.
+    ///
+    /// Raises `AttributeError` if this Breakdown was built via
+    /// `from_ranges`. Use `buckets` instead.
+    #[getter]
+    fn class_groups(&self) -> PyResult<Vec<(String, Vec<u32>)>> {
+        match &self.inner {
+            BreakdownInner::Range(_) => Err(PyAttributeError::new_err(
+                "Breakdown.class_groups is only available on class-group \
+                 breakdowns; this breakdown was built via from_ranges — \
+                 use .buckets instead",
+            )),
+            BreakdownInner::ClassGroups(g) => Ok(g
+                .groups()
+                .iter()
+                .map(|g| (g.label.to_string(), g.class_ids().to_vec()))
+                .collect()),
+        }
     }
 
     fn __len__(&self) -> usize {
-        self.inner.len()
+        match &self.inner {
+            BreakdownInner::Range(b) => b.len(),
+            BreakdownInner::ClassGroups(g) => g.len(),
+        }
     }
 
     fn __repr__(&self) -> String {
-        let n = self.inner.len();
-        let axis = self.inner.axis();
-        format!("Breakdown(axis={axis:?}, len={n})")
+        let (kind, axis, n) = match &self.inner {
+            BreakdownInner::Range(b) => ("range", b.axis(), b.len()),
+            BreakdownInner::ClassGroups(g) => ("class_groups", g.axis(), g.len()),
+        };
+        format!("Breakdown(kind={kind:?}, axis={axis:?}, len={n})")
     }
 }
