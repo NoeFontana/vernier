@@ -134,8 +134,8 @@ defaults were in force.
 
 ## What TIDE does NOT do
 
-The 0.5.0 surface intentionally stops short of three things people
-sometimes expect from TIDE-shaped tools:
+The current TIDE surface intentionally stops short of three things
+people sometimes expect from TIDE-shaped tools:
 
 - **Keypoints (OKS).** `Keypoints(...)` raises `NotImplementedError`
   per [ADR-0024](../adr/0024-tide-keypoints-deferred.md). COCO
@@ -143,18 +143,18 @@ sometimes expect from TIDE-shaped tools:
   structurally empty; OKS is not IoU, so the `(t_b, t_f)` phase
   diagram does not carve the same error geometry. The right TIDE-shaped
   tool for keypoints is per-keypoint OKS contribution analysis,
-  planned as a separate capability in a future minor.
+  tracked as a follow-up to ADR-0024.
 - **Per-class drill-down.** The current `TideReport` aggregates across
   classes. A `report.per_class` polars view (which classes contribute
-  most to each bin) is planned for 0.5.x. Today, the workaround is to
-  call `error_decomposition` once per category subset of the GT/DT
+  most to each bin) is a tracked follow-up. Today, the workaround is
+  to call `error_decomposition` once per category subset of the GT/DT
   payload — wasteful for large category counts but mechanically correct.
 - **Per-threshold mode.** The opt-in `mode="per_threshold"` variant
   the [TIDE paper](https://arxiv.org/abs/2008.08115) describes
   (computing the decomposition at every IoU threshold in the AP grid
-  and averaging) is deferred to a 0.5.x follow-up. The single-`t_f`
-  form vernier ships today is the paper-faithful default; the
-  per-threshold form is opt-in even in `tidecv`.
+  and averaging) is a tracked follow-up. The single-`t_f` form vernier
+  ships today is the paper-faithful default; the per-threshold form is
+  opt-in even in `tidecv`.
 
 ## Performance note
 
@@ -183,7 +183,7 @@ candidate for confusion-matrix inspection.
 - [ADR-0022](../adr/0022-tide-thresholds.md) — the per-kernel default
   thresholds (`t_f`, `t_b`) and their defenses.
 - [ADR-0024](../adr/0024-tide-keypoints-deferred.md) — why TIDE on
-  keypoints (OKS) is not in 0.5.0.
+  keypoints (OKS) is deferred.
 - Bolya et al., ["TIDE: A General Toolbox for Identifying Object
   Detection Errors"](https://arxiv.org/abs/2008.08115), ECCV 2020 —
   the paper this implementation is faithful to.

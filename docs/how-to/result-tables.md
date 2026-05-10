@@ -120,11 +120,11 @@ per_class_pairs = (
 print(per_class_pairs)
 ```
 
-`per_pair` is **class-restricted in v0.5**: every row has the same
+`per_pair` is **class-restricted today**: every row has the same
 `category_id` for DT and GT, matching the matching engine's
 behavior. Cross-class confusion (a DT of class A overlapping a GT of
-class B) is on the 2026-Q3 roadmap and is explicitly deferred per
-ADR-0019 §"What this ADR explicitly does *not* decide". Within-class
+class B) is explicitly deferred per ADR-0019 §"What this ADR
+explicitly does *not* decide". Within-class
 mining (low-IoU true positives, near-miss pairs) works today; pair
 the `per_pair` IoU stream with `per_detection.score` joined on
 `detection_id` to reconstruct the per-class PR shape.
@@ -175,26 +175,26 @@ result = Evaluator().evaluate(
 the default `iou_floor=0.1` keeps it under ~1 M rows (~40 MB Arrow);
 LVIS-scale workloads with the same floor can exceed hundreds of
 millions of rows, which is why the cap exists. Exceeding
-`per_pair_max_rows` raises an exception rather than silently
-truncating — `ValueError` in v0.5 (the typed `PerPairOverflowError`
-shipped on the public surface in Week 2.4 of the phased landing
-plan; check the ADR for the current state).
+`per_pair_max_rows` raises `ValueError` rather than silently
+truncating; ADR-0019 tracks the typed `PerPairOverflowError`
+follow-up.
 
 ## What's not in the table
 
-The v0.5 `EvalResult` deliberately omits the following surfaces; each
-is documented at its own anchor:
+`EvalResult` deliberately omits the following surfaces; each is
+documented at its own anchor:
 
 - **Per-image `ap` / `ap_50` columns.** PR curves from a single image
   are degenerate. See
   [`why-no-per-image-ap.md`](../explanation/why-no-per-image-ap.md).
-- **Cross-class `per_pair` confusion.** Pairs are class-restricted in
-  v0.5; cross-class confusion lands in 2026-Q3 per ADR-0019 §"What
-  this ADR explicitly does *not* decide".
-- **Chunked Arrow IPC for very-large `per_pair`.** v0.5 emits a single
-  `RecordBatch` per table; workloads beyond ~10 M `per_pair` rows
-  motivate a follow-up ADR for streaming IPC. Until then, raise
-  `per_pair_iou_floor` or fail loud via `per_pair_max_rows`.
+- **Cross-class `per_pair` confusion.** Pairs are class-restricted
+  today; cross-class confusion is deferred per ADR-0019 §"What this
+  ADR explicitly does *not* decide".
+- **Chunked Arrow IPC for very-large `per_pair`.** Today vernier
+  emits a single `RecordBatch` per table; workloads beyond ~10 M
+  `per_pair` rows motivate a follow-up ADR for streaming IPC. Until
+  then, raise `per_pair_iou_floor` or fail loud via
+  `per_pair_max_rows`.
 - **On-disk Parquet emit as a vernier method.** Free via polars
   (`df.write_parquet(...)`); we ship the data, the user picks the
   serializer.

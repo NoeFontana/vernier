@@ -55,8 +55,8 @@ For all other lines, the IoU axis is averaged across (length `T`).
 
 `AreaRng` is a `(index, label)` value type, not a closed enum. The canonical pycocotools layout is exposed as `AreaRng::ALL` / `SMALL` / `MEDIUM` / `LARGE` (constants matching `[all, small, medium, large]` at A-axis indices `0..4`). Callers that build an `Accumulated` with a different number of A-axis buckets — finer breakdowns (e.g. add a "tiny" bucket below "small") or robotics-relevant axes — construct `AreaRng::new(index, label)` and address them in their plan; the label flows through to `pretty_lines`.
 
-Note: the *bounds* that turn an annotation's area into a bucket index live upstream, on the orchestrator that builds `PerImageEval` cells (not yet implemented — Phase 1 Week 5). When that lands, it will accept an `AreaBucketing` config that pairs each label with its `[min_area, max_area]` bounds and emits the matching A-axis indices to the accumulator. The summarizer-side flexibility added here is the consumer of that config.
+Note: the *bounds* that turn an annotation's area into a bucket index live upstream, on the orchestrator that builds `PerImageEval` cells. ADR-0040 ships the user-parametrizable evaluation grid (`Evaluator.area_ranges`); the summarizer-side flexibility documented here is the consumer of that config.
 
 ## Keypoint summary
 
-The 10-stat `_summarizeKps` table is not yet implemented (Phase 3). Its layout differs only in `maxDets = [20]` and a 2-bucket area range (`medium`, `large`); the slicing is otherwise the same. With the plan/execution split, this is a custom plan, not a new entry point.
+The 10-stat `_summarizeKps` table is shipped (ADR-0012). Its layout differs from the detection 12-stat table only in `maxDets = [20]` and a 2-bucket area range (`medium`, `large`); the slicing is otherwise the same. With the plan/execution split, this is a custom plan, not a new entry point.

@@ -47,7 +47,7 @@ design decisions shaping it. Per-paradigm parity status:
 | Instance boundary IoU | `boundary-iou-api` | strict bit-equal | none |
 | Segm + boundary TIDE thresholds (`t_b`) | none yet | corrected-only | [ADR-0022](docs/adr/0022-tide-thresholds.md) still `proposed`; defaults extrapolated, not measured |
 | Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | `boundary=True` raises `NotImplementedError` ([ADR-0025](docs/adr/0025-panoptic-api.md) §Q3) |
-| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric`, `cityscapesScripts` (S3-B landing); synthetic fixtures today | **provisional** within patch line | [ADR-0028](docs/adr/0028-sem-seg.md); vendored-oracle env still landing |
+| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | smoke-tested against vendored oracle | [ADR-0028](docs/adr/0028-sem-seg.md); per-quirk strict-mode parity + ADE20K-scale bench TBD |
 | LVIS federated AP | `lvis-api` | semantics match | ~22 GB peak on full LVIS val; optimization scheduled post-0.0.2 |
 
 Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
@@ -101,6 +101,9 @@ Rust entry point — see
 
 ## 60-second example
 
+One-shot — predictions already serialized to JSON (end-of-epoch
+checkpoint, CI gate, post-training inspection):
+
 ```python
 from pathlib import Path
 from vernier.instance import Bbox, CocoDataset, Evaluator
@@ -113,6 +116,28 @@ summary = Evaluator(iou=Bbox()).evaluate(dataset, dt_bytes)
 for line in summary.pretty_lines():
     print(line)
 ```
+
+In a training loop — overlap eval with the next training step. The
+matching kernel runs on a worker thread, so `submit(...)` returns
+immediately and the training thread keeps moving:
+
+```python
+import json
+from pathlib import Path
+from vernier.instance import BackgroundEvaluator
+
+gt_bytes = Path("instances_val2017.json").read_bytes()
+with BackgroundEvaluator(gt_bytes, iou_type="bbox") as evaluator:
+    for images, _ in val_loader:
+        detections = model(images)  # list[{image_id, category_id, bbox, score}]
+        evaluator.submit(json.dumps(detections).encode())
+    summary = evaluator.finalize()
+print("AP =", summary.stats[0])
+```
+
+Both end in the same 12-line `pycocotools`-shaped Summary;
+[`docs/tutorials/first-evaluation.md`](docs/tutorials/first-evaluation.md)
+walks each end-to-end.
 
 ## Three evaluation paradigms
 

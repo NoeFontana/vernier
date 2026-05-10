@@ -249,8 +249,9 @@ vernier-bench run --paradigm panoptic --impl all \
   --workload coco_panoptic_val2017_perfect --mode dev
 
 # Semantic — vernier-only baseline against a synthetic workload
-# (no oracle until S3-B mmsegmentation env lands). The first run
-# materializes the cache under bench/.cache/synthetic_semantic/.
+# (mmsegmentation IoUMetric vendored per ADR-0036; cross-impl bench
+# remains externally blocked). The first run materializes the cache
+# under bench/.cache/synthetic_semantic/.
 vernier-bench run --paradigm semantic --impl all \
   --workload "synthetic_semantic:n_images=200,n_classes=19,seed=0" --mode dev
 

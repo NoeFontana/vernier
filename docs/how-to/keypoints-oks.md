@@ -8,12 +8,12 @@ this guide is the recipe.
 
 ```python
 from pathlib import Path
-from vernier.instance import Dataset, Evaluator, Keypoints
+from vernier.instance import CocoDataset, Evaluator, Keypoints
 
 gt_bytes = Path("person_keypoints_val2017.json").read_bytes()
 dt_bytes = Path("keypoints_predictions.json").read_bytes()
 
-dataset = Dataset.from_json(gt_bytes)
+dataset = CocoDataset.from_json(gt_bytes)
 summary = Evaluator(iou=Keypoints()).evaluate(dataset, dt_bytes)
 print(summary.stats[0])  # keypoints AP
 ```

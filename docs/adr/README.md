@@ -81,12 +81,14 @@ else is detail.
 | #    | Title                                                       | Status   |
 | ---- | ----------------------------------------------------------- | -------- |
 | [0013](0013-streaming-evaluator.md) | Streaming evaluator — store per-image evals, fold on snapshot | accepted |
-| [0014](0014-background-evaluator.md) | `BackgroundEvaluator` — single-worker async wrapper | accepted |
+| [0014](0014-background-evaluator.md) | `BackgroundEvaluator` — single-worker async wrapper | accepted (amended by 0035) |
 | [0015](0015-vernier-cli.md) | Ship `vernier-cli` as a workspace binary linking `vernier-core` directly | accepted |
 | [0016](0016-generalized-breakdown-axis.md) | Generalize the A-axis as a value-typed `Breakdown` | accepted |
 | [0019](0019-result-tables.md) | Result tables — opt-in, Arrow-backed, zero-overhead by default | accepted |
 | [0020](0020-parsed-once-dataset-handle.md) | Parsed-once `Dataset` handle as the GT-side derivation cache | accepted |
 | [0030](0030-buffer-protocol.md) | Accept detection arrays alongside JSON bytes in streaming update | accepted (amended 2026-05-09 — bitmask + compressed-bytes ingest readmitted) |
+| [0035](0035-api-surface-consolidation.md) | Consolidate the streaming / DDP / background public surface | proposed |
+| [0038](0038-tables-panoptic-semantic.md) | Result tables for panoptic and semantic — per-class only, sibling result types | accepted |
 
 ### Sibling paradigms
 
@@ -95,6 +97,17 @@ else is detail.
 | [0025](0025-panoptic-api.md) | Add panoptic-quality (PQ) evaluation as a sibling crate | accepted |
 | [0026](0026-lvis-support.md) | Add LVIS federated evaluation in `vernier-core` | accepted |
 | [0028](0028-sem-seg.md) | Add semantic segmentation as a `vernier-semantic` sibling crate | accepted |
+| [0036](0036-vendor-mmsegmentation-ioumetric.md) | Vendor `mmsegmentation` `IoUMetric` standalone for semantic-segmentation parity | proposed |
+| [0037](0037-generalize-semantic-kernel-class-id.md) | Generalize the semantic kernel over class-id type | proposed |
+
+### User-parametrizable evaluation
+
+| #    | Title                                                       | Status   |
+| ---- | ----------------------------------------------------------- | -------- |
+| [0039](0039-cross-paradigm-evaluator-parameterization.md) | Cross-paradigm conventions for user-parametrizable evaluation | accepted |
+| [0040](0040-user-parametrizable-instance-evaluation-grid.md) | User-parametrizable instance evaluation grid | accepted |
+| [0041](0041-user-parametrizable-semantic-evaluation.md) | User-parametrizable semantic evaluation (`class_filter`, `class_grouping`) | accepted |
+| [0042](0042-user-parametrizable-panoptic-evaluation.md) | User-parametrizable panoptic evaluation | accepted |
 
 ### Distributed evaluation
 

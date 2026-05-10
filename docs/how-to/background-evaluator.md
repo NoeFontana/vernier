@@ -86,6 +86,6 @@ calling thread on the next `submit`, not silently from the worker.
 - [ADR-0035](../adr/0035-api-surface-consolidation.md) — why the
   public surface is `submit` / `finalize` / `finalize_to_partial`
   with no snapshot path.
-- [`tutorials/training-loop.md`](../tutorials/training-loop.md) —
-  end-to-end training-loop recipe with logger integration.
+- [`tutorials/first-evaluation.md`](../tutorials/first-evaluation.md) —
+  the in-loop walkthrough (Path B), end-to-end on COCO val2017.
 - [`distributed-eval.md`](distributed-eval.md) — multi-rank pattern.
