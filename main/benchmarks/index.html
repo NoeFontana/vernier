@@ -1906,9 +1906,12 @@ against, on a single machine and a single git revision. The numbers below
 are the median total-stage wall time over the non-warmup reps recorded by
 the local bench harness (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0017-local-bench-harness.md">ADR-0017</a>,
 extended cross-paradigm in
-<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0033-multi-paradigm-bench.md">ADR-0033</a>).</p>
-<p><strong>Provenance</strong> — git SHA <code>f58f1075985f</code> · machine fingerprint <code>5658de0e29a3</code> · harness
-mode <code>dev</code> · build profile = cargo release defaults
+<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0033-multi-paradigm-bench.md">ADR-0033</a>).
+The IQR column reports the spread (Q3 - Q1) across the 10 measurement
+reps and the same value as a percentage of the median; release mode
+gates each cell at 5% relative IQR.</p>
+<p><strong>Provenance</strong> — git SHA <code>0a39957821bf</code> · machine fingerprint <code>1655eb18a194</code> · CPU AMD EPYC-Milan Processor (x86_64) · harness
+mode <code>release</code> · build profile = cargo release defaults
 (<code>opt-level=3</code>, <code>lto=thin</code>, <code>codegen-units=1</code>, no <code>target-cpu</code>). The
 release wheel on PyPI is built with the same profile — no
 benchmarking-only flags.</p>
@@ -1928,6 +1931,7 @@ parity gating, narrative on what moved each round), see
 <tr>
 <th>impl</th>
 <th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
 <th style="text-align: right;">RSS (max)</th>
 <th style="text-align: right;">vs vernier</th>
 </tr>
@@ -1935,21 +1939,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">361.6 ms</td>
+<td style="text-align: right;">359.6 ms</td>
+<td style="text-align: right;">7.2 ms (2.01%)</td>
 <td style="text-align: right;">235 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">2.123 s</td>
+<td style="text-align: right;">2.121 s</td>
+<td style="text-align: right;">30.2 ms (1.42%)</td>
 <td style="text-align: right;">661 MiB</td>
-<td style="text-align: right;">5.87×</td>
+<td style="text-align: right;">5.90×</td>
 </tr>
 <tr>
 <td>pycocotools</td>
-<td style="text-align: right;">5.811 s</td>
+<td style="text-align: right;">5.833 s</td>
+<td style="text-align: right;">129.9 ms (2.23%)</td>
 <td style="text-align: right;">576 MiB</td>
-<td style="text-align: right;">16.07×</td>
+<td style="text-align: right;">16.22×</td>
 </tr>
 </tbody>
 </table>
@@ -1959,6 +1966,7 @@ parity gating, narrative on what moved each round), see
 <tr>
 <th>impl</th>
 <th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
 <th style="text-align: right;">RSS (max)</th>
 <th style="text-align: right;">vs vernier</th>
 </tr>
@@ -1966,21 +1974,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">960.9 ms</td>
+<td style="text-align: right;">968.1 ms</td>
+<td style="text-align: right;">6.0 ms (0.62%)</td>
 <td style="text-align: right;">236 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">3.496 s</td>
+<td style="text-align: right;">3.553 s</td>
+<td style="text-align: right;">53.4 ms (1.50%)</td>
 <td style="text-align: right;">721 MiB</td>
-<td style="text-align: right;">3.64×</td>
+<td style="text-align: right;">3.67×</td>
 </tr>
 <tr>
 <td>pycocotools</td>
-<td style="text-align: right;">6.727 s</td>
+<td style="text-align: right;">6.690 s</td>
+<td style="text-align: right;">163.7 ms (2.45%)</td>
 <td style="text-align: right;">569 MiB</td>
-<td style="text-align: right;">7.00×</td>
+<td style="text-align: right;">6.91×</td>
 </tr>
 </tbody>
 </table>
@@ -1990,6 +2001,7 @@ parity gating, narrative on what moved each round), see
 <tr>
 <th>impl</th>
 <th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
 <th style="text-align: right;">RSS (max)</th>
 <th style="text-align: right;">vs vernier</th>
 </tr>
@@ -1997,21 +2009,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">3.136 s</td>
+<td style="text-align: right;">3.121 s</td>
+<td style="text-align: right;">15.5 ms (0.50%)</td>
 <td style="text-align: right;">238 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">17.670 s</td>
+<td style="text-align: right;">17.772 s</td>
+<td style="text-align: right;">83.2 ms (0.47%)</td>
 <td style="text-align: right;">794 MiB</td>
-<td style="text-align: right;">5.63×</td>
+<td style="text-align: right;">5.70×</td>
 </tr>
 <tr>
 <td>boundary-iou-api</td>
-<td style="text-align: right;">61.838 s</td>
+<td style="text-align: right;">62.161 s</td>
+<td style="text-align: right;">526.6 ms (0.85%)</td>
 <td style="text-align: right;">666 MiB</td>
-<td style="text-align: right;">19.72×</td>
+<td style="text-align: right;">19.92×</td>
 </tr>
 </tbody>
 </table>
@@ -2022,6 +2037,7 @@ parity gating, narrative on what moved each round), see
 <tr>
 <th>impl</th>
 <th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
 <th style="text-align: right;">RSS (max)</th>
 <th style="text-align: right;">vs vernier</th>
 </tr>
@@ -2029,21 +2045,24 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">130.2 ms</td>
-<td style="text-align: right;">101 MiB</td>
+<td style="text-align: right;">134.7 ms</td>
+<td style="text-align: right;">1.5 ms (1.08%)</td>
+<td style="text-align: right;">102 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>faster-coco-eval</td>
-<td style="text-align: right;">1.654 s</td>
+<td style="text-align: right;">1.707 s</td>
+<td style="text-align: right;">18.5 ms (1.09%)</td>
 <td style="text-align: right;">154 MiB</td>
-<td style="text-align: right;">12.70×</td>
+<td style="text-align: right;">12.67×</td>
 </tr>
 <tr>
 <td>pycocotools</td>
-<td style="text-align: right;">2.288 s</td>
+<td style="text-align: right;">2.308 s</td>
+<td style="text-align: right;">26.7 ms (1.16%)</td>
 <td style="text-align: right;">163 MiB</td>
-<td style="text-align: right;">17.57×</td>
+<td style="text-align: right;">17.13×</td>
 </tr>
 </tbody>
 </table>
@@ -2055,6 +2074,7 @@ parity gating, narrative on what moved each round), see
 <tr>
 <th>impl</th>
 <th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
 <th style="text-align: right;">RSS (max)</th>
 <th style="text-align: right;">vs vernier</th>
 </tr>
@@ -2062,15 +2082,17 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">32.004 s</td>
-<td style="text-align: right;">127 MiB</td>
+<td style="text-align: right;">13.012 s</td>
+<td style="text-align: right;">2.588 s (19.89%) *</td>
+<td style="text-align: right;">117 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 <tr>
 <td>panopticapi</td>
-<td style="text-align: right;">34.397 s</td>
-<td style="text-align: right;">145 MiB</td>
-<td style="text-align: right;">1.07×</td>
+<td style="text-align: right;">34.640 s</td>
+<td style="text-align: right;">336.1 ms (0.97%)</td>
+<td style="text-align: right;">146 MiB</td>
+<td style="text-align: right;">2.66×</td>
 </tr>
 </tbody>
 </table>
@@ -2082,6 +2104,7 @@ parity gating, narrative on what moved each round), see
 <tr>
 <th>impl</th>
 <th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
 <th style="text-align: right;">RSS (max)</th>
 <th style="text-align: right;">vs vernier</th>
 </tr>
@@ -2089,18 +2112,25 @@ parity gating, narrative on what moved each round), see
 <tbody>
 <tr>
 <td><strong>vernier</strong></td>
-<td style="text-align: right;">193.0 ms</td>
+<td style="text-align: right;">62.3 ms</td>
+<td style="text-align: right;">506.3 μs (0.81%)</td>
 <td style="text-align: right;">88 MiB</td>
 <td style="text-align: right;"><strong>1.00×</strong></td>
 </tr>
 </tbody>
 </table>
+<p><em>Cells marked <code>*</code> next to their IQR exceeded the release-mode 5% relative-IQR gate. Median still reported; treat the gap to the next impl as the load-bearing signal rather than the precise ratio.</em></p>
 <h2 id="methodology-in-one-paragraph">Methodology in one paragraph</h2>
 <p>Every cell runs in its own subprocess with its own uv-managed venv (one
 per impl), so a single Python process never has competing
 pycocotools-flavored packages on its <code>sys.path</code>. The harness records
 <code>(load, evaluate, accumulate, summarize, total)</code> wall_ns per stage,
-discards the warmup reps, and reports the median total. Parity is a
+discards the warmup reps, and reports the median total plus the
+inter-quartile range (IQR = Q3 - Q1, with the relative spread shown as
+a percentage of the median). Release mode (N=10 + 2 warmup) gates each
+impl on relative IQR ≤ 5%; cells where the gate failed are marked with
+<code>*</code> next to their IQR value — the median is still the best estimator,
+just with a wider confidence band than the gate accepts. Parity is a
 side effect of every timing run — strict-tier (vs pycocotools) and
 aligned-tier (vs faster-coco-eval) where applicable; failed parity
 fails the cell. Memory is <code>getrusage(RUSAGE_CHILDREN).ru_maxrss</code>,
