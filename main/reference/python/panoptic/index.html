@@ -2633,6 +2633,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#vernier.panoptic.Summary.per_group" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        per_group
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#vernier.panoptic.Summary.to_dict" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -5012,6 +5023,11 @@ rank for strict-mode bit-equality across the merge (ADR-0032
 <p>The partial bytes can be gathered across ranks and merged on
 the head rank with :meth:<code>from_partials</code> to produce a global
 :class:<code>Summary</code>.</p>
+<p>Per ADR-0042, raises :class:<code>InvalidPanopticParams</code> when any
+of <code>pq_iou_threshold</code> / <code>category_filter</code> / <code>class_grouping</code>
+/ <code>stuff_thing_partition</code> is set: extending the ADR-0032
+wire format to carry the resolved custom axes is a follow-up.
+Single-rank custom-params eval works today via :meth:<code>evaluate</code>.</p>
 
 
     </div>
@@ -6519,6 +6535,32 @@ errors defaults to 'strict'.</p>
 
         <p>Per-class rows keyed by category id. Returns a Python <code>dict</code>
 (constructed fresh on each call from the underlying BTreeMap).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.panoptic.Summary.per_group" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">per_group</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-method descriptor"><code>method descriptor</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">per_group</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n"><span title="dict">dict</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">,</span> <span class="n"><span title="vernier._core.GroupPanopticStats">GroupPanopticStats</span></span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Per-group rollup keyed by group label (ADR-0042). Empty when
+the evaluator was run without <code>class_grouping</code>. Returns a fresh
+dict on each call.</p>
 
 
     </div>
