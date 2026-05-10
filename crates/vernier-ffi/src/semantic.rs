@@ -38,8 +38,8 @@ use vernier_partial::PartialError;
 use vernier_semantic::decode::{decode_grayscale8, evaluate_from_pngs};
 use vernier_semantic::kernel::accumulate_confusion;
 use vernier_semantic::{
-    summarize, ClassSemanticStats, ConfusionMatrix, SemanticError, SemanticSummary,
-    StreamingSemanticEvaluator,
+    summarize_with_options, ClassSemanticStats, ConfusionMatrix, GroupSemanticStats, SemanticError,
+    SemanticSummary, StreamingSemanticEvaluator, SummarizeOptions,
 };
 
 use crate::background::BackgroundConfig;
@@ -204,6 +204,62 @@ impl PyClassSemanticStats {
     }
 }
 
+/// Per-group rollup row (ADR-0041).
+///
+/// Mirrors [`vernier_semantic::GroupSemanticStats`] one-to-one. Built
+/// only when the caller passes `class_grouping=` to
+/// `evaluate_semantic_from_arrays`; reachable from Python via
+/// `SemanticSummary.per_group`.
+#[pyclass(
+    module = "vernier._core",
+    name = "GroupSemanticStats",
+    frozen,
+    skip_from_py_object
+)]
+#[derive(Clone)]
+pub(crate) struct PyGroupSemanticStats {
+    inner: GroupSemanticStats,
+}
+
+#[pymethods]
+impl PyGroupSemanticStats {
+    #[getter]
+    fn label(&self) -> &str {
+        &self.inner.label
+    }
+    #[getter]
+    fn member_class_ids(&self) -> Vec<u32> {
+        self.inner.member_class_ids.clone()
+    }
+    #[getter]
+    fn miou(&self) -> f64 {
+        self.inner.miou
+    }
+    #[getter]
+    fn mean_accuracy(&self) -> f64 {
+        self.inner.mean_accuracy
+    }
+    #[getter]
+    fn pixel_accuracy(&self) -> f64 {
+        self.inner.pixel_accuracy
+    }
+    #[getter]
+    fn fwiou(&self) -> f64 {
+        self.inner.fwiou
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "GroupSemanticStats(label={:?}, miou={:.4}, mean_accuracy={:.4}, pixel_accuracy={:.4}, fwiou={:.4})",
+            self.inner.label,
+            self.inner.miou,
+            self.inner.mean_accuracy,
+            self.inner.pixel_accuracy,
+            self.inner.fwiou,
+        )
+    }
+}
+
 /// `(N, N)` confusion-matrix view exposed to Python.
 ///
 /// The flat `Vec<u64>` storage on the Rust side is exposed as a 2-D
@@ -335,6 +391,17 @@ impl PySemanticSummary {
         }
     }
 
+    /// Per-group rollup keyed by group label (ADR-0041). Empty when
+    /// the evaluator was run without `class_grouping`. Returns a fresh
+    /// dict on each call.
+    fn per_group<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let dict = PyDict::new(py);
+        for (label, row) in &self.inner.per_group {
+            dict.set_item(label, PyGroupSemanticStats { inner: row.clone() })?;
+        }
+        Ok(dict)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "SemanticSummary(miou={:.4}, fwiou={:.4}, pixel_accuracy={:.4}, mean_accuracy={:.4})",
@@ -387,7 +454,10 @@ fn semantic_error_to_pyerr(py: Python<'_>, e: &SemanticError) -> PyErr {
     *,
     ignore_label = None,
     label_remap = None,
+    class_filter = None,
+    class_grouping = None,
 ))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_semantic_from_arrays<'py>(
     py: Python<'py>,
     gt_label_maps: &Bound<'py, PyDict>,
@@ -396,6 +466,8 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     parity_mode: &str,
     ignore_label: Option<u32>,
     label_remap: Option<&Bound<'py, PyDict>>,
+    class_filter: Option<Vec<u32>>,
+    class_grouping: Option<Vec<(String, Vec<u32>)>>,
 ) -> PyResult<PySemanticSummary> {
     if n_classes == 0 {
         return Err(PyValueError::new_err(
@@ -469,7 +541,11 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
         for (_, (_, _, gt_buf), (_, _, dt_buf)) in &work {
             fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut confusion);
         }
-        summarize(confusion, mode)
+        let options = SummarizeOptions {
+            class_filter: class_filter.as_deref(),
+            class_groups: class_grouping.as_deref(),
+        };
+        summarize_with_options(confusion, mode, &options)
     });
 
     Ok(PySemanticSummary { inner: summary })
@@ -1160,6 +1236,7 @@ impl PyBackgroundSemanticEvaluator {
 pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyConfusionMatrix>()?;
     m.add_class::<PyClassSemanticStats>()?;
+    m.add_class::<PyGroupSemanticStats>()?;
     m.add_class::<PySemanticSummary>()?;
     m.add_class::<PyBackgroundSemanticEvaluator>()?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_arrays, m)?)?;

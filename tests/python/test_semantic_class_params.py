@@ -104,7 +104,7 @@ def test_class_grouping_class_groups_breakdown_accepted() -> None:
     Evaluator(class_grouping=g)
 
 
-# --- runtime gate: evaluate() raises NotImplementedError --------------------
+# --- runtime gate: evaluate() with custom params runs end-to-end -----------
 
 
 def _make_minimal_dataset_pred() -> tuple[Dataset, Predictions]:
@@ -114,19 +114,78 @@ def _make_minimal_dataset_pred() -> tuple[Dataset, Predictions]:
     return gt, dt
 
 
-def test_evaluate_with_class_filter_raises_not_implemented() -> None:
+def _five_class_dataset_pred() -> tuple[Dataset, Predictions]:
+    """5-class fixture with a deterministic confusion pattern: class 0
+    perfect, class 1 confused with class 2, classes 3 and 4 unused.
+    Lets per-group / filter math be hand-checked downstream."""
+    gt_arr = np.array([[0, 0, 1, 1], [0, 0, 1, 1], [2, 2, 0, 0], [2, 2, 0, 0]], dtype=np.uint8)
+    dt_arr = np.array([[0, 0, 2, 2], [0, 0, 2, 2], [2, 2, 0, 0], [2, 2, 0, 0]], dtype=np.uint8)
+    gt = Dataset.from_arrays({1: gt_arr}, n_classes=5)
+    dt = Predictions.from_arrays({1: dt_arr})
+    return gt, dt
+
+
+def test_evaluate_with_class_filter_returns_summary() -> None:
     gt, dt = _make_minimal_dataset_pred()
     e = Evaluator(class_filter=CategoryFilterByIds(ids=frozenset([0, 1])))
-    with pytest.raises(NotImplementedError, match="ADR-0041"):
-        e.evaluate(gt, dt)
+    summary = e.evaluate(gt, dt)
+    # Pixel-perfect uniform-zero pair: filter is a no-op on the
+    # single-class-0 fixture.
+    assert summary.pixel_accuracy == pytest.approx(1.0)
 
 
-def test_evaluate_with_class_grouping_raises_not_implemented() -> None:
-    gt, dt = _make_minimal_dataset_pred()
-    g = Breakdown.from_class_groups("g", [("a", [0, 1])])
+def test_evaluate_with_class_grouping_returns_per_group() -> None:
+    gt, dt = _five_class_dataset_pred()
+    g = Breakdown.from_class_groups(
+        "g",
+        [("majority", [0, 2]), ("minority", [1, 3, 4])],
+    )
     e = Evaluator(class_grouping=g)
-    with pytest.raises(NotImplementedError, match="ADR-0041"):
-        e.evaluate(gt, dt)
+    summary = e.evaluate(gt, dt)
+    per_group = summary.per_group()
+    assert set(per_group.keys()) == {"majority", "minority"}
+    # majority covers classes 0 and 2; both have non-zero support and
+    # mIoU must lie strictly between (the per-class IoUs of 0 and 2).
+    # 0 is perfect (IoU=1.0), 2 is partly confused with 1 (some FP).
+    maj = per_group["majority"]
+    assert 0.0 < maj.miou < 1.0
+    # minority covers 1 + zero-support classes; only class 1 contributes.
+    mino = per_group["minority"]
+    assert 0.0 <= mino.miou < 1.0
+    # member ids round-trip through the FFI.
+    assert maj.member_class_ids == [0, 2]
+    assert mino.member_class_ids == [1, 3, 4]
+
+
+def test_evaluate_with_class_filter_changes_headline_miou() -> None:
+    """Filter restricts headline reductions; per-class breakdown stays
+    complete. A filter that excludes the worst class lifts mIoU."""
+    gt, dt = _five_class_dataset_pred()
+    baseline = Evaluator().evaluate(gt, dt)
+    # class 1 has the worst IoU (it's confused with class 2). Filter
+    # to {0, 2} only — both have higher IoU than 1, so the filtered
+    # mIoU should be >= the unfiltered.
+    filtered = Evaluator(class_filter=CategoryFilterByIds(ids=frozenset([0, 2]))).evaluate(gt, dt)
+    assert filtered.miou >= baseline.miou
+    # Per-class breakdown is unaffected by the filter.
+    assert set(baseline.per_class().keys()) == set(filtered.per_class().keys())
+
+
+def test_evaluate_with_bygrouping_resolves_to_byids() -> None:
+    """ByGrouping label flows through; the kernel's per-group rollup
+    matches what an explicit ByIds filter for the same class set
+    produces."""
+    gt, dt = _five_class_dataset_pred()
+    g = Breakdown.from_class_groups("g", [("vehicles", [0, 2])])
+    by_grouping = Evaluator(
+        class_filter=CategoryFilterByGrouping(label="vehicles"),
+        class_grouping=g,
+    ).evaluate(gt, dt)
+    by_ids = Evaluator(
+        class_filter=CategoryFilterByIds(ids=frozenset([0, 2])),
+    ).evaluate(gt, dt)
+    assert by_grouping.miou == pytest.approx(by_ids.miou)
+    assert by_grouping.mean_accuracy == pytest.approx(by_ids.mean_accuracy)
 
 
 def test_evaluate_default_path_unchanged() -> None:
@@ -137,3 +196,5 @@ def test_evaluate_default_path_unchanged() -> None:
     # Pixel-perfect on a uniform-zero pair: every pixel is class 0,
     # both maps. miou == pixel_accuracy == 1.0.
     assert summary.pixel_accuracy == pytest.approx(1.0)
+    # per_group is empty when no grouping configured.
+    assert summary.per_group() == {}

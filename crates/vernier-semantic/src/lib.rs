@@ -55,7 +55,10 @@ pub use error::SemanticError;
 pub use kernel::ConfusionMatrix;
 pub use parity::ParityMode;
 pub use stream::StreamingSemanticEvaluator;
-pub use summarize::{summarize, ClassSemanticStats, SemanticSummary};
+pub use summarize::{
+    summarize, summarize_with_options, ClassSemanticStats, GroupSemanticStats, SemanticSummary,
+    SummarizeOptions,
+};
 
 /// Library version string. Useful for parity tracing in fixtures and
 /// for debugging mismatches between Rust and Python sides of the FFI
