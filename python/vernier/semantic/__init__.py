@@ -420,9 +420,56 @@ class Predictions:
         return cls(label_maps=merged)
 
 
+def _validate_semantic_class_filter(cf: CategoryFilter, class_grouping: Breakdown | None) -> None:
+    """Validate a ``class_filter`` for the semantic paradigm (ADR-0041).
+
+    ``Frequency`` is rejected (LVIS-only — no semantic frequency tag).
+    ``ByIds`` requires non-empty unique ids; bounds against ``n_classes``
+    are checked at evaluate time once the Dataset is in scope.
+    ``ByGrouping`` requires that ``class_grouping`` is configured and
+    that the named label exists in it.
+    """
+    if isinstance(cf, CategoryFilterFrequency):
+        raise InvalidSemanticParams(
+            field="class_filter",
+            value=cf,
+            remediation=(
+                "Frequency is LVIS-only - semantic has no per-class frequency "
+                "tag analogous to r/c/f. Use ByIds or ByGrouping instead "
+                "(ADR-0026 lines 178-182, ADR-0041)"
+            ),
+        )
+    if isinstance(cf, CategoryFilterByIds) and len(cf.ids) == 0:
+        raise InvalidSemanticParams(
+            field="class_filter",
+            value=cf,
+            remediation="ByIds must contain at least one class id (ADR-0041)",
+        )
+    if isinstance(cf, CategoryFilterByGrouping):
+        if class_grouping is None:
+            raise InvalidSemanticParams(
+                field="class_filter",
+                value=cf,
+                remediation=(
+                    "ByGrouping requires class_grouping to also be set; "
+                    "the label is resolved against the grouping's labels (ADR-0041)"
+                ),
+            )
+        labels = {label for label, _ in class_grouping.class_groups}
+        if cf.label not in labels:
+            raise InvalidSemanticParams(
+                field="class_filter",
+                value=cf,
+                remediation=(
+                    f"ByGrouping label {cf.label!r} is not a label of class_grouping "
+                    f"(known labels: {sorted(labels)!r}); ADR-0041"
+                ),
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class Evaluator:
-    """Semantic-segmentation evaluator (ADR-0028).
+    """Semantic-segmentation evaluator (ADR-0028, ADR-0041).
 
     Sibling to :class:`vernier.instance.Evaluator` (AP fold) and
     :class:`vernier.panoptic.Evaluator` (panoptic-quality). Computes
@@ -436,10 +483,44 @@ class Evaluator:
     Defaults match net-new-user expectations: ``parity_mode="corrected"``
     (per ADR-0002 recommendation); migrating users wanting bit-exact
     mmsegmentation behavior should set ``parity_mode="strict"``.
+
+    ``class_filter`` and ``class_grouping`` (ADR-0041) parameterize the
+    evaluation scope and rollup. ``class_filter`` restricts the headline
+    scalars (``miou`` etc.) to a subset of classes; ``class_grouping``
+    adds an optional per-group rollup alongside ``per_class``. Both
+    default to ``None`` (kernel-canonical: every class contributes to
+    headline scalars; no per-group rollup).
+
+    **PR scope cut:** the kernel-side plumbing for honoring custom
+    ``class_filter`` / ``class_grouping`` is a follow-up to ADR-0041
+    (`per_group` lives on `SemanticSummary` once the Rust struct gains
+    it). Until that lands, ``evaluate()`` raises
+    :class:`NotImplementedError` when either is set; the surface
+    (fields, validation, ``with_options`` threading) is in place.
     """
 
     parity_mode: ParityMode = "corrected"
     label_remap: Mapping[int, int] | None = field(default=None)
+    class_filter: CategoryFilter | None = None
+    class_grouping: Breakdown | None = None
+
+    def __post_init__(self) -> None:
+        if self.class_grouping is not None and self.class_grouping.kind != "class_groups":
+            raise InvalidSemanticParams(
+                field="class_grouping",
+                value=self.class_grouping,
+                remediation=(
+                    "must be a class-groups Breakdown "
+                    "(Breakdown.from_class_groups(...)); range Breakdowns "
+                    "belong on instance.Evaluator.area_ranges (ADR-0041)"
+                ),
+            )
+        if self.class_filter is not None:
+            _validate_semantic_class_filter(self.class_filter, self.class_grouping)
+
+    def _has_custom_class_params(self) -> bool:
+        """``True`` when any ADR-0041 field is set."""
+        return self.class_filter is not None or self.class_grouping is not None
 
     @overload
     def evaluate(
@@ -482,6 +563,15 @@ class Evaluator:
         behavior). Pass ``"all"`` or a tuple of :data:`TableName`
         values to opt into the wider :class:`EvalResult` return type.
         """
+        if self._has_custom_class_params():
+            raise NotImplementedError(
+                "evaluate() with custom class_filter / class_grouping is "
+                "deferred to a follow-up to ADR-0041 (kernel-side per_group "
+                "rollups land alongside the ADR-0039 params_hash split). "
+                "The surface — fields, validation, with_options threading — "
+                "is in place; use the default (set custom fields to None) "
+                "until the kernel plumbing ships."
+            )
         summary = evaluate_semantic_from_arrays(
             dict(gt.label_maps),
             dict(dt.label_maps),
