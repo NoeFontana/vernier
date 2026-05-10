@@ -2239,6 +2239,44 @@ fn background_finalized_error() -> EvalError {
     }
 }
 
+/// Borrowing dispatch: `match self` over every kernel variant, binding
+/// the inner `BackgroundEvaluator<K>` to `$ev` for `$body`. Used by the
+/// read-only accessors (`images_seen`, `queue_depth`, ...) where every
+/// arm calls the same method on `$ev` and returns the same scalar type.
+/// Adding a new kernel paradigm means adding one line *here*, not 11
+/// hand-written arms across the impl block.
+macro_rules! dispatch_state_ref {
+    ($self:expr, $ev:ident => $body:expr, $finalized:expr) => {
+        match $self {
+            Self::Bbox($ev) => $body,
+            Self::Segm($ev) => $body,
+            Self::SegmCached($ev) => $body,
+            Self::Boundary($ev) => $body,
+            Self::BoundaryCached($ev) => $body,
+            Self::Keypoints($ev) => $body,
+            Self::Finalized => $finalized,
+        }
+    };
+}
+
+/// Consuming dispatch: replace `*self` with [`BackgroundEvalState::Finalized`]
+/// and `match` the prior value, binding the inner
+/// `BackgroundEvaluator<K>` to `$ev` for `$body`. Used by `take_and_*`
+/// and `shutdown` where each arm needs to consume the inner evaluator.
+macro_rules! dispatch_state_consuming {
+    ($self:expr, $ev:ident => $body:expr, $finalized:expr) => {
+        match std::mem::replace($self, Self::Finalized) {
+            Self::Bbox($ev) => $body,
+            Self::Segm($ev) => $body,
+            Self::SegmCached($ev) => $body,
+            Self::Boundary($ev) => $body,
+            Self::BoundaryCached($ev) => $body,
+            Self::Keypoints($ev) => $body,
+            Self::Finalized => $finalized,
+        }
+    };
+}
+
 impl BackgroundEvalState {
     /// Post a detection batch to the worker. The JSON arm parses to
     /// [`ParsedDetections`] inside the kernel-typed branch; the array arm
@@ -2279,16 +2317,7 @@ impl BackgroundEvalState {
     }
 
     fn take_and_finalize(&mut self) -> Result<Summary, EvalError> {
-        let prev = std::mem::replace(self, Self::Finalized);
-        match prev {
-            Self::Bbox(ev) => ev.finalize(),
-            Self::Segm(ev) => ev.finalize(),
-            Self::SegmCached(ev) => ev.finalize(),
-            Self::Boundary(ev) => ev.finalize(),
-            Self::BoundaryCached(ev) => ev.finalize(),
-            Self::Keypoints(ev) => ev.finalize(),
-            Self::Finalized => Err(background_finalized_error()),
-        }
+        dispatch_state_consuming!(self, ev => ev.finalize(), Err(background_finalized_error()))
     }
 
     fn take_and_finalize_with_tables(
@@ -2296,89 +2325,39 @@ impl BackgroundEvalState {
         request: TablesRequest,
         config: TablesConfig,
     ) -> Result<(Summary, Tables), EvalError> {
-        let prev = std::mem::replace(self, Self::Finalized);
-        match prev {
-            Self::Bbox(ev) => ev.finalize_with_tables(request, config),
-            Self::Segm(ev) => ev.finalize_with_tables(request, config),
-            Self::SegmCached(ev) => ev.finalize_with_tables(request, config),
-            Self::Boundary(ev) => ev.finalize_with_tables(request, config),
-            Self::BoundaryCached(ev) => ev.finalize_with_tables(request, config),
-            Self::Keypoints(ev) => ev.finalize_with_tables(request, config),
-            Self::Finalized => Err(background_finalized_error()),
-        }
+        dispatch_state_consuming!(
+            self,
+            ev => ev.finalize_with_tables(request, config),
+            Err(background_finalized_error())
+        )
     }
 
     fn take_and_finalize_to_partial(&mut self) -> Result<Vec<u8>, EvalError> {
-        let prev = std::mem::replace(self, Self::Finalized);
-        match prev {
-            Self::Bbox(ev) => ev.finalize_to_partial(),
-            Self::Segm(ev) => ev.finalize_to_partial(),
-            Self::SegmCached(ev) => ev.finalize_to_partial(),
-            Self::Boundary(ev) => ev.finalize_to_partial(),
-            Self::BoundaryCached(ev) => ev.finalize_to_partial(),
-            Self::Keypoints(ev) => ev.finalize_to_partial(),
-            Self::Finalized => Err(background_finalized_error()),
-        }
+        dispatch_state_consuming!(
+            self,
+            ev => ev.finalize_to_partial(),
+            Err(background_finalized_error())
+        )
     }
 
     fn take_scheduling_outcome(&self) -> Option<Result<(), String>> {
-        match self {
-            Self::Bbox(ev) => ev.take_scheduling_outcome(),
-            Self::Segm(ev) => ev.take_scheduling_outcome(),
-            Self::SegmCached(ev) => ev.take_scheduling_outcome(),
-            Self::Boundary(ev) => ev.take_scheduling_outcome(),
-            Self::BoundaryCached(ev) => ev.take_scheduling_outcome(),
-            Self::Keypoints(ev) => ev.take_scheduling_outcome(),
-            Self::Finalized => None,
-        }
+        dispatch_state_ref!(self, ev => ev.take_scheduling_outcome(), None)
     }
 
     fn images_seen(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.images_seen(),
-            Self::Segm(ev) => ev.images_seen(),
-            Self::SegmCached(ev) => ev.images_seen(),
-            Self::Boundary(ev) => ev.images_seen(),
-            Self::BoundaryCached(ev) => ev.images_seen(),
-            Self::Keypoints(ev) => ev.images_seen(),
-            Self::Finalized => 0,
-        }
+        dispatch_state_ref!(self, ev => ev.images_seen(), 0)
     }
 
     fn detections_seen(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.detections_seen(),
-            Self::Segm(ev) => ev.detections_seen(),
-            Self::SegmCached(ev) => ev.detections_seen(),
-            Self::Boundary(ev) => ev.detections_seen(),
-            Self::BoundaryCached(ev) => ev.detections_seen(),
-            Self::Keypoints(ev) => ev.detections_seen(),
-            Self::Finalized => 0,
-        }
+        dispatch_state_ref!(self, ev => ev.detections_seen(), 0)
     }
 
     fn queue_depth(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.queue_depth(),
-            Self::Segm(ev) => ev.queue_depth(),
-            Self::SegmCached(ev) => ev.queue_depth(),
-            Self::Boundary(ev) => ev.queue_depth(),
-            Self::BoundaryCached(ev) => ev.queue_depth(),
-            Self::Keypoints(ev) => ev.queue_depth(),
-            Self::Finalized => 0,
-        }
+        dispatch_state_ref!(self, ev => ev.queue_depth(), 0)
     }
 
     fn memory_used_bytes(&self) -> usize {
-        match self {
-            Self::Bbox(ev) => ev.memory_used_bytes(),
-            Self::Segm(ev) => ev.memory_used_bytes(),
-            Self::SegmCached(ev) => ev.memory_used_bytes(),
-            Self::Boundary(ev) => ev.memory_used_bytes(),
-            Self::BoundaryCached(ev) => ev.memory_used_bytes(),
-            Self::Keypoints(ev) => ev.memory_used_bytes(),
-            Self::Finalized => 0,
-        }
+        dispatch_state_ref!(self, ev => ev.memory_used_bytes(), 0)
     }
 
     /// B5: drain the worker's accumulated submit-latency samples (in
@@ -2386,30 +2365,13 @@ impl BackgroundEvalState {
     /// constructed without `record_latency_samples=True` or after
     /// finalize.
     fn latency_samples_drain(&self) -> Vec<u64> {
-        match self {
-            Self::Bbox(ev) => ev.latency_samples_drain(),
-            Self::Segm(ev) => ev.latency_samples_drain(),
-            Self::SegmCached(ev) => ev.latency_samples_drain(),
-            Self::Boundary(ev) => ev.latency_samples_drain(),
-            Self::BoundaryCached(ev) => ev.latency_samples_drain(),
-            Self::Keypoints(ev) => ev.latency_samples_drain(),
-            Self::Finalized => Vec::new(),
-        }
+        dispatch_state_ref!(self, ev => ev.latency_samples_drain(), Vec::new())
     }
 
     /// Best-effort cooperative shutdown. Used by `__exit__` and `__del__`
     /// when the evaluator hasn't already been finalized.
     fn shutdown(&mut self) {
-        let prev = std::mem::replace(self, Self::Finalized);
-        match prev {
-            Self::Bbox(ev) => ev.shutdown(),
-            Self::Segm(ev) => ev.shutdown(),
-            Self::SegmCached(ev) => ev.shutdown(),
-            Self::Boundary(ev) => ev.shutdown(),
-            Self::BoundaryCached(ev) => ev.shutdown(),
-            Self::Keypoints(ev) => ev.shutdown(),
-            Self::Finalized => {}
-        }
+        dispatch_state_consuming!(self, ev => ev.shutdown(), ())
     }
 
     /// Test-only: forward to the worker's `_inject_poison_for_tests`.
@@ -2418,13 +2380,11 @@ impl BackgroundEvalState {
     /// reaches this.
     #[cfg(feature = "test-poison")]
     fn inject_poison_for_tests(&self) -> Result<(), EvalError> {
-        match self {
-            Self::Bbox(ev) => ev._inject_poison_for_tests(),
-            Self::Segm(ev) => ev._inject_poison_for_tests(),
-            Self::Boundary(ev) => ev._inject_poison_for_tests(),
-            Self::Keypoints(ev) => ev._inject_poison_for_tests(),
-            Self::Finalized => Err(background_finalized_error()),
-        }
+        dispatch_state_ref!(
+            self,
+            ev => ev._inject_poison_for_tests(),
+            Err(background_finalized_error())
+        )
     }
 }
 
