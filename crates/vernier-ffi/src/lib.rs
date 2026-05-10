@@ -202,16 +202,12 @@ struct PyEvalGrid {
     /// of `(gt, boundary_cache, segm_cache)`; reused by [`Self::dataset`]
     /// so the result-tables Python wrapper doesn't re-parse GT JSON.
     retained_dataset: dataset::DatasetSnapshot,
-    /// Resolved IoU threshold ladder used to build this grid (ADR-0040).
-    /// Carried on the grid so [`Self::accumulate`] reuses the same
-    /// ladder the matcher saw — pairing a custom grid with the canonical
-    /// ladder at accumulate time would silently misindex the T-axis.
+    /// Resolved IoU ladder this grid was built with (ADR-0040). Reused
+    /// by [`Self::accumulate`] and the per-axis tables so T-axis
+    /// indexing stays aligned with what the matcher saw.
     iou_thresholds: Vec<f64>,
-    /// Resolved recall threshold ladder. Threaded into
+    /// Resolved recall ladder, threaded into
     /// [`AccumulateParams::recall_thresholds`] by [`Self::accumulate`].
-    /// Independent from the eval-time ladder; lives here so the user's
-    /// custom value flows from `evaluate_*_grid` through accumulate
-    /// without re-asking on the second call.
     recall_thresholds: Vec<f64>,
 }
 
