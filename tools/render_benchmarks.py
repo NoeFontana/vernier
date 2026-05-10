@@ -86,6 +86,9 @@ class CellKey:
 @dataclass(frozen=True)
 class CellStats:
     median_ns: int
+    iqr_ns: int | None
+    iqr_relative: float | None
+    iqr_gate_passed: bool | None
     max_rss_bytes: int
 
 
@@ -117,6 +120,18 @@ def format_speedup(ratio: float | None) -> str:
     if ratio is None:
         return "—"
     return f"{ratio:.2f}×"  # noqa: RUF001
+
+
+def format_iqr(
+    iqr_ns: int | None,
+    iqr_relative: float | None,
+    iqr_gate_passed: bool | None,
+) -> str:
+    if iqr_ns is None:
+        return "—"
+    rel_str = f" ({iqr_relative * 100:.2f}%)" if iqr_relative is not None else ""
+    fail_marker = "" if iqr_gate_passed in (None, True) else " *"
+    return f"{format_ns(iqr_ns)}{rel_str}{fail_marker}"
 
 
 def is_vernier(impl: str) -> bool:
@@ -194,8 +209,20 @@ def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] 
         return None
     walls = [r["stages"]["total"]["wall_ns"] for r in reps]
     rsses = [r.get("ru_maxrss_bytes", 0) for r in reps]
+    aggregation = data.get("aggregation") or {}
+    total_agg = aggregation.get("stages", {}).get("total", {})
+    iqr_ns_raw = total_agg.get("iqr_ns")
+    iqr_ns = int(iqr_ns_raw) if isinstance(iqr_ns_raw, int) else None
+    iqr_gate = aggregation.get("iqr_gate") or {}
+    iqr_relative_raw = iqr_gate.get("relative")
+    iqr_relative = float(iqr_relative_raw) if isinstance(iqr_relative_raw, (int, float)) else None
+    iqr_gate_passed_raw = iqr_gate.get("passed")
+    iqr_gate_passed = bool(iqr_gate_passed_raw) if isinstance(iqr_gate_passed_raw, bool) else None
     stats = CellStats(
         median_ns=int(statistics.median(walls)),
+        iqr_ns=iqr_ns,
+        iqr_relative=iqr_relative,
+        iqr_gate_passed=iqr_gate_passed,
         max_rss_bytes=max(rsses) if rsses else 0,
     )
     cpu_model = data.get("cpu_model")
@@ -306,9 +333,14 @@ def render_iou_table(
         return ""
     impls = [i for i in IMPL_ORDER if i in matching]
     impls.extend(sorted(i for i in matching if i not in IMPL_ORDER))
+    has_iqr = any(matching[i].iqr_ns is not None for i in impls)
     rows = []
-    rows.append("| impl | median | RSS (max) | vs vernier |")
-    rows.append("| --- | ---: | ---: | ---: |")
+    if has_iqr:
+        rows.append("| impl | median | IQR | RSS (max) | vs vernier |")
+        rows.append("| --- | ---: | ---: | ---: | ---: |")
+    else:
+        rows.append("| impl | median | RSS (max) | vs vernier |")
+        rows.append("| --- | ---: | ---: | ---: |")
     for impl in impls:
         stats = matching[impl]
         speedup = stats.median_ns / baseline.median_ns
@@ -318,10 +350,17 @@ def render_iou_table(
         ratio_cell = (
             f"**{format_speedup(speedup)}**" if is_vernier(impl) else format_speedup(speedup)
         )
-        rows.append(
-            f"| {cell_label} | {format_ns(stats.median_ns)} "
-            f"| {format_bytes(stats.max_rss_bytes)} | {ratio_cell} |"
-        )
+        if has_iqr:
+            iqr_cell = format_iqr(stats.iqr_ns, stats.iqr_relative, stats.iqr_gate_passed)
+            rows.append(
+                f"| {cell_label} | {format_ns(stats.median_ns)} | {iqr_cell} "
+                f"| {format_bytes(stats.max_rss_bytes)} | {ratio_cell} |"
+            )
+        else:
+            rows.append(
+                f"| {cell_label} | {format_ns(stats.median_ns)} "
+                f"| {format_bytes(stats.max_rss_bytes)} | {ratio_cell} |"
+            )
     return "\n".join(rows)
 
 
@@ -418,6 +457,7 @@ def render_document(
     baselines_block = render_baselines_block(impl_versions)
     baselines_section = ("\n\n" + baselines_block) if baselines_block else ""
     cpu_clause = _cpu_provenance(cpu_model, cpu_arch)
+    has_iqr_failures = any(stats.iqr_gate_passed is False for stats in cells.values())
 
     header = f"""# Benchmarks
 
@@ -427,6 +467,9 @@ are the median total-stage wall time over the non-warmup reps recorded by
 the local bench harness ([ADR-0017](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0017-local-bench-harness.md),
 extended cross-paradigm in
 [ADR-0033](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0033-multi-paradigm-bench.md)).
+The IQR column reports the spread (Q3 - Q1) across the 10 measurement
+reps and the same value as a percentage of the median; release mode
+gates each cell at 5% relative IQR.
 
 **Provenance** — git SHA `{sha}` · machine fingerprint `{mfp}`{cpu_clause} · harness
 mode `{harness_mode}` · build profile = cargo release defaults
@@ -456,14 +499,27 @@ Every cell runs in its own subprocess with its own uv-managed venv (one
 per impl), so a single Python process never has competing
 pycocotools-flavored packages on its `sys.path`. The harness records
 `(load, evaluate, accumulate, summarize, total)` wall_ns per stage,
-discards the warmup reps, and reports the median total. Parity is a
+discards the warmup reps, and reports the median total plus the
+inter-quartile range (IQR = Q3 - Q1, with the relative spread shown as
+a percentage of the median). Release mode (N=10 + 2 warmup) gates each
+impl on relative IQR ≤ 5%; cells where the gate failed are marked with
+` *` next to their IQR value — the median is still the best estimator,
+just with a wider confidence band than the gate accepts. Parity is a
 side effect of every timing run — strict-tier (vs pycocotools) and
 aligned-tier (vs faster-coco-eval) where applicable; failed parity
 fails the cell. Memory is `getrusage(RUSAGE_CHILDREN).ru_maxrss`,
 high-water-marked across the rep set.
 """
 
-    return header + "\n\n".join(sections) + "\n\n" + methodology
+    iqr_footnote = ""
+    if has_iqr_failures:
+        iqr_footnote = (
+            "\n\n*Cells marked ` *` next to their IQR exceeded the release-mode "
+            "5% relative-IQR gate. Median still reported; treat the gap to the "
+            "next impl as the load-bearing signal rather than the precise ratio.*"
+        )
+
+    return header + "\n\n".join(sections) + iqr_footnote + "\n\n" + methodology
 
 
 def main() -> None:
