@@ -15,7 +15,7 @@
 //!
 //! Today the per-image orchestrator binds annotations into A-axis
 //! buckets via [`crate::AreaRange`], and the summarizer reads them back
-//! out via [`crate::AreaRng`]. The two shapes are coupled (`index` on
+//! out via [`crate::summarize::AreaRng`]. The two shapes are coupled (`index` on
 //! one matches `index` on the other) but live in different modules and
 //! describe the same conceptual axis with different field sets.
 //!
@@ -38,7 +38,7 @@
 //! follow-up ADR (CrowdPose-driven).
 //!
 //! [`AreaRange`]: crate::AreaRange
-//! [`AreaRng`]: crate::AreaRng
+//! [`AreaRng`]: crate::summarize::AreaRng
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -258,7 +258,7 @@ impl Breakdown {
     }
 
     /// Materialize the [`AreaRng`] slice the summarizer consumes when
-    /// rendering each per-bucket [`crate::StatLine`]. Useful for callers
+    /// rendering each per-bucket [`crate::summarize::StatLine`]. Useful for callers
     /// that build custom `StatRequest` plans against this breakdown's
     /// A-axis layout.
     pub fn summary_areas(&self) -> Vec<AreaRng> {

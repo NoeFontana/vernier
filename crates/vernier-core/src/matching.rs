@@ -4,12 +4,12 @@
 //! `pycocotools.cocoeval.COCOeval.evaluateImg` (lines 268-296). Per
 //! ADR-0005, this engine is generic over the matrix only — it knows
 //! nothing about bbox, segm, or keypoints. Phase 2 (segm) and Phase 3
-//! (OKS) add new [`crate::Similarity`] impls without touching this file.
+//! (OKS) add new [`crate::similarity::Similarity`] impls without touching this file.
 //! If they would, the abstraction failed.
 //!
 //! ## Ordering
 //!
-//! [`match_image`] receives inputs in the caller's natural order and
+//! `match_image` receives inputs in the caller's natural order and
 //! produces results in the engine's *internal sorted orders*:
 //!
 //! - GTs are sorted ascending by `gt_ignore` (quirk **A4** — strict).
@@ -20,9 +20,9 @@
 //!   matters for parity and is exactly what numpy's
 //!   `argsort(kind='mergesort')` produces.
 //!
-//! [`MatchResult::dt_perm`] and [`gt_perm`](MatchResult::gt_perm)
-//! expose the permutations so callers can map matched indices back to
-//! their input positions if needed.
+//! `MatchResult::dt_perm` and `MatchResult::gt_perm` expose the
+//! permutations so callers can map matched indices back to their
+//! input positions if needed.
 //!
 //! ## Quirk dispositions
 //!

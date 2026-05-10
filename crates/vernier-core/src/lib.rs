@@ -4,7 +4,7 @@
 //! binaries, CLI tools, and embedded contexts.
 //!
 //! By design, the public API of this crate is the source of truth for vernier's
-//! evaluation semantics. The [`vernier-ffi`] crate is a thin data-conversion
+//! evaluation semantics. The `vernier-ffi` crate is a thin data-conversion
 //! layer over this one; if you find yourself adding logic to `vernier-ffi`
 //! rather than here, that's a code smell worth resolving.
 //!

@@ -107,7 +107,7 @@ impl SegmComputeScratch {
 /// `Rle::bbox` (the I1 prefilter input), `Rle::area` (the union
 /// denominator), and `Rle::decode_fg_offsets_into` (the per-pair
 /// intersect kernel input). Pass an instance to
-/// [`crate::evaluate_segm_cached`] and reuse it across calls.
+/// [`crate::evaluate::evaluate_segm_cached`] and reuse it across calls.
 ///
 /// Keyed by GT annotation id ([`SegmAnn::ann_id`], populated from
 /// `CocoAnnotation::id` at the dataset boundary).

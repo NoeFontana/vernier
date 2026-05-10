@@ -153,7 +153,7 @@ pub struct BinAssignment {
 ///
 /// # Errors
 ///
-/// Propagates [`EvalError`] from [`match_image`] (only on dimension
+/// Propagates [`EvalError`] from the matching engine (only on dimension
 /// mismatch — kernel work is already done by the time we get here).
 pub fn assign_bins(
     gt: &CocoDataset,

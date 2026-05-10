@@ -98,11 +98,11 @@ impl BoundaryComputeScratch {
 /// band derivation is the dominant per-annotation cost in the
 /// boundary kernel (see `docs/engineering/benchmarking/`), and a
 /// cache amortises it across calls. Pass an instance to
-/// [`crate::evaluate_boundary_cached`] and reuse it across calls.
+/// [`crate::evaluate::evaluate_boundary_cached`] and reuse it across calls.
 ///
 /// Keyed by GT annotation id ([`SegmAnn::ann_id`], populated from
 /// `CocoAnnotation::id` at the dataset boundary). Invalidated
-/// wholesale when [`crate::evaluate_boundary_cached`] is invoked at
+/// wholesale when [`crate::evaluate::evaluate_boundary_cached`] is invoked at
 /// a different `dilation_ratio` than the entries were computed at —
 /// ratio is a static configuration knob in practice, so per-call
 /// invalidation is the simplest invariant.
@@ -117,7 +117,7 @@ pub struct BoundaryGtCache {
 #[derive(Default)]
 struct CacheInner {
     bands: HashMap<i64, BoundaryGtEntry>,
-    /// `None` until the first [`crate::evaluate_boundary_cached`]
+    /// `None` until the first [`crate::evaluate::evaluate_boundary_cached`]
     /// call populates entries. Subsequent calls compare and clear on
     /// mismatch.
     ratio: Option<f64>,
@@ -221,7 +221,7 @@ impl Similarity for BoundaryIou {
 /// [`SegmAnn::ann_id`]; misses fall through to a fresh derivation and
 /// populate the cache. The cache must already be aligned to
 /// `dilation_ratio` (callers go through
-/// [`crate::evaluate_boundary_cached`], which calls
+/// [`crate::evaluate::evaluate_boundary_cached`], which calls
 /// [`BoundaryGtCache::align_ratio`] once per evaluate).
 pub(crate) fn boundary_iou_compute(
     dilation_ratio: f64,

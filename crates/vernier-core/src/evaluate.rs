@@ -2,7 +2,7 @@
 //!
 //! The bridge between the dataset layer ([`crate::CocoDataset`] /
 //! [`crate::CocoDetections`]) and the IoU-type-agnostic spine
-//! ([`crate::match_image`] → [`crate::accumulate`]). Pycocotools fuses
+//! ([`crate::matching`] → [`crate::accumulate`]). Pycocotools fuses
 //! these in `evaluate()` (cocoeval.py 174-216); we keep the layers
 //! separate so the spine stays untouchable per ADR-0005.
 //!
@@ -27,9 +27,9 @@
 //!    compute the GT × DT IoU matrix once via [`Similarity::compute`].
 //! 4. For each area range, build the per-call `_ignore` vector
 //!    (quirk **D3**) from the dataset's base ignore (D1) plus the area
-//!    filter (D6/D7), run [`crate::match_image`], apply quirk **B7** by
+//!    filter (D6/D7), run the [`crate::matching`] engine, apply quirk **B7** by
 //!    flipping `dt_ignore` for unmatched DTs whose area is outside the
-//!    active range, and pack the result as a [`crate::PerImageEval`] at
+//!    active range, and pack the result as a [`crate::accumulate::PerImageEval`] at
 //!    `[k][a][i]`.
 //!
 //! ## Quirk dispositions handled here
@@ -62,10 +62,10 @@
 //!   a single virtual `k=0` bucket, with `category_id` carried through
 //!   matching as a no-op.
 //! - **E2 / J4** (`strict`): DTs never carry an `is_crowd` flag — the
-//!   [`crate::CocoDetection`] type lacks the field. Only GT crowdness
+//!   [`crate::dataset::CocoDetection`] type lacks the field. Only GT crowdness
 //!   drives the E1 asymmetry inside the kernel.
 //! - **J3** (`strict`): DT areas are read from
-//!   [`crate::CocoDetection::area`], which the dataset layer derives
+//!   [`crate::dataset::CocoDetection::area`], which the dataset layer derives
 //!   from the bbox at construction.
 //! - **J2** (`strict`): under [`ParityMode::Strict`], a DT lacking a
 //!   `segmentation` field under `iouType="segm"` has its bbox
@@ -117,12 +117,12 @@ pub const AREA_UNBOUNDED: f64 = 1e10;
 ///
 /// `index` is the position on the `Accumulated` A-axis the resulting
 /// [`PerImageEval`] feeds into; matched at summarize time against
-/// [`crate::AreaRng::index`].
+/// [`crate::summarize::AreaRng::index`].
 #[derive(Debug, Clone, Copy, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 #[rkyv(derive(Debug))]
 pub struct AreaRange {
     /// A-axis position. `0` is conventionally the `all` bucket, matching
-    /// [`crate::AreaRng::ALL`].
+    /// [`crate::summarize::AreaRng::ALL`].
     pub index: usize,
     /// Lower bound (inclusive — quirks D6/D7).
     pub lo: f64,
@@ -133,7 +133,7 @@ pub struct AreaRange {
 
 impl AreaRange {
     /// Pycocotools' default detection grid: `all`, `small`, `medium`,
-    /// `large`. Indices line up with [`crate::AreaRng`]'s `ALL` /
+    /// `large`. Indices line up with [`crate::summarize::AreaRng`]'s `ALL` /
     /// `SMALL` / `MEDIUM` / `LARGE` constants.
     pub fn coco_default() -> [Self; 4] {
         [
@@ -200,7 +200,7 @@ impl AreaRange {
 /// thresholds, …) lives on the [`EvalKernel`] passed alongside.
 #[derive(Debug, Clone, Copy)]
 pub struct EvaluateParams<'p> {
-    /// IoU thresholds, length `T`. Use [`crate::iou_thresholds`] for the
+    /// IoU thresholds, length `T`. Use [`crate::parity::iou_thresholds`] for the
     /// canonical 10-point COCO ladder.
     pub iou_thresholds: &'p [f64],
     /// Area ranges. The `index` field of each entry is the A-axis
@@ -210,7 +210,7 @@ pub struct EvaluateParams<'p> {
     pub area_ranges: &'p [AreaRange],
     /// Top-N filter applied to DTs per `(image, category)` cell before
     /// matching. Should be the largest entry of the eventual
-    /// [`crate::AccumulateParams::max_dets`] ladder; smaller caps are
+    /// [`crate::accumulate::AccumulateParams::max_dets`] ladder; smaller caps are
     /// sliced downstream.
     pub max_dets_per_image: usize,
     /// Quirk **L4** (`aligned`): when `false`, every category is
@@ -331,7 +331,7 @@ impl KernelKind {
 ///
 /// Implementors do the per-cell rasterization / lookup that a [`Similarity`]
 /// kernel can't (because [`Similarity`] is dataset-agnostic by design).
-/// `image` carries the `(h, w)` segm impls need for [`crate::Segmentation::to_rle`].
+/// `image` carries the `(h, w)` segm impls need for [`crate::segmentation::Segmentation::to_rle`].
 pub trait EvalKernel: Similarity {
     /// Discriminator carried in the distributed-eval wire format
     /// (ADR-0031) so heterogeneous partials are refused at merge time.
@@ -381,7 +381,7 @@ pub trait EvalKernel: Similarity {
     ///
     /// The streaming evaluator dispatches its summarizer choice on this
     /// flag: keypoints kernels resolve to the 10-stat
-    /// [`crate::StatRequest::coco_keypoints_default`] plan, every other
+    /// [`crate::summarize::StatRequest::coco_keypoints_default`] plan, every other
     /// kernel resolves to the 12-stat detection plan. Default `false`;
     /// [`OksSimilarity`] overrides to `true`. Additive trait method —
     /// existing implementors keep the default.
@@ -715,7 +715,7 @@ pub struct EvalImageMeta {
 /// Output of [`evaluate_bbox`] / [`evaluate_segm`] / [`evaluate_boundary`]
 /// — the flat `(K, A, I)` grid of
 /// [`PerImageEval`] cells the accumulator consumes, plus the dimensions
-/// needed to construct [`crate::AccumulateParams`].
+/// needed to construct [`crate::accumulate::AccumulateParams`].
 #[derive(Debug, Clone)]
 pub struct EvalGrid {
     /// `Some(cell)` per `(k, a, i)` triple where the cell ran; `None`
@@ -777,7 +777,7 @@ impl EvalGrid {
 /// Run the per-image evaluation pass with the given [`EvalKernel`].
 ///
 /// Iterates `(image, category)` cells, computes the IoU matrix once per
-/// cell via the kernel, runs [`crate::match_image`] once per area range,
+/// cell via the kernel, runs the [`crate::matching`] engine once per area range,
 /// and packs the results into a flat `[k][a][i]`-ordered grid suitable
 /// for [`crate::accumulate`].
 ///
@@ -789,7 +789,7 @@ impl EvalGrid {
 ///
 /// Propagates [`EvalError`] from the underlying [`Similarity`],
 /// [`EvalKernel::build_gt_anns`] / [`EvalKernel::build_dt_anns`], and
-/// [`crate::match_image`] calls.
+/// [`crate::matching`] calls.
 pub fn evaluate_with<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
@@ -1306,7 +1306,7 @@ impl EvalKernel for BoundaryIouCached<'_> {
 ///
 /// `sigmas` is the per-category sigma override map consumed by
 /// [`OksSimilarity::new`]: an empty map means "use
-/// [`crate::COCO_PERSON_SIGMAS`] for every category" (quirk **F1**,
+/// [`crate::similarity::oks::COCO_PERSON_SIGMAS`] for every category" (quirk **F1**,
 /// `corrected`). Sigma resolution rules — including the COCO-person
 /// default and the 17-keypoint length contract — are documented on
 /// [`OksSimilarity`].

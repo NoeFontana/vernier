@@ -249,7 +249,7 @@ impl<K: EvalKernel> ParsedDetections<K> {
 /// `update()` batches submitted in order.
 ///
 /// When `params.retain_iou` is `true`, the evaluator additionally
-/// retains a [`crate::RetainedIous`] store keyed by `(k, i)`, populated
+/// retains a [`crate::tables::RetainedIous`] store keyed by `(k, i)`, populated
 /// incrementally as each batch's `evaluate_with` returns its per-batch
 /// retentions. Consumed by the per_pair / per_detection table builders.
 #[derive(Debug)]
@@ -639,8 +639,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// Consume the evaluator and return both its final [`Summary`] and
     /// the requested result tables.
     ///
-    /// v0.5 supports the *cheap* tables ([`crate::TablesRequest::per_image`],
-    /// [`crate::TablesRequest::per_class`]) on the streaming path —
+    /// v0.5 supports the *cheap* tables ([`crate::tables::TablesRequest::per_image`],
+    /// [`crate::tables::TablesRequest::per_class`]) on the streaming path —
     /// neither needs the per-cell `EvalImageMeta` the cells store would
     /// have to also retain. `per_detection` / `per_pair` on streaming
     /// returns [`EvalError::NotImplemented`]; callers who need those
@@ -652,7 +652,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// - [`EvalError::NotImplemented`] when `request.per_detection` or
     ///   `request.per_pair` is set.
     /// - Any error from the underlying [`accumulate`] / summarize /
-    ///   [`crate::build_per_image`] / [`crate::build_per_class`] calls.
+    ///   [`crate::tables::build_per_image`] / [`crate::tables::build_per_class`] calls.
     pub fn finalize_with_tables(
         mut self,
         request: crate::tables::TablesRequest,
