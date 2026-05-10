@@ -127,7 +127,7 @@ for the cross-codebase comparison.
 - **Run multi-rank.** `Evaluator.evaluate_to_partial` per rank +
   `Evaluator.from_partials` on the head:
   [`how-to/distributed-eval.md`](../how-to/distributed-eval.md).
-- **Migrate from a competing tool.** The TL;DR table in
+- **Migrate from other tools.** The TL;DR table in
   [`migrate/from-pycocotools.md`](../migrate/from-pycocotools.md)
   maps the `COCOeval(...).evaluate().accumulate().summarize()`
   call sequence onto vernier's `Evaluator(...).evaluate(...)`.

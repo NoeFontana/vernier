@@ -49,13 +49,16 @@ plugins:
           options:
             show_source: false
             docstring_style: google
-            members_order: alphabetical
+            members_order: source
             heading_level: 2
             docstring_section_style: table
             separate_signature: true
             show_signature_annotations: true
             signature_crossrefs: true
             merge_init_into_class: true
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            filters: ["!^_"]
   - redirects:
       redirect_maps:
         explanation/lvis-migration.md: migrate/from-lvis-api.md
@@ -71,7 +74,6 @@ nav:
   - Tutorials:
       - tutorials/README.md
       - Your first evaluation: tutorials/first-evaluation.md
-      - Logging AP during training: tutorials/training-loop.md
       - Debugging with TIDE: tutorials/debugging-with-tide.md
   - Migrate:
       - migrate/README.md
@@ -87,6 +89,8 @@ nav:
       - Evaluate with boundary IoU: how-to/boundary-iou.md
       - Evaluate keypoints with OKS: how-to/keypoints-oks.md
       - Evaluate on a background thread: how-to/background-evaluator.md
+      - Ingest detection arrays: how-to/array-ingest.md
+      - Distributed evaluation: how-to/distributed-eval.md
   - Reference:
       - reference/README.md
       - Python API:
