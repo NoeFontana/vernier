@@ -72,7 +72,7 @@ class PartialRankCollision(RuntimeError):
 class BackgroundEvaluator:
     def __init__(
         self,
-        gt_json: bytes,
+        gt: bytes | CocoDataset,
         *,
         iou_type: Literal["bbox", "segm", "boundary", "keypoints"] = ...,
         parity_mode: Literal["strict", "corrected"] = ...,
@@ -193,6 +193,10 @@ class CocoDataset:
     def not_exhaustive_category_ids(self) -> Mapping[int, frozenset[int]] | None: ...
     @property
     def category_frequency(self) -> Mapping[int, LvisFrequencyLiteral] | None: ...
+    @property
+    def boundary_cache_len(self) -> int: ...
+    @property
+    def segm_cache_len(self) -> int: ...
     def clear_cache(self) -> None: ...
 
 class ArrowRecordBatch:

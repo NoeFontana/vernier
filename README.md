@@ -120,19 +120,22 @@ for line in summary.pretty_lines():
 
 In a training loop — overlap eval with the next training step. The
 matching kernel runs on a worker thread, so `submit(...)` returns
-immediately and the training thread keeps moving:
+immediately and the training thread keeps moving. Passing a
+`CocoDataset` reuses the parsed-once GT and its per-kernel
+derivation cache across every epoch (ADR-0020):
 
 ```python
 import json
 from pathlib import Path
-from vernier.instance import BackgroundEvaluator
+from vernier.instance import Bbox, CocoDataset, Evaluator
 
-gt_bytes = Path("instances_val2017.json").read_bytes()
-with BackgroundEvaluator(gt_bytes, iou_type="bbox") as evaluator:
+gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
+evaluator = Evaluator(iou=Bbox())
+with evaluator.background(gt) as bg:
     for images, _ in val_loader:
         detections = model(images)  # list[{image_id, category_id, bbox, score}]
-        evaluator.submit(json.dumps(detections).encode())
-    summary = evaluator.finalize()
+        bg.submit(json.dumps(detections).encode())
+    summary = bg.finalize()
 print("AP =", summary.stats[0])
 ```
 

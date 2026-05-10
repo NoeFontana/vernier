@@ -35,14 +35,17 @@ use std::time::Duration;
 use numpy::ndarray::Array1;
 use numpy::ToPyArray;
 use pyo3::create_exception;
-use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyUserWarning, PyValueError};
+use pyo3::exceptions::{
+    PyNotImplementedError, PyRuntimeError, PyTypeError, PyUserWarning, PyValueError,
+};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
 use vernier_core::accumulate::{accumulate, sort_max_dets, AccumulateParams, PerImageEval};
 use vernier_core::dataset::{CategoryId, DetectionInput};
 use vernier_core::evaluate::{
-    evaluate_boundary_cached, evaluate_segm_cached, EvalImageMeta, EvalKernel, OwnedEvaluateParams,
+    evaluate_boundary_cached, evaluate_segm_cached, BoundaryIouCached, EvalImageMeta, EvalKernel,
+    OwnedEvaluateParams, SegmIouCached,
 };
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
@@ -2163,6 +2166,31 @@ impl InstanceStreamOrchestrator {
     }
 }
 
+/// Spawn a [`background::BackgroundEvaluator`] for a typed kernel,
+/// folding the three error-mapping shapes — `with_rank`,
+/// `StreamingEvaluator::new`, and `spawn_with_options` — that every
+/// branch of [`PyBackgroundEvaluator::new`] shares.
+#[allow(clippy::too_many_arguments)]
+fn spawn_background_evaluator<K: EvalKernel + Send + 'static>(
+    py: Python<'_>,
+    dataset: CocoDataset,
+    kernel: K,
+    params: OwnedEvaluateParams,
+    parity: ParityMode,
+    budget: MemoryBudget,
+    config: background::BackgroundConfig,
+    rank_id: Option<u32>,
+    record_latency_samples: bool,
+) -> PyResult<background::BackgroundEvaluator<K>> {
+    let ev = maybe_tag_rank(
+        StreamingEvaluator::new(dataset, kernel, params, parity, budget)
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?,
+        rank_id,
+    )?;
+    background::BackgroundEvaluator::spawn_with_options(ev, config, record_latency_samples)
+        .map_err(|e| eval_error_to_pyerr(py, e))
+}
+
 /// Kernel-erased wrapper around a [`background::BackgroundEvaluator<K>`].
 ///
 /// Mirrors [`StreamingState`] for the background surface. Each variant
@@ -2172,7 +2200,16 @@ impl InstanceStreamOrchestrator {
 enum BackgroundEvalState {
     Bbox(background::BackgroundEvaluator<BboxIou>),
     Segm(background::BackgroundEvaluator<SegmIou>),
+    /// Segm path constructed from a `CocoDataset` handle (ADR-0020): the
+    /// kernel owns an `Arc<SegmGtCache>` so per-annotation GT-side
+    /// derivations are reused across `submit()` rounds.
+    SegmCached(background::BackgroundEvaluator<SegmIouCached<'static>>),
     Boundary(background::BackgroundEvaluator<BoundaryIou>),
+    /// Boundary path constructed from a `CocoDataset` handle
+    /// (ADR-0020): the kernel owns an `Arc<BoundaryGtCache>`, so the
+    /// ~36k Chebyshev erodes that build the GT band are paid once per
+    /// dataset rather than once per submitted batch.
+    BoundaryCached(background::BackgroundEvaluator<BoundaryIouCached<'static>>),
     Keypoints(background::BackgroundEvaluator<OksSimilarity>),
     Finalized,
 }
@@ -2233,7 +2270,9 @@ impl BackgroundEvalState {
         match self {
             Self::Bbox(ev) => dispatch!(ev, BboxIou),
             Self::Segm(ev) => dispatch!(ev, SegmIou),
+            Self::SegmCached(ev) => dispatch!(ev, SegmIouCached<'static>),
             Self::Boundary(ev) => dispatch!(ev, BoundaryIou),
+            Self::BoundaryCached(ev) => dispatch!(ev, BoundaryIouCached<'static>),
             Self::Keypoints(ev) => dispatch!(ev, OksSimilarity),
             Self::Finalized => Err(background::SubmitError::Eval(background_finalized_error())),
         }
@@ -2244,7 +2283,9 @@ impl BackgroundEvalState {
         match prev {
             Self::Bbox(ev) => ev.finalize(),
             Self::Segm(ev) => ev.finalize(),
+            Self::SegmCached(ev) => ev.finalize(),
             Self::Boundary(ev) => ev.finalize(),
+            Self::BoundaryCached(ev) => ev.finalize(),
             Self::Keypoints(ev) => ev.finalize(),
             Self::Finalized => Err(background_finalized_error()),
         }
@@ -2259,7 +2300,9 @@ impl BackgroundEvalState {
         match prev {
             Self::Bbox(ev) => ev.finalize_with_tables(request, config),
             Self::Segm(ev) => ev.finalize_with_tables(request, config),
+            Self::SegmCached(ev) => ev.finalize_with_tables(request, config),
             Self::Boundary(ev) => ev.finalize_with_tables(request, config),
+            Self::BoundaryCached(ev) => ev.finalize_with_tables(request, config),
             Self::Keypoints(ev) => ev.finalize_with_tables(request, config),
             Self::Finalized => Err(background_finalized_error()),
         }
@@ -2270,7 +2313,9 @@ impl BackgroundEvalState {
         match prev {
             Self::Bbox(ev) => ev.finalize_to_partial(),
             Self::Segm(ev) => ev.finalize_to_partial(),
+            Self::SegmCached(ev) => ev.finalize_to_partial(),
             Self::Boundary(ev) => ev.finalize_to_partial(),
+            Self::BoundaryCached(ev) => ev.finalize_to_partial(),
             Self::Keypoints(ev) => ev.finalize_to_partial(),
             Self::Finalized => Err(background_finalized_error()),
         }
@@ -2280,7 +2325,9 @@ impl BackgroundEvalState {
         match self {
             Self::Bbox(ev) => ev.take_scheduling_outcome(),
             Self::Segm(ev) => ev.take_scheduling_outcome(),
+            Self::SegmCached(ev) => ev.take_scheduling_outcome(),
             Self::Boundary(ev) => ev.take_scheduling_outcome(),
+            Self::BoundaryCached(ev) => ev.take_scheduling_outcome(),
             Self::Keypoints(ev) => ev.take_scheduling_outcome(),
             Self::Finalized => None,
         }
@@ -2290,7 +2337,9 @@ impl BackgroundEvalState {
         match self {
             Self::Bbox(ev) => ev.images_seen(),
             Self::Segm(ev) => ev.images_seen(),
+            Self::SegmCached(ev) => ev.images_seen(),
             Self::Boundary(ev) => ev.images_seen(),
+            Self::BoundaryCached(ev) => ev.images_seen(),
             Self::Keypoints(ev) => ev.images_seen(),
             Self::Finalized => 0,
         }
@@ -2300,7 +2349,9 @@ impl BackgroundEvalState {
         match self {
             Self::Bbox(ev) => ev.detections_seen(),
             Self::Segm(ev) => ev.detections_seen(),
+            Self::SegmCached(ev) => ev.detections_seen(),
             Self::Boundary(ev) => ev.detections_seen(),
+            Self::BoundaryCached(ev) => ev.detections_seen(),
             Self::Keypoints(ev) => ev.detections_seen(),
             Self::Finalized => 0,
         }
@@ -2310,7 +2361,9 @@ impl BackgroundEvalState {
         match self {
             Self::Bbox(ev) => ev.queue_depth(),
             Self::Segm(ev) => ev.queue_depth(),
+            Self::SegmCached(ev) => ev.queue_depth(),
             Self::Boundary(ev) => ev.queue_depth(),
+            Self::BoundaryCached(ev) => ev.queue_depth(),
             Self::Keypoints(ev) => ev.queue_depth(),
             Self::Finalized => 0,
         }
@@ -2320,7 +2373,9 @@ impl BackgroundEvalState {
         match self {
             Self::Bbox(ev) => ev.memory_used_bytes(),
             Self::Segm(ev) => ev.memory_used_bytes(),
+            Self::SegmCached(ev) => ev.memory_used_bytes(),
             Self::Boundary(ev) => ev.memory_used_bytes(),
+            Self::BoundaryCached(ev) => ev.memory_used_bytes(),
             Self::Keypoints(ev) => ev.memory_used_bytes(),
             Self::Finalized => 0,
         }
@@ -2334,7 +2389,9 @@ impl BackgroundEvalState {
         match self {
             Self::Bbox(ev) => ev.latency_samples_drain(),
             Self::Segm(ev) => ev.latency_samples_drain(),
+            Self::SegmCached(ev) => ev.latency_samples_drain(),
             Self::Boundary(ev) => ev.latency_samples_drain(),
+            Self::BoundaryCached(ev) => ev.latency_samples_drain(),
             Self::Keypoints(ev) => ev.latency_samples_drain(),
             Self::Finalized => Vec::new(),
         }
@@ -2347,7 +2404,9 @@ impl BackgroundEvalState {
         match prev {
             Self::Bbox(ev) => ev.shutdown(),
             Self::Segm(ev) => ev.shutdown(),
+            Self::SegmCached(ev) => ev.shutdown(),
             Self::Boundary(ev) => ev.shutdown(),
+            Self::BoundaryCached(ev) => ev.shutdown(),
             Self::Keypoints(ev) => ev.shutdown(),
             Self::Finalized => {}
         }
@@ -2584,7 +2643,7 @@ impl PyBackgroundEvaluator {
 impl PyBackgroundEvaluator {
     #[new]
     #[pyo3(signature = (
-        gt_json,
+        gt,
         *,
         iou_type = "bbox",
         parity_mode = "corrected",
@@ -2605,7 +2664,7 @@ impl PyBackgroundEvaluator {
     #[allow(clippy::too_many_arguments)]
     fn new(
         py: Python<'_>,
-        gt_json: &Bound<'_, PyBytes>,
+        gt: &Bound<'_, PyAny>,
         iou_type: &str,
         parity_mode: &str,
         max_dets: Vec<usize>,
@@ -2637,7 +2696,24 @@ impl PyBackgroundEvaluator {
             None => MemoryBudget::auto_default(),
         };
 
-        let dataset = parse_gt(gt_json.as_bytes())?;
+        // ADR-0020: a `CocoDataset` handle carries `Arc`-shared
+        // per-kernel caches that the worker thread reuses across
+        // `submit()` rounds; raw bytes carry no caches and the kernel
+        // dispatch below stays on the uncached variant.
+        let (snapshot, has_dataset_handle) = if let Ok(py_dataset) = gt.cast::<dataset::PyDataset>()
+        {
+            (py_dataset.borrow().snapshot(), true)
+        } else if let Ok(bytes) = gt.cast::<PyBytes>() {
+            (
+                dataset::DatasetSnapshot::from_parsed(parse_gt(bytes.as_bytes())?),
+                false,
+            )
+        } else {
+            return Err(PyTypeError::new_err(
+                "BackgroundEvaluator(...) gt must be `bytes` or `vernier.instance.CocoDataset`",
+            ));
+        };
+        let (dataset, boundary_cache_arc, segm_cache_arc) = snapshot.into_parts();
 
         if !shutdown_timeout_seconds.is_finite() || shutdown_timeout_seconds < 0.0 {
             return Err(PyValueError::new_err(format!(
@@ -2651,83 +2727,95 @@ impl PyBackgroundEvaluator {
             shutdown_timeout: Duration::from_secs_f64(shutdown_timeout_seconds),
         };
 
+        let make_params = |area: Vec<AreaRange>| OwnedEvaluateParams {
+            iou_thresholds: iou_thresholds().to_vec(),
+            area_ranges: area,
+            max_dets_per_image,
+            use_cats,
+            retain_iou,
+        };
+
         let (state, array_iou_type) = match iou_type {
             "bbox" => {
-                let area = area_ranges_for(&EvalIouType::Bbox);
-                let params = OwnedEvaluateParams {
-                    iou_thresholds: iou_thresholds().to_vec(),
-                    area_ranges: area,
-                    max_dets_per_image,
-                    use_cats,
-                    retain_iou,
-                };
-                let ev = maybe_tag_rank(
-                    StreamingEvaluator::new(dataset, BboxIou, params, parity, budget)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
-                    rank_id,
-                )?;
-                let bg = background::BackgroundEvaluator::spawn_with_options(
-                    ev,
+                let params = make_params(area_ranges_for(&EvalIouType::Bbox));
+                let bg = spawn_background_evaluator(
+                    py,
+                    dataset,
+                    BboxIou,
+                    params,
+                    parity,
+                    budget,
                     config,
+                    rank_id,
                     record_latency_samples,
-                )
-                .map_err(|e| eval_error_to_pyerr(py, e))?;
+                )?;
                 (
                     BackgroundEvalState::Bbox(bg),
                     array_ingest::ArrayIouType::Bbox,
                 )
             }
             "segm" => {
-                let area = area_ranges_for(&EvalIouType::Segm);
-                let params = OwnedEvaluateParams {
-                    iou_thresholds: iou_thresholds().to_vec(),
-                    area_ranges: area,
-                    max_dets_per_image,
-                    use_cats,
-                    retain_iou,
+                let params = make_params(area_ranges_for(&EvalIouType::Segm));
+                let state = if has_dataset_handle {
+                    let bg = spawn_background_evaluator(
+                        py,
+                        dataset,
+                        SegmIouCached::with_arc_cache(segm_cache_arc),
+                        params,
+                        parity,
+                        budget,
+                        config,
+                        rank_id,
+                        record_latency_samples,
+                    )?;
+                    BackgroundEvalState::SegmCached(bg)
+                } else {
+                    let bg = spawn_background_evaluator(
+                        py,
+                        dataset,
+                        SegmIou,
+                        params,
+                        parity,
+                        budget,
+                        config,
+                        rank_id,
+                        record_latency_samples,
+                    )?;
+                    BackgroundEvalState::Segm(bg)
                 };
-                let ev = maybe_tag_rank(
-                    StreamingEvaluator::new(dataset, SegmIou, params, parity, budget)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
-                    rank_id,
-                )?;
-                let bg = background::BackgroundEvaluator::spawn_with_options(
-                    ev,
-                    config,
-                    record_latency_samples,
-                )
-                .map_err(|e| eval_error_to_pyerr(py, e))?;
-                (
-                    BackgroundEvalState::Segm(bg),
-                    array_ingest::ArrayIouType::Segm,
-                )
+                (state, array_ingest::ArrayIouType::Segm)
             }
             "boundary" => {
                 let iou_kind = boundary_iou_type(dilation_ratio)?;
-                let area = area_ranges_for(&iou_kind);
-                let params = OwnedEvaluateParams {
-                    iou_thresholds: iou_thresholds().to_vec(),
-                    area_ranges: area,
-                    max_dets_per_image,
-                    use_cats,
-                    retain_iou,
+                let params = make_params(area_ranges_for(&iou_kind));
+                let state = if has_dataset_handle {
+                    let bg = spawn_background_evaluator(
+                        py,
+                        dataset,
+                        BoundaryIouCached::with_arc_cache(dilation_ratio, boundary_cache_arc),
+                        params,
+                        parity,
+                        budget,
+                        config,
+                        rank_id,
+                        record_latency_samples,
+                    )?;
+                    BackgroundEvalState::BoundaryCached(bg)
+                } else {
+                    let bg = spawn_background_evaluator(
+                        py,
+                        dataset,
+                        BoundaryIou { dilation_ratio },
+                        params,
+                        parity,
+                        budget,
+                        config,
+                        rank_id,
+                        record_latency_samples,
+                    )?;
+                    BackgroundEvalState::Boundary(bg)
                 };
-                let kernel = BoundaryIou { dilation_ratio };
-                let ev = maybe_tag_rank(
-                    StreamingEvaluator::new(dataset, kernel, params, parity, budget)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
-                    rank_id,
-                )?;
-                let bg = background::BackgroundEvaluator::spawn_with_options(
-                    ev,
-                    config,
-                    record_latency_samples,
-                )
-                .map_err(|e| eval_error_to_pyerr(py, e))?;
-                (
-                    BackgroundEvalState::Boundary(bg),
-                    array_ingest::ArrayIouType::Boundary,
-                )
+                (state, array_ingest::ArrayIouType::Boundary)
             }
             "keypoints" => {
                 let parsed_sigmas = match sigmas {
@@ -2737,26 +2825,18 @@ impl PyBackgroundEvaluator {
                 let iou_kind = EvalIouType::Keypoints {
                     sigmas: parsed_sigmas.clone(),
                 };
-                let area = area_ranges_for(&iou_kind);
-                let params = OwnedEvaluateParams {
-                    iou_thresholds: iou_thresholds().to_vec(),
-                    area_ranges: area,
-                    max_dets_per_image,
-                    use_cats,
-                    retain_iou,
-                };
-                let kernel = OksSimilarity::new(parsed_sigmas);
-                let ev = maybe_tag_rank(
-                    StreamingEvaluator::new(dataset, kernel, params, parity, budget)
-                        .map_err(|e| PyValueError::new_err(format!("{e}")))?,
-                    rank_id,
-                )?;
-                let bg = background::BackgroundEvaluator::spawn_with_options(
-                    ev,
+                let params = make_params(area_ranges_for(&iou_kind));
+                let bg = spawn_background_evaluator(
+                    py,
+                    dataset,
+                    OksSimilarity::new(parsed_sigmas),
+                    params,
+                    parity,
+                    budget,
                     config,
+                    rank_id,
                     record_latency_samples,
-                )
-                .map_err(|e| eval_error_to_pyerr(py, e))?;
+                )?;
                 (
                     BackgroundEvalState::Keypoints(bg),
                     array_ingest::ArrayIouType::Keypoints,
