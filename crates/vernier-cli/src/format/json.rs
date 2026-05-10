@@ -49,7 +49,7 @@ struct SchemaV1<'a> {
     max_dets: &'a [usize],
     /// Effective `use_cats`.
     use_cats: bool,
-    /// One entry per [`vernier_core::StatLine`] in plan order.
+    /// One entry per [`vernier_core::summarize::StatLine`] in plan order.
     lines: Vec<LineV1<'a>>,
     /// Numeric values in plan order — duplicated alongside `lines` so
     /// pycocotools-trained tooling gets a one-line port (per ADR-0015

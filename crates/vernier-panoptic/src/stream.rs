@@ -33,7 +33,7 @@ use crate::parity::ParityMode;
 use crate::summarize::{summarize_from_acc, PanopticSummary};
 
 /// Streaming panoptic-quality evaluator. Mirrors
-/// [`vernier_core::stream::StreamingEvaluator`]'s lifecycle for the
+/// `vernier_core::stream::StreamingEvaluator`'s lifecycle for the
 /// PQ paradigm: construct, [`update`](Self::update) per image,
 /// [`snapshot`](Self::snapshot) (non-consuming) or
 /// [`finalize`](Self::finalize) (consuming) to read the

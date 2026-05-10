@@ -4,8 +4,8 @@
 //! [`super::error_decomposition_bbox`]. Mirrors the borrow-shape of
 //! [`crate::EvaluateParams`]: the IoU / recall / area-range slices live
 //! on the caller and are borrowed for the duration of the call so the
-//! same canonical [`crate::iou_thresholds`] / [`crate::recall_thresholds`]
-//! / [`crate::AreaRange::coco_default`] tables can be reused across many
+//! same canonical [`crate::parity::iou_thresholds`] / [`crate::parity::recall_thresholds`]
+//! / [`crate::evaluate::AreaRange::coco_default`] tables can be reused across many
 //! TIDE invocations without reallocating.
 //!
 //! Defaults are not provided through `Default::default()`: per ADR-0022,
@@ -36,11 +36,11 @@ pub struct TideParams<'a> {
     /// Both bins are structurally empty).
     pub use_cats: bool,
     /// IoU thresholds for the AP ladder used by every accumulate pass.
-    /// Use [`crate::iou_thresholds`] for the canonical 10-point COCO
+    /// Use [`crate::parity::iou_thresholds`] for the canonical 10-point COCO
     /// ladder.
     pub iou_thresholds: &'a [f64],
     /// Recall thresholds for AP integration. Use
-    /// [`crate::recall_thresholds`] for the canonical 101-point grid.
+    /// [`crate::parity::recall_thresholds`] for the canonical 101-point grid.
     pub recall_thresholds: &'a [f64],
     /// Area ranges used by the accumulate passes. The orchestrator
     /// reads the `all` bucket only (TIDE binning is area-agnostic);

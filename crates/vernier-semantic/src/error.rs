@@ -1,7 +1,7 @@
 //! Typed errors raised by the semantic-segmentation evaluation surface.
 //!
 //! Mirrors the structured-variant pattern of
-//! [`vernier_panoptic::error::PanopticError`] and
+//! `vernier_panoptic::error::PanopticError` and
 //! [`vernier_core::error::EvalError`]: every error carries enough
 //! context for the FFI layer to surface a Python exception with
 //! attributes the user can lift programmatically (image id, class id,
@@ -40,7 +40,7 @@ impl fmt::Display for DupSide {
     }
 }
 
-/// COCO image id. Mirrors [`vernier_panoptic::dataset::ImageId`] in
+/// COCO image id. Mirrors `vernier_panoptic::dataset::ImageId` in
 /// width so the cross-crate FFI surface uses the same integer type.
 pub type ImageId = i64;
 

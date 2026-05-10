@@ -4,7 +4,7 @@
 //! Parallel to [`vernier_core::parity`] (pycocotools),
 //! [`vernier_core::boundary_parity`] (boundary-IoU),
 //! [`vernier_core::lvis_parity`] (LVIS), and
-//! [`vernier_panoptic::parity`] (panopticapi): same role (single home
+//! `vernier_panoptic::parity` (panopticapi): same role (single home
 //! for parity-contract knobs), different oracles. Each subsystem's
 //! lifecycle is intentionally decoupled per ADR-0028 §"Parity
 //! strategy".
@@ -23,7 +23,7 @@
 //! PR-B7. Drift between any constant here and `VENDORING.md` is a
 //! build failure — see the unit tests below.
 //!
-//! Unlike [`vernier_panoptic::parity::ParityMode`] (which duplicates
+//! Unlike `vernier_panoptic::parity::ParityMode` (which duplicates
 //! the enum because `vernier-panoptic ⊥ vernier-core` per ADR-0025),
 //! this module **re-exports** [`vernier_core::parity::ParityMode`]
 //! per ADR-0028 §"Workspace and dependency direction". Semantic eval

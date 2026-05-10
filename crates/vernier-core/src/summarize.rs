@@ -42,7 +42,7 @@ pub(crate) const IOU_LOOKUP_TOL: f64 = 1e-12;
 /// [`AreaRng::from_static`] for `&'static str` labels.
 ///
 /// The *bounds* that turn an annotation's area into a bucket index
-/// live upstream, on the orchestrator that builds [`crate::PerImageEval`]
+/// live upstream, on the orchestrator that builds [`crate::accumulate::PerImageEval`]
 /// cells; the summarizer only consumes the resulting A-axis index.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AreaRng {
@@ -175,7 +175,7 @@ pub enum MaxDetSelector {
 /// K-axis subset selector (ADR-0026 D2). Filters which categories
 /// contribute to a [`StatRequest`]'s mean.
 ///
-/// Frequency buckets are *not* a [`crate::Breakdown`] axis — they
+/// Frequency buckets are *not* a [`crate::breakdown::Breakdown`] axis — they
 /// are a category-subset selector, the K-axis equivalent of an area
 /// bucket. The discriminated form keeps frequency-keyed (LVIS) and
 /// id-keyed (per-supercategory, ablation subsets) intents cleanly
@@ -193,7 +193,8 @@ pub enum CategoryFilter {
     /// No filter — every category contributes (the COCO default).
     All,
     /// Include only categories whose [`Frequency`] tag matches. Quirk
-    /// **AB3**: empty after the [`-1`-sentinel](mean_slice) drop yields
+    /// **AB3**: empty after the `-1`-sentinel drop (handled internally
+    /// by the summarizer) yields
     /// `-1.0`, not `0.0` or `nan` (lvis-api's `eval.py:441-442`).
     Frequency(Frequency),
     /// Explicit subset: include only categories whose id is in the
@@ -205,7 +206,7 @@ pub enum CategoryFilter {
     /// is the group label; resolution happens at summarize time
     /// against the configured grouping.
     ///
-    /// Unlike [`Frequency`] / [`ByIds`], this variant does *not*
+    /// Unlike [`Frequency`](Self::Frequency) / [`ByIds`](Self::ByIds), this variant does *not*
     /// require LVIS context — it routes through the standard
     /// summarizer with the breakdown reference passed in via the
     /// non-LVIS context shim.
@@ -231,7 +232,8 @@ pub struct StatRequest {
     /// AP or AR.
     pub metric: Metric,
     /// `None` averages across the IoU ladder; `Some(t)` pins one row.
-    /// Looked up against `iou_thresholds` within [`IOU_LOOKUP_TOL`] at
+    /// Looked up against `iou_thresholds` within an internal absolute
+    /// tolerance (≈1e-9) at
     /// summarize time; values not on the ladder produce
     /// [`EvalError::InvalidConfig`].
     pub iou_threshold: Option<f64>,

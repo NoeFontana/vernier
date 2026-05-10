@@ -78,8 +78,8 @@ pub struct PqImageReport {
 ///
 /// `gt_remap` and `dt_remap` translate raw segment ids to row/col
 /// indices. Two backends mirror the per-image distribution: a
-/// `Vec<u32>`-backed direct lookup when raw ids fit
-/// [`DENSE_LOOKUP_MAX_ID`]; an `FxHashMap`-backed fallback for COCO
+/// `Vec<u32>`-backed direct lookup when raw ids fit a small internal
+/// cap; an `FxHashMap`-backed fallback for COCO
 /// panoptic and other RGB-encoded id spaces where raw ids exceed
 /// the cap.
 #[derive(Debug, Clone)]

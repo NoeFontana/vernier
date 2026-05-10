@@ -6,9 +6,10 @@
 //! here are the seam.
 //!
 //! Encode and decode are routed through [`crate::envelope::encode`]
-//! and [`crate::envelope::decode`] respectively, both of which take
-//! the body archive bytes as already-rkyv-archived `&[u8]` so this
-//! crate never touches paradigm-specific rkyv generics.
+//! and [`crate::envelope::with_validated_envelope`] respectively, both
+//! of which take the body archive bytes as already-rkyv-archived
+//! `&[u8]` so this crate never touches paradigm-specific rkyv
+//! generics.
 
 /// Paradigm discriminator carried in the wire envelope header.
 ///
@@ -32,7 +33,7 @@ pub enum ParadigmKind {
 impl ParadigmKind {
     /// Map a wire byte back to the typed enum. Returns `None` if the
     /// byte is unknown — the receiver surfaces this as
-    /// [`PartialError::Format`] with kind
+    /// [`PartialError::Format`](crate::error::PartialError::Format) with kind
     /// [`crate::error::PartialFormatErrorKind::ParadigmMismatch`].
     pub fn from_u8(b: u8) -> Option<Self> {
         match b {
@@ -51,7 +52,7 @@ impl ParadigmKind {
 
 /// Receiving rank's expectation of what a partial should look like.
 /// Each paradigm builds one from its own (dataset, params, parity_mode,
-/// evaluator config) and passes it to [`crate::envelope::decode`].
+/// evaluator config) and passes it to [`crate::envelope::with_validated_envelope`].
 ///
 /// Validation is paradigm-agnostic byte compare except for
 /// `shape_fingerprint`, where the receiver supplies its own values

@@ -62,16 +62,15 @@ jobs:
       - name: cargo test --doc
         run: cargo test --doc --workspace --exclude vernier-ffi
 
-  # Builds rustdoc with the same `--cfg docsrs` flag docs.rs uses, so
-  # broken intra-doc links and feature-gate breakage show up in PR CI
-  # rather than at release time on docs.rs. Currently runs without
-  # `-D warnings`; once the existing warning backlog is paid down, the
-  # gate flips to deny (tracked in a follow-up PR).
+  # Builds rustdoc with the same `--cfg docsrs` flag docs.rs uses,
+  # under `-D warnings` so broken intra-doc links and feature-gate
+  # breakage fail the PR rather than slipping through to docs.rs at
+  # release time.
   docs-rust:
     name: docs (rust)
     runs-on: ubuntu-latest
     env:
-      RUSTDOCFLAGS: "--cfg docsrs"
+      RUSTDOCFLAGS: "-D warnings --cfg docsrs"
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable

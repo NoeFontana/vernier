@@ -150,7 +150,7 @@ pub enum EvalError {
     },
 
     /// Partial wire-format header / framing rejected by
-    /// [`crate::distributed::validate_partial`] (ADR-0031). The `kind`
+    /// [`vernier_partial::with_validated_envelope`] (ADR-0031). The `kind`
     /// names which structural check tripped — magic, version, CRC,
     /// kernel discriminator, grid dims, or rkyv archive validation.
     #[error("partial wire format rejected: {kind}")]

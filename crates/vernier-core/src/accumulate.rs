@@ -2,7 +2,7 @@
 //!
 //! Mirrors `pycocotools.cocoeval.COCOeval.accumulate` (cocoeval.py
 //! lines 315-420). Inputs come from the upstream matching engine
-//! ([`crate::match_image`]) packaged as one [`PerImageEval`] per
+//! (the [`crate::matching`] engine) packaged as one [`PerImageEval`] per
 //! `(category, areaRange, image)` cell; outputs are the
 //! `(T, R, K, A, M)` precision and `(T, K, A, M)` recall tensors that
 //! the summarizer slices into the final 12 stats.
@@ -33,10 +33,10 @@
 //!   flag is set — both B6 (matched-to-ignore) and B7 (out-of-area
 //!   unmatched) are folded into `dt_ignore` upstream.
 //! - **C8** (`aligned`): precision denominator uses
-//!   [`PARITY_EPS`](crate::PARITY_EPS) (= `f64::EPSILON`), bit-equal to
+//!   [`crate::parity::PARITY_EPS`] (= `f64::EPSILON`), bit-equal to
 //!   `np.spacing(1)`.
 //! - **L1, L2** (`strict`): `iou_thresholds` and `recall_thresholds`
-//!   come from [`crate::iou_thresholds`] / [`crate::recall_thresholds`]
+//!   come from [`crate::parity::iou_thresholds`] / [`crate::parity::recall_thresholds`]
 //!   and are linspace-built; the accumulator does not assume their
 //!   values, only their lengths.
 //!
@@ -53,7 +53,8 @@ use crate::parity::{argsort_score_desc, ParityMode, PARITY_EPS};
 /// Per `(image, category, areaRange)` slice of evaluation data, in the
 /// shape the accumulator consumes.
 ///
-/// Built by the orchestrator from a [`crate::MatchResult`] plus the
+/// Built by the orchestrator from a `MatchResult` (private to the
+/// [`crate::matching`] module) plus the
 /// per-DT areas needed to apply quirk **B7**. Field orders mirror the
 /// matching engine's *sorted* internal orders: `dt_*` rows are
 /// score-desc (stable mergesort), `gt_ignore` is ignore-asc.
@@ -80,11 +81,11 @@ pub struct PerImageEval {
 /// matching pycocotools' flat indexing of `evalImgs`.
 #[derive(Debug, Clone, Copy)]
 pub struct AccumulateParams<'p> {
-    /// IoU thresholds, length `T`. Use [`crate::iou_thresholds`] for
+    /// IoU thresholds, length `T`. Use [`crate::parity::iou_thresholds`] for
     /// the canonical 10-point COCO ladder.
     pub iou_thresholds: &'p [f64],
     /// Recall integration thresholds, length `R` (typically 101). Use
-    /// [`crate::recall_thresholds`].
+    /// [`crate::parity::recall_thresholds`].
     pub recall_thresholds: &'p [f64],
     /// Per-image maxDet caps, length `M`. Pycocotools defaults to
     /// `[1, 10, 100]`. The matching engine should be invoked with the

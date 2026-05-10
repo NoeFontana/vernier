@@ -32,7 +32,7 @@
 //! pycocotools treats `iscrowd=1` (and the optional `ignore` field)
 //! GTs as silent: a DT matched to one is dropped from the FP/TP count;
 //! an unmatched ignore-GT is **not** a missed GT. Per ADR-0023's
-//! recommendation, the side-pass storage [`CrossClassIous`] only
+//! recommendation, the side-pass storage [`crate::tables::CrossClassIous`] only
 //! carries category indices and an opaque `(D, G)` matrix — no
 //! per-column ignore flag — so this module recomputes the per-image
 //! GT-annotation indices via [`crate::dataset::EvalDataset::ann_indices_for_image`]

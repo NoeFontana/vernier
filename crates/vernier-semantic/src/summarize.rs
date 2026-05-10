@@ -126,8 +126,8 @@ pub struct SummarizeOptions<'a> {
 
 /// Top-level semantic-evaluation result.
 ///
-/// Sibling to [`vernier_core::summary::Summary`] (instance) and
-/// [`vernier_panoptic::summarize::PanopticSummary`] (panoptic) per
+/// Sibling to [`vernier_core::summarize::Summary`] (instance) and
+/// `vernier_panoptic::summarize::PanopticSummary` (panoptic) per
 /// ADR-0028 §"Public Python surface". Carries the four headline
 /// scalars on top, the per-class breakdown, and the confusion matrix
 /// itself as a first-class output (downstream tools — calibration,

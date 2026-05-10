@@ -89,11 +89,11 @@ use crate::similarity::{BboxIou, BoundaryIou, SegmIou};
 /// to pin a defensible kernel-name string into the [`TideConfig`] and
 /// keep the discriminated entry-point list short for FFI registration.
 ///
-/// 1. Runs [`evaluate_with_retention`] to produce the standard
-///    [`crate::EvalGrid`] *and* the cross-class IoU side-pass output
-///    in one call.
-/// 2. Computes baseline mAP via the local [`compute_map`] helper
-///    (oracle-faithful semantics; intentionally not [`crate::summarize_with`]
+/// 1. Runs the retention-enabled pass that produces the standard
+///    [`crate::evaluate::EvalGrid`] *and* the cross-class IoU side-pass
+///    output in one call.
+/// 2. Computes baseline mAP via a local helper (oracle-faithful
+///    semantics; intentionally not [`crate::summarize::summarize_with`]
 ///    — see the helper's doc for the divergence).
 /// 3. Walks bin assignment ([`assign_bins`]) using the cross-class
 ///    storage for `iou_same` / `iou_cross`.
@@ -249,7 +249,7 @@ pub fn error_decomposition_segm(
 /// on [`TideParams`] so the kernel-name → kernel-config coupling lives
 /// in this wrapper instead of leaking into the kernel-generic
 /// `TideParams`. The cached-eval path
-/// ([`crate::evaluate_boundary_cached`]) is intentionally not used
+/// ([`crate::evaluate::evaluate_boundary_cached`]) is intentionally not used
 /// here: TIDE re-evaluates the same dataset eight times under one
 /// process; the un-cached kernel re-derives bands per call but avoids
 /// threading a [`crate::similarity::BoundaryGtCache`] through the

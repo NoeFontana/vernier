@@ -1,8 +1,8 @@
 //! Pinned numerical constants for the panoptic evaluation subsystem.
 //!
-//! Parallel to [`vernier_core::parity`] (pycocotools),
-//! [`vernier_core::boundary_parity`] (boundary-IoU), and
-//! [`vernier_core::lvis_parity`] (LVIS): same role (single home for
+//! Parallel to `vernier_core::parity` (pycocotools),
+//! `vernier_core::boundary_parity` (boundary-IoU), and
+//! `vernier_core::lvis_parity` (LVIS): same role (single home for
 //! parity-contract knobs), different oracle. Each subsystem's lifecycle
 //! is intentionally decoupled per ADR-0025 §"Parity strategy".
 //!
@@ -19,7 +19,7 @@
 /// Three-tier parity mode (per ADR-0002 vocabulary, scoped to panoptic).
 ///
 /// Locally duplicated rather than imported from
-/// [`vernier_core::parity::ParityMode`] because ADR-0025 declares
+/// `vernier_core::parity::ParityMode` because ADR-0025 declares
 /// `vernier-panoptic ⊥ vernier-core` (no edge in either direction):
 /// the architectural firewall keeps the AP fold unreachable from PQ
 /// code, structurally enforcing the ADR-0005 invariant. The duplication

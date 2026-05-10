@@ -5,7 +5,7 @@
 //! For the val2017-scale parity workload (5000 images, ~270k px each)
 //! this saves the per-pixel Python-level cast and the GIL-held submit
 //! copy — same pattern panopticapi shipped via
-//! [`vernier_panoptic::decode`] (commit 7e5ba96, 2.75× over the
+//! `vernier_panoptic::decode` (commit 7e5ba96, 2.75× over the
 //! array-input path).
 //!
 //! Single-threaded by design (per the parent-PR no-rayon scope). The

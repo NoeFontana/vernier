@@ -8,11 +8,11 @@
 //! The wire envelope (magic, version, CRC, header validation) lives
 //! in [`vernier_partial`]. This module owns:
 //!
-//! - [`WirePanopticBody`] — the rkyv-archivable per-category PqStat
-//!   accumulator plus the optional per-image deltas (when
+//! - `WirePanopticBody` (private) — the rkyv-archivable per-category
+//!   PqStat accumulator plus the optional per-image deltas (when
 //!   `retain_per_image_deltas=True`) needed to reconstruct strict-
 //!   mode bit-equality across f64 non-associativity.
-//! - [`PanopticMergeAccumulator`] — two paths:
+//! - `PanopticMergeAccumulator` (private) — two paths:
 //!   - **Corrected mode**: sum `per_category` across ranks. Fast, low
 //!     memory, but **not bit-equal** to a batch run because f64
 //!     addition isn't associative; the 4-ULP envelope (ADR-0004)

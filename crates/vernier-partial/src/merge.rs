@@ -3,8 +3,9 @@
 //!
 //! Each paradigm's outer merge accumulator embeds a
 //! [`BaseMergeAccumulator`] and delegates the policy checks to its
-//! [`Self::ingest_image_ids`] and [`Self::ingest_rank_id`] methods,
-//! then folds in its own paradigm-specific cell store.
+//! [`BaseMergeAccumulator::ingest_image_ids`] and
+//! [`BaseMergeAccumulator::ingest_rank_id`] methods, then folds in its
+//! own paradigm-specific cell store.
 
 use std::collections::{HashMap, HashSet};
 

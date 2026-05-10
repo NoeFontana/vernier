@@ -10,13 +10,13 @@
 //! state ([`PerImageEval`], [`EvalImageMeta`], …) and the rkyv
 //! archived form on the wire.
 //!
-//! Encoding is one rkyv archive of [`WireInstanceBody`] handed to
-//! [`vernier_partial::encode`] alongside a header built via
-//! [`build_header`]. Decoding routes through
+//! Encoding is one rkyv archive of the (private) `WireInstanceBody`
+//! handed to [`vernier_partial::encode`] alongside an internally-built
+//! header. Decoding routes through
 //! [`vernier_partial::with_validated_envelope`] which validates
 //! framing + paradigm + dataset/params/parity hashes and then hands
-//! the body archive bytes to [`InstanceMergeAccumulator::ingest`]
-//! to fold into the merged state.
+//! the body archive bytes to the (private) instance merge
+//! accumulator's `ingest` method to fold into the merged state.
 //!
 //! ## Determinism
 //!
@@ -24,8 +24,8 @@
 //! `HashMap`s; their iteration order is not stable. The wire form
 //! sorts every collection by key before archiving so two encodings
 //! of equal state produce byte-identical blobs. This matters for
-//! [`crate::StreamingEvaluator::checkpoint`] /
-//! [`crate::StreamingEvaluator::restore`] round-trip equality, and
+//! [`crate::stream::StreamingEvaluator::snapshot_to_partial`] /
+//! [`crate::stream::StreamingEvaluator::from_partials`] round-trip equality, and
 //! for cross-rank reproducibility under the strict-tier `(rank_id,
 //! local_position)` ordering reserved in ADR-0031.
 

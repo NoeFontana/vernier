@@ -9,11 +9,11 @@
 //! decision gate calls for.
 //!
 //! The implementation is a thin shim over the regular TIDE pipeline:
-//! it runs [`evaluate_with_retention`] for the cross-class side pass
-//! (ADR-0023), runs [`assign_bins`] (ADR-0021), then walks the
+//! it runs the retention-enabled `evaluate_with` for the cross-class
+//! side pass (ADR-0023), runs [`assign_bins`] (ADR-0021), then walks the
 //! resulting `dt_labels` and copies out the IoU values that bin pick
 //! already computed. No re-walk through the kernel; the iou values
-//! ride along on [`DtBinLabel`] for free.
+//! ride along on [`DtBinLabel`](super::DtBinLabel) for free.
 
 use crate::dataset::{CocoDataset, CocoDetections};
 use crate::error::EvalError;

@@ -10,9 +10,9 @@
 //! The wire envelope (magic, version, CRC, header validation) lives
 //! in [`vernier_partial`]. This module owns:
 //!
-//! - [`WireSemanticBody`] — the rkyv-archivable confusion matrix +
-//!   per-image metadata.
-//! - [`SemanticMergeAccumulator`] — the merge fold. Confusion-matrix
+//! - `WireSemanticBody` (private) — the rkyv-archivable confusion
+//!   matrix + per-image metadata.
+//! - `SemanticMergeAccumulator` (private) — the merge fold. Confusion-matrix
 //!   sum is integer-additive (commutative + associative), so strict-
 //!   mode merge is **unconditionally bit-equal** to a batch run over
 //!   the union (no `(score, rank_id, local_position)` tiebreak
