@@ -66,6 +66,11 @@ from vernier._core import (
 )
 from vernier._tables import arrow_to_dataframe
 from vernier._types import (
+    CategoryFilter,
+    CategoryFilterAll,
+    CategoryFilterByGrouping,
+    CategoryFilterByIds,
+    CategoryFilterFrequency,
     InvalidEvalParams,
     InvalidSemanticParams,
     ParityMode,
@@ -91,6 +96,11 @@ __all__ = [
     "PASCAL_VOC_N_CLASSES",
     "BackgroundEvaluator",
     "Breakdown",
+    "CategoryFilter",
+    "CategoryFilterAll",
+    "CategoryFilterByGrouping",
+    "CategoryFilterByIds",
+    "CategoryFilterFrequency",
     "ClassSemanticStats",
     "ConfusionMatrix",
     "Dataset",

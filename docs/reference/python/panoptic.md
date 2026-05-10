@@ -11,6 +11,10 @@ payload (segment id maps + segment-info JSON).
 
 ## Type aliases
 
+::: vernier.panoptic.CategoryFilter
+    options:
+      heading_level: 3
+
 ::: vernier.panoptic.ParityMode
     options:
       heading_level: 3

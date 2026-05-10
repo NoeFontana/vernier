@@ -12,6 +12,10 @@ common public datasets.
 
 ## Type aliases
 
+::: vernier.semantic.CategoryFilter
+    options:
+      heading_level: 3
+
 ::: vernier.semantic.ParityMode
     options:
       heading_level: 3

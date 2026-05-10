@@ -200,15 +200,28 @@ pub enum CategoryFilter {
     /// list. Sorted ascending for stable membership tests; duplicates
     /// are ignored.
     ByIds(Vec<CategoryId>),
+    /// Include only categories that belong to the named group of the
+    /// active [`ClassGroupBreakdown`] (ADR-0041 / ADR-0042). The string
+    /// is the group label; resolution happens at summarize time
+    /// against the configured grouping.
+    ///
+    /// Unlike [`Frequency`] / [`ByIds`], this variant does *not*
+    /// require LVIS context — it routes through the standard
+    /// summarizer with the breakdown reference passed in via the
+    /// non-LVIS context shim.
+    ///
+    /// [`ClassGroupBreakdown`]: crate::breakdown::ClassGroupBreakdown
+    ByGrouping(Cow<'static, str>),
 }
 
 impl CategoryFilter {
     /// `true` if this filter requires the K-axis context (frequency
-    /// map or id ordering) — i.e., everything except [`Self::All`].
-    /// Used by [`summarize_with`] to reject filters it cannot
-    /// resolve.
+    /// map or id ordering) — i.e., [`Self::Frequency`] or
+    /// [`Self::ByIds`]. [`Self::All`] and [`Self::ByGrouping`] are
+    /// resolvable without LVIS context (the latter via the
+    /// `ClassGroupBreakdown` reference passed alongside).
     pub fn needs_lvis_context(&self) -> bool {
-        !matches!(self, Self::All)
+        matches!(self, Self::Frequency(_) | Self::ByIds(_))
     }
 }
 
@@ -657,6 +670,13 @@ fn resolve_category_filter(
                     .collect(),
             ))
         }
+        CategoryFilter::ByGrouping(label) => Err(EvalError::InvalidConfig {
+            detail: format!(
+                "CategoryFilter::ByGrouping({label:?}) must be resolved to ByIds at the \
+                 evaluator boundary before reaching the kernel summarizer (ADR-0041 / 0042). \
+                 Resolution maps the group label against the active ClassGroupBreakdown."
+            ),
+        }),
     }
 }
 
