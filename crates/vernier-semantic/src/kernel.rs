@@ -9,7 +9,7 @@
 //! Confusion matrices are additively aggregable across images, which
 //! makes streaming evaluation a thin wrapper (ADR-0013 reuse): the
 //! per-image accumulator folds straight into a global matrix.
-//! [`crate::summarize::evaluate`] derives the seven headline metrics
+//! [`crate::summarize::summarize`] derives the seven headline metrics
 //! from the global matrix at finalize time.
 //!
 //! **Numerical layout.** Cell counts are `u64`. Worst case fits

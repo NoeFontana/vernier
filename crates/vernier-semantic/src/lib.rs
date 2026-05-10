@@ -1,7 +1,7 @@
 //! Semantic-segmentation evaluation for vernier (ADR-0028).
 //!
-//! This crate is a sibling to [`vernier-core`] (instance evaluation,
-//! AP fold) and [`vernier-panoptic`] (panoptic-quality). Unlike
+//! This crate is a sibling to [`vernier_core`] (instance evaluation,
+//! AP fold) and `vernier-panoptic` (panoptic-quality). Unlike
 //! `vernier-panoptic`, which is structurally independent of
 //! `vernier-core` per ADR-0025, this crate **depends on
 //! `vernier-core`** for [`vernier_core::parity::ParityMode`], the
@@ -19,7 +19,7 @@
 //! matrix accumulator, not a per-detection matching loop.
 //!
 //! The public Rust surface is the source of truth for vernier's
-//! semantic-mIoU semantics. The [`vernier-ffi`] crate exposes it to
+//! semantic-mIoU semantics. The `vernier-ffi` crate exposes it to
 //! Python as `vernier.semantic.Evaluator` and friends.
 //!
 //! See [ADR-0028](../../docs/adr/0028-sem-seg.md) for the design
@@ -63,7 +63,7 @@ pub use summarize::{
 /// Library version string. Useful for parity tracing in fixtures and
 /// for debugging mismatches between Rust and Python sides of the FFI
 /// boundary. Mirrors [`vernier_core::VERSION`] and
-/// [`vernier_panoptic::VERSION`] in shape.
+/// `vernier_panoptic::VERSION` in shape.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(test)]

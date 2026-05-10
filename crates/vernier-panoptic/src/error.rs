@@ -1,6 +1,6 @@
 //! Typed errors raised by the panoptic evaluation surface.
 //!
-//! Mirrors the structured-variant pattern of [`vernier_core::error::EvalError`]:
+//! Mirrors the structured-variant pattern of `vernier_core::error::EvalError`:
 //! every error carries enough context for the FFI layer to surface a
 //! Python exception with attributes the user can lift programmatically
 //! (image id, segment id, gt/dt shapes, etc.). Catch-all `String`
