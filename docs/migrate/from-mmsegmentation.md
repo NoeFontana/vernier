@@ -5,17 +5,15 @@ vernier ships first-class semantic-segmentation evaluation under
 path from `mmsegmentation`'s `IoUMetric`. Audience: anyone moving an
 existing semantic-segmentation evaluation pipeline onto vernier.
 
-> **Status — provisional within the patch line.** vernier's semantic
-> surface is functional and tested against hand-computed fixtures, but
-> the strict-mode oracle env (vendored `mmsegmentation` at a frozen
-> commit SHA) is still landing. Until that arrives,
-> `parity_mode="strict"` produces mmsegmentation-shaped numbers but is
-> not yet pinned to an external oracle run. The
-> [`docs/engineering/sem-seg-quirks.md`](../engineering/sem-seg-quirks.md)
-> survey enumerates the `(quirk, oracle) → mode` cells the eventual
-> harness verifies. See the
+> **Status.** vernier's semantic surface is functional and is being
+> calibrated against a vendored `mmsegmentation` `IoUMetric` per
+> [ADR-0036](../adr/0036-vendor-mmsegmentation-ioumetric.md)
+> (still `proposed` — vendored bytes + smoke harness landed; per-quirk
+> strict-mode parity claims are a follow-up). See
 > [README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation)
-> matrix for the per-paradigm picture.
+> for the matrix and
+> [`docs/engineering/sem-seg-quirks.md`](../engineering/sem-seg-quirks.md)
+> for the `(quirk, oracle) → mode` dispositions.
 
 ## TL;DR — what to change
 

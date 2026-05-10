@@ -11,12 +11,12 @@ oracle.
 
 ```python
 from pathlib import Path
-from vernier.instance import Boundary, Dataset, Evaluator
+from vernier.instance import Boundary, CocoDataset, Evaluator
 
 gt_bytes = Path("instances_val2017.json").read_bytes()
 dt_bytes = Path("detections.json").read_bytes()
 
-dataset = Dataset.from_json(gt_bytes)
+dataset = CocoDataset.from_json(gt_bytes)
 summary = Evaluator(iou=Boundary()).evaluate(dataset, dt_bytes)
 print(summary.stats[0])  # boundary AP
 ```

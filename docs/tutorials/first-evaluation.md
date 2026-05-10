@@ -1,9 +1,17 @@
 # Your first evaluation
 
-This tutorial runs vernier end-to-end on COCO val2017 and prints the
-12-line pycocotools-shaped summary. By the end you will have a
-working evaluation pipeline, know how to read the output, and know
-where to go next.
+This tutorial runs vernier end-to-end on COCO val2017 in the two
+shapes most users start with:
+
+- **Path A — one-shot evaluation from JSON.** Predictions are already
+  serialized to a file. Used for end-of-epoch checkpoints, CI gates,
+  and post-training inspection.
+- **Path B — during a training loop.** A `val_loader` produces
+  predictions step by step; the kernel runs on a worker thread so the
+  training thread does not stall.
+
+Both paths produce the same 12-line `pycocotools`-shaped summary —
+pick the one that matches your harness.
 
 ## Prerequisites
 
@@ -28,7 +36,7 @@ You also need two JSON files:
 These files are not redistributable through this site (COCO terms of
 use); download them locally before continuing.
 
-## Run it
+## Path A — one-shot evaluation from JSON
 
 <!-- needs-coco -->
 ```python
@@ -43,12 +51,43 @@ summary = Evaluator(iou=Bbox()).evaluate(dataset, dt_bytes)
 
 for line in summary.pretty_lines():
     print(line)
-print("AP =", summary.stats[0])
 ```
 
-That's the full evaluation. On a 2024-era laptop this completes in
-a few seconds; the bottleneck is JSON parsing on the GT side, not
-the matching kernel.
+That is the full evaluation. On a 2024-era laptop it completes in a
+few seconds; the bottleneck is JSON parsing on the GT side, not the
+matching kernel. `CocoDataset.from_json(gt_bytes)` parses the GT
+once so subsequent `evaluate(...)` calls reuse the cache
+([ADR-0020](../adr/0020-parsed-once-dataset-handle.md)).
+
+## Path B — during a training loop
+
+`BackgroundEvaluator`
+([ADR-0014](../adr/0014-background-evaluator.md)) runs the matching
+kernel on a worker thread; `submit(detections)` enqueues a batch and
+returns immediately, so the training thread is not blocked.
+
+```python
+from pathlib import Path
+import json
+from vernier.instance import BackgroundEvaluator
+
+gt_bytes = Path("instances_val2017.json").read_bytes()
+
+with BackgroundEvaluator(gt_bytes, iou_type="bbox") as evaluator:
+    for images, _ in val_loader:
+        detections = model(images)  # list[{image_id, category_id, bbox, score}]
+        evaluator.submit(json.dumps(detections).encode())
+    summary = evaluator.finalize()
+
+print("AP =", summary.stats[0], "AP50 =", summary.stats[1])
+```
+
+`submit(detections)` accepts the same loadRes-shaped JSON bytes that
+`evaluate(...)` accepts and blocks if the bounded worker queue is
+full; pass `timeout=` to surface back-pressure as a typed
+`QueueFullError` instead. The full API surface — queue sizing,
+memory budget, array-form ingest, multi-rank — lives in
+[`how-to/background-evaluator.md`](../how-to/background-evaluator.md).
 
 ## What the output means
 
@@ -82,12 +121,13 @@ for the cross-codebase comparison.
   for OKS (ADR-0012). Recipes:
   [`how-to/boundary-iou.md`](../how-to/boundary-iou.md),
   [`how-to/keypoints-oks.md`](../how-to/keypoints-oks.md).
-- **Log AP during training.** End-of-epoch
-  `Evaluator(...).evaluate(...)` is the default. If validation pass
-  timing matters, `BackgroundEvaluator.submit(...)` runs the kernel on
-  a worker thread so the training thread doesn't stall. Tutorial:
-  [`training-loop.md`](training-loop.md).
-- **Migrate from a competing tool.** The TL;DR table in
+- **Tune `BackgroundEvaluator`.** Queue capacity, memory budget,
+  array-form ingest, and the back-pressure contract:
+  [`how-to/background-evaluator.md`](../how-to/background-evaluator.md).
+- **Run multi-rank.** `Evaluator.evaluate_to_partial` per rank +
+  `Evaluator.from_partials` on the head:
+  [`how-to/distributed-eval.md`](../how-to/distributed-eval.md).
+- **Migrate from other tools.** The TL;DR table in
   [`migrate/from-pycocotools.md`](../migrate/from-pycocotools.md)
   maps the `COCOeval(...).evaluate().accumulate().summarize()`
   call sequence onto vernier's `Evaluator(...).evaluate(...)`.

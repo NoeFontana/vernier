@@ -1,7 +1,7 @@
 # TIDE: what it answers, and what it doesn't
 
 vernier ships a TIDE error decomposition (Bolya et al. 2020) via
-`vernier.error_decomposition`. Six bins — Cls, Loc, Both, Dupe, Bkg,
+`vernier.instance.error_decomposition`. Six bins — Cls, Loc, Both, Dupe, Bkg,
 Missed — together account for the gap between a model's headline mAP
 and the perfect-mAP upper bound. The tutorial
 ([`docs/tutorials/debugging-with-tide.md`](../tutorials/debugging-with-tide.md))
@@ -104,9 +104,10 @@ low-confidence ones because they elevate first in the PR curve). A
 high-cost ones." The decomposition is silent on which, and that
 matters when picking the right intervention.
 
-If the distinction matters, read the per-class table when 0.5.x lands
-the per-class drill-down (mentioned in the tutorial), or read the
-confusion matrix output of `vernier.confusion_matrix`. Confusion gives
+If the distinction matters, the per-class TIDE drill-down is the
+right shape (mentioned in the tutorial as a deferred follow-up), or
+read the confusion matrix output of
+`vernier.instance.confusion_matrix`. Confusion gives
 you raw counts of `(true_class, predicted_class)` pairs, which is the
 frequency view; TIDE's Cls bin is the cost view. They answer different
 questions and ideally you read both.
@@ -152,9 +153,9 @@ keypoints (OKS) entirely. The structural reasons:
   literature.
 
 The path forward is a per-keypoint OKS drill-down (a different
-metric, not TIDE-shaped), planned for a future minor release.
-`vernier.error_decomposition(..., iou=Keypoints(...))` raises
-`NotImplementedError` with a pointer to ADR-0024 today.
+metric, not TIDE-shaped), tracked as a follow-up to ADR-0024.
+`vernier.instance.error_decomposition(..., iou=Keypoints(...))`
+raises `NotImplementedError` with a pointer to ADR-0024 today.
 
 ## Where the validation comes from
 

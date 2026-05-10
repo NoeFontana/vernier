@@ -15,7 +15,7 @@ provide. For mechanical "rewrite my imports" instructions, see the
 | `panopticapi` | panoptic | The reference | ~1.07× slower | You explicitly need the `pq_compute_*` script outputs unchanged |
 | `lvis-api` | LVIS federated | The reference | Vernier reuses orchestration only | Your tooling depends on the `LVISEval` instance attributes |
 | `boundary-iou-api` | boundary IoU only | The reference | ~20× slower on val2017 perfect-DT | You're running an external evaluation script that loads `boundary_iou.coco_instance_api.COCOeval` by name |
-| `mmsegmentation` | semantic | One of three references vernier targets | Vernier is faster (S3-B mmseg env still landing) | You need the full `mmseg.evaluation` registry surface (it's a training framework, not just an evaluator) |
+| `mmsegmentation` | semantic | One of three references vernier targets | Vernier-only baseline today; cross-impl bench externally blocked | You need the full `mmseg.evaluation` registry surface (it's a training framework, not just an evaluator) |
 
 Numbers above reference the [benchmarks page](benchmarks.md) and the
 [engineering benchmarking notes](https://github.com/NoeFontana/vernier/tree/main/docs/engineering/benchmarking).
@@ -155,11 +155,11 @@ calibrates against (the other two are
 and the Pascal VOC / ADE20K reference scripts).
 
 [vernier-semantic](https://github.com/NoeFontana/vernier/tree/main/crates/vernier-semantic)
-ships per-class IoU, mIoU, FWIoU, pAcc, and mAcc. The S3-B
-mmsegmentation environment that closes the strict-mode oracle loop is
-still landing; until it does, parity is asserted against in-tree
-synthetic fixtures
-([ADR-0028](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0028-sem-seg.md)).
+ships per-class IoU, mIoU, FWIoU, pAcc, and mAcc. The vendored oracle
+harness lands under
+[ADR-0036](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0036-vendor-mmsegmentation-ioumetric.md)
+(still `proposed`); per-paradigm parity status lives in
+[README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation).
 
 **Pick `mmsegmentation` instead** when you need the broader training
 framework: model registry, training loop, dataset pipelines, config

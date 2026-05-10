@@ -3,12 +3,11 @@
 A parity-preserving COCO-style evaluator for instance segmentation, panoptic
 segmentation, boundary IoU, OKS keypoints, semantic segmentation, and LVIS
 federated evaluation. Bit-exact against `pycocotools==2.0.11`, `panopticapi`,
-and `lvis-api` in strict parity mode; semantic mIoU is **provisional** within
-the patch line until the vendored `mmsegmentation` oracle lands. See the
-per-paradigm matrix in the
+and `lvis-api` in strict parity mode; semantic mIoU is calibrated against
+a vendored `mmsegmentation` `IoUMetric`. See the per-paradigm matrix in the
 [README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation)
-for the full picture, plus a documented quirks survey for every place the
-reference implementations disagree with themselves.
+for the full per-paradigm picture, plus a documented quirks survey for every
+place the reference implementations disagree with themselves.
 
 ## Why vernier
 
