@@ -15,6 +15,9 @@ alongside the ADR-0039 distributed-eval phase.
 
 from __future__ import annotations
 
+import json
+
+import numpy as np
 import pytest
 
 from vernier.panoptic import (
@@ -22,8 +25,10 @@ from vernier.panoptic import (
     CategoryFilterByGrouping,
     CategoryFilterByIds,
     CategoryFilterFrequency,
+    Dataset,
     Evaluator,
     InvalidPanopticParams,
+    Predictions,
     StuffThingPartition,
 )
 
@@ -160,3 +165,104 @@ def test_any_custom_field_marks_evaluator_as_custom() -> None:
     assert Evaluator(class_grouping=g)._has_custom_class_params()
     p = StuffThingPartition(stuff=frozenset([1]), things=frozenset([2]))
     assert Evaluator(stuff_thing_partition=p)._has_custom_class_params()
+
+
+# --- end-to-end runs with custom params -------------------------------------
+
+
+def _make_two_class_pair() -> tuple[Dataset, Predictions]:
+    """4x4 fixture with two perfectly-matched segments. Category 1 is
+    a thing, category 2 is stuff (per the categories JSON below).
+    Predictions exactly match GT — every metric should be 1.0 unless
+    a custom param changes the matching."""
+    gt_map = np.array([[1, 1, 2, 2], [1, 1, 2, 2], [1, 1, 2, 2], [1, 1, 2, 2]], dtype=np.uint32)
+    dt_map = gt_map.copy()
+    gt_segs = json.dumps(
+        {
+            "1": [
+                {"id": 1, "category_id": 1, "iscrowd": 0, "area": 8},
+                {"id": 2, "category_id": 2, "iscrowd": 0, "area": 8},
+            ]
+        }
+    ).encode()
+    dt_segs = json.dumps(
+        {
+            "1": [
+                {"id": 1, "category_id": 1, "area": 8},
+                {"id": 2, "category_id": 2, "area": 8},
+            ]
+        }
+    ).encode()
+    cats = json.dumps([{"id": 1, "isthing": True}, {"id": 2, "isthing": False}]).encode()
+    gt = Dataset.from_arrays({1: gt_map}, gt_segs, cats)
+    dt = Predictions.from_arrays({1: dt_map}, dt_segs)
+    return gt, dt
+
+
+def test_evaluate_default_params_unchanged() -> None:
+    """No custom fields → kernel runs; baseline output intact."""
+    gt, dt = _make_two_class_pair()
+    summary = Evaluator().evaluate(gt, dt)
+    assert summary.pq == pytest.approx(1.0)
+    # per_group is empty when no grouping configured.
+    assert summary.per_group() == {}
+
+
+def test_evaluate_with_class_grouping_returns_per_group() -> None:
+    gt, dt = _make_two_class_pair()
+    g = Breakdown.from_class_groups("g", [("things_only", [1]), ("stuff_only", [2])])
+    summary = Evaluator(class_grouping=g).evaluate(gt, dt)
+    per_group = summary.per_group()
+    assert set(per_group.keys()) == {"things_only", "stuff_only"}
+    # Both groups have a single perfectly-matched category → PQ=1.0.
+    assert per_group["things_only"].pq == pytest.approx(1.0)
+    assert per_group["stuff_only"].pq == pytest.approx(1.0)
+    assert per_group["things_only"].member_category_ids == [1]
+
+
+def test_evaluate_with_category_filter_restricts_global_pq() -> None:
+    """Filter to category 1 only → global PQ averages only its row."""
+    gt, dt = _make_two_class_pair()
+    summary = Evaluator(
+        category_filter=CategoryFilterByIds(ids=frozenset([1])),
+        things_stuff_split=False,
+    ).evaluate(gt, dt)
+    assert summary.pq == pytest.approx(1.0)
+    assert summary.n == 1
+
+
+def test_evaluate_with_stuff_thing_partition_overrides_dataset() -> None:
+    """User-supplied partition flips the things/stuff split. With
+    category 1 marked stuff and category 2 marked things, the buckets
+    are swapped relative to the dataset's own `isthing` flags."""
+    gt, dt = _make_two_class_pair()
+    p = StuffThingPartition(stuff=frozenset([1]), things=frozenset([2]))
+    summary = Evaluator(stuff_thing_partition=p).evaluate(gt, dt)
+    # Both categories perfectly match → both buckets are 1.0; the
+    # override doesn't change the result on a perfect-match fixture
+    # but does change which category lands in which bucket.
+    # n_things should now reflect category 2; n_stuff should reflect
+    # category 1.
+    assert summary.n_things == 1
+    assert summary.n_stuff == 1
+    assert summary.pq_things == pytest.approx(1.0)
+    assert summary.pq_stuff == pytest.approx(1.0)
+
+
+def test_evaluate_with_pq_iou_threshold_threads_through() -> None:
+    """A threshold of 1.0 + 1ulp is unmatchable; perfect-match fixture
+    falls to all-FN. Pins that the parameter actually reaches the
+    matcher."""
+    gt, dt = _make_two_class_pair()
+    # Threshold > 1.0 makes matching impossible (the gate is `iou >
+    # threshold` and IoU is in [0, 1]).
+    summary = Evaluator(pq_iou_threshold=1.0, things_stuff_split=False).evaluate(gt, dt)
+    assert summary.pq == pytest.approx(0.0)
+
+
+def test_evaluate_to_partial_with_custom_params_raises() -> None:
+    """Streaming kernel plumbing for ADR-0042 custom params is a
+    follow-up; gate at the Python boundary."""
+    e = Evaluator(pq_iou_threshold=0.7)
+    with pytest.raises(InvalidPanopticParams, match="evaluate_to_partial"):
+        e.evaluate_to_partial(iter([]), categories=b"[]", rank_id=0)

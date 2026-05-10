@@ -39,7 +39,10 @@ pub mod tables;
 pub use dataset::{PanopticDataset, PanopticPredictions};
 pub use error::PanopticError;
 pub use parity::ParityMode;
-pub use summarize::{evaluate, ClassPanopticStats, PanopticSummary};
+pub use summarize::{
+    evaluate, evaluate_with_options, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
+    PanopticSummary, SummarizeOptions,
+};
 
 /// Library version string. Useful for parity tracing in fixtures and
 /// for debugging mismatches between Rust and Python sides of the FFI

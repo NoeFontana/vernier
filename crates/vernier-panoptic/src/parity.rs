@@ -61,7 +61,7 @@ pub const PANOPTIC_OFFSET: u64 = 256 * 256 * 256;
 /// (not ≥) — quirk **U7** — and metric-defining: `>` is the pivot
 /// guaranteeing at-most-one-match per GT (U9). Hardcoded in
 /// `panopticapi/evaluation.py:134`.
-pub(crate) const PANOPTIC_IOU_THRESHOLD: f64 = 0.5;
+pub const PANOPTIC_IOU_THRESHOLD: f64 = 0.5;
 
 /// IoU/PQ-equality tolerance applied under
 /// [`ParityMode::Corrected`] when comparing multi-process panopticapi
