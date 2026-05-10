@@ -20,7 +20,7 @@ use crate::dataset::{
     CategoryId, CategoryMeta, ImageEntry, ImageId, PanopticDataset, PanopticPredictions,
 };
 use crate::error::PanopticError;
-use crate::kernel::{pq_image_at_threshold, pq_image_with_id};
+use crate::kernel::pq_image_at_threshold;
 use crate::parity::ParityMode;
 use crate::parity::PANOPTIC_IOU_THRESHOLD;
 
@@ -286,11 +286,7 @@ pub fn evaluate_with_options(
                 .ok_or(PanopticError::MissingPredictionsForImage {
                     image_id: *image_id,
                 })?;
-        let report = if options.pq_iou_threshold.is_some() {
-            pq_image_at_threshold(*image_id, gt_entry, dt_entry, threshold)?
-        } else {
-            pq_image_with_id(*image_id, gt_entry, dt_entry)?
-        };
+        let report = pq_image_at_threshold(*image_id, gt_entry, dt_entry, threshold)?;
         let per_image = attribute_image(gt_entry, dt_entry, &report, mode);
         for (cat, stat) in per_image {
             acc.entry(cat).or_default().add_assign(&stat);
