@@ -126,6 +126,11 @@ for the cross-codebase comparison.
 
 ## Where to go next
 
+- **Tune the evaluator.** `parity_mode`, `max_dets`, `use_cats`,
+  `cast_inputs`, the GT-handle reuse pattern, and how they compose:
+  [`how-to/configure-evaluator.md`](../how-to/configure-evaluator.md).
+  Custom IoU / recall / area grids (ADR-0040) live in
+  [`how-to/custom-evaluation-grids.md`](../how-to/custom-evaluation-grids.md).
 - **Drill into the numbers.** Pass `tables="all"` to
   `evaluate(...)` to get per-image / per-class / per-detection /
   per-pair polars DataFrames. Recipe:
