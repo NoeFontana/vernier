@@ -13,11 +13,9 @@ from pathlib import Path
 
 import vernier
 
-FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
 
-
-def test_context_manager_cleans_up_worker() -> None:
-    gt = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
+def test_context_manager_cleans_up_worker(fixtures_dir: Path) -> None:
+    gt = (fixtures_dir / "perfect_match" / "gt.json").read_bytes()
     try:
         with vernier.instance.BackgroundEvaluator(gt) as ev:
             ev.submit(b"[]")

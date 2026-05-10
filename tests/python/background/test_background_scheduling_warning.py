@@ -19,11 +19,9 @@ from pathlib import Path
 
 import vernier
 
-FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
 
-
-def test_invalid_affinity_warns_once() -> None:
-    gt = (FIXTURES / "perfect_match" / "gt.json").read_bytes()
+def test_invalid_affinity_warns_once(fixtures_dir: Path) -> None:
+    gt = (fixtures_dir / "perfect_match" / "gt.json").read_bytes()
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         ev = vernier.instance.BackgroundEvaluator(gt, worker_affinity=999_999, worker_nice=-20)

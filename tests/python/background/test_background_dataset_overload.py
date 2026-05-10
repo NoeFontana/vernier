@@ -39,8 +39,6 @@ from vernier.instance import (
 
 IouType = Literal["bbox", "segm", "boundary", "keypoints"]
 
-FIXTURES = Path(__file__).parent.parent / "parity" / "fixtures"
-
 _KERNEL_FIXTURES: list[tuple[str, IouKind]] = [
     ("perfect_match", Bbox()),
     ("perfect_match_segm", Segm()),
@@ -65,11 +63,13 @@ def _iou_type_of(iou: IouKind) -> IouType:
 
 @pytest.mark.parity
 @pytest.mark.parametrize(("fixture", "iou"), _KERNEL_FIXTURES)
-def test_background_with_dataset_matches_bytes(fixture: str, iou: IouKind) -> None:
+def test_background_with_dataset_matches_bytes(
+    fixture: str, iou: IouKind, fixtures_dir: Path
+) -> None:
     """Constructing from `CocoDataset` produces the same Summary as bytes."""
     iou_type = _iou_type_of(iou)
-    gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
-    dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
+    gt_bytes = (fixtures_dir / fixture / "gt.json").read_bytes()
+    dt_bytes = (fixtures_dir / fixture / "dt.json").read_bytes()
 
     bg_bytes = BackgroundEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")
     bg_bytes.submit(dt_bytes)
@@ -89,13 +89,15 @@ def test_background_with_dataset_matches_bytes(fixture: str, iou: IouKind) -> No
 
 @pytest.mark.parity
 @pytest.mark.parametrize(("fixture", "iou"), _KERNEL_FIXTURES)
-def test_evaluator_background_factory_matches_direct(fixture: str, iou: IouKind) -> None:
+def test_evaluator_background_factory_matches_direct(
+    fixture: str, iou: IouKind, fixtures_dir: Path
+) -> None:
     """`Evaluator.background(gt)` produces the same Summary as the
     direct `BackgroundEvaluator(...)` constructor with the same kernel
     config."""
     iou_type = _iou_type_of(iou)
-    gt_bytes = (FIXTURES / fixture / "gt.json").read_bytes()
-    dt_bytes = (FIXTURES / fixture / "dt.json").read_bytes()
+    gt_bytes = (fixtures_dir / fixture / "gt.json").read_bytes()
+    dt_bytes = (fixtures_dir / fixture / "dt.json").read_bytes()
     dataset = CocoDataset.from_json(gt_bytes)
 
     bg_direct = BackgroundEvaluator(dataset, iou_type=iou_type, parity_mode="strict")
@@ -114,14 +116,14 @@ def test_evaluator_background_factory_matches_direct(fixture: str, iou: IouKind)
 
 
 @pytest.mark.parity
-def test_boundary_cache_populated_by_background_dataset_path() -> None:
+def test_boundary_cache_populated_by_background_dataset_path(fixtures_dir: Path) -> None:
     """Cache reuse is the headline benefit of ADR-0020. Building a
     `CocoDataset` and running a `BackgroundEvaluator` cycle with
     boundary IoU populates `boundary_cache_len`; running a second
     cycle leaves the count at the same level (no re-derivation).
     """
-    gt_bytes = (FIXTURES / "perfect_match_segm" / "gt.json").read_bytes()
-    dt_bytes = (FIXTURES / "perfect_match_segm" / "dt.json").read_bytes()
+    gt_bytes = (fixtures_dir / "perfect_match_segm" / "gt.json").read_bytes()
+    dt_bytes = (fixtures_dir / "perfect_match_segm" / "dt.json").read_bytes()
     dataset = CocoDataset.from_json(gt_bytes)
 
     assert dataset.boundary_cache_len == 0, (
@@ -150,10 +152,10 @@ def test_boundary_cache_populated_by_background_dataset_path() -> None:
 
 
 @pytest.mark.parity
-def test_segm_cache_populated_by_background_dataset_path() -> None:
+def test_segm_cache_populated_by_background_dataset_path(fixtures_dir: Path) -> None:
     """Same shape as the boundary cache test, on the segm path."""
-    gt_bytes = (FIXTURES / "perfect_match_segm" / "gt.json").read_bytes()
-    dt_bytes = (FIXTURES / "perfect_match_segm" / "dt.json").read_bytes()
+    gt_bytes = (fixtures_dir / "perfect_match_segm" / "gt.json").read_bytes()
+    dt_bytes = (fixtures_dir / "perfect_match_segm" / "dt.json").read_bytes()
     dataset = CocoDataset.from_json(gt_bytes)
 
     assert dataset.segm_cache_len == 0
