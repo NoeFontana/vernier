@@ -758,6 +758,48 @@ class Evaluator:
                 _reject_unknown_iou(self.iou)
         return kwargs
 
+    def background(
+        self,
+        gt: bytes | CocoDataset,
+        *,
+        memory_budget_bytes: int | None = None,
+        queue_capacity: int = 8,
+        worker_affinity: int | None = None,
+        worker_nice: int = 5,
+        shutdown_timeout_seconds: float = 5.0,
+        retain_iou: bool = False,
+        rank_id: int | None = None,
+        record_latency_samples: bool = False,
+    ) -> BackgroundEvaluator:
+        """Build a :class:`BackgroundEvaluator` (ADR-0014, ADR-0020) that
+        shares this evaluator's ``iou``, ``parity_mode``, ``max_dets``,
+        ``use_cats``, and ``cast_inputs``.
+
+        Passing a :class:`CocoDataset` for ``gt`` reuses the parsed-once
+        handle's per-kernel GT-side derivation caches across every
+        ``submit()`` round (ADR-0020). For boundary IoU this collapses
+        the dominant per-epoch cost — building the GT band per
+        annotation — from O(epochs) to O(1). Bbox and keypoints have
+        no GT-side cache today, so the win there is just the JSON
+        parse; segm sits between.
+
+        The five queueing / scheduling knobs mirror the keyword-only
+        parameters on :class:`BackgroundEvaluator`'s constructor.
+        """
+        kwargs = self._streaming_kwargs()
+        return BackgroundEvaluator(
+            gt,
+            memory_budget_bytes=memory_budget_bytes,
+            queue_capacity=queue_capacity,
+            worker_affinity=worker_affinity,
+            worker_nice=worker_nice,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
+            retain_iou=retain_iou,
+            rank_id=rank_id,
+            record_latency_samples=record_latency_samples,
+            **kwargs,
+        )
+
 
 def _normalize_sigmas(
     sigmas: Mapping[int, tuple[float, ...]],

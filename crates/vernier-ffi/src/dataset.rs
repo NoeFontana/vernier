@@ -61,6 +61,20 @@ impl DatasetSnapshot {
             segm_cache: Arc::new(SegmGtCache::new()),
         }
     }
+
+    /// Consume the snapshot and surface its three components for a
+    /// caller that owns the streaming substrate. The streaming
+    /// evaluator takes a `CocoDataset` by value, so we unwrap the
+    /// `Arc` (cheap when our `Arc` is the sole holder — bytes path)
+    /// or clone the inner value (dataset-handle path, where the
+    /// caller-owned `CocoDataset` keeps the original alive).
+    pub(crate) fn into_parts(self) -> (CocoDataset, Arc<BoundaryGtCache>, Arc<SegmGtCache>) {
+        (
+            Arc::unwrap_or_clone(self.gt),
+            self.boundary_cache,
+            self.segm_cache,
+        )
+    }
 }
 
 impl DatasetSnapshot {
@@ -232,6 +246,23 @@ impl PyDataset {
     fn clear_cache(&self) {
         self.boundary_cache.clear();
         self.segm_cache.clear();
+    }
+
+    /// Observability-only: count of GT annotations whose boundary
+    /// band is currently cached (ADR-0020). Useful for debugging or
+    /// tests that need to assert cache reuse; not a stable contract,
+    /// and the value can change shape as new cache slots are added.
+    #[getter]
+    fn boundary_cache_len(&self) -> usize {
+        self.boundary_cache.len()
+    }
+
+    /// Observability-only: count of GT annotations whose segm
+    /// bbox+area derivation is currently cached (ADR-0020). Same
+    /// caveats as [`Self::boundary_cache_len`].
+    #[getter]
+    fn segm_cache_len(&self) -> usize {
+        self.segm_cache.len()
     }
 
     fn __repr__(&self) -> String {

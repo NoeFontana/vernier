@@ -65,22 +65,36 @@ once so subsequent `evaluate(...)` calls reuse the cache
 ([ADR-0014](../adr/0014-background-evaluator.md)) runs the matching
 kernel on a worker thread; `submit(detections)` enqueues a batch and
 returns immediately, so the training thread is not blocked.
+`Evaluator.background(gt)` is the recommended way to construct one —
+it carries the evaluator's `iou` / `parity_mode` configuration onto
+the worker thread, and accepts a `CocoDataset` so the GT-side
+derivation cache (ADR-0020) is reused across every epoch's
+`submit()` rounds.
 
 ```python
 from pathlib import Path
 import json
-from vernier.instance import BackgroundEvaluator
+from vernier.instance import Bbox, CocoDataset, Evaluator
 
-gt_bytes = Path("instances_val2017.json").read_bytes()
+gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
+evaluator = Evaluator(iou=Bbox())
 
-with BackgroundEvaluator(gt_bytes, iou_type="bbox") as evaluator:
-    for images, _ in val_loader:
-        detections = model(images)  # list[{image_id, category_id, bbox, score}]
-        evaluator.submit(json.dumps(detections).encode())
-    summary = evaluator.finalize()
-
-print("AP =", summary.stats[0], "AP50 =", summary.stats[1])
+for epoch in range(num_epochs):
+    with evaluator.background(gt) as bg:
+        for images, _ in val_loader:
+            detections = model(images)  # list[{image_id, category_id, bbox, score}]
+            bg.submit(json.dumps(detections).encode())
+        summary = bg.finalize()
+    print(f"epoch {epoch}: AP =", summary.stats[0], "AP50 =", summary.stats[1])
 ```
+
+For boundary IoU (`Evaluator(iou=Boundary())`) the `CocoDataset` path
+collapses the per-epoch GT-band derivation cost (~36k Chebyshev
+erodes on val2017) from O(epochs) to O(1); for bbox/keypoints the
+benefit is just the one-shot JSON parse. If you don't reuse the GT
+across epochs, pass the bytes directly to
+`BackgroundEvaluator(gt_bytes, iou_type="bbox")` and the constructor
+takes the same one-shot path it always has.
 
 `submit(detections)` accepts the same loadRes-shaped JSON bytes that
 `evaluate(...)` accepts and blocks if the bounded worker queue is

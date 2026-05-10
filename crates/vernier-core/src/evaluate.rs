@@ -100,8 +100,38 @@ use crate::similarity::{
     SegmIou, Similarity,
 };
 use std::collections::{HashMap, HashSet};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use vernier_mask::Rle;
+
+/// Either a borrowed or `Arc`-owned reference to a per-kernel GT cache.
+///
+/// The borrowed variant feeds the one-shot batch entry points
+/// ([`evaluate_boundary_cached`], [`evaluate_segm_cached`]) where the
+/// cache's lifetime trivially exceeds the call. The `Arc` variant feeds
+/// the streaming substrate ([`crate::stream::StreamingEvaluator`]),
+/// where the kernel lives on a worker thread that needs `'static` and
+/// the cache is the same `Arc` the FFI [`crate::CocoDataset`] handle
+/// holds (ADR-0020).
+#[derive(Clone)]
+pub enum GtCacheRef<'a, T: ?Sized> {
+    /// Caller-owned cache passed by reference; lifetime tied to the
+    /// borrow. Used by the batch entry points.
+    Borrowed(&'a T),
+    /// Atomically refcounted cache, shared with the FFI `CocoDataset`
+    /// handle (ADR-0020). Used by streaming so the kernel can be
+    /// `'static`.
+    Owned(Arc<T>),
+}
+
+impl<T: ?Sized> GtCacheRef<'_, T> {
+    /// Borrow the underlying cache irrespective of variant.
+    pub fn get(&self) -> &T {
+        match self {
+            GtCacheRef::Borrowed(r) => r,
+            GtCacheRef::Owned(a) => a.as_ref(),
+        }
+    }
+}
 
 /// Sentinel `category_id` emitted on every cell when `use_cats=false`.
 /// Mirrors pycocotools' `p.catIds = [-1]` collapse (quirk **L4**).
@@ -1111,21 +1141,41 @@ pub fn evaluate_segm_cached(
 fn segm_kernel(gt_cache: Option<&SegmGtCache>) -> SegmIouCached<'_> {
     SegmIouCached {
         scratch: Mutex::new(SegmComputeScratch::new()),
-        gt_cache,
+        gt_cache: gt_cache.map(GtCacheRef::Borrowed),
     }
 }
 
-/// Internal kernel used by [`evaluate_segm`] and
-/// [`evaluate_segm_cached`]: same semantics as [`SegmIou`] but threads
-/// a single [`SegmComputeScratch`] across every `compute` call (so the
-/// dataset-wide pass amortizes per-cell `Vec` allocations across the
-/// ~36 k anns of a val2017 pass) and optionally consults a
-/// [`SegmGtCache`] for cross-call GT bbox+area reuse. Held by
-/// [`Mutex`] to satisfy `Similarity: Send + Sync`; the lock is
+/// Kernel used by [`evaluate_segm`] and [`evaluate_segm_cached`] — same
+/// semantics as [`SegmIou`] but threads a single [`SegmComputeScratch`]
+/// across every `compute` call (so the dataset-wide pass amortizes
+/// per-cell `Vec` allocations across the ~36 k anns of a val2017 pass)
+/// and optionally consults a [`SegmGtCache`] for cross-call GT
+/// bbox+area reuse.
+///
+/// The cache reference is generalised through [`GtCacheRef`] so the same
+/// kernel feeds both the borrowed batch path (`evaluate_segm_cached`)
+/// and the `Arc`-owned streaming path
+/// ([`Self::with_arc_cache`] + [`crate::stream::StreamingEvaluator`]).
+/// Held by [`Mutex`] to satisfy `Similarity: Send + Sync`; the lock is
 /// uncontended in single-threaded use.
-struct SegmIouCached<'a> {
+pub struct SegmIouCached<'a> {
     scratch: Mutex<SegmComputeScratch>,
-    gt_cache: Option<&'a SegmGtCache>,
+    gt_cache: Option<GtCacheRef<'a, SegmGtCache>>,
+}
+
+impl SegmIouCached<'static> {
+    /// Construct a streaming-friendly kernel that owns its GT cache via
+    /// [`Arc`] (ADR-0020). The kernel is `'static`, so a
+    /// [`crate::stream::StreamingEvaluator`] can store it across the
+    /// worker thread's lifetime; the same `Arc` is held by the FFI
+    /// `CocoDataset` handle, so derivations populated on one path are
+    /// visible to the other.
+    pub fn with_arc_cache(cache: Arc<SegmGtCache>) -> Self {
+        Self {
+            scratch: Mutex::new(SegmComputeScratch::new()),
+            gt_cache: Some(GtCacheRef::Owned(cache)),
+        }
+    }
 }
 
 impl Similarity for SegmIouCached<'_> {
@@ -1141,7 +1191,13 @@ impl Similarity for SegmIouCached<'_> {
             .scratch
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        segm_iou_compute(gts, dts, out, &mut scratch, self.gt_cache)
+        segm_iou_compute(
+            gts,
+            dts,
+            out,
+            &mut scratch,
+            self.gt_cache.as_ref().map(GtCacheRef::get),
+        )
     }
 }
 
@@ -1233,22 +1289,48 @@ fn kernel(dilation_ratio: f64, gt_cache: Option<&BoundaryGtCache>) -> BoundaryIo
     BoundaryIouCached {
         dilation_ratio,
         scratch: Mutex::new(BoundaryComputeScratch::new()),
-        gt_cache,
+        gt_cache: gt_cache.map(GtCacheRef::Borrowed),
     }
 }
 
-/// Internal kernel used by [`evaluate_boundary`] and
-/// [`evaluate_boundary_cached`]: same semantics as [`BoundaryIou`] but
-/// threads a single [`BoundaryComputeScratch`] across every `compute`
-/// call (so the dataset-wide pass amortizes per-mask + per-cell
-/// allocations) and optionally consults a [`BoundaryGtCache`] for
-/// cross-call GT band reuse. Held by [`Mutex`] to satisfy
-/// `Similarity: Send + Sync`; the lock is uncontended in
-/// single-threaded use.
-struct BoundaryIouCached<'a> {
+/// Kernel used by [`evaluate_boundary`] and [`evaluate_boundary_cached`]
+/// — same semantics as [`BoundaryIou`] but threads a single
+/// [`BoundaryComputeScratch`] across every `compute` call (so the
+/// dataset-wide pass amortizes per-mask + per-cell allocations) and
+/// optionally consults a [`BoundaryGtCache`] for cross-call GT band
+/// reuse.
+///
+/// The cache reference is generalised through [`GtCacheRef`] so the same
+/// kernel feeds both the borrowed batch path
+/// (`evaluate_boundary_cached`) and the `Arc`-owned streaming path
+/// ([`Self::with_arc_cache`] + [`crate::stream::StreamingEvaluator`]).
+/// Held by [`Mutex`] to satisfy `Similarity: Send + Sync`; the lock is
+/// uncontended in single-threaded use.
+pub struct BoundaryIouCached<'a> {
     dilation_ratio: f64,
     scratch: Mutex<BoundaryComputeScratch>,
-    gt_cache: Option<&'a BoundaryGtCache>,
+    gt_cache: Option<GtCacheRef<'a, BoundaryGtCache>>,
+}
+
+impl BoundaryIouCached<'static> {
+    /// Construct a streaming-friendly kernel that owns its GT cache via
+    /// [`Arc`] (ADR-0020). The kernel is `'static`, so a
+    /// [`crate::stream::StreamingEvaluator`] can store it across the
+    /// worker thread's lifetime; the same `Arc` is held by the FFI
+    /// `CocoDataset` handle, so derivations populated on one path are
+    /// visible to the other.
+    ///
+    /// Aligns the cache to `dilation_ratio` immediately — mismatched
+    /// ratio invalidates prior bands, mirroring
+    /// [`evaluate_boundary_cached`]'s contract.
+    pub fn with_arc_cache(dilation_ratio: f64, cache: Arc<BoundaryGtCache>) -> Self {
+        cache.align_ratio(dilation_ratio);
+        Self {
+            dilation_ratio,
+            scratch: Mutex::new(BoundaryComputeScratch::new()),
+            gt_cache: Some(GtCacheRef::Owned(cache)),
+        }
+    }
 }
 
 impl Similarity for BoundaryIouCached<'_> {
@@ -1270,7 +1352,7 @@ impl Similarity for BoundaryIouCached<'_> {
             dts,
             out,
             &mut scratch,
-            self.gt_cache,
+            self.gt_cache.as_ref().map(GtCacheRef::get),
         )
     }
 }

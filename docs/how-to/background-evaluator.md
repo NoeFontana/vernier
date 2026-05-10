@@ -10,17 +10,26 @@ matching kernel to finish.
 ```python
 from pathlib import Path
 import json
-from vernier.instance import BackgroundEvaluator
+from vernier.instance import Bbox, CocoDataset, Evaluator
 
-gt_bytes = Path("instances_val2017.json").read_bytes()
+gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
+evaluator = Evaluator(iou=Bbox())
 
-with BackgroundEvaluator(gt_bytes, iou_type="bbox") as evaluator:
+with evaluator.background(gt) as bg:
     for images, _ in val_loader:
         detections = model(images)
-        evaluator.submit(json.dumps(detections).encode())
-    summary = evaluator.finalize()
+        bg.submit(json.dumps(detections).encode())
+    summary = bg.finalize()
 print("final AP:", summary.stats[0])
 ```
+
+`Evaluator.background(gt)` carries the evaluator's `iou` /
+`parity_mode` / `max_dets` / `use_cats` / `cast_inputs` onto the
+worker thread; passing a `CocoDataset` reuses the parsed-once GT and
+its per-kernel derivation cache (ADR-0020) — meaningful on segm,
+load-bearing on boundary IoU. If your harness already holds GT JSON
+bytes and you do not reuse the dataset, you can also construct
+directly: `BackgroundEvaluator(gt_bytes, iou_type="bbox")`.
 
 The context-manager form drains the worker queue and joins the
 thread on exit. Without it, call `evaluator.finalize()` directly

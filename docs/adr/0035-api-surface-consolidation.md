@@ -93,8 +93,8 @@ class Evaluator:                 # frozen config dataclass
     def evaluate_to_partial(gt, dt, *, rank_id) -> bytes: ...
     @classmethod
     def from_partials(gt, partials, /, **config) -> Summary: ...
-    # plus paradigm-specific helpers (with_options on instance,
-    # background factory on semantic/panoptic, ...)
+    def background(gt, **knobs) -> BackgroundEvaluator: ...
+    # plus paradigm-specific helpers (with_options on instance, ...)
 
 class BackgroundEvaluator:       # worker-thread wrapper (FFI pyclass)
     def submit(...): ...
@@ -103,6 +103,25 @@ class BackgroundEvaluator:       # worker-thread wrapper (FFI pyclass)
     def finalize_with_tables(...) -> ...
     # plus context-manager + properties
 ```
+
+The instance `Evaluator.background(gt)` factory was added in this ADR
+amendment. Panoptic and semantic Evaluators already exposed
+`.background(...)`; the instance variant closes that asymmetry and
+fulfills ADR-0020's promise that a parsed-once `CocoDataset` handle
+clones one `Arc` into the BackgroundEvaluator's worker thread, so
+GT-side derivations populated by any `Evaluator.evaluate(dataset, ...)`
+or any prior `evaluator.background(dataset)` cycle are visible across
+all subsequent uses of the same dataset. The boundary-IoU GT-band cost
+(~36k Chebyshev erodes on val2017) collapses from O(epochs) to O(1)
+across a training-loop validation pass; segm sees a smaller win;
+bbox/keypoints save only the GT JSON parse (no GT-side cache slot
+today; see ADR-0020 §"Rust core surface").
+
+The instance `BackgroundEvaluator(gt, ...)` constructor accepts the same
+`bytes | CocoDataset` shape directly, mirroring `Evaluator.evaluate`.
+The factory is the recommended entry — it lifts `iou` / `parity_mode` /
+`max_dets` / `use_cats` / `cast_inputs` from the `Evaluator` so they
+are stated once.
 
 `StreamingEvaluator`, `StreamingPanopticEvaluator`,
 `StreamingSemanticEvaluator` are removed from the Python module
@@ -142,7 +161,13 @@ above delegate down to it.
   The DDP recipe in `docs/how-to/distributed-eval.md` no longer
   forces an import the user doesn't need. Three documented-as-biased
   features (running/peek/checkpoint) and one return-type bug exit
-  the public API.
+  the public API. ADR-0020's parsed-once handle now reaches the
+  worker-thread path: passing a `CocoDataset` to
+  `evaluator.background(...)` (or directly to
+  `BackgroundEvaluator(...)`) reuses the per-kernel GT-side
+  derivation cache across `submit()` rounds, so the boundary-IoU
+  GT-band cost is paid once per dataset rather than once per epoch
+  of training-loop validation.
 - **Negative:** existing users of `vernier.instance.StreamingEvaluator`
   must rewrite call sites against `Evaluator.evaluate_to_partial`
   (DDP submit) or `BackgroundEvaluator.submit` (training-loop
@@ -194,6 +219,11 @@ above delegate down to it.
   via the new PyO3 functions and `BackgroundEvaluator`).
 - ADR-0014 — background evaluator (this ADR amends the public
   surface: snapshot/peek paths removed; resource discipline unchanged).
+- ADR-0020 — parsed-once `CocoDataset` handle. The
+  instance `Evaluator.background(gt)` factory introduced in this
+  amendment, plus the `bytes | CocoDataset` overload on the
+  `BackgroundEvaluator(...)` constructor, are how the worker-thread
+  path reaches that handle's `Arc`-cloned per-kernel caches.
 - ADR-0029 — namespace restructure (per-paradigm submodules).
 - ADR-0031 — distributed eval / partial wire format (this ADR amends
   the Python entry class for `to_partial` / `from_partials`; the wire
