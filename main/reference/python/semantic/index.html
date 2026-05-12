@@ -2285,6 +2285,127 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#type-aliases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Type aliases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.CategoryFilter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.CategoryFilter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.ParityMode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.ParityMode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.TableName" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.TableName
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#per-dataset-constants" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-dataset constants
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.ADE20K_IGNORE_LABEL" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.ADE20K_IGNORE_LABEL
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.ADE20K_N_CLASSES" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.ADE20K_N_CLASSES
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.CITYSCAPES_IGNORE_LABEL" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.CITYSCAPES_IGNORE_LABEL
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.CITYSCAPES_N_CLASSES" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.CITYSCAPES_N_CLASSES
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.PASCAL_VOC_IGNORE_LABEL" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.PASCAL_VOC_IGNORE_LABEL
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.semantic.PASCAL_VOC_N_CLASSES" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.semantic.PASCAL_VOC_N_CLASSES
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -4796,9 +4917,9 @@ ignore convention).</p>
 
 </h2>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Evaluator</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../vernier/#vernier.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="#vernier.semantic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">label_remap</span><span class="p">:</span> <span class="n"><span title="collections.abc.Mapping">Mapping</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">,</span> <span class="n"><span title="int">int</span></span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">class_filter</span><span class="p">:</span> <span class="n"><span title="vernier._types.CategoryFilter">CategoryFilter</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">class_filter</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.CategoryFilter" href="#vernier.semantic.CategoryFilter">CategoryFilter</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">class_grouping</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Breakdown (vernier._core.Breakdown)" href="#vernier.semantic.Breakdown">Breakdown</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span>
 </span></code></pre></div>
@@ -4888,7 +5009,7 @@ it). Until that lands, <code>evaluate()</code> raises
       dataclass
    (vernier.semantic.Predictions)" href="#vernier.semantic.Predictions">Predictions</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span> <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="vernier.semantic.TableName">TableName</span></span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span> <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier.semantic.TableName" href="#vernier.semantic.TableName">TableName</a></span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
 
@@ -4911,7 +5032,7 @@ it). Until that lands, <code>evaluate()</code> raises
    (vernier.semantic.Predictions)" href="#vernier.semantic.Predictions">Predictions</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="vernier.semantic.TableName">TableName</span></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier.semantic.TableName" href="#vernier.semantic.TableName">TableName</a></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.SemanticSummary)" href="#vernier.semantic.Summary">SemanticSummary</a></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
@@ -5041,7 +5162,7 @@ before passing the dataset in.</p>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">partials</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="bytes">bytes</span></span><span class="p">],</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">/</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../vernier/#vernier.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="#vernier.semantic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">ignore_label</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.SemanticSummary)" href="#vernier.semantic.Summary">SemanticSummary</a></span>
 </span></code></pre></div>
@@ -5141,6 +5262,116 @@ they are rejected here with :class:<code>ValueError</code>.</p>
 
 
   </div>
+
+    </div>
+
+</div><h2 id="type-aliases">Type aliases</h2>
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.CategoryFilter"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.ParityMode"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.TableName"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div><h2 id="per-dataset-constants">Per-dataset constants</h2>
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.ADE20K_IGNORE_LABEL"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.ADE20K_N_CLASSES"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.CITYSCAPES_IGNORE_LABEL"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.CITYSCAPES_N_CLASSES"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.PASCAL_VOC_IGNORE_LABEL"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.semantic.PASCAL_VOC_N_CLASSES"></a>
+    <div class="doc doc-contents first">
 
     </div>
 

@@ -2251,6 +2251,50 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#type-aliases" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Type aliases
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.panoptic.CategoryFilter" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.panoptic.CategoryFilter
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.panoptic.ParityMode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.panoptic.ParityMode
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.panoptic.TableName" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.panoptic.TableName
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -4648,11 +4692,11 @@ the Dataset is in scope.</p>
 
 </h2>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">Evaluator</span><span class="p">(</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../vernier/#vernier.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">things_stuff_split</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">boundary</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">pq_iou_threshold</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">category_filter</span><span class="p">:</span> <span class="n"><span title="vernier._types.CategoryFilter">CategoryFilter</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">category_filter</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.CategoryFilter" href="#vernier.panoptic.CategoryFilter">CategoryFilter</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">class_grouping</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Breakdown (vernier._core.Breakdown)" href="#vernier.panoptic.Breakdown">Breakdown</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">stuff_thing_partition</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            StuffThingPartition
 
@@ -4740,7 +4784,7 @@ is in place.</p>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Dataset (vernier._core.PanopticDataset)" href="#vernier.panoptic.Dataset">PanopticDataset</a></span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Predictions (vernier._core.PanopticPredictions)" href="#vernier.panoptic.Predictions">PanopticPredictions</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span> <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="vernier.panoptic.TableName">TableName</span></span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span> <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier.panoptic.TableName" href="#vernier.panoptic.TableName">TableName</a></span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
 
@@ -4753,7 +4797,7 @@ is in place.</p>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Predictions (vernier._core.PanopticPredictions)" href="#vernier.panoptic.Predictions">PanopticPredictions</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="vernier.panoptic.TableName">TableName</span></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier.panoptic.TableName" href="#vernier.panoptic.TableName">TableName</a></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.PanopticSummary)" href="#vernier.panoptic.Summary">PanopticSummary</a></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
@@ -4853,7 +4897,7 @@ Single-rank custom-params eval works today via :meth:<code>evaluate</code>.</p>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">partials</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="bytes">bytes</span></span><span class="p">],</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">/</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="o">*</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../vernier/#vernier.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">things_stuff_split</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">retain_per_image_deltas</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.PanopticSummary)" href="#vernier.panoptic.Summary">PanopticSummary</a></span>
@@ -4957,6 +5001,43 @@ decoder.</p>
 
 
   </div>
+
+    </div>
+
+</div><h2 id="type-aliases">Type aliases</h2>
+
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.panoptic.CategoryFilter"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.panoptic.ParityMode"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.panoptic.TableName"></a>
+    <div class="doc doc-contents first">
 
     </div>
 
