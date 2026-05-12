@@ -8,3 +8,15 @@ variant for overlapping the kernel with the rest of the training step.
     options:
       show_root_heading: false
       show_root_toc_entry: false
+
+## Type aliases
+
+::: vernier.instance.CategoryFilter
+
+::: vernier.instance.DetectionsInput
+
+::: vernier.instance.IouKind
+
+::: vernier.instance.RLEInput
+
+::: vernier.instance.TableName

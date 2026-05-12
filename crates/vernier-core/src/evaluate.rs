@@ -1173,7 +1173,7 @@ fn segm_kernel(gt_cache: Option<&SegmGtCache>) -> SegmIouCached<'_> {
 }
 
 /// Kernel used by [`evaluate_segm`] and [`evaluate_segm_cached`] — same
-/// semantics as [`SegmIou`] but threads a single [`SegmComputeScratch`]
+/// semantics as [`SegmIou`] but threads a single `SegmComputeScratch`
 /// across every `compute` call (so the dataset-wide pass amortizes
 /// per-cell `Vec` allocations across the ~36 k anns of a val2017 pass)
 /// and optionally consults a [`SegmGtCache`] for cross-call GT
@@ -1322,7 +1322,7 @@ fn kernel(dilation_ratio: f64, gt_cache: Option<&BoundaryGtCache>) -> BoundaryIo
 
 /// Kernel used by [`evaluate_boundary`] and [`evaluate_boundary_cached`]
 /// — same semantics as [`BoundaryIou`] but threads a single
-/// [`BoundaryComputeScratch`] across every `compute` call (so the
+/// `BoundaryComputeScratch` across every `compute` call (so the
 /// dataset-wide pass amortizes per-mask + per-cell allocations) and
 /// optionally consults a [`BoundaryGtCache`] for cross-call GT band
 /// reuse.

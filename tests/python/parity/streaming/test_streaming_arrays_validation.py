@@ -62,15 +62,21 @@ def test_i32_labels_rejected() -> None:
 @pytest.mark.parity
 def test_non_contiguous_boxes_rejected() -> None:
     ev = BackgroundEvaluator(_gt_bbox_bytes(), iou_type="bbox")
-    full = np.zeros((1, 8), dtype=np.float64)
+    # Use 2 rows so the strided slice is unambiguously non-contiguous —
+    # NumPy treats single-row sliced shapes as contiguous (the row
+    # stride is irrelevant when shape[0]==1) on some versions, which
+    # makes a (1, 8)[:, :4] slice contig on older numpy and rejected on
+    # newer numpy. Two rows force the row stride to differ from C-stride.
+    full = np.zeros((2, 8), dtype=np.float64)
     full[0, :4] = [10.0, 10.0, 50.0, 50.0]
+    full[1, :4] = [20.0, 20.0, 60.0, 60.0]
     payload = cast(
         Detections,
         {
             "image_id": 1,
             "boxes": full[:, :4],  # strided slice; deliberately non-contiguous
-            "scores": np.array([0.9], dtype=np.float64),
-            "labels": np.array([1], dtype=np.int64),
+            "scores": np.array([0.9, 0.8], dtype=np.float64),
+            "labels": np.array([1, 1], dtype=np.int64),
         },
     )
     with pytest.raises(TypeError, match="ascontiguousarray"):

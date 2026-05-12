@@ -557,7 +557,7 @@ fn retained_ious_to_wire(r: &RetainedIous) -> Vec<WireRetainedIousEntry> {
             }
         })
         .collect();
-    out.sort_unstable_by(|a, b| (a.k, a.i).cmp(&(b.k, b.i)));
+    out.sort_unstable_by_key(|a| (a.k, a.i));
     out
 }
 

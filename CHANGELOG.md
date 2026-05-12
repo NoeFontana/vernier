@@ -99,7 +99,8 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   plus `Summary` / `ClassSemanticStats` / `ConfusionMatrix`
   re-exports of the FFI pyclasses (under their unprefixed names).
   `Dataset.from_arrays` and `Predictions.from_arrays` accept any
-  unsigned-integer dtype and upcast to `uint32` at the FFI boundary.
+  unsigned-integer dtype; the wrapper preserves the input dtype and
+  the FFI/kernel walks at native dtype (since ADR-0037).
   `Dataset.from_files` / `Predictions.from_files` decode single-
   channel PNG label maps via lazy-imported Pillow (raises a
   structured `ImportError` if Pillow is missing); RGB-encoded panoptic
@@ -111,7 +112,7 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   presets `Dataset.cityscapes` / `ade20k` / `pascal_voc` bake the
   canonical `(n_classes, ignore_label)` constants from
   `vernier_semantic::parity::*`. 23 new Python tests cover the
-  wrapper round-trip, dtype upcast, ignore-label / label-remap
+  wrapper round-trip, dtype handling, ignore-label / label-remap
   propagation, binary-mask merge rules, RGB rejection, and
   end-to-end PNG decode + evaluate.
 - **Semantic-segmentation FFI surface** (ADR-0028 PR-B4) —
