@@ -7,6 +7,14 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+## [0.0.2] — 2026-05-12
+
+This is the three-paradigm release: instance gains panoptic and semantic
+siblings, distributed eval lands across all three, and the bench harness
+brings real-model + alternatives numbers to the docs site. Two new
+crates ship to crates.io (`vernier-panoptic`, `vernier-semantic`) plus
+the `vernier-partial` leaf that holds the shared partial wire envelope.
+
 ### Added
 
 - **Distributed-eval entry points on `Evaluator`** (ADR-0035) — each
@@ -21,6 +29,16 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   partition-disjointness invariant, and the five paradigm-shared
   `Partial*` exception classes are all unchanged. The same DDP
   recipe works on instance, semantic, and panoptic.
+- **Distributed evaluation wire format** (ADR-0031, ADR-0032) — new
+  `vernier-partial` workspace crate holds the shared partial-envelope
+  (magic + `FORMAT_VERSION` + framing + the five `Partial*` typed
+  errors) used by all three paradigms. `FORMAT_VERSION` is a 1→2
+  hard break (pre-1.0 policy). Cross-paradigm merge is structurally
+  rejected (paradigm tag in the envelope). Determinism contract is
+  paradigm-specific: instance preserves bit-exactness, semantic
+  preserves it for any partition, panoptic only when the partition
+  order matches the original GT order. `BackgroundEvaluator` reuses
+  the same substrate via `finalize_to_partial`.
 
 ### Changed
 
@@ -164,6 +182,83 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   the corrected-disposition rows (AI3, AI4, AI6, AM1, AJ5) at the
   dataset-constructor boundary. The kernel, summarize, dataset, and
   FFI surfaces land in subsequent PRs (PR-B3..PR-B5).
+- **User-parametrizable evaluation grids** (ADR-0040, ADR-0041,
+  ADR-0042) — each paradigm's `Evaluator` accepts a structured
+  config object describing the slice/aggregation surface (instance:
+  IoU thresholds, area buckets, max-dets, per-class filter; semantic:
+  `class_filter` + `class_grouping`; panoptic: things/stuff split
+  override + per-class filter). The instance kernel grew the
+  `Breakdown` axis abstraction (ADR-0039 Phase 2A/2B): area buckets,
+  class groups, and CategoryFilter compose orthogonally; cells whose
+  combined `(IoU × area × class)` shape is empty short-circuit. New
+  `InvalidEvalParams` exception hierarchy (ADR-0039 Phase 1) replaces
+  the prior assert-based validation with structured Python errors
+  pointing at the offending param. Defaults reproduce the canonical
+  COCO / LVIS / panoptic / mIoU shapes — opt in only when you need
+  custom slicing.
+- **TIDE error decomposition** (ADR-0022, weeks 1–5) — new
+  `vernier.instance.tide` module returning the canonical six-bin
+  decomposition (`Cls`, `Loc`, `Both`, `Dupe`, `Bkg`, `Miss`) for
+  bbox / segm / boundary IoU kinds. Public Python surface +
+  debugging tutorial under `docs/explanation/`; per-image
+  confusion-matrix capability; FP-IoU histogram extractor + CLI for
+  cross-model `t_b` ratification rounds. Validated against a numpy
+  oracle on six synthetic fixtures; rf-detr-anchored real-model
+  harness drives the COCO val2017 cross-check. The bbox `t_b` row
+  in ADR-0022 is ratified; segm + boundary `t_b` rows remain
+  tentative (ratification pending the val2017 cross-model run).
+- **Result tables — opt-in Arrow surface** (ADR-0019, ADR-0038) —
+  `Evaluator.evaluate(..., tables=[...])` materializes per-detection,
+  per-pair, and per-class rows as zero-copy Arrow record batches
+  (PyArrow / pandas / polars zero-copy import). Tables stream out of
+  `BackgroundEvaluator` and `StreamingEvaluator` as well. Per-class
+  tables now extend to panoptic and semantic (ADR-0038): both
+  paradigms expose `per_class` schemas via the same
+  `RequestedTables` mechanism.
+- **Compressed-RLE + 2-D bitmask ingest on `Detections.rles`**
+  (ADR-0030) — instance accepts pycocotools-encoded compressed-RLE
+  bytes and 2-D `numpy.bool_`/`uint8` bitmasks alongside the
+  pre-existing decoded-RLE tuple form. The FFI path is zero-copy
+  via DLPack for array inputs, decoded-once for byte inputs, and
+  routes through `vernier_mask::Rle::from_*` constructors so all
+  three forms produce the same `Rle` representation downstream.
+- **Semantic uint8 / uint16 / uint32 ingest + fused PNG decode**
+  (ADR-0037) — `Dataset.from_arrays` / `Predictions.from_arrays`
+  accept any of the three unsigned-integer dtypes; the kernel walks
+  at the input dtype, so uint8 from a torch tensor avoids the 4×
+  upcast earlier wheel versions paid. New `Evaluator.evaluate_from_pngs`
+  fuses libpng decode + label-map fold in Rust under `py.detach`,
+  eliminating the per-image NumPy round-trip; `submit_png` is the
+  matching streaming entry point on `BackgroundEvaluator`. The
+  semantic kernel was generalized over a `ClassId` trait so the
+  fused path is monomorphized per dtype.
+- **`BackgroundEvaluator` generalized to semantic + panoptic**
+  (ADR-0014 follow-up) — the in-training entry point now exists for
+  all three paradigms with the same shape (`submit` / `finalize` /
+  `finalize_with_tables` / `finalize_to_partial` / context manager,
+  bounded queue + worker-thread offload + soft-warn memory budget).
+- **Parsed-once `Dataset` handle** (ADR-0020) — the GT cache
+  produced by parsing `Dataset.from_coco_json` is retained as an
+  opaque PyO3 handle that subsequent `Evaluator.evaluate(...)`
+  calls reuse without re-parsing. `EvalGrid` keeps the `Dataset`
+  alive across the `tables=` second pass, removing the prior
+  double-parse.
+- **`vernier-bench` cross-paradigm benchmark harness** (ADR-0017,
+  ADR-0033) — multi-paradigm runner orchestrates vernier vs.
+  pycocotools / faster-coco-eval / lvis-api / panopticapi /
+  mmsegmentation across a workload ladder (synthetic, COCO val2017
+  perfect-DT, mask-space jittered, real-model). `compare` /
+  `report` / `bench-sync` subcommands; release-mode pin, machine
+  fingerprint, IQR gate; bbox-IoU histogram dump on shutdown for
+  Stage-0 instrumentation; `--with-images` cache for inference
+  harnesses. Numbers feed `docs/comparison.md` and
+  `docs/benchmarks.md`.
+- **LVIS bench oracle** (ADR-0026 + ADR-0033) — `lvis-api 0.5.3` is
+  wired as the federated-AP strict-tier oracle alongside
+  pycocotools, with `Frequency`-aware K-axis cells.
+- **Semantic bench oracle** (ADR-0036) — mmsegmentation is wired as
+  the semantic strict-tier oracle (vernier-only cells published; the
+  ADE20K/mmseg parity gate remains externally blocked).
 
 ### Changed (BREAKING — pre-1.0)
 
@@ -238,6 +333,50 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   cross-reference (LVIS `-1` vs panoptic `0` vs uninitialized `nan`),
   and the explicit `max_dets=300` requirement.
 
+### Performance
+
+- **Bbox-IoU**: `pulp` `Arch` dispatch hoisted out of the inner loop
+  + bool-mask prefilter; small-cell fast path bypasses dispatch
+  overhead entirely.
+- **Boundary**: bbox-cropped erode + bbox-cropped XOR scan skip
+  per-mask full-image work; u64-packed row pass eliminates the
+  strided gather/scatter; band derivation skips prefilter-empty
+  rows/cols; per-image `BoundaryGtCache` + scratch reuse.
+  COCO val2017 perfect-DT: 21.4s → 3.1s (-85.5%).
+- **Segm**: bbox + area + offsets fused into a single counts walk;
+  `SegmGtCache` + scratch reuse; `SegmentTable` + offset-based
+  intersect closes the boundary regression; sparse-table AND-fold
+  for `min_filter_binary`; single-pass band derivation skips the
+  RLE round-trip; XOR fused into the segment scan.
+  COCO val2017 segm: -21%.
+- **Panoptic**: streaming runner + `FxHash` on per-image hashmaps
+  drops val2017 perfect-DT 85.6s / 21.17 GiB → 32.3s / 127 MiB
+  (now 1.11× faster than panopticapi); `submit_png` fuses libpng
+  decode + RGB→id + S3 area recompute in Rust; row-streamed libpng
+  output; thread-local DT-lookup scratch; `SegmentLookup` dispatch
+  hoisted out of `decode_dt`; dense intersection matrix in
+  `pq_image_with_id`.
+- **Semantic**: per-image streaming through the FFI; deduped
+  `parity_mode` parser; `evaluate_from_pngs` is the bench runner's
+  default path.
+- **FFI**: zero-copy GT/DT bytes via `PyBackedBytes` across
+  `py.detach`; per-cell results boxed so `EvalGrid` skips the
+  prior 268 MB zero-init; scratch buffers for cell-level + per-area
+  gathers; `from_inputs` HashMap built off the GIL; `Dataset` /
+  `CocoDetections` retained on `PyEvalGrid` so the `tables=` path
+  skips a double-parse.
+
+### Fixed
+
+- **LVIS GT area filter** (quirk AG6) — strict mode now mirrors the
+  oracle's `area > 0` ground-truth filter, eliminating a 0.06%
+  divergence on two categories at the federated K=168 / K=817
+  cells.
+- **Panoptic `isthing` ingest** — tolerates `int 0/1` and numpy
+  `int64` in `segments_info` (previously required `bool`).
+- **sdist** — `LICENSE-APACHE` and `LICENSE-MIT` are included in
+  the source distribution.
+
 ## [0.0.1] — 2026-04-30
 
 First release with code. The placeholder 0.0.0 reservations on
@@ -286,5 +425,6 @@ crate set that ship the evaluator.
 - **Parity fixtures** — minimal per-quirk fixtures plus full COCO
   val2017 perfect-DT smoke for bbox, segm, boundary, and keypoints.
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.0.1...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.0.2...HEAD
+[0.0.2]: https://github.com/NoeFontana/vernier/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/NoeFontana/vernier/releases/tag/v0.0.1
