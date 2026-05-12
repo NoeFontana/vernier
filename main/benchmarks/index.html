@@ -2232,12 +2232,8 @@ parity gating, narrative on what moved each round), see
 </table>
 <p>vernier reports AP=0.9983; lvis-api reports the same headline. Strict
 bit-equality on the <code>(T, R, K, A)</code> precision tensor passes on every
-category except K=168 and K=817 (2730 cells out of 4.86M, ~0.06%);
-those two K-rows differ at recall thresholds where lvis-api drops a
-fraction of a recall point on multi-GT-per-image cells under
-score-tie ordering. Tracked in <a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0026-lvis-support.md">ADR-0026 §"Known follow-up"</a>.
-The headline 56.9× speedup and 10× lower peak RSS are not affected
-by the open divergence — the timing + memory measurements stand on
+one of the 4.86M cells. The headline 56.9× speedup and 10× lower
+peak RSS are unaffected — the timing + memory measurements stand on
 their own.</p>
 <p>The 22 GB peak ADR-0026 called out at acceptance was the structural
 upper bound on the dense <code>Vec&lt;Option&lt;PerImageEval&gt;&gt;</code> orchestrator grid

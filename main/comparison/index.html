@@ -2028,10 +2028,11 @@ choice is mostly about migration cost.</p>
 <p>The original ADR-0026 §"Known follow-up" called out a &gt;22 GB structural
 peak from the dense <code>Vec&lt;Option&lt;PerImageEval&gt;&gt;</code> orchestrator grid (95M
 slots × 232 B). PR #179 collapsed the slot type via the <code>Box</code>-niche
-trick; the structural floor is now under 1 GB on full LVIS val. A small
-(~0.06%) per-cell precision-tensor drift against <code>lvis-api</code> shows up
-on full-val perfect-DT under the bench paradigm — concentrated on two
-categories — and is the remaining LVIS follow-up.</p>
+trick; the structural floor is now under 1 GB on full LVIS val. The
+small per-cell precision-tensor drift that briefly tracked here as a
+follow-up was root-caused to the oracle's <code>area &gt; 0</code> GT filter (quirk
+AG6) and is now mirrored in strict mode; the full-val bbox cell passes
+bit-equal.</p>
 <h2 id="boundary-iou-api"><code>boundary-iou-api</code></h2>
 <p><a href="https://github.com/bowenc0221/boundary-iou-api">boundary-iou-api</a> is the
 reference for boundary IoU — the metric that ranks segmentation by how
