@@ -48,8 +48,8 @@ design decisions shaping it. Per-paradigm parity status:
 | Instance boundary IoU | `boundary-iou-api` | strict bit-equal | none |
 | Segm + boundary TIDE thresholds (`t_b`) | none yet | corrected-only | [ADR-0022](docs/adr/0022-tide-thresholds.md) still `proposed`; defaults extrapolated, not measured |
 | Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | `boundary=True` raises `NotImplementedError` ([ADR-0025](docs/adr/0025-panoptic-api.md) §Q3) |
-| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | smoke-tested against vendored oracle | [ADR-0028](docs/adr/0028-sem-seg.md); per-quirk strict-mode parity + ADE20K-scale bench TBD |
-| LVIS federated AP | `lvis-api` | semantics match | ~22 GB peak on full LVIS val; optimization scheduled post-0.0.2 |
+| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | strict bit-equal on the four per-class u64 marginals at val2017 scale | [ADR-0028](docs/adr/0028-sem-seg.md); ADE20K-scale bench gated on license-cleared cache |
+| LVIS federated AP | `lvis-api` (vendored at `031ac21f`, ORACLE_LVIS_COMMIT_SHA) | strict bit-equal at fixture scale; ~0.06% precision-tensor drift on K=168 + K=817 only at full LVIS v1 val | bench paradigm wired; full-val strict parity divergence open ([ADR-0026](docs/adr/0026-lvis-support.md) §Known follow-up); segm cell waits on `evaluate_segm_grid_with_dataset` |
 
 Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
 per-library comparison: [`docs/comparison.md`](docs/comparison.md).
@@ -61,14 +61,15 @@ per-library comparison: [`docs/comparison.md`](docs/comparison.md).
      After a fresh bench round, refresh both: re-run the renderer, then update
      the numbers + version pins here. -->
 
-| Workload (val2017) | vernier median | Speedup vs alternatives |
+| Workload | vernier median | Speedup vs alternatives |
 | --- | ---: | --- |
-| Instance — bbox AP | 360 ms | **5.9×** faster-coco-eval · **16.2×** pycocotools |
-| Instance — segm AP | 968 ms | **3.7×** faster-coco-eval · **7.1×** pycocotools |
-| Instance — boundary AP | 3.1 s | **5.7×** faster-coco-eval · **19.9×** boundary-iou-api |
-| Instance — keypoints AP (OKS) | 136 ms | **12.5×** faster-coco-eval · **17.1×** pycocotools |
-| Panoptic — PQ | 11.6 s | **3.04×** panopticapi |
-| Semantic — mIoU | 5.1 s | **4.2×** mmsegmentation |
+| Instance — bbox AP (val2017) | 360 ms | **5.9×** faster-coco-eval · **16.2×** pycocotools |
+| Instance — segm AP (val2017) | 968 ms | **3.7×** faster-coco-eval · **7.1×** pycocotools |
+| Instance — boundary AP (val2017) | 3.1 s | **5.7×** faster-coco-eval · **19.9×** boundary-iou-api |
+| Instance — keypoints AP (val2017, OKS) | 136 ms | **12.5×** faster-coco-eval · **17.1×** pycocotools |
+| Panoptic — PQ (val2017) | 11.6 s | **3.04×** panopticapi |
+| Semantic — mIoU (val2017) | 5.1 s | **4.2×** mmsegmentation |
+| Instance — LVIS bbox AP (v1 val, perfect-DT) | 3.7 s | **56.9×** lvis-api · 10× lower peak RSS (1.49 GiB vs 15.01 GiB) |
 
 Median total-stage wall time on a KVM VPS (AMD EPYC-Milan, 4 cores ×
 2 threads = 8 logical CPUs, `x86_64` — not a bare-metal Milan box),
@@ -85,9 +86,12 @@ when to pick which in [`docs/comparison.md`](docs/comparison.md).
 [`faster-coco-eval==1.7.2`](https://pypi.org/project/faster-coco-eval/1.7.2/),
 [`panopticapi` @ `7bb4655`](https://github.com/cocodataset/panopticapi/commit/7bb4655548f9),
 [`boundary-iou-api` @ `37d2558`](https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677),
-[`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8) (vendored).
-vernier is at HEAD `1fd5720bf56c`. Each baseline is locked in its own
-uv-managed venv per
+[`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8) (vendored),
+[`lvis-api` @ `031ac21`](https://github.com/lvis-dataset/lvis-api/commit/031ac21f939b)
+(PyPI `lvis==0.5.3`).
+COCO and panoptic / semantic numbers were measured at HEAD `1fd5720bf56c`;
+the LVIS row was added at HEAD `e9d9c4d71303` after the bench
+paradigm landed. Each baseline is locked in its own uv-managed venv per
 [ADR-0017](docs/adr/0017-local-bench-harness.md).
 
 ## Install

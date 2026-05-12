@@ -39,11 +39,13 @@ IMPL_LABELS: dict[str, str] = {
     "vernier": "vernier",
     "vernier_panoptic": "vernier",
     "vernier_semantic": "vernier",
+    "vernier_lvis": "vernier",
     "pycocotools": "pycocotools",
     "faster-coco-eval": "faster-coco-eval",
     "boundary-iou-api": "boundary-iou-api",
     "panopticapi": "panopticapi",
     "mmsegmentation": "mmsegmentation",
+    "lvis-api": "lvis-api",
 }
 
 # Stable column order so the headline impl (vernier-family) renders first.
@@ -51,11 +53,13 @@ IMPL_ORDER: list[str] = [
     "vernier",
     "vernier_panoptic",
     "vernier_semantic",
+    "vernier_lvis",
     "faster-coco-eval",
     "pycocotools",
     "boundary-iou-api",
     "panopticapi",
     "mmsegmentation",
+    "lvis-api",
 ]
 
 # Per-paradigm display order for IoU/metric subsections.
@@ -63,16 +67,21 @@ IOU_ORDER: dict[str, list[str]] = {
     "instance": ["bbox", "segm", "boundary", "keypoints"],
     "panoptic": ["pq"],
     "semantic": ["miou"],
+    # LVIS shares IouType with instance but is a separate paradigm —
+    # bbox-only at the vernier side until ``evaluate_segm_grid_with_dataset``
+    # lands; lvis-api supports both natively.
+    "lvis": ["bbox", "segm"],
 }
 
 PARADIGM_TITLE = {
     "instance": "Instance — bbox / segm / boundary / keypoints (AP)",
     "panoptic": "Panoptic — PQ",
     "semantic": "Semantic — mIoU",
+    "lvis": "Instance — LVIS federated AP",
 }
 
 # Iteration order for the rendered document.
-PARADIGM_RENDER_ORDER: tuple[str, ...] = ("instance", "panoptic", "semantic")
+PARADIGM_RENDER_ORDER: tuple[str, ...] = ("instance", "panoptic", "semantic", "lvis")
 
 
 @dataclass(frozen=True)
@@ -308,7 +317,7 @@ def vernier_baseline_for(
     iou: str,
 ) -> CellStats | None:
     """Find the vernier(_*) cell to anchor the speedup column."""
-    for impl_label in ("vernier", "vernier_panoptic", "vernier_semantic"):
+    for impl_label in ("vernier", "vernier_panoptic", "vernier_semantic", "vernier_lvis"):
         key = CellKey(paradigm, workload, iou, impl_label)
         if key in cells:
             return cells[key]
@@ -399,6 +408,11 @@ _GH_BASELINES: dict[str, str] = {
     # impl_version so the renderer links to the upstream commit, not
     # the PyPI release.
     "mmsegmentation": "open-mmlab/mmsegmentation",
+    # lvis-api is pinned to commit ORACLE_LVIS_COMMIT_SHA in
+    # ``crates/vernier-core/src/lvis_parity.rs`` (PyPI lvis==0.5.3,
+    # uploaded 2020-06-18). Same SHA-link rendering as panopticapi /
+    # boundary-iou-api.
+    "lvis-api": "lvis-dataset/lvis-api",
 }
 assert set(IMPL_ORDER) >= _PYPI_BASELINES
 assert set(IMPL_ORDER) >= _GH_BASELINES.keys()

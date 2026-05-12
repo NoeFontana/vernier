@@ -66,10 +66,14 @@ Metric = Literal[
 ]
 
 # Paradigm discriminator for both the workload tagged union (per
-# ADR-0033) and the persisted ``BenchResult``. The four-way closed-
+# ADR-0033) and the persisted ``BenchResult``. The five-way closed-
 # world union mirrors ADR-0029's per-paradigm namespace split and
-# ADR-0032's ``WireEnvelopeBody`` pattern.
-Paradigm = Literal["instance", "panoptic", "semantic", "streaming"]
+# ADR-0032's ``WireEnvelopeBody`` pattern. ``lvis`` shares the JSON
+# GT/DT shape with ``instance`` but routes through the federated
+# AP-fold path (ADR-0026) and is gated against the vendored
+# ``lvis-api`` oracle, so the impl matrix entries differ from the
+# instance row.
+Paradigm = Literal["instance", "panoptic", "semantic", "streaming", "lvis"]
 
 Mode = Literal["dev", "release", "profile"]
 

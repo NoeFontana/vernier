@@ -47,7 +47,13 @@ from bench.reports.render import (
     render_scaling_table,
 )
 from bench.reports.scaling import group_by_synthetic_param
-from bench.workloads import InstanceWorkload, PanopticWorkload, SemanticWorkload, resolve
+from bench.workloads import (
+    InstanceWorkload,
+    LvisWorkload,
+    PanopticWorkload,
+    SemanticWorkload,
+    resolve,
+)
 from bench.workloads.synthetic import SCALING_AXES
 
 _IOU_CHOICES: tuple[str, ...] = get_args(IouType)
@@ -233,6 +239,55 @@ def run_cmd(
         result = run_cell(cell, parity=do_parity)
         for impl_name, json_path in result.impl_jsons.items():
             click.echo(f"{impl_name}: {json_path}")
+        if result.parity is not None:
+            if result.parity.passed:
+                click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+            else:
+                click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
+        return
+
+    if paradigm_typed == "lvis":
+        if not isinstance(workload_obj, LvisWorkload):
+            raise click.ClickException(
+                f"workload {workload!r} resolved to {type(workload_obj).__name__}, "
+                f"but --paradigm lvis requires an LvisWorkload."
+            )
+        if iou not in workload_obj.supported_iou_types:
+            supported = ", ".join(sorted(workload_obj.supported_iou_types))
+            raise click.ClickException(
+                f"workload {workload!r} does not support --iou {iou_type}; supported: {supported}"
+            )
+        impl_filter = None if impl == "all" else (impl,)
+        impls = impls_for_metric("lvis", iou, impl_filter=impl_filter)
+        if not impls:
+            choices = sorted(IMPL_PARADIGM_SUPPORT["lvis"])
+            raise click.ClickException(
+                f"impl {impl!r} is not registered for paradigm=lvis with --iou {iou_type}; "
+                f"choices: {choices}"
+            )
+        cell = CellSpec(
+            bench_root=BENCH_ROOT,
+            repo_root=REPO_ROOT,
+            impls=impls,
+            workload_id=workload_obj.workload_id,
+            iou_type=iou,
+            gt_path=workload_obj.gt_path,
+            dt_path=workload_obj.dt_path,
+            mode=mode_typed,
+            run_seed=run_seed,
+            paradigm="lvis",
+        )
+        do_parity = not no_parity and mode_typed != "profile"
+        result = run_cell(cell, parity=do_parity)
+        for impl_name, json_path in result.impl_jsons.items():
+            click.echo(f"{impl_name}: {json_path}")
+        for impl_name, outcome in result.iqr_outcomes.items():
+            status = "OK" if outcome.passed else "FAILED"
+            click.echo(
+                f"iqr_gate[{impl_name}]: {status} "
+                f"(rel={outcome.relative:.3%}, threshold={outcome.threshold:.1%})",
+                err=not outcome.passed,
+            )
         if result.parity is not None:
             if result.parity.passed:
                 click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")

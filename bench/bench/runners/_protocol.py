@@ -62,6 +62,35 @@ def stat_names(iou_type: IouType) -> tuple[str, ...]:
     return KP_STAT_NAMES if iou_type == "keypoints" else BBOX_STAT_NAMES
 
 
+# LVIS 13-entry plan, mirrored from
+# ``crates/vernier-core/src/summarize.rs::lvis_default`` and the oracle's
+# ``LVISEval.results`` keys. The ``@{max_dets}`` suffix on the AR rows is
+# resolved at write time (LVIS canonical max_dets is 300, AC1).
+LVIS_STAT_NAMES_TEMPLATE: tuple[str, ...] = (
+    "AP",
+    "AP50",
+    "AP75",
+    "APs",
+    "APm",
+    "APl",
+    "APr",
+    "APc",
+    "APf",
+    "AR@{max_dets}",
+    "ARs@{max_dets}",
+    "ARm@{max_dets}",
+    "ARl@{max_dets}",
+)
+
+
+def lvis_stat_names(max_dets: int) -> tuple[str, ...]:
+    """Resolve the 13 LVIS plan keys for a given ``max_dets``. Used by
+    both the ``vernier_lvis`` and ``lvis-api`` runners so the
+    ``summary_stats`` dict comes out keyed identically across impls
+    (the cross-impl comparator zips over keys)."""
+    return tuple(k.format(max_dets=max_dets) for k in LVIS_STAT_NAMES_TEMPLATE)
+
+
 def parse_runner_args() -> argparse.Namespace:
     """Detection-runner argspec. Untouched by ADR-0033 so the legacy
     detection runners ship unchanged. Panoptic / semantic / streaming
@@ -147,6 +176,12 @@ def parse_panoptic_runner_args() -> argparse.Namespace:
 # assemblers import these so the producer and consumer sides can't drift.
 PANOPTIC_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class"})
 SEMANTIC_ARTIFACT_KEYS: frozenset[str] = frozenset({"snapshot", "per_class", "confusion"})
+# LVIS reuses the detection single-tensor ``"tensor"`` slot for the
+# ``(T, R, K, A)`` precision tensor — same parity surface shape as
+# instance, just with K=1203 categories on val. The 13-entry summary
+# plan rides ``RunnerRepOutput.summary_stats`` (no separate snapshot
+# artifact — the precision tensor is the load-bearing parity carrier).
+LVIS_ARTIFACT_KEYS: frozenset[str] = frozenset({"tensor"})
 
 
 def scan_label_map_dir(directory: Path) -> dict[int, Path]:
@@ -424,6 +459,87 @@ def write_panoptic_outputs(
             "snapshot": file_sha256(snapshot_path),
             "per_class": file_sha256(per_class_path),
         },
+        warnings=list(warnings or []),
+    )
+    output_path: Path = args.output
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(output.model_dump_json(indent=2))
+
+
+def parse_lvis_runner_args() -> argparse.Namespace:
+    """LVIS-runner argspec (ADR-0026 + ADR-0033).
+
+    Same on-disk shape as the detection argspec — LVIS GT/DT are JSON
+    pairs — but with two LVIS-specific knobs:
+
+    - ``--paradigm`` is pinned to ``"lvis"`` so the orchestrator
+      routes through the LVIS comparator (vernier_lvis vs lvis-api,
+      not vernier vs pycocotools).
+    - ``--max-dets`` defaults to ``300`` (LVIS canonical, AC1) instead
+      of detection's ``100``. The flag is per-rep argv so future cells
+      can sweep.
+
+    ``--iou-type`` is restricted to ``"bbox"`` until the
+    ``evaluate_segm_grid_with_dataset`` FFI lands; both runners reject
+    other choices loudly so a misrouted cell fails at the runner rather
+    than silently mis-evaluating.
+    """
+    p = argparse.ArgumentParser(add_help=True)
+    p.add_argument("--gt", type=Path, required=True)
+    p.add_argument("--dt", type=Path, required=True)
+    p.add_argument("--iou-type", choices=["bbox"], required=True)
+    p.add_argument("--workload-id", type=str, required=True)
+    p.add_argument("--output", type=Path, required=True)
+    p.add_argument("--tensor-output", type=Path, required=True)
+    p.add_argument(
+        "--max-dets",
+        type=int,
+        default=300,
+        help="LVIS canonical max_dets (AC1 = 300). Per-rep argv override allowed.",
+    )
+    p.add_argument(
+        "--paradigm",
+        type=str,
+        default="lvis",
+        choices=["lvis"],
+        help="Evaluation paradigm. Pinned to 'lvis' for this runner family.",
+    )
+    return p.parse_args()
+
+
+def write_lvis_outputs(
+    *,
+    args: argparse.Namespace,
+    impl: str,
+    impl_version: str,
+    stages: dict[str, StageTimings],
+    summary_stats: dict[str, float],
+    precision_tensor: np.ndarray,
+    warnings: list[BenchWarning] | None = None,
+) -> None:
+    """Persist an LVIS runner's tensor + result JSON.
+
+    Same on-disk shape as detection (``"tensor"`` slot single-array
+    plus the 13-entry summary stats), with ``paradigm="lvis"`` pinned
+    on the ``RunnerRepOutput`` so the orchestrator routes the result
+    to the LVIS comparator. The summary keys must be in the
+    :func:`lvis_stat_names` shape — the cross-impl comparator zips
+    over keys positionally.
+    """
+    tensor_path: Path = args.tensor_output
+    tensor_path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(tensor_path, precision_tensor, allow_pickle=False)
+
+    output = RunnerRepOutput(
+        paradigm="lvis",
+        impl=impl,
+        impl_version=impl_version,
+        iou_type=args.iou_type,
+        workload_id=args.workload_id,
+        stages=stages,
+        summary_stats=summary_stats,
+        artifact_paths={TENSOR_KEY: tensor_path.name},
+        artifact_sha256={TENSOR_KEY: file_sha256(tensor_path)},
         warnings=list(warnings or []),
     )
     output_path: Path = args.output

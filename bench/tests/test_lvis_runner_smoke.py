@@ -138,3 +138,104 @@ def test_vernier_runner_lvis_inline_smoke(tmp_path: Path) -> None:
     # Same (T, R, K, A, M) shape as COCO — LVIS-specific axis layout
     # only kicks in on the LVIS surface; this smoke uses the COCO surface.
     assert tensor.ndim == 5
+
+
+def test_vernier_lvis_runner_inline_smoke(tmp_path: Path) -> None:
+    """The vernier_lvis runner consumes the LVIS surface via
+    ``CocoDataset.from_lvis_json`` + ``evaluate_bbox_grid_with_dataset``
+    and emits a paradigm=lvis result. AP=1.0 on perfect-DT is a smoke
+    on the wiring; the federated AA3/AA4 branches are exercised under
+    the val parity test (gated behind ``VERNIER_BENCH_DOWNLOAD_TESTS``)
+    rather than the inline fixture."""
+    skip_if_no_env("vernier")
+
+    gt, dt = _lvis_inline_fixture(tmp_path)
+    output = tmp_path / "vernier_lvis.json"
+    tensor_output = tmp_path / "vernier_lvis.npy"
+
+    cmd = uv_run_argv(
+        BENCH_ROOT,
+        "vernier_lvis",
+        "-m",
+        runner_module("vernier_lvis"),
+        "--gt",
+        str(gt),
+        "--dt",
+        str(dt),
+        "--iou-type",
+        "bbox",
+        "--workload-id",
+        "lvis_inline_smoke",
+        "--output",
+        str(output),
+        "--tensor-output",
+        str(tensor_output),
+    )
+    proc = subprocess.run(
+        cmd, env=uv_run_env(BENCH_ROOT, "vernier_lvis"), check=False, capture_output=True
+    )
+    assert proc.returncode == 0, (
+        f"vernier_lvis runner exited {proc.returncode}\n"
+        f"stdout:\n{proc.stdout.decode(errors='replace')}\n"
+        f"stderr:\n{proc.stderr.decode(errors='replace')}\n"
+    )
+    payload = json.loads(output.read_text())
+    assert payload["impl"] == "vernier_lvis"
+    assert payload["paradigm"] == "lvis"
+    assert payload["iou_type"] == "bbox"
+    # Perfect-DT, default max_dets=300 → AR@300 also pinned at 1.0.
+    assert payload["summary_stats"]["AP"] >= 0.999
+    assert "AR@300" in payload["summary_stats"]
+
+    tensor = np.load(tensor_output)
+    # LVIS shape: (T=10, R=101, K=3, A=4) — no M-axis (AF5).
+    assert tensor.ndim == 4
+    assert tensor.shape[2] == 3  # 3 categories in the inline fixture
+
+
+def test_lvis_api_runner_inline_smoke(tmp_path: Path) -> None:
+    """The lvis-api oracle runner consumes the same LVIS-shaped GT and
+    emits the matching paradigm=lvis result. Cross-impl bit-equality
+    on the precision tensor is checked under the val parity path; this
+    smoke confirms the env + argspec wiring."""
+    skip_if_no_env("lvis-api")
+
+    gt, dt = _lvis_inline_fixture(tmp_path)
+    output = tmp_path / "lvis_api.json"
+    tensor_output = tmp_path / "lvis_api.npy"
+
+    cmd = uv_run_argv(
+        BENCH_ROOT,
+        "lvis-api",
+        "-m",
+        runner_module("lvis-api"),
+        "--gt",
+        str(gt),
+        "--dt",
+        str(dt),
+        "--iou-type",
+        "bbox",
+        "--workload-id",
+        "lvis_inline_smoke",
+        "--output",
+        str(output),
+        "--tensor-output",
+        str(tensor_output),
+    )
+    proc = subprocess.run(
+        cmd, env=uv_run_env(BENCH_ROOT, "lvis-api"), check=False, capture_output=True
+    )
+    assert proc.returncode == 0, (
+        f"lvis-api runner exited {proc.returncode}\n"
+        f"stdout:\n{proc.stdout.decode(errors='replace')}\n"
+        f"stderr:\n{proc.stderr.decode(errors='replace')}\n"
+    )
+    payload = json.loads(output.read_text())
+    assert payload["impl"] == "lvis-api"
+    assert payload["paradigm"] == "lvis"
+    assert payload["iou_type"] == "bbox"
+    assert payload["summary_stats"]["AP"] >= 0.999
+
+    tensor = np.load(tensor_output)
+    assert tensor.ndim == 4
+    assert tensor.shape[2] == 3

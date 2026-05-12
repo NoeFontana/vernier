@@ -28,17 +28,19 @@ def test_lvis_perfect_resolves_via_env_overrides(
     and ``vernier-bench run``."""
     gt = tmp_path / "lvis_v1_val.json"
     gt.write_bytes(b"{}")
-    dt = tmp_path / "perfect_dt_segm.json"
+    dt = tmp_path / "perfect_dt.json"
     dt.write_bytes(b"[]")
     monkeypatch.setenv("VERNIER_LVIS_GT_PATH", str(gt))
-    monkeypatch.setenv("VERNIER_LVIS_DT_SEGM_PATH", str(dt))
+    monkeypatch.setenv("VERNIER_LVIS_DT_PATH", str(dt))
 
     w = resolve(lvis_v1.PERFECT_WORKLOAD_ID, REPO_ROOT)
     assert w.workload_id == "lvis_v1_val_perfect"
+    assert w.paradigm == "lvis"
     assert w.gt_path == gt
     assert w.dt_path == dt
-    # LVIS has no keypoint annotations; segm + bbox is the full surface.
-    assert w.supported_iou_types == frozenset({"bbox", "segm"})
+    # bbox-only at the vernier side until ``evaluate_segm_grid_with_dataset``
+    # lands; the matrix entry pins this too.
+    assert w.supported_iou_types == frozenset({"bbox"})
 
 
 def test_lvis_jittered_resolves_via_env_override(
@@ -65,6 +67,7 @@ def test_lvis_jittered_resolves_via_env_override(
 
     w = resolve("lvis_v1_val_jittered_seed7", REPO_ROOT)
     assert w.workload_id == "lvis_v1_val_jittered_seed7"
+    assert w.paradigm == "lvis"
     assert w.gt_path == gt
     # The cache filename uniquely identifies the LVIS workload — a
     # subsequent COCO jittered seed=7 must not collide.

@@ -971,11 +971,92 @@ def _compare_streaming_cross_impl(
     )
 
 
+# LVIS tier table (ADR-0026 + ADR-0033). Strict-tier path: bit-equal
+# ``(T, R, K, A)`` precision tensor between vernier_lvis and the
+# vendored lvis-api oracle pinned at ORACLE_LVIS_COMMIT_SHA. AF5 quirk:
+# no M-axis, K=1203 on full LVIS v1 val. The aligned tier is unused
+# today (vernier_lvis matches lvis-api bit-equally on every cell the
+# parity_lvis suite covers); keeping the slot lets future stochastic
+# fixtures use ALIGNED_ATOL without a schema change.
+_LVIS_TIER_PAIRS: tuple[tuple[Tier, str, str, float], ...] = (
+    ("strict", "vernier_lvis", "lvis-api", 0.0),
+)
+
+
+class _LvisComparator:
+    """LVIS federated-AP comparator (ADR-0026 + ADR-0033).
+
+    Strict-tier path: bit-equal ``(T, R, K, A)`` precision tensor
+    between vernier_lvis and the vendored lvis-api oracle. Same shape
+    as the instance comparator — LVIS reuses the single-tensor parity
+    surface — but with its own impl pair so the COCO-side
+    (vernier, pycocotools, faster-coco-eval) never collides with the
+    federated path.
+
+    The K-axis carries the LVIS 1203-category space (AF4); the
+    summary plan collapses to 13 entries via the unweighted
+    rare/common/frequent buckets. A category-row drift in the tensor
+    can hide under the bucket mean, so the tensor — not the stats —
+    is the parity carrier per AF5 / quirk J1.
+    """
+
+    paradigm: ClassVar[Paradigm] = "lvis"
+
+    def __init__(
+        self,
+        *,
+        impl_tensors: dict[str, np.ndarray] | None = None,
+        impl_sha256: dict[str, str] | None = None,
+    ) -> None:
+        self._tensors: dict[str, np.ndarray] = impl_tensors or {}
+        self._sha256: dict[str, str] = impl_sha256 or {}
+
+    def compare(
+        self,
+        *,
+        workload_id: str,
+        iou_type: Metric,
+        impl_outputs: dict[str, ComparableArtifact],
+    ) -> CellParityReport:
+        # bbox-only today — the matrix entry, workload supported_iou_types,
+        # and runner argspec are all pinned to bbox until
+        # ``evaluate_segm_grid_with_dataset`` lands. Widen this set in
+        # lockstep with those.
+        if iou_type != "bbox":
+            raise ValueError(
+                f"lvis comparator received unsupported metric {iou_type!r}; "
+                f"valid: {{'bbox'}} (segm waits on evaluate_segm_grid_with_dataset)"
+            )
+        tiers: list[TierResult] = []
+        for tier, impl_a, impl_b, atol in _LVIS_TIER_PAIRS:
+            if impl_a not in self._tensors or impl_b not in self._tensors:
+                continue
+            tiers.append(
+                _compare_pair(
+                    tier=tier,
+                    impl_a=impl_a,
+                    impl_b=impl_b,
+                    tensor_a=self._tensors[impl_a],
+                    tensor_b=self._tensors[impl_b],
+                    sha_a=self._sha256[impl_a],
+                    sha_b=self._sha256[impl_b],
+                    atol=atol,
+                )
+            )
+        return CellParityReport(workload_id=workload_id, iou_type=iou_type, tiers=tiers)
+
+
 _REGISTRY: dict[Paradigm, Comparator] = {
     "instance": _InstanceComparator(impl_tensors={}, impl_sha256={}),  # type: ignore[arg-type]
     "panoptic": _PanopticComparator(),
     "semantic": _SemanticComparator(),
     "streaming": _StreamingComparator(),
+    # LVIS uses the per-call constructor pattern (mirroring instance) —
+    # ``compare_lvis_cell`` builds a fresh comparator per cell. The
+    # registry slot is a stub so dispatchers walking the registry
+    # generically still find a comparator, even if they don't use it
+    # directly (the orchestrator uses the per-cell entry point).
+    "lvis": _LvisComparator(),
 }
 
 
@@ -1021,6 +1102,28 @@ def compare_cell(
     ``get_comparator(paradigm).compare(...)`` instead.
     """
     comparator = _InstanceComparator(impl_tensors=impl_tensors, impl_sha256=impl_sha256)
+    return comparator.compare(
+        workload_id=workload_id,
+        iou_type=iou_type,
+        impl_outputs={},
+    )
+
+
+def compare_lvis_cell(
+    *,
+    workload_id: str,
+    iou_type: Metric,
+    impl_tensors: dict[str, np.ndarray],
+    impl_sha256: dict[str, str],
+) -> CellParityReport:
+    """LVIS-paradigm twin of :func:`compare_cell` — same single-tensor
+    surface, dedicated tier table (vernier_lvis vs lvis-api).
+
+    Constructed per-call (mirroring the detection comparator) so the
+    impl-tensor map travels by argument rather than via the registry
+    stub at ``_REGISTRY["lvis"]``.
+    """
+    comparator = _LvisComparator(impl_tensors=impl_tensors, impl_sha256=impl_sha256)
     return comparator.compare(
         workload_id=workload_id,
         iou_type=iou_type,

@@ -53,6 +53,21 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         # the latency_cdf artifact is informational (no parity gate).
         "vernier_bg": frozenset({"p99"}),
     },
+    # LVIS paradigm: vernier_lvis + the vendored lvis-api oracle
+    # (ADR-0026, ORACLE_LVIS_COMMIT_SHA = 031ac21f939b…). Boundary /
+    # keypoints are not LVIS metrics. bbox-only at the vernier side
+    # today: the parsed-once `CocoDataset.from_lvis_json` path needs an
+    # FFI entry point per IoU kind, and only `evaluate_bbox_grid_with_dataset`
+    # exists. Adding the segm cell waits on the segm/keypoints/boundary
+    # `*_grid_with_dataset` variants. The lvis-api oracle natively
+    # supports both, so we mirror our coverage. COCO-side impls
+    # (pycocotools, faster-coco-eval) are deliberately absent — they
+    # would silently mis-evaluate LVIS data because the federated
+    # semantics layer over the AP-fold core (AA3/AA4 cell skip).
+    "lvis": {
+        "vernier_lvis": frozenset({"bbox"}),
+        "lvis-api": frozenset({"bbox"}),
+    },
 }
 
 # Detection-only IouType view, derived from the instance entry. Used
@@ -84,6 +99,12 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     "vernier_streaming": "vernier",
     "naive_python": "pycocotools",
     "vernier_bg": "vernier",
+    # ``vernier_lvis`` runs in the vernier env so it can import
+    # ``vernier.instance.CocoDataset.from_lvis_json``; ``lvis-api``
+    # gets its own env (mirrors the panopticapi pattern: oracle env
+    # is named after the oracle's PyPI package).
+    "vernier_lvis": "vernier",
+    "lvis-api": "lvis-api",
 }
 
 

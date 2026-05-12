@@ -118,9 +118,13 @@ instance's attribute layout. There's no equivalent bit-for-bit text
 output to scrape (LVIS doesn't print a fixed-format summary), so the
 choice is mostly about migration cost.
 
-There's a known follow-up: vernier's dense-grid matrix peaks ~22 GB on a
-full LVIS val run; the optimization plan is folded into the round of
-work after 0.0.2.
+The original ADR-0026 §"Known follow-up" called out a >22 GB structural
+peak from the dense `Vec<Option<PerImageEval>>` orchestrator grid (95M
+slots × 232 B). PR #179 collapsed the slot type via the `Box`-niche
+trick; the structural floor is now under 1 GB on full LVIS val. A small
+(~0.06%) per-cell precision-tensor drift against `lvis-api` shows up
+on full-val perfect-DT under the bench paradigm — concentrated on two
+categories — and is the remaining LVIS follow-up.
 
 ## `boundary-iou-api`
 
