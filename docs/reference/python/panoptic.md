@@ -8,3 +8,11 @@ payload (segment id maps + segment-info JSON).
     options:
       show_root_heading: false
       show_root_toc_entry: false
+
+## Type aliases
+
+::: vernier.panoptic.CategoryFilter
+
+::: vernier.panoptic.ParityMode
+
+::: vernier.panoptic.TableName

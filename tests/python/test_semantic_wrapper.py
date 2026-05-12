@@ -47,11 +47,12 @@ def test_evaluator_perfect_match_through_wrapper() -> None:
     assert s.pixel_accuracy == pytest.approx(1.0)
 
 
-def test_dataset_from_arrays_upcasts_dtype() -> None:
-    # uint8 input is upcast to uint32 by the wrapper.
+def test_dataset_from_arrays_preserves_native_dtype() -> None:
+    # ADR-0037: the FFI accepts uint8 / uint16 / uint32 natively and
+    # the kernel walks at the input dtype; the wrapper does not upcast.
     arr_u8 = np.array([[0, 1], [1, 0]], dtype=np.uint8)
     gt = Dataset.from_arrays({1: arr_u8}, n_classes=2)
-    assert gt.label_maps[1].dtype == np.uint32
+    assert gt.label_maps[1].dtype == np.uint8
 
 
 def test_dataset_validates_n_classes() -> None:
