@@ -451,10 +451,33 @@ ADR-0005 invariant (no edits to `matching.rs`, `accumulate.rs`, or
 
 ### Known follow-up
 
-The dense `Vec<Option<PerImageEval>>` orchestrator grid is
-load-bearing in the matching path but allocates ~232 bytes per
-`(category, area, image)` slot regardless of whether the cell is
-populated. On full LVIS v1 val (1203 * 4 * 19809 ~= 95M slots),
-peak resident exceeds 22 GB. PR-6's val smoke subsamples to 1000
-images by default; sparse cell storage is the perf push tracked
-outside this ADR.
+**Dense-grid memory peak — structurally fixed by PR #179.** The
+orchestrator grid was `Vec<Option<PerImageEval>>` at the time of
+this ADR's acceptance — ~232 bytes per `(category, area, image)`
+slot regardless of population, projecting to >22 GB peak resident
+on full LVIS v1 val (1203 × 4 × 19809 ≈ 95M slots). PR-6's val
+smoke subsamples to 1000 images to keep the measurement tractable.
+PR #179 ("perf(evaluate): box per-cell results so EvalGrid skips
+268 MB zero-init") shifted the slot type to
+`Vec<Option<Box<PerImageEval>>>`: `Box`'s `NonNull` niche absorbs
+the discriminant, so each unpopulated slot is 8 B and populated
+cells pay one heap allocation. On the LVIS dimensions the structural
+floor drops to 95M × 8 B ≈ 760 MB before populated cells land —
+the 22 GB ceiling is no longer load-bearing. The original perf push
+to sparse cell storage is unblocked; whether it's worth chasing
+depends on what full-val measurement reveals (the bench-side LVIS
+cell wired ahead of the next patch release, ADR-0026 follow-up,
+captures the new peak in `bench/results/<sha>/<fp>/lvis/`).
+
+**Bench-side strict parity at full val — open.** The release-mode
+LVIS bench cell (`lvis_v1_val_perfect` × bbox, ADR-0033 + bench
+matrix) shows ~0.06% per-cell divergence between vernier_lvis and
+lvis-api on the (T, R, K, A) precision tensor — concentrated on
+two categories (K=168, K=817) out of 1203. Vernier reports 1.0
+on every divergent cell (the perfect-DT expectation); lvis-api
+reports 0.987–0.999. The 1000-image parity smoke doesn't
+populate enough multi-GT-per-image cells in those two categories
+to surface the divergence. Hypothesis: score-tie ordering inside
+`LVISResults` (perfect-DT detections all carry score=1.0, so
+DT-to-GT tie-breaking is the load-bearing path); root cause not
+yet pinned. Tracked alongside the bench cell's `divergence_report.json`.

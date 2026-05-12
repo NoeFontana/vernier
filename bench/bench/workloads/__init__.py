@@ -144,12 +144,31 @@ class StreamingWorkload(_WorkloadBase):
     chunk_schedule: tuple[int, ...]
 
 
-# Discriminated union over the four variants. Pydantic validates the
+class LvisWorkload(_WorkloadBase):
+    """LVIS paradigm — federated AP cell over an LVIS-shaped JSON GT/DT
+    pair (ADR-0026).
+
+    Same on-disk shape as :class:`InstanceWorkload`, but the federated
+    semantics (``not_exhaustive_category_ids`` / ``neg_category_ids``
+    per image, ``frequency`` letters per category, the 13-entry
+    ``lvis_default()`` summary plan) require a separate runner protocol
+    and a separate oracle (``lvis-api``). Splitting into its own
+    paradigm prevents COCO-side runners (pycocotools / faster-coco-eval)
+    from being silently dispatched against LVIS data.
+    """
+
+    paradigm: Literal["lvis"] = "lvis"
+    gt_path: Path
+    dt_path: Path
+    supported_iou_types: frozenset[IouType]
+
+
+# Discriminated union over the five variants. Pydantic validates the
 # discriminator at parse time; a malformed JSON fails with the
 # correct variant's error message rather than as a runtime
 # AttributeError deep in a runner.
 Workload = Annotated[
-    InstanceWorkload | PanopticWorkload | SemanticWorkload | StreamingWorkload,
+    InstanceWorkload | PanopticWorkload | SemanticWorkload | StreamingWorkload | LvisWorkload,
     Field(discriminator="paradigm"),
 ]
 WorkloadAdapter: TypeAdapter[Workload] = TypeAdapter(Workload)
@@ -301,18 +320,24 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
 
     if workload_name == lvis_v1.PERFECT_WORKLOAD_ID:
         gt = lvis_v1.gt_path()
-        dt = lvis_v1.perfect_dt_segm_path()
-        return InstanceWorkload(
+        # The bench is bbox-only on the LVIS paradigm today (the
+        # parsed-once-dataset FFI only ships ``evaluate_bbox_grid_with_dataset``);
+        # take the bbox-shape perfect-DT so the strict-tier parity gate
+        # against lvis-api stays bit-equal. Once the segm FFI lands
+        # this resolver flips to ``perfect_dt_segm_path`` for segm
+        # cells (per-iou DT picked at CellSpec time).
+        dt = lvis_v1.perfect_dt_bbox_path()
+        return LvisWorkload(
             workload_id=lvis_v1.PERFECT_WORKLOAD_ID,
             gt_path=gt,
             dt_path=dt,
-            supported_iou_types=frozenset({"bbox", "segm"}),
+            supported_iou_types=frozenset({"bbox"}),
         )
 
     if (lvis_seed := lvis_v1.parse_jittered_seed(workload_name)) is not None:
         gt = lvis_v1.gt_path()
         dt = jittered_predictions.lvis_dt_path(gt_path=gt, seed=lvis_seed)
-        return InstanceWorkload(
+        return LvisWorkload(
             workload_id=lvis_v1.jittered_workload_id(lvis_seed),
             gt_path=gt,
             dt_path=dt,

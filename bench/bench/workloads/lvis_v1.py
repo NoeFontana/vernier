@@ -60,6 +60,33 @@ def gt_path() -> Path:
     return ensure_gt()
 
 
+def perfect_dt_bbox_path() -> Path:
+    """Return the bbox-shape perfect-DT for the LVIS GT.
+
+    Honors ``VERNIER_LVIS_DT_PATH`` (the parity-cache convention,
+    matching the bbox-only ``perfect_dt.json`` the parity tests use);
+    otherwise synthesizes via :func:`lvis_val_cache.ensure_perfect_dts`.
+
+    Why two perfect-DT files: ``perfect_dt.json`` carries the GT bbox
+    field only, while ``perfect_dt_segm.json`` carries bbox + segm + a
+    segm-derived ``area`` (raster pixel count). Feeding the segm-shape
+    file to a bbox cell triggers a small per-cell parity drift because
+    lvis-api uses the segm-derived ``area`` for the area-bucket
+    assignment (small / medium / large) while vernier_lvis computes
+    the area from the bbox; the bbox cell takes the bbox-shape file
+    so the strict-tier parity gate stays bit-equal. The segm cell will
+    use ``perfect_dt_segm_path`` once
+    ``evaluate_segm_grid_with_dataset`` lands.
+    """
+    env_override = os.environ.get("VERNIER_LVIS_DT_PATH")
+    if env_override:
+        candidate = Path(env_override)
+        if candidate.exists():
+            return candidate
+    bbox_dt, _ = ensure_perfect_dts()
+    return bbox_dt
+
+
 def perfect_dt_segm_path() -> Path:
     """Return the perfect-segm DT for the LVIS GT.
 
@@ -95,5 +122,6 @@ __all__ = [
     "gt_path",
     "jittered_workload_id",
     "parse_jittered_seed",
+    "perfect_dt_bbox_path",
     "perfect_dt_segm_path",
 ]

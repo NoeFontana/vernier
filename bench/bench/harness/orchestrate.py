@@ -47,6 +47,7 @@ from bench.harness.parity import (
     PanopticSnapshot,
     SemanticSnapshot,
     compare_cell,
+    compare_lvis_cell,
     get_comparator,
     write_report,
 )
@@ -1003,6 +1004,16 @@ def run_cell(
     if parity:
         if cell.paradigm == "instance":
             parity_report = compare_cell(
+                workload_id=cell.workload_id,
+                iou_type=cell.iou_type,
+                impl_tensors=impl_tensors,
+                impl_sha256=impl_sha256,
+            )
+        elif cell.paradigm == "lvis":
+            # LVIS reuses the single-tensor parity surface but pairs
+            # vernier_lvis vs lvis-api (not vernier vs pycocotools).
+            # Same dispatch shape as instance, separate tier table.
+            parity_report = compare_lvis_cell(
                 workload_id=cell.workload_id,
                 iou_type=cell.iou_type,
                 impl_tensors=impl_tensors,

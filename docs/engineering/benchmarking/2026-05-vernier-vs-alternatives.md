@@ -289,6 +289,109 @@ images is well inside the gate.
 resolver — gated on the license-cleared ADE20K val cache, not on
 the mmseg oracle (which is now wired).
 
+## LVIS — `lvis_v1_val_perfect`
+
+Full LVIS v1 val (19809 images, 1203 categories), GT-as-DT
+(`perfect_dt.json` — bbox-shape; the segm-shape variant is the
+follow-up cell once `evaluate_segm_grid_with_dataset` lands).
+**Bench paradigm wired this phase** (ADR-0026 + ADR-0033): new
+`paradigm: "lvis"` under `bench/harness/`, dedicated
+`bench/envs/lvis-api/` env (lvis @ `031ac21f` + `pycocotools==2.0.11`
++ runtime `np.float = float` shim mirroring
+`parity_lvis/conftest.py`), and a `_LvisComparator` that runs
+strict-tier bit-equality on the precision tensor against the
+vendored oracle.
+
+### bbox
+
+| impl                |    median    |       IQR        | RSS (max)  | vs vernier   |
+| ------------------- | -----------: | ---------------: | ---------: | -----------: |
+| **vernier_lvis**    |    3.691 s   |  46.7 ms (1.26%) |   1.49 GiB |  **1.00x**   |
+| lvis-api            |  210.086 s   |   9.72 s (4.63%) |  15.01 GiB |    56.92x    |
+
+Snapshot machine fingerprint `1655eb18a194` (same host as the
+val2017 / panoptic / semantic numbers above). Different SHA —
+LVIS landed at `e9d9c4d71303`, post-`1fd5720bf56c`; numbers are
+not cross-comparable to the COCO sections above as absolute
+wall times.
+
+### Raw measurements (LVIS)
+
+| iou  | impl          |       median (ns) |          IQR (ns) |        RSS (B)     |
+| ---- | ------------- | ----------------: | ----------------: | -----------------: |
+| bbox | vernier_lvis  |     3,691,000,000 |        46,732,481 |      1,601,400,832 |
+| bbox | lvis-api      |   210,086,000,000 |     9,717,624,000 |     16,121,479,168 |
+
+### Read against the table
+
+- **56.9x speedup** is the largest cross-impl gap in this snapshot.
+  lvis-api is unoptimized Python (~210 s / rep on full val); the
+  bulk of vernier's lead is parallel-free framework overhead
+  (single-pass orchestrator vs the per-category Python iteration
+  in `LVISEval.evaluate`), with the AP-fold core itself doing
+  roughly the same work on both sides.
+- **10x lower peak RSS** (1.49 GiB vs 15.01 GiB). The dense
+  orchestrator grid that ADR-0026 §"Known follow-up" called out as
+  ">22 GB structural" is no longer the load-bearing constraint —
+  PR #179's `Box`-niche fix made each empty slot 8 B instead of 232 B
+  (`Vec<Option<Box<PerImageEval>>>`), dropping the structural floor
+  to 95M × 8 B ≈ 760 MB before populated cells land. The measured
+  1.49 GiB matches that floor plus populated-cell heap. The lvis-api
+  side carries the full per-image / per-category Python dict tree,
+  hence the 15 GiB.
+- **Vernier IQR 1.26%** is well inside the 5% gate. **lvis-api IQR
+  4.63%** sits right at the gate boundary, driven by GC pauses
+  inside the long oracle reps (one rep is ~3.5 min wall, GC
+  variance has time to compound). The gap to vernier — 57x — is
+  three orders of magnitude wider than the IQR, so the comparison
+  is load-bearing despite the wider lvis-api confidence band.
+
+### Open: strict parity at full val
+
+Both impls report the same headline `AP = 0.9983` on perfect-DT.
+Strict-tier bit-equality on the `(T, R, K, A)` precision tensor
+passes on **every category except K=168 and K=817** — 2730 divergent
+cells out of 4.86M (0.056%). Vernier reports 1.0 on every divergent
+cell (the perfect-DT expectation); lvis-api reports 0.987–0.9990.
+The 1000-image parity smoke
+(`tests/python/parity_lvis/test_lvis_val.py`) doesn't populate enough
+multi-GT-per-image cells in those two categories to surface the
+divergence — that's why it passes today.
+
+Hypothesis: score-tie ordering inside `LVISResults`. Perfect-DT has
+every detection at score=1.0, so DT-to-GT tie-breaking is the
+load-bearing path; vernier's stable-sort lands on a different
+DT-to-GT mapping than lvis-api's, and lvis-api drops a fraction of
+a recall point on the few categories with enough multi-GT density
+to trigger the divergence. Not yet root-caused; tracked in ADR-0026
+§"Known follow-up" with the bench cell's divergence_report.json
+as the authoritative record. The 56.9x speedup is not gated on
+the resolution.
+
+**Harness additions landed this phase**:
+- New paradigm `"lvis"` in `bench.harness.schema.Paradigm` +
+  `IMPL_PARADIGM_SUPPORT["lvis"]`.
+- `bench/envs/lvis-api/` env (`lvis @ 031ac21f`, `pycocotools==2.0.11`,
+  `pip` injected via `[tool.uv.extra-build-dependencies]` because
+  lvis 0.5.3's `setup.py` calls pip during the build but doesn't
+  declare it).
+- `vernier_lvis_runner.py` (uses `CocoDataset.from_lvis_json` +
+  `evaluate_bbox_grid_with_dataset` + `summarize_lvis`) and
+  `lvis_api_runner.py` (wraps `LVISEval` with the runtime
+  `np.float = float` shim mirroring `parity_lvis/conftest.py`).
+- `_LvisComparator` in `bench.harness.parity` — single strict-tier
+  pair (vernier_lvis vs lvis-api), same single-tensor surface as
+  the instance comparator with its own impl pair.
+- CLI dispatch `vernier-bench run --paradigm lvis ...`; auto-derived
+  from `LvisWorkload` discriminator.
+- `tools/render_benchmarks.py` emits an "Instance — LVIS federated
+  AP" section under the same impl-row format as the others.
+
+bbox-only at the vernier side today because only
+`evaluate_bbox_grid_with_dataset` ships on the FFI; segm waits on
+the parsed-once-dataset segm variant. lvis-api supports both
+natively, so the matrix entry mirrors vernier's coverage.
+
 ## How to refresh
 
 ```bash
@@ -321,12 +424,22 @@ vernier-bench run --paradigm semantic --impl all \
 vernier-bench run --paradigm semantic --impl all \
   --workload coco_val2017_semantic_perfect --mode release
 
+# LVIS — vernier_lvis vs the vendored lvis-api oracle (ADR-0026,
+# pinned commit 031ac21f). Needs the ~200 MB LVIS val cache provisioned
+# once (`python -m lvis_val_cache`); the lvis-api env adds ~150 MiB on
+# disk (matplotlib + opencv-python pulled transitively by lvis 0.5.3).
+# Wall budget: ~50 min on the host snapshot above — lvis-api runs at
+# ~3.5 min/rep × 12 reps; vernier_lvis stays under 60 s across all reps.
+vernier-bench run --paradigm lvis --impl all \
+  --workload lvis_v1_val_perfect --iou bbox --mode release
+
 # Re-pull the medians + IQRs + RSS from the result tree (release mode
 # carries the aggregation block; the docs renderer reads from there):
 for cell in instance/coco_val2017_jittered_seed0/{bbox,segm,boundary} \
             instance/coco_val2017_keypoints_jittered_seed0/keypoints \
             panoptic/coco_panoptic_val2017_perfect/pq \
-            semantic/synthetic_semantic_n200_c19_s0/miou; do
+            semantic/synthetic_semantic_n200_c19_s0/miou \
+            lvis/lvis_v1_val_perfect/bbox; do
   for f in bench/results/<sha>/<fp>/$cell/*.json; do
     [ -f "$f" ] && python -c "import json; d=json.load(open('$f')); a=d['aggregation']; t=a['stages']['total']; m=a['memory']; g=a['iqr_gate']; print(t['median_ns'], t['iqr_ns'], m['max_bytes'], g['relative'], g['passed'])"
   done

@@ -16,7 +16,12 @@ mode `release` · build profile = cargo release defaults
 release wheel on PyPI is built with the same profile — no
 benchmarking-only flags.
 
-**Baselines pinned for these numbers** — [`faster-coco-eval==1.7.2`](https://pypi.org/project/faster-coco-eval/1.7.2/) · [`pycocotools==2.0.11`](https://pypi.org/project/pycocotools/2.0.11/) · [`boundary-iou-api` @ `37d2558`](https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677) · [`panopticapi` @ `7bb4655`](https://github.com/cocodataset/panopticapi/commit/7bb4655548f9) · [`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8). Each baseline is locked in its own uv-managed venv per ADR-0017.
+**Baselines pinned for these numbers** — [`faster-coco-eval==1.7.2`](https://pypi.org/project/faster-coco-eval/1.7.2/) · [`pycocotools==2.0.11`](https://pypi.org/project/pycocotools/2.0.11/) · [`boundary-iou-api` @ `37d2558`](https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677) · [`panopticapi` @ `7bb4655`](https://github.com/cocodataset/panopticapi/commit/7bb4655548f9) · [`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8) · [`lvis-api` @ `031ac21`](https://github.com/lvis-dataset/lvis-api/commit/031ac21f939b) (PyPI `lvis==0.5.3`). Each baseline is locked in its own uv-managed venv per ADR-0017.
+
+The LVIS section below was measured at HEAD `e9d9c4d71303` after the
+bench paradigm landed; every other section is at `1fd5720bf56c`. The
+next full bench refresh will collapse the LVIS section into the same
+SHA as the others.
 
 For the full per-cell deep-dive (per-stage breakdown, RSS evolution,
 parity gating, narrative on what moved each round), see
@@ -100,6 +105,34 @@ This page is regenerated from the harness result tree by
 
 
 *Cells marked ` *` next to their IQR exceeded the release-mode 5% relative-IQR gate. Median still reported; treat the gap to the next impl as the load-bearing signal rather than the precise ratio.*
+
+## Instance — LVIS federated AP
+
+### Workload: `lvis_v1_val_perfect`
+
+LVIS v1 val (19809 images, 1203 categories), GT-as-DT (perfect bbox-shape DT). Federated semantics layer over the shared AP-fold core per ADR-0026.
+
+**`bbox`**
+
+| impl | median | IQR | RSS (max) | vs vernier |
+| --- | ---: | ---: | ---: | ---: |
+| **vernier** | 3.691 s | 46.7 ms (1.26%) | 1.49 GiB | **1.00×** |
+| lvis-api | 210.086 s | 9.72 s (4.63%) | 15.01 GiB | 56.92× |
+
+vernier reports AP=0.9983; lvis-api reports the same headline. Strict
+bit-equality on the `(T, R, K, A)` precision tensor passes on every
+category except K=168 and K=817 (2730 cells out of 4.86M, ~0.06%);
+those two K-rows differ at recall thresholds where lvis-api drops a
+fraction of a recall point on multi-GT-per-image cells under
+score-tie ordering. Tracked in [ADR-0026 §"Known follow-up"](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0026-lvis-support.md).
+The headline 56.9× speedup and 10× lower peak RSS are not affected
+by the open divergence — the timing + memory measurements stand on
+their own.
+
+The 22 GB peak ADR-0026 called out at acceptance was the structural
+upper bound on the dense `Vec<Option<PerImageEval>>` orchestrator grid
+(95M slots × 232 B). PR #179 collapsed the slot type via the
+`Box`-niche trick; the measured peak above is 1.49 GiB.
 
 ## Methodology in one paragraph
 

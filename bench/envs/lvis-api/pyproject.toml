@@ -1,0 +1,51 @@
+[project]
+name = "vernier-bench-env-lvis-api"
+version = "0.0.0"
+description = "uv env for the lvis-api oracle runner subprocess (ADR-0026 / ADR-0033)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# Hosts the lvis-api oracle runner. ``vernier_lvis`` (the candidate)
+# runs in the vernier env so it can import vernier directly — same
+# split as semantic (mmsegmentation gets its own env, vernier_semantic
+# rides the vernier env). The reason here is identical: lvis 0.5.3
+# pulls in matplotlib + opencv + cython transitively (~150 MiB), and
+# we don't want that footprint on the vernier env shared by every
+# vernier runner.
+#
+# lvis is fetched from the SHA-pinned commit that matches
+# ``ORACLE_LVIS_COMMIT_SHA`` in
+# ``crates/vernier-core/src/lvis_parity.rs`` (PyPI ``lvis==0.5.3``,
+# uploaded 2020-06-18). pycocotools is pinned to 2.0.11 — lvis-api
+# imports ``pycocotools.mask`` for RLE ops, and 2.0.11 is the
+# project-wide parity oracle pin (ADR-0002).
+dependencies = [
+    "vernier-bench",
+    "vernier-lvis-val-cache",
+    "lvis",
+    "pycocotools==2.0.11",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+# vernier-bench is pure Python — editable so harness edits show up
+# without re-sync.
+vernier-bench = { path = "../..", editable = true }
+# lvis_val_cache provides the LVIS v1 val GT / perfect-DT helpers.
+vernier-lvis-val-cache = { path = "../../../tools/lvis_val_cache", editable = true }
+# lvis: pinned commit SHA mirrors
+# ``crates/vernier-core/src/lvis_parity.rs::ORACLE_LVIS_COMMIT_SHA``.
+# Bumping is an ADR-level decision (every quirk vernier reproduces in
+# strict mode is keyed to this commit).
+lvis = { git = "https://github.com/lvis-dataset/lvis-api.git", rev = "031ac21f939bcb5f1ca8de2ab8704082e101ff9b" }
+
+# lvis 0.5.3's ``setup.py`` invokes pip during the build but doesn't
+# declare it in ``build-system.requires``. uv's recommended fix is the
+# extra-build-dependencies escape hatch — see the project README's
+# error reproduction steps. Removing this line breaks ``uv lock``.
+[tool.uv.extra-build-dependencies]
+lvis = ["pip"]
