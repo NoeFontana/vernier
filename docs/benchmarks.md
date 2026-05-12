@@ -121,12 +121,8 @@ LVIS v1 val (19809 images, 1203 categories), GT-as-DT (perfect bbox-shape DT). F
 
 vernier reports AP=0.9983; lvis-api reports the same headline. Strict
 bit-equality on the `(T, R, K, A)` precision tensor passes on every
-category except K=168 and K=817 (2730 cells out of 4.86M, ~0.06%);
-those two K-rows differ at recall thresholds where lvis-api drops a
-fraction of a recall point on multi-GT-per-image cells under
-score-tie ordering. Tracked in [ADR-0026 §"Known follow-up"](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0026-lvis-support.md).
-The headline 56.9× speedup and 10× lower peak RSS are not affected
-by the open divergence — the timing + memory measurements stand on
+one of the 4.86M cells. The headline 56.9× speedup and 10× lower
+peak RSS are unaffected — the timing + memory measurements stand on
 their own.
 
 The 22 GB peak ADR-0026 called out at acceptance was the structural

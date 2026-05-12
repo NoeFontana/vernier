@@ -883,12 +883,39 @@ pub fn evaluate_with<K: EvalKernel>(
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
 
+    // Quirk **AG6** (strict, ADR-0026): the LVIS oracle's
+    // `LVIS.get_ann_ids` applies a strict `area > 0` filter
+    // (`lvis/lvis.py:94`) and silently drops GTs whose JSON `area`
+    // is zero. Post-filter `img_pl` then drives `_prepare`'s federated
+    // DT filter, so on "all-zero-area" `(image, category)` cells the
+    // DT is dropped along with the GT, and on "mixed" cells the
+    // orphan DTs become FPs. Reproduce in strict mode for federated
+    // datasets only — COCO and `Corrected` mode keep zero-area
+    // annotations (vernier's default behavior). The filter slots in
+    // before the cell-empty short-circuit so the AA4 cell-skip path
+    // naturally fires when every GT in a cell is zero-area.
+    let strict_lvis_zero_area_filter =
+        matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
+
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
         let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
         for (i, image) in images.iter().enumerate() {
             let image_id = image.id;
-            let gt_indices = gt_indices_for_cell(gt, image_id, *cat);
+            let gt_indices_raw = gt_indices_for_cell(gt, image_id, *cat);
+            let gt_indices_buf: Vec<usize>;
+            let gt_indices: &[usize] = if strict_lvis_zero_area_filter
+                && gt_indices_raw.iter().any(|&j| gt_anns[j].area <= 0.0)
+            {
+                gt_indices_buf = gt_indices_raw
+                    .iter()
+                    .copied()
+                    .filter(|&j| gt_anns[j].area > 0.0)
+                    .collect();
+                &gt_indices_buf
+            } else {
+                gt_indices_raw
+            };
             let raw_dt_indices = raw_dt_indices_for_cell(dt, image_id, *cat);
             if gt_indices.is_empty() && raw_dt_indices.is_empty() {
                 continue;
@@ -3610,5 +3637,164 @@ mod tests {
         let cell = g.cell(0, 0, 0).expect("perfect_match cell must exist");
         assert_eq!(cell.dt_scores.len(), 2);
         assert!(cell.dt_ignore.iter().all(|&ig| !ig));
+    }
+
+    // -- Quirk AG6: strict-mode `area > 0` GT filter (ADR-0026) --------------
+
+    /// Build a GT annotation with an explicitly-pinned `area`. The
+    /// general-purpose `ann()` derives area from the bbox (`w * h`),
+    /// which can't synthesize the "bbox has positive extent but `area`
+    /// field is 0" case the oracle filters on.
+    fn ann_with_area(
+        id: i64,
+        image: i64,
+        cat: i64,
+        bbox: (f64, f64, f64, f64),
+        area: f64,
+    ) -> CocoAnnotation {
+        let mut a = ann(id, image, cat, bbox);
+        a.area = area;
+        a
+    }
+
+    #[test]
+    fn ag6_mixed_cell_drops_zero_area_gt_in_strict_mode() {
+        // Mixed cell: one area>0 GT and one area==0 GT (both with
+        // positive-extent bboxes — mirrors the LVIS val data where
+        // ann_id=31604 has `bbox=[132.86, 347.1, 0.07, 0.08]` and
+        // `area=0.0` because the segm-derived area is zero). Perfect-DTs
+        // for both. Strict mode mirrors the oracle: the zero-area GT
+        // is dropped, leaving its DT as an unmatched FP.
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "a")];
+        let anns = vec![
+            ann(1, 1, 1, (10.0, 10.0, 20.0, 20.0)),
+            ann_with_area(2, 1, 1, (50.0, 50.0, 0.1, 0.1), 0.0),
+        ];
+        let gt = lvis_dataset(
+            &images,
+            &anns,
+            &cats,
+            &[(1, vec![])],
+            &[(1, vec![])],
+            &[(1, crate::dataset::Frequency::Frequent)],
+        );
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (10.0, 10.0, 20.0, 20.0)),
+            dt_input(1, 1, 0.8, (50.0, 50.0, 0.1, 0.1)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+
+        let strict = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let cell = strict
+            .cell(0, 0, 0)
+            .expect("mixed cell must still evaluate in strict mode");
+        assert_eq!(cell.dt_scores.len(), 2);
+        // dt_scores sorted desc → [0.9, 0.8]. At t=0 (iou=0.5):
+        // DT_real matches GT_real; DT_zero finds no GT (filtered out)
+        // so dt_matches[0,1] == 0.
+        let strict_meta = strict.cell_meta(0, 0, 0).unwrap();
+        assert_eq!(strict_meta.dt_matches[(0, 0)], 1, "DT_real → GT id=1");
+        assert_eq!(
+            strict_meta.dt_matches[(0, 1)],
+            0,
+            "DT_zero must be unmatched after strict filter drops GT id=2"
+        );
+
+        let corrected = evaluate_bbox(&gt, &dts, params, ParityMode::Corrected).unwrap();
+        let cor_meta = corrected.cell_meta(0, 0, 0).unwrap();
+        assert_eq!(cor_meta.dt_matches[(0, 0)], 1, "DT_real → GT id=1");
+        assert_eq!(
+            cor_meta.dt_matches[(0, 1)],
+            2,
+            "Corrected mode keeps the zero-area GT and matches DT_zero → GT id=2"
+        );
+    }
+
+    #[test]
+    fn ag6_all_zero_area_cell_skipped_via_aa4_in_strict_mode() {
+        // Only GT for (image 1, cat 1) is zero-area. Post-filter
+        // gt_indices is empty; cat 1 is not in neg[1] either, so the
+        // AA4 cell-skip path fires and the DT is silently dropped —
+        // mirroring the oracle's behavior on the (image 492990,
+        // cat 982) cell in LVIS val (the only all-zero-area cell on
+        // that dataset).
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "a")];
+        let anns = vec![ann_with_area(1, 1, 1, (50.0, 50.0, 0.1, 0.1), 0.0)];
+        let gt = lvis_dataset(
+            &images,
+            &anns,
+            &cats,
+            &[(1, vec![])],
+            &[(1, vec![])],
+            &[(1, crate::dataset::Frequency::Frequent)],
+        );
+        let dts =
+            CocoDetections::from_inputs(vec![dt_input(1, 1, 0.9, (50.0, 50.0, 0.1, 0.1))]).unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+
+        let strict = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        assert!(
+            strict.cell(0, 0, 0).is_none(),
+            "AG6: all-zero-area cell must be skipped via AA4 in strict mode"
+        );
+
+        let corrected = evaluate_bbox(&gt, &dts, params, ParityMode::Corrected).unwrap();
+        let cell = corrected
+            .cell(0, 0, 0)
+            .expect("Corrected mode must keep the zero-area GT");
+        assert_eq!(cell.dt_scores.len(), 1);
+    }
+
+    #[test]
+    fn ag6_strict_filter_is_noop_on_coco_dataset() {
+        // Same input as the mixed-cell test but constructed via
+        // `from_parts` so `federated()` is `None`. The strict filter
+        // must NOT apply — COCO eval keeps zero-area GTs (the
+        // pycocotools oracle doesn't filter at load).
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "a")];
+        let anns = vec![
+            ann(1, 1, 1, (10.0, 10.0, 20.0, 20.0)),
+            ann_with_area(2, 1, 1, (50.0, 50.0, 0.1, 0.1), 0.0),
+        ];
+        let gt = CocoDataset::from_parts(images, anns, cats).unwrap();
+        let dts = CocoDetections::from_inputs(vec![
+            dt_input(1, 1, 0.9, (10.0, 10.0, 20.0, 20.0)),
+            dt_input(1, 1, 0.8, (50.0, 50.0, 0.1, 0.1)),
+        ])
+        .unwrap();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
+        let meta = grid.cell_meta(0, 0, 0).unwrap();
+        assert_eq!(meta.dt_matches[(0, 0)], 1);
+        assert_eq!(
+            meta.dt_matches[(0, 1)],
+            2,
+            "COCO strict mode must NOT drop the zero-area GT — AG6 is LVIS-only"
+        );
     }
 }
