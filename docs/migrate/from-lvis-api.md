@@ -5,14 +5,14 @@ strict parity mode. ADR-0026 is the design record for the LVIS
 support; this guide is the user-facing migration path. Audience:
 anyone moving an existing LVIS evaluation pipeline onto vernier.
 
-> **Status.** LVIS federated semantics match `lvis-api` at fixture scale.
+> **Status.** LVIS federated semantics match `lvis-api` bit-equal on
+> the `(T, R, K, A)` precision tensor at full LVIS v1 val under
+> `ParityMode::Strict` (the default for users migrating from `lvis-api`).
 > The dense-grid memory ceiling that ADR-0026 §"Known follow-up" called
 > out (~22 GB on full LVIS val) is structurally fixed by PR #179
 > (`Vec<Option<PerImageEval>>` → `Vec<Option<Box<PerImageEval>>>`); the
 > 8-byte slot-with-niche brings the structural floor under 1 GB before
-> populated cells land. A small (~0.06%) per-cell precision-tensor drift
-> on full-val perfect-DT against `lvis-api`, concentrated on two
-> categories, is open and tracked in ADR-0026. See the
+> populated cells land. See the
 > [README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation)
 > matrix.
 

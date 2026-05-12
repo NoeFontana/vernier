@@ -407,6 +407,7 @@ boundary M–Q, and panoptic R–Z.
 | AG3 | Predictions are loaded by **instantiating `LVISResults` directly**: `LVISResults(lvis_gt, results, max_dets=300)`. There is **no `LVIS.loadRes()` method** (different from `COCO.loadRes`). The constructor applies the AC2 input-side trim. Earlier draft cited a non-existent `LVIS.loadRes()`; corrected against lvis.py. | rs:9-71; lvis.py (no `loadRes`) | **strict**. vernier's `CocoDetections::from_lvis_results` mirrors the constructor shape (GT + results + max_dets). |
 | AG4 | Result files for segm use the same compressed-RLE format as COCO. | rs (transitively from pycocotools) | **strict** by inheritance. |
 | AG5 | `LVIS.get_ann_ids` filters by area with **strict inequality on both ends** (`area > rng[0] and area < rng[1]`, lv:90-96). A GT with area exactly `32**2` falls into neither `small` nor `medium`. (In practice integer pixel-count areas almost never hit a boundary precisely; documented for property-test design.) | lv:90-96 | **strict**. |
+| AG6 | The **same** `LVIS.get_ann_ids` strict lower-bound (lv:94) **silently drops GTs with `area == 0`** on every call (`_prepare` invokes it with the default `area_rng=None → [0, inf]`, so the filter degenerates to `area > 0`). On LVIS v1 val, three annotations satisfy this: `id=31604` (img 194724 / cat 818 / `bbox=[132.86, 347.1, 0.07, 0.08]`), `id=85153` (img 492990 / cat 982), `id=114462` (img 305772 / cat 169) — all carry positive-extent bboxes but a segm-derived `area` field of `0.0`. Two are in "mixed" `(image, category)` cells where other non-zero-area GTs of the same category survive — the post-filter `img_pl` keeps the category, so the orphan DT becomes an FP. One (`id=85153`) is in an "all-zero-area" cell where the category drops out of `img_pl` and the DT is silently dropped via the federated AA4-style filter at ev:101. Observed as ~0.06% per-cell drift in full-val perfect-DT parity before the fix (concentrated on the two "mixed" cells: K=168 'bun' loses 1 DT, K=817 'plate' loses 1 DT). | lv:94, ev:101 | **strict**. `evaluate_with` filters GT indices on `area > 0` under `ParityMode::Strict` for federated datasets; placement before the AA4 cell-skip means all-zero-area cells naturally drop their DT, matching the oracle. Pinned by `evaluate.rs::tests::ag6_*`. |
 
 ### AH. API surface
 
@@ -469,15 +470,18 @@ depends on what full-val measurement reveals (the bench-side LVIS
 cell wired ahead of the next patch release, ADR-0026 follow-up,
 captures the new peak in `bench/results/<sha>/<fp>/lvis/`).
 
-**Bench-side strict parity at full val — open.** The release-mode
-LVIS bench cell (`lvis_v1_val_perfect` × bbox, ADR-0033 + bench
-matrix) shows ~0.06% per-cell divergence between vernier_lvis and
-lvis-api on the (T, R, K, A) precision tensor — concentrated on
-two categories (K=168, K=817) out of 1203. Vernier reports 1.0
-on every divergent cell (the perfect-DT expectation); lvis-api
-reports 0.987–0.999. The 1000-image parity smoke doesn't
-populate enough multi-GT-per-image cells in those two categories
-to surface the divergence. Hypothesis: score-tie ordering inside
-`LVISResults` (perfect-DT detections all carry score=1.0, so
-DT-to-GT tie-breaking is the load-bearing path); root cause not
-yet pinned. Tracked alongside the bench cell's `divergence_report.json`.
+**Bench-side strict parity at full val — resolved (AG6).** The
+release-mode LVIS bench cell (`lvis_v1_val_perfect` × bbox,
+ADR-0033 + bench matrix) initially showed ~0.06% per-cell divergence
+between vernier_lvis and lvis-api on the (T, R, K, A) precision
+tensor — concentrated on two K-rows (K_idx=168 'bun', K_idx=817
+'plate') out of 1203. Root-caused to quirk **AG6**: the oracle's
+`LVIS.get_ann_ids` strict `area > 0` filter silently drops three
+zero-area GT annotations in LVIS val; the perfect-DT generator
+emits a DT for each (including the dropped ones), so on "mixed"
+`(image, category)` cells the orphan DTs become FPs. Hypothesis at
+the time the ADR was acceptance-amended (score-tie ordering inside
+`LVISResults`) is invalidated by the actual cause. Fixed by mirroring
+the filter under `ParityMode::Strict` for federated datasets; pinned
+by `evaluate.rs::tests::ag6_*`. The release-mode bench cell now
+passes strict parity bit-equal.

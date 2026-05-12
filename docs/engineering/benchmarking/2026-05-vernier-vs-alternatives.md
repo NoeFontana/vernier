@@ -346,27 +346,30 @@ wall times.
   three orders of magnitude wider than the IQR, so the comparison
   is load-bearing despite the wider lvis-api confidence band.
 
-### Open: strict parity at full val
+### Strict parity at full val — closed (AG6)
 
-Both impls report the same headline `AP = 0.9983` on perfect-DT.
-Strict-tier bit-equality on the `(T, R, K, A)` precision tensor
-passes on **every category except K=168 and K=817** — 2730 divergent
-cells out of 4.86M (0.056%). Vernier reports 1.0 on every divergent
-cell (the perfect-DT expectation); lvis-api reports 0.987–0.9990.
-The 1000-image parity smoke
-(`tests/python/parity_lvis/test_lvis_val.py`) doesn't populate enough
-multi-GT-per-image cells in those two categories to surface the
-divergence — that's why it passes today.
+Both impls report the same headline `AP = 0.9983` on perfect-DT, and
+strict-tier bit-equality on the `(T, R, K, A)` precision tensor now
+passes on **all 4.86M cells** at full LVIS v1 val.
 
-Hypothesis: score-tie ordering inside `LVISResults`. Perfect-DT has
-every detection at score=1.0, so DT-to-GT tie-breaking is the
-load-bearing path; vernier's stable-sort lands on a different
-DT-to-GT mapping than lvis-api's, and lvis-api drops a fraction of
-a recall point on the few categories with enough multi-GT density
-to trigger the divergence. Not yet root-caused; tracked in ADR-0026
-§"Known follow-up" with the bench cell's divergence_report.json
-as the authoritative record. The 56.9x speedup is not gated on
-the resolution.
+The earlier round of this snapshot recorded ~0.06% per-cell drift on
+two K-rows (K_idx=168 'bun' and K_idx=817 'plate'). Root cause was
+quirk **AG6** — `LVIS.get_ann_ids` filters with strict `area > 0`
+(`lvis/lvis.py:94`) and silently drops three zero-area GT annotations
+in LVIS val. The perfect-DT generator emits a DT for every GT
+including the dropped ones, so on the two "mixed" `(image, category)`
+cells the orphan DT became an FP on the oracle's side. Vernier
+matched all 1206 DT-GT pairs cleanly because its loader keeps
+zero-area annotations. The original "score-tie ordering" hypothesis
+was wrong (perfect-DT scores aren't literally 1.0 — they're values
+like 0.999968 — and `mergesort` deterministic ordering wouldn't have
+explained the magnitude anyway).
+
+Fixed by mirroring the filter under `ParityMode::Strict` for
+federated datasets only (corrected mode keeps the zero-area
+annotations, which is the user-friendly default). Pinned by
+`evaluate.rs::tests::ag6_*`. The 56.9x speedup and 10x lower
+peak RSS were never gated on this — they stand unchanged.
 
 **Harness additions landed this phase**:
 - New paradigm `"lvis"` in `bench.harness.schema.Paradigm` +

@@ -121,10 +121,11 @@ choice is mostly about migration cost.
 The original ADR-0026 §"Known follow-up" called out a >22 GB structural
 peak from the dense `Vec<Option<PerImageEval>>` orchestrator grid (95M
 slots × 232 B). PR #179 collapsed the slot type via the `Box`-niche
-trick; the structural floor is now under 1 GB on full LVIS val. A small
-(~0.06%) per-cell precision-tensor drift against `lvis-api` shows up
-on full-val perfect-DT under the bench paradigm — concentrated on two
-categories — and is the remaining LVIS follow-up.
+trick; the structural floor is now under 1 GB on full LVIS val. The
+small per-cell precision-tensor drift that briefly tracked here as a
+follow-up was root-caused to the oracle's `area > 0` GT filter (quirk
+AG6) and is now mirrored in strict mode; the full-val bbox cell passes
+bit-equal.
 
 ## `boundary-iou-api`
 
