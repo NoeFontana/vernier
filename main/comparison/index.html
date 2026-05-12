@@ -2025,9 +2025,13 @@ image. The semantics match <code>lvis-api</code>'s outputs.</p>
 instance's attribute layout. There's no equivalent bit-for-bit text
 output to scrape (LVIS doesn't print a fixed-format summary), so the
 choice is mostly about migration cost.</p>
-<p>There's a known follow-up: vernier's dense-grid matrix peaks ~22 GB on a
-full LVIS val run; the optimization plan is folded into the round of
-work after 0.0.2.</p>
+<p>The original ADR-0026 §"Known follow-up" called out a &gt;22 GB structural
+peak from the dense <code>Vec&lt;Option&lt;PerImageEval&gt;&gt;</code> orchestrator grid (95M
+slots × 232 B). PR #179 collapsed the slot type via the <code>Box</code>-niche
+trick; the structural floor is now under 1 GB on full LVIS val. A small
+(~0.06%) per-cell precision-tensor drift against <code>lvis-api</code> shows up
+on full-val perfect-DT under the bench paradigm — concentrated on two
+categories — and is the remaining LVIS follow-up.</p>
 <h2 id="boundary-iou-api"><code>boundary-iou-api</code></h2>
 <p><a href="https://github.com/bowenc0221/boundary-iou-api">boundary-iou-api</a> is the
 reference for boundary IoU — the metric that ranks segmentation by how
