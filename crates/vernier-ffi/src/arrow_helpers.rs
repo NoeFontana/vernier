@@ -5,10 +5,13 @@
 //! `RecordBatch` for export. No business logic, no per-paradigm types.
 
 use std::ffi::CString;
+use std::sync::Arc;
 
 use arrow_array::ffi::to_ffi;
 use arrow_array::{Array, RecordBatch, StructArray};
 use arrow_data::ArrayData;
+use arrow_schema::ffi::FFI_ArrowSchema;
+use arrow_schema::{Schema, SchemaRef};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyCapsule};
@@ -20,10 +23,17 @@ use pyo3::types::{PyAny, PyCapsule};
 /// The buffers are `Arc`-backed inside `ArrayData`, so each call mints
 /// fresh `FFI_ArrowArray` / `FFI_ArrowSchema` handles cheaply; when a
 /// capsule drops, the FFI struct's `Drop` runs the C-Data-Interface
-/// `release` callback.
+/// `release` callback. The `schema` reference is retained because
+/// `to_ffi(&ArrayData)` re-derives an `FFI_ArrowSchema` from the
+/// `ArrayData`'s data_type alone — it does not see the parent
+/// `RecordBatch`'s field-level or schema-level metadata. We rebuild
+/// the FFI schema from the retained `Schema` so the ADR-0019 /
+/// ADR-0046 metadata (`vernier.schema_version`, `vernier.table`, ...)
+/// survives the round trip.
 #[pyclass(module = "vernier._core", name = "ArrowRecordBatch", frozen)]
 pub(crate) struct ArrowRecordBatchPy {
     data: ArrayData,
+    schema: SchemaRef,
 }
 
 #[pymethods]
@@ -39,8 +49,12 @@ impl ArrowRecordBatchPy {
         requested_schema: Option<&Bound<'py, PyAny>>,
     ) -> PyResult<(Bound<'py, PyCapsule>, Bound<'py, PyCapsule>)> {
         let _ = requested_schema;
-        let (ffi_array, ffi_schema) = to_ffi(&self.data)
+        // Build the array's FFI buffer pair, then discard the
+        // metadata-less schema and replace it with one derived from
+        // the retained `Schema` (which carries metadata).
+        let (ffi_array, _ffi_schema_no_meta) = to_ffi(&self.data)
             .map_err(|e| PyValueError::new_err(format!("arrow ffi export failed: {e}")))?;
+        let ffi_schema = schema_to_ffi(&self.schema)?;
         let schema_capsule = make_capsule(py, ffi_schema, "arrow_schema")?;
         let array_capsule = make_capsule(py, ffi_array, "arrow_array")?;
         Ok((schema_capsule, array_capsule))
@@ -51,6 +65,48 @@ impl ArrowRecordBatchPy {
         let n_cols = self.data.child_data().len();
         format!("ArrowRecordBatch(rows={n_rows}, columns={n_cols})")
     }
+}
+
+/// Convert a `Schema` to an `FFI_ArrowSchema` carrying both the
+/// schema-level metadata (e.g., `vernier.schema_version`) and the
+/// per-field metadata. The structure must be a `Struct` (the
+/// C-Data-Interface representation of a record batch); field children
+/// are derived from `schema.fields()` in order.
+fn schema_to_ffi(schema: &Schema) -> PyResult<FFI_ArrowSchema> {
+    // Build child FFI schemas (one per field), each named like the
+    // field, with its data_type and nullability flag.
+    let mut children: Vec<FFI_ArrowSchema> = Vec::with_capacity(schema.fields().len());
+    for field in schema.fields() {
+        let child = FFI_ArrowSchema::try_from(field.data_type())
+            .and_then(|c| c.with_name(field.name()))
+            .map_err(|e| {
+                PyValueError::new_err(format!("arrow field {:?} to FFI failed: {e}", field.name()))
+            })?;
+        let flags = if field.is_nullable() {
+            arrow_schema::ffi::Flags::NULLABLE
+        } else {
+            arrow_schema::ffi::Flags::empty()
+        };
+        let child = child
+            .with_flags(flags)
+            .map_err(|e| PyValueError::new_err(format!("arrow field flags failed: {e}")))?;
+        children.push(child);
+    }
+    let parent = FFI_ArrowSchema::try_new("+s", children, None)
+        .map_err(|e| PyValueError::new_err(format!("arrow parent FFI build failed: {e}")))?;
+    let parent = if !schema.metadata().is_empty() {
+        parent
+            .with_metadata(
+                schema
+                    .metadata()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            )
+            .map_err(|e| PyValueError::new_err(format!("arrow schema metadata failed: {e}")))?
+    } else {
+        parent
+    };
+    Ok(parent)
 }
 
 /// Wrap a (Drop-runs-release) Arrow FFI struct in a PyCapsule with the
@@ -67,10 +123,14 @@ where
 
 /// Wrap an Arrow `RecordBatch` for PyCapsule export. Arrow treats
 /// record batches and struct arrays identically on the C-Data-Interface
-/// side; we go through `StructArray` to get a single `ArrayData` payload.
+/// side; we go through `StructArray` to get a single `ArrayData` payload,
+/// and retain the original `Schema` so schema-level metadata
+/// (ADR-0019, ADR-0046) is preserved on export.
 pub(crate) fn wrap_batch(batch: RecordBatch) -> ArrowRecordBatchPy {
+    let schema = Arc::clone(batch.schema_ref());
     ArrowRecordBatchPy {
         data: StructArray::from(batch).to_data(),
+        schema,
     }
 }
 

@@ -1,0 +1,17 @@
+{
+  "metadata": {
+    "vernier.schema_version": "1",
+    "vernier.table": "slices",
+    "vernier.paradigm": "panoptic",
+    "vernier.metric": "pq"
+  },
+  "fields": [
+    {"name": "axis", "type": "utf8", "nullable": false},
+    {"name": "value", "type": "utf8", "nullable": false},
+    {"name": "n_images", "type": "uint64", "nullable": false},
+    {"name": "n_detections", "type": "uint64", "nullable": false},
+    {"name": "pq", "type": "float64", "nullable": false},
+    {"name": "sq", "type": "float64", "nullable": false},
+    {"name": "rq", "type": "float64", "nullable": false}
+  ]
+}

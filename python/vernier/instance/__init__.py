@@ -8,9 +8,10 @@ keypoints) lives under ``vernier.instance``. Sibling to
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
-from typing import Any, Final, Literal, NoReturn, overload
+from typing import Any, Final, Literal, NoReturn, TypeAlias, overload
 
 from vernier._array_types import (
     CompressedRLE,
@@ -34,14 +35,18 @@ from vernier._core import (
     QueueFullError,
     Summary,
     evaluate_bbox_grid,
+    evaluate_bbox_partitioned,
     evaluate_bbox_summary,
     evaluate_bbox_summary_with_dataset,
     evaluate_boundary_grid,
+    evaluate_boundary_partitioned,
     evaluate_boundary_summary,
     evaluate_boundary_summary_with_dataset,
+    evaluate_keypoints_partitioned,
     evaluate_keypoints_summary,
     evaluate_keypoints_summary_with_dataset,
     evaluate_segm_grid,
+    evaluate_segm_partitioned,
     evaluate_segm_summary,
     evaluate_segm_summary_with_dataset,
     per_class_to_arrow_pycapsule,
@@ -111,6 +116,7 @@ __all__ = [
     "LrpConfig",
     "LrpPerClass",
     "LrpReport",
+    "Manifest",
     "MemoryBudgetWarning",
     "OutOfBudgetError",
     "PartialDatasetMismatch",
@@ -177,6 +183,29 @@ class Keypoints:
 #: Per-kernel parameters live on each variant; pattern-match on
 #: :attr:`Evaluator.iou` to dispatch.
 IouKind = Bbox | Segm | Boundary | Keypoints
+
+
+#: Acceptable shapes for the ``manifest=`` keyword on
+#: :meth:`Evaluator.evaluate` (ADR-0046). One of:
+#:
+#: - a ``dict`` matching the canonical JSON-records shape;
+#: - a file path (``str`` or :class:`os.PathLike`) to a ``.json`` manifest;
+#: - any object exposing the Arrow PyCapsule Interface
+#:   (``__arrow_c_array__`` / ``__arrow_c_stream__``) — a polars,
+#:   pandas, pyarrow, or duckdb DataFrame of per-image metadata
+#:   passes straight in.
+Manifest: TypeAlias = Mapping[str, Any] | str | os.PathLike[str] | Any
+
+
+def _normalize_cross_axes(
+    cross_axes: Sequence[Sequence[str]] | None,
+) -> list[list[str]] | None:
+    """Coerce ``cross_axes`` into the ``list[list[str]]`` shape the FFI
+    consumes. ``None`` passes through unchanged so the kwarg's default
+    on the FFI side (no cross product) is what fires."""
+    if cross_axes is None:
+        return None
+    return [list(axes) for axes in cross_axes]
 
 
 #: Per-kernel canonical ``max_dets`` ladders used when
@@ -406,6 +435,8 @@ class Evaluator:
         *,
         tables: None = None,
         tables_config: TablesConfig | None = None,
+        manifest: None = None,
+        cross_axes: None = None,
     ) -> Summary: ...
 
     @overload
@@ -416,6 +447,20 @@ class Evaluator:
         *,
         tables: Literal["all"] | tuple[TableName, ...],
         tables_config: TablesConfig | None = None,
+        manifest: None = None,
+        cross_axes: None = None,
+    ) -> EvalResult: ...
+
+    @overload
+    def evaluate(
+        self,
+        gt: bytes | CocoDataset,
+        dt: DetectionsInput,
+        *,
+        tables: None = None,
+        tables_config: TablesConfig | None = None,
+        manifest: Manifest,
+        cross_axes: Sequence[Sequence[str]] | None = None,
     ) -> EvalResult: ...
 
     def evaluate(
@@ -425,6 +470,8 @@ class Evaluator:
         *,
         tables: Literal["all"] | tuple[TableName, ...] | None = None,
         tables_config: TablesConfig | None = None,
+        manifest: Manifest | None = None,
+        cross_axes: Sequence[Sequence[str]] | None = None,
     ) -> Summary | EvalResult:
         """Run the evaluation pipeline against a GT/DT pair.
 
@@ -444,6 +491,16 @@ class Evaluator:
         :data:`TableName`\\ s to opt into the wider :class:`EvalResult`
         return type.
 
+        ``manifest=`` opts into ADR-0046 partitioned eval. Accepts a
+        dict (the canonical JSON-records shape), a file path
+        (``.json``), or any object exposing the Arrow PyCapsule
+        Interface (a polars / pandas / pyarrow DataFrame of per-image
+        metadata). Returns an :class:`EvalResult` whose ``.summary``
+        is bit-identical to the un-partitioned call and whose
+        ``.slices`` property is a polars DataFrame with one row per
+        ``(axis, value)`` cell. ``cross_axes=`` opts joint cells in
+        (per ADR-0046 §E2; marginals are the default).
+
         Per ADR-0040, raises :class:`IncompatibleSummaryPlan` when
         ``iou_thresholds`` / ``recall_thresholds`` / ``area_ranges``
         is set explicitly: the canonical 12-stat summary plan is keyed
@@ -461,6 +518,19 @@ class Evaluator:
                 remediation=_INCOMPATIBLE_SUMMARY_REMEDIATION,
             )
         max_dets_list = self._resolve_max_dets()
+        if manifest is not None:
+            if tables is not None:
+                raise ValueError(
+                    "tables= and manifest= cannot be combined yet; the partitioned "
+                    "evaluate returns EvalResult carrying the slices RecordBatch "
+                    "but per-class / per-image partitioned tables are a follow-up."
+                )
+            if isinstance(gt, CocoDataset):
+                raise NotImplementedError(
+                    "manifest= currently requires GT JSON bytes; CocoDataset handles "
+                    "on the partitioned path are a follow-up."
+                )
+            return self._evaluate_partitioned(gt, dt, max_dets_list, manifest, cross_axes)
         if tables is not None:
             return self._evaluate_with_tables(
                 gt, dt, max_dets_list, tables, tables_config or TablesConfig()
@@ -492,6 +562,76 @@ class Evaluator:
                 )
             case _:
                 _reject_unknown_iou(self.iou)
+
+    def _evaluate_partitioned(
+        self,
+        gt: bytes,
+        dt: DetectionsInput,
+        max_dets_list: list[int],
+        manifest: Manifest,
+        cross_axes: Sequence[Sequence[str]] | None,
+    ) -> EvalResult:
+        """ADR-0046 partitioned eval dispatch. Routes the user's
+        manifest input through the kernel-specific FFI entry, then
+        wraps the resulting `PartitionedSummary` in an `EvalResult`
+        carrying the slices RecordBatch."""
+        cross = _normalize_cross_axes(cross_axes)
+        match self.iou:
+            case Bbox():
+                psum = evaluate_bbox_partitioned(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    manifest,
+                    self.cast_inputs,
+                    cross_axes=cross,
+                )
+            case Segm():
+                psum = evaluate_segm_partitioned(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    manifest,
+                    self.cast_inputs,
+                    cross_axes=cross,
+                )
+            case Boundary(dilation_ratio=r):
+                psum = evaluate_boundary_partitioned(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    r,
+                    manifest,
+                    self.cast_inputs,
+                    cross_axes=cross,
+                )
+            case Keypoints(sigmas=s):
+                psum = evaluate_keypoints_partitioned(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    _normalize_sigmas(s),
+                    manifest,
+                    self.cast_inputs,
+                    cross_axes=cross,
+                )
+            case _:
+                _reject_unknown_iou(self.iou)
+        slices_batch = psum.slices_capsule()
+        return EvalResult(
+            summary=psum.overall,
+            _slices_batch=slices_batch,
+            overall_n_images=int(psum.overall_n_images),
+            overall_n_detections=int(psum.overall_n_detections),
+        )
 
     def evaluate_tables(
         self,

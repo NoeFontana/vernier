@@ -17,6 +17,8 @@ variant for overlapping the kernel with the rest of the training step.
 
 ::: vernier.instance.IouKind
 
+::: vernier.instance.Manifest
+
 ::: vernier.instance.RLEInput
 
 ::: vernier.instance.TableName

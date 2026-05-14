@@ -326,6 +326,43 @@ fn metric_olrp_keypoints_runs_end_to_end() {
 }
 
 #[test]
+fn v1_json_byte_stable_without_manifest() {
+    // ADR-0046 contract: un-partitioned eval is byte-for-byte
+    // identical to today's path. Two back-to-back invocations on the
+    // same inputs must produce byte-equal JSON.
+    let tmp = tempdir();
+    let out_a = tmp.path().join("a.json");
+    let out_b = tmp.path().join("b.json");
+
+    for out in [&out_a, &out_b] {
+        let mut cmd = Command::cargo_bin("vernier").unwrap();
+        let mut args: Vec<String> = vec!["eval".into()];
+        args.extend(bbox_args());
+        args.push("--emit".into());
+        args.push(format!("json={}", out.display()));
+        let output = cmd.args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    }
+    let a = std::fs::read(&out_a).unwrap();
+    let b = std::fs::read(&out_b).unwrap();
+    assert_eq!(a, b, "v1 JSON must be byte-stable across runs");
+    // Sanity: still v1 — no accidental v2 leak.
+    let parsed: serde_json::Value = serde_json::from_slice(&a).unwrap();
+    assert_eq!(parsed["version"], "1");
+}
+
+#[test]
+fn cross_without_manifest_is_rejected_at_validate_time() {
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let mut args: Vec<String> = vec!["eval".into()];
+    args.extend(bbox_args());
+    args.push("--cross".into());
+    args.push("weather,time_of_day".into());
+    let output = cmd.args(args).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
+#[test]
 fn metric_unknown_value_exits_two() {
     let mut cmd = Command::cargo_bin("vernier").unwrap();
     let mut args: Vec<String> = vec!["eval".into()];

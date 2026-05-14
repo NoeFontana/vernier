@@ -22,12 +22,14 @@ from vernier._compat import PycocotoolsCOCOeval as COCOeval
 from vernier._core import version
 from vernier._types import ParityMode
 from vernier.adapters import patch_pycocotools
+from vernier.aggregate import aggregate
 
 __all__ = [
     "COCOeval",
     "Frequency",
     "ParityMode",
     "__version__",
+    "aggregate",
     "instance",
     "panoptic",
     "patch_pycocotools",

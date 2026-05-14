@@ -217,9 +217,10 @@ class EvalResult:
     """Result of an opt-in result-tables evaluate(...) call.
 
     Returned only when ``tables=`` is non-``None`` on
-    :meth:`vernier.Evaluator.evaluate`. The default ``tables=None`` path
-    still returns the bit-identical :class:`vernier.Summary` it always
-    has.
+    :meth:`vernier.Evaluator.evaluate`, or when ``manifest=`` is set
+    on the partitioned-eval path (ADR-0046). The default ``tables=None``
+    + ``manifest=None`` path still returns the bit-identical
+    :class:`vernier.Summary` it always has.
 
     Tables are exposed as cached :class:`polars.DataFrame` properties;
     polars is imported lazily on first attribute access (installed via
@@ -236,6 +237,10 @@ class EvalResult:
     #: hardcoded slot indices that don't generalize to user-defined
     #: grids. Custom-grid callers consume the per-axis result tables
     #: directly. The default-grid path always populates this field.
+    #:
+    #: On the ADR-0046 partitioned path this is the ``overall``
+    #: summary — bit-identical to the un-partitioned call against the
+    #: same GT/DT pair.
     summary: Summary | None
     # Underlying Arrow producers (PyCapsule-emitting). `None` for tables
     # the caller didn't request. Leading underscore: implementation
@@ -244,6 +249,17 @@ class EvalResult:
     _per_class_batch: object | None = field(default=None, repr=False)
     _per_detection_batch: object | None = field(default=None, repr=False)
     _per_pair_batch: object | None = field(default=None, repr=False)
+    #: Slices RecordBatch (ADR-0046). ``None`` unless ``manifest=`` was
+    #: passed to ``Evaluator.evaluate(...)``. The cached
+    #: :attr:`slices` DataFrame view reads it.
+    _slices_batch: object | None = field(default=None, repr=False)
+    #: Image count behind ``summary`` on the partitioned path; ``None``
+    #: on the un-partitioned path (where it equals
+    #: ``len(dataset.images)``).
+    overall_n_images: int | None = field(default=None)
+    #: Detection count behind ``summary`` on the partitioned path;
+    #: ``None`` on the un-partitioned path.
+    overall_n_detections: int | None = field(default=None)
 
     @property
     def stats(self) -> list[float]:
@@ -280,6 +296,14 @@ class EvalResult:
         """One row per (DT, GT) pair. Raises ``RuntimeError`` if
         ``per_pair`` was not in the ``tables=`` request."""
         return arrow_to_dataframe(self._per_pair_batch, "per_pair")
+
+    @cached_property
+    def slices(self) -> pl.DataFrame:
+        """One row per ``(axis, value)`` partition cell (ADR-0046).
+        Available only when the originating ``evaluate(...)`` call
+        carried a ``manifest=`` keyword; raises :class:`RuntimeError`
+        otherwise."""
+        return arrow_to_dataframe(self._slices_batch, "slices")
 
 
 #: Tables the active build of vernier knows how to produce on the

@@ -43,6 +43,9 @@ impl Formatter for Text {
                 Ok(())
             }
             EvalArtifact::Lrp(report) => render_lrp(report, out),
+            EvalArtifact::Partitioned { summary, label } => {
+                render_partitioned(summary, *label, out)
+            }
         }
     }
 }
@@ -90,4 +93,37 @@ fn fmt_opt(v: Option<f64>) -> String {
         Some(x) => format!("{x:.4}"),
         None => "NaN".to_string(),
     }
+}
+
+/// Render a partitioned (ADR-0046 / v2) eval: the overall pretty-lines
+/// table first, then one labelled block per slice with a header line
+/// of the form `==> axis = value  (n_images=N, n_detections=M)`.
+fn render_partitioned(
+    summary: &vernier_core::partition::PartitionedSummary,
+    label: Option<&str>,
+    out: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    if let Some(label) = label {
+        writeln!(out, "label = {label}")?;
+    }
+    writeln!(
+        out,
+        "overall  (n_images={}, n_detections={})",
+        summary.overall_n_images, summary.overall_n_detections
+    )?;
+    for line in summary.overall.pretty_lines() {
+        writeln!(out, "{line}")?;
+    }
+    for sr in &summary.slices {
+        writeln!(out)?;
+        writeln!(
+            out,
+            "==>  {} = {}  (n_images={}, n_detections={})",
+            sr.slice.axis, sr.slice.value, sr.n_images, sr.n_detections
+        )?;
+        for line in sr.summary.pretty_lines() {
+            writeln!(out, "{line}")?;
+        }
+    }
+    Ok(())
 }

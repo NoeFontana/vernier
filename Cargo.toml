@@ -103,6 +103,14 @@ crc32fast = "1"
 # overkill for hot-path histograms over `(u32, u32)` keys that never
 # touch user-controlled input.
 rustc-hash = "2"
+# CSV parser used by the manifest CSV adapter (ADR-0046 §D2). Spreadsheet-
+# native attribute tables are the primary input for the robotics user;
+# the parser converts to the canonical JSON-records shape at parse time
+# so the validation path is shared.
+csv = "1"
+# Shell-style glob expansion for `vernier aggregate --results 'runs/*.json'`
+# (ADR-0046 §B2 / §"`vernier aggregate`"). Pure-Rust, single-purpose.
+glob = "0.3"
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit

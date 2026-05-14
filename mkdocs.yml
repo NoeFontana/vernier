@@ -102,6 +102,8 @@ nav:
           - vernier.semantic: reference/python/semantic.md
           - vernier.adapters: reference/python/adapters.md
       - CLI output schema: reference/cli-output-schema.md
+      - Manifest schema: reference/manifest-schema.md
+      - Aggregate output schema: reference/aggregate-schema.md
       - COCO summary stats: reference/coco-summary-stats.md
   - Explanation:
       - explanation/README.md

@@ -3,18 +3,29 @@
 //! PyCapsule Interface. No business logic — column shapes, sentinels,
 //! and overflow live in `vernier-core`. Construction runs under
 //! `py.detach` (per ADR-0006).
+//!
+//! Schema metadata. Every schema produced here carries
+//! `vernier.schema_version = "1"` and `vernier.table = "<name>"`
+//! metadata so consumers can pin against a stable contract — the
+//! Arrow analogue of the JSON `version` field (ADR-0019 / ADR-0046).
+//! Slice schemas additionally carry `vernier.paradigm` and
+//! `vernier.metric` so the four wide variants
+//! (instance-AP / instance-LRP / panoptic / semantic) can be
+//! disambiguated from a single column-name list.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use arrow_array::types::Int32Type;
 use arrow_array::{
     ArrayRef, DictionaryArray, FixedSizeListArray, Float64Array, Int32Array, Int64Array,
-    RecordBatch, StringArray, UInt32Array,
+    RecordBatch, StringArray, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
+use vernier_core::partition::PartitionedSummary;
 use vernier_core::tables::{
     aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
     build_per_pair, BboxColumns, MatchStatus, PerClassTable, PerDetectionTable, PerImageTable,
@@ -26,6 +37,35 @@ use crate::arrow_helpers::{arrow_err, wrap_batch, ArrowRecordBatchPy};
 use crate::dataset::PyDataset;
 use crate::PyAccumulated;
 use crate::PyEvalGrid;
+
+/// Schema metadata key for the wire-format version of a table.
+pub(crate) const META_SCHEMA_VERSION: &str = "vernier.schema_version";
+/// Schema metadata key naming the table (`per_class`, `slices`, ...).
+pub(crate) const META_TABLE: &str = "vernier.table";
+/// Schema metadata key naming the paradigm for slice tables
+/// (`instance`, `panoptic`, `semantic`).
+pub(crate) const META_PARADIGM: &str = "vernier.paradigm";
+/// Schema metadata key naming the headline metric for slice tables
+/// (`ap`, `lrp`, `pq`, `miou`).
+pub(crate) const META_METRIC: &str = "vernier.metric";
+
+/// Bytes-keyed metadata stamp for a regular result table.
+pub(crate) fn table_metadata(name: &str) -> HashMap<String, String> {
+    let mut md = HashMap::with_capacity(2);
+    md.insert(META_SCHEMA_VERSION.to_owned(), "1".to_owned());
+    md.insert(META_TABLE.to_owned(), name.to_owned());
+    md
+}
+
+/// Bytes-keyed metadata stamp for a slice table.
+fn slices_metadata(paradigm: &str, metric: &str) -> HashMap<String, String> {
+    let mut md = HashMap::with_capacity(4);
+    md.insert(META_SCHEMA_VERSION.to_owned(), "1".to_owned());
+    md.insert(META_TABLE.to_owned(), "slices".to_owned());
+    md.insert(META_PARADIGM.to_owned(), paradigm.to_owned());
+    md.insert(META_METRIC.to_owned(), metric.to_owned());
+    md
+}
 
 /// Build a [`vernier_core::PerClassTable`] and return it as an
 /// Arrow record batch wrapped for PyCapsule export.
@@ -291,7 +331,7 @@ fn per_detection_schema(with_geometry: bool) -> Schema {
             false,
         ));
     }
-    Schema::new(fields)
+    Schema::new(fields).with_metadata(table_metadata("per_detection"))
 }
 
 /// Build a [`PerPairTable`] and return it as an Arrow record batch
@@ -351,6 +391,220 @@ fn per_pair_schema() -> Schema {
         Field::new("category_id", DataType::Int64, false),
         Field::new("iou", DataType::Float64, false),
     ])
+    .with_metadata(table_metadata("per_pair"))
+}
+
+// ---------------------------------------------------------------------------
+// Slices RecordBatches (ADR-0046)
+// ---------------------------------------------------------------------------
+
+/// Schema for the instance-AP slices table. Columns: the 12 detection
+/// stats wide plus n_images / n_detections, one row per
+/// `(axis, value)` cell.
+fn slices_instance_ap_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("axis", DataType::Utf8, false),
+        Field::new("value", DataType::Utf8, false),
+        Field::new("n_images", DataType::UInt64, false),
+        Field::new("n_detections", DataType::UInt64, false),
+        Field::new("ap", DataType::Float64, false),
+        Field::new("ap50", DataType::Float64, false),
+        Field::new("ap75", DataType::Float64, false),
+        Field::new("ap_s", DataType::Float64, false),
+        Field::new("ap_m", DataType::Float64, false),
+        Field::new("ap_l", DataType::Float64, false),
+        Field::new("ar_max_1", DataType::Float64, false),
+        Field::new("ar_max_10", DataType::Float64, false),
+        Field::new("ar_max_100", DataType::Float64, false),
+        Field::new("ar_s", DataType::Float64, false),
+        Field::new("ar_m", DataType::Float64, false),
+        Field::new("ar_l", DataType::Float64, false),
+    ])
+    .with_metadata(slices_metadata("instance", "ap"))
+}
+
+/// Schema for the panoptic slices table.
+fn slices_panoptic_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("axis", DataType::Utf8, false),
+        Field::new("value", DataType::Utf8, false),
+        Field::new("n_images", DataType::UInt64, false),
+        Field::new("n_detections", DataType::UInt64, false),
+        Field::new("pq", DataType::Float64, false),
+        Field::new("sq", DataType::Float64, false),
+        Field::new("rq", DataType::Float64, false),
+    ])
+    .with_metadata(slices_metadata("panoptic", "pq"))
+}
+
+/// Schema for the semantic slices table.
+fn slices_semantic_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("axis", DataType::Utf8, false),
+        Field::new("value", DataType::Utf8, false),
+        Field::new("n_images", DataType::UInt64, false),
+        Field::new("n_detections", DataType::UInt64, false),
+        Field::new("miou", DataType::Float64, false),
+        Field::new("fwiou", DataType::Float64, false),
+        Field::new("pixel_accuracy", DataType::Float64, false),
+        Field::new("mean_accuracy", DataType::Float64, false),
+    ])
+    .with_metadata(slices_metadata("semantic", "miou"))
+}
+
+/// One row per slice in `summary.slices`, with the 12 detection-AP
+/// stats laid out wide.
+pub(crate) fn slices_record_batch_instance_ap(
+    summary: &PartitionedSummary,
+) -> Result<RecordBatch, arrow_schema::ArrowError> {
+    let n = summary.slices.len();
+    let mut axis: Vec<String> = Vec::with_capacity(n);
+    let mut value: Vec<String> = Vec::with_capacity(n);
+    let mut n_images: Vec<u64> = Vec::with_capacity(n);
+    let mut n_detections: Vec<u64> = Vec::with_capacity(n);
+    // 12 detection stats — flat per-cell vectors, then assembled by column.
+    let mut cols: [Vec<f64>; 12] = Default::default();
+    for slice in &summary.slices {
+        axis.push(slice.slice.axis.clone());
+        value.push(slice.slice.value.clone());
+        n_images.push(slice.n_images);
+        n_detections.push(slice.n_detections);
+        let stats = slice.summary.stats();
+        for (i, col) in cols.iter_mut().enumerate() {
+            col.push(stats.get(i).copied().unwrap_or(f64::NAN));
+        }
+    }
+    let schema = Arc::new(slices_instance_ap_schema());
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(axis)),
+        Arc::new(StringArray::from(value)),
+        Arc::new(UInt64Array::from(n_images)),
+        Arc::new(UInt64Array::from(n_detections)),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[0]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[1]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[2]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[3]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[4]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[5]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[6]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[7]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[8]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[9]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[10]))),
+        Arc::new(Float64Array::from(std::mem::take(&mut cols[11]))),
+    ];
+    RecordBatch::try_new(schema, columns)
+}
+
+/// Convert an [`ArrowError`] result into a PyCapsule wrapper.
+pub(crate) fn slices_instance_ap_to_arrow(
+    summary: &PartitionedSummary,
+) -> Result<ArrowRecordBatchPy, arrow_schema::ArrowError> {
+    Ok(wrap_batch(slices_record_batch_instance_ap(summary)?))
+}
+
+/// One row per `(axis, value)` slice for the panoptic paradigm.
+///
+/// `rows` is a parallel vector of `(axis, value, n_images, n_detections,
+/// pq, sq, rq)` tuples produced by the per-slice loop in the Python
+/// wrapper — panoptic does not flow through [`PartitionedSummary`].
+pub(crate) fn slices_record_batch_panoptic(
+    rows: &[PanopticSliceRow],
+) -> Result<RecordBatch, arrow_schema::ArrowError> {
+    let n = rows.len();
+    let mut axis: Vec<String> = Vec::with_capacity(n);
+    let mut value: Vec<String> = Vec::with_capacity(n);
+    let mut n_images: Vec<u64> = Vec::with_capacity(n);
+    let mut n_detections: Vec<u64> = Vec::with_capacity(n);
+    let mut pq: Vec<f64> = Vec::with_capacity(n);
+    let mut sq: Vec<f64> = Vec::with_capacity(n);
+    let mut rq: Vec<f64> = Vec::with_capacity(n);
+    for r in rows {
+        axis.push(r.axis.clone());
+        value.push(r.value.clone());
+        n_images.push(r.n_images);
+        n_detections.push(r.n_detections);
+        pq.push(r.pq);
+        sq.push(r.sq);
+        rq.push(r.rq);
+    }
+    let schema = Arc::new(slices_panoptic_schema());
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(axis)),
+        Arc::new(StringArray::from(value)),
+        Arc::new(UInt64Array::from(n_images)),
+        Arc::new(UInt64Array::from(n_detections)),
+        Arc::new(Float64Array::from(pq)),
+        Arc::new(Float64Array::from(sq)),
+        Arc::new(Float64Array::from(rq)),
+    ];
+    RecordBatch::try_new(schema, columns)
+}
+
+/// One row per `(axis, value)` slice for the semantic paradigm.
+pub(crate) fn slices_record_batch_semantic(
+    rows: &[SemanticSliceRow],
+) -> Result<RecordBatch, arrow_schema::ArrowError> {
+    let n = rows.len();
+    let mut axis: Vec<String> = Vec::with_capacity(n);
+    let mut value: Vec<String> = Vec::with_capacity(n);
+    let mut n_images: Vec<u64> = Vec::with_capacity(n);
+    let mut n_detections: Vec<u64> = Vec::with_capacity(n);
+    let mut miou: Vec<f64> = Vec::with_capacity(n);
+    let mut fwiou: Vec<f64> = Vec::with_capacity(n);
+    let mut pa: Vec<f64> = Vec::with_capacity(n);
+    let mut ma: Vec<f64> = Vec::with_capacity(n);
+    for r in rows {
+        axis.push(r.axis.clone());
+        value.push(r.value.clone());
+        n_images.push(r.n_images);
+        n_detections.push(r.n_detections);
+        miou.push(r.miou);
+        fwiou.push(r.fwiou);
+        pa.push(r.pixel_accuracy);
+        ma.push(r.mean_accuracy);
+    }
+    let schema = Arc::new(slices_semantic_schema());
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(axis)),
+        Arc::new(StringArray::from(value)),
+        Arc::new(UInt64Array::from(n_images)),
+        Arc::new(UInt64Array::from(n_detections)),
+        Arc::new(Float64Array::from(miou)),
+        Arc::new(Float64Array::from(fwiou)),
+        Arc::new(Float64Array::from(pa)),
+        Arc::new(Float64Array::from(ma)),
+    ];
+    RecordBatch::try_new(schema, columns)
+}
+
+/// Plain-data row payload for the panoptic slices table. Built by
+/// the Python orchestrator that loops the unchanged single-eval over
+/// per-slice image subsets (the panoptic substitute for
+/// `evaluate_partitioned`).
+#[derive(Debug, Clone)]
+pub(crate) struct PanopticSliceRow {
+    pub(crate) axis: String,
+    pub(crate) value: String,
+    pub(crate) n_images: u64,
+    pub(crate) n_detections: u64,
+    pub(crate) pq: f64,
+    pub(crate) sq: f64,
+    pub(crate) rq: f64,
+}
+
+/// Plain-data row payload for the semantic slices table. Same
+/// orchestration pattern as [`PanopticSliceRow`].
+#[derive(Debug, Clone)]
+pub(crate) struct SemanticSliceRow {
+    pub(crate) axis: String,
+    pub(crate) value: String,
+    pub(crate) n_images: u64,
+    pub(crate) n_detections: u64,
+    pub(crate) miou: f64,
+    pub(crate) fwiou: f64,
+    pub(crate) pixel_accuracy: f64,
+    pub(crate) mean_accuracy: f64,
 }
 
 fn per_image_schema() -> Schema {
@@ -368,6 +622,7 @@ fn per_image_schema() -> Schema {
         Field::new("fn_at_75", DataType::UInt32, false),
         Field::new("tp_mean_iou", DataType::UInt32, false),
     ])
+    .with_metadata(table_metadata("per_image"))
 }
 
 fn per_class_schema() -> Schema {
@@ -386,4 +641,5 @@ fn per_class_schema() -> Schema {
         Field::new("n_gt", DataType::UInt32, false),
         Field::new("n_dt", DataType::UInt32, false),
     ])
+    .with_metadata(table_metadata("per_class"))
 }

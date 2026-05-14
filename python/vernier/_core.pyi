@@ -362,6 +362,89 @@ def evaluate_keypoints_grid(
     area_ranges: Breakdown | None = ...,
 ) -> EvalGrid: ...
 
+# ADR-0046 partitioned-eval surface.
+
+class PartitionedSummary:
+    @property
+    def overall(self) -> Summary: ...
+    @property
+    def overall_n_images(self) -> int: ...
+    @property
+    def overall_n_detections(self) -> int: ...
+    @property
+    def n_slices(self) -> int: ...
+    def slices_capsule(self) -> ArrowRecordBatch: ...
+
+def evaluate_bbox_partitioned(
+    gt_json: bytes,
+    dt: DetectionsInput,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    manifest: object,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedSummary: ...
+def evaluate_segm_partitioned(
+    gt_json: bytes,
+    dt: DetectionsInput,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    manifest: object,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedSummary: ...
+def evaluate_boundary_partitioned(
+    gt_json: bytes,
+    dt: DetectionsInput,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    dilation_ratio: float,
+    manifest: object,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedSummary: ...
+def evaluate_keypoints_partitioned(
+    gt_json: bytes,
+    dt: DetectionsInput,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    sigmas: dict[int, list[float]],
+    manifest: object,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedSummary: ...
+def evaluate_bbox_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
+def evaluate_segm_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
+def evaluate_boundary_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
+def evaluate_keypoints_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
+def slices_batch_panoptic(
+    rows: list[tuple[str, str, int, int, float, float, float]],
+) -> ArrowRecordBatch: ...
+def slices_batch_semantic(
+    rows: list[tuple[str, str, int, int, float, float, float, float]],
+) -> ArrowRecordBatch: ...
+def manifest_to_json_bytes(manifest: object, key_kind: str = ...) -> bytes: ...
+
 class _TideDeltaDict(TypedDict):
     cls: float
     loc: float

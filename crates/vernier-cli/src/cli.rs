@@ -38,11 +38,106 @@ pub(crate) struct Cli {
 }
 
 /// Verb-level dispatch. Per ADR-0015 §"CLI structure", `eval` is the
-/// only verb at v0.2; future verbs land additively.
+/// v0.2 verb; ADR-0046 adds `aggregate` for cross-run fan-in.
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
     /// Run a COCO-style eval and emit a summary.
     Eval(EvalArgs),
+    /// Fan-in over many `vernier eval` result documents (ADR-0046).
+    /// Joins each result to a `key_kind=result` manifest by `--label`
+    /// (falling back to the result file path) and emits a comparative
+    /// per-slice table. When `--baseline` names a slice value, the
+    /// table gains rPC columns (`<metric>__rpc = mean_other /
+    /// mean_baseline`).
+    Aggregate(AggregateArgs),
+}
+
+/// Args for `vernier aggregate` (ADR-0046).
+#[derive(Debug, Parser)]
+pub(crate) struct AggregateArgs {
+    /// Partition manifest. Must declare `key_kind: "result"` (or the
+    /// CSV form, which is `result`-only on this verb).
+    #[arg(long, value_name = "PATH")]
+    pub(crate) manifest: PathBuf,
+
+    /// Shell glob over result JSON files (e.g. `runs/*.json`). Each
+    /// match is parsed as a `vernier eval` document (v1 or v2). A
+    /// glob that matches zero files is a typed error.
+    #[arg(long, value_name = "GLOB")]
+    pub(crate) results: String,
+
+    /// Baseline slice value (e.g. `clean`). When set, rPC columns
+    /// (`<metric>__rpc = mean(non-baseline) / mean(baseline)`) are
+    /// appended. Omit for the comparative table without relative
+    /// reductions.
+    #[arg(long, value_name = "VALUE")]
+    pub(crate) baseline: Option<String>,
+
+    /// Metric names to aggregate. Repeatable. Defaults to every
+    /// numeric stat the slice tables expose (one column per
+    /// `Summary::stats()` position, named after the corresponding
+    /// pretty-line).
+    #[arg(long, value_name = "NAME", action = ArgAction::Append)]
+    pub(crate) metric: Vec<String>,
+
+    /// Repeatable emit selector — same shape as `vernier eval`'s
+    /// `--emit` flag.
+    #[arg(long = "emit", value_name = "FMT[=PATH]", num_args = 1, action = ArgAction::Append)]
+    pub(crate) emit: Vec<String>,
+
+    /// Suppress diagnostic output on stderr.
+    #[arg(long, action = ArgAction::SetTrue)]
+    pub(crate) quiet: bool,
+}
+
+impl AggregateArgs {
+    /// Resolve the emit list, enforcing the same single-stdout /
+    /// unique-file-paths rules `EvalArgs::validate` does.
+    pub(crate) fn validate(&self) -> Result<Vec<EmitSpec>, CliError> {
+        resolve_emit_list(&self.emit)
+    }
+}
+
+/// Resolve a raw `--emit` flag list into validated [`EmitSpec`]s.
+///
+/// Defaults to one `text`-on-stdout emit when empty. Errors when more
+/// than one entry targets stdout, when two entries target the same
+/// file path, or when a `FMT=PATH` value is malformed.
+pub(crate) fn resolve_emit_list(raw: &[String]) -> Result<Vec<EmitSpec>, CliError> {
+    let raw_emits: Vec<String> = if raw.is_empty() {
+        vec!["text".to_string()]
+    } else {
+        raw.to_vec()
+    };
+    let mut parsed: Vec<EmitSpec> = Vec::with_capacity(raw_emits.len());
+    let mut stdout_seen = false;
+    for entry in &raw_emits {
+        let spec = parse_emit(entry)?;
+        match &spec.destination {
+            EmitDestination::Stdout => {
+                if stdout_seen {
+                    return Err(CliError::Validation(
+                        "more than one --emit targets stdout; outputs would interleave".into(),
+                    ));
+                }
+                stdout_seen = true;
+            }
+            EmitDestination::File(path) => {
+                let collides = parsed.iter().any(|e| match &e.destination {
+                    EmitDestination::File(p) => p == path,
+                    EmitDestination::Stdout => false,
+                });
+                if collides {
+                    return Err(CliError::Validation(format!(
+                        "--emit path {} appears more than once",
+                        path.display()
+                    )));
+                }
+            }
+        }
+        parsed.push(spec);
+    }
+    Ok(parsed)
 }
 
 /// Args for `vernier eval`. Field-level docs become clap's `--help`
@@ -130,6 +225,38 @@ pub(crate) struct EvalArgs {
     /// (`tau`).
     #[arg(long = "metric", value_enum, default_value_t = MetricArg::Ap)]
     pub(crate) metric: MetricArg,
+
+    /// Partition manifest (ADR-0046). When set, eval fans out per
+    /// `(axis, value)` cell described in the manifest and the output
+    /// emits the schema-v2 `slices` document instead of v1. File
+    /// extension drives the parser: `.json` is the canonical
+    /// JSON-records shape; `.csv` is the spreadsheet form (CSV is
+    /// `key_kind=image_id` only on this verb — `key_kind=result` is
+    /// `vernier aggregate`'s input, not eval's).
+    #[arg(long, value_name = "PATH")]
+    pub(crate) manifest: Option<PathBuf>,
+
+    /// Joint-cell axis tuples (ADR-0046 §E2). Per-axis marginals are
+    /// always emitted; `--cross` opts into the joint cells of the
+    /// named axes. Each `--cross` flag is a comma-separated tuple of
+    /// at least two axis names; the flag is repeatable to declare
+    /// multiple cross-product tuples. Only meaningful with
+    /// `--manifest`; passing it alone is a typed-error.
+    ///
+    /// Stored as raw comma-joined strings at parse time; the
+    /// tuple-per-flag boundary is what callers want to preserve
+    /// (`value_delimiter = ','` would flatten every flag invocation
+    /// into one big list, losing the tuple structure). Splitting
+    /// happens in [`EvalArgs::parsed_cross_axes`].
+    #[arg(long, value_name = "AXES", action = ArgAction::Append)]
+    pub(crate) cross: Vec<String>,
+
+    /// Run label (ADR-0046). Stamped into the result document so a
+    /// subsequent `vernier aggregate` can join a `key_kind=result`
+    /// manifest by label rather than by file path. Optional; absent
+    /// when the user does not plan to aggregate.
+    #[arg(long, value_name = "NAME")]
+    pub(crate) label: Option<String>,
 }
 
 /// Headline-metric selector. Per ADR-0043 LRP / oLRP is opt-in (the
@@ -256,6 +383,34 @@ impl EvalArgs {
         }
     }
 
+    /// Split each raw `--cross` invocation on `,` to recover the
+    /// `Vec<Vec<String>>` shape `PartitionSpec::build` consumes.
+    ///
+    /// Each flag invocation is one tuple; `--cross a,b --cross c,d`
+    /// yields `[["a","b"], ["c","d"]]`. Tuples shorter than two axes
+    /// or containing an empty axis name are rejected here so the
+    /// downstream `vernier-core` error is a typed-CLI error instead
+    /// of an `InvalidConfig` from the spec builder.
+    pub(crate) fn parsed_cross_axes(&self) -> Result<Vec<Vec<String>>, CliError> {
+        let mut out: Vec<Vec<String>> = Vec::with_capacity(self.cross.len());
+        for (idx, raw) in self.cross.iter().enumerate() {
+            let parts: Vec<String> = raw.split(',').map(|s| s.trim().to_string()).collect();
+            if parts.iter().any(String::is_empty) {
+                return Err(CliError::Validation(format!(
+                    "--cross tuple #{idx} ({raw:?}) contains an empty axis name"
+                )));
+            }
+            if parts.len() < 2 {
+                return Err(CliError::Validation(format!(
+                    "--cross tuple #{idx} ({raw:?}) must list at least two axes \
+                     (a single-axis cross is a marginal — already emitted by default)"
+                )));
+            }
+            out.push(parts);
+        }
+        Ok(out)
+    }
+
     /// Effective `use_cats` after combining the `--use-cats` /
     /// `--no-use-cats` pair.
     pub(crate) fn effective_use_cats(&self) -> bool {
@@ -309,44 +464,23 @@ impl EvalArgs {
                 ));
             }
         }
-        // Default to a single text-on-stdout emit when no `--emit`
-        // flag was supplied. This is the canonical no-flag invocation
-        // shape ADR-0015 §"Surface" pins.
-        let raw_emits: Vec<String> = if self.emit.is_empty() {
-            vec!["text".to_string()]
-        } else {
-            self.emit.clone()
-        };
-
-        let mut parsed: Vec<EmitSpec> = Vec::with_capacity(raw_emits.len());
-        let mut stdout_seen = false;
-        for raw in &raw_emits {
-            let spec = parse_emit(raw)?;
-            match &spec.destination {
-                EmitDestination::Stdout => {
-                    if stdout_seen {
-                        return Err(CliError::Validation(
-                            "more than one --emit targets stdout; outputs would interleave".into(),
-                        ));
-                    }
-                    stdout_seen = true;
-                }
-                EmitDestination::File(path) => {
-                    let collides = parsed.iter().any(|e| match &e.destination {
-                        EmitDestination::File(p) => p == path,
-                        EmitDestination::Stdout => false,
-                    });
-                    if collides {
-                        return Err(CliError::Validation(format!(
-                            "--emit path {} appears more than once",
-                            path.display()
-                        )));
-                    }
-                }
-            }
-            parsed.push(spec);
+        // ADR-0046: `--cross` is only meaningful with `--manifest`. A
+        // bare `--cross` is almost always a script bug; raise it
+        // explicitly rather than silently dropping the flag.
+        if !self.cross.is_empty() && self.manifest.is_none() {
+            return Err(CliError::Validation(
+                "--cross requires --manifest; cross-product cells are a partition-only concept"
+                    .into(),
+            ));
         }
-        Ok(parsed)
+        // Surface the tuple-shape errors at validate time too, even
+        // though the partition dispatch would catch them later. This
+        // keeps the "validate the args before doing any work" promise
+        // intact.
+        let _ = self.parsed_cross_axes()?;
+        // The remaining single-stdout / unique-file-paths checks are
+        // shared with `vernier aggregate`; see `resolve_emit_list`.
+        resolve_emit_list(&self.emit)
     }
 }
 
@@ -414,7 +548,9 @@ mod tests {
             "--iou-type",
             "bbox",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         assert_eq!(args.iou_type, IouTypeArg::Bbox);
         assert_eq!(args.parity_mode, ParityModeArg::Strict);
         assert!(args.max_dets.is_none());
@@ -434,7 +570,9 @@ mod tests {
             "--dilation-ratio",
             "0.02",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         let err = args.validate().unwrap_err();
         assert!(matches!(err, CliError::Validation(_)));
     }
@@ -452,7 +590,9 @@ mod tests {
             "--sigmas",
             "sigmas.json",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         let err = args.validate().unwrap_err();
         assert!(matches!(err, CliError::Validation(_)));
     }
@@ -472,7 +612,9 @@ mod tests {
             "--emit",
             "json",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         let err = args.validate().unwrap_err();
         assert!(matches!(err, CliError::Validation(_)));
     }
@@ -492,7 +634,9 @@ mod tests {
             "--emit",
             "json=out.txt",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         let err = args.validate().unwrap_err();
         assert!(matches!(err, CliError::Validation(_)));
     }
@@ -509,7 +653,9 @@ mod tests {
             "bbox",
             "--no-use-cats",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         assert!(!args.effective_use_cats());
     }
 
@@ -526,7 +672,9 @@ mod tests {
             "--max-dets",
             "1,10,100",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         assert_eq!(args.max_dets.as_deref(), Some("1,10,100"));
         assert_eq!(args.parsed_max_dets().unwrap(), Some(vec![1usize, 10, 100]));
     }
@@ -542,7 +690,9 @@ mod tests {
             "--iou-type",
             "bbox",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         let emits = args.validate().unwrap();
         assert_eq!(emits.len(), 1);
         assert!(matches!(emits[0].destination, EmitDestination::Stdout));
@@ -562,7 +712,9 @@ mod tests {
             "--emit",
             "yaml",
         ]);
-        let Command::Eval(args) = cli.command;
+        let Command::Eval(args) = cli.command else {
+            panic!("expected Eval")
+        };
         let err = args.validate().unwrap_err();
         assert!(matches!(err, CliError::Validation(_)));
     }

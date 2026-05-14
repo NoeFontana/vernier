@@ -177,9 +177,82 @@ The contract: byte-equal output for byte-equal input, across runs, machines, and
 
 The schema version is decoupled from the package version on purpose — `vernier-cli` ships under 0.0.x patches today (no SemVer guarantees on the package), but `"version": "1"` is a hard contract: reshaping it outside the discipline above breaks the regression-archive use case the JSON formatter is built around.
 
+## Schema v2 — partitioned output (`--manifest`)
+
+ADR-0046 adds a fan-out lane: when `vernier eval --manifest PATH` is passed, the binary emits a *partitioned* JSON document under `"version": "2"`. Un-partitioned eval keeps emitting v1 verbatim — that is the load-bearing byte-stability contract of ADR-0046.
+
+> **Rule:** without `--manifest`, the output is byte-for-byte identical to the v1 document above. The v2 envelope is **only** emitted when a manifest drives the eval.
+
+### v2 top-level fields
+
+| Field         | Type                                  | Notes                                                                                                                                                       |
+|---------------|---------------------------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `version`     | string                                | `"2"` for partitioned output.                                                                                                                               |
+| `label`       | string or `null`                      | `--label` value stamped on this run. `null` when omitted. `vernier aggregate` joins by this field when present.                                            |
+| `iou_type`    | string                                | As v1.                                                                                                                                                       |
+| `parity_mode` | string                                | As v1.                                                                                                                                                       |
+| `max_dets`    | array of non-negative integers        | As v1.                                                                                                                                                       |
+| `use_cats`    | boolean                               | As v1.                                                                                                                                                       |
+| `overall`     | [`Overall` object](#overall-subfields) | The un-partitioned summary. Bit-identical to a v1 document over the same `(GT, DT)` pair — load-bearing parity contract per ADR-0046.               |
+| `slices`      | array of [`Slice` objects](#slices-subfields) | One entry per partition slice, in canonical order (axis ascending, value ascending, `__unassigned__` last; joint cells follow the marginals).        |
+
+### `overall` subfields
+
+| Field           | Type                       | Notes                                                                          |
+|-----------------|----------------------------|--------------------------------------------------------------------------------|
+| `lines`         | array of `Line` objects    | Same shape and order as v1's `lines`.                                          |
+| `stats`         | array of floats            | Same shape and order as v1's `stats`.                                          |
+| `n_images`      | non-negative integer       | Number of dataset images behind the overall summary.                           |
+| `n_detections`  | non-negative integer       | Total detection count behind the overall summary (a=0 "all" bucket counted once per detection). |
+
+### `slices[]` subfields
+
+| Field           | Type                       | Notes                                                                                                                |
+|-----------------|----------------------------|----------------------------------------------------------------------------------------------------------------------|
+| `axis`          | string                     | The manifest axis name. For joint cells, the `::`-joined tuple (`weather::time_of_day`).                              |
+| `value`         | string                     | The categorical level. For joint cells, the `::`-joined value tuple (`fog::night`). `__unassigned__` for unassigned. |
+| `n_images`      | non-negative integer       | Number of dataset images in this slice.                                                                              |
+| `n_detections`  | non-negative integer       | Detection count in this slice (same accounting as `overall.n_detections`).                                            |
+| `lines`         | array of `Line` objects    | Same shape and order as v1's `lines`, evaluated over this slice's image subset.                                       |
+| `stats`         | array of floats            | Same shape and order as v1's `stats`, evaluated over this slice's image subset.                                       |
+
+### Determinism guarantees (v2)
+
+The v1 determinism rules carry through verbatim. Additionally:
+
+- **Slice order is canonical**, not insertion order: `(axis ascending, value ascending, __unassigned__ last)` for marginals; joint cells follow the marginals in the same canonical order applied to the joined `axis` / `value` strings.
+- **`overall` is bit-identical to a v1 run** on the same `(GT, DT)` pair — the partitioned dispatch invokes the same `accumulate + summarize` calls over the un-filtered grid.
+
+### Worked example (v2)
+
+```json
+{
+  "version": "2",
+  "label": "run_2026_05_14",
+  "iou_type": "bbox",
+  "parity_mode": "strict",
+  "max_dets": [1, 10, 100],
+  "use_cats": true,
+  "overall": {
+    "lines": [/* 12 entries, same shape as v1 */],
+    "stats": [0.527, 0.728, 0.581, 0.341, 0.566, 0.683, 0.392, 0.624, 0.661, 0.471, 0.706, 0.812],
+    "n_images": 5000,
+    "n_detections": 31_500
+  },
+  "slices": [
+    {"axis": "weather", "value": "clear",          "n_images": 3700, "n_detections": 22_900, "lines": [/* ... */], "stats": [/* 12 */]},
+    {"axis": "weather", "value": "fog",            "n_images": 1100, "n_detections":  7_300, "lines": [/* ... */], "stats": [/* 12 */]},
+    {"axis": "weather", "value": "__unassigned__", "n_images":  200, "n_detections":  1_300, "lines": [/* ... */], "stats": [/* 12 */]}
+  ]
+}
+```
+
+See [`docs/reference/manifest-schema.md`](manifest-schema.md) for the manifest input and [`docs/reference/aggregate-schema.md`](aggregate-schema.md) for the `vernier aggregate` companion output.
+
 ## See also
 
 - [`docs/adr/0015-vernier-cli.md`](../adr/0015-vernier-cli.md) — the source of truth for the CLI surface, the formatter abstraction, and the determinism contract.
+- [`docs/adr/0046-slice-and-aggregate.md`](../adr/0046-slice-and-aggregate.md) — partition manifest and the v1 → v2 schema bump.
 - [`docs/reference/coco-summary-stats.md`](coco-summary-stats.md) — the `stats[i]` ↔ slice mapping for the bbox / segm 12-stat plan.
 - [`docs/adr/0012-oks-keypoints-surface.md`](../adr/0012-oks-keypoints-surface.md) — keypoints plan order and kernel-canonical `max_dets = [20]`.
 - [`docs/adr/0010-boundary-iou-isolated-subsystem.md`](../adr/0010-boundary-iou-isolated-subsystem.md) — boundary IoU metric definition consumed by `iou_type = "boundary"`.

@@ -48,6 +48,9 @@ vernier-partial = { path = "../vernier-partial", version = "0.0.2" }
 rkyv.workspace = true
 blake3.workspace = true
 crc32fast.workspace = true
+# CSV manifest adapter (ADR-0046 §D2). Converts spreadsheet-shaped
+# attribute tables to the canonical JSON-records shape at parse time.
+csv = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
