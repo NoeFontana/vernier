@@ -7,6 +7,24 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+### Added
+
+- **Boundary Panoptic Quality** (ADR-0025 §Z1/Z2 amendment) —
+  `PanopticEvaluator(boundary=True, dilation_ratio=0.02)` now ships
+  under both `parity_mode="strict"` (bit-exact reproduction of
+  `bowenc0221/boundary-iou-api`'s `coco_panoptic_api/evaluation.py`
+  at SHA `37d25586a677`) and `parity_mode="corrected"` (deterministic,
+  snapshot-based; segment-id-sorted iteration). Composition is
+  `iou = min(mask_iou, boundary_iou)` — identical to the instance
+  Boundary case (the prior Q3 row of `boundary-iou-quirks.md` had
+  miscalled this; corrected in the same amendment). FN/FP attribution
+  is unchanged; U6/U7/V1-V7/W1/W7 stand. The streaming runner threads
+  boundary state per image with `BoundaryScratch` reuse, and
+  distributed-eval partials hash the `dilation_ratio` into
+  `params_hash` so silent boundary/instance partial mixing is rejected
+  at envelope-validation time. No `FORMAT_VERSION` bump. Cityscapes
+  panoptic (Z3) remains deferred.
+
 ## [0.0.2] — 2026-05-12
 
 This is the three-paradigm release: instance gains panoptic and semantic

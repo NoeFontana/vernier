@@ -46,6 +46,27 @@ on the same overlap geometry, so the boundary-kernel default is
 [`tutorials/debugging-with-tide.md`](../tutorials/debugging-with-tide.md#choosing-thresholds)
 explains why.
 
+## Boundary Panoptic Quality
+
+For panoptic outputs, `Evaluator(boundary=True)` switches the
+matching IoU to `min(mask_iou, boundary_iou)` per ADR-0025 §Z1/Z2
+amendment (mirrors `bowenc0221/boundary-iou-api`'s
+`coco_panoptic_api/evaluation.py`):
+
+```python
+from vernier.panoptic import Evaluator
+
+ev = Evaluator(boundary=True, dilation_ratio=0.02)
+summary = ev.evaluate(gt, dt)
+```
+
+`parity_mode="corrected"` (the default) is order-independent;
+`parity_mode="strict"` reproduces upstream's JSON-order in-place
+boundary-map mutation bit-exactly. Both modes share the
+`vernier-mask` erosion primitives the instance Boundary path uses
+(M1–M5 of the quirks survey). Cityscapes panoptic (ADR-0025 Z3)
+remains deferred.
+
 ## CLI flag
 
 The CLI takes the kernel as `--iou boundary`:
