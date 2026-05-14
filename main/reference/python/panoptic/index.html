@@ -2680,7 +2680,9 @@ payload (segment id maps + segment-info JSON).</p>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">worker_affinity</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">worker_nice</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">shutdown_timeout_seconds</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">boundary</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">dilation_ratio</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4695,17 +4697,18 @@ the Dataset is in scope.</p>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">things_stuff_split</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">boundary</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">pq_iou_threshold</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">category_filter</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.CategoryFilter" href="#vernier.panoptic.CategoryFilter">CategoryFilter</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">class_grouping</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Breakdown (vernier._core.Breakdown)" href="#vernier.panoptic.Breakdown">Breakdown</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">stuff_thing_partition</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            StuffThingPartition
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">dilation_ratio</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">0.02</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">pq_iou_threshold</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">category_filter</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.CategoryFilter" href="#vernier.panoptic.CategoryFilter">CategoryFilter</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">class_grouping</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Breakdown (vernier._core.Breakdown)" href="#vernier.panoptic.Breakdown">Breakdown</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">stuff_thing_partition</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            StuffThingPartition
 
 
   
       dataclass
    (vernier.panoptic.StuffThingPartition)" href="#vernier.panoptic.StuffThingPartition">StuffThingPartition</a></span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4725,11 +4728,15 @@ independent unweighted means over their subsets (W4).</p>
 <code>parity_mode</code>, which defaults to <code>"corrected"</code> (the ADR-0002
 recommendation for net-new users); migrating users wanting
 bit-exact panopticapi behavior should set <code>parity_mode="strict"</code>.</p>
-<p><code>boundary=True</code> raises :class:<code>NotImplementedError</code>. Boundary PQ
-is deferred to a follow-up ADR (ADR-0025 §"explicitly does not
-decide" Q3 / Z1). The composition rule in the bowenc0221 fork is
-not the instance-case <code>min(mask_iou, boundary_iou)</code> and resolving
-it requires its own pass.</p>
+<p><code>boundary=True</code> enables Boundary Panoptic Quality (ADR-0025 Z1/Z2
+amendment). The per-image matching IoU is composed as
+<code>min(mask_iou, boundary_iou)</code> — identical to the instance
+Boundary case — over a boundary panoptic map built by eroding each
+segment's mask by <code>dilation_ratio * sqrt(h² + w²)</code> Chebyshev
+pixels and painting the resulting band back as the segment id.
+<code>dilation_ratio</code> defaults to <code>0.02</code> (Cheng et al. 2021).
+FN/FP attribution is unchanged: it consults the mask confusion
+matrix and mask per-segment areas only.</p>
 <p>The four ADR-0042 fields parameterize the evaluation scope and
 rollup: <code>pq_iou_threshold</code> overrides the canonical 0.5 PQ match
 threshold (single float, not a ladder); <code>category_filter</code> and
@@ -4900,17 +4907,22 @@ Single-rank custom-params eval works today via :meth:<code>evaluate</code>.</p>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">things_stuff_split</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">retain_per_image_deltas</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.PanopticSummary)" href="#vernier.panoptic.Summary">PanopticSummary</a></span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">boundary</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">dilation_ratio</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">0.02</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.PanopticSummary)" href="#vernier.panoptic.Summary">PanopticSummary</a></span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
 
         <p>Merge <code>partials</code> (one per rank) into a global :class:<code>Summary</code>
 (ADR-0032, ADR-0035).</p>
-<p><code>categories</code>, <code>parity_mode</code>, <code>things_stuff_split</code>, and
-<code>retain_per_image_deltas</code> must match what each rank used to
-produce its partial. Mismatches raise the structured
-<code>Partial*</code> errors re-exported on this module.</p>
+<p><code>categories</code>, <code>parity_mode</code>, <code>things_stuff_split</code>,
+<code>retain_per_image_deltas</code>, <code>boundary</code>, and <code>dilation_ratio</code>
+must match what each rank used to produce its partial.
+Mismatches raise the structured <code>Partial*</code> errors re-exported
+on this module — boundary-PQ partials carry the dilation ratio
+in <code>params_hash</code> so silent boundary/instance mixing is
+rejected at envelope-validation time.</p>
 
 
     </div>
