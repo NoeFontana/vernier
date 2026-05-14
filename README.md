@@ -47,7 +47,8 @@ design decisions shaping it. Per-paradigm parity status:
 | Instance bbox / segm / keypoints AP | `pycocotools==2.0.11` | strict bit-equal | none |
 | Instance boundary IoU | `boundary-iou-api` | strict bit-equal | none |
 | Segm + boundary TIDE thresholds (`t_b`) | none yet | corrected-only | [ADR-0022](docs/adr/0022-tide-thresholds.md) still `proposed`; defaults extrapolated, not measured |
-| Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | `boundary=True` raises `NotImplementedError` ([ADR-0025](docs/adr/0025-panoptic-api.md) §Q3) |
+| Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | none |
+| Panoptic boundary PQ | `bowenc0221/boundary-iou-api` (single-core path, same SHA as the instance vendor) | strict bit-equal | [ADR-0025 §Z1/Z2 amendment](docs/adr/0025-panoptic-api.md); Cityscapes panoptic (Z3) deferred |
 | Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | strict bit-equal on the four per-class u64 marginals at val2017 scale | [ADR-0028](docs/adr/0028-sem-seg.md); ADE20K-scale bench gated on license-cleared cache |
 | LVIS federated AP | `lvis-api` (vendored at `031ac21f`, ORACLE_LVIS_COMMIT_SHA) | strict bit-equal on the `(T, R, K, A)` precision tensor at full LVIS v1 val | bench paradigm wired; segm cell waits on `evaluate_segm_grid_with_dataset` |
 

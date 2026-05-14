@@ -44,9 +44,9 @@ use vernier_panoptic::dataset::{CategoryId, CategoryMeta, ImageEntry, ImageId, S
 use vernier_panoptic::decode::decode_panoptic_png;
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
-    evaluate_with_options, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
+    evaluate_with_options, BoundaryConfig, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
     PanopticDataset, PanopticError, PanopticPredictions, PanopticSummary, ParityMode,
-    SummarizeOptions,
+    SummarizeOptions, BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
 };
 
 // ---------------------------------------------------------------------------
@@ -524,6 +524,8 @@ impl PyPanopticSummary {
     category_filter=None,
     class_grouping=None,
     stuff_thing_partition=None,
+    boundary=false,
+    dilation_ratio=BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_panoptic(
@@ -536,16 +538,11 @@ pub(crate) fn evaluate_panoptic(
     category_filter: Option<Vec<u32>>,
     class_grouping: Option<Vec<(String, Vec<u32>)>>,
     stuff_thing_partition: Option<(Vec<u32>, Vec<u32>)>,
+    boundary: bool,
+    dilation_ratio: f64,
 ) -> PyResult<PyPanopticSummary> {
-    let mode = match parity_mode {
-        "strict" => ParityMode::Strict,
-        "corrected" => ParityMode::Corrected,
-        other => {
-            return Err(PyValueError::new_err(format!(
-                "unknown panoptic parity_mode {other:?}; expected 'strict' or 'corrected'"
-            )))
-        }
-    };
+    let mode = parse_panoptic_parity_mode(parity_mode)?;
+    let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
     let gt_arc = Arc::clone(&gt.inner);
     let dt_arc = Arc::clone(&dt.inner);
     // Build the isthing-overridden categories map up front so the
@@ -576,6 +573,7 @@ pub(crate) fn evaluate_panoptic(
                 pq_iou_threshold,
                 categories_override: categories_override.as_ref(),
                 summarize: summarize_opts,
+                boundary: boundary_cfg,
             };
             evaluate_with_options(&gt_arc, &dt_arc, mode, things_stuff_split, &opts)
         })
@@ -670,6 +668,29 @@ fn parse_panoptic_parity_mode(s: &str) -> PyResult<ParityMode> {
             "unknown panoptic parity_mode {other:?}; expected 'strict' or 'corrected'"
         ))),
     }
+}
+
+/// Validate `(boundary, dilation_ratio)` from the FFI and lift into an
+/// `Option<BoundaryConfig>`. Centralizes the keyword-pair contract
+/// shared by all four panoptic entry points (evaluate, to_partial,
+/// merge_partials, BackgroundPanopticEvaluator.__init__).
+fn boundary_cfg_from_ffi(
+    boundary: bool,
+    dilation_ratio: f64,
+    parity_mode: ParityMode,
+) -> PyResult<Option<BoundaryConfig>> {
+    if !boundary {
+        return Ok(None);
+    }
+    if !dilation_ratio.is_finite() || dilation_ratio <= 0.0 {
+        return Err(PyValueError::new_err(format!(
+            "dilation_ratio must be a positive finite float when boundary=True, got {dilation_ratio}"
+        )));
+    }
+    Ok(Some(BoundaryConfig {
+        dilation_ratio,
+        parity_mode,
+    }))
 }
 
 /// Build an [`ImageEntry`] from per-image FFI inputs: a 2-D uint32
@@ -770,7 +791,10 @@ fn build_image_entry_from_png(
     *,
     things_stuff_split = true,
     retain_per_image_deltas = false,
+    boundary = false,
+    dilation_ratio = BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
 ))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_panoptic_to_partial<'py>(
     py: Python<'py>,
     images: &Bound<'py, PyList>,
@@ -779,13 +803,21 @@ pub(crate) fn evaluate_panoptic_to_partial<'py>(
     rank_id: u32,
     things_stuff_split: bool,
     retain_per_image_deltas: bool,
+    boundary: bool,
+    dilation_ratio: f64,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let mode = parse_panoptic_parity_mode(parity_mode)?;
     let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
     let mut ev =
         StreamingPanopticEvaluator::new(cats, mode, things_stuff_split, retain_per_image_deltas)
             .with_rank(rank_id)
             .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    if let Some(cfg) = boundary_cfg {
+        ev = ev
+            .with_boundary(cfg)
+            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    }
 
     // Process per image so we never hold the full label-map corpus in
     // memory at once (PR #187 streaming-runner property; the eager
@@ -830,7 +862,10 @@ pub(crate) fn evaluate_panoptic_to_partial<'py>(
     *,
     things_stuff_split = true,
     retain_per_image_deltas = false,
+    boundary = false,
+    dilation_ratio = BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
 ))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn merge_panoptic_partials<'py>(
     py: Python<'py>,
     categories: &[u8],
@@ -838,9 +873,12 @@ pub(crate) fn merge_panoptic_partials<'py>(
     parity_mode: &str,
     things_stuff_split: bool,
     retain_per_image_deltas: bool,
+    boundary: bool,
+    dilation_ratio: f64,
 ) -> PyResult<PyPanopticSummary> {
     let mode = parse_panoptic_parity_mode(parity_mode)?;
     let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
+    let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
     let owned: Vec<Vec<u8>> = partials
         .iter()
         .map(|item| {
@@ -854,11 +892,12 @@ pub(crate) fn merge_panoptic_partials<'py>(
     let summary = py
         .detach(move || -> Result<PanopticSummary, PanopticError> {
             let slices: Vec<&[u8]> = owned.iter().map(|v| v.as_slice()).collect();
-            let merged = StreamingPanopticEvaluator::from_partials(
+            let merged = StreamingPanopticEvaluator::from_partials_with_boundary(
                 cats,
                 mode,
                 things_stuff_split,
                 retain_per_image_deltas,
+                boundary_cfg,
                 &slices,
             )?;
             merged.finalize()
@@ -960,6 +999,8 @@ impl PyBackgroundPanopticEvaluator {
         worker_affinity = None,
         worker_nice = 5,
         shutdown_timeout_seconds = 5.0,
+        boundary = false,
+        dilation_ratio = BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -973,10 +1014,13 @@ impl PyBackgroundPanopticEvaluator {
         worker_affinity: Option<usize>,
         worker_nice: i32,
         shutdown_timeout_seconds: f64,
+        boundary: bool,
+        dilation_ratio: f64,
     ) -> PyResult<Self> {
         let mode = parse_panoptic_parity_mode(parity_mode)?;
         let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
         let n_categories = cats.len();
+        let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
         let mut inner = StreamingPanopticEvaluator::new(
             cats,
             mode,
@@ -986,6 +1030,11 @@ impl PyBackgroundPanopticEvaluator {
         if let Some(rid) = rank_id {
             inner = inner
                 .with_rank(rid)
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        }
+        if let Some(cfg) = boundary_cfg {
+            inner = inner
+                .with_boundary(cfg)
                 .map_err(|e| panoptic_error_to_pyerr(py, e))?;
         }
         let config = BackgroundConfig {

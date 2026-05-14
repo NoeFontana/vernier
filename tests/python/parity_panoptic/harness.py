@@ -20,9 +20,10 @@ to :meth:`PanopticDataset.from_arrays`.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Generator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -73,9 +74,65 @@ def id2rgb(id_map: NDArray[np.uint32]) -> NDArray[np.uint8]:
     return out
 
 
-def _write_png(label_map: NDArray[np.uint32], path: Path) -> None:
+def write_panoptic_png(label_map: NDArray[np.uint32], path: Path) -> None:
+    """Encode a panoptic label map as a 3-channel uint8 RGB PNG via the
+    rgb2id convention. Shared by the panopticapi and bowenc0221
+    boundary-PQ oracles, which both consume on-disk PNGs."""
     rgb = id2rgb(label_map)
     PILImage.fromarray(rgb, mode="RGB").save(path)
+
+
+@contextlib.contextmanager
+def prepare_pq_inputs(
+    label_maps_gt: Mapping[int, NDArray[np.uint32]],
+    segments_gt: Mapping[int, Sequence[Mapping[str, Any]]],
+    label_maps_dt: Mapping[int, NDArray[np.uint32]],
+    segments_dt: Mapping[int, Sequence[Mapping[str, Any]]],
+    categories: Sequence[Mapping[str, Any]],
+) -> Generator[
+    tuple[Path, Path, list[tuple[dict[str, Any], dict[str, Any]]], dict[int, dict[str, Any]]],
+    None,
+    None,
+]:
+    """Materialize on-disk PNG inputs for the upstream
+    ``pq_compute_single_core`` API. Yields
+    ``(gt_dir, dt_dir, annotation_set, cats_dict)`` and cleans up the
+    temp directory on exit. Shared by the panopticapi (mask) and
+    bowenc0221 (boundary) oracle paths — both speak the same
+    file-path-based API; only the call's `iou_type` extras differ."""
+    cats_dict = {c["id"]: dict(c) for c in categories}
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_p = Path(tmp)
+        gt_dir = tmp_p / "gt"
+        dt_dir = tmp_p / "dt"
+        gt_dir.mkdir()
+        dt_dir.mkdir()
+
+        gt_anns: list[dict[str, Any]] = []
+        dt_anns: list[dict[str, Any]] = []
+        for image_id, label_map in label_maps_gt.items():
+            file_name = f"{image_id:012d}.png"
+            write_panoptic_png(label_map, gt_dir / file_name)
+            gt_anns.append(
+                {
+                    "image_id": image_id,
+                    "file_name": file_name,
+                    "segments_info": [dict(s) for s in segments_gt[image_id]],
+                }
+            )
+        for image_id, label_map in label_maps_dt.items():
+            file_name = f"{image_id:012d}.png"
+            write_panoptic_png(label_map, dt_dir / file_name)
+            dt_anns.append(
+                {
+                    "image_id": image_id,
+                    "file_name": file_name,
+                    "segments_info": [dict(s) for s in segments_dt[image_id]],
+                }
+            )
+
+        annotation_set = list(zip(gt_anns, dt_anns, strict=True))
+        yield gt_dir, dt_dir, annotation_set, cats_dict
 
 
 def _oracle_snapshot(
@@ -88,42 +145,14 @@ def _oracle_snapshot(
     # Lazy import: panopticapi lives on `sys.path` via `conftest.py`.
     from panopticapi.evaluation import pq_compute_single_core  # type: ignore[import-not-found]
 
-    cats_dict = {c["id"]: dict(c) for c in categories}
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_p = Path(tmp)
-        gt_dir = tmp_p / "gt"
-        dt_dir = tmp_p / "dt"
-        gt_dir.mkdir()
-        dt_dir.mkdir()
-
-        gt_anns = []
-        dt_anns = []
-        for image_id, label_map in label_maps_gt.items():
-            file_name = f"{image_id:012d}.png"
-            _write_png(label_map, gt_dir / file_name)
-            gt_anns.append(
-                {
-                    "image_id": image_id,
-                    "file_name": file_name,
-                    "segments_info": [dict(s) for s in segments_gt[image_id]],
-                }
-            )
-        for image_id, label_map in label_maps_dt.items():
-            file_name = f"{image_id:012d}.png"
-            _write_png(label_map, dt_dir / file_name)
-            dt_anns.append(
-                {
-                    "image_id": image_id,
-                    "file_name": file_name,
-                    "segments_info": [dict(s) for s in segments_dt[image_id]],
-                }
-            )
-
-        annotation_set = list(zip(gt_anns, dt_anns, strict=True))
+    with prepare_pq_inputs(label_maps_gt, segments_gt, label_maps_dt, segments_dt, categories) as (
+        gt_dir,
+        dt_dir,
+        annotation_set,
+        cats_dict,
+    ):
         pq_stat = pq_compute_single_core(0, annotation_set, str(gt_dir), str(dt_dir), cats_dict)
-
-    return pq_stat_to_snapshot(pq_stat, cats_dict)
+        return pq_stat_to_snapshot(pq_stat, cats_dict)
 
 
 def pq_stat_to_snapshot(

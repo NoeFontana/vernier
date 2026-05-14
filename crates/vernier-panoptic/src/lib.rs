@@ -23,6 +23,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod attribute;
+pub mod boundary;
 pub mod dataset;
 pub mod decode;
 pub mod distributed;
@@ -36,9 +37,10 @@ pub mod tables;
 // Each item lives at exactly one path — its home module. Adding a
 // re-export here widens the headline; treat it as a deliberate
 // decision, not a default for new pub items.
+pub use boundary::{BoundaryConfig, BoundaryScratch, BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT};
 pub use dataset::{PanopticDataset, PanopticPredictions};
 pub use error::PanopticError;
-pub use parity::ParityMode;
+pub use parity::{ParityMode, BOUNDARY_PANOPTIC_ORACLE_COMMIT_SHA};
 pub use summarize::{
     evaluate, evaluate_with_options, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
     PanopticSummary, SummarizeOptions,

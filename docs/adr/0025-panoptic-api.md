@@ -1,6 +1,6 @@
 # ADR-0025: Add panoptic-quality evaluation as a sibling crate
 
-- **Status:** accepted
+- **Status:** accepted (amended 2026-05-14: Z1 + Z2 shipped — see §Z1/Z2 amendment)
 - **Date:** 2026-05-03
 - **Ratified:** 2026-05-03 (PRs #122–#128, ADR-0025 panoptic rollout)
 - **Deciders:** @NoeFontana
@@ -14,8 +14,9 @@ detection and keypoints) and a real user need for robotics / AV
 perception teams that consume things-and-stuff outputs from one network
 head. Through 0.0.1 we deferred it: `THIRD_PARTY_NOTICES.md` carries
 `panopticapi` as "out of scope" and `boundary-iou-quirks.md` quirk Q3
-defers boundary PQ "if and when vernier extends to panoptic." This ADR
-is that extension.
+deferred boundary PQ "if and when vernier extends to panoptic." This
+ADR is that extension; the boundary-PQ track (Q3 / Z1 / Z2) shipped
+under the §Z1/Z2 amendment (2026-05-14) below.
 
 Two facts shape the integration. **Panoptic eval does not share the AP
 spine.** Matching is constrained one-to-one on `IoU > 0.5` with
@@ -39,9 +40,11 @@ boundary", and §"Add or remove a top-level dependency" (`png` crate;
   lock held across IoU types; this is the first test it holds across
   evaluation paradigms.
 - **ADR-0009 leaf direction.** Instance-PQ works on `uint32` label
-  maps and reuses no mask primitives, but the deferred boundary-PQ
-  track (Q3 / Z2) needs the erosion primitives in `vernier-mask`.
-  The `vernier-panoptic → vernier-mask` edge is declared up front.
+  maps and reuses no mask primitives; the boundary-PQ track (Q3 / Z2,
+  shipped under §Z1/Z2 amendment) consumes the same erosion
+  primitives in `vernier-mask` that the instance Boundary AP and
+  TIDE rows depend on. The `vernier-panoptic → vernier-mask` edge
+  was declared up front for exactly this reason.
 - **ADR-0002 parity discipline, applied to a different oracle.**
   panopticapi is to PQ what pycocotools is to AP. The strict /
   aligned / corrected tier model transplants; the disposition table
@@ -71,7 +74,7 @@ boundary", and §"Add or remove a top-level dependency" (`png` crate;
 A new workspace crate `crates/vernier-panoptic/` with edges:
 
 - `vernier-panoptic → vernier-mask` (declared per ADR-0009; load-bearing
-  when boundary-PQ ships).
+  for boundary-PQ, shipped under §Z1/Z2 amendment).
 - `vernier-panoptic ⊥ vernier-core` (no edge in either direction).
 - `vernier-ffi → vernier-panoptic`.
 
@@ -313,11 +316,13 @@ overlaps two GT segments (one wins by IoU; the other becomes FN).
 
 ## What this ADR explicitly does *not* decide
 
-- **Boundary PQ (Q3 / appendix Z).** Composition rule in the
-  bowenc0221 fork is **not** the instance-case
-  `min(mask_iou, boundary_iou)` and resolving it requires its own
-  pass. Follow-up ADR. Until it lands, `PanopticEvaluator(boundary=True)`
-  raises `NotImplementedError`.
+- **Boundary PQ (Q3 / appendix Z1, Z2).** Disposed under §Z1/Z2
+  amendment (2026-05-14): composition rule is `iou = min(mask_iou,
+  boundary_iou)` (identical to the instance case), computed on the
+  iteratively-constructed boundary panoptic map.
+  `PanopticEvaluator(boundary=True)` is functional. **Cityscapes
+  panoptic (Z3)** remains deferred — different stuff-class semantics,
+  separate follow-up.
 - **Cityscapes panoptic, streaming PQ, `vernier panoptic` CLI,
   Arrow result tables for PQ.** Each is a separate follow-up;
   ADR-0015's verb extensibility and ADR-0019's table surface both
@@ -362,8 +367,8 @@ overlaps two GT segments (one wins by IoU; the other becomes FN).
 - ADR-0015 — `vernier-cli` verb extensibility (CLI follow-up).
 - ADR-0019 — Result tables (table follow-up).
 - ADR-0024 — Defer-with-alternative-track pattern.
-- `docs/engineering/boundary-iou-quirks.md` Q3 — resolved by Z1
-  follow-up ADR.
+- `docs/engineering/boundary-iou-quirks.md` Q3 — resolved by §Z1/Z2
+  amendment (2026-05-14).
 - `THIRD_PARTY_NOTICES.md` — `panopticapi` moves from "out of scope"
   to "pinned-package env" on merge.
 - Kirillov, He, Girshick, Rother, Dollár. *Panoptic Segmentation.*
@@ -482,15 +487,17 @@ against `master` HEAD as of this ADR's drafting; the SHA in
 | Y7 | Progress: `print(f'Core: {proc_id}, {idx} from ...')` every 100 images, plus an end-of-core line. Hardcoded format. | ev:82-83, 164 | **corrected**. No stdout from the core; structured `progress=Callable[[int, int], None]` arg on `PanopticEvaluator`. |
 | Y8 | `evaluation.py` consumes only `id` (key) and `isthing` from each category. **`name` is *not* required by the eval** (no per-category printer, Y2). `color` is used by `IdGenerator` (a creation helper, not eval). | ev:53-54 | **aligned**. `CategoryMeta` requires `id` + `isthing`; extras preserved on the dataset handle, ignored by the kernel. |
 
-### Z. Boundary PQ (deferred)
+### Z. Boundary PQ
 
-Anchors the deferral and cross-references Q3 in `boundary-iou-quirks.md`.
-Not implemented in the initial ship; resolved by a follow-up ADR.
+Anchors the disposition and cross-references Q3 in
+`boundary-iou-quirks.md`. Z1 and Z2 are shipped under the §Z1/Z2
+amendment (2026-05-14); Z3 (Cityscapes panoptic) remains deferred to
+a separate follow-up.
 
 | # | Quirk | Source | Disposition |
 |---|---|---|---|
-| Z1 | `boundary_iou/coco_panoptic_api/evaluation.py` (bowenc0221 fork) implements boundary-aware PQ. The composition rule for matched pairs is **not** the instance-case `min(mask_iou, boundary_iou)`; it derives a separate boundary-IoU on eroded masks and consumes it in the matching threshold. | bowenc0221 fork | **corrected (deferred)**. Until follow-up ADR, `PanopticEvaluator(boundary=True)` raises `NotImplementedError` pointing here. |
-| Z2 | Boundary PQ inherits M1–M5 (erosion spec) from boundary-IoU survey: 3×3 Chebyshev, half-to-even rounding, `dilation_ratio = 0.02`, `dilation ≥ 1` clamp. | boundary-iou survey | **strict (deferred)**. Follow-up ADR cites M1–M5 by ID rather than re-litigating. |
+| Z1 | Composition rule is `iou = min(mask_iou, boundary_iou)` — **identical** to the instance case (O1); upstream `boundary_iou/coco_panoptic_api/evaluation.py:195` at SHA `37d25586a677b043ed585f10e5c42d4e80176ea9` is literally `iou = min(iou, boundary_iou)`. The non-trivial part is the iterative, JSON-order-dependent construction of the boundary panoptic map: each segment's binary mask is read from the partially-mutated id-map and eroded; interior pixels are wiped to `BOUNDARY_ID = max(category_id) + 1`; the eroded band is painted back as the segment id. Later segments may lose pixels their predecessors' bands stomped. | bowenc0221 fork (`boundary_iou/coco_panoptic_api/evaluation.py:105-127, 195`) | **corrected** (default; snapshot-based, segment-id-sorted, deterministic) **+ strict** (bit-exact upstream in-place JSON-order mutation). See §Z1/Z2 amendment below. |
+| Z2 | Boundary PQ inherits M1–M5 (erosion spec) from boundary-IoU survey: 3×3 Chebyshev (M1, M5), half-to-even rounding (M2), `dilation_ratio = 0.02` (M4), `dilation ≥ 1` clamp (M3). | boundary-iou survey | **strict**. Same `vernier-mask` primitives that the instance Boundary AP / TIDE rows consume — `crates/vernier-mask/src/ops/boundary.rs:123` for `dilation_pixels`; PR #184/185 for the u64-packed and bbox-cropped erode kernels. Shipped via §Z1/Z2 amendment. |
 | Z3 | Cityscapes panoptic via the same fork. Different categories, ignore semantics, stuff-class handling. Out of scope for both Z1 and the initial ship. | cityscapes fork | **corrected (deferred)**. Separate follow-up. |
 
 ### Open questions
@@ -534,10 +541,150 @@ Each is a ~30-minute fixture; resolved by follow-up commits before the ADR is **
    first developer provisions the cache and runs the measurement.
    Strict mode demands bit-equality vs `pq_compute_single_core`
    regardless and is unaffected.
-7. **Z1 boundary-PQ composition.** Closed by the follow-up ADR.
-   Suspected shape: boundary-IoU on eroded masks via the same
-   instance-case kernel, but the matching threshold is
-   `boundary_iou > 0.5` rather than `min(mask_iou, boundary_iou) > 0.5`;
-   the U6 union may or may not apply. **Deferred** to a follow-up
-   ADR; `PanopticEvaluator(boundary=True)` raises
-   `NotImplementedError` pointing here.
+7. **Z1 boundary-PQ composition.** *Resolved 2026-05-14 (§Z1/Z2
+   amendment below).* The earlier draft's suspicion — "threshold is
+   `boundary_iou > 0.5` rather than `min(mask_iou, boundary_iou) >
+   0.5`" — was incorrect. Upstream
+   `boundary_iou/coco_panoptic_api/evaluation.py:195` is literally
+   `iou = min(iou, boundary_iou)`; composition is identical to the
+   instance case (O1). The non-triviality lives in the iterative
+   boundary panoptic map construction (segment-by-segment
+   interior-erase + band-paint, JSON-order dependent — see §Z1/Z2
+   amendment). The U6 union applies to both the mask and boundary
+   IoU computations.
+
+---
+
+## Z1/Z2 amendment (2026-05-14)
+
+- **Status:** Shipped 2026-05-14.
+- **Scope:** Closes Z1 and Z2; flips both from `(deferred)` to live
+  dispositions. Z3 (Cityscapes panoptic) remains deferred and is
+  unaffected.
+
+### Composition rule (definitive)
+
+For each `(gt_id, pred_id)` candidate pair with category agreement
+(U5) and non-zero intersection:
+
+1. `mask_iou = mask_inter / (gt.area + pred.area − mask_inter −
+   void_pred_mask)`, the standard panoptic union (U6) over the
+   `pan_gt × pan_pred` confusion histogram.
+2. `boundary_iou = b_inter / (gt.boundary_area + pred.boundary_area
+   − b_inter − void_pred_boundary)`, the same union shape (U6)
+   over the `pan_gt_boundary × pan_pred_boundary` confusion
+   histogram, with `BOUNDARY_ID` treated as the boundary-map's void.
+3. `iou = min(mask_iou, boundary_iou)`; match if `iou > 0.5` (strict
+   inequality per U7); on match, `tp += 1` and `sum_iou += iou`
+   (U9, U10).
+
+FN / FP attribution is **unchanged** from the mask-only case — it
+consumes the *mask* confusion matrix and *mask* areas only. U6 / U7
+/ V1-V7 / W1 / W7 all stand verbatim. The `boundary_area` field
+participates **only** in step 2.
+
+### Boundary panoptic map construction
+
+The boundary panoptic map is built segment-by-segment from a per-image
+id-map. `BOUNDARY_ID = max(category_id) + 1` is the sentinel for
+"interior" pixels that get wiped between segments. `dilation_px` is
+computed per quirks M2 / M3 / M4 / M5 via `vernier-mask`'s
+`dilation_pixels` (single source of truth for both modes).
+
+**strict** (mirrors upstream `evaluation.py:105-127`, bit-exact
+JSON-order in-place mutation):
+
+```text
+pan_boundary = pan.clone()                # one allocation per image
+for el in segments_info (JSON order):
+    binary_mask = (pan_boundary == el.id)
+    binary_band = mask XOR erode_chebyshev(mask, dilation_px)
+    pan_boundary[binary_mask] = BOUNDARY_ID     # wipe interior
+    pan_boundary[binary_band] = el.id           # paint band
+    el.boundary_area = popcount(binary_band)
+```
+
+In-place mutation means a later segment `k`'s
+`(pan_boundary == k_id)` excludes pixels that earlier segments'
+bands stomped on. Order-dependent by construction.
+
+**corrected** (default; snapshot + sorted-id, deterministic):
+
+```text
+snapshot = pan.clone()                    # read-only reference
+pan_boundary = filled(BOUNDARY_ID)        # never read for masks
+for el in segments_info (sorted by id):
+    binary_mask = (snapshot == el.id)
+    binary_band = mask XOR erode_chebyshev(mask, dilation_px)
+    pan_boundary[binary_band] = el.id
+    el.boundary_area = popcount(binary_band)
+```
+
+Bands may overlap on output (later sorted-id segments can co-paint
+into pixels an earlier segment already painted), but each segment's
+`boundary_area` and intersection counts are derived from the
+read-only `snapshot` and are independent of segment order. Equal to
+strict whenever no two segments' bands overlap.
+
+### Parity modes shipped
+
+- **strict** — bit-exact reproduction of upstream
+  `pq_compute_single_core(..., iou_type="boundary",
+  dilation_ratio=...)` at the pinned SHA
+  `37d25586a677b043ed585f10e5c42d4e80176ea9`.
+- **corrected** — `PanopticEvaluator.parity_mode` default;
+  deterministic under segment reordering, equal to strict when bands
+  do not overlap.
+- **aligned** is unused for boundary PQ — no meaningful tolerance
+  band sits between strict and corrected; `strict + corrected`
+  covers the space.
+
+API surface additions:
+
+- `PanopticEvaluator.parity_mode: ParityMode` — unchanged default
+  (`"corrected"`).
+- `PanopticEvaluator.dilation_ratio: float = 0.02` — new field,
+  consulted only when `boundary=True`. Per quirk M4 / Q1, vernier
+  exposes `dilation_ratio` at every entry point that uses boundary
+  IoU.
+
+### Citation chain
+
+Every disposition in this amendment is grounded in a row of the two
+quirks surveys, not re-litigated here:
+
+- **Q3** (`boundary-iou-quirks.md`, rewritten 2026-05-14) — the
+  composition rule and the iterative boundary panoptic map
+  construction.
+- **M1-M5** (`boundary-iou-quirks.md`) — erosion spec: 3×3
+  Chebyshev, half-to-even rounding, `dilation ≥ 1` clamp,
+  `dilation_ratio = 0.02` default. Already shipped in `vernier-mask`
+  (`crates/vernier-mask/src/ops/boundary.rs:123` for
+  `dilation_pixels`; PR #184 / PR #185 for the u64-packed and
+  bbox-cropped erode kernels).
+- **U6** — panoptic union with void-pred subtraction. Applies to
+  both `mask_iou` and `boundary_iou` denominators.
+- **U7** — strict-`>` threshold at `iou > 0.5`. Unchanged.
+- **V1-V7** — FP / FN attribution from the mask confusion matrix.
+  Unchanged — `boundary_area` does not enter V4 / V5 (V4's
+  FP-exclusion overlap is mask-area-only by design).
+- **W1 / W7** — per-category and global PQ / SQ / RQ aggregation.
+  Unchanged — `sum_iou` consumes whatever `iou` step 3 above
+  decides.
+- **ADR-0010** — the instance Boundary IoU disposition baseline;
+  panoptic boundary inherits its erosion primitives wholesale via
+  the `vernier-panoptic → vernier-mask` edge declared in this ADR's
+  *Workspace and dependency direction* section.
+
+### Why amend instead of supersede
+
+`CLAUDE.md` flags ADRs as immutable once `accepted` and prefers
+superseding ADRs over in-place edits. The user explicitly elected
+amendment here: Z1 and Z2 were always tagged `(deferred)` in the
+appendix, and the ADR's *What this ADR explicitly does not decide*
+section already anticipated a follow-up. Flipping a deferral
+disposition in place is a status update consistent with the
+original ADR's intent, not a re-decision of an accepted call. Z3
+remains deferred and is not affected. *(Author's note: this is a
+deliberate exception to the convention, taken once and recorded
+for posterity rather than absorbed as a pattern.)*

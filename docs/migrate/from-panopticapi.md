@@ -55,16 +55,31 @@ the implicit pool: expect last-bit PQ drift on the first run (your
 prior numbers are host-dependent; vernier's are not). The strict-mode
 parity claim against the single-core path is the deterministic anchor.
 
-## Boundary PQ raises `NotImplementedError`
+## Boundary PQ
 
-`Evaluator(boundary=True)` raises `NotImplementedError` pointing at
-the **Q3 / Z1** follow-up ADR. The
-composition rule in the [`bowenc0221/boundary-iou-api`][bowen-fork]
-fork's panoptic path is *not* the instance-case
-`min(mask_iou, boundary_iou)` and resolving it requires its own pass.
-ADR-0025 §"explicitly does not decide" anchors the deferral.
+`Evaluator(boundary=True, dilation_ratio=0.02)` now ships
+([ADR-0025 §Z1/Z2 amendment][adr-z]). The composition rule is
+`iou = min(mask_iou, boundary_iou)` — identical to instance Boundary;
+upstream `coco_panoptic_api/evaluation.py:195` is literally
+`iou = min(iou, boundary_iou)`. What is non-trivial is the iterative,
+JSON-order-dependent construction of the boundary panoptic map (the
+[`bowenc0221/boundary-iou-api`][bowen-fork] fork erodes each segment
+against the *partially-mutated* id-map, so later segments lose pixels
+their predecessors' bands stomped).
+
+Two parity modes, same `parity_mode` field used elsewhere:
+
+- `parity_mode="strict"` mirrors upstream's in-place JSON-order
+  mutation bit-exactly. Pick this for cross-tool comparisons.
+- `parity_mode="corrected"` (default) snapshots the input id-map and
+  processes segments in sorted-id order. Equal to strict whenever
+  segment bands do not overlap; documented divergence otherwise.
+
+Cityscapes panoptic boundary (ADR-0025 Z3) is still deferred — out of
+scope for this migration.
 
 [bowen-fork]: https://github.com/bowenc0221/boundary-iou-api
+[adr-z]: ../adr/0025-panoptic-api.md#z1z2-amendment-2026-05-14
 
 ## Sentinels: `-1` vs `0` vs `nan`
 

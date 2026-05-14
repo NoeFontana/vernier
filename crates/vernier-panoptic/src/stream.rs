@@ -25,11 +25,12 @@ use std::collections::{HashMap, HashSet};
 use vernier_partial::RankId;
 
 use crate::attribute::{attribute_image, PqStat};
+use crate::boundary::{BoundaryConfig, BoundaryScratch};
 use crate::dataset::{CategoryId, CategoryMeta, ImageEntry, ImageId};
 use crate::distributed::{encode, panoptic_expectation, EncodeInput, PanopticMergeAccumulator};
 use crate::error::PanopticError;
-use crate::kernel::pq_image_with_id;
-use crate::parity::ParityMode;
+use crate::kernel::{pq_image_at_threshold_with_boundary, pq_image_with_id};
+use crate::parity::{ParityMode, PANOPTIC_IOU_THRESHOLD};
 use crate::summarize::{summarize_from_acc, PanopticSummary};
 
 /// Streaming panoptic-quality evaluator. Mirrors
@@ -38,7 +39,7 @@ use crate::summarize::{summarize_from_acc, PanopticSummary};
 /// [`snapshot`](Self::snapshot) (non-consuming) or
 /// [`finalize`](Self::finalize) (consuming) to read the
 /// [`PanopticSummary`].
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct StreamingPanopticEvaluator {
     /// Per-category PqStat fold, updated as images stream in.
     acc: HashMap<CategoryId, PqStat>,
@@ -61,6 +62,23 @@ pub struct StreamingPanopticEvaluator {
     /// rank strict-mode bit-equality merge.
     retain_per_image_deltas: bool,
     rank_id: Option<RankId>,
+    /// Boundary-PQ configuration (ADR-0025 Z1 amendment). When set,
+    /// each [`Self::update`] call routes through
+    /// [`pq_image_at_threshold_with_boundary`] and the partial header
+    /// carries the dilation_ratio in its `params_hash` so cross-rank
+    /// merge rejects mixed-boundary partials.
+    boundary: Option<BoundaryConfig>,
+    /// Cached `max(category_id)` over `categories`, computed once at
+    /// construction. The boundary panoptic-map construction needs
+    /// it for the `BOUNDARY_ID` sentinel; recomputing per `update`
+    /// would add an O(n_categories) walk to the hot path.
+    max_category_id: u32,
+    /// Reusable GT-side boundary scratch buffers. Boundary state is
+    /// per-image-local — no cross-image carry — but the scratch
+    /// allocations amortize across calls.
+    gt_boundary_scratch: BoundaryScratch,
+    /// Reusable DT-side boundary scratch buffers.
+    dt_boundary_scratch: BoundaryScratch,
 }
 
 impl StreamingPanopticEvaluator {
@@ -80,6 +98,12 @@ impl StreamingPanopticEvaluator {
         things_stuff_split: bool,
         retain_per_image_deltas: bool,
     ) -> Self {
+        let max_category_id: u32 = categories
+            .keys()
+            .copied()
+            .filter_map(|id| u32::try_from(id).ok())
+            .max()
+            .unwrap_or(0);
         Self {
             acc: HashMap::new(),
             categories,
@@ -93,7 +117,36 @@ impl StreamingPanopticEvaluator {
             things_stuff_split,
             retain_per_image_deltas,
             rank_id: None,
+            boundary: None,
+            max_category_id,
+            gt_boundary_scratch: BoundaryScratch::new(),
+            dt_boundary_scratch: BoundaryScratch::new(),
         }
+    }
+
+    /// Enable boundary-PQ on this evaluator (ADR-0025 Z1 amendment).
+    /// Each subsequent [`Self::update`] call composes
+    /// `min(mask_iou, boundary_iou)` and the emitted partials carry
+    /// `params_hash(boundary=Some(dilation_ratio))` so cross-rank
+    /// merge rejects partials computed without boundary or with a
+    /// different `dilation_ratio`.
+    ///
+    /// Calling this after the first [`Self::update`] is a programming
+    /// error — boundary affects per-category PqStat values, so a
+    /// mid-stream toggle would silently mix two regimes.
+    pub fn with_boundary(mut self, cfg: BoundaryConfig) -> Result<Self, PanopticError> {
+        if !self.seen_images.is_empty() {
+            return Err(PanopticError::Partial(
+                vernier_partial::PartialError::Format {
+                    kind: vernier_partial::PartialFormatErrorKind::RkyvDecode {
+                        detail: "with_boundary must be called before the first update()"
+                            .to_string(),
+                    },
+                },
+            ));
+        }
+        self.boundary = Some(cfg);
+        Ok(self)
     }
 
     /// Set the rank identifier carried in the partial wire header
@@ -146,7 +199,19 @@ impl StreamingPanopticEvaluator {
         if !self.seen_images.insert(image_id) {
             return Err(PanopticError::DuplicateImageId { image_id });
         }
-        let report = pq_image_with_id(image_id, gt, dt)?;
+        let report = match self.boundary {
+            None => pq_image_with_id(image_id, gt, dt)?,
+            Some(cfg) => pq_image_at_threshold_with_boundary(
+                image_id,
+                gt,
+                dt,
+                PANOPTIC_IOU_THRESHOLD,
+                cfg,
+                self.max_category_id,
+                &mut self.gt_boundary_scratch,
+                &mut self.dt_boundary_scratch,
+            )?,
+        };
         let per_image = attribute_image(gt, dt, &report, self.parity_mode);
 
         // Fold into the per-category accumulator. The `acc` is the
@@ -197,6 +262,7 @@ impl StreamingPanopticEvaluator {
             retain_per_image_deltas: self.retain_per_image_deltas,
             rank_id: self.rank_id,
             n_images: self.seen_images.len() as u32,
+            boundary: self.boundary.map(|cfg| cfg.dilation_ratio),
         }
     }
 
@@ -241,12 +307,35 @@ impl StreamingPanopticEvaluator {
         retain_per_image_deltas: bool,
         partials: &[&[u8]],
     ) -> Result<Self, PanopticError> {
+        Self::from_partials_with_boundary(
+            categories,
+            parity_mode,
+            things_stuff_split,
+            retain_per_image_deltas,
+            None,
+            partials,
+        )
+    }
+
+    /// Boundary-aware variant of [`Self::from_partials`]. Pass
+    /// `Some(cfg)` to require partials computed under boundary PQ with
+    /// the same `dilation_ratio`; pass `None` to require non-boundary
+    /// partials (the existing behavior).
+    pub fn from_partials_with_boundary(
+        categories: HashMap<CategoryId, CategoryMeta>,
+        parity_mode: ParityMode,
+        things_stuff_split: bool,
+        retain_per_image_deltas: bool,
+        boundary: Option<BoundaryConfig>,
+        partials: &[&[u8]],
+    ) -> Result<Self, PanopticError> {
         let strict = parity_mode == ParityMode::Strict;
         let exp = panoptic_expectation(
             &categories,
             parity_mode,
             things_stuff_split,
             retain_per_image_deltas,
+            boundary.map(|c| c.dilation_ratio),
         );
         let mut acc = PanopticMergeAccumulator::new(strict, retain_per_image_deltas);
         for bytes in partials {
@@ -272,6 +361,11 @@ impl StreamingPanopticEvaluator {
         // partials don't carry.
         ev.per_image = None;
         ev.retain_per_image_deltas = false;
+        // Preserve boundary state so a follow-up
+        // `finalize_to_partial` (when the merged evaluator is re-
+        // emitted, e.g. for a hierarchical merge) carries the same
+        // header bit pattern.
+        ev.boundary = boundary;
         Ok(ev)
     }
 }

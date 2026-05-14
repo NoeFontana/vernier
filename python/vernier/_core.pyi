@@ -593,6 +593,8 @@ def evaluate_panoptic(
     category_filter: list[int] | None = ...,
     class_grouping: list[tuple[str, list[int]]] | None = ...,
     stuff_thing_partition: tuple[list[int], list[int]] | None = ...,
+    boundary: bool = ...,
+    dilation_ratio: float = ...,
 ) -> PanopticSummary: ...
 def evaluate_panoptic_to_partial(
     images: Sequence[tuple[int, NDArray[np.uint32], bytes, NDArray[np.uint32], bytes]],
@@ -602,6 +604,8 @@ def evaluate_panoptic_to_partial(
     *,
     things_stuff_split: bool = ...,
     retain_per_image_deltas: bool = ...,
+    boundary: bool = ...,
+    dilation_ratio: float = ...,
 ) -> bytes: ...
 def merge_panoptic_partials(
     categories: bytes,
@@ -610,6 +614,8 @@ def merge_panoptic_partials(
     *,
     things_stuff_split: bool = ...,
     retain_per_image_deltas: bool = ...,
+    boundary: bool = ...,
+    dilation_ratio: float = ...,
 ) -> PanopticSummary: ...
 
 # ---------------------------------------------------------------------------
@@ -762,6 +768,8 @@ class BackgroundPanopticEvaluator:
         worker_affinity: int | None = ...,
         worker_nice: int = ...,
         shutdown_timeout_seconds: float = ...,
+        boundary: bool = ...,
+        dilation_ratio: float = ...,
     ) -> None: ...
     @property
     def n_categories(self) -> int: ...

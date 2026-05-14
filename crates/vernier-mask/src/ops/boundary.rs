@@ -116,11 +116,11 @@ fn erode_for_band(rle: &Rle, dilation_ratio: f64, scratch: &mut ErodeScratch) {
 /// Quirks **M2** + **M3**: pixel dilation distance for a `(h, w)`
 /// mask at the given ratio. Half-to-even rounding, clamped to ≥ 1.
 ///
-/// Crate-private: the public boundary surface takes `dilation_ratio`
-/// directly and computes `d` internally. Exposed at crate scope so the
-/// boundary parity tests can pin the rounding behaviour without going
-/// through `boundary_band`.
-pub(crate) fn dilation_pixels(h: u32, w: u32, dilation_ratio: f64) -> u32 {
+/// The public boundary surface takes `dilation_ratio` directly and
+/// computes `d` internally; vernier-panoptic's boundary-map
+/// construction also calls this primitive against the panoptic label
+/// map's `(h, w)` so the M2/M3 rounding rule is shared.
+pub fn dilation_pixels(h: u32, w: u32, dilation_ratio: f64) -> u32 {
     let diag = ((f64::from(h)).powi(2) + (f64::from(w)).powi(2)).sqrt();
     let raw = (dilation_ratio * diag).round_ties_even();
     if raw.is_finite() && raw >= 1.0 {

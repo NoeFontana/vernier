@@ -135,7 +135,7 @@ separate code paths.
 |---|---|---|---|
 | Q1 | LVIS exposes `dilation_ratio` as an `LVISEval.__init__` parameter (default 0.02). The COCO instance API does not expose it at all — the value is implicit at 0.02. | le:34 | **corrected**. vernier exposes `dilation_ratio` everywhere boundary IoU is invoked, including the pycocotools-shim and the CLI. |
 | Q2 | Cityscapes instance / panoptic boundary metrics use the same `mask_to_boundary` routine with default `dilation_ratio=0.02`. No dataset-specific tuning. | (separate API files) | **strict**. Single algorithm, configurable ratio. |
-| Q3 | Panoptic boundary PQ (`boundary_iou/coco_panoptic_api/`) has its own composition logic that is **not** the simple `min(mask_iou, boundary_iou)` of the instance case. Out of scope for the current 0.0.x release line. | (panoptic eval) | **corrected (deferred)**. A separate ADR will dispose of panoptic boundary PQ if and when vernier extends to panoptic evaluation; until that ADR lands, vernier does not implement panoptic boundary PQ at all. |
+| Q3 | Panoptic boundary PQ (`boundary_iou/coco_panoptic_api/evaluation.py:195`) uses the **same** composition as the instance case — literally `iou = min(iou, boundary_iou)` (O1). The non-trivial part is the iterative, JSON-order-dependent construction of the boundary panoptic map: each segment's binary mask is read from the **partially-mutated** id-map and eroded; the interior is wiped to a `BOUNDARY_ID = max(category_id) + 1` sentinel and the eroded band is painted back as the segment id. Later segments in JSON order lose pixels that earlier segments' bands stomped on. | (panoptic eval; bowenc0221 SHA `37d25586a677...`) | **strict + corrected**. Strict mirrors upstream's in-place JSON-order mutation bit-exactly; corrected snapshots the input id-map and processes segments in sorted-id order (overlapping bands may co-paint, but counts are order-invariant). Disposed in ADR-0025 §Z1/Z2 amendment (2026-05-14). |
 
 ---
 
@@ -152,8 +152,11 @@ where each row is signed off. A short cheat-sheet:
   (XOR vs subtract — bit-equal, safer), O3 (shared RLE intersection
   kernel), P5 (polygon rasterisation transitive).
 - **Corrected:** M4 (`dilation_ratio` exposed everywhere), Q1 (LVIS-
-  style parameterisation generalised to all entry points), Q3
-  (panoptic boundary PQ — deferred).
+  style parameterisation generalised to all entry points).
+- **Strict + corrected:** Q3 (panoptic boundary PQ — composition is
+  the instance-case `min(mask_iou, boundary_iou)`; non-triviality is
+  in the iterative boundary panoptic map construction. Both modes
+  shipped via ADR-0025 §Z1/Z2 amendment 2026-05-14).
 - **Informational:** M6 (upstream `cv2.erode` determinism within the
   pinned OpenCV range; vernier does not call it).
 
@@ -192,11 +195,15 @@ small reproducer before signing off.
    matching `1.0` or `NaN` as some interpretations of "complete
    agreement on emptiness" might suggest). The chosen value is
    pinned by O1 (the min-fold) when both inputs are empty.
-5. **Q3 panoptic composition.** When (if) vernier extends to
-   panoptic boundary PQ, the composition rule differs from the
-   instance case in ways the reference panoptic eval encodes but
-   does not document. A future ADR is the right home for that
-   investigation.
+5. **Q3 panoptic composition.** *Resolved 2026-05-14 (ADR-0025 §Z1/Z2
+   amendment).* The investigation found that upstream
+   (`boundary_iou/coco_panoptic_api/evaluation.py:195`) is literally
+   `iou = min(iou, boundary_iou)` — identical to the instance case.
+   The non-triviality lives in the iterative boundary panoptic map
+   construction (segment-by-segment interior-erase + band-paint, with
+   later JSON-order segments losing pixels to earlier segments'
+   bands). vernier ships both a strict mode (bit-exact upstream
+   mutation) and a corrected mode (snapshot + id-sort, deterministic).
 
 These open questions are the tail; the head is large and the
 disposition table above is high-confidence. ADR-0010 ratifies the
