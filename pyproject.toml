@@ -32,6 +32,14 @@ classifiers = [
 ]
 dependencies = [
     "numpy>=2.0",
+    # ADR-0046 §F2: ``vernier.aggregate`` is implemented on top of
+    # pyarrow's Table/RecordBatch primitives. It is part of the
+    # top-level :mod:`vernier` namespace, so importing the package
+    # must succeed without an extra. pyarrow's wheel is ~20 MB but
+    # is industry-standard for any Arrow-shaped data flow; we pay
+    # the install cost rather than gating the rich analysis lane
+    # behind an extra.
+    "pyarrow>=15",
 ]
 
 [project.optional-dependencies]
@@ -40,7 +48,8 @@ viz = ["plotly>=6.0"]
 # Result tables (ADR-0019). polars is the canonical consumer for the
 # Arrow PyCapsule the FFI emits; pandas/duckdb/pyarrow also work and
 # are *not* declared here because they are optional alternatives the
-# user picks themselves.
+# user picks themselves. (pyarrow moved to base ``dependencies`` for
+# the ADR-0046 ``vernier.aggregate`` surface.)
 tables = ["polars>=1.0"]
 # Real-model validation harness (TIDE Week 5). rfdetr is the source of
 # RFDETRNano (bbox) + RFDETRSegNano (segm) used by
