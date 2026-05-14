@@ -122,6 +122,26 @@ pub(crate) struct EvalArgs {
     /// data) is unaffected.
     #[arg(long, action = ArgAction::SetTrue)]
     pub(crate) quiet: bool,
+
+    /// Headline metric. Defaults to `ap` (the COCO-style AP/AR
+    /// summary, identical to the pre-LRP CLI shape). `olrp` swaps in
+    /// the LRP / oLRP error decomposition per ADR-0043 and emits
+    /// per-class oLRP plus the deployable confidence threshold
+    /// (`tau`).
+    #[arg(long = "metric", value_enum, default_value_t = MetricArg::Ap)]
+    pub(crate) metric: MetricArg,
+}
+
+/// Headline-metric selector. Per ADR-0043 LRP / oLRP is opt-in (the
+/// existing AP-table contract is unchanged for callers who do not
+/// pass `--metric olrp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub(crate) enum MetricArg {
+    /// Default — COCO-style AP / AR summary.
+    Ap,
+    /// Localization Recall Precision (Oksuz TPAMI 2021).
+    Olrp,
 }
 
 /// IoU kind selector. Maps onto `vernier_core` kernels; see
@@ -148,6 +168,28 @@ impl IouTypeArg {
             Self::Segm => "segm",
             Self::Boundary => "boundary",
             Self::Keypoints => "keypoints",
+        }
+    }
+
+    /// Project to the `vernier-core` kernel discriminant. Used by the
+    /// metric pipelines that need to look up per-kernel defaults.
+    pub(crate) fn kernel_kind(self) -> vernier_core::evaluate::KernelKind {
+        use vernier_core::evaluate::KernelKind;
+        match self {
+            Self::Bbox => KernelKind::Bbox,
+            Self::Segm => KernelKind::Segm,
+            Self::Boundary => KernelKind::Boundary,
+            Self::Keypoints => KernelKind::Keypoints,
+        }
+    }
+
+    /// Default area-range bucket set for this kernel. Keypoints use a
+    /// dedicated table (no `small` bucket and a single `large` bucket);
+    /// every other kernel uses the four-bucket COCO default.
+    pub(crate) fn default_area_ranges(self) -> Vec<vernier_core::evaluate::AreaRange> {
+        match self {
+            Self::Keypoints => vernier_core::evaluate::AreaRange::keypoints_default().to_vec(),
+            _ => vernier_core::evaluate::AreaRange::coco_default().to_vec(),
         }
     }
 }

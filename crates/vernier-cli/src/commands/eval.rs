@@ -18,6 +18,7 @@ use std::process;
 
 use vernier_core::accumulate::{accumulate, sort_max_dets, AccumulateParams};
 use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
+use vernier_core::lrp::{self, LrpParams, LrpReport};
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::summarize::{summarize_detection, summarize_with, StatRequest};
 use vernier_core::{
@@ -25,9 +26,9 @@ use vernier_core::{
     CocoDetections, EvalError, EvaluateParams, ParityMode, Summary,
 };
 
-use crate::cli::{EmitDestination, EmitSpec, EvalArgs, IouTypeArg};
+use crate::cli::{EmitDestination, EmitSpec, EvalArgs, IouTypeArg, MetricArg};
 use crate::error::CliError;
-use crate::format::{registry, FormatContext, Formatter};
+use crate::format::{registry, EvalArtifact, FormatContext, Formatter};
 
 /// Detection-canonical max_dets ladder used when `--max-dets` is
 /// absent and `--iou-type` is anything other than `keypoints`. Mirrors
@@ -90,26 +91,49 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         _ => 0.0,
     };
 
-    let summary = run_pipeline(
-        args.iou_type,
-        &gt,
-        &dt,
-        parity_mode,
-        &max_dets,
-        use_cats,
-        dilation_ratio,
-        sigmas,
-    )?;
-
     // ADR-0015 §"Formatter abstraction": eval runs exactly once
-    // (above); the dispatch below is a flat for-loop, no re-eval.
+    // (the LRP branch below or the AP branch below); the dispatch
+    // is a flat for-loop, no re-eval.
     let ctx = FormatContext {
         iou_type: args.iou_type,
         parity_mode,
         max_dets: &max_dets,
         use_cats,
     };
-    dispatch_emits(&emits, &summary, &ctx)
+
+    match args.metric {
+        MetricArg::Ap => {
+            let summary = run_pipeline(
+                args.iou_type,
+                &gt,
+                &dt,
+                parity_mode,
+                &max_dets,
+                use_cats,
+                dilation_ratio,
+                sigmas,
+            )?;
+            dispatch_emits(&emits, &EvalArtifact::Ap(&summary), &ctx)
+        }
+        MetricArg::Olrp => {
+            // Per ADR-0043, LRP runs through a separate eval entry
+            // (it sets retain_iou=true internally and runs a parallel
+            // matching pass per class). max_dets's top rung is what
+            // the LRP matching pass uses.
+            let top_max = max_dets.iter().copied().max().unwrap_or(100);
+            let report = run_lrp_pipeline(
+                args.iou_type,
+                &gt,
+                &dt,
+                parity_mode,
+                top_max,
+                use_cats,
+                dilation_ratio,
+                sigmas,
+            )?;
+            dispatch_emits(&emits, &EvalArtifact::Lrp(&report), &ctx)
+        }
+    }
 }
 
 /// Convenience entry point for `main.rs`: maps a [`CliError`] to the
@@ -146,10 +170,7 @@ fn run_pipeline(
     sigmas: Option<HashMap<i64, Vec<f64>>>,
 ) -> Result<Summary, EvalError> {
     let iou_thr = iou_thresholds();
-    let area: Vec<AreaRange> = match iou_type {
-        IouTypeArg::Keypoints => AreaRange::keypoints_default().to_vec(),
-        _ => AreaRange::coco_default().to_vec(),
-    };
+    let area: Vec<AreaRange> = iou_type.default_area_ranges();
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
     let eval_params = EvaluateParams {
         iou_thresholds: iou_thr,
@@ -193,7 +214,7 @@ fn run_pipeline(
 
 fn dispatch_emits(
     emits: &[EmitSpec],
-    summary: &Summary,
+    artifact: &EvalArtifact<'_>,
     ctx: &FormatContext<'_>,
 ) -> Result<(), CliError> {
     for spec in emits {
@@ -210,14 +231,52 @@ fn dispatch_emits(
             EmitDestination::Stdout => {
                 let stdout = io::stdout();
                 let mut handle = stdout.lock();
-                formatter.render(summary, ctx, &mut handle)?;
+                formatter.render(artifact, ctx, &mut handle)?;
             }
             EmitDestination::File(path) => {
-                write_atomic(path, |w| formatter.render(summary, ctx, w))?;
+                write_atomic(path, |w| formatter.render(artifact, ctx, w))?;
             }
         }
     }
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_lrp_pipeline(
+    iou_type: IouTypeArg,
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    parity: ParityMode,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    dilation_ratio: f64,
+    sigmas: Option<HashMap<i64, Vec<f64>>>,
+) -> Result<LrpReport, CliError> {
+    let area: Vec<AreaRange> = iou_type.default_area_ranges();
+    // LRP runs at a single tp_threshold; the matching engine's iou
+    // axis is collapsed to [tp_threshold]. Use the per-kernel
+    // default from ADR-0044.
+    let tp_threshold = lrp::tp_threshold_for(iou_type.kernel_kind());
+    let iou_thr = [tp_threshold];
+    let tau_grid = lrp::default_tau_grid();
+    let params = LrpParams {
+        tp_threshold,
+        tau_grid,
+        max_dets_per_image,
+        use_cats,
+        iou_thresholds: &iou_thr,
+        area_ranges: &area,
+    };
+    let report = match iou_type {
+        IouTypeArg::Bbox => lrp::optimal_lrp_bbox(gt, dt, params, parity),
+        IouTypeArg::Segm => lrp::optimal_lrp_segm(gt, dt, params, parity),
+        IouTypeArg::Boundary => lrp::optimal_lrp_boundary(gt, dt, params, parity, dilation_ratio),
+        IouTypeArg::Keypoints => {
+            lrp::optimal_lrp_keypoints(gt, dt, params, parity, sigmas.unwrap_or_default())
+        }
+    }
+    .map_err(CliError::from)?;
+    Ok(report)
 }
 
 fn lookup_formatter(name: crate::format::FormatName) -> Option<&'static dyn Formatter> {

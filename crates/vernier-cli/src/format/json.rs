@@ -20,11 +20,12 @@
 use std::io;
 
 use serde::Serialize;
+use vernier_core::lrp::LrpReport;
 use vernier_core::summarize::{Metric, StatLine};
 use vernier_core::{ParityMode, Summary};
 
 use crate::error::CliError;
-use crate::format::{FormatContext, FormatName, Formatter};
+use crate::format::{EvalArtifact, FormatContext, FormatName, Formatter};
 
 /// Schema version pinned at v0.2.0. Bumping requires the same bar as
 /// reshaping the on-disk format: a new ADR plus a major-version
@@ -93,32 +94,109 @@ impl Formatter for Json {
 
     fn render(
         &self,
-        summary: &Summary,
+        artifact: &EvalArtifact<'_>,
         ctx: &FormatContext<'_>,
         out: &mut dyn io::Write,
     ) -> Result<(), CliError> {
-        let lines: Vec<LineV1<'_>> = summary.lines.iter().map(line_to_v1).collect();
-        let stats = summary.stats();
-        let doc = SchemaV1 {
-            version: SCHEMA_VERSION,
-            iou_type: ctx.iou_type.as_str(),
-            parity_mode: parity_mode_str(ctx.parity_mode),
-            max_dets: ctx.max_dets,
-            use_cats: ctx.use_cats,
-            lines,
-            stats,
-        };
-        // Pretty-print disabled: pretty bytes inflate the archive
-        // size and add no signal `jq` can't reformat. The default
-        // `to_writer` is the canonical compact form and is what
-        // ADR-0015's byte-determinism contract is built around.
-        serde_json::to_writer(&mut *out, &doc)?;
-        // Trailing newline so concatenating two outputs (`cat a.json
-        // b.json`) does not produce `}{` on a single line. ADR-0015
-        // §"Output determinism" requires this.
-        writeln!(out)?;
-        Ok(())
+        match artifact {
+            EvalArtifact::Ap(summary) => render_ap(summary, ctx, out),
+            EvalArtifact::Lrp(report) => render_lrp(report, ctx, out),
+        }
     }
+}
+
+fn render_ap(
+    summary: &Summary,
+    ctx: &FormatContext<'_>,
+    out: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    let lines: Vec<LineV1<'_>> = summary.lines.iter().map(line_to_v1).collect();
+    let stats = summary.stats();
+    let doc = SchemaV1 {
+        version: SCHEMA_VERSION,
+        iou_type: ctx.iou_type.as_str(),
+        parity_mode: parity_mode_str(ctx.parity_mode),
+        max_dets: ctx.max_dets,
+        use_cats: ctx.use_cats,
+        lines,
+        stats,
+    };
+    serde_json::to_writer(&mut *out, &doc)?;
+    writeln!(out)?;
+    Ok(())
+}
+
+fn render_lrp(
+    report: &LrpReport,
+    ctx: &FormatContext<'_>,
+    out: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    let per_class: Vec<LrpClassV1> = report
+        .per_class
+        .iter()
+        .map(|c| LrpClassV1 {
+            category_id: c.category_id,
+            olrp: c.olrp,
+            olrp_loc: c.olrp_loc,
+            olrp_fp: c.olrp_fp,
+            olrp_fn: c.olrp_fn,
+            tau: c.tau,
+        })
+        .collect();
+    let doc = LrpSchemaV1 {
+        version: SCHEMA_VERSION,
+        metric: "olrp",
+        iou_type: ctx.iou_type.as_str(),
+        parity_mode: parity_mode_str(ctx.parity_mode),
+        max_dets: ctx.max_dets,
+        use_cats: ctx.use_cats,
+        olrp: report.olrp,
+        olrp_loc: report.olrp_loc,
+        olrp_fp: report.olrp_fp,
+        olrp_fn: report.olrp_fn,
+        per_class,
+        n_empty_classes: report.n_empty_classes,
+        kernel: report.config.kernel.as_str(),
+        tp_threshold: report.config.tp_threshold,
+        tau_grid_len: report.config.tau_grid_len,
+    };
+    serde_json::to_writer(&mut *out, &doc)?;
+    writeln!(out)?;
+    Ok(())
+}
+
+/// LRP/oLRP JSON shape. Field order is wire-stable.
+#[derive(Debug, Serialize)]
+struct LrpSchemaV1<'a> {
+    /// Schema version (shared with the AP variant).
+    version: &'a str,
+    /// Always `"olrp"` for this variant — discriminator so a single
+    /// JSON parser handles both metric shapes.
+    metric: &'static str,
+    iou_type: &'a str,
+    parity_mode: &'a str,
+    max_dets: &'a [usize],
+    use_cats: bool,
+    olrp: f64,
+    olrp_loc: f64,
+    olrp_fp: f64,
+    olrp_fn: f64,
+    per_class: Vec<LrpClassV1>,
+    n_empty_classes: u32,
+    kernel: &'a str,
+    tp_threshold: f64,
+    tau_grid_len: usize,
+}
+
+/// Per-class oLRP entry. `None` fields serialize as JSON `null`.
+#[derive(Debug, Serialize)]
+struct LrpClassV1 {
+    category_id: i64,
+    olrp: Option<f64>,
+    olrp_loc: Option<f64>,
+    olrp_fp: Option<f64>,
+    olrp_fn: Option<f64>,
+    tau: Option<f64>,
 }
 
 fn line_to_v1(line: &StatLine) -> LineV1<'_> {

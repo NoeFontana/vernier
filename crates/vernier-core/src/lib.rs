@@ -22,6 +22,7 @@ pub mod dataset;
 pub mod distributed;
 pub mod error;
 pub mod evaluate;
+pub mod lrp;
 pub mod lvis_parity;
 pub mod matching;
 pub mod parity;

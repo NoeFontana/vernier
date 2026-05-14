@@ -259,4 +259,5 @@ markers = [
     "parity_semantic_val: COCO val2017 panoptic-derived semantic whole-dataset parity smoke (skipped unless the panoptic cache is provisioned via `python -m panoptic_val_cache`)",
     "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
     "real_models: real-model validation harness (rfdetr) — heavy, opt-in only, skipped unless the real-models extra is installed and VERNIER_COCO_CACHE points at val2017 GT + images",
+    "tripwire: sanity gates against vendored first-party references (e.g., kemaloksuz/LRP-Error). Not a parity contract — when a tripwire fires, investigate manually; do not auto-resolve.",
 ]
