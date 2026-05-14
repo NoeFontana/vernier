@@ -99,7 +99,53 @@ __all__ = [
     "Summary",
     "TableName",
     "decode_label_map_png",
+    "optimal_lrp",
 ]
+
+
+def optimal_lrp(
+    gt: Dataset,
+    dt: Predictions,
+    *,
+    tp_threshold: float | None = None,
+    tau_grid: object = None,
+    parity_mode: ParityMode = "corrected",
+) -> object:
+    """Panoptic LRP / oLRP (ADR-0043 — namespace reserved, not yet
+    wired).
+
+    Per ADR-0043 panoptic LRP runs a parallel matching pass that does
+    not reuse PQ's hard ``IoU > 0.5`` cutoff (the tau sweep needs the
+    full unthresholded matched-IoU list). That pass is not yet wired
+    in 0.5.x because the panoptic prediction data model
+    (``vernier.panoptic.Predictions``) does not carry per-segment
+    scores — without a confidence value per detection there is no
+    tau to sweep, and adding scores requires extending the panoptic
+    paradigm's wire format (a separate ADR-level decision).
+
+    The Python entry point is registered here so ``from
+    vernier.panoptic import optimal_lrp`` works as advertised by
+    ADR-0043; calling it raises :class:`NotImplementedError` with a
+    structured remediation pointer to the same ADR. When the
+    panoptic prediction shape adds a score field, this stub
+    delegates to a sibling Rust kernel pass that mirrors the
+    matching logic in :func:`vernier.instance.optimal_lrp` over
+    segment-IoU.
+
+    The argument shape is fixed in 0.5.x even though the function
+    raises today: callers can write the call site against the final
+    surface and the upgrade is purely backend.
+    """
+    _ = (gt, dt, tp_threshold, tau_grid, parity_mode)
+    raise NotImplementedError(
+        "vernier.panoptic.optimal_lrp is reserved per ADR-0043 but not "
+        "yet wired: the panoptic prediction data model does not carry "
+        "per-segment scores, so the tau sweep cannot run. Adding scores "
+        "to the panoptic Predictions shape is a separate ADR-level "
+        "decision (the parallel-matching-pass plumbing is ready Rust-side; "
+        "see crates/vernier-core/src/lrp/). Track the lift in the 0.5.x "
+        "follow-up that wires panoptic LRP end-to-end."
+    )
 
 
 @dataclass(frozen=True)

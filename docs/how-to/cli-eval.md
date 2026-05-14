@@ -83,6 +83,30 @@ vernier eval --gt gt.json --dt dt.json --iou-type bbox --quiet
 
 `--quiet` silences the (currently-empty, but reserved) stderr diagnostic stream. Stdout — the summary itself — is unaffected; `--quiet` and `--emit text` compose without surprises. Errors that abort the run still write a typed message to stderr and exit non-zero regardless of `--quiet`. The CLI does not ship a `--verbose` flag in the current 0.0.x release line; structured logging is a follow-up ADR (ADR-0015 §"What this ADR explicitly does *not* decide").
 
+## Evaluate with `--metric olrp` (LRP / oLRP error decomposition)
+
+Per [ADR-0043](../adr/0043-lrp-oracle-and-namespace.md), the headline
+metric is selectable via `--metric {ap,olrp}` (default `ap`,
+preserving the existing AP/AR summary). `olrp` swaps the headline for
+the four-row oLRP decomposition (`oLRP`, `Loc`, `FP`, `FN`) and
+reports the per-class argmin tau as the operating-point recommendation:
+
+```sh
+vernier eval --gt gt.json --dt dt.json --iou-type bbox --metric olrp
+```
+
+`--metric olrp` composes with `--iou-type {bbox,segm,boundary,keypoints}`:
+boundary uses `--dilation-ratio` (default `0.02`); keypoints uses
+`--sigmas` and ships per [ADR-0045](../adr/0045-lrp-keypoints-shipped.md).
+Panoptic does not yet ship LRP — predictions carry no per-segment
+score; the Python `vernier.panoptic.optimal_lrp` is a typed
+`NotImplementedError` stub pending a follow-up ADR.
+
+The JSON formatter under `--metric olrp` writes the same `"version":
+"1"` envelope as `ap` with `"metric": "olrp"` and the headline fields
+replaced by the four-row block + `tau_per_class`. See
+[`reference/cli-output-schema.md`](../reference/cli-output-schema.md).
+
 ## Pin the JSON schema version for archived results
 
 ```sh

@@ -55,6 +55,12 @@ from vernier._core import (
 from vernier._core import (
     merge_instance_partials as _merge_instance_partials,
 )
+from vernier._lrp import (
+    LrpConfig,
+    LrpPerClass,
+    LrpReport,
+    optimal_lrp,
+)
 from vernier._tide import (
     FpIouHistogram,
     TideConfig,
@@ -102,6 +108,9 @@ __all__ = [
     "InvalidInstanceParams",
     "IouKind",
     "Keypoints",
+    "LrpConfig",
+    "LrpPerClass",
+    "LrpReport",
     "MemoryBudgetWarning",
     "OutOfBudgetError",
     "PartialDatasetMismatch",
@@ -121,6 +130,7 @@ __all__ = [
     "confusion_matrix",
     "error_decomposition",
     "fp_iou_histogram",
+    "optimal_lrp",
 ]
 
 

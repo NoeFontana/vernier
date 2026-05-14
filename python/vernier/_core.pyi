@@ -444,6 +444,68 @@ def fp_iou_histogram_boundary(
     dilation_ratio: float,
 ) -> _FpIouHistogramDict: ...
 
+class _LrpPerClassDict(TypedDict):
+    category_id: int
+    olrp: float | None
+    olrp_loc: float | None
+    olrp_fp: float | None
+    olrp_fn: float | None
+    tau: float | None
+
+class _LrpConfigDict(TypedDict):
+    tp_threshold: float
+    tau_grid_len: int
+    kernel: str
+
+class _LrpReportDict(TypedDict):
+    olrp: float
+    loc: float
+    fp: float
+    fn: float
+    per_class: list[_LrpPerClassDict]
+    n_empty_classes: int
+    config: _LrpConfigDict
+
+def optimal_lrp_bbox(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _LrpReportDict: ...
+def optimal_lrp_segm(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+) -> _LrpReportDict: ...
+def optimal_lrp_boundary(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+    dilation_ratio: float,
+) -> _LrpReportDict: ...
+def optimal_lrp_keypoints(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+    sigmas: dict[int, list[float]],
+) -> _LrpReportDict: ...
+def lrp_default_tau_grid() -> list[float]: ...
+
 class _ConfusionMatrixDict(TypedDict):
     gt_class: list[str]
     dt_class: list[str]
