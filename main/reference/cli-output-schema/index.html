@@ -14,7 +14,7 @@
         <link rel="prev" href="../python/adapters/">
       
       
-        <link rel="next" href="../coco-summary-stats/">
+        <link rel="next" href="../manifest-schema/">
       
       
         
@@ -1684,6 +1684,78 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#schema-v2-partitioned-output-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema v2 — partitioned output (--manifest)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Schema v2 — partitioned output (--manifest)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#v2-top-level-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        v2 top-level fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#overall-subfields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        overall subfields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#slices-subfields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        slices[] subfields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#determinism-guarantees-v2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Determinism guarantees (v2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#worked-example-v2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worked example (v2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#see-also" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1698,6 +1770,62 @@
   
 </nav>
       
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
     </li>
   
 
@@ -2172,9 +2300,169 @@
 <li><strong>Older schemas remain consumable</strong> for one schema generation past the default switch. A pipeline that pins <code>vernier-cli</code> to a specific 0.0.x patch and stores its output for replay can read the same bytes back through every subsequent 0.0.x patch that keeps <code>"version": "1"</code> as the default, and through the first generation after the default flips. The generation after that, parsers may stop accepting <code>"1"</code>.</li>
 </ul>
 <p>The schema version is decoupled from the package version on purpose — <code>vernier-cli</code> ships under 0.0.x patches today (no SemVer guarantees on the package), but <code>"version": "1"</code> is a hard contract: reshaping it outside the discipline above breaks the regression-archive use case the JSON formatter is built around.</p>
+<h2 id="schema-v2-partitioned-output-manifest">Schema v2 — partitioned output (<code>--manifest</code>)</h2>
+<p>ADR-0046 adds a fan-out lane: when <code>vernier eval --manifest PATH</code> is passed, the binary emits a <em>partitioned</em> JSON document under <code>"version": "2"</code>. Un-partitioned eval keeps emitting v1 verbatim — that is the load-bearing byte-stability contract of ADR-0046.</p>
+<blockquote>
+<p><strong>Rule:</strong> without <code>--manifest</code>, the output is byte-for-byte identical to the v1 document above. The v2 envelope is <strong>only</strong> emitted when a manifest drives the eval.</p>
+</blockquote>
+<h3 id="v2-top-level-fields">v2 top-level fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version</code></td>
+<td>string</td>
+<td><code>"2"</code> for partitioned output.</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>string or <code>null</code></td>
+<td><code>--label</code> value stamped on this run. <code>null</code> when omitted. <code>vernier aggregate</code> joins by this field when present.</td>
+</tr>
+<tr>
+<td><code>iou_type</code></td>
+<td>string</td>
+<td>As v1.</td>
+</tr>
+<tr>
+<td><code>parity_mode</code></td>
+<td>string</td>
+<td>As v1.</td>
+</tr>
+<tr>
+<td><code>max_dets</code></td>
+<td>array of non-negative integers</td>
+<td>As v1.</td>
+</tr>
+<tr>
+<td><code>use_cats</code></td>
+<td>boolean</td>
+<td>As v1.</td>
+</tr>
+<tr>
+<td><code>overall</code></td>
+<td><a href="#overall-subfields"><code>Overall</code> object</a></td>
+<td>The un-partitioned summary. Bit-identical to a v1 document over the same <code>(GT, DT)</code> pair — load-bearing parity contract per ADR-0046.</td>
+</tr>
+<tr>
+<td><code>slices</code></td>
+<td>array of <a href="#slices-subfields"><code>Slice</code> objects</a></td>
+<td>One entry per partition slice, in canonical order (axis ascending, value ascending, <code>__unassigned__</code> last; joint cells follow the marginals).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="overall-subfields"><code>overall</code> subfields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>lines</code></td>
+<td>array of <code>Line</code> objects</td>
+<td>Same shape and order as v1's <code>lines</code>.</td>
+</tr>
+<tr>
+<td><code>stats</code></td>
+<td>array of floats</td>
+<td>Same shape and order as v1's <code>stats</code>.</td>
+</tr>
+<tr>
+<td><code>n_images</code></td>
+<td>non-negative integer</td>
+<td>Number of dataset images behind the overall summary.</td>
+</tr>
+<tr>
+<td><code>n_detections</code></td>
+<td>non-negative integer</td>
+<td>Total detection count behind the overall summary (a=0 "all" bucket counted once per detection).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="slices-subfields"><code>slices[]</code> subfields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>axis</code></td>
+<td>string</td>
+<td>The manifest axis name. For joint cells, the <code>::</code>-joined tuple (<code>weather::time_of_day</code>).</td>
+</tr>
+<tr>
+<td><code>value</code></td>
+<td>string</td>
+<td>The categorical level. For joint cells, the <code>::</code>-joined value tuple (<code>fog::night</code>). <code>__unassigned__</code> for unassigned.</td>
+</tr>
+<tr>
+<td><code>n_images</code></td>
+<td>non-negative integer</td>
+<td>Number of dataset images in this slice.</td>
+</tr>
+<tr>
+<td><code>n_detections</code></td>
+<td>non-negative integer</td>
+<td>Detection count in this slice (same accounting as <code>overall.n_detections</code>).</td>
+</tr>
+<tr>
+<td><code>lines</code></td>
+<td>array of <code>Line</code> objects</td>
+<td>Same shape and order as v1's <code>lines</code>, evaluated over this slice's image subset.</td>
+</tr>
+<tr>
+<td><code>stats</code></td>
+<td>array of floats</td>
+<td>Same shape and order as v1's <code>stats</code>, evaluated over this slice's image subset.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="determinism-guarantees-v2">Determinism guarantees (v2)</h3>
+<p>The v1 determinism rules carry through verbatim. Additionally:</p>
+<ul>
+<li><strong>Slice order is canonical</strong>, not insertion order: <code>(axis ascending, value ascending, __unassigned__ last)</code> for marginals; joint cells follow the marginals in the same canonical order applied to the joined <code>axis</code> / <code>value</code> strings.</li>
+<li><strong><code>overall</code> is bit-identical to a v1 run</strong> on the same <code>(GT, DT)</code> pair — the partitioned dispatch invokes the same <code>accumulate + summarize</code> calls over the un-filtered grid.</li>
+</ul>
+<h3 id="worked-example-v2">Worked example (v2)</h3>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="p">{</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2&quot;</span><span class="p">,</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;run_2026_05_14&quot;</span><span class="p">,</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">&quot;iou_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bbox&quot;</span><span class="p">,</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">&quot;parity_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;strict&quot;</span><span class="p">,</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">&quot;max_dets&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">1</span><span class="p">,</span><span class="w"> </span><span class="mi">10</span><span class="p">,</span><span class="w"> </span><span class="mi">100</span><span class="p">],</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="nt">&quot;use_cats&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">  </span><span class="nt">&quot;overall&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">    </span><span class="nt">&quot;lines&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="cm">/* 12 entries, same shape as v1 */</span><span class="p">],</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">    </span><span class="nt">&quot;stats&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0.527</span><span class="p">,</span><span class="w"> </span><span class="mf">0.728</span><span class="p">,</span><span class="w"> </span><span class="mf">0.581</span><span class="p">,</span><span class="w"> </span><span class="mf">0.341</span><span class="p">,</span><span class="w"> </span><span class="mf">0.566</span><span class="p">,</span><span class="w"> </span><span class="mf">0.683</span><span class="p">,</span><span class="w"> </span><span class="mf">0.392</span><span class="p">,</span><span class="w"> </span><span class="mf">0.624</span><span class="p">,</span><span class="w"> </span><span class="mf">0.661</span><span class="p">,</span><span class="w"> </span><span class="mf">0.471</span><span class="p">,</span><span class="w"> </span><span class="mf">0.706</span><span class="p">,</span><span class="w"> </span><span class="mf">0.812</span><span class="p">],</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">    </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">    </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">31</span><span class="err">_</span><span class="mi">500</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">  </span><span class="nt">&quot;slices&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;axis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;weather&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;clear&quot;</span><span class="p">,</span><span class="w">          </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3700</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">22</span><span class="err">_</span><span class="mi">900</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lines&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="cm">/* ... */</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;stats&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="cm">/* 12 */</span><span class="p">]},</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;axis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;weather&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;fog&quot;</span><span class="p">,</span><span class="w">            </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1100</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w">  </span><span class="mi">7</span><span class="err">_</span><span class="mi">300</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lines&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="cm">/* ... */</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;stats&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="cm">/* 12 */</span><span class="p">]},</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;axis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;weather&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;__unassigned__&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w">  </span><span class="mi">200</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w">  </span><span class="mi">1</span><span class="err">_</span><span class="mi">300</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;lines&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="cm">/* ... */</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;stats&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="cm">/* 12 */</span><span class="p">]}</span>
+</span><span id="__span-4-18"><a id="__codelineno-4-18" name="__codelineno-4-18" href="#__codelineno-4-18"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>See <a href="../manifest-schema/"><code>docs/reference/manifest-schema.md</code></a> for the manifest input and <a href="../aggregate-schema/"><code>docs/reference/aggregate-schema.md</code></a> for the <code>vernier aggregate</code> companion output.</p>
 <h2 id="see-also">See also</h2>
 <ul>
 <li><a href="../../adr/0015-vernier-cli/"><code>docs/adr/0015-vernier-cli.md</code></a> — the source of truth for the CLI surface, the formatter abstraction, and the determinism contract.</li>
+<li><a href="../../adr/0046-slice-and-aggregate/"><code>docs/adr/0046-slice-and-aggregate.md</code></a> — partition manifest and the v1 → v2 schema bump.</li>
 <li><a href="../coco-summary-stats/"><code>docs/reference/coco-summary-stats.md</code></a> — the <code>stats[i]</code> ↔ slice mapping for the bbox / segm 12-stat plan.</li>
 <li><a href="../../adr/0012-oks-keypoints-surface/"><code>docs/adr/0012-oks-keypoints-surface.md</code></a> — keypoints plan order and kernel-canonical <code>max_dets = [20]</code>.</li>
 <li><a href="../../adr/0010-boundary-iou-isolated-subsystem/"><code>docs/adr/0010-boundary-iou-isolated-subsystem.md</code></a> — boundary IoU metric definition consumed by <code>iou_type = "boundary"</code>.</li>
