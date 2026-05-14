@@ -8,13 +8,13 @@
       
       
       
-        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/migrate/from-pycocotools/">
+        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/explanation/lrp-and-its-limits/">
       
       
-        <link rel="prev" href="../">
+        <link rel="prev" href="../tide-and-its-limits/">
       
       
-        <link rel="next" href="../from-faster-coco-eval/">
+        <link rel="next" href="../why-no-per-image-ap/">
       
       
         
@@ -25,7 +25,7 @@
     
     
       
-        <title>From pycocotools - vernier</title>
+        <title>LRP and its limits - vernier</title>
       
     
     
@@ -78,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#migrating-from-pycocotools-to-vernier" class="md-skip">
+        <a href="#lrp-what-it-answers-and-what-it-doesnt" class="md-skip">
           Skip to content
         </a>
       
@@ -112,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              From pycocotools
+              LRP and its limits
             
           </span>
         </div>
@@ -298,13 +298,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../migrate/" class="md-tabs__link">
           
   
   
@@ -360,11 +358,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../explanation/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -651,31 +651,26 @@
       
   
   
-    
   
   
-  
     
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
         
           
-          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="">
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
             
   
   
@@ -693,7 +688,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_5">
             <span class="md-nav__icon md-icon"></span>
             
@@ -711,7 +706,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../" class="md-nav__link">
+      <a href="../../migrate/" class="md-nav__link">
         
   
   
@@ -736,37 +731,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    From pycocotools
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../migrate/from-pycocotools/" class="md-nav__link">
         
   
   
@@ -782,136 +750,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#tldr-what-to-change" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        TL;DR — what to change
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#drop-in-via-patch_pycocotools" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Drop-in via patch_pycocotools
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pytest-integration" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pytest integration
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#troubleshooting-my-patch-had-no-effect" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Troubleshooting: my patch had no effect
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#worked-example" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Worked example
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#sentinels-empty-buckets-are-10" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Sentinels: empty buckets are -1.0
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#what-does-not-carry-over" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        What does NOT carry over
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#pinned-pycocotools-version" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Pinned pycocotools version
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#whole-dataset-parity-smoke" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Whole-dataset parity smoke
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See also
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -924,7 +762,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../from-faster-coco-eval/" class="md-nav__link">
+      <a href="../../migrate/from-faster-coco-eval/" class="md-nav__link">
         
   
   
@@ -952,7 +790,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../from-lvis-api/" class="md-nav__link">
+      <a href="../../migrate/from-lvis-api/" class="md-nav__link">
         
   
   
@@ -980,7 +818,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../from-mmsegmentation/" class="md-nav__link">
+      <a href="../../migrate/from-mmsegmentation/" class="md-nav__link">
         
   
   
@@ -1008,7 +846,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../from-panopticapi/" class="md-nav__link">
+      <a href="../../migrate/from-panopticapi/" class="md-nav__link">
         
   
   
@@ -1722,26 +1560,31 @@
       
   
   
+    
   
   
+  
     
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
             
   
   
@@ -1759,7 +1602,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1777,7 +1620,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../explanation/" class="md-nav__link">
+      <a href="../" class="md-nav__link">
         
   
   
@@ -1805,7 +1648,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../explanation/three-paradigms/" class="md-nav__link">
+      <a href="../three-paradigms/" class="md-nav__link">
         
   
   
@@ -1833,7 +1676,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../explanation/tide-and-its-limits/" class="md-nav__link">
+      <a href="../tide-and-its-limits/" class="md-nav__link">
         
   
   
@@ -1858,10 +1701,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../explanation/lrp-and-its-limits/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1877,6 +1747,175 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#what-olrp-answers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What oLRP answers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-lrp-differs-from-ap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How LRP differs from AP
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-lrp-differs-from-tide" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How LRP differs from TIDE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#limits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Limits
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Limits">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#olrp-is-single-class-tolerant-it-doesnt-see-cross-class-confusion" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        oLRP is single-class-tolerant — it doesn't see cross-class confusion
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tau-is-per-class-multi-class-deployment-needs-per-class-thresholds-in-production" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tau is per-class — multi-class deployment needs per-class thresholds in production
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#empty-tp-classes-report-tau-nan-olrp-10" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Empty-TP classes report tau = NaN, oLRP = 1.0
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tau-search-is-discrete-the-reported-threshold-is-grid-precision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tau search is discrete — the reported threshold is grid-precision
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#argmin-tau-ties-resolve-to-the-larger-threshold-deliberately" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Argmin-tau ties resolve to the larger threshold (deliberately)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-it-disagrees-with-kemaloksuzlrp-error-on-real-models" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where it disagrees with kemaloksuz/LRP-Error on real models
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-kernel-specific-defaults-come-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the kernel-specific defaults come from
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-validation-comes-from" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the validation comes from
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#see-also" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        See also
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1889,7 +1928,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../explanation/why-no-per-image-ap/" class="md-nav__link">
+      <a href="../why-no-per-image-ap/" class="md-nav__link">
         
   
   
@@ -1937,225 +1976,207 @@
   
 
 
-<h1 id="migrating-from-pycocotools-to-vernier">Migrating from <code>pycocotools</code> to vernier</h1>
-<p>vernier reproduces <code>pycocotools==2.0.11</code>'s evaluation semantics
-bit-for-bit in strict parity mode. ADR-0002 (parity model) and
-ADR-0007 (drop-in policy) are the design records; this guide is the
-user-facing migration path. Audience: anyone moving an existing
-<code>COCOeval</code>-based evaluation pipeline onto vernier.</p>
-<h2 id="tldr-what-to-change">TL;DR — what to change</h2>
-<p>The public surface lives under <code>vernier.instance</code> (per ADR-0029),
-plus the pycocotools-shaped shim re-exported at the root:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier</span><span class="w"> </span><span class="kn">import</span> <span class="n">COCOeval</span><span class="p">,</span> <span class="n">patch_pycocotools</span>          <span class="c1"># shim path</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">CocoDataset</span><span class="p">,</span> <span class="n">Evaluator</span>    <span class="c1"># native path</span>
-</span></code></pre></div>
-<table>
-<thead>
-<tr>
-<th><code>pycocotools</code></th>
-<th>vernier (shim)</th>
-<th>vernier (native)</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>from pycocotools.cocoeval import COCOeval</code></td>
-<td><code>from vernier import COCOeval</code></td>
-<td><code>from vernier.instance import Evaluator</code></td>
-</tr>
-<tr>
-<td><code>cocoEval = COCOeval(coco_gt, coco_dt, iouType="bbox")</code></td>
-<td>same call shape, vernier subclass</td>
-<td><code>evaluator = Evaluator(iou=Bbox(), parity_mode="strict")</code></td>
-</tr>
-<tr>
-<td><code>cocoEval.evaluate(); cocoEval.accumulate(); cocoEval.summarize()</code></td>
-<td>same three calls</td>
-<td><code>summary = evaluator.evaluate(dataset, dt_bytes)</code></td>
-</tr>
-<tr>
-<td><code>cocoEval.stats</code> (12-entry numpy array)</td>
-<td>same <code>.stats</code> array</td>
-<td><code>summary.stats</code> (12-entry <code>list[float]</code>, same order)</td>
-</tr>
-<tr>
-<td><code>print(cocoEval)</code> (the <code>summarize()</code> stdout)</td>
-<td>same stdout in strict mode</td>
-<td><code>for line in summary.pretty_lines(): print(line)</code></td>
-</tr>
-</tbody>
-</table>
-<p>The <code>COCOeval</code> shim is a drop-in: existing pycocotools-based code
-runs unchanged once the symbol is swapped. The native <code>Evaluator</code>
-surface is the ergonomic path forward — it returns a typed <code>Summary</code>
-instead of mutating instance attributes, and it exposes the per-image
-/ per-class / per-detection / per-pair tables documented in
-<a href="../../how-to/result-tables/"><code>how-to/result-tables.md</code></a>.</p>
-<h2 id="drop-in-via-patch_pycocotools">Drop-in via <code>patch_pycocotools</code></h2>
-<p>Existing scripts that already <code>import pycocotools.cocoeval</code> need not
-edit the import. <code>patch_pycocotools</code> swaps the class in-place:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier</span><span class="w"> </span><span class="kn">import</span> <span class="n">patch_pycocotools</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">unpatch</span> <span class="o">=</span> <span class="n">patch_pycocotools</span><span class="p">(</span><span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="p">)</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">try</span><span class="p">:</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="c1"># Existing pycocotools code runs unchanged; COCOeval is now vernier&#39;s.</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="kn">from</span><span class="w"> </span><span class="nn">pycocotools.cocoeval</span><span class="w"> </span><span class="kn">import</span> <span class="n">COCOeval</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>    <span class="n">cocoEval</span> <span class="o">=</span> <span class="n">COCOeval</span><span class="p">(</span><span class="n">coco_gt</span><span class="p">,</span> <span class="n">coco_dt</span><span class="p">,</span> <span class="n">iouType</span><span class="o">=</span><span class="s2">&quot;bbox&quot;</span><span class="p">)</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>    <span class="n">cocoEval</span><span class="o">.</span><span class="n">evaluate</span><span class="p">();</span> <span class="n">cocoEval</span><span class="o">.</span><span class="n">accumulate</span><span class="p">();</span> <span class="n">cocoEval</span><span class="o">.</span><span class="n">summarize</span><span class="p">()</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="k">finally</span><span class="p">:</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>    <span class="n">unpatch</span><span class="p">()</span>
-</span></code></pre></div>
-<p>The context-manager form is <code>patched_pycocotools()</code> and nests
-correctly. <code>patch_pycocotools</code> defaults to <code>parity_mode="strict"</code>
-because migration intent is bit-exactness with pycocotools; the
-native <code>Evaluator</code> constructor defaults to <code>parity_mode="corrected"</code>
-because new code does not need pycocotools' historical quirks.
-ADR-0002 documents the two dispositions (<code>strict</code> / <code>corrected</code>);
-ADR-0007 §"Behavior" pins the helper's default. The patch raises
-<code>ImportError</code> if pycocotools is not installed, rather than silently
-no-oping.</p>
-<h2 id="pytest-integration">Pytest integration</h2>
-<p>To run an unmodified pycocotools-based test suite (mmdetection,
-ultralytics, detectron2, etc.) under vernier, drop a five-line
-<code>conftest.py</code> at the test root:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># conftest.py</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">pytest</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier</span><span class="w"> </span><span class="kn">import</span> <span class="n">patch_pycocotools</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="nd">@pytest</span><span class="o">.</span><span class="n">fixture</span><span class="p">(</span><span class="n">autouse</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">scope</span><span class="o">=</span><span class="s2">&quot;session&quot;</span><span class="p">)</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="k">def</span><span class="w"> </span><span class="nf">_vernier_strict</span><span class="p">():</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>    <span class="n">unpatch</span> <span class="o">=</span> <span class="n">patch_pycocotools</span><span class="p">(</span><span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="p">)</span>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="k">yield</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="n">unpatch</span><span class="p">()</span>
-</span></code></pre></div>
-<p><code>autouse=True</code> and <code>scope="session"</code> are the only non-obvious bits.
-Session scope guarantees the patch fires once, before any test
-module is collected and imported — which is the window pycocotools-
-shaped imports need (see Troubleshooting below). Autouse means no
-test has to opt in by parameter.</p>
-<p>The same pattern translates to any framework with setup / teardown
-hooks: <code>unittest.TestCase.setUpClass</code> / <code>tearDownClass</code>, a
-<code>nose</code>-style module-level fixture, or a script-level <code>try</code> /
-<code>finally</code> around the run. There is no <code>vernier[pytest]</code> extra and
-no plugin entry point on purpose — the shim is the whole product;
-making it more invisible would just slow the migration to the
-native <code>Evaluator</code> API.</p>
-<h2 id="troubleshooting-my-patch-had-no-effect">Troubleshooting: my patch had no effect</h2>
-<p>Symptom: you called <code>patch_pycocotools()</code> (or installed the
-<code>conftest.py</code> fixture above), the call ran without error, but the
-numbers your suite produces are byte-identical to a run <em>without</em>
-vernier.</p>
-<p>Cause: a module that imports <code>pycocotools.cocoeval</code> was loaded
-<em>before</em> <code>patch_pycocotools</code> fired. Python's <code>from … import name</code>
-binds <code>name</code> to whatever object the source module exposes at that
-moment — patching <code>sys.modules["pycocotools.cocoeval"].COCOeval</code>
-later does not retroactively rewrite already-bound names. The
-patch is live for any <em>subsequent</em> <code>from pycocotools.cocoeval import
-COCOeval</code>, but the downstream test module captured the original
-class at its own import time and that binding wins.</p>
-<p>The rule: <code>patch_pycocotools()</code> must run before any module that
-imports <code>pycocotools.cocoeval</code>. In practice that means one of:</p>
+<h1 id="lrp-what-it-answers-and-what-it-doesnt">LRP: what it answers, and what it doesn't</h1>
+<p>vernier ships an LRP / oLRP decomposition (Oksuz et al., ECCV 2018;
+TPAMI 2021) via <code>vernier.instance.optimal_lrp</code> and
+<code>vernier.panoptic.optimal_lrp</code>. Three components — <code>oLRP_Loc</code>,
+<code>oLRP_FP</code>, <code>oLRP_FN</code> — collapse to a single oLRP score per class, and
+the search returns the per-class confidence threshold <code>tau</code> at which
+the model achieves that score. A worked example tutorial
+(<code>docs/tutorials/debugging-with-lrp.md</code>, planned alongside this page)
+walks the <em>how</em>; this page is the <em>what for, and what against</em>. Long
+enough that an issue starting with "the tau looks wrong" can be
+closed by a link.</p>
+<h2 id="what-olrp-answers">What oLRP answers</h2>
+<p><strong>What confidence threshold should I deploy this model at?</strong> The
+"o" in oLRP is <em>optimal</em>: the metric searches over a grid of
+confidence thresholds and reports the one that minimizes localization-
+recall-precision error. The reported <code>tau</code> is what a practitioner
+would set on the model to reproduce the reported behavior. That is
+the headline deliverable — not the score in isolation, but the
+<em>(score, threshold)</em> pair.</p>
+<p><strong>How does my model trade off the three error modes?</strong> oLRP
+decomposes into <code>oLRP_Loc</code> (localization error on TPs, computed as
+<code>1 − mean(IoU)</code> or <code>1 − mean(OKS)</code> over the matched pairs), <code>oLRP_FP</code>
+(false-positive rate at the optimal threshold), and <code>oLRP_FN</code>
+(false-negative rate at the optimal threshold). The three are
+orthogonal in a way AP's single number isn't — a model with <code>oLRP_Loc
+= 0.1, oLRP_FP = 0.4, oLRP_FN = 0.1</code> is making a very different
+mistake than <code>oLRP_Loc = 0.4, oLRP_FP = 0.1, oLRP_FN = 0.1</code>, and the
+fix is different even though both might have similar AP.</p>
+<p><strong>Comparing two models on the same data at their respective
+operating points.</strong> Each model's <code>tau</code> is found independently, so
+the comparison is "model A at its best deployable threshold versus
+model B at its best deployable threshold." That is the comparison a
+practitioner deploying one of them cares about.</p>
+<h2 id="how-lrp-differs-from-ap">How LRP differs from AP</h2>
+<p>AP is a single number that integrates the precision-recall curve over
+all confidence thresholds. It does not report the threshold; the
+curve <em>is</em> the threshold-swept signal, and the integration averages
+across it. oLRP, by contrast, picks a single point on the threshold
+axis (the optimum) and reports the error structure at that point.</p>
+<p>The two answer different questions. AP tells you "how good is this
+model's ranking, across all operating points?" oLRP tells you "at
+this model's best operating point, what's costing it?" A model with
+strong AP can have surprising error structure at its optimal tau;
+oLRP surfaces what AP averaged out.</p>
+<h2 id="how-lrp-differs-from-tide">How LRP differs from TIDE</h2>
+<p>TIDE (<a href="../tide-and-its-limits/"><code>tide-and-its-limits.md</code></a>) decomposes
+the gap between a model's mAP and the perfect-mAP upper bound into
+six bins (Cls, Loc, Both, Dupe, Bkg, Missed) by running corrected
+accumulations per bin. It is a <em>mAP-relative</em> decomposition — every
+number is a delta against baseline.</p>
+<p>oLRP is not mAP-relative. The three components are computed at a
+single operating point and reported in their own units (<code>oLRP_Loc</code>
+is the average IoU gap; <code>oLRP_FP</code> and <code>oLRP_FN</code> are rates at that
+operating point). Three differences fall out:</p>
 <ul>
-<li>A session-scoped <code>conftest.py</code> fixture (above) — pytest collects
-  and runs <code>conftest.py</code> before importing test modules.</li>
-<li>A direct call at the top of a top-level script, before the first
-  <code>import</code> of a module that pulls in pycocotools.</li>
-<li>The context-manager form (<code>patched_pycocotools()</code>) wrapping the
-  invocation that triggers the eval-using imports.</li>
+<li><strong>Continuous IoU, not binned.</strong> TIDE's bin assignment is a
+  phase diagram over <code>(t_b, t_f)</code>. oLRP's localization term is a
+  mean of similarity scores across matched TPs — no binning, no
+  threshold defining "almost matched". That is why oLRP-on-OKS
+  ships (ADR-0045) where TIDE-on-OKS does not (ADR-0024): the
+  continuous-similarity geometry transfers; the phase diagram does
+  not.</li>
+<li><strong>Ships a tau.</strong> TIDE picks its <code>t_f</code> and <code>t_b</code> <em>a priori</em> (per
+  ADR-0022 defaults). oLRP picks <code>tau</code> from data, per class. That
+  makes oLRP a deployment-relevant answer in a way TIDE is not —
+  TIDE tells you the shape of your errors, oLRP tells you the
+  threshold to set.</li>
+<li><strong>No Cls bin.</strong> TIDE has Cls (and Both) bins that compare
+  detections against GTs of other classes. oLRP is a per-class
+  metric that does not look across classes. The cost: oLRP is
+  silent on cross-class confusion (see "Limits" below). The
+  benefit: oLRP works cleanly on single-class workloads (notably
+  COCO keypoints) where TIDE's cross-class bins are
+  algorithmically zero.</li>
 </ul>
-<p>The patch is intentionally not an import side-effect of <code>import
-vernier</code> (ADR-0007 §"Discoverability"): a silent rewrite would make
-unexpected score differences untraceable. The cost of that policy is
-that ordering is the user's responsibility, hence this section.</p>
-<h2 id="worked-example">Worked example</h2>
-<p>Native <code>Evaluator</code> form, end-to-end:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">CocoDataset</span><span class="p">,</span> <span class="n">Evaluator</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">gt_bytes</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;instances_val2017.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">dt_bytes</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;detections.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">dataset</span> <span class="o">=</span> <span class="n">CocoDataset</span><span class="o">.</span><span class="n">from_json</span><span class="p">(</span><span class="n">gt_bytes</span><span class="p">)</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">dt_bytes</span><span class="p">)</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>              <span class="c1"># AP, e.g. 0.347</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">summary</span><span class="o">.</span><span class="n">pretty_lines</span><span class="p">():</span>  <span class="c1"># the pycocotools-shaped 12-line block</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
-</span></code></pre></div>
-<p>The 12-entry <code>summary.stats</code> vector matches pycocotools'
-<code>cocoEval.stats</code> position-for-position (<code>AP, AP50, AP75, APs, APm,
-APl, AR1, AR10, AR100, ARs, ARm, ARl</code>). Switch to <code>Segm()</code> for
-instance-mask IoU, <code>Boundary()</code> for boundary IoU (ADR-0010), or
-<code>Keypoints()</code> for OKS (ADR-0012).</p>
-<h2 id="sentinels-empty-buckets-are-10">Sentinels: empty buckets are <code>-1.0</code></h2>
-<p><code>pycocotools</code> initializes <code>precision</code>, <code>recall</code>, and <code>scores</code> to
-<code>-1</code> and filters with <code>s[s&gt;-1]</code> before averaging (quirk <strong>C5</strong> in
-<a href="../../engineering/pycocotools-quirks/"><code>docs/engineering/pycocotools-quirks.md</code></a>).
-A category with no GTs disappears from the average — it is not
-counted as zero. vernier reproduces the sentinel byte-for-byte in
-strict mode, so <code>summary.stats[i] == -1.0</code> for empty buckets.</p>
-<p>If you cross-compare with LVIS (also <code>-1.0</code>, quirk <strong>AF6</strong>) or
-panoptic (vernier returns <code>0.0</code> for the corrected <code>EmptyCategory</code>
-case, quirk <strong>W6</strong>), the parallel sentinel table in
-<a href="../from-lvis-api/#sentinels-1-vs-0-vs-nan"><code>from-lvis-api.md</code></a> is
-the cross-codebase reference.</p>
-<h2 id="what-does-not-carry-over">What does NOT carry over</h2>
+<p>The two are complementary. Read TIDE to understand error structure;
+read oLRP to understand operating point.</p>
+<h2 id="limits">Limits</h2>
+<h3 id="olrp-is-single-class-tolerant-it-doesnt-see-cross-class-confusion">oLRP is single-class-tolerant — it doesn't see cross-class confusion</h3>
+<p>The components are computed per class, and the dataset-level
+reduction is a mean over classes. If a model systematically
+mislabels person-on-bike as just person, oLRP's per-class accounting
+shows up as missing-class-bicycle FNs and wrong-class-person FPs —
+both penalized in the right components numerically, but the <em>causal</em>
+link (one class's FP is the same instance as another class's FN) is
+invisible to oLRP. TIDE's Cls bin or the
+<code>vernier.instance.confusion_matrix</code> output is what you want for
+cross-class diagnosis.</p>
+<h3 id="tau-is-per-class-multi-class-deployment-needs-per-class-thresholds-in-production">Tau is per-class — multi-class deployment needs per-class thresholds in production</h3>
+<p>A reported <code>tau = 0.42</code> for <code>person</code> and <code>tau = 0.31</code> for <code>dog</code> means
+that to reproduce the oLRP numbers in production you set those two
+thresholds <em>separately</em>. Many deployment stacks use a single
+confidence cutoff. There is no canonical aggregation of per-class
+taus into a single threshold — taking the mean or median loses the
+guarantee that the reported score is achievable. If your deployment
+constraint is "one threshold for the whole model," oLRP is reporting
+an upper-bound on achievable performance, not your achievable
+performance.</p>
+<p>The result table reports per-class taus exactly so this gap is
+visible.</p>
+<h3 id="empty-tp-classes-report-tau-nan-olrp-10">Empty-TP classes report <code>tau = NaN, oLRP = 1.0</code></h3>
+<p>A class with no TPs at any threshold in the grid (the model never
+found a true instance of it) carries <code>oLRP = 1.0</code> (the worst
+possible score) and <code>tau = NaN</code>. These are flagged in the result
+table separately so they do not silently pull the dataset-level
+mean. If half a dataset's classes are empty-TP, the headline oLRP
+is meaningless before you filter; the per-class table is the safe
+read in that regime.</p>
+<h3 id="tau-search-is-discrete-the-reported-threshold-is-grid-precision">Tau search is discrete — the reported threshold is grid-precision</h3>
+<p>oLRP's <code>tau</code> comes from a discrete grid (default <code>0.01</code> step over
+<code>[0.0, 1.0]</code>, per <a href="../../adr/0044-lrp-thresholds-and-tau-grid/">ADR-0044</a>).
+The reported threshold is accurate to ±half-a-grid-step — fine for
+deployment intent at the practitioner's typical 1%-increment tuning
+granularity, but not exact. Two consecutive grid points are typically
+within <code>&lt;0.001</code> of LRP from each other in dense regions, so the
+reported score is reliable; the <em>exact</em> optimum within the grid step
+is not pinned.</p>
+<p>If you need a different grid, pass <code>tau_grid=np.linspace(0, 1, 1001)</code>
+per call. The result's <code>config</code> field records the resolved grid.</p>
+<h3 id="argmin-tau-ties-resolve-to-the-larger-threshold-deliberately">Argmin-tau ties resolve to the larger threshold (deliberately)</h3>
+<p>When two thresholds yield identical oLRP, the larger one wins. The
+reading is "given a tie, deploy the more conservative threshold —
+fewer FPs, slightly less recall, same score." This is a design
+choice, not a property of the metric — <code>kemaloksuz/LRP-Error</code>
+documents its tie-handling ambiguously, and other implementations
+may pick the smaller. ADR-0043 commits us to "larger wins" because
+it matches deployment intuition.</p>
+<h2 id="where-it-disagrees-with-kemaloksuzlrp-error-on-real-models">Where it disagrees with <code>kemaloksuz/LRP-Error</code> on real models</h2>
+<p>The LRP-Error repo is the first-party reference implementation
+(Oksuz wrote both the paper and the code). vernier vendors it
+commit-pinned as a CI tripwire (one synthetic fixture cross-checks
+<code>|oracle − kemaloksuz| &lt; 1e-6</code>) — see
+<a href="../../adr/0043-lrp-oracle-and-namespace/">ADR-0043</a>. The tripwire is
+a sanity gate, not a parity contract: where the two diverge on real
+data, the numpy oracle at <code>tests/python/oracle/lrp/oracle.py</code> is
+authoritative.</p>
+<p><strong>This section is a placeholder.</strong> The empirical comparison against
+<code>kemaloksuz/LRP-Error</code> on real models on COCO val2017 is gated on
+the deferred whole-dataset parity infrastructure
+(<code>project_coco_val_regression.md</code>); vernier does not commit COCO
+val data in CI per the licensing policy. Once the 0.5.x follow-up
+runs the comparison, this section will be filled in with the
+specific divergence patterns observed — the categories where ties
+resolve differently, the low-recall edge cases LRP-Error handles
+ambiguously, the empty-TP class flagging differences.</p>
+<p>The pattern is identical to the equivalent paragraph in
+<a href="../tide-and-its-limits/"><code>tide-and-its-limits.md</code></a>: we know where to
+look, the comparison is on the roadmap, and the gap closes when
+infrastructure lands.</p>
+<h2 id="where-the-kernel-specific-defaults-come-from">Where the kernel-specific defaults come from</h2>
+<p><a href="../../adr/0044-lrp-thresholds-and-tau-grid/">ADR-0044</a> is canonical;
+in summary:</p>
 <ul>
-<li><strong>Per-image AP.</strong> <code>pycocotools-cli</code> and <code>faster-coco-eval</code> both
-  expose a per-image AP value; vernier does not, by design. PR
-  curves from a single image are degenerate. See
-  <a href="../../explanation/why-no-per-image-ap/"><code>why-no-per-image-ap.md</code></a>
-  for the rationale and the polars recipe to reconstruct it from
-  raw counts when genuinely needed.</li>
-<li><strong><code>useCats=False</code> cross-class matching.</strong> vernier's <code>Evaluator</code>
-  takes the per-category fold as the contract. The pycocotools
-  <code>useCats=0</code> path runs in the shim under <code>parity_mode="strict"</code>
-  for migration, but the native surface does not surface that
-  switch — cross-class confusion analysis lands in <code>per_pair</code>
-  (ADR-0019) on a separate roadmap.</li>
-<li><strong>In-place mutation of <code>COCOeval</code> instance attributes.</strong> The
-  native <code>Evaluator.evaluate(...)</code> returns a typed <code>Summary</code> instead
-  of mutating <code>cocoEval.eval</code> / <code>cocoEval.evalImgs</code> /
-  <code>cocoEval.stats</code>. Code that reaches into those attributes should
-  migrate to <code>summary.stats</code> (the 12-entry vector) and the per-image /
-  per-class / per-detection / per-pair tables surfaced via
-  <code>Evaluator(...).evaluate(gt, dt, tables="all")</code> (ADR-0019). The
-  <code>evalImgs</code> flat-cube layout is not exposed on the native surface;
-  the shim under <code>parity_mode="strict"</code> still produces it.</li>
+<li><strong>bbox</strong> — <code>tp_threshold=0.5</code>, <code>tau_grid=0.01-step</code>. Both anchored
+  on the Oksuz TPAMI 2021 paper. The paper's recommended operating
+  point reproduces against these defaults on canonical models.</li>
+<li><strong>segm</strong> — same <code>tp_threshold=0.5</code>. <em>Tentative</em>: argued from the
+  bound that segmentation IoU is at most bbox IoU on the same
+  instance, and tracks within ~10% on standard models. Empirical
+  anchoring on real models is deferred to a 0.5.x follow-up.</li>
+<li><strong>boundary</strong> — same <code>tp_threshold=0.5</code> at <code>dilation_ratio=0.02</code>,
+  tentative. Note: this is the <em>opposite</em> posture from
+  ADR-0022's TIDE boundary default (which carves a tighter floor),
+  because LRP's <code>tp_threshold</code> is the "this is a TP" line, not a
+  phase-diagram cutoff. Different metric, different role for the
+  same number.</li>
+<li><strong>keypoints</strong> — same <code>tp_threshold=0.5</code> on OKS. Anchored on OKS
+  <code>0.5</code> as the meaningful-match operating point. Empirical
+  anchoring deferred to the same 0.5.x follow-up.</li>
 </ul>
-<h2 id="pinned-pycocotools-version">Pinned pycocotools version</h2>
-<p>vernier's strict-mode parity is keyed to <code>pycocotools==2.0.11</code>
-(pinned exactly in <code>pyproject.toml</code>). Bumping that pin is an
-ADR-level decision per CLAUDE.md §"Parity contract" — every quirk
-vernier reproduces is keyed to this version, and the parity harness
-double-runs reference and candidate at exactly this SHA.</p>
-<h2 id="whole-dataset-parity-smoke">Whole-dataset parity smoke</h2>
-<p>The <code>tests/python/parity/test_parity.py</code> suite double-runs vernier
-and pycocotools on a fixture corpus and diffs every intermediate
-(<code>evalImgs</code>, <code>eval</code>, <code>stats</code>). The COCO val2017 smoke at
-<code>tests/python/parity/test_coco_val.py</code> is env-gated and pins the
-12-entry summary bit-equal against <code>COCOeval</code> on the full dataset.
-Run with:</p>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>just<span class="w"> </span>test-parity<span class="w">                                              </span><span class="c1"># the fast fixture suite</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nv">VERNIER_COCO_GT_PATH</span><span class="o">=</span>...<span class="w"> </span><span class="nv">VERNIER_COCO_DT_PATH</span><span class="o">=</span>...<span class="w"> </span>just<span class="w"> </span>test-coco-val<span class="w">  </span><span class="c1"># the val2017 smoke</span>
-</span></code></pre></div>
-<p>The val2017 GT and a public-detector predictions JSON are downloaded
-under the COCO terms of use and never committed to the repo;
-<code>tools/fetch-coco-val.sh</code> is the canonical setup helper.</p>
+<p>The "tentative" warning in ADR-0044 is honest; if your workload's
+models cluster differently, override per call. The result's
+<code>config.tp_threshold</code> makes the resolution audit-trail available.</p>
+<h2 id="where-the-validation-comes-from">Where the validation comes from</h2>
+<p>The Rust core is gated against a numpy oracle at
+<code>tests/python/oracle/lrp/oracle.py</code>. Hand-computed assertions on
+small fixtures pin oracle correctness; <code>1e-9</code> parity between Rust
+and oracle pins implementation correctness; a single CI tripwire
+fixture cross-checks <code>|oracle − kemaloksuz| &lt; 1e-6</code> to catch the
+whole-class regressions a self-consistent oracle would not.</p>
+<p>Real-model behavior on COCO val2017 is the same deferred-validation
+story as TIDE — gated on the whole-dataset parity infrastructure
+(<code>project_coco_val_regression.md</code>, the equivalent follow-up doc).
+Until that runs, the LRP entry points are correct against the
+oracle and sanity-gated against the published reference; the
+empirical real-model behavior assertion is on the 0.5.x line.</p>
 <h2 id="see-also">See also</h2>
 <ul>
-<li><a href="../../adr/0002-three-tier-parity-model/">ADR-0002</a> — strict / aligned /
-  corrected parity tiers.</li>
-<li><a href="../../adr/0007-patch-pycocotools-policy/">ADR-0007</a> — why
-  <code>patch_pycocotools</code> (verb names the mechanism), not
-  <code>init_as_pycocotools</code> (faster-coco-eval's borrowed shape).</li>
-<li><a href="../../engineering/pycocotools-quirks/"><code>docs/engineering/pycocotools-quirks.md</code></a>
-  — the disposition table for every pycocotools quirk vernier had
-  to reckon with. Cite quirks by ID (e.g. <strong>C5</strong>, <strong>B1</strong>, <strong>D1</strong>)
-  in issues and PRs.</li>
-<li><a href="../from-faster-coco-eval/">Migrating from <code>faster-coco-eval</code></a> —
-  if your starting point is faster-coco-eval rather than vanilla
-  pycocotools.</li>
+<li><code>docs/tutorials/debugging-with-lrp.md</code> (planned) — worked example
+  of using oLRP on a model, end-to-end.</li>
+<li><a href="../../adr/0043-lrp-oracle-and-namespace/">ADR-0043</a> — correctness
+  model and namespace.</li>
+<li><a href="../../adr/0044-lrp-thresholds-and-tau-grid/">ADR-0044</a> — threshold
+  and tau-grid defaults.</li>
+<li><a href="../../adr/0045-lrp-keypoints-shipped/">ADR-0045</a> — why LRP-on-OKS
+  ships where TIDE-on-OKS does not.</li>
+<li><a href="../tide-and-its-limits/"><code>tide-and-its-limits.md</code></a> — the sibling
+  decomposition; read both for the full diagnostic picture.</li>
+<li><a href="../why-no-per-image-ap/"><code>why-no-per-image-ap.md</code></a> — same
+  statistical reasoning for "scale matters" applied to a different
+  metric.</li>
 </ul>
 
 
