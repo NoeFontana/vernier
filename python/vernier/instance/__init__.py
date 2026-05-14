@@ -194,7 +194,7 @@ IouKind = Bbox | Segm | Boundary | Keypoints
 #:   (``__arrow_c_array__`` / ``__arrow_c_stream__``) — a polars,
 #:   pandas, pyarrow, or duckdb DataFrame of per-image metadata
 #:   passes straight in.
-Manifest: TypeAlias = Mapping[str, Any] | str | "os.PathLike[str]" | Any
+Manifest: TypeAlias = Mapping[str, Any] | str | os.PathLike[str] | Any
 
 
 def _normalize_cross_axes(

@@ -191,9 +191,7 @@ def _v2_json_to_batch(doc: Mapping[str, object], *, source: str) -> pa.RecordBat
         values.append(str(row.get("value", "")))
         stats_obj = row.get("stats", {})
         stats: Mapping[str, object] = (
-            cast("Mapping[str, object]", stats_obj)
-            if isinstance(stats_obj, Mapping)
-            else {}
+            cast("Mapping[str, object]", stats_obj) if isinstance(stats_obj, Mapping) else {}
         )
         if "n_images" in row or "n_images" in stats:
             has_n_images = True
@@ -256,8 +254,7 @@ def _coerce_result_entry(
             doc_obj = json.load(f)
         if not isinstance(doc_obj, dict):
             raise AggregateError(
-                f"result JSON at {path!s} must be a JSON object "
-                f"(got {type(doc_obj).__name__})",
+                f"result JSON at {path!s} must be a JSON object (got {type(doc_obj).__name__})",
             )
         doc = cast("Mapping[str, object]", doc_obj)
         version = doc.get("version")
@@ -345,13 +342,11 @@ def _coerce_manifest(manifest: ManifestInput) -> dict[str, dict[str, str]]:
                 doc_obj = json.load(f)
             if not isinstance(doc_obj, dict):
                 raise AggregateError(
-                    f"manifest at {path!s} must be a JSON object "
-                    f"(got {type(doc_obj).__name__})",
+                    f"manifest at {path!s} must be a JSON object (got {type(doc_obj).__name__})",
                 )
             return _coerce_manifest_dict(cast("Mapping[str, object]", doc_obj))
         raise AggregateError(
-            f"manifest path {path!s} has unsupported extension {suffix!r}; "
-            "expected .json or .csv",
+            f"manifest path {path!s} has unsupported extension {suffix!r}; expected .json or .csv",
         )
     if hasattr(manifest, "__arrow_c_array__") or hasattr(manifest, "__arrow_c_stream__"):
         return _coerce_manifest_arrow(manifest)
@@ -368,8 +363,7 @@ def _coerce_manifest_dict(doc: Mapping[str, object]) -> dict[str, dict[str, str]
         version = str(doc.get("manifest_version", ""))
         if version != "1":
             raise AggregateError(
-                f"manifest_version={version!r} is not supported "
-                "(expected '1')",
+                f"manifest_version={version!r} is not supported (expected '1')",
             )
         key_kind = doc.get("key_kind")
         if key_kind != "result":
@@ -387,8 +381,7 @@ def _coerce_manifest_dict(doc: Mapping[str, object]) -> dict[str, dict[str, str]
         for i, row in enumerate(cast("list[object]", rows)):
             if not isinstance(row, Mapping):
                 raise AggregateError(
-                    f"manifest rows[{i}] must be an object "
-                    f"(got {type(row).__name__})",
+                    f"manifest rows[{i}] must be an object (got {type(row).__name__})",
                 )
             row_map = cast("Mapping[str, object]", row)
             key = row_map.get("key")
@@ -453,8 +446,7 @@ def _coerce_manifest_csv(path: Path) -> dict[str, dict[str, str]]:
             )
         if "key" not in reader.fieldnames:
             raise AggregateError(
-                f"CSV manifest at {path!s} missing 'key' column "
-                f"(header: {reader.fieldnames!r})",
+                f"CSV manifest at {path!s} missing 'key' column (header: {reader.fieldnames!r})",
             )
         rows = (cast("Mapping[str, object]", row) for row in reader)
         return _rows_to_manifest_map(rows, source=f"CSV manifest at {path!s}")
@@ -502,8 +494,7 @@ def _select_metric_columns(
         return sorted(
             name
             for name in schema_names
-            if name not in _RESERVED_SLICE_COLS
-            and pa.types.is_floating(schema.field(name).type)
+            if name not in _RESERVED_SLICE_COLS and pa.types.is_floating(schema.field(name).type)
         )
     if isinstance(requested, str):
         requested_list: list[str] = [requested]
@@ -723,8 +714,7 @@ def aggregate(
         for (axis, value), per_metric_lists in groups.items():
             if value == baseline:
                 baseline_means[axis] = {
-                    m: (sum(vs) / len(vs) if vs else None)
-                    for m, vs in per_metric_lists.items()
+                    m: (sum(vs) / len(vs) if vs else None) for m, vs in per_metric_lists.items()
                 }
         for m in metric_cols:
             rpc_col: list[float | None] = []
