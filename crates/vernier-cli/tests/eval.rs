@@ -272,6 +272,76 @@ impl Tempdir {
     }
 }
 
+#[test]
+fn metric_olrp_text_output_contains_olrp_headline() {
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let mut args: Vec<String> = vec!["eval".into()];
+    args.extend(bbox_args());
+    args.push("--metric".into());
+    args.push("olrp".into());
+    let output = cmd.args(args).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    // ADR-0043: oLRP-mode text emit replaces the AP/AR block with the
+    // four-row oLRP headline (oLRP / Loc / FP / FN). Pin the headline
+    // tokens; format drift is caught by the parity harness.
+    assert!(stdout.contains("oLRP"), "missing oLRP headline: {stdout}");
+    assert!(stdout.contains("Loc"), "missing Loc row: {stdout}");
+    assert!(stdout.contains("FP"), "missing FP row: {stdout}");
+    assert!(stdout.contains("FN"), "missing FN row: {stdout}");
+    assert!(
+        !stdout.contains("Average Precision"),
+        "AP block should be suppressed in olrp mode: {stdout}"
+    );
+    assert!(stdout.ends_with('\n'));
+}
+
+#[test]
+fn metric_olrp_json_output_carries_metric_tag() {
+    let tmp = tempdir();
+    let out = tmp.path().join("olrp.json");
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let mut args: Vec<String> = vec!["eval".into()];
+    args.extend(bbox_args());
+    args.push("--metric".into());
+    args.push("olrp".into());
+    args.push("--emit".into());
+    args.push(format!("json={}", out.display()));
+    let output = cmd.args(args).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    let parsed: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    assert_eq!(parsed["version"], "1");
+    assert_eq!(parsed["metric"], "olrp");
+    assert_eq!(parsed["iou_type"], "bbox");
+}
+
+#[test]
+fn metric_olrp_keypoints_runs_end_to_end() {
+    // ADR-0045: LRP-on-OKS ships (no Cls/Both bins, so the keypoint
+    // deferral that TIDE took does not transfer). Smoke-test the
+    // end-to-end CLI path on a fresh kernel.
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let mut args: Vec<String> = vec!["eval".into()];
+    args.extend(keypoints_args());
+    args.push("--metric".into());
+    args.push("olrp".into());
+    let output = cmd.args(args).output().unwrap();
+    assert_eq!(output.status.code(), Some(0), "{:?}", output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("oLRP"));
+}
+
+#[test]
+fn metric_unknown_value_exits_two() {
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let mut args: Vec<String> = vec!["eval".into()];
+    args.extend(bbox_args());
+    args.push("--metric".into());
+    args.push("recall".into());
+    let output = cmd.args(args).output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+}
+
 impl Drop for Tempdir {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.path);
