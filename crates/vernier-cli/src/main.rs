@@ -28,5 +28,6 @@ fn main() {
     let cli = Cli::parse();
     match &cli.command {
         Command::Eval(args) => commands::eval::run_or_exit(args),
+        Command::Aggregate(args) => commands::aggregate::run_or_exit(args),
     }
 }

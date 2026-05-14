@@ -33,10 +33,10 @@ use crate::format::{registry, EvalArtifact, FormatContext, Formatter};
 /// Detection-canonical max_dets ladder used when `--max-dets` is
 /// absent and `--iou-type` is anything other than `keypoints`. Mirrors
 /// pycocotools' default and the in-process FFI default.
-const DETECTION_MAX_DETS_DEFAULT: [usize; 3] = [1, 10, 100];
+pub(crate) const DETECTION_MAX_DETS_DEFAULT: [usize; 3] = [1, 10, 100];
 /// Keypoints-canonical max_dets default per ADR-0012. Single-rung
 /// ladder; all 10 kp summary lines resolve to it.
-const KEYPOINTS_MAX_DETS_DEFAULT: [usize; 1] = [20];
+pub(crate) const KEYPOINTS_MAX_DETS_DEFAULT: [usize; 1] = [20];
 
 /// End-to-end runner. Reads the GT/DT JSON, resolves the kernel
 /// config, runs the pipeline, and writes every `--emit` destination.
@@ -45,7 +45,16 @@ const KEYPOINTS_MAX_DETS_DEFAULT: [usize; 1] = [20];
 /// bytes (or nothing, if every `--emit` writes to a file). Per
 /// ADR-0015 §"Stdout / stderr split", the binary does not deviate
 /// from this discipline.
+///
+/// **Byte-stability contract (ADR-0046):** when `--manifest` is
+/// absent, control flow stays in this function and the emitted output
+/// is byte-for-byte identical to the v0.2 release. The partitioned
+/// lane is routed through `eval_partitioned::run` and never touches
+/// this path.
 pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
+    if args.manifest.is_some() {
+        return super::eval_partitioned::run(args);
+    }
     let emits = args.validate()?;
 
     let parity_mode: ParityMode = args.parity_mode.into();
@@ -299,7 +308,7 @@ fn read_input(path: &Path) -> Result<Vec<u8>, CliError> {
 /// surfaces as a typed [`CliError::OutputWrite`] with exit code 1.
 /// `--mkdir` is explicitly out of scope for v0.2 (per ADR-0015 §"What
 /// this ADR explicitly does *not* decide").
-fn write_atomic<F>(final_path: &Path, render: F) -> Result<(), CliError>
+pub(crate) fn write_atomic<F>(final_path: &Path, render: F) -> Result<(), CliError>
 where
     F: FnOnce(&mut dyn io::Write) -> Result<(), CliError>,
 {

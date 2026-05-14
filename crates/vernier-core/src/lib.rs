@@ -25,6 +25,7 @@ pub mod evaluate;
 pub mod lrp;
 pub mod lvis_parity;
 pub mod manifest;
+pub mod manifest_csv;
 pub mod matching;
 pub mod parity;
 pub mod partition;

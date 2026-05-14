@@ -11,12 +11,14 @@
 //! [`registry`] slice, and add its name to the [`FormatName`] enum.
 //! Nothing else moves.
 
+pub(crate) mod aggregate_json;
 pub(crate) mod json;
 pub(crate) mod text;
 
 use std::io;
 
 use vernier_core::lrp::LrpReport;
+use vernier_core::partition::PartitionedSummary;
 use vernier_core::{ParityMode, Summary};
 
 use crate::cli::IouTypeArg;
@@ -33,6 +35,16 @@ pub(crate) enum EvalArtifact<'a> {
     Ap(&'a Summary),
     /// LRP / oLRP report per ADR-0043.
     Lrp(&'a LrpReport),
+    /// Partitioned slice-and-aggregate result per ADR-0046. The
+    /// `label` is the `--label` value stamped on the run (or
+    /// `None` when no `--label` was supplied).
+    Partitioned {
+        /// The partitioned summary (overall + per-slice).
+        summary: &'a PartitionedSummary,
+        /// `--label` value, surfaced as a top-level field in the
+        /// emitted JSON / text so `vernier aggregate` can join by it.
+        label: Option<&'a str>,
+    },
 }
 
 /// Per-formatter rendering context. Carries the eval-time configuration

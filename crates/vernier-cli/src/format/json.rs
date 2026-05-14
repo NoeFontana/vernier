@@ -21,6 +21,7 @@ use std::io;
 
 use serde::Serialize;
 use vernier_core::lrp::LrpReport;
+use vernier_core::partition::PartitionedSummary;
 use vernier_core::summarize::{Metric, StatLine};
 use vernier_core::{ParityMode, Summary};
 
@@ -31,6 +32,12 @@ use crate::format::{EvalArtifact, FormatContext, FormatName, Formatter};
 /// reshaping the on-disk format: a new ADR plus a major-version
 /// release. See ADR-0015 §"Versioning and stability commitments".
 pub(crate) const SCHEMA_VERSION: &str = "1";
+
+/// Partitioned-output schema version (ADR-0046 / ADR-0039). The v1
+/// shape stays in force for un-partitioned eval; v2 is only emitted
+/// when `--manifest` is supplied. Un-partitioned eval is byte-stable
+/// at v1 — that is the load-bearing contract this constant guards.
+pub(crate) const SCHEMA_VERSION_V2: &str = "2";
 
 /// Top-level JSON document. Field order is the wire-stable serialized
 /// order, *not* serde's insertion order, because the struct's source
@@ -101,6 +108,9 @@ impl Formatter for Json {
         match artifact {
             EvalArtifact::Ap(summary) => render_ap(summary, ctx, out),
             EvalArtifact::Lrp(report) => render_lrp(report, ctx, out),
+            EvalArtifact::Partitioned { summary, label } => {
+                render_partitioned(summary, *label, ctx, out)
+            }
         }
     }
 }
@@ -226,4 +236,99 @@ fn parity_mode_str(m: ParityMode) -> &'static str {
         ParityMode::Strict => "strict",
         ParityMode::Corrected => "corrected",
     }
+}
+
+// ---------------------------------------------------------------------------
+// Schema v2 — partitioned (ADR-0046).
+//
+// Un-partitioned eval keeps emitting v1 verbatim; v2 is only ever
+// emitted from the `--manifest` dispatch lane. Field order is the wire
+// order (serde follows struct declaration order — the existing
+// determinism contract carries straight through).
+// ---------------------------------------------------------------------------
+
+/// Top-level v2 document. Field order is wire-stable.
+#[derive(Debug, Serialize)]
+struct SchemaV2<'a> {
+    /// Schema version pin (`"2"` for partitioned output).
+    version: &'a str,
+    /// `--label` value stamped on this run, or `null` when omitted.
+    /// `vernier aggregate` joins by this field when present.
+    label: Option<&'a str>,
+    iou_type: &'a str,
+    parity_mode: &'a str,
+    max_dets: &'a [usize],
+    use_cats: bool,
+    /// Un-partitioned summary (bit-identical to today's v1 output for
+    /// the same `(GT, DT)` pair — load-bearing parity contract per
+    /// ADR-0046).
+    overall: OverallV2<'a>,
+    /// One entry per slice in the spec's canonical order (axis
+    /// ascending, value ascending, `__unassigned__` last; joint cells
+    /// follow the marginals).
+    slices: Vec<SliceV2<'a>>,
+}
+
+/// `overall` sub-object on the v2 document.
+#[derive(Debug, Serialize)]
+struct OverallV2<'a> {
+    lines: Vec<LineV1<'a>>,
+    stats: Vec<f64>,
+    n_images: u64,
+    n_detections: u64,
+}
+
+/// Per-slice entry under `slices` on the v2 document.
+#[derive(Debug, Serialize)]
+struct SliceV2<'a> {
+    axis: &'a str,
+    value: &'a str,
+    n_images: u64,
+    n_detections: u64,
+    lines: Vec<LineV1<'a>>,
+    stats: Vec<f64>,
+}
+
+fn render_partitioned(
+    summary: &PartitionedSummary,
+    label: Option<&str>,
+    ctx: &FormatContext<'_>,
+    out: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    let overall_lines: Vec<LineV1<'_>> = summary.overall.lines.iter().map(line_to_v1).collect();
+    let overall_stats = summary.overall.stats();
+    let overall = OverallV2 {
+        lines: overall_lines,
+        stats: overall_stats,
+        n_images: summary.overall_n_images,
+        n_detections: summary.overall_n_detections,
+    };
+
+    let mut slices: Vec<SliceV2<'_>> = Vec::with_capacity(summary.slices.len());
+    for sr in &summary.slices {
+        let lines: Vec<LineV1<'_>> = sr.summary.lines.iter().map(line_to_v1).collect();
+        let stats = sr.summary.stats();
+        slices.push(SliceV2 {
+            axis: sr.slice.axis.as_str(),
+            value: sr.slice.value.as_str(),
+            n_images: sr.n_images,
+            n_detections: sr.n_detections,
+            lines,
+            stats,
+        });
+    }
+
+    let doc = SchemaV2 {
+        version: SCHEMA_VERSION_V2,
+        label,
+        iou_type: ctx.iou_type.as_str(),
+        parity_mode: parity_mode_str(ctx.parity_mode),
+        max_dets: ctx.max_dets,
+        use_cats: ctx.use_cats,
+        overall,
+        slices,
+    };
+    serde_json::to_writer(&mut *out, &doc)?;
+    writeln!(out)?;
+    Ok(())
 }
