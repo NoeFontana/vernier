@@ -31,10 +31,10 @@
 //! - **The summary plan.** AP / keypoints plans come from
 //!   [`crate::summarize`]; this module only orchestrates loops over
 //!   subsets of `eval_imgs`.
-//! - **LRP partitioning.** A sibling [`evaluate_partitioned_lrp`]
-//!   function lives in the LRP module — its decomposition path is
+//! - **LRP partitioning.** A sibling `evaluate_partitioned_lrp` is
+//!   anticipated in the LRP module — its decomposition path is
 //!   different enough that sharing the loop here would be a false
-//!   economy.
+//!   economy. Currently deferred (see ADR-0046 phase 1 follow-up).
 
 use std::collections::{HashMap, HashSet};
 
