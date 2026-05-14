@@ -5,7 +5,7 @@
 //! process boundary: missing/duplicate/conflicting flags, exit-code
 //! mapping, file-emit semantics, and `--quiet` stderr suppression.
 
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::{Path, PathBuf};
 
@@ -282,9 +282,6 @@ fn metric_olrp_text_output_contains_olrp_headline() {
     let output = cmd.args(args).output().unwrap();
     assert_eq!(output.status.code(), Some(0), "{:?}", output);
     let stdout = String::from_utf8(output.stdout).unwrap();
-    // ADR-0043: oLRP-mode text emit replaces the AP/AR block with the
-    // four-row oLRP headline (oLRP / Loc / FP / FN). Pin the headline
-    // tokens; format drift is caught by the parity harness.
     assert!(stdout.contains("oLRP"), "missing oLRP headline: {stdout}");
     assert!(stdout.contains("Loc"), "missing Loc row: {stdout}");
     assert!(stdout.contains("FP"), "missing FP row: {stdout}");
@@ -317,9 +314,6 @@ fn metric_olrp_json_output_carries_metric_tag() {
 
 #[test]
 fn metric_olrp_keypoints_runs_end_to_end() {
-    // ADR-0045: LRP-on-OKS ships (no Cls/Both bins, so the keypoint
-    // deferral that TIDE took does not transfer). Smoke-test the
-    // end-to-end CLI path on a fresh kernel.
     let mut cmd = Command::cargo_bin("vernier").unwrap();
     let mut args: Vec<String> = vec!["eval".into()];
     args.extend(keypoints_args());
