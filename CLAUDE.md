@@ -1,35 +1,30 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Project guidance for Claude Code. Domain memory lives at `~/.claude/projects/-home-dev-src-vernier/memory/`.
 
 ## Project shape
 
-Mixed Rust/Python monorepo. Build is glued by `maturin` + `uv`; tasks via `just`.
+Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 
-- `crates/vernier-core/` — pure Rust evaluation logic. **No Python deps.** Source of truth for semantics. `#![forbid(unsafe_code)]`.
-- `crates/vernier-mask/` — pure Rust COCO RLE codec, polygon rasterizer, mask ops (per ADR-0009). Leaf crate: depended on by `vernier-core`, never the reverse. **No Python deps.** `#![forbid(unsafe_code)]`.
-- `crates/vernier-ffi/` — PyO3 bindings, compiled as the `vernier._core` extension module. **Data conversion only, no business logic** — if logic creeps in here it belongs in `vernier-core`. Not published as a crate (`publish = false`); ships inside the wheel.
-- `python/vernier/` — thin Python wrapper, the user-facing API. `pyright` runs `strict` on this directory.
-- `tools/reservations/` — placeholder packages that hold names on crates.io / PyPI. Each has its own `[workspace]` table and is deliberately **outside** the Cargo workspace. Don't add it to workspace members and don't `just build` it. See `docs/engineering/registry-reservations.md`.
-- `docs/adr/` — Architecture Decision Records (MADR format). Significant changes start as a `proposed` ADR, not a PR. ADRs are immutable once `accepted`; supersede with a new ADR rather than edit.
+- `crates/vernier-core/` — pure Rust eval logic. No Python deps. `#![forbid(unsafe_code)]`. Source of truth for semantics.
+- `crates/vernier-mask/` — COCO RLE codec, polygon rasterizer, mask ops (ADR-0009). Leaf crate (no reverse dep on core). No Python deps. `#![forbid(unsafe_code)]`.
+- `crates/vernier-ffi/` — PyO3 bindings → `vernier._core`. Data conversion only; logic belongs in core. `publish = false`.
+- `python/vernier/` — user-facing Python wrapper. `pyright` strict.
+- `tools/reservations/` — placeholder packages reserving crates.io / PyPI names. Outside the Cargo workspace; don't add to members, don't `just build`. See `docs/engineering/registry-reservations.md`.
+- `docs/adr/` — MADR-format ADRs. Significant changes start as a `proposed` ADR, not a PR. Immutable once `accepted`; supersede with a new ADR.
 
-## Common commands (use `just`)
+## Commands (use `just`)
 
-```bash
-just bootstrap        # one-time: uv sync + maturin develop --release
-just develop          # fast iterative rebuild (debug Rust)
-just build            # release wheel into target/wheels/
-just test             # Rust nextest + Python pytest
-just test-rust        # cargo nextest run --workspace
-just test-py          # uv run pytest
-just test-parity      # only tests marked @pytest.mark.parity
-just lint             # clippy + ruff + pyright (CI-equivalent, read-only)
-just fmt              # cargo fmt + ruff format + ruff check --fix
-just audit            # cargo deny check
-just clean            # nuke target/, .venv, built _core*.so
-```
+- `just bootstrap` — one-time `uv sync` + `maturin develop --release`
+- `just develop` — fast iterative rebuild (debug Rust)
+- `just build` — release wheel into `target/wheels/`
+- `just test` / `test-rust` / `test-py` / `test-parity` — full suite or subset
+- `just lint` — clippy + ruff + pyright (CI-equivalent, read-only)
+- `just fmt` — cargo fmt + ruff format + ruff check --fix
+- `just audit` — `cargo deny check`
+- `just clean` — nuke `target/`, `.venv`, built `_core*.so`
 
-Single-test invocations:
+Single tests:
 
 ```bash
 cargo nextest run -p vernier-core <test_name>
@@ -42,25 +37,19 @@ Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nex
 
 ## Parity contract — read before changing eval logic
 
-`pycocotools==2.0.11` is pinned **exactly** in `pyproject.toml` and is the reference oracle. Bumping it is an ADR-level decision, not a routine dep update — every quirk vernier reproduces is keyed to this version.
-
-Each pycocotools quirk gets one of three dispositions, surveyed in `docs/engineering/pycocotools-quirks.md`:
-
-- **strict** — reproduce bit-exactly. Default.
-- **aligned** — match semantics; outputs match within a documented tolerance.
-- **corrected** — opt-in opinionated fix; default behavior diverges and the divergence is documented.
-
-The parity harness (`tests/python/parity/harness.py`) double-runs reference and candidate and diffs every intermediate. Today the candidate (`_run_vernier`) delegates to pycocotools — the suite is a tautology until the Rust evaluator lands. When that changes, `_run_vernier` is the single function to swap.
+- `pycocotools==2.0.11` pinned **exactly** in `pyproject.toml` — the reference oracle. Bumping is ADR-level.
+- Each quirk gets one disposition in `docs/engineering/pycocotools-quirks.md`: **strict** (bit-exact, default) / **aligned** (semantic, documented tolerance) / **corrected** (opt-in fix; default diverges).
+- Parity harness: `tests/python/parity/harness.py`. Candidate (`_run_vernier`) today delegates to pycocotools — a tautology until the Rust evaluator lands. `_run_vernier` is the single swap point.
 
 ## Code style — non-obvious bits
 
-- **Workspace clippy** denies: `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro`. `print_stdout`/`print_stderr` warn. Workspace rust lints deny `unused_must_use` and warn `missing_docs`, `unreachable_pub`. Don't introduce these in new code.
-- `vernier-core` `#![forbid(unsafe_code)]`. `vernier-ffi` may have carefully-audited unsafe (e.g., DLPack interop); each crate states its policy in its `lib.rs`.
-- Stable Rust only. Workspace dependencies (ndarray, pyo3, numpy, pyo3-stub-gen, thiserror) are pinned by minor version in the workspace table — bump there, not in individual crates. PyO3 features are pinned to `abi3-py310` for stable wheel ABI.
-- Python: `ruff` lints include PYI (stub-file linting). Stub edits sometimes require stripping docstrings / pass-bodies (PYI021/PYI048).
+- Workspace clippy denies `unwrap_used`, `expect_used`, `panic`, `todo`, `unimplemented`, `dbg_macro`. `print_stdout` / `print_stderr` warn. Workspace rust lints deny `unused_must_use`; warn `missing_docs`, `unreachable_pub`.
+- `vernier-core` `#![forbid(unsafe_code)]`. `vernier-ffi` may carry audited unsafe (DLPack); each crate states policy in `lib.rs`.
+- Stable Rust only. Workspace deps pinned by minor version in the workspace table — bump there, not per-crate. PyO3 features pinned to `abi3-py310`.
+- Python `ruff` includes PYI; stub edits sometimes need stripping docstrings / pass-bodies (PYI021/PYI048).
 
 ## Non-trivial workflows
 
-- **Adding a quirk-driven test:** put a fixture in `tests/python/parity/fixtures/<name>/{gt,dt}.json`, add the name to `ALL_FIXTURES` in `tests/python/parity/test_parity.py`. The disposition table in `docs/engineering/pycocotools-quirks.md` is the canonical index — cite quirks by ID (e.g., "B1", "D6").
-- **Reserving a new registry name:** edit `tools/reservations/`, then `./tools/reservations/reserve.sh --publish` (crates.io). PyPI reservations are now folded into the release path — see `docs/engineering/release-runbook.md`. Don't expect either to interact with the workspace.
+- **Quirk-driven test:** fixture in `tests/python/parity/fixtures/<name>/{gt,dt}.json`; add name to `ALL_FIXTURES` in `tests/python/parity/test_parity.py`. Cite quirks by ID (e.g. "B1", "D6") per the disposition table.
+- **Reserving a registry name:** edit `tools/reservations/`, then `./tools/reservations/reserve.sh --publish` (crates.io). PyPI flows through the release path — see `docs/engineering/release-runbook.md`.
 - **Committing:** conventional commits encouraged. `just lint && just test && just audit` mirrors CI.
