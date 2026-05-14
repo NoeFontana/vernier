@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "vernier.schema_version": "1",
+    "vernier.table": "slices",
+    "vernier.paradigm": "semantic",
+    "vernier.metric": "miou"
+  },
+  "fields": [
+    {"name": "axis", "type": "utf8", "nullable": false},
+    {"name": "value", "type": "utf8", "nullable": false},
+    {"name": "n_images", "type": "uint64", "nullable": false},
+    {"name": "n_detections", "type": "uint64", "nullable": false},
+    {"name": "miou", "type": "float64", "nullable": false},
+    {"name": "fwiou", "type": "float64", "nullable": false},
+    {"name": "pixel_accuracy", "type": "float64", "nullable": false},
+    {"name": "mean_accuracy", "type": "float64", "nullable": false}
+  ]
+}

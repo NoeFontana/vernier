@@ -1,0 +1,26 @@
+{
+  "metadata": {
+    "vernier.schema_version": "1",
+    "vernier.table": "slices",
+    "vernier.paradigm": "instance",
+    "vernier.metric": "ap"
+  },
+  "fields": [
+    {"name": "axis", "type": "utf8", "nullable": false},
+    {"name": "value", "type": "utf8", "nullable": false},
+    {"name": "n_images", "type": "uint64", "nullable": false},
+    {"name": "n_detections", "type": "uint64", "nullable": false},
+    {"name": "ap", "type": "float64", "nullable": false},
+    {"name": "ap50", "type": "float64", "nullable": false},
+    {"name": "ap75", "type": "float64", "nullable": false},
+    {"name": "ap_s", "type": "float64", "nullable": false},
+    {"name": "ap_m", "type": "float64", "nullable": false},
+    {"name": "ap_l", "type": "float64", "nullable": false},
+    {"name": "ar_max_1", "type": "float64", "nullable": false},
+    {"name": "ar_max_10", "type": "float64", "nullable": false},
+    {"name": "ar_max_100", "type": "float64", "nullable": false},
+    {"name": "ar_s", "type": "float64", "nullable": false},
+    {"name": "ar_m", "type": "float64", "nullable": false},
+    {"name": "ar_l", "type": "float64", "nullable": false}
+  ]
+}

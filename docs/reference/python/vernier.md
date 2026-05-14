@@ -12,6 +12,7 @@ items below are the genuinely top-level utilities.
       members:
         - Frequency
         - COCOeval
+        - aggregate
         - version
 
 ## Type aliases

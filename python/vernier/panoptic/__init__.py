@@ -449,6 +449,8 @@ class Evaluator:
         dt: Predictions,
         *,
         tables: None = None,
+        manifest: None = None,
+        cross_axes: None = None,
     ) -> Summary: ...
 
     @overload
@@ -458,6 +460,8 @@ class Evaluator:
         dt: Predictions,
         *,
         tables: Literal["all"] | tuple[TableName, ...],
+        manifest: None = None,
+        cross_axes: None = None,
     ) -> EvalResult: ...
 
     def evaluate(
@@ -466,6 +470,8 @@ class Evaluator:
         dt: Predictions,
         *,
         tables: Literal["all"] | tuple[TableName, ...] | None = None,
+        manifest: object | None = None,
+        cross_axes: Sequence[Sequence[str]] | None = None,
     ) -> Summary | EvalResult:
         """Run the panoptic-quality evaluation.
 
@@ -478,7 +484,25 @@ class Evaluator:
         behavior, bit-identical to the pre-tables release). Pass
         ``"all"`` or a tuple of :data:`TableName` values to opt into
         the wider :class:`EvalResult` return type.
+
+        ``manifest=`` for ADR-0046 partitioned eval is **deferred**
+        on the panoptic paradigm. The panoptic substrate computes its
+        summary from per-image accumulations rather than an AP-shaped
+        accumulator tensor; cleanly subsetting requires either a
+        `PanopticDataset.subset_by_image_ids` accessor (not yet
+        exposed) or a Python-side per-slice reconstruction. Both are
+        tracked as ADR-0046 phase-2 work. Pass ``manifest=`` to get a
+        :class:`NotImplementedError` carrying the same pointer.
         """
+        if manifest is not None or cross_axes is not None:
+            raise NotImplementedError(
+                "panoptic partitioned eval (manifest=) is deferred to ADR-0046 "
+                "phase 2 — the panoptic substrate's per-image accumulation does "
+                "not subset cleanly without adding a `subset_by_image_ids` "
+                "accessor on PanopticDataset / PanopticPredictions, or a "
+                "Python-level loop that rebuilds the panoptic handles per slice. "
+                "Tracked at docs/adr/0046-slice-and-aggregate.md."
+            )
         # ADR-0042 custom axes resolve Python-side. ByGrouping → ByIds;
         # the kernel's category-filter primitive is id-keyed only.
         resolved_filter = _resolve_category_filter(self.category_filter, self.class_grouping)

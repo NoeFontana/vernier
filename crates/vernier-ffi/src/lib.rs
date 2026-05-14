@@ -69,9 +69,11 @@ mod confusion;
 mod dataset;
 mod dlpack;
 mod lrp;
+mod manifest_py;
 mod numpy_utils;
 mod panoptic;
 mod panoptic_tables;
+mod partition_py;
 mod semantic;
 mod semantic_tables;
 mod tables;
@@ -163,7 +165,7 @@ fn dump_bbox_iou_histogram(path: &str) -> PyResult<usize> {
 /// value is constructed once by [`evaluate_bbox_summary`] and never
 /// mutated (per ADR-0006).
 #[pyclass(module = "vernier._core", name = "Summary", frozen)]
-struct PySummary {
+pub(crate) struct PySummary {
     inner: Summary,
 }
 
@@ -184,6 +186,15 @@ impl PySummary {
     fn __repr__(&self) -> String {
         let n = self.inner.lines.len();
         format!("Summary(lines={n})")
+    }
+}
+
+impl PySummary {
+    /// Construct from a borrowed [`Summary`] for crate-internal use
+    /// (the partition orchestrator wraps the `overall` summary on its
+    /// outbound path).
+    pub(crate) fn new(inner: Summary) -> Self {
+        Self { inner }
     }
 }
 
@@ -333,6 +344,20 @@ impl PyEvalGrid {
     /// custom value was supplied at evaluate-time.
     pub(crate) fn iou_thresholds(&self) -> &[f64] {
         &self.iou_thresholds
+    }
+
+    /// Owned copy of the resolved IoU threshold ladder, for callers
+    /// that need to move it into a `py.detach` closure (the partition
+    /// orchestrator does).
+    pub(crate) fn iou_thresholds_vec(&self) -> Vec<f64> {
+        self.iou_thresholds.clone()
+    }
+
+    /// Three-`Arc` snapshot of the dataset the grid was built against.
+    /// Cheap clone; consumed by the partition orchestrator to look up
+    /// the image-id → flat-index map without re-parsing GT.
+    pub(crate) fn dataset_snapshot(&self) -> dataset::DatasetSnapshot {
+        self.retained_dataset.clone()
     }
 }
 
@@ -527,7 +552,7 @@ fn eval_img_dict<'py>(
 /// The Keypoints variant carries a [`HashMap`], which is not `Copy`;
 /// the enum is therefore `Clone` only.
 #[derive(Debug, Clone)]
-enum EvalIouType {
+pub(crate) enum EvalIouType {
     Bbox,
     Segm,
     Boundary { dilation_ratio: f64 },
@@ -593,7 +618,7 @@ impl EvalIouType {
 /// `accumulate()` `max_dets` ladder. Smaller ladder entries are sliced
 /// downstream by `accumulate`.
 #[allow(clippy::too_many_arguments)]
-fn evaluate_grid_impl(
+pub(crate) fn evaluate_grid_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
     gt_json: &Bound<'_, PyBytes>,
@@ -1273,7 +1298,7 @@ fn evaluate_keypoints_grid<'py>(
 /// Decode a Python `dict[int, Sequence[float]]` into the
 /// `HashMap<i64, Vec<f64>>` shape `OksSimilarity` consumes. Empty dict
 /// is valid — `OksSimilarity` falls back to COCO-person sigmas.
-fn parse_sigmas(d: &Bound<'_, PyDict>) -> PyResult<HashMap<i64, Vec<f64>>> {
+pub(crate) fn parse_sigmas(d: &Bound<'_, PyDict>) -> PyResult<HashMap<i64, Vec<f64>>> {
     let mut out: HashMap<i64, Vec<f64>> = HashMap::with_capacity(d.len());
     for (k, v) in d.iter() {
         let cat: i64 = k.extract()?;
@@ -1377,7 +1402,7 @@ pub(crate) fn validate_dilation_ratio(dilation_ratio: f64) -> PyResult<()> {
     Ok(())
 }
 
-fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
+pub(crate) fn boundary_iou_type(dilation_ratio: f64) -> PyResult<EvalIouType> {
     validate_dilation_ratio(dilation_ratio)?;
     Ok(EvalIouType::Boundary { dilation_ratio })
 }
@@ -3111,6 +3136,45 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(confusion::confusion_matrix_boundary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_instance_to_partial, m)?)?;
     m.add_function(wrap_pyfunction!(merge_instance_partials, m)?)?;
+    // ADR-0046 partitioned-eval surface (instance only; LRP variants
+    // raise a typed `RuntimeError`, panoptic/semantic partition at
+    // the Python level).
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_bbox_partitioned,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_segm_partitioned,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_boundary_partitioned,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_keypoints_partitioned,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_bbox_partitioned_lrp,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_segm_partitioned_lrp,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_boundary_partitioned_lrp,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_keypoints_partitioned_lrp,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(partition_py::slices_batch_panoptic, m)?)?;
+    m.add_function(wrap_pyfunction!(partition_py::slices_batch_semantic, m)?)?;
+    m.add_function(wrap_pyfunction!(partition_py::manifest_to_json_bytes, m)?)?;
+    m.add_class::<partition_py::PyPartitionedSummary>()?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;

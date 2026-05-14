@@ -581,6 +581,8 @@ class Evaluator:
         dt: Predictions,
         *,
         tables: None = None,
+        manifest: None = None,
+        cross_axes: None = None,
     ) -> Summary: ...
 
     @overload
@@ -590,6 +592,8 @@ class Evaluator:
         dt: Predictions,
         *,
         tables: Literal["all"] | tuple[TableName, ...],
+        manifest: None = None,
+        cross_axes: None = None,
     ) -> EvalResult: ...
 
     def evaluate(
@@ -598,6 +602,8 @@ class Evaluator:
         dt: Predictions,
         *,
         tables: Literal["all"] | tuple[TableName, ...] | None = None,
+        manifest: object | None = None,
+        cross_axes: Sequence[Sequence[str]] | None = None,
     ) -> Summary | EvalResult:
         """Run the semantic-segmentation evaluation.
 
@@ -614,7 +620,23 @@ class Evaluator:
         Defaults to ``None``, returning :class:`Summary` (existing
         behavior). Pass ``"all"`` or a tuple of :data:`TableName`
         values to opt into the wider :class:`EvalResult` return type.
+
+        ``manifest=`` for ADR-0046 partitioned eval is **deferred**
+        on the semantic paradigm. The semantic :class:`EvalResult`
+        does not yet carry a slices field; routing through the
+        partitioned path requires a coordinated update to the
+        per-class table emission as well. Tracked as ADR-0046 phase-2
+        work; pass ``manifest=`` to get a :class:`NotImplementedError`
+        carrying the same pointer.
         """
+        if manifest is not None or cross_axes is not None:
+            raise NotImplementedError(
+                "semantic partitioned eval (manifest=) is deferred to ADR-0046 "
+                "phase 2 — the semantic EvalResult does not yet carry a "
+                "slices field, and the per-class table emission needs a "
+                "coordinated update for the partitioned path. Tracked at "
+                "docs/adr/0046-slice-and-aggregate.md."
+            )
         # ADR-0041 custom axes resolve Python-side. ByGrouping → ByIds
         # via the active class_grouping (the kernel's filter primitive
         # is class-id-keyed; group labels live in user-space).

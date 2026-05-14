@@ -1,0 +1,10 @@
+{
+  "manifest_version": "1",
+  "key_kind": "image_id",
+  "rows": [
+    {"key": 1, "weather": "fog",   "time_of_day": "day"},
+    {"key": 2, "weather": "clear", "time_of_day": "day"},
+    {"key": 3, "weather": "fog",   "time_of_day": "night"},
+    {"key": 4, "weather": "clear", "time_of_day": "night"}
+  ]
+}

@@ -27,6 +27,7 @@ ROOT_STAYS: tuple[str, ...] = (
     "Frequency",
     "ParityMode",
     "__version__",
+    "aggregate",
     "patch_pycocotools",
     "version",
     "instance",

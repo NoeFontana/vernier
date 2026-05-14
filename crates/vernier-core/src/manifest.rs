@@ -140,9 +140,7 @@ pub fn parse_manifest(
         "result" => KeyKind::Result,
         other => {
             return Err(EvalError::InvalidConfig {
-                detail: format!(
-                    "unknown key_kind {other:?}; expected \"image_id\" or \"result\""
-                ),
+                detail: format!("unknown key_kind {other:?}; expected \"image_id\" or \"result\""),
             });
         }
     };
@@ -189,11 +187,10 @@ pub fn parse_manifest(
 
         match key_kind {
             KeyKind::Image => {
-                let id = parse_image_id_key(&row.key).map_err(|detail| {
-                    EvalError::InvalidConfig {
+                let id =
+                    parse_image_id_key(&row.key).map_err(|detail| EvalError::InvalidConfig {
                         detail: format!("row {row_idx}: {detail}"),
-                    }
-                })?;
+                    })?;
                 if !known_image_ids.contains(&id) {
                     warnings.push(ManifestWarning::UnknownKey {
                         key: id.0.to_string(),
@@ -215,10 +212,11 @@ pub fn parse_manifest(
                 }
             }
             KeyKind::Result => {
-                let label =
-                    parse_result_label_key(&row.key).map_err(|detail| EvalError::InvalidConfig {
+                let label = parse_result_label_key(&row.key).map_err(|detail| {
+                    EvalError::InvalidConfig {
                         detail: format!("row {row_idx}: {detail}"),
-                    })?;
+                    }
+                })?;
                 if !known_labels.contains(&label) {
                     warnings.push(ManifestWarning::UnknownKey { key: label });
                     continue;
@@ -300,9 +298,7 @@ fn parse_image_id_key(value: &serde_json::Value) -> Result<ImageId, String> {
             if let Some(i) = n.as_i64() {
                 Ok(ImageId(i))
             } else {
-                Err(format!(
-                    "image_id key must be an integer; got {n:?}"
-                ))
+                Err(format!("image_id key must be an integer; got {n:?}"))
             }
         }
         serde_json::Value::String(s) => s
@@ -331,9 +327,7 @@ fn parse_axis_value(value: &serde_json::Value) -> Result<String, String> {
         serde_json::Value::Number(_) => {
             Err("axis values must be strings; numeric slicing is the Breakdown axis".into())
         }
-        serde_json::Value::Bool(_) => {
-            Err("axis values must be strings; got a JSON boolean".into())
-        }
+        serde_json::Value::Bool(_) => Err("axis values must be strings; got a JSON boolean".into()),
         other => Err(format!("axis values must be strings; got {other:?}")),
     }
 }
@@ -442,8 +436,7 @@ mod tests {
                 {"key": "fog_run", "weather": "fog"}
             ]
         }"#;
-        let labels: HashSet<String> =
-            ["clean", "fog_run"].iter().map(|s| s.to_string()).collect();
+        let labels: HashSet<String> = ["clean", "fog_run"].iter().map(|s| s.to_string()).collect();
         let parsed = parse_manifest(bytes, &HashSet::new(), &labels).unwrap();
         assert_eq!(parsed.key_kind, KeyKind::Result);
         assert_eq!(parsed.per_label["clean"]["weather"], "clear");
@@ -472,9 +465,8 @@ mod tests {
             ]
         }"#;
         // Three images in the grid; only id=1 mentioned in the manifest.
-        let image_id_to_idx: HashMap<ImageId, usize> = (1..=3)
-            .map(|i| (ImageId(i), (i - 1) as usize))
-            .collect();
+        let image_id_to_idx: HashMap<ImageId, usize> =
+            (1..=3).map(|i| (ImageId(i), (i - 1) as usize)).collect();
         let (spec, _warnings) = partition_spec_from_manifest(bytes, &image_id_to_idx, &[]).unwrap();
         let unassigned = spec
             .slices

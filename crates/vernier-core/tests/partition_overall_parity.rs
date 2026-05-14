@@ -149,10 +149,7 @@ fn two_axis_manifest_with_unassigned_smokes_through() {
         .iter()
         .map(|s| (s.axis.as_str(), s.value.as_str()))
         .collect();
-    assert_eq!(
-        labels,
-        vec![("weather", "fog"), ("weather", UNASSIGNED)]
-    );
+    assert_eq!(labels, vec![("weather", "fog"), ("weather", UNASSIGNED)]);
 
     let part = evaluate_partitioned(
         &grid.eval_imgs,

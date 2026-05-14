@@ -1,0 +1,19 @@
+{
+  "metadata": {
+    "vernier.schema_version": "1",
+    "vernier.table": "slices",
+    "vernier.paradigm": "instance",
+    "vernier.metric": "lrp"
+  },
+  "deferred": true,
+  "fields": [
+    {"name": "axis", "type": "utf8", "nullable": false},
+    {"name": "value", "type": "utf8", "nullable": false},
+    {"name": "n_images", "type": "uint64", "nullable": false},
+    {"name": "n_detections", "type": "uint64", "nullable": false},
+    {"name": "olrp", "type": "float64", "nullable": false},
+    {"name": "olrp_loc", "type": "float64", "nullable": false},
+    {"name": "olrp_fp", "type": "float64", "nullable": false},
+    {"name": "olrp_fn", "type": "float64", "nullable": false}
+  ]
+}

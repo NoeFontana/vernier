@@ -193,11 +193,7 @@ impl PartitionSpec {
         // Joint slices have predictable axis names already (CROSS_SEPARATOR
         // join); sort them by (axis, value) so cross-product output order
         // is stable across runs.
-        joint_slices.sort_by(|a, b| {
-            a.axis
-                .cmp(&b.axis)
-                .then_with(|| a.value.cmp(&b.value))
-        });
+        joint_slices.sort_by(|a, b| a.axis.cmp(&b.axis).then_with(|| a.value.cmp(&b.value)));
 
         let total = marginal_slices.len() + joint_slices.len();
         if total > SLICES_CAP {
@@ -602,15 +598,11 @@ fn expand_cross_axes(
     // image-id intersection.
     let mut value_sets: Vec<(&str, Vec<AxisValueEntry<'_>>)> = Vec::with_capacity(axes.len());
     for axis in axes {
-        let by_value = per_axis
-            .get(axis)
-            .ok_or_else(|| EvalError::InvalidConfig {
-                detail: format!("--cross axis {axis:?} missing during expansion"),
-            })?;
-        let mut entries: Vec<(&str, &HashSet<ImageId>)> = by_value
-            .iter()
-            .map(|(v, ids)| (v.as_str(), ids))
-            .collect();
+        let by_value = per_axis.get(axis).ok_or_else(|| EvalError::InvalidConfig {
+            detail: format!("--cross axis {axis:?} missing during expansion"),
+        })?;
+        let mut entries: Vec<(&str, &HashSet<ImageId>)> =
+            by_value.iter().map(|(v, ids)| (v.as_str(), ids)).collect();
         entries.sort_by_key(|(v, _)| *v);
         value_sets.push((axis.as_str(), entries));
     }
