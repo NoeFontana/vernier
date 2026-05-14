@@ -15,12 +15,12 @@
 //!
 //! Two threaded surfaces extend the immutable batch evaluators:
 //!
-//! - [`InstanceStreamOrchestrator`] (ADR-0035) is an internal Rust
+//! - `InstanceStreamOrchestrator` (ADR-0035) is an internal Rust
 //!   struct — not a pyclass. The `evaluate_instance_to_partial` and
 //!   `merge_instance_partials` pyfunctions own one synchronously and
 //!   drive it through a single construct + update + finalize-to-partial
 //!   cycle.
-//! - [`PyBackgroundEvaluator`] (ADR-0014) wraps a streaming evaluator in
+//! - `PyBackgroundEvaluator` (ADR-0014) wraps a streaming evaluator in
 //!   a dedicated worker thread. The worker owns the inner evaluator,
 //!   so the single-writer rule is satisfied by construction; callers
 //!   may submit from any thread. Best-effort `nice` and core-affinity

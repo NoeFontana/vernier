@@ -309,20 +309,20 @@ pub(crate) fn erode_raster_into_scratch(
     }
 }
 
-/// Bbox-shape variant of [`erode_raster_into_scratch`]. Reads input
-/// from `scratch.raster_bbox` (`bw * bh` column-major) and writes the
-/// eroded result to `scratch.eroded_bbox` (`bw * bh` column-major) —
-/// the boundary-IoU fast path's bbox-only buffers.
+/// Bbox-shape variant of the full-image `erode_raster_into_scratch`
+/// (crate-private). Reads input from `scratch.raster_bbox` (`bw * bh`
+/// column-major) and writes the eroded result to `scratch.eroded_bbox`
+/// (`bw * bh` column-major) — the boundary-IoU fast path's bbox-only
+/// buffers.
 ///
-/// Algorithmically identical to [`erode_raster_into_scratch`] (same
-/// pad / row pass / column pass / strip pad over `(bh + 2, bw + 2)`
-/// padded buffer), but the input copy-in and output strip-out are
-/// contiguous bbox-shape slices rather than scattered full-image
-/// columns. That removes the per-mask full-image
-/// [`Rle::to_raster_bytes_into`] write and the per-mask full-image
-/// `eroded` zero-init the full-image variant pays for outside the
-/// foreground bbox — both of which are bandwidth-bound on val2017's
-/// 480×640 image dims.
+/// Algorithmically identical to the full-image variant (same pad /
+/// row pass / column pass / strip pad over `(bh + 2, bw + 2)` padded
+/// buffer), but the input copy-in and output strip-out are contiguous
+/// bbox-shape slices rather than scattered full-image columns. That
+/// removes the per-mask full-image [`Rle::to_raster_bytes_into`] write
+/// and the per-mask full-image `eroded` zero-init the full-image
+/// variant pays for outside the foreground bbox — both of which are
+/// bandwidth-bound on val2017's 480×640 image dims.
 pub fn erode_bbox_into_scratch(scratch: &mut ErodeScratch, bw: usize, bh: usize, d: usize) {
     debug_assert_eq!(scratch.raster_bbox.len(), bw * bh);
     scratch.eroded_bbox.clear();
