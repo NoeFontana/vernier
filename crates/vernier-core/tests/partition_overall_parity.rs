@@ -18,7 +18,7 @@ use vernier_core::evaluate::{evaluate_bbox, AreaRange, EvalGrid, EvaluateParams}
 use vernier_core::manifest::partition_spec_from_manifest;
 use vernier_core::parity::{iou_thresholds, ParityMode};
 use vernier_core::partition::{
-    evaluate_partitioned, GridDims, KeyKind, PartitionSpec, SummaryKind, UNASSIGNED,
+    evaluate_partitioned, GridDims, KeyKind, PartitionSpec, SummaryPlan, UNASSIGNED,
 };
 use vernier_core::summarize::summarize_detection;
 use vernier_core::{accumulate, parity, CocoDataset, CocoDetections, EvalDataset};
@@ -78,7 +78,7 @@ fn overall_matches_unpartitioned_eval() {
         &spec,
         iou_thresholds(),
         ParityMode::Strict,
-        SummaryKind::DetectionDefault,
+        SummaryPlan::DetectionDefault,
     )
     .unwrap();
 
@@ -157,7 +157,7 @@ fn two_axis_manifest_with_unassigned_smokes_through() {
         &spec,
         iou_thresholds(),
         ParityMode::Strict,
-        SummaryKind::DetectionDefault,
+        SummaryPlan::DetectionDefault,
     )
     .unwrap();
 
@@ -203,7 +203,7 @@ fn manifest_with_only_unknown_keys_yields_overall_only_spec() {
         &spec,
         iou_thresholds(),
         ParityMode::Strict,
-        SummaryKind::DetectionDefault,
+        SummaryPlan::DetectionDefault,
     )
     .unwrap();
     assert!(part.slices.is_empty());

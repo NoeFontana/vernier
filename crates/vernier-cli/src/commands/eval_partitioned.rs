@@ -22,10 +22,12 @@ use vernier_core::dataset::ImageId;
 use vernier_core::manifest;
 use vernier_core::manifest_csv;
 use vernier_core::parity::iou_thresholds;
-use vernier_core::partition::{self, GridDims, KeyKind, PartitionSpec, SummaryKind};
+use vernier_core::partition::{
+    self, image_id_to_idx as build_image_id_to_idx, GridDims, KeyKind, PartitionSpec, SummaryPlan,
+};
 use vernier_core::{
     evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, AreaRange, CocoDataset,
-    CocoDetections, EvalDataset, EvalError, EvalGrid, EvaluateParams, ParityMode,
+    CocoDetections, EvalError, EvalGrid, EvaluateParams, ParityMode,
 };
 
 use crate::cli::{EmitDestination, EvalArgs, IouTypeArg, MetricArg};
@@ -141,8 +143,8 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
     }
 
     let summary_kind = match args.iou_type {
-        IouTypeArg::Keypoints => SummaryKind::KeypointsDefault,
-        _ => SummaryKind::DetectionDefault,
+        IouTypeArg::Keypoints => SummaryPlan::KeypointsDefault,
+        _ => SummaryPlan::DetectionDefault,
     };
 
     let dims = GridDims {
@@ -223,12 +225,6 @@ fn run_kernel(
         }
     };
     Ok(grid)
-}
-
-fn build_image_id_to_idx(gt: &CocoDataset) -> HashMap<ImageId, usize> {
-    let mut ids: Vec<ImageId> = gt.images().iter().map(|im| im.id).collect();
-    ids.sort_unstable_by_key(|id| id.0);
-    ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
 }
 
 fn build_spec(

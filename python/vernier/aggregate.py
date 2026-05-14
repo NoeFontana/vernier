@@ -25,7 +25,7 @@ import csv
 import json
 import os
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Union, cast
 
@@ -278,17 +278,10 @@ def _coerce_result_entry(
         label = str(label_attr) if label_attr is not None else f"result_{index}"
         batch = _coerce_arrow_input(slices_attr, context=f"results[{index}].slices")
         return label, batch
-    # Last-ditch: an object with `.summary` and no slices — wrap the
-    # scalar metrics as a single-row "overall" batch. Useful for the
-    # un-partitioned EvalResult path (no .slices populated).
-    summary = getattr(entry_obj, "summary", None)
-    if summary is not None:
-        label_attr = getattr(entry_obj, "label", None)
-        label = str(label_attr) if label_attr is not None else f"result_{index}"
-        return label, _summary_to_overall_batch(summary)
     raise AggregateError(
         f"results[{index}] is of type {type(entry).__name__}; expected "
-        "pa.RecordBatch, pa.Table, EvalResult, or path to a v2 result JSON",
+        "pa.RecordBatch, pa.Table, EvalResult with .slices populated, or path "
+        "to a v2 result JSON",
     )
 
 
@@ -318,34 +311,6 @@ def _coerce_arrow_input(obj: object, *, context: str) -> pa.RecordBatch:
         f"{context} is of type {type(obj).__name__}; "
         "expected pyarrow.RecordBatch / pyarrow.Table or an Arrow PyCapsule object",
     )
-
-
-def _summary_to_overall_batch(summary: object) -> pa.RecordBatch:
-    """Wrap a paradigm ``Summary`` into a single-row overall batch.
-
-    The fallback path when an ``EvalResult`` has no ``slices`` populated
-    (un-partitioned evaluation). Reads ``summary.stats`` (a ``list[float]``
-    per ADR-0040) and emits one metric column per stat as ``stat_{i}``.
-    """
-    stats_attr = getattr(summary, "stats", None)
-    if stats_attr is None:
-        raise AggregateError(
-            f"summary of type {type(summary).__name__} has no .stats attribute",
-        )
-    if not isinstance(stats_attr, Sequence):
-        raise AggregateError(
-            f"summary.stats is of type {type(stats_attr).__name__}; expected a sequence",
-        )
-    stats = cast("Sequence[float]", stats_attr)
-    arrays: list[pa.Array] = [
-        pa.array(["overall"], type=pa.string()),
-        pa.array(["overall"], type=pa.string()),
-    ]
-    names: list[str] = ["axis", "value"]
-    for i, v in enumerate(stats):
-        arrays.append(pa.array([float(v)], type=pa.float64()))
-        names.append(f"stat_{i}")
-    return pa.RecordBatch.from_arrays(arrays, names=names)
 
 
 # ---------------------------------------------------------------------------
@@ -451,9 +416,35 @@ def _coerce_manifest_dict(doc: Mapping[str, object]) -> dict[str, dict[str, str]
     )
 
 
+def _rows_to_manifest_map(
+    rows: Iterable[Mapping[str, object]],
+    *,
+    source: str,
+    allow_empty_key: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Materialise tabular rows (CSV / Arrow) into ``{label: {axis: value}}``.
+
+    Each row must carry a ``key`` cell; every other cell becomes an
+    axis-value entry on the resulting per-label map. ``source`` is the
+    file / context string used in error messages.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for i, row in enumerate(rows):
+        key = row.get("key")
+        if key is None or (not allow_empty_key and key == ""):
+            raise AggregateError(f"{source} row {i} missing 'key' value")
+        axes = {
+            str(axis): str(value)
+            for axis, value in row.items()
+            if axis != "key" and value is not None
+        }
+        out[str(key)] = axes
+    return out
+
+
 def _coerce_manifest_csv(path: Path) -> dict[str, dict[str, str]]:
     """Read a CSV manifest. Header row supplies axis names; first column ``key``."""
-    # Use utf-8-sig to transparently strip a BOM if present.
+    # utf-8-sig transparently strips a BOM if present.
     with path.open(encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
         if reader.fieldnames is None:
@@ -465,20 +456,8 @@ def _coerce_manifest_csv(path: Path) -> dict[str, dict[str, str]]:
                 f"CSV manifest at {path!s} missing 'key' column "
                 f"(header: {reader.fieldnames!r})",
             )
-        out: dict[str, dict[str, str]] = {}
-        for i, row in enumerate(reader):
-            key = row.get("key")
-            if key is None or key == "":
-                raise AggregateError(
-                    f"CSV manifest at {path!s} row {i} missing 'key' value",
-                )
-            axes = {
-                str(axis): str(value)
-                for axis, value in row.items()
-                if axis != "key" and value is not None
-            }
-            out[str(key)] = axes
-    return out
+        rows = (cast("Mapping[str, object]", row) for row in reader)
+        return _rows_to_manifest_map(rows, source=f"CSV manifest at {path!s}")
 
 
 def _coerce_manifest_arrow(obj: object) -> dict[str, dict[str, str]]:
@@ -489,24 +468,12 @@ def _coerce_manifest_arrow(obj: object) -> dict[str, dict[str, str]]:
         raise AggregateError(
             f"could not pull Arrow manifest into a pyarrow.Table: {e}",
         ) from e
-    column_names: list[str] = list(table.column_names)
-    if "key" not in column_names:
+    if "key" not in table.column_names:
         raise AggregateError(
-            f"Arrow manifest missing 'key' column (columns: {column_names!r})",
+            f"Arrow manifest missing 'key' column (columns: {list(table.column_names)!r})",
         )
-    pylist: list[Mapping[str, object]] = list(table.to_pylist())
-    out: dict[str, dict[str, str]] = {}
-    for i, row in enumerate(pylist):
-        key = row.get("key")
-        if key is None:
-            raise AggregateError(f"Arrow manifest row {i} has null 'key'")
-        axes = {
-            str(axis): str(value)
-            for axis, value in row.items()
-            if axis != "key" and value is not None
-        }
-        out[str(key)] = axes
-    return out
+    pylist = cast("list[Mapping[str, object]]", table.to_pylist())
+    return _rows_to_manifest_map(pylist, source="Arrow manifest")
 
 
 # ---------------------------------------------------------------------------

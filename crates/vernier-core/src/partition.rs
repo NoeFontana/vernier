@@ -39,10 +39,24 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::accumulate::{accumulate, AccumulateParams, PerImageEval};
-use crate::dataset::ImageId;
+use crate::dataset::{EvalDataset, ImageId};
 use crate::error::EvalError;
 use crate::parity::{recall_thresholds, ParityMode};
 use crate::summarize::{summarize_detection, summarize_with, StatRequest, Summary};
+
+/// Build the canonical id-ascending image-id → I-axis index map for a
+/// dataset.
+///
+/// Mirrors the ordering [`crate::evaluate::evaluate_with`] uses on the
+/// I-axis (`gt.images().iter().sorted_by(|im| im.id)`). Consumed by
+/// [`PartitionSpec::build`] and the FFI / CLI partitioned-eval entry
+/// points so the slice loop's I-axis indices line up with the
+/// matching pass's.
+pub fn image_id_to_idx<D: EvalDataset>(dataset: &D) -> HashMap<ImageId, usize> {
+    let mut ids: Vec<ImageId> = dataset.images().iter().map(|im| im.id).collect();
+    ids.sort_unstable_by_key(|id| id.0);
+    ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
+}
 
 /// Reserved slice value for any dataset key not present in the
 /// manifest. Materialized as one row per axis in every partitioned
@@ -158,9 +172,6 @@ impl PartitionSpec {
         axes_sorted.sort();
 
         for axis in axes_sorted {
-            // `validate_cross_axes` above has already walked
-            // `per_axis.keys()` so every key resolves; the lookup here
-            // is infallible in practice but stays defensive.
             let values = match per_axis.get(axis) {
                 Some(v) => v,
                 None => continue,
@@ -207,10 +218,6 @@ impl PartitionSpec {
 
         let mut slices = marginal_slices;
         slices.extend(joint_slices);
-        // Marginals are already canonically ordered by the per-axis
-        // walk; the joint sort above preserves their relative order.
-        // No further sort needed.
-
         Ok(Self { key_kind, slices })
     }
 
@@ -268,19 +275,51 @@ pub struct PartitionedSummary {
 }
 
 /// How [`evaluate_partitioned`] summarizes each accumulator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SummaryKind {
+///
+/// The `Default` variants pin the canonical pycocotools shapes; the
+/// `Custom` variant accepts a caller-supplied plan + max_dets ladder
+/// for LVIS-shape or user-defined summaries.
+#[derive(Debug, Clone, Copy)]
+pub enum SummaryPlan<'a> {
     /// Standard COCO 12-stat detection plan at `max_dets=[1, 10, 100]`.
     DetectionDefault,
     /// Keypoints 10-stat plan at `max_dets=[20]` (ADR-0012).
     KeypointsDefault,
+    /// Caller-supplied plan + max_dets ladder. Used by LVIS callers and
+    /// any user-defined summary that does not match the two defaults.
+    Custom {
+        /// One [`StatRequest`] per summary line, in display order.
+        plan: &'a [StatRequest],
+        /// `max_dets` ladder threaded into [`AccumulateParams::max_dets`].
+        max_dets: &'a [usize],
+    },
 }
 
-impl SummaryKind {
-    fn max_dets(self) -> &'static [usize] {
+impl<'a> SummaryPlan<'a> {
+    fn max_dets(&self) -> &'a [usize] {
         match self {
             Self::DetectionDefault => &DETECTION_MAX_DETS,
             Self::KeypointsDefault => &KEYPOINTS_MAX_DETS,
+            Self::Custom { max_dets, .. } => max_dets,
+        }
+    }
+
+    fn summarize(
+        &self,
+        accum: &crate::accumulate::Accumulated,
+        iou_thresholds: &[f64],
+    ) -> Result<Summary, EvalError> {
+        match self {
+            Self::DetectionDefault => {
+                summarize_detection(accum, iou_thresholds, &DETECTION_MAX_DETS)
+            }
+            Self::KeypointsDefault => {
+                let plan = StatRequest::coco_keypoints_default();
+                summarize_with(accum, &plan, iou_thresholds, &KEYPOINTS_MAX_DETS)
+            }
+            Self::Custom { plan, max_dets } => {
+                summarize_with(accum, plan, iou_thresholds, max_dets)
+            }
         }
     }
 }
@@ -324,7 +363,7 @@ pub fn evaluate_partitioned(
     spec: &PartitionSpec,
     iou_thresholds: &[f64],
     parity_mode: ParityMode,
-    summary_kind: SummaryKind,
+    summary_plan: SummaryPlan<'_>,
 ) -> Result<PartitionedSummary, EvalError> {
     let expected = grid.n_categories * grid.n_area_ranges * grid.n_images;
     if eval_imgs.len() != expected {
@@ -340,29 +379,25 @@ pub fn evaluate_partitioned(
         });
     }
 
-    let max_dets = summary_kind.max_dets();
     let accum_params = AccumulateParams {
         iou_thresholds,
         recall_thresholds: recall_thresholds(),
-        max_dets,
+        max_dets: summary_plan.max_dets(),
         n_categories: grid.n_categories,
         n_area_ranges: grid.n_area_ranges,
         n_images: grid.n_images,
     };
 
-    // Overall: bit-identical to today's path — we hand the same
-    // `eval_imgs` slice straight to `accumulate`.
     let accum_overall = accumulate(eval_imgs, accum_params, parity_mode)?;
-    let overall = summarize_with_kind(&accum_overall, iou_thresholds, summary_kind)?;
+    let overall = summary_plan.summarize(&accum_overall, iou_thresholds)?;
     let overall_n_detections = count_detections(eval_imgs, grid, None);
-    let overall_n_images = grid.n_images as u64;
 
     let mut slices_out: Vec<SliceResult> = Vec::with_capacity(spec.slices.len());
     for slice in &spec.slices {
-        let filtered = filtered_flatten(eval_imgs, grid, &slice.image_indices);
+        let (filtered, n_detections) =
+            filtered_flatten_and_count(eval_imgs, grid, &slice.image_indices);
         let accum = accumulate(&filtered, accum_params, parity_mode)?;
-        let summary = summarize_with_kind(&accum, iou_thresholds, summary_kind)?;
-        let n_detections = count_detections(eval_imgs, grid, Some(&slice.image_indices));
+        let summary = summary_plan.summarize(&accum, iou_thresholds)?;
         slices_out.push(SliceResult {
             n_images: slice.image_ids.len() as u64,
             n_detections,
@@ -373,7 +408,7 @@ pub fn evaluate_partitioned(
 
     Ok(PartitionedSummary {
         overall,
-        overall_n_images,
+        overall_n_images: grid.n_images as u64,
         overall_n_detections,
         slices: slices_out,
     })
@@ -381,10 +416,8 @@ pub fn evaluate_partitioned(
 
 /// Run a custom summary plan over a partitioned grid.
 ///
-/// Same orchestration as [`evaluate_partitioned`] but routes through
-/// [`summarize_with`] with a caller-supplied plan + `max_dets` ladder.
-/// Useful for LVIS-shape partitioned evals or any user-defined plan
-/// that doesn't fit [`SummaryKind`].
+/// Thin compatibility wrapper around [`evaluate_partitioned`] with
+/// [`SummaryPlan::Custom`]. Prefer the unified entry point.
 ///
 /// # Errors
 ///
@@ -398,68 +431,35 @@ pub fn evaluate_partitioned_with(
     parity_mode: ParityMode,
     plan: &[StatRequest],
 ) -> Result<PartitionedSummary, EvalError> {
-    let expected = grid.n_categories * grid.n_area_ranges * grid.n_images;
-    if eval_imgs.len() != expected {
-        return Err(EvalError::DimensionMismatch {
-            detail: format!(
-                "eval_imgs len {} != n_categories({}) * n_area_ranges({}) * n_images({}) = {}",
-                eval_imgs.len(),
-                grid.n_categories,
-                grid.n_area_ranges,
-                grid.n_images,
-                expected,
-            ),
-        });
-    }
-
-    let accum_params = AccumulateParams {
+    evaluate_partitioned(
+        eval_imgs,
+        grid,
+        spec,
         iou_thresholds,
-        recall_thresholds: recall_thresholds(),
-        max_dets,
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
-    };
-
-    let accum_overall = accumulate(eval_imgs, accum_params, parity_mode)?;
-    let overall = summarize_with(&accum_overall, plan, iou_thresholds, max_dets)?;
-    let overall_n_detections = count_detections(eval_imgs, grid, None);
-    let overall_n_images = grid.n_images as u64;
-
-    let mut slices_out: Vec<SliceResult> = Vec::with_capacity(spec.slices.len());
-    for slice in &spec.slices {
-        let filtered = filtered_flatten(eval_imgs, grid, &slice.image_indices);
-        let accum = accumulate(&filtered, accum_params, parity_mode)?;
-        let summary = summarize_with(&accum, plan, iou_thresholds, max_dets)?;
-        let n_detections = count_detections(eval_imgs, grid, Some(&slice.image_indices));
-        slices_out.push(SliceResult {
-            n_images: slice.image_ids.len() as u64,
-            n_detections,
-            slice: slice.clone(),
-            summary,
-        });
-    }
-
-    Ok(PartitionedSummary {
-        overall,
-        overall_n_images,
-        overall_n_detections,
-        slices: slices_out,
-    })
+        parity_mode,
+        SummaryPlan::Custom { plan, max_dets },
+    )
 }
 
 /// Build a fresh dense `eval_imgs` vec that retains only cells whose
-/// I-axis index belongs to `slice_indices`; cells outside the slice
-/// are `None`. The Boxes for in-slice cells are deep-cloned because
-/// `accumulate` borrows the dense slice and cannot share ownership
-/// with the source grid.
-fn filtered_flatten(
+/// I-axis index belongs to `slice_indices`, and at the same time sum
+/// the detection count from the kept cells at A=0 (the "all" bucket;
+/// other area buckets would double-count any DT whose area sits on a
+/// bucket boundary, quirk D6).
+///
+/// Boxes for in-slice cells are deep-cloned because `accumulate`
+/// borrows the dense slice and cannot share ownership with the source
+/// grid. The walk is fused with detection counting so the two passes
+/// over the same indices collapse into one (ADR-0046 phase-1
+/// efficiency review).
+fn filtered_flatten_and_count(
     eval_imgs: &[Option<Box<PerImageEval>>],
     grid: GridDims,
     slice_indices: &HashSet<usize>,
-) -> Vec<Option<Box<PerImageEval>>> {
+) -> (Vec<Option<Box<PerImageEval>>>, u64) {
     let total = grid.n_categories * grid.n_area_ranges * grid.n_images;
     let mut out: Vec<Option<Box<PerImageEval>>> = Vec::with_capacity(total);
+    let mut n_detections: u64 = 0;
     for k in 0..grid.n_categories {
         for a in 0..grid.n_area_ranges {
             for i in 0..grid.n_images {
@@ -469,18 +469,21 @@ fn filtered_flatten(
                 } else {
                     None
                 };
+                if a == 0 {
+                    if let Some(ref c) = cell {
+                        n_detections = n_detections.saturating_add(c.dt_scores.len() as u64);
+                    }
+                }
                 out.push(cell);
             }
         }
     }
-    out
+    (out, n_detections)
 }
 
-/// Sum `dt_scores.len()` over every cell at A-axis 0 (the "all"
-/// bucket — area filtering would double-count) whose I-axis index
-/// matches `slice_indices`, or the full grid when
-/// `slice_indices = None`. This is the canonical per-detection count
-/// used by the per_image table.
+/// Sum `dt_scores.len()` over the full grid at A=0. Used for the
+/// `overall` count; per-slice counts are returned by
+/// [`filtered_flatten_and_count`] for free.
 fn count_detections(
     eval_imgs: &[Option<Box<PerImageEval>>],
     grid: GridDims,
@@ -494,9 +497,6 @@ fn count_detections(
                     continue;
                 }
             }
-            // a=0 is the "all" area bucket; small/medium/large would
-            // double-count any DT whose area sits on a bucket boundary
-            // (quirk D6).
             let flat = k * grid.n_area_ranges * grid.n_images + i;
             if let Some(cell) = eval_imgs.get(flat).and_then(|c| c.as_deref()) {
                 total = total.saturating_add(cell.dt_scores.len() as u64);
@@ -504,22 +504,6 @@ fn count_detections(
         }
     }
     total
-}
-
-fn summarize_with_kind(
-    accum: &crate::accumulate::Accumulated,
-    iou_thresholds: &[f64],
-    kind: SummaryKind,
-) -> Result<Summary, EvalError> {
-    match kind {
-        SummaryKind::DetectionDefault => {
-            summarize_detection(accum, iou_thresholds, &DETECTION_MAX_DETS)
-        }
-        SummaryKind::KeypointsDefault => {
-            let plan = StatRequest::coco_keypoints_default();
-            summarize_with(accum, &plan, iou_thresholds, &KEYPOINTS_MAX_DETS)
-        }
-    }
 }
 
 fn make_slice(
@@ -852,10 +836,12 @@ mod tests {
             vec![Some(fake_cell(2)), Some(fake_cell(3)), Some(fake_cell(4))];
 
         let slice_indices: HashSet<usize> = HashSet::from([0, 2]);
-        let filtered = filtered_flatten(&eval_imgs, grid, &slice_indices);
+        let (filtered, n_detections) = filtered_flatten_and_count(&eval_imgs, grid, &slice_indices);
         assert!(filtered[0].is_some());
         assert!(filtered[1].is_none());
         assert!(filtered[2].is_some());
+        // Detection counts (2 + 4) sum at A=0 for the in-slice images.
+        assert_eq!(n_detections, 2 + 4);
     }
 
     #[test]

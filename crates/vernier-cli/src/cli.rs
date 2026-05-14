@@ -94,41 +94,50 @@ impl AggregateArgs {
     /// Resolve the emit list, enforcing the same single-stdout /
     /// unique-file-paths rules `EvalArgs::validate` does.
     pub(crate) fn validate(&self) -> Result<Vec<EmitSpec>, CliError> {
-        let raw_emits: Vec<String> = if self.emit.is_empty() {
-            vec!["text".to_string()]
-        } else {
-            self.emit.clone()
-        };
-        let mut parsed: Vec<EmitSpec> = Vec::with_capacity(raw_emits.len());
-        let mut stdout_seen = false;
-        for raw in &raw_emits {
-            let spec = parse_emit(raw)?;
-            match &spec.destination {
-                EmitDestination::Stdout => {
-                    if stdout_seen {
-                        return Err(CliError::Validation(
-                            "more than one --emit targets stdout; outputs would interleave".into(),
-                        ));
-                    }
-                    stdout_seen = true;
+        resolve_emit_list(&self.emit)
+    }
+}
+
+/// Resolve a raw `--emit` flag list into validated [`EmitSpec`]s.
+///
+/// Defaults to one `text`-on-stdout emit when empty. Errors when more
+/// than one entry targets stdout, when two entries target the same
+/// file path, or when a `FMT=PATH` value is malformed.
+pub(crate) fn resolve_emit_list(raw: &[String]) -> Result<Vec<EmitSpec>, CliError> {
+    let raw_emits: Vec<String> = if raw.is_empty() {
+        vec!["text".to_string()]
+    } else {
+        raw.to_vec()
+    };
+    let mut parsed: Vec<EmitSpec> = Vec::with_capacity(raw_emits.len());
+    let mut stdout_seen = false;
+    for entry in &raw_emits {
+        let spec = parse_emit(entry)?;
+        match &spec.destination {
+            EmitDestination::Stdout => {
+                if stdout_seen {
+                    return Err(CliError::Validation(
+                        "more than one --emit targets stdout; outputs would interleave".into(),
+                    ));
                 }
-                EmitDestination::File(path) => {
-                    let collides = parsed.iter().any(|e| match &e.destination {
-                        EmitDestination::File(p) => p == path,
-                        EmitDestination::Stdout => false,
-                    });
-                    if collides {
-                        return Err(CliError::Validation(format!(
-                            "--emit path {} appears more than once",
-                            path.display()
-                        )));
-                    }
+                stdout_seen = true;
+            }
+            EmitDestination::File(path) => {
+                let collides = parsed.iter().any(|e| match &e.destination {
+                    EmitDestination::File(p) => p == path,
+                    EmitDestination::Stdout => false,
+                });
+                if collides {
+                    return Err(CliError::Validation(format!(
+                        "--emit path {} appears more than once",
+                        path.display()
+                    )));
                 }
             }
-            parsed.push(spec);
         }
-        Ok(parsed)
+        parsed.push(spec);
     }
+    Ok(parsed)
 }
 
 /// Args for `vernier eval`. Field-level docs become clap's `--help`
@@ -469,44 +478,9 @@ impl EvalArgs {
         // keeps the "validate the args before doing any work" promise
         // intact.
         let _ = self.parsed_cross_axes()?;
-        // Default to a single text-on-stdout emit when no `--emit`
-        // flag was supplied. This is the canonical no-flag invocation
-        // shape ADR-0015 §"Surface" pins.
-        let raw_emits: Vec<String> = if self.emit.is_empty() {
-            vec!["text".to_string()]
-        } else {
-            self.emit.clone()
-        };
-
-        let mut parsed: Vec<EmitSpec> = Vec::with_capacity(raw_emits.len());
-        let mut stdout_seen = false;
-        for raw in &raw_emits {
-            let spec = parse_emit(raw)?;
-            match &spec.destination {
-                EmitDestination::Stdout => {
-                    if stdout_seen {
-                        return Err(CliError::Validation(
-                            "more than one --emit targets stdout; outputs would interleave".into(),
-                        ));
-                    }
-                    stdout_seen = true;
-                }
-                EmitDestination::File(path) => {
-                    let collides = parsed.iter().any(|e| match &e.destination {
-                        EmitDestination::File(p) => p == path,
-                        EmitDestination::Stdout => false,
-                    });
-                    if collides {
-                        return Err(CliError::Validation(format!(
-                            "--emit path {} appears more than once",
-                            path.display()
-                        )));
-                    }
-                }
-            }
-            parsed.push(spec);
-        }
-        Ok(parsed)
+        // The remaining single-stdout / unique-file-paths checks are
+        // shared with `vernier aggregate`; see `resolve_emit_list`.
+        resolve_emit_list(&self.emit)
     }
 }
 

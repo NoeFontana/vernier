@@ -20,16 +20,14 @@
 //! eval N+1 times (a C1 fallback, acceptable for those paradigms'
 //! smaller K + cheaper re-matching).
 
-use std::collections::HashMap;
-
 use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict};
 
-use vernier_core::dataset::ImageId;
 use vernier_core::manifest::partition_spec_from_manifest;
-use vernier_core::partition::{evaluate_partitioned, GridDims, PartitionedSummary, SummaryKind};
-use vernier_core::EvalDataset;
+use vernier_core::partition::{
+    evaluate_partitioned, image_id_to_idx, GridDims, PartitionedSummary, SummaryPlan,
+};
 
 use crate::arrow_helpers::{wrap_batch, ArrowRecordBatchPy};
 use crate::breakdown;
@@ -163,12 +161,9 @@ fn evaluate_instance_partitioned_impl(
 
     // 2) Build image_id -> sorted-index map from the grid's GT
     //    snapshot. Image ordering matches `evaluate_with` exactly
-    //    (id-ascending sort) — the same map `partition::build` needs.
+    //    (id-ascending sort).
     let snapshot = grid.dataset_snapshot();
-    let mut ids: Vec<ImageId> = snapshot.gt.images().iter().map(|m| m.id).collect();
-    ids.sort_unstable_by_key(|i| i.0);
-    let image_id_to_idx: HashMap<ImageId, usize> =
-        ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let image_id_to_idx = image_id_to_idx(&*snapshot.gt);
 
     // 3) Materialise canonical JSON for the manifest input.
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
@@ -179,7 +174,10 @@ fn evaluate_instance_partitioned_impl(
         .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
     warn_about_manifest(py, &warnings)?;
 
-    // 5) Run the partitioned summarize pass.
+    // 5) Run the partitioned summarize pass. Capture eval_imgs by
+    //    reference into the GIL-released closure — at LVIS scale the
+    //    dense vec is ~760 MB of pointer slots plus ~hundreds of MB
+    //    of deep-cloned cells; the closure only needs a borrow.
     let parity = parse_parity_mode(parity_mode)?;
     let iou_thr = grid.iou_thresholds_vec();
     let grid_inner = grid.eval_grid_ref();
@@ -188,16 +186,16 @@ fn evaluate_instance_partitioned_impl(
         n_area_ranges: grid_inner.n_area_ranges,
         n_images: grid_inner.n_images,
     };
-    let kind = if is_keypoints {
-        SummaryKind::KeypointsDefault
+    let plan = if is_keypoints {
+        SummaryPlan::KeypointsDefault
     } else {
-        SummaryKind::DetectionDefault
+        SummaryPlan::DetectionDefault
     };
-    let eval_imgs = grid_inner.eval_imgs.clone();
+    let eval_imgs = grid_inner.eval_imgs.as_slice();
     let summary = py
         .detach(
             move || -> Result<PartitionedSummary, vernier_core::EvalError> {
-                evaluate_partitioned(&eval_imgs, dims, &spec, &iou_thr, parity, kind)
+                evaluate_partitioned(eval_imgs, dims, &spec, &iou_thr, parity, plan)
             },
         )
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
