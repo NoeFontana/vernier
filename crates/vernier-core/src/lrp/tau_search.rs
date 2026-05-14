@@ -2,7 +2,7 @@
 //!
 //! Given the four parallel per-detection arrays
 //! `(dt_score, dt_matched, dt_ignore, dt_iou)` for one class plus the
-//! count of non-crowd / non-ignore GTs, [`search_tau`] sweeps the
+//! count of non-crowd / non-ignore GTs, `search_tau` sweeps the
 //! tau-grid and returns the threshold that minimises LRP, along with
 //! the active-set statistics at that threshold (so the caller can
 //! decompose the metric without re-evaluating).

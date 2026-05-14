@@ -11,7 +11,7 @@
 //!    the per-cell matching pass.
 //! 3. Filters out ignore detections (matched-to-crowd or
 //!    matched-to-ignore-GT) before handing the arrays to
-//!    [`super::tau_search::search_tau`].
+//!    `super::tau_search::search_tau`.
 //! 4. Decomposes the tau-search result into the three additive
 //!    components per the paper's eq. 10:
 //!
@@ -27,7 +27,7 @@
 //!
 //! ## What this is *not*
 //!
-//! This module does NOT reuse [`crate::matching::match_image`]. The
+//! This module does NOT reuse `crate::matching::match_image`. The
 //! AP-side matcher operates over an IoU-threshold ladder and produces
 //! a `(T, D)` matched-array shape that the LRP tau search would have
 //! to flatten back to a single threshold. Doing our own single-

@@ -1,7 +1,7 @@
 //! Text formatter — the no-flag default.
 //!
 //! Per ADR-0015 §"Formatter: text (default)", the AP text formatter
-//! is byte-identical to [`Summary::pretty_lines`] joined by `'\n'`
+//! is byte-identical to `Summary::pretty_lines` joined by `'\n'`
 //! and terminated with `'\n'`. In strict mode, the bytes match
 //! pycocotools' `summarize()` stdout output (modulo the trailing
 //! newline, which pycocotools' `print()` also emits).

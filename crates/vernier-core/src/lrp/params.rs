@@ -9,7 +9,7 @@
 //!
 //! Defaults are not provided through `Default::default()`: per
 //! ADR-0044, `tp_threshold` and `tau_grid` are kernel-dependent and
-//! resolved by [`super::defaults::defaults_for`] rather than by a
+//! resolved by `super::defaults::defaults_for` rather than by a
 //! struct-level zero.
 
 use crate::evaluate::AreaRange;

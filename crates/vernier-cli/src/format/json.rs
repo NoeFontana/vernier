@@ -12,7 +12,7 @@
 //! - Stable key order (the explicit order the [`SchemaV1`] struct
 //!   declares its fields in).
 //! - `lines` array in plan order — same order as
-//!   [`vernier_core::Summary::lines`] / [`Summary::pretty_lines`].
+//!   `vernier_core::Summary::lines` / `Summary::pretty_lines`.
 //! - No timestamps, host, user, cwd, or build-metadata fields.
 //! - Trailing newline after the closing brace so shell pipelines that
 //!   `cat` two outputs together get clean line boundaries.
