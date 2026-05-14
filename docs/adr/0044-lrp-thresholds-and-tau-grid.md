@@ -1,6 +1,6 @@
 # ADR-0044: LRP — tau grid resolution and per-kernel TP thresholds
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-14
 - **Deciders:** @NoeFontana
 - **Consulted:** —

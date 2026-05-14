@@ -107,4 +107,5 @@ nav:
       - explanation/README.md
       - Three paradigms (instance/panoptic/semantic): explanation/three-paradigms.md
       - TIDE and its limits: explanation/tide-and-its-limits.md
+      - LRP and its limits: explanation/lrp-and-its-limits.md
       - Why no per-image AP: explanation/why-no-per-image-ap.md

@@ -1,6 +1,6 @@
 # ADR-0043: LRP / oLRP — numpy oracle, kemaloksuz tripwire, and cross-paradigm namespace
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-14
 - **Deciders:** @NoeFontana
 - **Consulted:** —

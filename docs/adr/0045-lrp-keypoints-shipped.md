@@ -1,6 +1,6 @@
 # ADR-0045: LRP for keypoints — shipped, not deferred
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-05-14
 - **Deciders:** @NoeFontana
 - **Consulted:** —

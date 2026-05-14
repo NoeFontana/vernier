@@ -8,8 +8,9 @@
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 > Fast, parity-preserving evaluation for object detection, instance /
-> panoptic / semantic segmentation, boundary IoU, OKS keypoints, and
-> LVIS federated. Rust core, Python frontend, optional CLI.
+> panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS
+> federated, and LRP / oLRP error decomposition. Rust core, Python
+> frontend, optional CLI.
 
 `pycocotools==2.0.11` is the de-facto reference for COCO evaluation —
 slow, unmaintained, and full of edge-case quirks. Faster
@@ -51,6 +52,7 @@ design decisions shaping it. Per-paradigm parity status:
 | Panoptic boundary PQ | `bowenc0221/boundary-iou-api` (single-core path, same SHA as the instance vendor) | strict bit-equal | [ADR-0025 §Z1/Z2 amendment](docs/adr/0025-panoptic-api.md); Cityscapes panoptic (Z3) deferred |
 | Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | strict bit-equal on the four per-class u64 marginals at val2017 scale | [ADR-0028](docs/adr/0028-sem-seg.md); ADE20K-scale bench gated on license-cleared cache |
 | LVIS federated AP | `lvis-api` (vendored at `031ac21f`, ORACLE_LVIS_COMMIT_SHA) | strict bit-equal on the `(T, R, K, A)` precision tensor at full LVIS v1 val | bench paradigm wired; segm cell waits on `evaluate_segm_grid_with_dataset` |
+| LRP / oLRP error decomposition (instance bbox / segm / boundary / keypoints) | pure-NumPy oracle ([ADR-0043](docs/adr/0043-lrp-oracle-and-namespace.md)) | strict against the oracle within 1e-9; `kemaloksuz/LRP-Error` tripwire vendored opt-in | panoptic LRP is a typed `NotImplementedError` stub — panoptic predictions carry no per-segment scores (ADR follow-up) |
 
 Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
 per-library comparison: [`docs/comparison.md`](docs/comparison.md).

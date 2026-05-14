@@ -9,6 +9,20 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ### Added
 
+- **LRP / oLRP error decomposition** (ADR-0043, ADR-0044, ADR-0045) —
+  Oksuz et al. (ECCV 2018 / TPAMI 2021) Localization Recall Precision
+  as an opt-in metric alongside AP. `vernier.instance.optimal_lrp(gt,
+  dt, iou=Bbox()|Segm()|Boundary()|Keypoints())` decomposes detection
+  performance into `oLRP_Loc + oLRP_FP + oLRP_FN`, minimised over a
+  per-class confidence threshold `tau`. CLI gains `--metric {ap,olrp}`
+  with `ap` preserving the existing headline-table contract. The Rust
+  core lives in `crates/vernier-core/src/lrp/`; the ADR-0005 firewall
+  is held (no edits to `matching.rs` / `accumulate.rs` / `evaluate.rs`).
+  Pure-NumPy oracle is the correctness contract (ADR-0043);
+  `kemaloksuz/LRP-Error` is an opt-in tripwire, not a parity gate.
+  `vernier.panoptic.optimal_lrp` is a typed `NotImplementedError` stub
+  — panoptic predictions carry no per-segment score so the tau sweep
+  has nothing to scan; extension is a follow-up ADR.
 - **Boundary Panoptic Quality** (ADR-0025 §Z1/Z2 amendment) —
   `PanopticEvaluator(boundary=True, dilation_ratio=0.02)` now ships
   under both `parity_mode="strict"` (bit-exact reproduction of
