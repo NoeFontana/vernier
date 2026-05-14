@@ -91,6 +91,20 @@ pub const PANOPTIC_PARITY_EPS: f64 = 1e-9;
 /// is a build failure — see the unit test below.
 pub const ORACLE_COMMIT_SHA: &str = "7bb4655548f98f3fedc07bf37e9040a992b054b0";
 
+/// Frozen commit SHA of the vendored
+/// `bowenc0221/boundary-iou-api` reference oracle used for the
+/// **boundary panoptic-quality** parity track (ADR-0025 Z1/Z2
+/// amendment). Same SHA as
+/// `vernier_core::boundary_parity::ORACLE_COMMIT_SHA` (the instance-
+/// Boundary oracle): one upstream commit, two vendored subtrees
+/// (`boundary_iou/instance/...` and `boundary_iou/coco_panoptic_api/...`).
+///
+/// The vendored tree lives at
+/// `tests/python/parity_panoptic/oracle/boundary_iou_api/`; provenance
+/// shares the same VENDORING.md tripwire pattern as the panopticapi
+/// SHA above.
+pub const BOUNDARY_PANOPTIC_ORACLE_COMMIT_SHA: &str = "37d25586a677b043ed585f10e5c42d4e80176ea9";
+
 /// Pinned `Pillow` release the vendored `panopticapi` oracle decodes
 /// PNGs with. The oracle's `evaluation.py` imports `PIL.Image` at
 /// module scope (`evaluation.py:14`) and decodes panoptic PNGs with
@@ -150,6 +164,19 @@ mod tests {
         assert_eq!(
             ORACLE_COMMIT_SHA,
             "7bb4655548f98f3fedc07bf37e9040a992b054b0"
+        );
+    }
+
+    #[test]
+    fn boundary_panoptic_oracle_sha_pins_bowenc_2021() {
+        // Tripwire: the boundary panoptic oracle SHA must equal the
+        // instance Boundary oracle SHA pinned in vernier-core
+        // (`crates/vernier-core/src/boundary_parity.rs`). Two vendored
+        // subtrees, one upstream commit — drifting either independently
+        // breaks the ADR-0025 Z1/Z2 parity claim.
+        assert_eq!(
+            BOUNDARY_PANOPTIC_ORACLE_COMMIT_SHA,
+            "37d25586a677b043ed585f10e5c42d4e80176ea9"
         );
     }
 

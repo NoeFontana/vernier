@@ -16,11 +16,12 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::attribute::{attribute_image, PqStat};
+use crate::boundary::{BoundaryConfig, BoundaryScratch};
 use crate::dataset::{
     CategoryId, CategoryMeta, ImageEntry, ImageId, PanopticDataset, PanopticPredictions,
 };
 use crate::error::PanopticError;
-use crate::kernel::pq_image_at_threshold;
+use crate::kernel::{pq_image_at_threshold, pq_image_at_threshold_with_boundary};
 use crate::parity::ParityMode;
 use crate::parity::PANOPTIC_IOU_THRESHOLD;
 
@@ -257,6 +258,10 @@ pub struct EvaluateOptions<'a> {
     pub categories_override: Option<&'a HashMap<CategoryId, CategoryMeta>>,
     /// Summarize-time options (filter + grouping).
     pub summarize: SummarizeOptions<'a>,
+    /// Boundary-PQ configuration (ADR-0025 Z1 amendment). When
+    /// `Some`, the per-image kernel composes
+    /// `min(mask_iou, boundary_iou)`; `None` runs instance PQ.
+    pub boundary: Option<BoundaryConfig>,
 }
 
 /// Like [`evaluate`] but with optional ADR-0042 axes
@@ -279,6 +284,15 @@ pub fn evaluate_with_options(
     let mut sorted_gt: Vec<(&ImageId, &ImageEntry)> = gt.images.iter().collect();
     sorted_gt.sort_unstable_by_key(|(id, _)| *id);
     let threshold = options.pq_iou_threshold.unwrap_or(PANOPTIC_IOU_THRESHOLD);
+    let categories = options.categories_override.unwrap_or(&gt.categories);
+    let max_category_id: u32 = categories
+        .keys()
+        .copied()
+        .filter_map(|id| u32::try_from(id).ok())
+        .max()
+        .unwrap_or(0);
+    let mut gt_scratch = BoundaryScratch::new();
+    let mut dt_scratch = BoundaryScratch::new();
     for (image_id, gt_entry) in sorted_gt {
         let dt_entry =
             dt.images
@@ -286,14 +300,25 @@ pub fn evaluate_with_options(
                 .ok_or(PanopticError::MissingPredictionsForImage {
                     image_id: *image_id,
                 })?;
-        let report = pq_image_at_threshold(*image_id, gt_entry, dt_entry, threshold)?;
+        let report = match options.boundary {
+            None => pq_image_at_threshold(*image_id, gt_entry, dt_entry, threshold)?,
+            Some(cfg) => pq_image_at_threshold_with_boundary(
+                *image_id,
+                gt_entry,
+                dt_entry,
+                threshold,
+                cfg,
+                max_category_id,
+                &mut gt_scratch,
+                &mut dt_scratch,
+            )?,
+        };
         let per_image = attribute_image(gt_entry, dt_entry, &report, mode);
         for (cat, stat) in per_image {
             acc.entry(cat).or_default().add_assign(&stat);
         }
     }
 
-    let categories = options.categories_override.unwrap_or(&gt.categories);
     summarize_from_acc_with_options(
         acc,
         categories,

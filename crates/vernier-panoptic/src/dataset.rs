@@ -34,6 +34,11 @@ pub type CategoryId = i64;
 /// **S4**) and computed from the PNG for DT (quirk **S3**, load-bearing
 /// for the IoU denominator). `iscrowd` is a bool here; the FFI accepts
 /// `int | bool` per quirk **S5** and normalizes.
+///
+/// Boundary-band areas (ADR-0025 Z1/Z2) are per-image-local and live in
+/// [`crate::boundary::BoundaryMap::boundary_areas`] rather than on this
+/// struct — they would never be serialized through the distributed-eval
+/// envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentInfo {
     /// Segment id (panoptic-encoded; same value the PNG carries).

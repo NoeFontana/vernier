@@ -80,21 +80,32 @@ pub fn panoptic_dataset_hash(categories: &HashMap<CategoryId, CategoryMeta>) -> 
 }
 
 /// BLAKE3 fingerprint over `(parity_mode, things_stuff_split,
-/// retain_per_image_deltas)`. All three control how the merge fold
-/// interprets the body: parity_mode picks the V3 storage shape (per
-/// `attribute_image`), things_stuff_split decides whether the summary
-/// has per-bucket means, and retain_per_image_deltas decides whether
-/// strict-mode merge has the data it needs to re-sum in image-id
-/// order.
+/// retain_per_image_deltas, boundary)`. All four control how the merge
+/// fold interprets the body: parity_mode picks the V3 storage shape
+/// (per `attribute_image`), things_stuff_split decides whether the
+/// summary has per-bucket means, retain_per_image_deltas decides
+/// whether strict-mode merge has the data it needs to re-sum in
+/// image-id order, and boundary (when `Some`) marks the rank as having
+/// computed boundary-PQ per-category PqStats — mixing boundary and
+/// non-boundary partials would silently produce nonsense numbers.
+///
+/// The `boundary` parameter is folded into the hash only when active;
+/// `None` reproduces the pre-amendment bit pattern for backward
+/// compatibility with non-boundary partials (ADR-0025 Z1 amendment).
 pub fn panoptic_params_hash(
     parity_mode: ParityMode,
     things_stuff_split: bool,
     retain_per_image_deltas: bool,
+    boundary: Option<f64>,
 ) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(&[encode_parity_mode(parity_mode)]);
     h.update(&[u8::from(things_stuff_split)]);
     h.update(&[u8::from(retain_per_image_deltas)]);
+    if let Some(dilation_ratio) = boundary {
+        h.update(&[1u8]);
+        h.update(&dilation_ratio.to_le_bytes());
+    }
     *h.finalize().as_bytes()
 }
 
@@ -173,6 +184,11 @@ pub(crate) struct EncodeInput<'a> {
     pub(crate) retain_per_image_deltas: bool,
     pub(crate) rank_id: Option<u32>,
     pub(crate) n_images: u32,
+    /// Boundary-PQ dilation ratio when boundary mode was active on
+    /// this rank, else `None`. Folded into `params_hash` so mixing
+    /// boundary and non-boundary partials at merge time is rejected
+    /// (ADR-0025 Z1 amendment).
+    pub(crate) boundary: Option<f64>,
 }
 
 pub(crate) fn build_header(input: &EncodeInput<'_>) -> WireEnvelopeHeader {
@@ -186,6 +202,7 @@ pub(crate) fn build_header(input: &EncodeInput<'_>) -> WireEnvelopeHeader {
             input.parity_mode,
             input.things_stuff_split,
             input.retain_per_image_deltas,
+            input.boundary,
         ),
         // Slot 0 is `n_categories` — a cross-rank invariant. The
         // remaining slots are unused; per-rank `n_images` lives in
@@ -251,13 +268,19 @@ pub(crate) fn panoptic_expectation(
     parity_mode: ParityMode,
     things_stuff_split: bool,
     retain_per_image_deltas: bool,
+    boundary: Option<f64>,
 ) -> PartialExpectation {
     PartialExpectation {
         paradigm: ParadigmKind::Panoptic,
         discriminator: PANOPTIC_DISCRIMINATOR,
         parity_mode: encode_parity_mode(parity_mode),
         dataset_hash: panoptic_dataset_hash(categories),
-        params_hash: panoptic_params_hash(parity_mode, things_stuff_split, retain_per_image_deltas),
+        params_hash: panoptic_params_hash(
+            parity_mode,
+            things_stuff_split,
+            retain_per_image_deltas,
+            boundary,
+        ),
         shape_fingerprint: [categories.len() as u32, 0, 0, 0],
         strict_mode: parity_mode == ParityMode::Strict,
     }
@@ -479,19 +502,31 @@ mod tests {
 
     #[test]
     fn params_hash_distinguishes_all_three_axes() {
-        let baseline = panoptic_params_hash(ParityMode::Corrected, false, false);
+        let baseline = panoptic_params_hash(ParityMode::Corrected, false, false, None);
         assert_ne!(
             baseline,
-            panoptic_params_hash(ParityMode::Strict, false, false)
+            panoptic_params_hash(ParityMode::Strict, false, false, None)
         );
         assert_ne!(
             baseline,
-            panoptic_params_hash(ParityMode::Corrected, true, false)
+            panoptic_params_hash(ParityMode::Corrected, true, false, None)
         );
         assert_ne!(
             baseline,
-            panoptic_params_hash(ParityMode::Corrected, false, true)
+            panoptic_params_hash(ParityMode::Corrected, false, true, None)
         );
+    }
+
+    #[test]
+    fn params_hash_distinguishes_boundary() {
+        // Boundary-PQ partials must hash differently from instance PQ
+        // ones so merge silently mixing them is rejected at the envelope
+        // step (ADR-0025 Z1 amendment).
+        let baseline = panoptic_params_hash(ParityMode::Corrected, false, false, None);
+        let boundary_on = panoptic_params_hash(ParityMode::Corrected, false, false, Some(0.02));
+        assert_ne!(baseline, boundary_on);
+        let other_ratio = panoptic_params_hash(ParityMode::Corrected, false, false, Some(0.01));
+        assert_ne!(boundary_on, other_ratio);
     }
 
     #[test]
@@ -512,10 +547,11 @@ mod tests {
             retain_per_image_deltas: false,
             rank_id: Some(0),
             n_images: 3,
+            boundary: None,
         })
         .unwrap();
 
-        let exp = panoptic_expectation(&cats, ParityMode::Corrected, false, false);
+        let exp = panoptic_expectation(&cats, ParityMode::Corrected, false, false, None);
         let mut merge = PanopticMergeAccumulator::new(false, false);
         vernier_partial::with_validated_envelope(&bytes, &exp, |view| merge.ingest(&view)).unwrap();
         assert_eq!(merge.n_images, 3);
@@ -542,13 +578,14 @@ mod tests {
                 retain_per_image_deltas: false,
                 rank_id: Some(rank),
                 n_images: 2,
+                boundary: None,
             })
             .unwrap()
         };
         let b0 = mk_bytes(&acc0, 0, [0, 1]);
         let b1 = mk_bytes(&acc1, 1, [2, 3]);
 
-        let exp = panoptic_expectation(&cats, ParityMode::Corrected, false, false);
+        let exp = panoptic_expectation(&cats, ParityMode::Corrected, false, false, None);
         let mut merge = PanopticMergeAccumulator::new(false, false);
         vernier_partial::with_validated_envelope(&b0, &exp, |view| merge.ingest(&view)).unwrap();
         vernier_partial::with_validated_envelope(&b1, &exp, |view| merge.ingest(&view)).unwrap();
@@ -576,12 +613,13 @@ mod tests {
             retain_per_image_deltas: false,
             rank_id: Some(0),
             n_images: 0,
+            boundary: None,
         })
         .unwrap();
 
         // The receiving expectation declares retain_per_image_deltas=true
         // — params_hash will mismatch first.
-        let exp = panoptic_expectation(&cats, ParityMode::Strict, false, true);
+        let exp = panoptic_expectation(&cats, ParityMode::Strict, false, true, None);
         let mut merge = PanopticMergeAccumulator::new(true, true);
         let err =
             vernier_partial::with_validated_envelope(&bytes, &exp, |view| merge.ingest(&view))

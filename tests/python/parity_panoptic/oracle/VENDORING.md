@@ -1,6 +1,18 @@
-# Vendored oracle: `cocodataset/panopticapi`
+# Vendored oracles: `cocodataset/panopticapi` + `bowenc0221/boundary-iou-api`
 
-This directory contains a frozen, verbatim copy of the
+This directory contains two frozen, version-pinned upstream oracles
+consumed by the panoptic parity tree. They live side-by-side because
+they share the surface (`pq_compute_single_core`) — the second is a
+fork-with-modifications of the first that adds the boundary-PQ
+``iou_type="boundary"`` code path. Both are test-only, both are
+imported from a checked-in path via ``sys.path`` insertion in the
+harness modules (see ``boundary_harness.py``).
+
+---
+
+## Oracle A — `cocodataset/panopticapi`
+
+This subtree contains a frozen, verbatim copy of the
 [`cocodataset/panopticapi`](https://github.com/cocodataset/panopticapi)
 reference implementation of panoptic-quality (PQ) evaluation
 (Kirillov, He, Girshick, Rother, Dollár; *Panoptic Segmentation*;
@@ -188,3 +200,183 @@ move to a different upstream commit:
 The "no modifications" invariant is structural — it is what makes
 the SHA pin a parity claim rather than a snapshot. If a fix is
 needed, it goes upstream-or-fork, not into the vendored tree.
+
+---
+
+## Oracle B — `bowenc0221/boundary-iou-api` (panoptic surface)
+
+This subtree contains a frozen copy of the **panoptic** evaluation
+files from
+[`bowenc0221/boundary-iou-api`](https://github.com/bowenc0221/boundary-iou-api),
+the upstream that adds boundary-IoU composition to the panopticapi
+PQ kernel (Cheng, Girshick, Dollár, Schwing, Kirillov; *Boundary IoU:
+Improving Object-Centric Image Segmentation Evaluation*; CVPR 2021;
+arXiv:2103.16562). The same upstream repo is the reference oracle for
+the boundary-IoU instance surface — see
+[`tests/python/parity_boundary/oracle/VENDORING.md`](../../parity_boundary/oracle/VENDORING.md);
+the pinned SHA is identical.
+
+The oracle is consumed only by the boundary-PQ parity tests in
+[`tests/python/parity_panoptic/test_boundary_parity.py`](../test_boundary_parity.py)
+via [`tests/python/parity_panoptic/boundary_harness.py`](../boundary_harness.py).
+It is not imported by `python/vernier/`, `crates/`, or anything that
+ships in the published wheel.
+
+Per **ADR-0010 §"Oracle (E2 + E3)"** this is a vendored, version-
+pinned dependency: every quirk vernier reproduces under
+``parity_mode="strict", boundary=True`` is keyed to this exact commit,
+in the same way that pycocotools parity is keyed to
+``pycocotools==2.0.11`` (ADR-0002) and panopticapi parity is keyed to
+``7bb46555`` (Oracle A above).
+
+### Provenance
+
+| Field                | Value |
+| -------------------- | ----- |
+| Upstream repo        | https://github.com/bowenc0221/boundary-iou-api |
+| Upstream commit SHA  | `37d25586a677b043ed585f10e5c42d4e80176ea9` |
+| Upstream commit date | 2021-04-25 |
+| Upstream branch      | `master` |
+| PyPI release         | none (upstream is install-from-source via `pip install git+https://...`) |
+| License              | BSD 2-Clause "Simplified" (per upstream `license.txt`; copyright © 2021, Bowen Cheng) |
+| Vendored on          | 2026-05-14 |
+| Vendored by          | @NoeFontana |
+| Modifications        | One file (`coco_panoptic_api/evaluation.py`) gets a single trailing one-line comment marker — see below. All other vendored bytes are verbatim. |
+
+The pinned SHA matches the boundary-IoU instance oracle vendored at
+``tests/python/parity_boundary/oracle/boundary_iou_api`` — both
+oracles ride on the same upstream commit because they are the same
+repo (the same `pip install git+...` checkout gives you both). One
+SHA, two consumers.
+
+### Provenance — byte-equality
+
+Each file in this subtree is byte-equal to the same path inside the
+`bowenc0221/boundary-iou-api` GitHub repo at the pinned commit, with
+the single exception noted under "Modifications". SHA-256 hashes
+(verified at vendor time on 2026-05-14 against the `gh api` fetch at
+the pinned ref):
+
+| Path                                              | SHA-256                                                            | Notes |
+| ------------------------------------------------- | ------------------------------------------------------------------ | ----- |
+| `boundary_iou_api/__init__.py`                    | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | Empty package marker (not present upstream as `boundary_iou_api`; introduced here as the import root — see "Modifications"). |
+| `boundary_iou_api/coco_panoptic_api/__init__.py`  | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` | Verbatim (empty upstream). |
+| `boundary_iou_api/coco_panoptic_api/evaluation.py` (upstream-equal bytes) | `8537746529d216a231c67ec51ba1a5e993c181baccebcadf6b7bca2c51356dc7` | Bytes-as-fetched-from-upstream. |
+| `boundary_iou_api/coco_panoptic_api/evaluation.py` (as shipped) | `b10f595f6b67962a372ca7f4d5c9a591ef5eb3521af0010038fa55de68207e83` | After appending a single trailing one-line vendor-marker comment. |
+| `boundary_iou_api/utils/__init__.py`              | `2c712855027cbf2cfcc1841f7fb132efc2d25e6bb83e14c69391e572fee86fd2` | **Local shim** (not vendored from upstream); re-exports `mask_to_boundary` from the parity_boundary vendor — see "Modifications". |
+
+The empty `__init__.py` files have SHA-256 of the empty string, which
+is the standard `e3b0c44...8b855`.
+
+### Modifications
+
+This is the only oracle subtree in the repo with non-zero modifications.
+Two changes, both motivated by import-resolution mechanics and neither
+touching evaluation semantics:
+
+1. **`coco_panoptic_api/evaluation.py`**: appended a single trailing
+   one-line comment:
+
+   ```text
+   # Vendored from bowenc0221/boundary-iou-api @ 37d25586a677b043ed585f10e5c42d4e80176ea9 — do not edit; refresh by re-fetching.
+   ```
+
+   All other bytes are verbatim from upstream. The upstream-equal
+   SHA-256 (`8537746...`) is recorded alongside the shipped SHA-256
+   (`b10f595...`) so a future auditor can confirm the file is the
+   pinned upstream content plus the marker line.
+
+   The marker is documentation, not behavior — it does not run because
+   it is a comment. We chose the trailing-comment approach (rather than
+   a sibling ``PROVENANCE`` file) because the marker is most discoverable
+   to anyone reading the file in isolation, including auto-tooling that
+   greps for vendor markers.
+
+2. **`utils/__init__.py`** is a **local shim**, not vendored bytes.
+   The upstream ``coco_panoptic_api/evaluation.py`` line 24 does
+   ``from ..utils import mask_to_boundary``. In the upstream package
+   layout the relative parent is ``boundary_iou`` (housing both
+   ``coco_panoptic_api`` and ``utils.boundary_utils``); here we keep
+   ``coco_panoptic_api`` as the only sub-package under
+   ``boundary_iou_api`` and let the sibling ``utils`` package satisfy
+   the relative import. The shim is a single line:
+
+   ```python
+   from boundary_iou.utils.boundary_utils import mask_to_boundary  # noqa: F401
+   ```
+
+   It re-exports the **same upstream function** that the instance-side
+   oracle (`tests/python/parity_boundary/oracle/boundary_iou_api/`)
+   already vendored at the same pinned SHA. Duplicating
+   ``boundary_utils.py`` here would create two copies that could drift;
+   re-exporting keeps a single source of truth.
+
+   The boundary harness (`boundary_harness.py`) inserts the
+   parity_boundary tree on ``sys.path`` at import time so this shim's
+   import resolves.
+
+### Inventory — what we vendored, and what we did not
+
+Vendored:
+
+```
+boundary_iou_api/
+├── __init__.py                     # empty package marker (local)
+├── coco_panoptic_api/
+│   ├── __init__.py                 # empty upstream package marker
+│   └── evaluation.py               # PQ orchestrator w/ boundary support
+└── utils/
+    └── __init__.py                 # local shim → parity_boundary vendor
+```
+
+Skipped (from the upstream GitHub tree):
+
+| Upstream path | Why skipped |
+| ------------- | ----------- |
+| `boundary_iou/coco_instance_api/`  | Instance-IoU surface; vendored separately under `tests/python/parity_boundary/oracle/boundary_iou_api/`. Vendoring twice would create drift risk. |
+| `boundary_iou/utils/boundary_utils.py` | Already vendored under `parity_boundary`; re-exported here via the local shim above. |
+| `tools/`, `setup.py`, `README.md`, `license.txt`, `.gitignore` | Project metadata / install glue / docs; not part of the panoptic-PQ eval surface. The license attestation lives in the parity_boundary tree (`tests/python/parity_boundary/oracle/boundary_iou_api/LICENSE`); this VENDORING.md records the same SHA so the BSD-2-Clause attribution applies. |
+
+Skipping a subtree is a vendoring-discipline choice, not a license
+question — BSD-2-Clause permits redistribution of subsets.
+
+### Runtime dependencies
+
+Same as the instance-side oracle:
+
+- ``opencv-python`` (pinned in ``pyproject.toml``; the upstream's
+  ``mask_to_boundary`` calls ``cv2.erode`` / ``cv2.copyMakeBorder``).
+- ``Pillow`` (pinned; the upstream's ``pq_compute_single_core`` opens
+  PNGs via ``PIL.Image.open``).
+- The panopticapi oracle's ``panopticapi.utils.get_traceback`` and
+  ``panopticapi.utils.rgb2id`` (Oracle A above; same vendoring tree).
+
+### How to refresh
+
+Same shape as Oracle A above, with two additions:
+
+1. Open a `proposed` ADR titled "Refresh boundary-IoU oracles to
+   `<short-sha>`" — the SHA refresh must move **both** Oracle B here
+   and the instance-side vendor (`tests/python/parity_boundary/oracle/`)
+   atomically. They share an upstream commit; if they diverge that's
+   itself a parity break.
+2. Re-fetch the two upstream files via:
+
+   ```bash
+   gh api repos/bowenc0221/boundary-iou-api/contents/boundary_iou/coco_panoptic_api/evaluation.py?ref=<new-sha> \
+     --jq '.content' | base64 -d > tests/python/parity_panoptic/oracle/boundary_iou_api/coco_panoptic_api/evaluation.py
+   gh api repos/bowenc0221/boundary-iou-api/contents/boundary_iou/coco_panoptic_api/__init__.py?ref=<new-sha> \
+     --jq '.content' | base64 -d > tests/python/parity_panoptic/oracle/boundary_iou_api/coco_panoptic_api/__init__.py
+   ```
+3. Re-append the trailing vendor-marker comment to ``evaluation.py``
+   (or update it to mention the new SHA).
+4. Update the byte-equality table above with the new SHA-256s for both
+   the upstream-equal and the as-shipped versions of ``evaluation.py``.
+5. Verify the relative import ``from ..utils import mask_to_boundary``
+   still points at our local shim (upstream rarely moves the layout
+   but a refresh diff might).
+
+The "no semantic modifications" invariant holds for Oracle B too: the
+trailing comment doesn't change behavior, and the utils shim re-exports
+the same upstream function. Any future fix to ``evaluation.py`` semantics
+goes upstream-or-fork, not into the vendored tree.

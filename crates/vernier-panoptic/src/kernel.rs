@@ -24,6 +24,7 @@
 
 use rustc_hash::FxHashMap;
 
+use crate::boundary::{build_boundary_map, BoundaryConfig, BoundaryMap, BoundaryScratch};
 use crate::dataset::{CategoryId, ImageEntry, ImageId};
 use crate::error::PanopticError;
 use crate::parity::{PANOPTIC_IOU_THRESHOLD, PANOPTIC_VOID};
@@ -200,6 +201,73 @@ pub fn pq_image_at_threshold(
     dt: &ImageEntry,
     threshold: f64,
 ) -> Result<PqImageReport, PanopticError> {
+    pq_image_at_threshold_inner(image_id, gt, dt, threshold, None, None)
+}
+
+/// Boundary-PQ variant of [`pq_image_at_threshold`] (ADR-0025 Z1/Z2
+/// amendment). Builds the boundary panoptic maps for GT and DT (under
+/// `cfg.parity_mode`), runs a second confusion-histogram scan against
+/// them, and composes the matching IoU as
+/// `min(mask_iou, boundary_iou)`. FN/FP attribution
+/// ([`crate::attribute::attribute_image`]) is unchanged: it consults
+/// the **mask** intersections and **mask** per-segment areas only.
+///
+/// `max_category_id` is needed because the upstream's `BOUNDARY_ID`
+/// sentinel is keyed off `max(category_id) + 1`; vernier defensively
+/// widens to `max(max_category_id, max_segment_id, max_pan_value) + 1`
+/// (no observable effect under any COCO panoptic id space).
+///
+/// `gt_scratch` and `dt_scratch` are reusable to amortize allocations
+/// across many images on the streaming path. Both are mutated.
+#[allow(clippy::too_many_arguments)]
+pub fn pq_image_at_threshold_with_boundary(
+    image_id: ImageId,
+    gt: &ImageEntry,
+    dt: &ImageEntry,
+    threshold: f64,
+    cfg: BoundaryConfig,
+    max_category_id: u32,
+    gt_scratch: &mut BoundaryScratch,
+    dt_scratch: &mut BoundaryScratch,
+) -> Result<PqImageReport, PanopticError> {
+    if gt.height != dt.height || gt.width != dt.width {
+        return Err(PanopticError::ShapeMismatch {
+            image_id,
+            gt_shape: (gt.height, gt.width),
+            dt_shape: (dt.height, dt.width),
+        });
+    }
+    // Strict-mode JSON-order caveat: upstream iterates segments_info
+    // in JSON order; our `ImageEntry.segments` is an FxHashMap whose
+    // iteration is non-deterministic. Sorting by id makes strict-mode
+    // output reproducible and matches upstream on COCO panoptic (where
+    // segments are id-sorted by convention). A JSON file with
+    // non-monotonic ordering would diverge — a sibling FFI entry point
+    // taking `Vec<SegmentInfo>` would close the gap.
+    let mut gt_segments: Vec<_> = gt.segments.values().copied().collect();
+    gt_segments.sort_unstable_by_key(|s| s.id);
+    let mut dt_segments: Vec<_> = dt.segments.values().copied().collect();
+    dt_segments.sort_unstable_by_key(|s| s.id);
+    let gt_boundary = build_boundary_map(gt, &gt_segments, max_category_id, cfg, gt_scratch);
+    let dt_boundary = build_boundary_map(dt, &dt_segments, max_category_id, cfg, dt_scratch);
+    pq_image_at_threshold_inner(
+        image_id,
+        gt,
+        dt,
+        threshold,
+        Some(&gt_boundary),
+        Some(&dt_boundary),
+    )
+}
+
+fn pq_image_at_threshold_inner(
+    image_id: ImageId,
+    gt: &ImageEntry,
+    dt: &ImageEntry,
+    threshold: f64,
+    gt_boundary: Option<&BoundaryMap>,
+    dt_boundary: Option<&BoundaryMap>,
+) -> Result<PqImageReport, PanopticError> {
     if gt.height != dt.height || gt.width != dt.width {
         return Err(PanopticError::ShapeMismatch {
             image_id,
@@ -212,6 +280,23 @@ pub fn pq_image_at_threshold(
     let n_gt = intersections.n_gt as usize;
     let n_dt = intersections.n_dt as usize;
     let void_row = n_gt;
+
+    // Boundary path: build a parallel dense intersection histogram
+    // over `(pan_gt_boundary, pan_pred_boundary)` and per-segment
+    // band areas indexed by segment id. The boundary `(VOID, dt)`
+    // row carries pixels where GT is VOID on the boundary map AND
+    // DT carries a segment id on the boundary map — the upstream's
+    // `gt_pred_map_boundary[(VOID, pred_label)]` term.
+    let boundary_inter = match (gt_boundary, dt_boundary) {
+        (Some(gtb), Some(dtb)) => Some(build_dense_boundary_intersections(
+            gt,
+            dt,
+            gtb,
+            dtb,
+            &intersections,
+        )),
+        _ => None,
+    };
 
     // Iterate the dense matrix in (row, col) order. Per quirk **U9**
     // the TP set is invariant under iteration order — once a
@@ -230,8 +315,7 @@ pub fn pq_image_at_threshold(
     for gi in 0..n_gt {
         let gt_id = intersections.gt_ids[gi];
         let Some(gt_seg) = gt.segments.get(&gt_id) else {
-            continue; // S8: GT segment declared but missing — but rows are
-                      // built from `gt.segments`, so this is unreachable.
+            continue;
         };
         if gt_seg.iscrowd {
             continue; // U4: crowd GT cannot be a TP
@@ -260,7 +344,28 @@ pub fn pq_image_at_threshold(
             if union == 0 {
                 continue; // pathological; would be NaN under U8
             }
-            let iou = (intersection as f64) / (union as f64);
+            let mask_iou = (intersection as f64) / (union as f64);
+            // ADR-0025 Z1 amendment composition: when boundary PQ is
+            // active, `iou = min(mask_iou, boundary_iou)`. Boundary
+            // state is populated jointly, so a `Some(bint)` implies
+            // both boundary maps are also `Some`.
+            let iou = if let (Some(bint), Some(gtb), Some(dtb)) =
+                (&boundary_inter, gt_boundary, dt_boundary)
+            {
+                let b_inter = bint.count(gt_id, dt_id) as u64;
+                let void_b = bint.count(PANOPTIC_VOID, dt_id) as u64;
+                let gt_b = gtb.boundary_areas.get(&gt_id).copied().unwrap_or(0);
+                let dt_b = dtb.boundary_areas.get(&dt_id).copied().unwrap_or(0);
+                let b_union = (gt_b + dt_b).saturating_sub(b_inter).saturating_sub(void_b);
+                let boundary_iou = if b_union == 0 {
+                    0.0
+                } else {
+                    (b_inter as f64) / (b_union as f64)
+                };
+                mask_iou.min(boundary_iou)
+            } else {
+                mask_iou
+            };
             if iou > threshold {
                 tp_pairs.push(TpPair {
                     gt_id,
@@ -300,6 +405,65 @@ pub fn pq_image_at_threshold(
         unmatched_dt,
         intersections,
     })
+}
+
+/// Build the dense `(gt_row, dt_col) -> band_intersection_pixels`
+/// matrix by walking the parallel boundary label maps. Reuses the
+/// gt/dt id ordering of the mask-side `intersections` matrix so the
+/// matching loop can index both with the same `(gi, di)` pair.
+///
+/// Pixels where either side carries the boundary-`BOUNDARY_ID`
+/// sentinel (interior, not band) are skipped — the boundary
+/// intersection by definition only counts band-vs-band pairs.
+/// The VOID row at index `n_gt` carries `(VOID, dt_band)` pixels —
+/// the upstream's `gt_pred_map_boundary[(VOID, pred_label)]` term that
+/// subtracts from the boundary union.
+fn build_dense_boundary_intersections(
+    gt: &ImageEntry,
+    dt: &ImageEntry,
+    gt_boundary: &BoundaryMap,
+    dt_boundary: &BoundaryMap,
+    intersections: &DenseIntersections,
+) -> DenseIntersections {
+    debug_assert_eq!(gt.label_map.len(), dt.label_map.len());
+    debug_assert_eq!(gt_boundary.ids.len(), gt.label_map.len());
+    debug_assert_eq!(dt_boundary.ids.len(), gt.label_map.len());
+
+    let n_gt = intersections.n_gt as usize;
+    let n_dt = intersections.n_dt as usize;
+    let mut counts: Vec<u32> = vec![0; (n_gt + 1) * n_dt];
+
+    let gt_sentinel = gt_boundary.boundary_id;
+    let dt_sentinel = dt_boundary.boundary_id;
+
+    for (g, d) in gt_boundary.ids.iter().zip(dt_boundary.ids.iter()) {
+        // Skip interior pixels — `BOUNDARY_ID` is the upstream's
+        // synthetic "this pixel is in a segment but not on its band"
+        // marker. Treating it as a real segment id would double-count
+        // interior overlaps as band intersections.
+        if *g == gt_sentinel || *d == dt_sentinel {
+            continue;
+        }
+        let di = intersections.dt_remap.lookup(*d);
+        if di == u32::MAX {
+            continue;
+        }
+        let gi = intersections.gt_remap.lookup(*g);
+        if gi == u32::MAX {
+            continue;
+        }
+        counts[gi as usize * n_dt + di as usize] += 1;
+    }
+
+    DenseIntersections {
+        n_gt: intersections.n_gt,
+        n_dt: intersections.n_dt,
+        counts,
+        gt_remap: intersections.gt_remap.clone(),
+        dt_remap: intersections.dt_remap.clone(),
+        gt_ids: intersections.gt_ids.clone(),
+        dt_ids: intersections.dt_ids.clone(),
+    }
 }
 
 /// Build the dense `(gt_row, dt_col) -> intersection_pixels` matrix
@@ -607,5 +771,66 @@ mod tests {
                 .map(|p| (p.gt_id, p.dt_id))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn boundary_path_perfect_match_yields_tp_with_iou_one() {
+        // Perfect overlap → mask_iou = 1.0 and boundary_iou is
+        // computed on a single segment that fills the image. For a
+        // 5x5 fully-filled mask the band IS the mask (erosion at
+        // dilation=0.5 empties the interior). So boundary_iou is also
+        // 1.0; min = 1.0 > 0.5 → matches.
+        let gt = entry(5, 5, vec![1; 25], &[(1, 100, false, 25)]);
+        let dt = entry(5, 5, vec![10; 25], &[(10, 100, false, 25)]);
+        let cfg = BoundaryConfig {
+            dilation_ratio: 0.5,
+            parity_mode: crate::parity::ParityMode::Corrected,
+        };
+        let mut gt_scratch = BoundaryScratch::new();
+        let mut dt_scratch = BoundaryScratch::new();
+        let report = pq_image_at_threshold_with_boundary(
+            0,
+            &gt,
+            &dt,
+            PANOPTIC_IOU_THRESHOLD,
+            cfg,
+            200,
+            &mut gt_scratch,
+            &mut dt_scratch,
+        )
+        .unwrap();
+        assert_eq!(report.tp_pairs.len(), 1);
+        assert_eq!(report.tp_pairs[0].iou, 1.0);
+    }
+
+    #[test]
+    fn boundary_strict_and_corrected_both_compose_via_min() {
+        // Two segments of differing sizes — verify the composition
+        // produces a matching pair in both modes.
+        let gt = entry(4, 4, vec![1; 16], &[(1, 100, false, 16)]);
+        let dt = entry(4, 4, vec![10; 16], &[(10, 100, false, 16)]);
+        for mode in [
+            crate::parity::ParityMode::Strict,
+            crate::parity::ParityMode::Corrected,
+        ] {
+            let cfg = BoundaryConfig {
+                dilation_ratio: 0.5,
+                parity_mode: mode,
+            };
+            let mut gs = BoundaryScratch::new();
+            let mut ds = BoundaryScratch::new();
+            let report = pq_image_at_threshold_with_boundary(
+                0,
+                &gt,
+                &dt,
+                PANOPTIC_IOU_THRESHOLD,
+                cfg,
+                200,
+                &mut gs,
+                &mut ds,
+            )
+            .unwrap();
+            assert_eq!(report.tp_pairs.len(), 1, "mode {mode:?}");
+        }
     }
 }

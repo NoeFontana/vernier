@@ -39,7 +39,7 @@ use crate::rle::Rle;
 /// Construct with [`ErodeScratch::new`] (zero-allocation start).
 /// Buffers grow as `clear() + resize()` on each call, so a sequence
 /// of similarly-shaped masks pays zero allocations after the first.
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub struct ErodeScratch {
     pub(crate) padded: Vec<u8>,
     pub(crate) row_scratch: Vec<u8>,
@@ -70,6 +70,30 @@ impl ErodeScratch {
     /// Creates an empty scratch instance with no buffer allocations.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Mutable view of the bbox-shape input raster
+    /// [`erode_bbox_into_scratch`] consumes. Callers (e.g.
+    /// vernier-panoptic's boundary-map builder) fill this with the
+    /// `bw * bh` column-major foreground bytes before calling the
+    /// erosion entry point. Internal vernier-mask callers go through
+    /// [`crate::Rle::decode_bbox_into`] instead.
+    pub fn raster_bbox_mut(&mut self) -> &mut Vec<u8> {
+        &mut self.raster_bbox
+    }
+
+    /// Read-only view of the eroded bbox-shape result. Populated by
+    /// [`erode_bbox_into_scratch`] in lockstep with `raster_bbox`.
+    pub fn eroded_bbox(&self) -> &[u8] {
+        &self.eroded_bbox
+    }
+
+    /// Read-only view of the bbox-shape input raster (the buffer
+    /// returned by [`Self::raster_bbox_mut`]). Useful for callers that
+    /// need to XOR the eroded result back against the original mask
+    /// without keeping a separate copy.
+    pub fn raster_bbox(&self) -> &[u8] {
+        &self.raster_bbox
     }
 }
 
@@ -299,7 +323,7 @@ pub(crate) fn erode_raster_into_scratch(
 /// `eroded` zero-init the full-image variant pays for outside the
 /// foreground bbox — both of which are bandwidth-bound on val2017's
 /// 480×640 image dims.
-pub(crate) fn erode_bbox_into_scratch(scratch: &mut ErodeScratch, bw: usize, bh: usize, d: usize) {
+pub fn erode_bbox_into_scratch(scratch: &mut ErodeScratch, bw: usize, bh: usize, d: usize) {
     debug_assert_eq!(scratch.raster_bbox.len(), bw * bh);
     scratch.eroded_bbox.clear();
     scratch.eroded_bbox.resize(bw * bh, 0);

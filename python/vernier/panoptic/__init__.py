@@ -302,11 +302,15 @@ class Evaluator:
     recommendation for net-new users); migrating users wanting
     bit-exact panopticapi behavior should set ``parity_mode="strict"``.
 
-    ``boundary=True`` raises :class:`NotImplementedError`. Boundary PQ
-    is deferred to a follow-up ADR (ADR-0025 §"explicitly does not
-    decide" Q3 / Z1). The composition rule in the bowenc0221 fork is
-    not the instance-case ``min(mask_iou, boundary_iou)`` and resolving
-    it requires its own pass.
+    ``boundary=True`` enables Boundary Panoptic Quality (ADR-0025 Z1/Z2
+    amendment). The per-image matching IoU is composed as
+    ``min(mask_iou, boundary_iou)`` — identical to the instance
+    Boundary case — over a boundary panoptic map built by eroding each
+    segment's mask by ``dilation_ratio * sqrt(h² + w²)`` Chebyshev
+    pixels and painting the resulting band back as the segment id.
+    ``dilation_ratio`` defaults to ``0.02`` (Cheng et al. 2021).
+    FN/FP attribution is unchanged: it consults the mask confusion
+    matrix and mask per-segment areas only.
 
     The four ADR-0042 fields parameterize the evaluation scope and
     rollup: ``pq_iou_threshold`` overrides the canonical 0.5 PQ match
@@ -327,6 +331,10 @@ class Evaluator:
     parity_mode: ParityMode = "corrected"
     things_stuff_split: bool = True
     boundary: bool = False
+    #: Chebyshev-ball dilation ratio for the boundary panoptic map
+    #: (ADR-0025 Z1 amendment). Consumed only when ``boundary=True``;
+    #: ignored otherwise. Defaults to ``0.02`` per Cheng et al. 2021.
+    dilation_ratio: float = 0.02
     pq_iou_threshold: float | None = None
     category_filter: CategoryFilter | None = None
     class_grouping: Breakdown | None = None
@@ -334,13 +342,22 @@ class Evaluator:
 
     def __post_init__(self) -> None:
         if self.boundary:
-            raise NotImplementedError(
-                "boundary panoptic-quality is deferred to a follow-up ADR "
-                "(ADR-0025 §'explicitly does not decide' Q3 / Z1). "
-                "The composition rule in the bowenc0221 fork is not the "
-                "instance-case min(mask_iou, boundary_iou) and resolving it "
-                "requires its own pass."
-            )
+            if not math.isfinite(self.dilation_ratio):
+                raise InvalidPanopticParams(
+                    field="dilation_ratio",
+                    value=self.dilation_ratio,
+                    remediation="must be finite when boundary=True (ADR-0025 Z1 amendment)",
+                )
+            if self.dilation_ratio <= 0.0:
+                raise InvalidPanopticParams(
+                    field="dilation_ratio",
+                    value=self.dilation_ratio,
+                    remediation=(
+                        "must be > 0.0 when boundary=True; the Chebyshev "
+                        "erosion radius clamps to >= 1 pixel regardless "
+                        "(ADR-0025 Z1 amendment)"
+                    ),
+                )
         if self.pq_iou_threshold is not None:
             t = self.pq_iou_threshold
             if not math.isfinite(t):
@@ -430,6 +447,8 @@ class Evaluator:
             category_filter=resolved_filter,
             class_grouping=resolved_groups,
             stuff_thing_partition=resolved_partition,
+            boundary=self.boundary,
+            dilation_ratio=self.dilation_ratio,
         )
         if tables is None:
             return summary
@@ -495,6 +514,8 @@ class Evaluator:
             rank_id,
             things_stuff_split=self.things_stuff_split,
             retain_per_image_deltas=retain_per_image_deltas,
+            boundary=self.boundary,
+            dilation_ratio=self.dilation_ratio,
         )
 
     @classmethod
@@ -507,14 +528,19 @@ class Evaluator:
         parity_mode: ParityMode = "corrected",
         things_stuff_split: bool = True,
         retain_per_image_deltas: bool = False,
+        boundary: bool = False,
+        dilation_ratio: float = 0.02,
     ) -> Summary:
         """Merge ``partials`` (one per rank) into a global :class:`Summary`
         (ADR-0032, ADR-0035).
 
-        ``categories``, ``parity_mode``, ``things_stuff_split``, and
-        ``retain_per_image_deltas`` must match what each rank used to
-        produce its partial. Mismatches raise the structured
-        ``Partial*`` errors re-exported on this module.
+        ``categories``, ``parity_mode``, ``things_stuff_split``,
+        ``retain_per_image_deltas``, ``boundary``, and ``dilation_ratio``
+        must match what each rank used to produce its partial.
+        Mismatches raise the structured ``Partial*`` errors re-exported
+        on this module — boundary-PQ partials carry the dilation ratio
+        in ``params_hash`` so silent boundary/instance mixing is
+        rejected at envelope-validation time.
         """
         return _merge_panoptic_partials(
             categories,
@@ -522,6 +548,8 @@ class Evaluator:
             parity_mode,
             things_stuff_split=things_stuff_split,
             retain_per_image_deltas=retain_per_image_deltas,
+            boundary=boundary,
+            dilation_ratio=dilation_ratio,
         )
 
     def background(
@@ -564,4 +592,6 @@ class Evaluator:
             worker_affinity=worker_affinity,
             worker_nice=worker_nice,
             shutdown_timeout_seconds=shutdown_timeout_seconds,
+            boundary=self.boundary,
+            dilation_ratio=self.dilation_ratio,
         )
