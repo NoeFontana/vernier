@@ -43,22 +43,20 @@ from __future__ import annotations
 
 import json
 import sys
-import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, Literal
 
 import numpy as np
 from numpy.typing import NDArray
-from PIL import Image as PILImage
 
 import vernier
 
 from .harness import (
     PanopticSnapshot,
     assert_snapshots_equal,  # re-export
-    id2rgb,
     pq_stat_to_snapshot,
+    prepare_pq_inputs,
     summary_to_snapshot,
 )
 
@@ -108,14 +106,6 @@ def _ensure_sys_path() -> None:
 _ensure_sys_path()
 
 
-def _write_png(label_map: NDArray[np.uint32], path: Path) -> None:
-    """Round-trip a uint32 panoptic label map to RGB PNG via the
-    rgb2id convention. Shared with the non-boundary harness — repeating
-    here so the helper is local to this module's import surface."""
-    rgb = id2rgb(label_map)
-    PILImage.fromarray(rgb, mode="RGB").save(path)
-
-
 def oracle_boundary_snapshot(
     label_maps_gt: Mapping[int, NDArray[np.uint32]],
     segments_gt: Mapping[int, Sequence[Mapping[str, Any]]],
@@ -129,12 +119,10 @@ def oracle_boundary_snapshot(
     ``pq_compute_single_core(..., iou_type="boundary", dilation_ratio=...)``
     against the fixture and return a :class:`PanopticSnapshot`.
 
-    Per the upstream API the function takes file paths, so this helper
-    encodes each label map to a PNG in a temp dir (rgb2id convention),
-    builds the matched annotation list, and calls the single-core
-    entry point with ``proc_id=0`` — bypassing the multi-core pool the
-    same way the non-boundary harness does, for the same multiprocess
-    reasons (no ``num_proc`` parameter, host-CPU drift).
+    Shares the temp-dir + PNG-write + annotation-list scaffolding with
+    the non-boundary panoptic harness (:func:`prepare_pq_inputs`) — the
+    only difference is the extra ``"boundary", dilation_ratio``
+    positional pair on the call.
     """
     _ensure_sys_path()
     # Lazy import: vendored package is only on sys.path after
@@ -143,39 +131,12 @@ def oracle_boundary_snapshot(
         pq_compute_single_core,
     )
 
-    cats_dict = {c["id"]: dict(c) for c in categories}
-
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_p = Path(tmp)
-        gt_dir = tmp_p / "gt"
-        dt_dir = tmp_p / "dt"
-        gt_dir.mkdir()
-        dt_dir.mkdir()
-
-        gt_anns: list[dict[str, Any]] = []
-        dt_anns: list[dict[str, Any]] = []
-        for image_id, label_map in label_maps_gt.items():
-            file_name = f"{image_id:012d}.png"
-            _write_png(label_map, gt_dir / file_name)
-            gt_anns.append(
-                {
-                    "image_id": image_id,
-                    "file_name": file_name,
-                    "segments_info": [dict(s) for s in segments_gt[image_id]],
-                }
-            )
-        for image_id, label_map in label_maps_dt.items():
-            file_name = f"{image_id:012d}.png"
-            _write_png(label_map, dt_dir / file_name)
-            dt_anns.append(
-                {
-                    "image_id": image_id,
-                    "file_name": file_name,
-                    "segments_info": [dict(s) for s in segments_dt[image_id]],
-                }
-            )
-
-        annotation_set = list(zip(gt_anns, dt_anns, strict=True))
+    with prepare_pq_inputs(label_maps_gt, segments_gt, label_maps_dt, segments_dt, categories) as (
+        gt_dir,
+        dt_dir,
+        annotation_set,
+        cats_dict,
+    ):
         pq_stat = pq_compute_single_core(
             0,
             annotation_set,
@@ -185,8 +146,7 @@ def oracle_boundary_snapshot(
             "boundary",
             dilation_ratio,
         )
-
-    return pq_stat_to_snapshot(pq_stat, cats_dict)
+        return pq_stat_to_snapshot(pq_stat, cats_dict)
 
 
 def vernier_boundary_snapshot(

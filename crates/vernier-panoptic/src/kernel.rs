@@ -281,13 +281,12 @@ fn pq_image_at_threshold_inner(
     let n_dt = intersections.n_dt as usize;
     let void_row = n_gt;
 
-    // Boundary path: build a parallel dense intersection histogram
-    // over `(pan_gt_boundary, pan_pred_boundary)` and per-segment
-    // band areas indexed by segment id. The boundary `(VOID, dt)`
-    // row carries pixels where GT is VOID on the boundary map AND
-    // DT carries a segment id on the boundary map — the upstream's
-    // `gt_pred_map_boundary[(VOID, pred_label)]` term.
-    let boundary_inter = match (gt_boundary, dt_boundary) {
+    // Boundary path: build a parallel intersection-counts vector over
+    // `(pan_gt_boundary, pan_pred_boundary)` indexed in the mask side's
+    // `(gi, di)` space — same shape `(n_gt + 1) * n_dt`. Reuse of the
+    // mask remaps means the matching loop indexes both arrays directly
+    // with no second hash lookup.
+    let boundary_counts: Option<Vec<u32>> = match (gt_boundary, dt_boundary) {
         (Some(gtb), Some(dtb)) => Some(build_dense_boundary_intersections(
             gt,
             dt,
@@ -347,13 +346,13 @@ fn pq_image_at_threshold_inner(
             let mask_iou = (intersection as f64) / (union as f64);
             // ADR-0025 Z1 amendment composition: when boundary PQ is
             // active, `iou = min(mask_iou, boundary_iou)`. Boundary
-            // state is populated jointly, so a `Some(bint)` implies
+            // state is populated jointly, so `Some(counts)` implies
             // both boundary maps are also `Some`.
-            let iou = if let (Some(bint), Some(gtb), Some(dtb)) =
-                (&boundary_inter, gt_boundary, dt_boundary)
+            let iou = if let (Some(bcounts), Some(gtb), Some(dtb)) =
+                (&boundary_counts, gt_boundary, dt_boundary)
             {
-                let b_inter = bint.count(gt_id, dt_id) as u64;
-                let void_b = bint.count(PANOPTIC_VOID, dt_id) as u64;
+                let b_inter = bcounts[gi * n_dt + di] as u64;
+                let void_b = bcounts[void_row * n_dt + di] as u64;
                 let gt_b = gtb.boundary_areas.get(&gt_id).copied().unwrap_or(0);
                 let dt_b = dtb.boundary_areas.get(&dt_id).copied().unwrap_or(0);
                 let b_union = (gt_b + dt_b).saturating_sub(b_inter).saturating_sub(void_b);
@@ -407,24 +406,24 @@ fn pq_image_at_threshold_inner(
     })
 }
 
-/// Build the dense `(gt_row, dt_col) -> band_intersection_pixels`
-/// matrix by walking the parallel boundary label maps. Reuses the
-/// gt/dt id ordering of the mask-side `intersections` matrix so the
-/// matching loop can index both with the same `(gi, di)` pair.
+/// Build the `(gt_row, dt_col) -> band_intersection_pixels` counts
+/// vector by walking the parallel boundary label maps. Reuses the
+/// mask-side `intersections` remaps, so the returned counts share the
+/// `(gi, di)` index space — callers read `counts[gi * n_dt + di]`
+/// directly without going through a second hash lookup.
 ///
-/// Pixels where either side carries the boundary-`BOUNDARY_ID`
+/// Pixels where either side carries the boundary `BOUNDARY_ID`
 /// sentinel (interior, not band) are skipped — the boundary
-/// intersection by definition only counts band-vs-band pairs.
-/// The VOID row at index `n_gt` carries `(VOID, dt_band)` pixels —
-/// the upstream's `gt_pred_map_boundary[(VOID, pred_label)]` term that
-/// subtracts from the boundary union.
+/// intersection by definition only counts band-vs-band pairs. The
+/// VOID row at index `n_gt` carries `(VOID, dt_band)` pixels —
+/// upstream's `gt_pred_map_boundary[(VOID, pred_label)]` term.
 fn build_dense_boundary_intersections(
     gt: &ImageEntry,
     dt: &ImageEntry,
     gt_boundary: &BoundaryMap,
     dt_boundary: &BoundaryMap,
     intersections: &DenseIntersections,
-) -> DenseIntersections {
+) -> Vec<u32> {
     debug_assert_eq!(gt.label_map.len(), dt.label_map.len());
     debug_assert_eq!(gt_boundary.ids.len(), gt.label_map.len());
     debug_assert_eq!(dt_boundary.ids.len(), gt.label_map.len());
@@ -437,10 +436,6 @@ fn build_dense_boundary_intersections(
     let dt_sentinel = dt_boundary.boundary_id;
 
     for (g, d) in gt_boundary.ids.iter().zip(dt_boundary.ids.iter()) {
-        // Skip interior pixels — `BOUNDARY_ID` is the upstream's
-        // synthetic "this pixel is in a segment but not on its band"
-        // marker. Treating it as a real segment id would double-count
-        // interior overlaps as band intersections.
         if *g == gt_sentinel || *d == dt_sentinel {
             continue;
         }
@@ -455,15 +450,7 @@ fn build_dense_boundary_intersections(
         counts[gi as usize * n_dt + di as usize] += 1;
     }
 
-    DenseIntersections {
-        n_gt: intersections.n_gt,
-        n_dt: intersections.n_dt,
-        counts,
-        gt_remap: intersections.gt_remap.clone(),
-        dt_remap: intersections.dt_remap.clone(),
-        gt_ids: intersections.gt_ids.clone(),
-        dt_ids: intersections.dt_ids.clone(),
-    }
+    counts
 }
 
 /// Build the dense `(gt_row, dt_col) -> intersection_pixels` matrix
