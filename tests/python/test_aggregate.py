@@ -8,6 +8,8 @@ schema metadata, and the missing-label warning path.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import warnings
 from pathlib import Path
 
@@ -16,6 +18,11 @@ import pytest
 
 import vernier
 from vernier.aggregate import AggregateError, aggregate
+
+WORKSPACE_ROOT = Path(__file__).resolve().parents[2]
+PARTITION_TINY_FIXTURE = (
+    WORKSPACE_ROOT / "tests" / "python" / "parity" / "fixtures" / "partition_tiny"
+)
 
 
 def _make_slice_batch(label: str, ap: float, ap_50: float, ap_75: float) -> pa.RecordBatch:
@@ -358,3 +365,304 @@ def _relabel(batch: pa.RecordBatch, new_label: str) -> pa.RecordBatch:
         [batch.column(i) for i in range(batch.num_columns)],
         schema=schema,
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI v2 JSON shape coverage (the on-disk envelope produced by the Rust
+# CLI's `vernier eval --manifest` lane).
+# ---------------------------------------------------------------------------
+
+
+def test_cli_v2_json_positional_stats_shape_unit() -> None:
+    """A v2 doc with positional ``stats`` + ``lines`` deserialises to the
+    CLI alias columns.
+
+    Mirrors the CLI's `crates/vernier-cli/src/format/json.rs` envelope
+    shape (and the canonical mapping in `commands/aggregate.rs`) so the
+    test is bound to that contract rather than to a hand-built fixture.
+    """
+
+    # Build a single-slice v2 doc with the CLI's positional stats /
+    # lines shape. Twelve lines mirror the canonical detection summary.
+    def _line(
+        metric: str,
+        iou_label: str,
+        area: str,
+        max_dets: int,
+        value: float,
+    ) -> dict[str, object]:
+        return {
+            "metric": metric,
+            "iou_threshold": None if iou_label == "0.50:0.95" else float(iou_label),
+            "iou_threshold_label": iou_label,
+            "area": area,
+            "max_dets": max_dets,
+            "value": value,
+        }
+
+    lines = [
+        _line("AP", "0.50:0.95", "all", 100, 0.80),
+        _line("AP", "0.50", "all", 100, 0.90),
+        _line("AP", "0.75", "all", 100, 0.85),
+        _line("AP", "0.50:0.95", "small", 100, 0.70),
+        _line("AP", "0.50:0.95", "medium", 100, 0.75),
+        _line("AP", "0.50:0.95", "large", 100, 0.95),
+        _line("AR", "0.50:0.95", "all", 1, 0.60),
+        _line("AR", "0.50:0.95", "all", 10, 0.65),
+        _line("AR", "0.50:0.95", "all", 100, 0.68),
+        _line("AR", "0.50:0.95", "small", 100, 0.55),
+        _line("AR", "0.50:0.95", "medium", 100, 0.62),
+        _line("AR", "0.50:0.95", "large", 100, 0.78),
+    ]
+    doc = {
+        "version": "2",
+        "label": "run_a",
+        "iou_type": "bbox",
+        "overall": {
+            "lines": lines,
+            "stats": [line["value"] for line in lines],
+            "n_images": 4,
+            "n_detections": 6,
+        },
+    }
+
+    from vernier.aggregate import _v2_json_to_batch
+
+    batch = _v2_json_to_batch(doc, source="<test>")
+    schema_names = set(batch.schema.names)
+    # The CLI aliases are present (pycocotools-style nicknames).
+    assert {"ap", "ap50", "ap75", "ap_small", "ap_medium", "ap_large"} <= schema_names
+    assert {"ar_1", "ar_10", "ar_100", "ar_small", "ar_medium", "ar_large"} <= schema_names
+    # Canonical names are present too — both forms address the same cell.
+    assert "AP_0.50:0.95_all_100" in schema_names
+    assert "AR_0.50:0.95_all_1" in schema_names
+    # Values resolve to the right line — `ap` is the AP[0.50:0.95]/all/100
+    # tuple, value 0.80.
+    assert batch.column("ap").to_pylist() == pytest.approx([0.80])
+    assert batch.column("ap50").to_pylist() == pytest.approx([0.90])
+    assert batch.column("ar_1").to_pylist() == pytest.approx([0.60])
+    # Slice-level support counts surface at the row level.
+    assert batch.column("n_images").to_pylist() == [4]
+    assert batch.column("n_detections").to_pylist() == [6]
+
+
+def test_aggregate_consumes_cli_v2_json_doc_directly(tmp_path: Path) -> None:
+    """A v2 JSON doc with the CLI's positional ``stats`` shape round-trips
+    through :func:`vernier.aggregate`.
+
+    Skipping the subprocess: we write the JSON shape the CLI emits
+    (verified by `crates/vernier-cli/tests/eval_manifest.rs`) directly,
+    then aggregate over it. The end-to-end subprocess variant is
+    :func:`test_aggregate_consumes_cli_v2_json_subprocess`.
+    """
+
+    def _line(
+        metric: str,
+        iou_label: str,
+        area: str,
+        max_dets: int,
+        value: float,
+    ) -> dict[str, object]:
+        return {
+            "metric": metric,
+            "iou_threshold": None if iou_label == "0.50:0.95" else float(iou_label),
+            "iou_threshold_label": iou_label,
+            "area": area,
+            "max_dets": max_dets,
+            "value": value,
+        }
+
+    def _doc(label: str, ap: float, ap50: float, ap75: float) -> dict[str, object]:
+        lines = [
+            _line("AP", "0.50:0.95", "all", 100, ap),
+            _line("AP", "0.50", "all", 100, ap50),
+            _line("AP", "0.75", "all", 100, ap75),
+        ]
+        return {
+            "version": "2",
+            "label": label,
+            "iou_type": "bbox",
+            "overall": {
+                "lines": lines,
+                "stats": [line["value"] for line in lines],
+                "n_images": 100,
+                "n_detections": 200,
+            },
+        }
+
+    p_clean = tmp_path / "clean.json"
+    p_fog = tmp_path / "fog.json"
+    p_clean.write_text(json.dumps(_doc("clean", 0.80, 0.90, 0.85)), encoding="utf-8")
+    p_fog.write_text(json.dumps(_doc("fog", 0.40, 0.50, 0.45)), encoding="utf-8")
+
+    rmanifest = {
+        "manifest_version": "1",
+        "key_kind": "result",
+        "rows": [
+            {"key": "clean", "weather": "clear"},
+            {"key": "fog", "weather": "fog"},
+        ],
+    }
+    result = aggregate([str(p_clean), str(p_fog)], rmanifest, baseline="clear")
+    # Pycocotools-style aliases are first-class column names.
+    assert "ap" in result.schema.names
+    assert "ap50" in result.schema.names
+    assert "ap75" in result.schema.names
+    # Plus the canonical form (the CLI emits both).
+    assert "AP_0.50:0.95_all_100" in result.schema.names
+    # rPC ratios resolve.
+    assert result.column("ap__rpc").to_pylist() == pytest.approx([1.0, 0.40 / 0.80])
+    assert result.column("ap50__rpc").to_pylist() == pytest.approx([1.0, 0.50 / 0.90])
+    assert result.column("value").to_pylist() == ["clear", "fog"]
+
+
+@pytest.fixture(scope="session")
+def vernier_bin() -> Path:
+    """Locate (and on miss, build) the `vernier` CLI binary.
+
+    Mirrors the bootstrap pattern in
+    `tests/python/parity/test_cli.py::vernier_bin` so the two
+    out-of-process suites agree on where the binary lives. Cargo build
+    is incremental — repeated invocations on a clean tree are fast.
+    """
+    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", str(WORKSPACE_ROOT / "target")))
+    debug_binary = target_dir / "debug" / "vernier"
+    release_binary = target_dir / "release" / "vernier"
+    if release_binary.exists():
+        return release_binary
+    if debug_binary.exists():
+        return debug_binary
+    # Build once. Use --release for parity with how the wheel is
+    # produced; the difference (debug vs release) does not affect the
+    # JSON envelope shape.
+    subprocess.run(
+        ["cargo", "build", "--release", "-p", "vernier-cli"],
+        cwd=WORKSPACE_ROOT,
+        check=True,
+    )
+    assert release_binary.exists(), f"cargo build did not produce {release_binary}"
+    return release_binary
+
+
+@pytest.mark.slow
+def test_aggregate_consumes_cli_v2_json_subprocess(
+    vernier_bin: Path,
+    tmp_path: Path,
+) -> None:
+    """End-to-end: ``vernier eval --manifest`` writes v2 JSON; ``vernier.aggregate``
+    reads it.
+
+    Pipes the real CLI output through the Python entry point — the
+    test the CLI-shape compatibility gap was filed to close. Marked
+    ``slow`` because the subprocess fork dominates the run time.
+    """
+    gt = PARTITION_TINY_FIXTURE / "gt.json"
+    dt = PARTITION_TINY_FIXTURE / "dt.json"
+    manifest = PARTITION_TINY_FIXTURE / "weather_x_tod.json"
+    assert gt.exists()
+    assert dt.exists()
+    assert manifest.exists()
+
+    out_a = tmp_path / "run_a.json"
+    out_b = tmp_path / "run_b.json"
+    for out, label in ((out_a, "run_a"), (out_b, "run_b")):
+        result = subprocess.run(
+            [
+                str(vernier_bin),
+                "eval",
+                "--gt",
+                str(gt),
+                "--dt",
+                str(dt),
+                "--iou-type",
+                "bbox",
+                "--manifest",
+                str(manifest),
+                "--label",
+                label,
+                "--emit",
+                f"json={out}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        # eval to stderr is fine; we just want the file written.
+        assert out.exists(), f"CLI did not write {out}: stderr={result.stderr!r}"
+
+    rmanifest = {
+        "manifest_version": "1",
+        "key_kind": "result",
+        "rows": [
+            {"key": "run_a", "weather": "clear"},
+            {"key": "run_b", "weather": "fog"},
+        ],
+    }
+    aggregated = aggregate([str(out_a), str(out_b)], rmanifest)
+    # The AP column round-trips. We do not assert on numeric values
+    # here — that is the parity suite's job; the CLI v2 → aggregate
+    # shape compatibility is the contract this test pins.
+    assert "ap" in aggregated.schema.names
+    assert aggregated.num_rows == 2
+    assert set(aggregated.column("value").to_pylist()) == {"clear", "fog"}
+    # rPC requires an explicit baseline; without it, no __rpc columns.
+    assert not any(n.endswith("__rpc") for n in aggregated.schema.names)
+
+
+@pytest.mark.slow
+def test_aggregate_consumes_cli_v2_json_subprocess_with_baseline(
+    vernier_bin: Path,
+    tmp_path: Path,
+) -> None:
+    """End-to-end with ``baseline=`` — verifies rPC columns get the right
+    column names when the JSON shape is the CLI v2 envelope.
+    """
+    gt = PARTITION_TINY_FIXTURE / "gt.json"
+    dt = PARTITION_TINY_FIXTURE / "dt.json"
+    manifest = PARTITION_TINY_FIXTURE / "weather_x_tod.json"
+
+    out_clean = tmp_path / "clean.json"
+    out_fog = tmp_path / "fog.json"
+    for out, label in ((out_clean, "clean"), (out_fog, "fog")):
+        subprocess.run(
+            [
+                str(vernier_bin),
+                "eval",
+                "--gt",
+                str(gt),
+                "--dt",
+                str(dt),
+                "--iou-type",
+                "bbox",
+                "--manifest",
+                str(manifest),
+                "--label",
+                label,
+                "--emit",
+                f"json={out}",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    rmanifest = {
+        "manifest_version": "1",
+        "key_kind": "result",
+        "rows": [
+            {"key": "clean", "weather": "clear"},
+            {"key": "fog", "weather": "fog"},
+        ],
+    }
+    aggregated = aggregate(
+        [str(out_clean), str(out_fog)],
+        rmanifest,
+        baseline="clear",
+        metric="ap",
+    )
+    # `metric=ap` filtered output: axis, value, n_runs, ap, ap__rpc.
+    assert aggregated.schema.names == ["axis", "value", "n_runs", "ap", "ap__rpc"]
+    # The "clear" baseline row resolves to rPC=1.0 by construction.
+    rpc_values = aggregated.column("ap__rpc").to_pylist()
+    clear_idx = aggregated.column("value").to_pylist().index("clear")
+    assert rpc_values[clear_idx] == pytest.approx(1.0)

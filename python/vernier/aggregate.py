@@ -130,6 +130,145 @@ def _as_int_or_zero(value: object) -> int:
     return 0
 
 
+def _position_alias(metric: str, iou_label: str, area: str, max_dets: int) -> str | None:
+    """Return the pycocotools-style alias for a ``(metric, iou_label, area, max_dets)``
+    tuple, or ``None`` if the line does not match a known table position.
+
+    Mirrors the canonical mapping in
+    ``crates/vernier-cli/src/commands/aggregate.rs::position_alias`` so
+    that ``vernier aggregate --emit json`` (the Rust CLI) and
+    :func:`vernier.aggregate` (this Python entry point) agree on column
+    names when consuming the same CLI v2 JSON document. Both surface
+    these aliases alongside the canonical ``<metric>_<iou_label>_<area>_<max_dets>``
+    form so callers can refer to common stats by their pycocotools
+    nicknames.
+    """
+    if metric == "AP" and iou_label == "0.50:0.95" and area == "all":
+        return "ap"
+    if metric == "AP" and iou_label == "0.50" and area == "all":
+        return "ap50"
+    if metric == "AP" and iou_label == "0.75" and area == "all":
+        return "ap75"
+    if metric == "AP" and iou_label == "0.50:0.95" and area == "small":
+        return "ap_small"
+    if metric == "AP" and iou_label == "0.50:0.95" and area == "medium":
+        return "ap_medium"
+    if metric == "AP" and iou_label == "0.50:0.95" and area == "large":
+        return "ap_large"
+    if metric == "AR" and iou_label == "0.50:0.95" and area == "all" and max_dets == 1:
+        return "ar_1"
+    if metric == "AR" and iou_label == "0.50:0.95" and area == "all" and max_dets == 10:
+        return "ar_10"
+    if metric == "AR" and iou_label == "0.50:0.95" and area == "all" and max_dets == 100:
+        return "ar_100"
+    if metric == "AR" and iou_label == "0.50:0.95" and area == "small":
+        return "ar_small"
+    if metric == "AR" and iou_label == "0.50:0.95" and area == "medium":
+        return "ar_medium"
+    if metric == "AR" and iou_label == "0.50:0.95" and area == "large":
+        return "ar_large"
+    return None
+
+
+def _lines_to_metric_map(
+    lines: object,
+    *,
+    source: str,
+    context: str,
+) -> dict[str, float]:
+    """Build a ``{name -> value}`` map from a v2 ``lines`` array.
+
+    Each line carries the tuple ``(metric, iou_threshold_label, area,
+    max_dets, value)``. We surface every line under its canonical name
+    ``<metric>_<iou_label>_<area>_<max_dets>`` (always unique within a
+    summary), and additionally under a short alias (``ap``, ``ap50``,
+    ``ar_100``, ``ar_small``, …) when the tuple matches a pycocotools
+    table position. Both names map onto the same numeric value so the
+    caller can address columns by either form.
+    """
+    if not isinstance(lines, list):
+        raise AggregateError(
+            f"result document {source!r} {context} 'lines' must be a list "
+            f"(got {type(lines).__name__})",
+        )
+    out: dict[str, float] = {}
+    for i, line_obj in enumerate(cast("list[object]", lines)):
+        if not isinstance(line_obj, Mapping):
+            raise AggregateError(
+                f"result document {source!r} {context} lines[{i}] must be an object "
+                f"(got {type(line_obj).__name__})",
+            )
+        line = cast("Mapping[str, object]", line_obj)
+        metric_obj = line.get("metric")
+        iou_label_obj = line.get("iou_threshold_label")
+        area_obj = line.get("area")
+        max_dets_obj = line.get("max_dets")
+        value = _as_float_or_none(line.get("value"))
+        if (
+            not isinstance(metric_obj, str)
+            or not isinstance(iou_label_obj, str)
+            or not isinstance(area_obj, str)
+            or not isinstance(max_dets_obj, (int, float))
+            or isinstance(max_dets_obj, bool)
+            or value is None
+        ):
+            # Malformed line — skip silently rather than blow up so a
+            # well-formed sibling line still maps. The CLI v2 envelope
+            # always emits all four fields, so this is purely defensive.
+            continue
+        max_dets = int(max_dets_obj)
+        canonical = f"{metric_obj}_{iou_label_obj}_{area_obj}_{max_dets}"
+        # Canonical name is authoritative; alias only set if absent
+        # (matches the Rust CLI's `out.entry(alias).or_insert(v)`).
+        out[canonical] = value
+        alias = _position_alias(metric_obj, iou_label_obj, area_obj, max_dets)
+        if alias is not None and alias not in out:
+            out[alias] = value
+    return out
+
+
+def _entry_metrics(
+    entry: Mapping[str, object],
+    *,
+    source: str,
+    context: str,
+) -> dict[str, float]:
+    """Extract a ``{name -> value}`` metric map from one v2 entry.
+
+    Accepts two shapes:
+
+    - ``stats: {name: value}`` (dict-keyed) — preserved verbatim. Used
+      by Python-side fixtures and any caller that already keys metrics
+      by their final column name.
+    - ``stats: [v1, v2, ...]`` paired with ``lines: [{metric,
+      iou_threshold_label, area, max_dets, value}, ...]`` (positional)
+      — used by the CLI v2 envelope (`crates/vernier-cli/src/format/json.rs`).
+      We discard the positional ``stats`` array (since it duplicates
+      the ``lines`` ``value`` field by construction) and derive names
+      from ``lines`` using :func:`_lines_to_metric_map`.
+
+    A document with neither shape (e.g. ``stats`` absent or wrong type
+    and no ``lines``) produces an empty map — the row will still appear
+    in the output table with null metric cells.
+    """
+    stats_obj = entry.get("stats")
+    if isinstance(stats_obj, Mapping):
+        stats = cast("Mapping[str, object]", stats_obj)
+        out: dict[str, float] = {}
+        for k, v in stats.items():
+            f = _as_float_or_none(v)
+            if f is not None:
+                out[k] = f
+        return out
+    if isinstance(stats_obj, list) or "lines" in entry:
+        # Positional `stats` array, or no `stats` but `lines` present:
+        # derive names from the `lines` array. The positional `stats`
+        # is redundant with `lines[].value` by construction (ADR-0046).
+        lines = entry.get("lines")
+        return _lines_to_metric_map(lines, source=source, context=context)
+    return {}
+
+
 def _v2_json_to_batch(doc: Mapping[str, object], *, source: str) -> pa.RecordBatch:
     """Convert a v2 result JSON document into the wide slice-table shape.
 
@@ -167,16 +306,20 @@ def _v2_json_to_batch(doc: Mapping[str, object], *, source: str) -> pa.RecordBat
                 )
             slices.append(cast("Mapping[str, object]", row))
 
+    # First pass: extract per-row metric maps so we can collect the
+    # union of column names. Handles both the dict-keyed `stats` shape
+    # and the CLI v2 positional `stats: [...]` + `lines: [...]` shape
+    # uniformly (see :func:`_entry_metrics`).
+    per_row_metrics: list[dict[str, float]] = []
+    for i, row in enumerate(slices):
+        context = "overall" if raw_slices is None else f"slices[{i}]"
+        per_row_metrics.append(_entry_metrics(row, source=source, context=context))
+
     # Collect the union of metric column names across all rows,
     # alphabetically — value-determinism (ADR-0019).
     metric_cols: set[str] = set()
-    for row in slices:
-        stats_obj = row.get("stats", {})
-        if isinstance(stats_obj, Mapping):
-            stats = cast("Mapping[str, object]", stats_obj)
-            for k, v in stats.items():
-                if _as_float_or_none(v) is not None:
-                    metric_cols.add(k)
+    for row_metrics in per_row_metrics:
+        metric_cols.update(row_metrics.keys())
     metric_order = sorted(metric_cols)
 
     axes: list[str] = []
@@ -186,27 +329,33 @@ def _v2_json_to_batch(doc: Mapping[str, object], *, source: str) -> pa.RecordBat
     metric_arrays: dict[str, list[float | None]] = {m: [] for m in metric_order}
     has_n_images = False
     has_n_dets = False
-    for row in slices:
+    for row, row_metrics in zip(slices, per_row_metrics, strict=True):
         axes.append(str(row.get("axis", "")))
         values.append(str(row.get("value", "")))
+        # Dict-keyed stats may carry n_images / n_detections inside the
+        # stats map; positional stats place them at the row level.
+        # Accept either; row-level wins on a collision.
         stats_obj = row.get("stats", {})
-        stats: Mapping[str, object] = (
+        nested_stats: Mapping[str, object] = (
             cast("Mapping[str, object]", stats_obj) if isinstance(stats_obj, Mapping) else {}
         )
-        if "n_images" in row or "n_images" in stats:
+        if "n_images" in row or "n_images" in nested_stats:
             has_n_images = True
-            n_images_col.append(_as_int_or_zero(row.get("n_images", stats.get("n_images"))))
+            n_images_col.append(
+                _as_int_or_zero(row.get("n_images", nested_stats.get("n_images"))),
+            )
         else:
             n_images_col.append(None)
-        if "n_detections" in row or "n_detections" in stats:
+        if "n_detections" in row or "n_detections" in nested_stats:
             has_n_dets = True
             n_dets_col.append(
-                _as_int_or_zero(row.get("n_detections", stats.get("n_detections"))),
+                _as_int_or_zero(row.get("n_detections", nested_stats.get("n_detections"))),
             )
         else:
             n_dets_col.append(None)
         for m in metric_order:
-            metric_arrays[m].append(_as_float_or_none(stats.get(m)))
+            v = row_metrics.get(m)
+            metric_arrays[m].append(float(v) if v is not None else None)
 
     arrays: list[pa.Array] = [
         pa.array(axes, type=pa.string()),

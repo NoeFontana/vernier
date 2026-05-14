@@ -19,13 +19,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 import pytest
 
 import vernier.panoptic as pq
 import vernier.semantic as sem
-from vernier.instance import Bbox, Boundary, Evaluator, Segm
+from vernier.instance import (
+    Bbox,
+    Boundary,
+    Evaluator,
+    PartitionedLrpReport,
+    Segm,
+    optimal_lrp,
+)
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "partition_tiny"
 
@@ -446,3 +454,100 @@ def test_semantic_partitioned_dict_and_json_path_agree(tmp_path: Path) -> None:
     assert sorted(a.slices.to_dicts(), key=lambda r: (r["axis"], r["value"])) == sorted(
         b.slices.to_dicts(), key=lambda r: (r["axis"], r["value"])
     )
+
+
+# ---------------------------------------------------------------------------
+# Instance LRP — partition `overall` parity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("parity_mode", ["strict", "corrected"])
+def test_lrp_partitioned_overall_matches_unpartitioned(
+    parity_mode: Literal["strict", "corrected"],
+) -> None:
+    """ADR-0046 phase-1 follow-up: load-bearing parity claim for
+    partitioned LRP. The matching pass runs once and the per-class
+    decompose pipeline runs N+1 times; the overall report must equal
+    the un-partitioned call bit-identically."""
+    gt, dt, manifest_bytes = _load_fixture()
+    manifest = json.loads(manifest_bytes)
+
+    base = optimal_lrp(gt, dt, parity_mode=parity_mode)
+    part = optimal_lrp(gt, dt, manifest=manifest, parity_mode=parity_mode)
+    assert isinstance(part, PartitionedLrpReport)
+    assert part.overall.olrp == base.olrp
+    assert part.overall.loc == base.loc
+    assert part.overall.fp == base.fp
+    assert part.overall.fn == base.fn
+    assert part.overall.n_empty_classes == base.n_empty_classes
+    assert len(part.overall.per_class) == len(base.per_class)
+    for a, b in zip(part.overall.per_class, base.per_class):
+        assert a.category_id == b.category_id
+        # `==` against NaN is False; compare via `repr` so NaN-vs-NaN
+        # is bit-stable. (All non-NaN values match the un-partitioned
+        # path verbatim under the C3 axiom.)
+        assert repr(a) == repr(b)
+
+
+def test_lrp_partitioned_slice_shape_and_axes() -> None:
+    """Slices DataFrame has the expected (axis, value) cells for the
+    two-axis partition_tiny manifest: 2 axes x (2 values + 1 unassigned)
+    = 6 marginal rows."""
+    gt, dt, manifest_bytes = _load_fixture()
+    manifest = json.loads(manifest_bytes)
+    part = optimal_lrp(gt, dt, manifest=manifest)
+    assert isinstance(part, PartitionedLrpReport)
+    slices = part.slices  # polars DataFrame
+    assert slices.shape[0] == 6
+    cells = set(zip(slices["axis"].to_list(), slices["value"].to_list()))
+    expected = {
+        ("time_of_day", "day"),
+        ("time_of_day", "night"),
+        ("time_of_day", "__unassigned__"),
+        ("weather", "clear"),
+        ("weather", "fog"),
+        ("weather", "__unassigned__"),
+    }
+    assert cells == expected
+
+
+def test_lrp_partitioned_per_slice_olrp_hand_computed() -> None:
+    """Hand-computed per-slice oLRP on the partition_tiny fixture.
+
+    `weather=fog`:
+      - image 1: GT cat 1 + GT cat 2 (5 area=900); DT cat 1 (perfect) +
+        DT cat 2 (perfect, score 0.83 against bbox [120,30,30,30] → IoU=1).
+      - image 3: GT cat 2 + DT cat 2 (perfect).
+      Three positive GTs (2 from cat 2, 1 from cat 1), all perfectly
+      matched at IoU=1 → per-class oLRP = 0 for both classes → headline
+      oLRP = 0.
+
+    `time_of_day=day` covers images 1, 2 which have widget (cat 1) and
+    gizmo (cat 2) matches at varying IoUs, including a DT (id 6) added
+    to image 4 with low score 0.40 — that detection lives in `night`
+    not `day`, so `day` sees no extra noise.
+
+    These exact values are observed from the live FFI in the smoke
+    test above; pinning them here guards against regressions in the
+    partition filter logic (and against accidental changes to the
+    matching pass that bleed into the LRP decompose).
+    """
+    gt, dt, manifest_bytes = _load_fixture()
+    manifest = json.loads(manifest_bytes)
+    part = optimal_lrp(gt, dt, manifest=manifest)
+    assert isinstance(part, PartitionedLrpReport)
+    rows = {(r["axis"], r["value"]): r for r in part.slices.to_dicts()}
+    # weather=fog: every detection a perfect match → olrp = 0.
+    fog = rows[("weather", "fog")]
+    assert fog["olrp"] == 0.0
+    assert fog["olrp_loc"] == 0.0
+    assert fog["olrp_fp"] == 0.0
+    assert fog["olrp_fn"] == 0.0
+    assert fog["n_images"] == 2
+    assert fog["n_detections"] == 3
+    # __unassigned__ slices contain no images → olrp = 0.0 (the
+    # aggregator's empty-mean convention; matches the n_pos_gt = 0
+    # all-classes-empty case).
+    weather_unassigned = rows[("weather", "__unassigned__")]
+    assert weather_unassigned["n_images"] == 0
+    assert weather_unassigned["n_detections"] == 0

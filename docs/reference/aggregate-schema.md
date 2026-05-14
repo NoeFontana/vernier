@@ -4,6 +4,18 @@ The fan-in companion to `vernier eval --manifest` (ADR-0046). Reads N result doc
 
 The output lives in its own version namespace — `aggregate_version`, not `version` — because the verb and consumer differ from `vernier eval`'s output. Coupling their version axes would force lockstep bumps the lifecycles do not warrant.
 
+## Accepted input shapes
+
+Both the Rust CLI (`vernier aggregate`) and the Python entry point (`vernier.aggregate`) accept the same input shapes:
+
+- **CLI v2 JSON envelope.** The on-disk format `vernier eval --manifest --emit json=…` produces. Each `overall` / slice entry carries:
+  - `lines: [{metric, iou_threshold, iou_threshold_label, area, max_dets, value}, …]` — one row per stat in plan order.
+  - `stats: [v1, v2, …]` — the same values as `lines[].value`, kept for pycocotools-style positional access. `stats` is **redundant** with `lines` by construction; the aggregator reads `lines` and discards the positional `stats` array.
+- **Dict-keyed `stats` shape.** A v2 doc whose `stats` field is a `{name: value}` map. Used by Python-side fixtures and by callers that already key metrics by their final column name. Each key is the column name verbatim; no further canonicalization is applied.
+- **Arrow `RecordBatch` / `Table`** (Python entry point only). The canonical wide slice-table shape with columns `axis`, `value`, plus metric Float64 columns. Column names are whatever the producer emitted (e.g. the in-process `vernier.instance.Evaluator` schema in `crates/vernier-ffi/src/tables.rs`).
+
+CLI v2 JSON output is a **first-class input** to `vernier.aggregate`: piping `vernier eval --manifest out.json` and then calling `vernier.aggregate([out.json], manifest=…)` is a supported flow.
+
 ## Top-level fields
 
 | Field               | Type                                  | Notes                                                                                                                                                       |
@@ -49,6 +61,29 @@ The aggregator exposes two naming conventions for metric columns:
 - **Canonical.** Every line is also exposed under the full canonical name `<metric>_<iou_label>_<area>_<max_dets>` (e.g. `AP_0.50:0.95_all_100`). Use this when an alias does not apply (custom area ranges, non-default `max_dets`).
 
 Both naming conventions resolve to the same column value, so `--metric ap` and `--metric AP_0.50:0.95_all_100` are equivalent on a default-shaped detection result.
+
+### Canonical mapping table
+
+The CLI's `lines[]` entries deterministically map to the column names below. The Rust source of truth is `crates/vernier-cli/src/commands/aggregate.rs::position_alias`; `vernier.aggregate` mirrors it in `python/vernier/aggregate.py::_position_alias` so the two paths agree byte-for-byte on the same v2 JSON document.
+
+| `metric` | `iou_threshold_label` | `area`   | `max_dets` | Alias        | Canonical                     |
+|----------|-----------------------|----------|------------|--------------|-------------------------------|
+| `AP`     | `0.50:0.95`           | `all`    | any        | `ap`         | `AP_0.50:0.95_all_<max_dets>` |
+| `AP`     | `0.50`                | `all`    | any        | `ap50`       | `AP_0.50_all_<max_dets>`      |
+| `AP`     | `0.75`                | `all`    | any        | `ap75`       | `AP_0.75_all_<max_dets>`      |
+| `AP`     | `0.50:0.95`           | `small`  | any        | `ap_small`   | `AP_0.50:0.95_small_<max_dets>` |
+| `AP`     | `0.50:0.95`           | `medium` | any        | `ap_medium`  | `AP_0.50:0.95_medium_<max_dets>` |
+| `AP`     | `0.50:0.95`           | `large`  | any        | `ap_large`   | `AP_0.50:0.95_large_<max_dets>` |
+| `AR`     | `0.50:0.95`           | `all`    | `1`        | `ar_1`       | `AR_0.50:0.95_all_1`          |
+| `AR`     | `0.50:0.95`           | `all`    | `10`       | `ar_10`      | `AR_0.50:0.95_all_10`         |
+| `AR`     | `0.50:0.95`           | `all`    | `100`      | `ar_100`     | `AR_0.50:0.95_all_100`        |
+| `AR`     | `0.50:0.95`           | `small`  | any        | `ar_small`   | `AR_0.50:0.95_small_<max_dets>` |
+| `AR`     | `0.50:0.95`           | `medium` | any        | `ar_medium`  | `AR_0.50:0.95_medium_<max_dets>` |
+| `AR`     | `0.50:0.95`           | `large`  | any        | `ar_large`   | `AR_0.50:0.95_large_<max_dets>` |
+
+A line whose tuple does not match any row above is exposed **only** under its canonical name. This applies to custom IoU thresholds, custom area ranges, and non-default `max_dets` ladders.
+
+Note: the Arrow-input path (`vernier.instance.Evaluator().slices`) uses a slightly different column convention (`ap50` / `ap75` / `ap_s` / `ap_m` / `ap_l` / `ar_max_1` / `ar_max_10` / `ar_max_100` / `ar_s` / `ar_m` / `ar_l`) because it is sourced from the FFI table schema in `crates/vernier-ffi/src/tables.rs`. The two conventions are pinned today; reconciling them is tracked separately.
 
 ## Worked example
 

@@ -25,7 +25,7 @@ use arrow_schema::{DataType, Field, Schema};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
-use vernier_core::partition::PartitionedSummary;
+use vernier_core::partition::{PartitionedLrpReport, PartitionedSummary};
 use vernier_core::tables::{
     aggregate_per_class_support, build_per_class, build_per_detection, build_per_image,
     build_per_pair, BboxColumns, MatchStatus, PerClassTable, PerDetectionTable, PerImageTable,
@@ -423,6 +423,25 @@ fn slices_instance_ap_schema() -> Schema {
     .with_metadata(slices_metadata("instance", "ap"))
 }
 
+/// Schema for the instance-LRP slices table. Columns mirror the
+/// headline numbers carried on [`vernier_core::lrp::LrpReport`] —
+/// `oLRP` plus its three additive components — wide alongside the
+/// `(axis, value, n_images, n_detections)` keys every slices table
+/// shares.
+fn slices_instance_lrp_schema() -> Schema {
+    Schema::new(vec![
+        Field::new("axis", DataType::Utf8, false),
+        Field::new("value", DataType::Utf8, false),
+        Field::new("n_images", DataType::UInt64, false),
+        Field::new("n_detections", DataType::UInt64, false),
+        Field::new("olrp", DataType::Float64, false),
+        Field::new("olrp_loc", DataType::Float64, false),
+        Field::new("olrp_fp", DataType::Float64, false),
+        Field::new("olrp_fn", DataType::Float64, false),
+    ])
+    .with_metadata(slices_metadata("instance", "lrp"))
+}
+
 /// Schema for the panoptic slices table.
 fn slices_panoptic_schema() -> Schema {
     Schema::new(vec![
@@ -501,6 +520,52 @@ pub(crate) fn slices_instance_ap_to_arrow(
     summary: &PartitionedSummary,
 ) -> Result<ArrowRecordBatchPy, arrow_schema::ArrowError> {
     Ok(wrap_batch(slices_record_batch_instance_ap(summary)?))
+}
+
+/// One row per slice in `report.slices`, with the four headline LRP
+/// stats laid out wide. Mirrors [`slices_record_batch_instance_ap`]
+/// but for the LRP fold (ADR-0046 phase-1 follow-up).
+pub(crate) fn slices_record_batch_instance_lrp(
+    report: &PartitionedLrpReport,
+) -> Result<RecordBatch, arrow_schema::ArrowError> {
+    let n = report.slices.len();
+    let mut axis: Vec<String> = Vec::with_capacity(n);
+    let mut value: Vec<String> = Vec::with_capacity(n);
+    let mut n_images: Vec<u64> = Vec::with_capacity(n);
+    let mut n_detections: Vec<u64> = Vec::with_capacity(n);
+    let mut olrp: Vec<f64> = Vec::with_capacity(n);
+    let mut olrp_loc: Vec<f64> = Vec::with_capacity(n);
+    let mut olrp_fp: Vec<f64> = Vec::with_capacity(n);
+    let mut olrp_fn: Vec<f64> = Vec::with_capacity(n);
+    for slice in &report.slices {
+        axis.push(slice.slice.axis.clone());
+        value.push(slice.slice.value.clone());
+        n_images.push(slice.n_images);
+        n_detections.push(slice.n_detections);
+        olrp.push(slice.report.olrp);
+        olrp_loc.push(slice.report.olrp_loc);
+        olrp_fp.push(slice.report.olrp_fp);
+        olrp_fn.push(slice.report.olrp_fn);
+    }
+    let schema = Arc::new(slices_instance_lrp_schema());
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(axis)),
+        Arc::new(StringArray::from(value)),
+        Arc::new(UInt64Array::from(n_images)),
+        Arc::new(UInt64Array::from(n_detections)),
+        Arc::new(Float64Array::from(olrp)),
+        Arc::new(Float64Array::from(olrp_loc)),
+        Arc::new(Float64Array::from(olrp_fp)),
+        Arc::new(Float64Array::from(olrp_fn)),
+    ];
+    RecordBatch::try_new(schema, columns)
+}
+
+/// PyCapsule-wrapped variant of [`slices_record_batch_instance_lrp`].
+pub(crate) fn slices_instance_lrp_to_arrow(
+    report: &PartitionedLrpReport,
+) -> Result<ArrowRecordBatchPy, arrow_schema::ArrowError> {
+    Ok(wrap_batch(slices_record_batch_instance_lrp(report)?))
 }
 
 /// One row per `(axis, value)` slice for the panoptic paradigm.

@@ -39,8 +39,10 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::accumulate::{accumulate, AccumulateParams, PerImageEval};
-use crate::dataset::{EvalDataset, ImageId};
+use crate::dataset::{CocoDataset, CocoDetections, EvalDataset, ImageId};
 use crate::error::EvalError;
+use crate::evaluate::EvalKernel;
+use crate::lrp::{optimal_lrp_with_partitioned, LrpKernelMarker, LrpParams, LrpReport};
 use crate::parity::{recall_thresholds, ParityMode};
 use crate::summarize::{summarize_detection, summarize_with, StatRequest, Summary};
 
@@ -409,6 +411,136 @@ pub fn evaluate_partitioned(
     Ok(PartitionedSummary {
         overall,
         overall_n_images: grid.n_images as u64,
+        overall_n_detections,
+        slices: slices_out,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// LRP partitioning (ADR-0046 phase-1 follow-up)
+// ---------------------------------------------------------------------------
+
+/// Per-slice LRP report attached to a [`PartitionedLrpReport`].
+#[derive(Debug, Clone)]
+pub struct LrpSliceResult {
+    /// The slice this report describes; the same `Slice` value that
+    /// appears in the input [`PartitionSpec`].
+    pub slice: Slice,
+    /// LRP report restricted to the slice's image set. The per-class
+    /// arrays are the concatenation of the per-image walks for the
+    /// slice's images only; everything downstream (`tau` search,
+    /// `oLRP_*` decomposition) is identical to the un-partitioned
+    /// path.
+    pub report: LrpReport,
+    /// Number of dataset images assigned to this slice. Matches the
+    /// manifest-assigned set length (the same convention as the AP
+    /// partition path).
+    pub n_images: u64,
+    /// Number of detections whose image id falls in the slice's
+    /// image set. Counted from the raw `CocoDetections` records, not
+    /// from a per-grid walk — LRP partitioning is decompose-only and
+    /// has no flat-grid analog.
+    pub n_detections: u64,
+}
+
+/// Result of [`evaluate_partitioned_lrp`].
+///
+/// `overall` is bit-identical to a non-partitioned [`optimal_lrp_with`]
+/// over the same `(gt, dt)` — the load-bearing parity contract of
+/// partitioned LRP, mirroring the AP partition path's `overall`
+/// guarantee.
+///
+/// [`optimal_lrp_with`]: crate::lrp::optimal_lrp_with
+#[derive(Debug, Clone)]
+pub struct PartitionedLrpReport {
+    /// Un-partitioned LRP report; bit-identical to a single
+    /// `optimal_lrp_with` over the same inputs.
+    pub overall: LrpReport,
+    /// Total dataset image count behind `overall`.
+    pub overall_n_images: u64,
+    /// Total detection count behind `overall`.
+    pub overall_n_detections: u64,
+    /// One entry per `spec.slices` element, in the spec's order.
+    pub slices: Vec<LrpSliceResult>,
+}
+
+/// Run the partitioned LRP pipeline against a `(gt, dt)` pair.
+///
+/// Matching runs **exactly once** internally (the C3 axiom of
+/// ADR-0046): the partitioned LRP entry point invokes
+/// [`crate::lrp::optimal_lrp_with_partitioned`], which builds a single
+/// `EvalGrid` + retained-IoU store and then walks the post-match
+/// decompose pipeline `1 + slices.len()` times — once for the overall
+/// report, once per slice. The matching engine is never invoked
+/// per slice.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying matching / decompose
+/// passes.
+pub fn evaluate_partitioned_lrp<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    kernel: &K,
+    kernel_marker: LrpKernelMarker,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+    spec: &PartitionSpec,
+) -> Result<PartitionedLrpReport, EvalError> {
+    // Reports are returned as [overall, slice_0, slice_1, ...].
+    let filters: Vec<HashSet<usize>> = spec
+        .slices
+        .iter()
+        .map(|s| s.image_indices.clone())
+        .collect();
+    let mut reports =
+        optimal_lrp_with_partitioned(gt, dt, kernel, kernel_marker, params, parity_mode, &filters)?;
+    if reports.len() != spec.slices.len() + 1 {
+        return Err(EvalError::DimensionMismatch {
+            detail: format!(
+                "lrp partition: expected {} reports (1 overall + {} slices), got {}",
+                spec.slices.len() + 1,
+                spec.slices.len(),
+                reports.len()
+            ),
+        });
+    }
+    // `remove(0)` is small (slices.len() typically <= 16); we own the
+    // vec and pop-front once.
+    let overall = reports.remove(0);
+
+    let n_images_total = gt.images().len() as u64;
+    let image_id_to_idx_map = image_id_to_idx(gt);
+    let mut slice_n_detections: Vec<u64> = vec![0; spec.slices.len()];
+    let mut overall_n_detections: u64 = 0;
+    for d in dt.detections() {
+        overall_n_detections = overall_n_detections.saturating_add(1);
+        let Some(&i) = image_id_to_idx_map.get(&d.image_id) else {
+            continue;
+        };
+        for (slice_idx, slice) in spec.slices.iter().enumerate() {
+            if slice.image_indices.contains(&i) {
+                slice_n_detections[slice_idx] = slice_n_detections[slice_idx].saturating_add(1);
+            }
+        }
+    }
+
+    let slices_out: Vec<LrpSliceResult> = spec
+        .slices
+        .iter()
+        .zip(reports)
+        .enumerate()
+        .map(|(idx, (slice, report))| LrpSliceResult {
+            n_images: slice.image_ids.len() as u64,
+            n_detections: slice_n_detections[idx],
+            slice: slice.clone(),
+            report,
+        })
+        .collect();
+
+    Ok(PartitionedLrpReport {
+        overall,
+        overall_n_images: n_images_total,
         overall_n_detections,
         slices: slices_out,
     })

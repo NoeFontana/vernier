@@ -3175,6 +3175,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(partition_py::slices_batch_semantic, m)?)?;
     m.add_function(wrap_pyfunction!(partition_py::manifest_to_json_bytes, m)?)?;
     m.add_class::<partition_py::PyPartitionedSummary>()?;
+    m.add_class::<partition_py::PyPartitionedLrpReport>()?;
     m.add_class::<PySummary>()?;
     m.add_class::<PyEvalGrid>()?;
     m.add_class::<PyAccumulated>()?;
