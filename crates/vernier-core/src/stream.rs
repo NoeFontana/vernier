@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
-use crate::accumulate::{accumulate, AccumulateParams, PerImageEval};
+use crate::accumulate::{accumulate, AccumulateParams, Accumulated, PerImageEval};
 use crate::dataset::{
     AnnId, CategoryId, CocoDataset, CocoDetection, CocoDetections, DetectionInput, EvalDataset,
     ImageId,
@@ -753,12 +753,14 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // dense `eval_imgs` slice fully drives `build_per_image` /
         // `build_per_class`; `eval_imgs_meta` is densified from
         // `meta_cells` for per_detection / per_pair, and
-        // `retained_ious` is cloned from the streaming store.
+        // `retained_ious` is cloned from the streaming store. GT-only
+        // overlay images leave `eval_imgs_meta[flat]` at None — they
+        // contribute no detections, so per_detection / per_pair skip them.
+        let eval_imgs = self.densify_with_gt_overlay()?;
         let n_k = self.grid_meta.n_categories;
         let n_a = self.grid_meta.n_area_ranges;
         let n_i = self.grid_meta.n_images;
         let total = n_k * n_a * n_i;
-        let mut eval_imgs = self.cells.flatten(&self.grid_meta);
         let eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = if self.params.retain_iou {
             let mut out: Vec<Option<Box<EvalImageMeta>>> = Vec::with_capacity(total);
             for k in 0..n_k {
@@ -772,31 +774,6 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         } else {
             vec![None; total]
         };
-        if self.images_seen() < self.grid_meta.n_images {
-            self.ensure_gt_only_cells()?;
-            let gt_only = self
-                .gt_only_cells
-                .as_ref()
-                .ok_or_else(|| EvalError::InvalidConfig {
-                    detail: "gt_only_cells cache missing after init".into(),
-                })?;
-            for i in 0..n_i {
-                if self.seen_image_indices.contains(&i) {
-                    continue;
-                }
-                for k in 0..n_k {
-                    for a in 0..n_a {
-                        let flat = k * n_a * n_i + a * n_i + i;
-                        if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
-                            eval_imgs[flat] = Some(cell.clone());
-                            // GT-only images contribute no detections;
-                            // leave `eval_imgs_meta[flat]` at None so
-                            // per_detection / per_pair simply skip them.
-                        }
-                    }
-                }
-            }
-        }
 
         let synthetic_grid = crate::evaluate::EvalGrid {
             eval_imgs,
@@ -807,39 +784,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             retained_ious: self.retained_ious.clone(),
         };
 
-        // Standard COCO ladder per the existing `compute_summary` path.
         let max_dets: [usize; 3] = [1, 10, 100];
-        let accum_params = AccumulateParams {
-            iou_thresholds: &self.params.iou_thresholds,
-            recall_thresholds: recall_thresholds(),
-            max_dets: &max_dets,
-            n_categories: n_k,
-            n_area_ranges: n_a,
-            n_images: n_i,
-        };
-        let accumulated = accumulate(&synthetic_grid.eval_imgs, accum_params, self.parity_mode)?;
-        let summary = if self.kernel.is_keypoints() {
-            let kp_max_dets: [usize; 1] = [20];
-            let accum_params_kp = AccumulateParams {
-                iou_thresholds: &self.params.iou_thresholds,
-                recall_thresholds: recall_thresholds(),
-                max_dets: &kp_max_dets,
-                n_categories: n_k,
-                n_area_ranges: n_a,
-                n_images: n_i,
-            };
-            let accumulated_kp =
-                accumulate(&synthetic_grid.eval_imgs, accum_params_kp, self.parity_mode)?;
-            let plan = StatRequest::coco_keypoints_default();
-            summarize_with(
-                &accumulated_kp,
-                &plan,
-                &self.params.iou_thresholds,
-                &kp_max_dets,
-            )?
-        } else {
-            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
-        };
+        let (summary, accumulated) = self.summarize_dense(&synthetic_grid.eval_imgs)?;
 
         // Build a fresh `CocoDetections` view over every detection seen
         // so far when per_detection is requested; cheaper tables don't
@@ -1024,74 +970,9 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         Ok(())
     }
 
-    /// Internal: shared implementation of [`Self::snapshot_with_cells`].
-    /// Densifies the cell store (with GT-only overlay) once, summarizes
-    /// over the dense slice, and returns both the [`Summary`] and the
-    /// dense store. Bit-identical to [`Self::compute_summary`] on the
-    /// summary axis — the only divergence is that the densified
-    /// `eval_imgs` is retained alongside the summary instead of being
-    /// dropped at the end of the call.
     fn compute_summary_and_cells(&mut self) -> Result<SnapshotWithCells, EvalError> {
-        let mut eval_imgs = self.cells.flatten(&self.grid_meta);
-
-        if self.images_seen() < self.grid_meta.n_images {
-            self.ensure_gt_only_cells()?;
-            let n_k = self.grid_meta.n_categories;
-            let n_a = self.grid_meta.n_area_ranges;
-            let n_i = self.grid_meta.n_images;
-            let gt_only = self
-                .gt_only_cells
-                .as_ref()
-                .ok_or_else(|| EvalError::InvalidConfig {
-                    detail: "gt_only_cells cache missing after init".into(),
-                })?;
-            for i in 0..n_i {
-                if self.seen_image_indices.contains(&i) {
-                    continue;
-                }
-                for k in 0..n_k {
-                    for a in 0..n_a {
-                        let flat = k * n_a * n_i + a * n_i + i;
-                        if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
-                            eval_imgs[flat] = Some(cell.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        let max_dets: [usize; 3] = [1, 10, 100];
-        let accum_params = AccumulateParams {
-            iou_thresholds: &self.params.iou_thresholds,
-            recall_thresholds: recall_thresholds(),
-            max_dets: &max_dets,
-            n_categories: self.grid_meta.n_categories,
-            n_area_ranges: self.grid_meta.n_area_ranges,
-            n_images: self.grid_meta.n_images,
-        };
-        let accumulated = accumulate(&eval_imgs, accum_params, self.parity_mode)?;
-        let summary = if self.kernel.is_keypoints() {
-            let kp_max_dets: [usize; 1] = [20];
-            let accum_params_kp = AccumulateParams {
-                iou_thresholds: &self.params.iou_thresholds,
-                recall_thresholds: recall_thresholds(),
-                max_dets: &kp_max_dets,
-                n_categories: self.grid_meta.n_categories,
-                n_area_ranges: self.grid_meta.n_area_ranges,
-                n_images: self.grid_meta.n_images,
-            };
-            let accumulated_kp = accumulate(&eval_imgs, accum_params_kp, self.parity_mode)?;
-            let plan = StatRequest::coco_keypoints_default();
-            summarize_with(
-                &accumulated_kp,
-                &plan,
-                &self.params.iou_thresholds,
-                &kp_max_dets,
-            )?
-        } else {
-            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
-        };
-
+        let eval_imgs = self.densify_with_gt_overlay()?;
+        let (summary, _accumulated) = self.summarize_dense(&eval_imgs)?;
         Ok(SnapshotWithCells {
             summary,
             eval_imgs,
@@ -1102,45 +983,63 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         })
     }
 
-    /// Internal: shared implementation of `snapshot` and `finalize`.
-    /// Mutates `self` only to populate the lazy `gt_only_cells` cache
-    /// on its first call.
     fn compute_summary(&mut self) -> Result<Summary, EvalError> {
-        let mut eval_imgs = self.cells.flatten(&self.grid_meta);
+        let eval_imgs = self.densify_with_gt_overlay()?;
+        let (summary, _accumulated) = self.summarize_dense(&eval_imgs)?;
+        Ok(summary)
+    }
 
-        // Overlay GT-only cells for images that never received any
-        // detection across the entire stream. The batch path files
-        // these (with `dt_scores=[]` + populated `gt_ignore`); without
-        // this overlay, streaming `finalize().stats` diverges from
-        // `Evaluator.evaluate(...).stats` whenever the GT contains
-        // images with no DTs anywhere in the stream — see ADR-0013
-        // §"Per-image cell coverage".
-        if self.images_seen() < self.grid_meta.n_images {
-            self.ensure_gt_only_cells()?;
-            let n_k = self.grid_meta.n_categories;
-            let n_a = self.grid_meta.n_area_ranges;
-            let n_i = self.grid_meta.n_images;
-            let gt_only = self
-                .gt_only_cells
-                .as_ref()
-                .ok_or_else(|| EvalError::InvalidConfig {
-                    detail: "gt_only_cells cache missing after init".into(),
-                })?;
-            for i in 0..n_i {
-                if self.seen_image_indices.contains(&i) {
-                    continue;
-                }
-                for k in 0..n_k {
-                    for a in 0..n_a {
-                        let flat = k * n_a * n_i + a * n_i + i;
-                        if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
-                            eval_imgs[flat] = Some(cell.clone());
-                        }
+    /// Densify the per-image cell store with the GT-only overlay for
+    /// images that never received a detection across the stream.
+    /// Without this overlay, streaming `finalize().stats` diverges
+    /// from `Evaluator.evaluate(...).stats` whenever GT contains
+    /// images with no DTs anywhere — see ADR-0013 §"Per-image cell
+    /// coverage". Mutates `self` only to populate the lazy
+    /// `gt_only_cells` cache on first call.
+    fn densify_with_gt_overlay(
+        &mut self,
+    ) -> Result<Vec<Option<Box<PerImageEval>>>, EvalError> {
+        let mut eval_imgs = self.cells.flatten(&self.grid_meta);
+        if self.images_seen() >= self.grid_meta.n_images {
+            return Ok(eval_imgs);
+        }
+        self.ensure_gt_only_cells()?;
+        let n_k = self.grid_meta.n_categories;
+        let n_a = self.grid_meta.n_area_ranges;
+        let n_i = self.grid_meta.n_images;
+        let gt_only = self
+            .gt_only_cells
+            .as_ref()
+            .ok_or_else(|| EvalError::InvalidConfig {
+                detail: "gt_only_cells cache missing after init".into(),
+            })?;
+        for i in 0..n_i {
+            if self.seen_image_indices.contains(&i) {
+                continue;
+            }
+            for k in 0..n_k {
+                for a in 0..n_a {
+                    let flat = k * n_a * n_i + a * n_i + i;
+                    if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
+                        eval_imgs[flat] = Some(cell.clone());
                     }
                 }
             }
         }
-        // Standard COCO ladder; pycocotools applies it unconditionally.
+        Ok(eval_imgs)
+    }
+
+    /// Accumulate-and-summarize over a pre-densified `eval_imgs` slice
+    /// at the parity-pinned COCO `max_dets=[1,10,100]` ladder, with the
+    /// ADR-0012 keypoints fork (single-rung `[20]` ladder + 10-stat
+    /// plan). Returns `(Summary, Accumulated)` so callers that need the
+    /// intermediate accumulator (table builders) can reuse it without
+    /// re-running. The returned `Accumulated` is always the default-
+    /// ladder one — the keypoints kp-ladder accumulator is internal.
+    fn summarize_dense(
+        &self,
+        eval_imgs: &[Option<Box<PerImageEval>>],
+    ) -> Result<(Summary, Accumulated), EvalError> {
         let max_dets: [usize; 3] = [1, 10, 100];
         let accum_params = AccumulateParams {
             iou_thresholds: &self.params.iou_thresholds,
@@ -1150,13 +1049,9 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             n_area_ranges: self.grid_meta.n_area_ranges,
             n_images: self.grid_meta.n_images,
         };
-        let accumulated = accumulate(&eval_imgs, accum_params, self.parity_mode)?;
-        if self.kernel.is_keypoints() {
-            // ADR-0012: keypoints uses a 10-stat plan with a 1-rung
-            // max-dets ladder pinned at 20.
+        let accumulated = accumulate(eval_imgs, accum_params, self.parity_mode)?;
+        let summary = if self.kernel.is_keypoints() {
             let kp_max_dets: [usize; 1] = [20];
-            // Re-run accumulate with the kp-canonical ladder so the
-            // M-axis lengths line up with the summary plan.
             let accum_params_kp = AccumulateParams {
                 iou_thresholds: &self.params.iou_thresholds,
                 recall_thresholds: recall_thresholds(),
@@ -1165,17 +1060,18 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                 n_area_ranges: self.grid_meta.n_area_ranges,
                 n_images: self.grid_meta.n_images,
             };
-            let accumulated_kp = accumulate(&eval_imgs, accum_params_kp, self.parity_mode)?;
+            let accumulated_kp = accumulate(eval_imgs, accum_params_kp, self.parity_mode)?;
             let plan = StatRequest::coco_keypoints_default();
             summarize_with(
                 &accumulated_kp,
                 &plan,
                 &self.params.iou_thresholds,
                 &kp_max_dets,
-            )
+            )?
         } else {
-            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)
-        }
+            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
+        };
+        Ok((summary, accumulated))
     }
 }
 

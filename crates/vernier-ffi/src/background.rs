@@ -370,120 +370,19 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
         }
     }
 
-    /// ADR-0031: drain the queue, serialize the evaluator's final
-    /// state as a partial blob, and join the worker. Consumes `self`.
-    pub(crate) fn finalize_to_partial(self) -> Result<Vec<u8>, EvalError> {
+    /// Send a finalize-shaped `WorkerMessage` through the channel,
+    /// wait for the typed reply, then join the worker thread.
+    /// Consumes `self`. The worker prefers its own error over the
+    /// finalize reply on a clean panic-free exit.
+    fn dispatch_finalize<R, F>(self, build_msg: F) -> Result<R, EvalError>
+    where
+        R: Send + 'static,
+        F: FnOnce(SyncSender<Result<R, EvalError>>) -> WorkerMessage<K>,
+    {
         self.take_last_error()?;
-        let (reply_tx, reply_rx) = sync_channel::<Result<Vec<u8>, EvalError>>(1);
+        let (reply_tx, reply_rx) = sync_channel::<Result<R, EvalError>>(1);
         self.sender
-            .send(WorkerMessage::FinalizeToPartial { reply: reply_tx })
-            .map_err(|_| EvalError::InvalidConfig {
-                detail: "background worker is no longer accepting finalize requests".to_string(),
-            })?;
-        let blob = match reply_rx.recv() {
-            Ok(result) => result,
-            Err(_) => Err(EvalError::InvalidConfig {
-                detail: "background worker dropped finalize reply channel".to_string(),
-            }),
-        };
-        let join_result = match self.take_worker() {
-            Some(handle) => handle.join(),
-            None => return blob,
-        };
-        match join_result {
-            Ok(Ok(())) => blob,
-            Ok(Err(worker_err)) => Err(worker_err),
-            Err(payload) => Err(EvalError::InvalidConfig {
-                detail: format!("background worker panicked: {payload:?}"),
-            }),
-        }
-    }
-
-    /// Drain the queue, finalize the evaluator, and join the worker.
-    ///
-    /// Consumes `self` — the wrapper is unusable afterwards. The FFI
-    /// layer holds a `Mutex<Option<BackgroundEvaluator<K>>>` so it can
-    /// `take()` to satisfy the `self`-by-value signature.
-    pub(crate) fn finalize(self) -> Result<Summary, EvalError> {
-        self.take_last_error()?;
-        let (reply_tx, reply_rx) = sync_channel::<Result<Summary, EvalError>>(1);
-        self.sender
-            .send(WorkerMessage::Finalize { reply: reply_tx })
-            .map_err(|_| EvalError::InvalidConfig {
-                detail: "background worker is no longer accepting finalize requests".to_string(),
-            })?;
-        let summary = match reply_rx.recv() {
-            Ok(result) => result,
-            Err(_) => Err(EvalError::InvalidConfig {
-                detail: "background worker dropped finalize reply channel".to_string(),
-            }),
-        };
-
-        let join_result = match self.take_worker() {
-            Some(handle) => handle.join(),
-            None => return summary,
-        };
-        match join_result {
-            Ok(Ok(())) => summary,
-            // Worker returned cleanly with an error; prefer that over
-            // whatever finalize produced.
-            Ok(Err(worker_err)) => Err(worker_err),
-            Err(payload) => Err(EvalError::InvalidConfig {
-                detail: format!("background worker panicked: {payload:?}"),
-            }),
-        }
-    }
-
-    /// ADR-0018 Unit 6: finalize variant that also returns the
-    /// per-image cell store needed by the calibration summarizer.
-    ///
-    /// Same shape as [`Self::finalize`]; consumes the wrapper. The
-    /// returned [`SnapshotWithCells::summary`] is bit-identical to what
-    /// [`Self::finalize`] would have produced for the same evaluator
-    /// state — this variant only adds cell retention.
-    pub(crate) fn finalize_with_cells(self) -> Result<SnapshotWithCells, EvalError> {
-        self.take_last_error()?;
-        let (reply_tx, reply_rx) = sync_channel::<Result<SnapshotWithCells, EvalError>>(1);
-        self.sender
-            .send(WorkerMessage::FinalizeWithCells { reply: reply_tx })
-            .map_err(|_| EvalError::InvalidConfig {
-                detail: "background worker is no longer accepting finalize requests".to_string(),
-            })?;
-        let bundle = match reply_rx.recv() {
-            Ok(r) => r,
-            Err(_) => Err(EvalError::InvalidConfig {
-                detail: "background worker dropped finalize reply channel".to_string(),
-            }),
-        };
-
-        let join_result = match self.take_worker() {
-            Some(handle) => handle.join(),
-            None => return bundle,
-        };
-        match join_result {
-            Ok(Ok(())) => bundle,
-            Ok(Err(worker_err)) => Err(worker_err),
-            Err(payload) => Err(EvalError::InvalidConfig {
-                detail: format!("background worker panicked: {payload:?}"),
-            }),
-        }
-    }
-
-    /// Tables-aware finalize. Same shape as [`Self::finalize`]; consumes
-    /// the wrapper.
-    pub(crate) fn finalize_with_tables(
-        self,
-        request: TablesRequest,
-        config: TablesConfig,
-    ) -> Result<(Summary, Tables), EvalError> {
-        self.take_last_error()?;
-        let (reply_tx, reply_rx) = sync_channel::<Result<(Summary, Tables), EvalError>>(1);
-        self.sender
-            .send(WorkerMessage::FinalizeWithTables {
-                reply: reply_tx,
-                request,
-                config,
-            })
+            .send(build_msg(reply_tx))
             .map_err(|_| EvalError::InvalidConfig {
                 detail: "background worker is no longer accepting finalize requests".to_string(),
             })?;
@@ -493,7 +392,6 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
                 detail: "background worker dropped finalize reply channel".to_string(),
             }),
         };
-
         let join_result = match self.take_worker() {
             Some(handle) => handle.join(),
             None => return result,
@@ -505,6 +403,43 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
                 detail: format!("background worker panicked: {payload:?}"),
             }),
         }
+    }
+
+    /// ADR-0031: drain the queue, serialize the evaluator's final
+    /// state as a partial blob, and join the worker. Consumes `self`.
+    pub(crate) fn finalize_to_partial(self) -> Result<Vec<u8>, EvalError> {
+        self.dispatch_finalize(|reply| WorkerMessage::FinalizeToPartial { reply })
+    }
+
+    /// Drain the queue, finalize the evaluator, and join the worker.
+    ///
+    /// Consumes `self` — the wrapper is unusable afterwards. The FFI
+    /// layer holds a `Mutex<Option<BackgroundEvaluator<K>>>` so it can
+    /// `take()` to satisfy the `self`-by-value signature.
+    pub(crate) fn finalize(self) -> Result<Summary, EvalError> {
+        self.dispatch_finalize(|reply| WorkerMessage::Finalize { reply })
+    }
+
+    /// ADR-0018 Unit 6: finalize variant that also returns the
+    /// per-image cell store needed by the calibration summarizer. The
+    /// returned [`SnapshotWithCells::summary`] is bit-identical to what
+    /// [`Self::finalize`] would have produced for the same evaluator
+    /// state — this variant only adds cell retention.
+    pub(crate) fn finalize_with_cells(self) -> Result<SnapshotWithCells, EvalError> {
+        self.dispatch_finalize(|reply| WorkerMessage::FinalizeWithCells { reply })
+    }
+
+    /// Tables-aware finalize.
+    pub(crate) fn finalize_with_tables(
+        self,
+        request: TablesRequest,
+        config: TablesConfig,
+    ) -> Result<(Summary, Tables), EvalError> {
+        self.dispatch_finalize(|reply| WorkerMessage::FinalizeWithTables {
+            reply,
+            request,
+            config,
+        })
     }
 
     /// Best-effort cooperative shutdown. Sends `Shutdown`, then polls
@@ -716,9 +651,6 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
                 return Ok(());
             }
             Ok(WorkerMessage::FinalizeWithCells { reply }) => {
-                // `snapshot_with_cells` takes `&mut self`; the worker
-                // owns the evaluator outright, so we satisfy the borrow
-                // and exit the loop without ever moving it.
                 let s = evaluator.snapshot_with_cells();
                 let _ = reply.send(s);
                 return Ok(());
@@ -753,9 +685,7 @@ mod tests {
     //! message the generic core doesn't already exercise.
     use super::*;
     use vernier_core::dataset::{AnnId, Bbox, CategoryId, ImageId};
-    use vernier_core::dataset::{
-        CategoryMeta, CocoAnnotation, CocoDataset, CocoDetections, ImageMeta,
-    };
+    use vernier_core::dataset::{CategoryMeta, CocoAnnotation, CocoDataset, ImageMeta};
     use vernier_core::evaluate::{AreaRange, OwnedEvaluateParams};
     use vernier_core::parity::iou_thresholds;
     use vernier_core::similarity::BboxIou;
@@ -817,9 +747,6 @@ mod tests {
     }
 
     /// ADR-0018 Unit 6 smoke test: update → finalize_with_cells round-
-    /// trips through the worker thread, returning a [`SnapshotWithCells`]
-    /// whose summary axis is well-formed and whose cell-store carries
-    /// at least one populated cell (the single submitted detection).
     #[test]
     fn finalize_with_cells_round_trips_through_worker() {
         let bg = spawn_test_worker();
@@ -830,43 +757,20 @@ mod tests {
         bg.submit_blocking(parsed).unwrap();
 
         let bundle = bg.finalize_with_cells().unwrap();
-        // 12-stat detection plan; identical to what `finalize()` would
-        // have produced — the parity test in `vernier-core::stream`
-        // pins bit-equality, this just confirms the worker hands the
-        // bundle back unmodified.
         assert_eq!(bundle.summary.lines.len(), 12);
         assert_eq!(bundle.n_categories, 1);
         assert_eq!(bundle.n_area_ranges, AreaRange::coco_default().len());
         assert!(!bundle.iou_thresholds.is_empty());
         assert!(matches!(bundle.parity_mode, ParityMode::Strict));
-        // One detection submitted → at least one populated cell.
         assert!(bundle.eval_imgs.iter().any(|c| c.is_some()));
     }
 
-    /// `finalize_with_cells` consumes the wrapper exactly like
-    /// `finalize`: the worker thread joins cleanly afterwards. Smoke-
-    /// check by making sure no panic propagates and that an empty
-    /// finalize (no submitted detections) still produces a
-    /// well-formed summary + dense cell store.
     #[test]
     fn finalize_with_cells_empty_evaluator_still_returns_dense_store() {
         let bg = spawn_test_worker();
         let bundle = bg.finalize_with_cells().unwrap();
         assert_eq!(bundle.summary.lines.len(), 12);
-        // Dense store length is K * A * I; the tiny dataset has 1 cat,
-        // 4 area ranges, 1 image.
-        // 1 cat * 4 area ranges * 1 image = 4 slots.
+        // 1 category × 4 area ranges × 1 image.
         assert_eq!(bundle.eval_imgs.len(), 4);
-    }
-
-    /// Compile-time sanity: `CocoDetections` is referenced only to keep
-    /// the imports section honest (the parser consumes it indirectly
-    /// via `ParsedDetections`).
-    #[test]
-    fn coco_detections_type_compiles_at_test_site() {
-        // No-op: just confirm the type is in scope; if `from_records`
-        // disappears we'll find out here rather than via a stale
-        // `use` in another file.
-        let _ = CocoDetections::from_records(Vec::new());
     }
 }
