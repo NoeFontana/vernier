@@ -83,7 +83,7 @@ The CLI's `lines[]` entries deterministically map to the column names below. The
 
 A line whose tuple does not match any row above is exposed **only** under its canonical name. This applies to custom IoU thresholds, custom area ranges, and non-default `max_dets` ladders.
 
-Note: the Arrow-input path (`vernier.instance.Evaluator().slices`) uses a slightly different column convention (`ap50` / `ap75` / `ap_s` / `ap_m` / `ap_l` / `ar_max_1` / `ar_max_10` / `ar_max_100` / `ar_s` / `ar_m` / `ar_l`) because it is sourced from the FFI table schema in `crates/vernier-ffi/src/tables.rs`. The two conventions are pinned today; reconciling them is tracked separately.
+Both surfaces use the **same column names** for the 12 canonical detection slots — the alias table above is authoritative. The Arrow path (`vernier.instance.Evaluator().slices`, sourced from `crates/vernier-ffi/src/tables.rs::slices_instance_ap_schema`) emits the spelled-out pycocotools-style labels (`ap_small`, `ap_medium`, `ap_large`, `ar_1`, `ar_10`, `ar_100`, `ar_small`, `ar_medium`, `ar_large`) so a `vernier.aggregate` call that mixes Arrow `RecordBatch` inputs with CLI v2 JSON inputs (the `vernier eval --manifest` envelope) yields a single non-null column per metric — no wide-union with mostly-null cells. The label set matches pycocotools' text-table convention (`area=small`, `maxDets=  1`) emitted by `Summary::pretty_lines`.
 
 ## Worked example
 

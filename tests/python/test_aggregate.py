@@ -607,6 +607,124 @@ def test_aggregate_consumes_cli_v2_json_subprocess(
     assert set(aggregated.column("value").to_pylist()) == {"clear", "fog"}
     # rPC requires an explicit baseline; without it, no __rpc columns.
     assert not any(n.endswith("__rpc") for n in aggregated.schema.names)
+    # ADR-0046 metric-name unification: every canonical 12-stat alias
+    # the CLI v2 envelope surfaces resolves to a non-null Float64 column
+    # for every aggregated row. A null here means the Arrow- and JSON-
+    # lane schemas drifted apart and the aggregator built a wide-union
+    # with mostly-null cells per column.
+    for alias in (
+        "ap",
+        "ap50",
+        "ap75",
+        "ap_small",
+        "ap_medium",
+        "ap_large",
+        "ar_1",
+        "ar_10",
+        "ar_100",
+        "ar_small",
+        "ar_medium",
+        "ar_large",
+    ):
+        assert alias in aggregated.schema.names, f"alias {alias!r} missing from JSON-only lane"
+        col = aggregated.column(alias)
+        assert col.null_count == 0, f"alias {alias!r} has {col.null_count} null cells"
+
+
+@pytest.mark.slow
+def test_aggregate_unifies_arrow_and_cli_json_inputs(
+    vernier_bin: Path,
+    tmp_path: Path,
+) -> None:
+    """Cross-surface acid test: Arrow ``RecordBatch`` slices + CLI v2 JSON
+    flow through one ``aggregate`` call without producing null metric
+    cells.
+
+    Materializes one slice table via the in-process ``Evaluator`` (Arrow
+    PyCapsule, from ``crates/vernier-ffi/src/tables.rs::slices_instance_ap_schema``)
+    and a second via the ``vernier eval --manifest`` subprocess (CLI v2
+    JSON envelope, via ``crates/vernier-cli/src/commands/aggregate.rs::position_alias``).
+    Pre-ADR-0046 metric-name unification the two surfaces emitted
+    disjoint column names (``ap_s`` / ``ap_small`` etc.), so a mixed
+    ``aggregate`` call produced a wide-union with mostly-null cells.
+    Post-unification every canonical 12-stat alias resolves to one
+    non-null Float64 column.
+    """
+    pa = pytest.importorskip("pyarrow")
+    gt = PARTITION_TINY_FIXTURE / "gt.json"
+    dt = PARTITION_TINY_FIXTURE / "dt.json"
+    manifest = PARTITION_TINY_FIXTURE / "weather_x_tod.json"
+
+    # Arrow leg: in-process Evaluator stamped with vernier.label="run_arrow".
+    manifest_doc = json.loads(manifest.read_bytes())
+    arrow_result = vernier.instance.Evaluator().evaluate(
+        gt.read_bytes(),
+        dt.read_bytes(),
+        manifest=manifest_doc,
+    )
+    arrow_batch = pa.record_batch(arrow_result._slices_batch)
+    arrow_batch = arrow_batch.replace_schema_metadata({b"vernier.label": b"run_arrow"})
+
+    # JSON leg: subprocess vernier eval --manifest writes a CLI v2 doc.
+    out_json = tmp_path / "run_json.json"
+    subprocess.run(
+        [
+            str(vernier_bin),
+            "eval",
+            "--gt",
+            str(gt),
+            "--dt",
+            str(dt),
+            "--iou-type",
+            "bbox",
+            "--manifest",
+            str(manifest),
+            "--label",
+            "run_json",
+            "--emit",
+            f"json={out_json}",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert out_json.exists()
+
+    rmanifest = {
+        "manifest_version": "1",
+        "key_kind": "result",
+        "rows": [
+            {"key": "run_arrow", "weather": "clear"},
+            {"key": "run_json", "weather": "fog"},
+        ],
+    }
+    aggregated = aggregate([arrow_batch, str(out_json)], rmanifest)
+    schema_names = set(aggregated.schema.names)
+    # The 12-stat aliases live on both lanes; the aggregated table
+    # carries one Float64 column per alias and every row is non-null.
+    for alias in (
+        "ap",
+        "ap50",
+        "ap75",
+        "ap_small",
+        "ap_medium",
+        "ap_large",
+        "ar_1",
+        "ar_10",
+        "ar_100",
+        "ar_small",
+        "ar_medium",
+        "ar_large",
+    ):
+        assert alias in schema_names, (
+            f"alias {alias!r} missing from cross-surface aggregate "
+            f"(present columns: {sorted(schema_names)!r})"
+        )
+        col = aggregated.column(alias)
+        assert col.null_count == 0, (
+            f"alias {alias!r} has {col.null_count} null cells — "
+            "Arrow and CLI-JSON column names diverged again"
+        )
 
 
 @pytest.mark.slow
