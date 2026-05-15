@@ -108,7 +108,10 @@ fn parse_cross_axes(cross_axes: Option<Vec<Vec<String>>>) -> Vec<Vec<String>> {
 
 /// Surface a `Vec<ManifestWarning>` through Python's `warnings` module
 /// so the caller observes them at `evaluate(manifest=...)` call time.
-fn warn_about_manifest(
+///
+/// Shared by the instance, panoptic, and semantic partitioned FFI
+/// entrypoints — each previously had its own near-identical copy.
+pub(crate) fn warn_about_manifest(
     py: Python<'_>,
     warnings: &[vernier_core::manifest::ManifestWarning],
 ) -> PyResult<()> {

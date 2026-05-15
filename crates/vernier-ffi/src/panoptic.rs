@@ -796,29 +796,7 @@ impl PyPartitionedPanopticReport {
     }
 }
 
-/// Surface a `Vec<ManifestWarning>` through Python's `warnings` module
-/// so the caller observes them at `evaluate(manifest=...)` call time.
-/// Mirrors the instance partition path's `warn_about_manifest`; kept
-/// local to the panoptic FFI rather than re-imported because the
-/// `partition_py` module is `pub(crate)` to a different paradigm.
-fn warn_about_manifest(
-    py: Python<'_>,
-    warnings: &[vernier_core::manifest::ManifestWarning],
-) -> PyResult<()> {
-    if warnings.is_empty() {
-        return Ok(());
-    }
-    let warnings_mod = py.import("warnings")?;
-    for w in warnings {
-        let msg = match w {
-            vernier_core::manifest::ManifestWarning::UnknownKey { key } => {
-                format!("manifest key {key:?} is not present in the dataset; skipping")
-            }
-        };
-        warnings_mod.call_method1("warn", (msg,))?;
-    }
-    Ok(())
-}
+use crate::partition_py::warn_about_manifest;
 
 /// C3 partitioned panoptic eval (ADR-0046 §"Performance").
 ///

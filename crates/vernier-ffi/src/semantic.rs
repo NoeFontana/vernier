@@ -650,24 +650,7 @@ impl PyPartitionedSemanticReport {
     }
 }
 
-fn warn_about_manifest_sem(
-    py: Python<'_>,
-    warnings: &[vernier_core::manifest::ManifestWarning],
-) -> PyResult<()> {
-    if warnings.is_empty() {
-        return Ok(());
-    }
-    let warnings_mod = py.import("warnings")?;
-    for w in warnings {
-        let msg = match w {
-            vernier_core::manifest::ManifestWarning::UnknownKey { key } => {
-                format!("manifest key {key:?} is not present in the dataset; skipping")
-            }
-        };
-        warnings_mod.call_method1("warn", (msg,))?;
-    }
-    Ok(())
-}
+use crate::partition_py::warn_about_manifest;
 
 /// C3 partitioned semantic eval (ADR-0046 §"Performance").
 ///
@@ -750,7 +733,7 @@ pub(crate) fn evaluate_semantic_partitioned<'py>(
         .collect();
     let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &image_id_to_idx, &cross)
         .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
-    warn_about_manifest_sem(py, &warnings)?;
+    warn_about_manifest(py, &warnings)?;
 
     // Pre-compute per-slice image-id filter sets on the FFI thread.
     let mut slice_inputs: Vec<(String, String, HashSet<ImageId>, u64)> =
@@ -806,6 +789,18 @@ pub(crate) fn evaluate_semantic_partitioned<'py>(
         inc_semantic_fold_count();
         // Per-image confusion matrices. Built once; folded under
         // different filters at summarize time (C3).
+        //
+        // MEMORY: each `ConfusionMatrix` is `n_classes² * u64` =
+        // 8·N² bytes. At Cityscapes (19 classes) → 2.9 KB/image; at
+        // ADE20K (150) → 180 KB/image. At hypothetical LVIS-class
+        // scale (1203) the per-image matrices are ~11.6 MB each —
+        // 5k images would consume ~58 GB resident, which OOMs every
+        // realistic host. The semantic kernel was designed for
+        // ≤150 classes (see `vernier_semantic::kernel`); promoting
+        // it to LVIS scale requires a streamed-fold rewrite where
+        // slice accumulators take per-image contributions
+        // incrementally instead of materialising the per-image
+        // vector. Tracked as a follow-up.
         let mut per_image: Vec<(ImageId, ConfusionMatrix)> = Vec::with_capacity(work.len());
         for (image_id, (_, _, gt_buf), (_, _, dt_buf)) in &work {
             let mut cm = ConfusionMatrix::zeros(n_classes);
