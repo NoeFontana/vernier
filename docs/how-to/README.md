@@ -22,5 +22,8 @@ accomplish.
   rank-local + gather across instance / semantic / panoptic.
 - [Evaluate keypoints with OKS](keypoints-oks.md) — `Keypoints()` with
   per-category sigmas.
+- [Per-class metrics broken down by manifest slice](per-class-by-slice.md) —
+  the recipe for the `tables=` + `manifest=` cross product (deliberate
+  non-feature; the kwargs reject in combination).
 - [Use result tables](result-tables.md) — the per-image / per-class /
   per-detection / per-pair polars DataFrames.
