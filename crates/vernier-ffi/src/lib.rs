@@ -102,6 +102,31 @@ create_exception!(
     "Streaming evaluator's memory usage crossed the soft-warn threshold."
 );
 
+create_exception!(
+    vernier._core,
+    InvalidAnnotationError,
+    pyo3::exceptions::PyValueError,
+    "Annotation could not be parsed or references an unknown image_id / category_id."
+);
+create_exception!(
+    vernier._core,
+    NonFiniteError,
+    pyo3::exceptions::PyValueError,
+    "A NaN or infinity reached arithmetic that cannot tolerate it (e.g., a detection score)."
+);
+create_exception!(
+    vernier._core,
+    DimensionMismatchError,
+    pyo3::exceptions::PyValueError,
+    "Two annotations or two RLEs disagree on dimensions in a way that makes the operation undefined."
+);
+create_exception!(
+    vernier._core,
+    InvalidConfigError,
+    pyo3::exceptions::PyValueError,
+    "Caller-supplied evaluation parameters are inconsistent with the data they are being applied to."
+);
+
 // ADR-0031 distributed-eval merge errors. Each carries typed
 // attributes so a CI gate can match on them directly without
 // parsing a string message.
@@ -520,12 +545,26 @@ impl PyAccumulated {
 /// Parse a COCO GT payload, lifting `EvalError` into `PyValueError`.
 /// One helper per FFI entry — keeps the error mapping uniform.
 pub(crate) fn parse_gt(bytes: &[u8]) -> PyResult<CocoDataset> {
-    CocoDataset::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+    CocoDataset::from_json_bytes(bytes).map_err(coco_load_error_to_pyerr)
 }
 
 /// Parse a COCO detections payload (sibling of [`parse_gt`]).
 pub(crate) fn parse_dt(bytes: &[u8]) -> PyResult<CocoDetections> {
-    CocoDetections::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+    CocoDetections::from_json_bytes(bytes).map_err(coco_load_error_to_pyerr)
+}
+
+/// GIL-free subset of [`eval_error_to_pyerr`] for the variants that can
+/// fire during JSON loading. The Partial* / OutOfBudget arms need a
+/// `Python<'_>` token to attach attributes and are unreachable here, so
+/// they collapse into the generic `PyValueError` fallback.
+fn coco_load_error_to_pyerr(e: EvalError) -> PyErr {
+    match e {
+        EvalError::InvalidAnnotation { .. } => InvalidAnnotationError::new_err(format!("{e}")),
+        EvalError::NonFinite { .. } => NonFiniteError::new_err(format!("{e}")),
+        EvalError::DimensionMismatch { .. } => DimensionMismatchError::new_err(format!("{e}")),
+        EvalError::InvalidConfig { .. } => InvalidConfigError::new_err(format!("{e}")),
+        other => PyValueError::new_err(format!("{other}")),
+    }
 }
 
 /// Build a single pycocotools-shaped `evalImgs` dict from one cell.
@@ -1531,6 +1570,10 @@ pub(crate) fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
         EvalError::PartialRankCollision { rank_id } => {
             partial_rank_collision_to_pyerr(py, format!("{e}"), rank_id)
         }
+        EvalError::InvalidAnnotation { .. } => InvalidAnnotationError::new_err(format!("{e}")),
+        EvalError::NonFinite { .. } => NonFiniteError::new_err(format!("{e}")),
+        EvalError::DimensionMismatch { .. } => DimensionMismatchError::new_err(format!("{e}")),
+        EvalError::InvalidConfig { .. } => InvalidConfigError::new_err(format!("{e}")),
         other => PyValueError::new_err(format!("{other}")),
     }
 }
@@ -3246,6 +3289,19 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "MemoryBudgetWarning",
         m.py().get_type::<MemoryBudgetWarning>(),
+    )?;
+    m.add(
+        "InvalidAnnotationError",
+        m.py().get_type::<InvalidAnnotationError>(),
+    )?;
+    m.add("NonFiniteError", m.py().get_type::<NonFiniteError>())?;
+    m.add(
+        "DimensionMismatchError",
+        m.py().get_type::<DimensionMismatchError>(),
+    )?;
+    m.add(
+        "InvalidConfigError",
+        m.py().get_type::<InvalidConfigError>(),
     )?;
     m.add(
         "PartialFormatMismatch",

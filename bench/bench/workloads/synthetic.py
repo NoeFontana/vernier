@@ -182,3 +182,22 @@ def make_workload(
     with dt_out.open("w") as f:
         json.dump(detections, f, separators=(",", ":"))
     return gt_out, dt_out
+
+
+def make_workload_scaled(
+    scale: int = 1,
+    *,
+    seed: int = 0,
+    iscrowd_fraction: float = 0.0,
+) -> tuple[Path, Path]:
+    """5000*scale images, 80 categories, 100 dt/gt per image — dense regime."""
+    if scale < 1:
+        raise ValueError(f"scale must be >= 1, got {scale}")
+    return make_workload(
+        n_images=5000 * scale,
+        n_categories=80,
+        dt_per_image=100,
+        gt_per_image=100,
+        seed=seed,
+        iscrowd_fraction=iscrowd_fraction,
+    )

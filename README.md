@@ -6,6 +6,7 @@
 [![crates.io vernier-mask](https://img.shields.io/crates/v/vernier-mask.svg?label=crates.io%20%7C%20vernier-mask)](https://crates.io/crates/vernier-mask)
 [![crates.io vernier-cli](https://img.shields.io/crates/v/vernier-cli.svg?label=crates.io%20%7C%20vernier-cli)](https://crates.io/crates/vernier-cli)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NoeFontana/vernier/blob/main/docs/tutorials/notebooks/colab_smoke.ipynb)
 
 Fast, parity-preserving evaluation for object detection, instance / panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS federated, LRP / oLRP error decomposition, and detection-family calibration (ECE / MCE / reliability). Rust core, Python frontend, optional CLI.
 
@@ -29,16 +30,22 @@ for line in summary.pretty_lines():
 In a training loop — overlap eval with the data loading and inference. The matching kernel runs on a worker thread, so `submit(...)` returns immediately and the main thread keeps moving. Passing a `CocoDataset` reuses the parsed-once GT and its per-kernel derivation cache across every epoch (ADR-0020):
 
 ```python
-import json
 from pathlib import Path
 from vernier.instance import Bbox, CocoDataset, Evaluator
 
 gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
 evaluator = Evaluator(iou=Bbox())
 with evaluator.background(gt) as bg:
-    for images, _ in val_loader:
-        detections = model(images)  # list[{image_id, category_id, bbox, score}]
-        bg.submit(json.dumps(detections).encode())
+    for images, targets in val_loader:
+        # torchvision detection API shape: list[dict] of length batch_size,
+        # each with "boxes" (N,4 xywh), "scores" (N,), "labels" (N,) as
+        # torch.Tensor. vernier consumes any DLPack-producing array library
+        # (torch, jax, cupy, numpy) zero-copy.
+        predictions = model(images)
+        bg.submit([
+            {"image_id": int(t["image_id"]), **p}
+            for t, p in zip(targets, predictions)
+        ])
     summary = bg.finalize()
 print("AP =", summary.stats[0])
 ```

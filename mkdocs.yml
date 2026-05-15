@@ -106,6 +106,7 @@ nav:
       - Manifest schema: reference/manifest-schema.md
       - Aggregate output schema: reference/aggregate-schema.md
       - COCO summary stats: reference/coco-summary-stats.md
+      - Errors: reference/errors.md
   - Explanation:
       - explanation/README.md
       - Three paradigms (instance/panoptic/semantic): explanation/three-paradigms.md

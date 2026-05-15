@@ -1,5 +1,7 @@
 # Your first evaluation
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NoeFontana/vernier/blob/main/docs/tutorials/notebooks/colab_smoke.ipynb)
+
 This tutorial runs vernier end-to-end on COCO val2017 in the two
 shapes most users start with:
 
@@ -73,7 +75,6 @@ derivation cache (ADR-0020) is reused across every epoch's
 
 ```python
 from pathlib import Path
-import json
 from vernier.instance import Bbox, CocoDataset, Evaluator
 
 gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
@@ -81,9 +82,17 @@ evaluator = Evaluator(iou=Bbox())
 
 for epoch in range(num_epochs):
     with evaluator.background(gt) as bg:
-        for images, _ in val_loader:
-            detections = model(images)  # list[{image_id, category_id, bbox, score}]
-            bg.submit(json.dumps(detections).encode())
+        for images, targets in val_loader:
+            # torchvision detection API: model(images) -> list[dict] of
+            # length batch_size, each carrying "boxes" (N,4 xywh),
+            # "scores" (N,), "labels" (N,) as torch.Tensor. vernier
+            # ingests any DLPack-producing array library (torch, jax,
+            # cupy, numpy) zero-copy via ADR-0030.
+            predictions = model(images)
+            bg.submit([
+                {"image_id": int(t["image_id"]), **p}
+                for t, p in zip(targets, predictions)
+            ])
         summary = bg.finalize()
     print(f"epoch {epoch}: AP =", summary.stats[0], "AP50 =", summary.stats[1])
 ```
@@ -96,11 +105,11 @@ across epochs, pass the bytes directly to
 `BackgroundEvaluator(gt_bytes, iou_type="bbox")` and the constructor
 takes the same one-shot path it always has.
 
-`submit(detections)` accepts the same loadRes-shaped JSON bytes that
-`evaluate(...)` accepts and blocks if the bounded worker queue is
-full; pass `timeout=` to surface back-pressure as a typed
-`QueueFullError` instead. The full API surface — queue sizing,
-memory budget, array-form ingest, multi-rank — lives in
+`submit(detections)` accepts either the array shape above or the
+loadRes-shaped JSON bytes `evaluate(...)` accepts. It blocks if the
+bounded worker queue is full; pass `timeout=` to surface back-pressure
+as a typed `QueueFullError` instead. The full API surface — queue
+sizing, memory budget, multi-rank — lives in
 [`how-to/background-evaluator.md`](../how-to/background-evaluator.md).
 
 ## What the output means
