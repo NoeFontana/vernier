@@ -106,28 +106,63 @@ fn render_partitioned(
     label: Option<&str>,
     out: &mut dyn io::Write,
 ) -> Result<(), CliError> {
-    if let Some(label) = label {
-        writeln!(out, "label = {label}")?;
-    }
-    writeln!(
+    write_partitioned_preamble(
         out,
-        "overall  (n_images={}, n_detections={})",
-        summary.overall_n_images, summary.overall_n_detections
+        label,
+        summary.overall_n_images,
+        summary.overall_n_detections,
     )?;
     for line in summary.overall.pretty_lines() {
         writeln!(out, "{line}")?;
     }
     for sr in &summary.slices {
         writeln!(out)?;
-        writeln!(
+        write_slice_header(
             out,
-            "==>  {} = {}  (n_images={}, n_detections={})",
-            sr.slice.axis, sr.slice.value, sr.n_images, sr.n_detections
+            &sr.slice.axis,
+            &sr.slice.value,
+            sr.n_images,
+            sr.n_detections,
         )?;
         for line in sr.summary.pretty_lines() {
             writeln!(out, "{line}")?;
         }
     }
+    Ok(())
+}
+
+/// Shared label + overall header, written by both `render_partitioned`
+/// (AP) and `render_partitioned_lrp` (LRP). Centralised so the two
+/// output formats can't drift on the canonical preamble shape.
+fn write_partitioned_preamble(
+    out: &mut dyn io::Write,
+    label: Option<&str>,
+    overall_n_images: u64,
+    overall_n_detections: u64,
+) -> Result<(), CliError> {
+    if let Some(label) = label {
+        writeln!(out, "label = {label}")?;
+    }
+    writeln!(
+        out,
+        "overall  (n_images={overall_n_images}, n_detections={overall_n_detections})"
+    )?;
+    Ok(())
+}
+
+/// Shared per-slice header. Same canonical shape across AP and LRP
+/// partitioned text output.
+fn write_slice_header(
+    out: &mut dyn io::Write,
+    axis: &str,
+    value: &str,
+    n_images: u64,
+    n_detections: u64,
+) -> Result<(), CliError> {
+    writeln!(
+        out,
+        "==>  {axis} = {value}  (n_images={n_images}, n_detections={n_detections})"
+    )?;
     Ok(())
 }
 
@@ -141,13 +176,11 @@ fn render_partitioned_lrp(
     label: Option<&str>,
     out: &mut dyn io::Write,
 ) -> Result<(), CliError> {
-    if let Some(label) = label {
-        writeln!(out, "label = {label}")?;
-    }
-    writeln!(
+    write_partitioned_preamble(
         out,
-        "overall  (n_images={}, n_detections={})",
-        summary.overall_n_images, summary.overall_n_detections
+        label,
+        summary.overall_n_images,
+        summary.overall_n_detections,
     )?;
     writeln!(out, "oLRP     = {olrp:.4}", olrp = summary.overall.olrp)?;
     writeln!(out, "oLRP_Loc = {v:.4}", v = summary.overall.olrp_loc)?;
@@ -167,10 +200,12 @@ fn render_partitioned_lrp(
     )?;
     for sr in &summary.slices {
         writeln!(out)?;
-        writeln!(
+        write_slice_header(
             out,
-            "==>  {} = {}  (n_images={}, n_detections={})",
-            sr.slice.axis, sr.slice.value, sr.n_images, sr.n_detections
+            &sr.slice.axis,
+            &sr.slice.value,
+            sr.n_images,
+            sr.n_detections,
         )?;
         writeln!(out, "oLRP     = {v:.4}", v = sr.report.olrp)?;
         writeln!(out, "oLRP_Loc = {v:.4}", v = sr.report.olrp_loc)?;

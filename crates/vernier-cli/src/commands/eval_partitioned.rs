@@ -57,6 +57,64 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         return run_lrp(args, &emits, parity_mode, use_cats);
     }
 
+    let inputs = load_partitioned_inputs(args)?;
+
+    let grid = run_kernel(
+        args.iou_type,
+        &inputs.gt,
+        &inputs.dt,
+        parity_mode,
+        &inputs.max_dets,
+        use_cats,
+        inputs.dilation_ratio,
+        inputs.sigmas,
+    )?;
+
+    let summary_kind = match args.iou_type {
+        IouTypeArg::Keypoints => SummaryPlan::KeypointsDefault,
+        _ => SummaryPlan::DetectionDefault,
+    };
+
+    let dims = GridDims {
+        n_categories: grid.n_categories,
+        n_area_ranges: grid.n_area_ranges,
+        n_images: grid.n_images,
+    };
+    let partitioned = partition::evaluate_partitioned(
+        &grid.eval_imgs,
+        dims,
+        &inputs.spec,
+        iou_thresholds(),
+        parity_mode,
+        summary_kind,
+    )?;
+
+    let ctx = FormatContext {
+        iou_type: args.iou_type,
+        parity_mode,
+        max_dets: &inputs.max_dets,
+        use_cats,
+    };
+    let artifact = EvalArtifact::Partitioned {
+        summary: &partitioned,
+        label: args.label.as_deref(),
+    };
+    emit_artifact(&emits, &ctx, &artifact)
+}
+
+/// Shared preamble across `run` and `run_lrp`: read GT/DT, resolve
+/// kernel-specific defaults (max_dets, sigmas, dilation), parse the
+/// manifest, build the `PartitionSpec`, surface warnings.
+struct PartitionedInputs {
+    gt: CocoDataset,
+    dt: CocoDetections,
+    max_dets: Vec<usize>,
+    sigmas: Option<HashMap<i64, Vec<f64>>>,
+    dilation_ratio: f64,
+    spec: PartitionSpec,
+}
+
+fn load_partitioned_inputs(args: &EvalArgs) -> Result<PartitionedInputs, CliError> {
     let parsed_max_dets = args.parsed_max_dets()?;
     let mut max_dets: Vec<usize> = match (parsed_max_dets, args.iou_type) {
         (Some(d), _) => d,
@@ -92,27 +150,8 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         _ => 0.0,
     };
 
-    // Build the eval grid via the existing per-kernel entry points;
-    // the matching pass is identical to the un-partitioned lane (C3 of
-    // ADR-0046 — match once, summarize per slice).
-    let grid = run_kernel(
-        args.iou_type,
-        &gt,
-        &dt,
-        parity_mode,
-        &max_dets,
-        use_cats,
-        dilation_ratio,
-        sigmas,
-    )?;
-
-    // Build image_id -> I-axis index map. The evaluator iterates GT
-    // images in id-ascending order, so we mirror that here.
     let image_id_to_idx = build_image_id_to_idx(&gt);
 
-    // Read the manifest. File extension picks the parser. Keep the
-    // discriminator in this single match so adding new formats later
-    // is a one-arm change.
     let manifest_path = args.manifest.as_ref().ok_or_else(|| {
         // Caller (eval::run) is supposed to have routed only manifest
         // dispatch here; defensive guard prevents a silent panic if
@@ -123,9 +162,7 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         path: manifest_path.clone(),
         source,
     })?;
-
     let cross_axes = args.parsed_cross_axes()?;
-
     let (spec, warnings) = build_spec(
         manifest_path,
         &manifest_bytes,
@@ -137,37 +174,24 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         report_warnings(&warnings);
     }
 
-    let summary_kind = match args.iou_type {
-        IouTypeArg::Keypoints => SummaryPlan::KeypointsDefault,
-        _ => SummaryPlan::DetectionDefault,
-    };
+    Ok(PartitionedInputs {
+        gt,
+        dt,
+        max_dets,
+        sigmas,
+        dilation_ratio,
+        spec,
+    })
+}
 
-    let dims = GridDims {
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
-    };
-    let partitioned = partition::evaluate_partitioned(
-        &grid.eval_imgs,
-        dims,
-        &spec,
-        iou_thresholds(),
-        parity_mode,
-        summary_kind,
-    )?;
-
-    let ctx = FormatContext {
-        iou_type: args.iou_type,
-        parity_mode,
-        max_dets: &max_dets,
-        use_cats,
-    };
-    let artifact = EvalArtifact::Partitioned {
-        summary: &partitioned,
-        label: args.label.as_deref(),
-    };
-
-    for spec in &emits {
+/// Walk the parsed `--emit` list, render the artifact to each
+/// destination. Shared by the AP and LRP partition arms.
+fn emit_artifact(
+    emits: &[crate::cli::EmitSpec],
+    ctx: &FormatContext<'_>,
+    artifact: &EvalArtifact<'_>,
+) -> Result<(), CliError> {
+    for spec in emits {
         let formatter = lookup_formatter(spec.format).ok_or_else(|| {
             CliError::Validation(format!(
                 "internal: format {:?} disappeared from registry",
@@ -178,10 +202,10 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
             EmitDestination::Stdout => {
                 let stdout = io::stdout();
                 let mut handle = stdout.lock();
-                formatter.render(&artifact, &ctx, &mut handle)?;
+                formatter.render(artifact, ctx, &mut handle)?;
             }
             EmitDestination::File(path) => {
-                write_atomic(path, |w| formatter.render(&artifact, &ctx, w))?;
+                write_atomic(path, |w| formatter.render(artifact, ctx, w))?;
             }
         }
     }
@@ -301,66 +325,10 @@ fn run_lrp(
     parity_mode: ParityMode,
     use_cats: bool,
 ) -> Result<(), CliError> {
-    let parsed_max_dets = args.parsed_max_dets()?;
-    let mut max_dets: Vec<usize> = match (parsed_max_dets, args.iou_type) {
-        (Some(d), _) => d,
-        (None, IouTypeArg::Keypoints) => KEYPOINTS_MAX_DETS_DEFAULT.to_vec(),
-        (None, _) => DETECTION_MAX_DETS_DEFAULT.to_vec(),
-    };
-    sort_max_dets(&mut max_dets);
+    let inputs = load_partitioned_inputs(args)?;
     // LRP runs at a single `max_dets_per_image` rung — the top of the
     // ladder (mirrors the un-partitioned LRP path in `eval.rs`).
-    let max_dets_per_image = max_dets.iter().copied().max().unwrap_or(100);
-
-    let gt_bytes = fs::read(&args.gt).map_err(|source| CliError::InputRead {
-        path: args.gt.clone(),
-        source,
-    })?;
-    let dt_bytes = fs::read(&args.dt).map_err(|source| CliError::InputRead {
-        path: args.dt.clone(),
-        source,
-    })?;
-    let gt = CocoDataset::from_json_bytes(&gt_bytes)?;
-    let dt = CocoDetections::from_json_bytes(&dt_bytes)?;
-
-    let sigmas = match (&args.sigmas, args.iou_type) {
-        (Some(path), IouTypeArg::Keypoints) => Some(load_sigmas(path)?),
-        (Some(_), _) => {
-            return Err(CliError::Validation(
-                "--sigmas is only valid with --iou-type keypoints".into(),
-            ));
-        }
-        (None, _) => None,
-    };
-
-    let dilation_ratio = match (args.dilation_ratio, args.iou_type) {
-        (Some(d), IouTypeArg::Boundary) => d,
-        (None, IouTypeArg::Boundary) => BOUNDARY_DILATION_RATIO_DEFAULT,
-        _ => 0.0,
-    };
-
-    let image_id_to_idx = build_image_id_to_idx(&gt);
-
-    let manifest_path = args.manifest.as_ref().ok_or_else(|| {
-        CliError::Validation("internal: partitioned dispatch invoked without --manifest".into())
-    })?;
-    let manifest_bytes = fs::read(manifest_path).map_err(|source| CliError::InputRead {
-        path: manifest_path.clone(),
-        source,
-    })?;
-
-    let cross_axes = args.parsed_cross_axes()?;
-
-    let (spec, warnings) = build_spec(
-        manifest_path,
-        &manifest_bytes,
-        &image_id_to_idx,
-        &cross_axes,
-    )?;
-
-    if !args.quiet {
-        report_warnings(&warnings);
-    }
+    let max_dets_per_image = inputs.max_dets.iter().copied().max().unwrap_or(100);
 
     // Resolve LRP params per ADR-0044 (single threshold, canonical
     // tau grid). Same shape as `run_lrp_pipeline` in `eval.rs` — the
@@ -381,45 +349,26 @@ fn run_lrp(
 
     let partitioned = run_lrp_kernel(
         args.iou_type,
-        &gt,
-        &dt,
+        &inputs.gt,
+        &inputs.dt,
         params,
         parity_mode,
-        &spec,
-        dilation_ratio,
-        sigmas,
+        &inputs.spec,
+        inputs.dilation_ratio,
+        inputs.sigmas,
     )?;
 
     let ctx = FormatContext {
         iou_type: args.iou_type,
         parity_mode,
-        max_dets: &max_dets,
+        max_dets: &inputs.max_dets,
         use_cats,
     };
     let artifact = EvalArtifact::PartitionedLrp {
         summary: &partitioned,
         label: args.label.as_deref(),
     };
-
-    for spec in emits {
-        let formatter = lookup_formatter(spec.format).ok_or_else(|| {
-            CliError::Validation(format!(
-                "internal: format {:?} disappeared from registry",
-                spec.format
-            ))
-        })?;
-        match &spec.destination {
-            EmitDestination::Stdout => {
-                let stdout = io::stdout();
-                let mut handle = stdout.lock();
-                formatter.render(&artifact, &ctx, &mut handle)?;
-            }
-            EmitDestination::File(path) => {
-                write_atomic(path, |w| formatter.render(&artifact, &ctx, w))?;
-            }
-        }
-    }
-    Ok(())
+    emit_artifact(emits, &ctx, &artifact)
 }
 
 #[allow(clippy::too_many_arguments)]
