@@ -8,9 +8,12 @@ repo.
 
 ## Running
 
+From the workspace root (cargo-fuzz walks up to the nearest Cargo.toml
+and expects `fuzz/` next to it, so `--fuzz-dir` is mandatory here):
+
 ```bash
-cd tools/fuzz
-cargo +nightly fuzz run <target> -- -max_total_time=120
+cargo +nightly fuzz build --fuzz-dir tools/fuzz
+cargo +nightly fuzz run --fuzz-dir tools/fuzz <target> -- -max_total_time=120
 ```
 
 | Target | Probes |

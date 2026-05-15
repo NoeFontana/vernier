@@ -1,10 +1,11 @@
 """Platform-matrix smoke test (ADR-0030 array ingest via DLPack).
 
-Mocks a detector that emits per-image numpy arrays — boxes / scores /
-labels — and submits them straight into `BackgroundEvaluator` without
-any JSON encoding. vernier consumes the arrays zero-copy through
-DLPack, so a real training loop swapping numpy for torch / jax /
-cupy tensors works identically.
+Mocks a batched detector — same calling convention as torchvision's
+`DetectionModel(images) -> List[Dict[str, Tensor]]` — and submits each
+batch directly to `BackgroundEvaluator`. vernier consumes the per-image
+boxes / scores / labels arrays zero-copy through DLPack, so swapping
+numpy for torch / jax / cupy at the model boundary needs no code
+changes downstream.
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import json
 import numpy as np
 
 from vernier.instance import Bbox, CocoDataset, Detections, Evaluator
+
+BATCH_SIZE = 2
 
 
 def _make_gt() -> bytes:
@@ -45,12 +48,7 @@ def _make_gt() -> bytes:
     }).encode()
 
 
-def fake_model(image_id: int) -> Detections:
-    """Stand-in for ``model(image)``. Returns the per-image output of a
-    typical detector — boxes (xywh, float64), scores (float64),
-    labels (int64) — as numpy arrays. A real loop would yield
-    `torch.Tensor` / `jax.Array` / `cupy.ndarray` here; vernier ingests
-    any DLPack-producing array library without translation."""
+def _per_image(image_id: int) -> Detections:
     rng = np.random.default_rng(image_id)
     n_dets = 4
     boxes = np.empty((n_dets, 4), dtype=np.float64)
@@ -66,13 +64,22 @@ def fake_model(image_id: int) -> Detections:
     }
 
 
+def fake_model(image_ids: list[int]) -> list[Detections]:
+    """Stand-in for `model(images) -> List[Dict[str, Tensor]]` — the
+    torchvision detection-API shape. One Detections dict per image,
+    each carrying boxes / scores / labels as arrays."""
+    return [_per_image(i) for i in image_ids]
+
+
 def main() -> None:
     gt_bytes = _make_gt()
     dataset = CocoDataset.from_json(gt_bytes)
     evaluator = Evaluator(iou=Bbox())
+    all_ids = list(range(1, 6))
+    batches = [all_ids[i : i + BATCH_SIZE] for i in range(0, len(all_ids), BATCH_SIZE)]
     with evaluator.background(dataset) as bg:
-        for image_id in range(1, 6):
-            bg.submit(fake_model(image_id))
+        for image_ids in batches:
+            bg.submit(fake_model(image_ids))
         summary = bg.finalize()
     for line in summary.pretty_lines():
         print(line)

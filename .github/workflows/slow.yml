@@ -110,10 +110,8 @@ jobs:
       - name: install cargo-fuzz
         run: cargo install cargo-fuzz
       - name: build all fuzz targets (shared link step)
-        working-directory: tools/fuzz
-        run: cargo +nightly fuzz build
+        run: cargo +nightly fuzz build --fuzz-dir tools/fuzz
       - name: run fuzz targets (120s each)
-        working-directory: tools/fuzz
         run: |
           set -e
           for target in \
@@ -124,6 +122,6 @@ jobs:
             fuzz_segmentation \
             fuzz_panoptic_segments; do
             echo "::group::$target"
-            cargo +nightly fuzz run "$target" -- -max_total_time=120 -timeout=10
+            cargo +nightly fuzz run --fuzz-dir tools/fuzz "$target" -- -max_total_time=120 -timeout=10
             echo "::endgroup::"
           done
