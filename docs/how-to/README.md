@@ -10,6 +10,9 @@ accomplish.
   stalls the main thread.
 - [Evaluate with boundary IoU](boundary-iou.md) — the `Boundary()`
   kernel and its dilation knob.
+- [Evaluate model calibration](calibration.md) — ECE / MCE /
+  reliability table for the detection family (ADR-0018), including
+  the `StreamingSnapshot` pairing for training-loop folds.
 - [Evaluate with `vernier eval`](cli-eval.md) — the static CLI binary
   for CI pipelines without a Python interpreter.
 - [Configure the evaluator](configure-evaluator.md) — the entry-point
@@ -27,3 +30,6 @@ accomplish.
   non-feature; the kwargs reject in combination).
 - [Use result tables](result-tables.md) — the per-image / per-class /
   per-detection / per-pair polars DataFrames.
+- [Slice an evaluation by scenario](scenario-slicing.md) —
+  manifest-driven `(axis, value)` cells, joint cells via `cross_axes`,
+  and `vernier aggregate` for cross-run corruption tables (ADR-0046).

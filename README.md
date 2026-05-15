@@ -7,7 +7,7 @@
 [![crates.io vernier-cli](https://img.shields.io/crates/v/vernier-cli.svg?label=crates.io%20%7C%20vernier-cli)](https://crates.io/crates/vernier-cli)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Fast, parity-preserving evaluation for object detection, instance / panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS federated, and LRP / oLRP error decomposition. Rust core, Python frontend, optional CLI.
+Fast, parity-preserving evaluation for object detection, instance / panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS federated, LRP / oLRP error decomposition, and detection-family calibration (ECE / MCE / reliability). Rust core, Python frontend, optional CLI.
 
 ## 60-second example
 
@@ -120,11 +120,18 @@ Pre-1.0; public API is unstable. See [`docs/adr/`](docs/adr/) for the design dec
   The CLI ships as a static binary, so CI pipelines call vernier
   without provisioning a Python interpreter.
 - **One toolkit instead of five.** bbox / segm / boundary / keypoints
-  AP, panoptic PQ, semantic mIoU, and LVIS federated all live behind
-  one Python API and one CLI. Per-paradigm migration guides under
+  AP, panoptic PQ, semantic mIoU, LVIS federated, oLRP error
+  decomposition, and detection-family calibration all live behind
+  one Python API and one CLI — folded over a single matching pass.
+  Per-paradigm migration guides under
   [`docs/migrate/`](docs/migrate/) show how to replace `pycocotools`,
   `faster-coco-eval`, `panopticapi`, `lvis-api`, and
   `mmsegmentation` one at a time.
+- **Scenario slicing + cross-run aggregation.** A partition manifest
+  (`weather`, `time_of_day`, …) feeds `vernier eval --manifest` for
+  per-slice headline metrics and `vernier aggregate` for cross-run
+  corruption tables (mPC / rPC) — one matching pass, N slices
+  ([ADR-0046](docs/adr/0046-slice-and-aggregate.md)).
 
 Per-paradigm parity status:
 
@@ -138,6 +145,7 @@ Per-paradigm parity status:
 | Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | strict bit-equal on the four per-class u64 marginals at val2017 scale | [ADR-0028](docs/adr/0028-sem-seg.md); ADE20K-scale bench gated on license-cleared cache |
 | LVIS federated AP | `lvis-api` (vendored at `031ac21f`, ORACLE_LVIS_COMMIT_SHA) | strict bit-equal on the `(T, R, K, A)` precision tensor at full LVIS v1 val | bench paradigm wired; segm cell waits on `evaluate_segm_grid_with_dataset` |
 | LRP / oLRP error decomposition (instance bbox / segm / boundary / keypoints) | pure-NumPy oracle ([ADR-0043](docs/adr/0043-lrp-oracle-and-namespace.md)) | strict against the oracle within 1e-9; `kemaloksuz/LRP-Error` tripwire vendored opt-in | panoptic LRP is a typed `NotImplementedError` stub — panoptic predictions carry no per-segment scores (ADR follow-up) |
+| Detection-family calibration — ECE / MCE / reliability (instance bbox / segm / boundary / keypoints) | clean-room NumPy oracle ([ADR-0018](docs/adr/0018-calibration.md)) with isolated P1–P10 quirks survey | strict bit-equal against the oracle (16/16 parity tests) | panoptic (Shape 2) and semantic (Shape 3) calibration deferred on data-model prerequisites; Clopper-Pearson CI documented Phase-2 |
 
 Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
 per-library comparison: [`docs/comparison.md`](docs/comparison.md).

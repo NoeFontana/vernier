@@ -2,9 +2,11 @@
 
 A parity-preserving COCO-style evaluator for instance segmentation, panoptic
 segmentation, boundary IoU, OKS keypoints, semantic segmentation, LVIS
-federated evaluation, and LRP / oLRP error decomposition. Bit-exact against `pycocotools==2.0.11`, `panopticapi`,
-and `lvis-api` in strict parity mode; semantic mIoU is calibrated against
-a vendored `mmsegmentation` `IoUMetric`. See the per-paradigm matrix in the
+federated evaluation, LRP / oLRP error decomposition, and detection-family
+calibration (ECE / MCE / reliability). Bit-exact against
+`pycocotools==2.0.11`, `panopticapi`, and `lvis-api` in strict parity mode;
+semantic mIoU is calibrated against a vendored `mmsegmentation` `IoUMetric`.
+See the per-paradigm matrix in the
 [README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation)
 for the full per-paradigm picture, plus a documented quirks survey for every
 place the reference implementations disagree with themselves.
@@ -30,6 +32,11 @@ empirically. vernier takes a third path:
   fragmented `pycocotools`, `boundary-iou-api`, `panopticapi`, `lvis-api`,
   and `mmsegmentation` installs (each has a per-paradigm
   [migration guide](migrate/README.md)).
+- **Scenario slicing and cross-run aggregation.** A partition manifest
+  (`weather`, `time_of_day`, …) feeds `vernier eval --manifest` for
+  per-slice headline metrics and `vernier aggregate` for cross-run
+  corruption tables (mPC / rPC) — one matching pass, N slices
+  ([ADR-0046](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0046-slice-and-aggregate.md)).
 - **Drop-in shim.** `vernier.patch_pycocotools()` swaps the `COCOeval` symbol
   in place — existing pycocotools-based scripts switch with one line
   ([ADR-0007](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0007-patch-pycocotools-policy.md)).

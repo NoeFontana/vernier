@@ -38,6 +38,38 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
   `params_hash` so silent boundary/instance partial mixing is rejected
   at envelope-validation time. No `FORMAT_VERSION` bump. Cityscapes
   panoptic (Z3) remains deferred.
+- **Detection-family calibration summarizer** (ADR-0018) —
+  ECE / MCE / reliability table for bbox / segm / boundary /
+  keypoints. Opt-in via `Evaluator.evaluate(..., calibration=True)`;
+  the lazy `result.calibration(iou=..., n_bins=15,
+  binning="quantile", min_score=0.05, per_class=False, ...)` re-fold
+  returns a `vernier.calibration.CalibrationResult` (polars
+  `reliability` / `per_class` plus scalar `ece` / `mce`). Re-folding
+  with different params does not re-run matching. Streaming pairing:
+  `BackgroundEvaluator.finalize_with_cells()` plus the
+  `vernier.calibration.StreamingSnapshot` wrapper. Clean-room NumPy
+  oracle is the correctness contract; 16/16 parity bit-equal at
+  strict mode. Panoptic and semantic calibration are deferred
+  (data-model prerequisites per the ADR's per-paradigm shape map).
+- **Slice-and-aggregate** (ADR-0046) — manifest-driven scenario
+  slicing across all three paradigms plus the `vernier aggregate`
+  fan-in verb. Python:
+  `Evaluator.evaluate(..., manifest=..., cross_axes=...)` accepts a
+  dict, JSON / CSV path, or Arrow PyCapsule manifest and returns
+  `EvalResult.slices` as a polars `DataFrame` (one row per
+  `(axis, value)` cell). CLI: `vernier eval --manifest weather.json
+  [--cross weather,time_of_day] [--label NAME] [--metric {ap,olrp}]`
+  emits a v2 envelope; un-partitioned `vernier eval` keeps emitting
+  v1 verbatim. `vernier.aggregate(results, manifest, *,
+  baseline=None, metric=None)` and `vernier aggregate result1.json
+  result2.json --manifest runs.json --baseline clean` fan N runs
+  into a comparative table with `<metric>` (mPC) and
+  `<metric>__rpc` (rPC) columns when `--baseline` is set. The
+  `tables=` + `manifest=` cross product is a deliberate non-feature
+  with a client-side recipe at
+  [`docs/how-to/per-class-by-slice.md`](docs/how-to/per-class-by-slice.md).
+  New reference schemas: [`manifest-schema.md`](docs/reference/manifest-schema.md),
+  [`aggregate-schema.md`](docs/reference/aggregate-schema.md).
 
 ## [0.0.2] — 2026-05-12
 

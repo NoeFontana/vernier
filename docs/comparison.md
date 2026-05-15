@@ -171,6 +171,61 @@ framework: model registry, training loop, dataset pipelines, config
 system. vernier-semantic is the evaluation half only; the training half
 is out of scope.
 
+## Metrics beyond AP
+
+The alternatives above all measure the same metric family — COCO-style
+average precision (plus PQ / mIoU on the panoptic / semantic side).
+vernier additionally ships two diagnostic surfaces that none of the
+above expose, alongside the same matching pass:
+
+- **LRP / oLRP error decomposition** (Oksuz et al., ECCV 2018 / TPAMI
+  2021). `vernier.instance.optimal_lrp(...)` and
+  `vernier eval --metric olrp` return `oLRP_Loc + oLRP_FP + oLRP_FN`
+  plus a per-class operating-point `tau`. The first-party reference
+  is [`kemaloksuz/LRP-Error`](https://github.com/kemaloksuz/LRP-Error)
+  — vernier vendors it commit-pinned as a CI tripwire, not as a
+  parity oracle ([ADR-0043](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0043-lrp-oracle-and-namespace.md)).
+  The correctness contract is a clean-room NumPy oracle in
+  `tests/python/oracle/lrp/`. Among the alternatives in the table,
+  none expose an oLRP surface. See
+  [LRP and its limits](explanation/lrp-and-its-limits.md).
+- **Detection-family calibration** (ECE / MCE / reliability table).
+  `Evaluator.evaluate(..., calibration=True)` plus the lazy
+  `result.calibration(...)` fold over the retained per-image cell
+  store ([ADR-0018](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0018-calibration.md)).
+  The obvious comparison is *not* a COCO library but the general-
+  purpose calibration toolkits — most prominently
+  [`torchmetrics`](https://lightning.ai/docs/torchmetrics/) and
+  [`netcal`](https://github.com/EFS-OpenSource/calibration-framework).
+  Both compute ECE on a score / label pair, but neither knows what
+  a COCO match is — the user has to thread the AP fold's per-pair
+  TP/FP labels into the calibrator manually. vernier folds against
+  the same ADR-0013 cell store the AP fold writes, so the matching
+  pass is shared and the score / label pairs are bit-identical to
+  the AP path. Calibration is detection-family today; panoptic and
+  semantic are deferred (see
+  [Calibration and its limits](explanation/calibration-and-its-limits.md)).
+
+These surfaces are stacked on the matching engine, not bolted on:
+the same `Evaluator.evaluate(...)` call returns AP-side metrics,
+oLRP, and calibration over one pass. The alternative is N libraries
+in N matching passes with N divergent definitions of "true positive."
+
+## Scenario slicing and cross-run aggregation
+
+The alternatives above evaluate one dataset against one detection set.
+vernier additionally accepts a *partition manifest* — a tiny CSV/JSON
+table mapping image ids to scenario axes (`weather`, `time_of_day`,
+…) — and emits one row of headline metrics per `(axis, value)` cell
+alongside the overall summary, in one matching pass
+([ADR-0046](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0046-slice-and-aggregate.md)).
+`vernier aggregate` then fans N corruption runs into a single
+comparative table with mPC / rPC columns matching the Michaelis et
+al. (NeurIPS-W 2019) corruption-benchmark convention. None of the
+alternatives in the table above ship this lane; the typical pattern
+elsewhere is N invocations + glue code per row. See
+[Slice an evaluation by scenario](how-to/scenario-slicing.md).
+
 ## What vernier doesn't do (yet)
 
 A short, honest list:
