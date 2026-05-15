@@ -5231,13 +5231,15 @@ is bit-identical to the un-partitioned call and whose
 <code>.slices</code> property is a polars DataFrame with one row per
 <code>(axis, value)</code> cell. <code>cross_axes=</code> opts joint cells in
 (per ADR-0046 §E2; marginals are the default).</p>
-<p>Per ADR-0046 §"Performance", semantic partitioned eval runs as
-one :func:<code>evaluate_semantic_from_arrays</code> call per slice (the
-C1 path) — the semantic substrate accumulates per-image
-confusion matrices into a global matrix without an image-id
-filter at summarize time. The <code>overall</code> summary is the
-un-partitioned eval over the full mappings, preserving the
-bit-identical-overall parity contract by construction.</p>
+<p>Per ADR-0046's C3 axiom, the per-image confusion-matrix fold
+runs exactly once regardless of slice count: the FFI retains a
+<code>Vec&lt;(image_id, ConfusionMatrix)&gt;</code> of per-image deltas and
+the partition orchestrator sums them under (a) no filter for
+<code>overall</code> and (b) each slice's image-id set for the per-slice
+rows. Confusion-matrix sums are u64-additive, so the parity
+contract is unconditional (no f64 non-associativity to worry
+about, unlike the panoptic path); the <code>overall</code> summary is
+bit-identical to the un-partitioned call by construction.</p>
 
 
     </div>

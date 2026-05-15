@@ -1756,6 +1756,100 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#schema-v2-partitioned-lrp-output-metric-olrp-manifest" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Schema v2 — partitioned LRP output (--metric olrp --manifest)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Schema v2 — partitioned LRP output (--metric olrp --manifest)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#lrp-v2-top-level-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LRP v2 top-level fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lrpoverall-subfields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LrpOverall subfields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lrpslice-subfields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LrpSlice subfields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#lrpconfig-subfields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LrpConfig subfields
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per_class-is-omitted-by-default" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        per_class is omitted by default
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#determinism-guarantees-lrp-v2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Determinism guarantees (LRP v2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#worked-example-lrp-v2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Worked example (LRP v2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#see-also" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2459,6 +2553,238 @@
 </span><span id="__span-4-19"><a id="__codelineno-4-19" name="__codelineno-4-19" href="#__codelineno-4-19"></a><span class="p">}</span>
 </span></code></pre></div>
 <p>See <a href="../manifest-schema/"><code>docs/reference/manifest-schema.md</code></a> for the manifest input and <a href="../aggregate-schema/"><code>docs/reference/aggregate-schema.md</code></a> for the <code>vernier aggregate</code> companion output.</p>
+<h2 id="schema-v2-partitioned-lrp-output-metric-olrp-manifest">Schema v2 — partitioned LRP output (<code>--metric olrp --manifest</code>)</h2>
+<p>ADR-0046 (with ADR-0043 / ADR-0044 / ADR-0045 for the LRP semantics) extends the partition fan-out to the LRP / oLRP metric. When <code>--metric olrp --manifest PATH</code> is supplied, the binary emits a <em>partitioned LRP</em> JSON document under <code>"version": "2"</code>, distinguished from the AP v2 envelope by a <code>"metric": "olrp"</code> discriminator.</p>
+<blockquote>
+<p><strong>Rule:</strong> <code>--metric olrp</code> without <code>--manifest</code> keeps emitting the un-partitioned LRP shape under <code>"version": "1"</code>. The partitioned-LRP envelope is <strong>only</strong> emitted when both <code>--metric olrp</code> and <code>--manifest</code> are present.</p>
+</blockquote>
+<h3 id="lrp-v2-top-level-fields">LRP v2 top-level fields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version</code></td>
+<td>string</td>
+<td><code>"2"</code> for partitioned output.</td>
+</tr>
+<tr>
+<td><code>metric</code></td>
+<td>string</td>
+<td><code>"olrp"</code> — discriminator for parsers that switch on <code>(version, metric)</code>.</td>
+</tr>
+<tr>
+<td><code>label</code></td>
+<td>string or <code>null</code></td>
+<td><code>--label</code> value stamped on this run. <code>null</code> when omitted.</td>
+</tr>
+<tr>
+<td><code>iou_type</code></td>
+<td>string</td>
+<td>As v1.</td>
+</tr>
+<tr>
+<td><code>parity_mode</code></td>
+<td>string</td>
+<td>As v1.</td>
+</tr>
+<tr>
+<td><code>use_cats</code></td>
+<td>boolean</td>
+<td>As v1.</td>
+</tr>
+<tr>
+<td><code>overall</code></td>
+<td><a href="#lrp-overall-subfields"><code>LrpOverall</code> object</a></td>
+<td>The un-partitioned LRP block. Bit-identical to a single <code>optimal_lrp_*</code> call over the same <code>(GT, DT)</code>.</td>
+</tr>
+<tr>
+<td><code>slices</code></td>
+<td>array of <a href="#lrp-slices-subfields"><code>LrpSlice</code> objects</a></td>
+<td>One entry per partition slice, in the same canonical order as the AP v2 envelope.</td>
+</tr>
+</tbody>
+</table>
+<p>Note: the LRP envelope does <strong>not</strong> carry the AP <code>max_dets</code> top-level field. LRP runs at a single <code>max_dets_per_image</code> rung (the top of the resolved ladder); the value is implicit in the kernel-canonical defaults and is recorded inside the resolved <code>config</code> for documentation rather than as a wire-level array.</p>
+<h3 id="lrpoverall-subfields"><code>LrpOverall</code> subfields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>olrp</code></td>
+<td>float</td>
+<td>Mean per-class oLRP across classes with at least one positive GT (per ADR-0043).</td>
+</tr>
+<tr>
+<td><code>olrp_loc</code></td>
+<td>float</td>
+<td>Mean per-class <code>oLRP_Loc</code> across classes with at least one TP at the optimal tau.</td>
+</tr>
+<tr>
+<td><code>olrp_fp</code></td>
+<td>float</td>
+<td>Mean per-class <code>oLRP_FP</code> (same denominator as <code>olrp_loc</code>).</td>
+</tr>
+<tr>
+<td><code>olrp_fn</code></td>
+<td>float</td>
+<td>Mean per-class <code>oLRP_FN</code> (same denominator as <code>olrp</code>).</td>
+</tr>
+<tr>
+<td><code>n_empty_classes</code></td>
+<td>non-negative integer</td>
+<td>Number of classes with no positive GTs (excluded from the headline means).</td>
+</tr>
+<tr>
+<td><code>n_images</code></td>
+<td>non-negative integer</td>
+<td>Number of dataset images behind the overall report.</td>
+</tr>
+<tr>
+<td><code>n_detections</code></td>
+<td>non-negative integer</td>
+<td>Total detection count behind the overall report.</td>
+</tr>
+<tr>
+<td><code>config</code></td>
+<td><a href="#lrpconfig-subfields"><code>LrpConfig</code> object</a></td>
+<td>Resolved configuration (kernel, <code>tp_threshold</code>, <code>tau_grid_len</code>) — every report self-describes per ADR-0044.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="lrpslice-subfields"><code>LrpSlice</code> subfields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>axis</code></td>
+<td>string</td>
+<td>The manifest axis name. For joint cells, the <code>::</code>-joined tuple.</td>
+</tr>
+<tr>
+<td><code>value</code></td>
+<td>string</td>
+<td>The categorical level. For joint cells, the <code>::</code>-joined value tuple. <code>__unassigned__</code> for unassigned.</td>
+</tr>
+<tr>
+<td><code>n_images</code></td>
+<td>non-negative integer</td>
+<td>Number of dataset images in this slice.</td>
+</tr>
+<tr>
+<td><code>n_detections</code></td>
+<td>non-negative integer</td>
+<td>Detection count in this slice.</td>
+</tr>
+<tr>
+<td><code>olrp</code></td>
+<td>float</td>
+<td>Per-slice headline oLRP, computed by restricting the LRP decompose walk to this slice's image set.</td>
+</tr>
+<tr>
+<td><code>olrp_loc</code></td>
+<td>float</td>
+<td>Per-slice <code>oLRP_Loc</code>.</td>
+</tr>
+<tr>
+<td><code>olrp_fp</code></td>
+<td>float</td>
+<td>Per-slice <code>oLRP_FP</code>.</td>
+</tr>
+<tr>
+<td><code>olrp_fn</code></td>
+<td>float</td>
+<td>Per-slice <code>oLRP_FN</code>.</td>
+</tr>
+<tr>
+<td><code>n_empty_classes</code></td>
+<td>non-negative integer</td>
+<td>Per-slice count of classes with no positive GTs (a slice may be more sparsely class-covered than the overall dataset).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="lrpconfig-subfields"><code>LrpConfig</code> subfields</h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tp_threshold</code></td>
+<td>float</td>
+<td>IoU/OKS floor for TP — resolved per ADR-0044 (<code>0.5</code> for every kernel by default).</td>
+</tr>
+<tr>
+<td><code>tau_grid_len</code></td>
+<td>non-negative integer</td>
+<td>Length of the confidence-threshold grid the LRP search ran on (101 for the canonical default grid).</td>
+</tr>
+<tr>
+<td><code>kernel</code></td>
+<td>string</td>
+<td>Canonical kernel name (<code>"bbox"</code> / <code>"segm"</code> / <code>"boundary"</code> / <code>"keypoints"</code>).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="per_class-is-omitted-by-default"><code>per_class</code> is omitted by default</h3>
+<p>The un-partitioned LRP v1 envelope ships a <code>per_class</code> array (one row per category) carrying the deployable <code>tau</code> plus the four per-class decomposition fields. The partitioned LRP v2 envelope <strong>omits <code>per_class</code> from both <code>overall</code> and <code>slices</code></strong> by default, for two reasons:</p>
+<ul>
+<li><strong>Size at LVIS scale.</strong> A 1203-category dataset crossed with 8 slices would balloon the document by ~10k per-class rows — the bulk of which downstream <code>vernier aggregate</code> flows do not consume.</li>
+<li><strong>Wrong surface for the partitioned use-case.</strong> The partitioned document is the comparative table — the headline numbers per slice are the reason to slice. Per-class detail is the un-partitioned <code>--metric olrp</code> run's job; users who want both spawn both.</li>
+</ul>
+<p>A future <code>--per-class</code> opt-in flag is anticipated if a workload ever needs the per-class table embedded in the partitioned envelope.</p>
+<h3 id="determinism-guarantees-lrp-v2">Determinism guarantees (LRP v2)</h3>
+<p>The v1 / AP-v2 determinism rules carry through verbatim: fixed key order, no timestamps, no environment leakage, round-trip-safe float formatting, atomic file writes. Additionally:</p>
+<ul>
+<li><strong>Slice order is canonical</strong>, same rule as the AP v2 envelope: <code>(axis ascending, value ascending, __unassigned__ last)</code> for marginals; joint cells follow the marginals.</li>
+<li><strong><code>overall</code> is bit-identical</strong> to a v1 LRP run on the same <code>(GT, DT)</code> pair — the partitioned LRP dispatch invokes the same matching engine once and runs the decompose walk over the un-filtered image set for <code>overall</code>.</li>
+</ul>
+<h3 id="worked-example-lrp-v2">Worked example (LRP v2)</h3>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2&quot;</span><span class="p">,</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">&quot;metric&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;olrp&quot;</span><span class="p">,</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;run_2026_05_14&quot;</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="nt">&quot;iou_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bbox&quot;</span><span class="p">,</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span><span class="nt">&quot;parity_mode&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;strict&quot;</span><span class="p">,</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span><span class="nt">&quot;use_cats&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">  </span><span class="nt">&quot;overall&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">    </span><span class="nt">&quot;olrp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.412</span><span class="p">,</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="nt">&quot;olrp_loc&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.183</span><span class="p">,</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">    </span><span class="nt">&quot;olrp_fp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.092</span><span class="p">,</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">    </span><span class="nt">&quot;olrp_fn&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.137</span><span class="p">,</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">    </span><span class="nt">&quot;n_empty_classes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">    </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5000</span><span class="p">,</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">    </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">31</span><span class="err">_</span><span class="mi">500</span><span class="p">,</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="w">    </span><span class="nt">&quot;config&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="nt">&quot;tp_threshold&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;tau_grid_len&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">101</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;kernel&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bbox&quot;</span><span class="p">}</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="w">  </span><span class="nt">&quot;slices&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;axis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;weather&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;clear&quot;</span><span class="p">,</span><span class="w">          </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3700</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">22</span><span class="err">_</span><span class="mi">900</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.398</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_loc&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.177</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_fp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.086</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_fn&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.135</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_empty_classes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">},</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;axis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;weather&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;fog&quot;</span><span class="p">,</span><span class="w">            </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1100</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w">  </span><span class="mi">7</span><span class="err">_</span><span class="mi">300</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.487</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_loc&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.221</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_fp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.121</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_fn&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.145</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_empty_classes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">},</span>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="w">    </span><span class="p">{</span><span class="nt">&quot;axis&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;weather&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;value&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;__unassigned__&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_images&quot;</span><span class="p">:</span><span class="w">  </span><span class="mi">200</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_detections&quot;</span><span class="p">:</span><span class="w">  </span><span class="mi">1</span><span class="err">_</span><span class="mi">300</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.453</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_loc&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.198</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_fp&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.114</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;olrp_fn&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.141</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;n_empty_classes&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">4</span><span class="p">}</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a><span class="p">}</span>
+</span></code></pre></div>
 <h2 id="see-also">See also</h2>
 <ul>
 <li><a href="../../adr/0015-vernier-cli/"><code>docs/adr/0015-vernier-cli.md</code></a> — the source of truth for the CLI surface, the formatter abstraction, and the determinism contract.</li>
@@ -2466,6 +2792,7 @@
 <li><a href="../coco-summary-stats/"><code>docs/reference/coco-summary-stats.md</code></a> — the <code>stats[i]</code> ↔ slice mapping for the bbox / segm 12-stat plan.</li>
 <li><a href="../../adr/0012-oks-keypoints-surface/"><code>docs/adr/0012-oks-keypoints-surface.md</code></a> — keypoints plan order and kernel-canonical <code>max_dets = [20]</code>.</li>
 <li><a href="../../adr/0010-boundary-iou-isolated-subsystem/"><code>docs/adr/0010-boundary-iou-isolated-subsystem.md</code></a> — boundary IoU metric definition consumed by <code>iou_type = "boundary"</code>.</li>
+<li><a href="../../adr/0043-lrp-oracle-and-namespace/"><code>docs/adr/0043-lrp-oracle-and-namespace.md</code></a> / <a href="../../adr/0044-lrp-thresholds-and-tau-grid/"><code>docs/adr/0044-lrp-thresholds-and-tau-grid.md</code></a> / <a href="../../adr/0045-lrp-keypoints-shipped/"><code>docs/adr/0045-lrp-keypoints-shipped.md</code></a> — the LRP / oLRP semantics, per-kernel defaults, and keypoints support consumed by <code>--metric olrp</code>.</li>
 </ul>
 
 
