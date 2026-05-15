@@ -30,6 +30,13 @@ test-poison = []
 # call at end-of-run. Off by default; never compiled into shipped
 # wheels.
 bench-histogram = ["vernier-core/bench-histogram"]
+# ADR-0046 partitioned-eval matching-pass call counter. Surfaces
+# `_test_reset_panoptic_matching_count` /
+# `_test_read_panoptic_matching_count` and the sibling semantic
+# variants so the Python perf tests can assert the matching pass
+# runs exactly once regardless of slice count. Off by default; never
+# compiled into shipped wheels.
+_test-counter = []
 
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.0.2" }

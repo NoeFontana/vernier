@@ -531,15 +531,16 @@ class Evaluator:
         ``(axis, value)`` cell. ``cross_axes=`` opts joint cells in
         (per ADR-0046 §E2; marginals are the default).
 
-        Per ADR-0046 §"Performance", panoptic partitioned eval runs
-        as one ``evaluate_panoptic`` call per slice (the C1 path)
-        rather than the C3 path the instance paradigm uses: the
-        panoptic substrate computes its summary from per-image
-        accumulations rather than an AP-shaped accumulator tensor
-        that ``evaluate_partitioned`` could fan out over. The
-        ``overall`` summary is the un-partitioned eval over the full
-        handles, preserving the bit-identical-overall parity contract
-        by construction.
+        Per ADR-0046's C3 axiom, the matching + attribution pass
+        runs exactly once regardless of slice count: the panoptic
+        kernel emits per-image per-category accumulator deltas, and
+        the partition orchestrator folds + summarizes those deltas
+        under (a) no filter for ``overall`` and (b) each slice's
+        image-id set for the per-slice rows — the image-axis analogue
+        of ADR-0026's K-axis subset-at-summarize-time. The
+        ``overall`` summary is bit-identical to the un-partitioned
+        call by construction (the un-filtered fold reproduces the
+        canonical aggregation step verbatim).
         """
         if manifest is not None:
             from vernier.panoptic._partition import (

@@ -25,7 +25,7 @@
 //! merging) are documented follow-ups landing in PR-B5 alongside the
 //! preset constructors that drive them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -42,12 +42,16 @@ use vernier_semantic::{
     SemanticSummary, StreamingSemanticEvaluator, SummarizeOptions,
 };
 
+use crate::arrow_helpers::{wrap_batch, ArrowRecordBatchPy};
 use crate::background::BackgroundConfig;
 use crate::background_streaming::{
     BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError,
 };
+use crate::manifest_py::manifest_to_canonical_json;
 use crate::numpy_utils::ImageId;
+use crate::tables::{slices_record_batch_semantic, SemanticSliceRow};
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
+use vernier_core::manifest::partition_spec_from_manifest;
 
 /// Per-image label-map buffer extracted from a numpy ndarray. Lets the
 /// semantic FFI accept `uint8` / `uint16` / `uint32` natively (ADR-0037);
@@ -549,6 +553,326 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     });
 
     Ok(PySemanticSummary { inner: summary })
+}
+
+// ---------------------------------------------------------------------------
+// Partitioned semantic eval (ADR-0046 C3).
+//
+// One pass over the input images builds a `Vec<(image_id,
+// ConfusionMatrix)>` of per-image deltas; the partition orchestrator
+// then sums only the matrices for slice images and summarizes from
+// that fold. Confusion-matrix sums are u64-additive, so the fold is
+// bit-identical to a fresh kernel pass over the slice (no f64
+// non-associativity to worry about, unlike the panoptic path).
+// ---------------------------------------------------------------------------
+
+/// Test-only call counter for the semantic per-image fold pass.
+/// Symmetric to the panoptic counter; the Python perf test asserts
+/// the per-image fold runs **exactly once** regardless of slice count.
+#[cfg(any(test, feature = "_test-counter"))]
+static SEMANTIC_FOLD_PASS_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "_test-counter"))]
+fn inc_semantic_fold_count() {
+    SEMANTIC_FOLD_PASS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(any(test, feature = "_test-counter")))]
+fn inc_semantic_fold_count() {}
+
+#[cfg(any(test, feature = "_test-counter"))]
+#[pyfunction]
+pub(crate) fn _test_reset_semantic_fold_count() -> u64 {
+    SEMANTIC_FOLD_PASS_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(any(test, feature = "_test-counter"))]
+#[pyfunction]
+pub(crate) fn _test_read_semantic_fold_count() -> u64 {
+    SEMANTIC_FOLD_PASS_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Result of an ADR-0046 C3 partitioned semantic eval.
+///
+/// `overall` is bit-identical to a non-partitioned
+/// `evaluate_semantic_from_arrays` over the same inputs.
+#[pyclass(module = "vernier._core", name = "PartitionedSemanticReport", frozen)]
+pub(crate) struct PyPartitionedSemanticReport {
+    summary: SemanticSummary,
+    overall_n_images: u64,
+    slice_rows: Vec<SemanticSliceRow>,
+}
+
+#[pymethods]
+impl PyPartitionedSemanticReport {
+    /// Bit-identical to a non-partitioned `evaluate_semantic_from_arrays`
+    /// over the same inputs.
+    #[getter]
+    fn overall(&self) -> PySemanticSummary {
+        PySemanticSummary {
+            inner: self.summary.clone(),
+        }
+    }
+
+    /// Image count behind `overall`.
+    #[getter]
+    fn overall_n_images(&self) -> u64 {
+        self.overall_n_images
+    }
+
+    /// Always `0` — semantic has no detection notion; the column is
+    /// shape-parity with panoptic / instance.
+    #[getter]
+    fn overall_n_detections(&self) -> u64 {
+        0
+    }
+
+    /// Number of `(axis, value)` cells in the partition.
+    #[getter]
+    fn n_slices(&self) -> usize {
+        self.slice_rows.len()
+    }
+
+    /// Arrow `RecordBatch` of per-slice rows. Built fresh per call.
+    fn slices_capsule(&self) -> PyResult<ArrowRecordBatchPy> {
+        let batch = slices_record_batch_semantic(&self.slice_rows)
+            .map_err(|e| PyValueError::new_err(format!("arrow build failed: {e}")))?;
+        Ok(wrap_batch(batch))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PartitionedSemanticReport(overall_n_images={}, n_slices={})",
+            self.overall_n_images,
+            self.slice_rows.len(),
+        )
+    }
+}
+
+use crate::partition_py::warn_about_manifest;
+
+/// C3 partitioned semantic eval (ADR-0046 §"Performance").
+///
+/// Folds each image's `(gt, dt)` pair into a per-image confusion
+/// matrix exactly **once**, then aggregates + summarizes those
+/// matrices under (a) no filter for `overall` and (b) each slice's
+/// image-id set for the per-slice rows. The kernel is never re-run
+/// per slice — the load-bearing C3 axiom.
+#[pyfunction]
+#[pyo3(signature = (
+    gt_label_maps,
+    dt_label_maps,
+    n_classes,
+    parity_mode,
+    manifest,
+    *,
+    ignore_label = None,
+    label_remap = None,
+    class_filter = None,
+    class_grouping = None,
+    cross_axes = None,
+    key_kind = "image_id",
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_semantic_partitioned<'py>(
+    py: Python<'py>,
+    gt_label_maps: &Bound<'py, PyDict>,
+    dt_label_maps: &Bound<'py, PyDict>,
+    n_classes: u32,
+    parity_mode: &str,
+    manifest: &Bound<'py, PyAny>,
+    ignore_label: Option<u32>,
+    label_remap: Option<&Bound<'py, PyDict>>,
+    class_filter: Option<Vec<u32>>,
+    class_grouping: Option<Vec<(String, Vec<u32>)>>,
+    cross_axes: Option<Vec<Vec<String>>>,
+    key_kind: &str,
+) -> PyResult<PyPartitionedSemanticReport> {
+    if n_classes == 0 {
+        return Err(PyValueError::new_err(
+            "semantic evaluator requires n_classes >= 1",
+        ));
+    }
+    let mode = crate::parse_parity_mode(parity_mode)?;
+    let mut gt_maps = parse_semantic_label_maps(gt_label_maps, "semantic gt")?;
+    let mut dt_maps = parse_semantic_label_maps(dt_label_maps, "semantic dt")?;
+    let remap = parse_label_remap(label_remap)?;
+
+    for image_id in gt_maps.keys() {
+        if !dt_maps.contains_key(image_id) {
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::MissingPrediction {
+                    image_id: *image_id,
+                },
+            ));
+        }
+    }
+
+    if let Some(remap) = &remap {
+        for (_, _, buf) in dt_maps.values_mut() {
+            *buf = apply_remap_promote_u32(buf, remap);
+        }
+    }
+
+    if gt_maps.is_empty() {
+        return Err(semantic_error_to_pyerr(py, &SemanticError::EmptyDataset));
+    }
+
+    let mut image_ids: Vec<ImageId> = gt_maps.keys().copied().collect();
+    image_ids.sort_unstable();
+
+    let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
+    let cross = cross_axes.unwrap_or_default();
+
+    let image_id_to_idx: HashMap<vernier_core::dataset::ImageId, usize> = image_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (vernier_core::dataset::ImageId(*id), i))
+        .collect();
+    let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &image_id_to_idx, &cross)
+        .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
+    warn_about_manifest(py, &warnings)?;
+
+    // Pre-compute per-slice image-id filter sets on the FFI thread.
+    let mut slice_inputs: Vec<(String, String, HashSet<ImageId>, u64)> =
+        Vec::with_capacity(spec.slices.len());
+    for sl in &spec.slices {
+        let sem_ids: HashSet<ImageId> = sl.image_ids.iter().map(|id| id.0).collect();
+        let n_images = sem_ids.len() as u64;
+        slice_inputs.push((sl.axis.clone(), sl.value.clone(), sem_ids, n_images));
+    }
+
+    let n_images_overall = image_ids.len() as u64;
+
+    // Build the per-image work vec exactly like the un-partitioned
+    // path so the kernel walk is identical (matching pass parity).
+    let mut work: Vec<(ImageId, SemanticLabelMap, SemanticLabelMap)> =
+        Vec::with_capacity(image_ids.len());
+    for image_id in &image_ids {
+        let gt = gt_maps.remove(image_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "internal: missing gt label_map for image_id={image_id}"
+            ))
+        })?;
+        let dt = dt_maps.remove(image_id).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "internal: missing dt label_map for image_id={image_id}"
+            ))
+        })?;
+        if gt.0 != dt.0 || gt.1 != dt.1 {
+            return Err(semantic_error_to_pyerr(
+                py,
+                &SemanticError::ShapeMismatch {
+                    image_id: *image_id,
+                    gt_shape: (gt.0, gt.1),
+                    dt_shape: (dt.0, dt.1),
+                },
+            ));
+        }
+        work.push((*image_id, gt, dt));
+    }
+
+    struct SemSliceMetrics {
+        axis: String,
+        value: String,
+        n_images: u64,
+        miou: f64,
+        fwiou: f64,
+        pixel_accuracy: f64,
+        mean_accuracy: f64,
+    }
+    type C3Out = (SemanticSummary, Vec<SemSliceMetrics>);
+
+    let (overall_summary, slice_metrics) = py.detach(move || -> C3Out {
+        inc_semantic_fold_count();
+        // Per-image confusion matrices. Built once; folded under
+        // different filters at summarize time (C3).
+        //
+        // MEMORY: each `ConfusionMatrix` is `n_classes² * u64` =
+        // 8·N² bytes. At Cityscapes (19 classes) → 2.9 KB/image; at
+        // ADE20K (150) → 180 KB/image. At hypothetical LVIS-class
+        // scale (1203) the per-image matrices are ~11.6 MB each —
+        // 5k images would consume ~58 GB resident, which OOMs every
+        // realistic host. The semantic kernel was designed for
+        // ≤150 classes (see `vernier_semantic::kernel`); promoting
+        // it to LVIS scale requires a streamed-fold rewrite where
+        // slice accumulators take per-image contributions
+        // incrementally instead of materialising the per-image
+        // vector. Tracked as a follow-up.
+        let mut per_image: Vec<(ImageId, ConfusionMatrix)> = Vec::with_capacity(work.len());
+        for (image_id, (_, _, gt_buf), (_, _, dt_buf)) in &work {
+            let mut cm = ConfusionMatrix::zeros(n_classes);
+            fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut cm);
+            per_image.push((*image_id, cm));
+        }
+
+        let options = SummarizeOptions {
+            class_filter: class_filter.as_deref(),
+            class_groups: class_grouping.as_deref(),
+        };
+
+        // Overall — un-filtered sum.
+        let mut overall_cm = ConfusionMatrix::zeros(n_classes);
+        for (_, cm) in &per_image {
+            overall_cm.add_assign_unchecked(cm);
+        }
+        let overall = summarize_with_options(overall_cm, mode, &options);
+
+        // Per-slice — sum only the matrices for the slice's images.
+        let mut metrics: Vec<SemSliceMetrics> = Vec::with_capacity(slice_inputs.len());
+        for (axis, value, ids, n_images) in slice_inputs {
+            if ids.is_empty() {
+                metrics.push(SemSliceMetrics {
+                    axis,
+                    value,
+                    n_images: 0,
+                    miou: 0.0,
+                    fwiou: 0.0,
+                    pixel_accuracy: 0.0,
+                    mean_accuracy: 0.0,
+                });
+                continue;
+            }
+            let mut slice_cm = ConfusionMatrix::zeros(n_classes);
+            for (image_id, cm) in &per_image {
+                if ids.contains(image_id) {
+                    slice_cm.add_assign_unchecked(cm);
+                }
+            }
+            let summary = summarize_with_options(slice_cm, mode, &options);
+            metrics.push(SemSliceMetrics {
+                axis,
+                value,
+                n_images,
+                miou: summary.miou,
+                fwiou: summary.fwiou,
+                pixel_accuracy: summary.pixel_accuracy,
+                mean_accuracy: summary.mean_accuracy,
+            });
+        }
+        (overall, metrics)
+    });
+
+    let slice_rows: Vec<SemanticSliceRow> = slice_metrics
+        .into_iter()
+        .map(|m| SemanticSliceRow {
+            axis: m.axis,
+            value: m.value,
+            n_images: m.n_images,
+            n_detections: 0,
+            miou: m.miou,
+            fwiou: m.fwiou,
+            pixel_accuracy: m.pixel_accuracy,
+            mean_accuracy: m.mean_accuracy,
+        })
+        .collect();
+    Ok(PyPartitionedSemanticReport {
+        summary: overall_summary,
+        overall_n_images: n_images_overall,
+        slice_rows,
+    })
 }
 
 /// Dispatch [`accumulate_confusion`] over the runtime dtype of a
@@ -1239,9 +1563,16 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyGroupSemanticStats>()?;
     m.add_class::<PySemanticSummary>()?;
     m.add_class::<PyBackgroundSemanticEvaluator>()?;
+    m.add_class::<PyPartitionedSemanticReport>()?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_arrays, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_from_pngs, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_semantic_to_partial, m)?)?;
     m.add_function(wrap_pyfunction!(merge_semantic_partials, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_semantic_partitioned, m)?)?;
+    #[cfg(any(test, feature = "_test-counter"))]
+    {
+        m.add_function(wrap_pyfunction!(_test_reset_semantic_fold_count, m)?)?;
+        m.add_function(wrap_pyfunction!(_test_read_semantic_fold_count, m)?)?;
+    }
     Ok(())
 }
