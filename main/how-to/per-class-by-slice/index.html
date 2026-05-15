@@ -8,11 +8,13 @@
       
       
       
-        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/explanation/why-no-per-image-ap/">
+        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/how-to/per-class-by-slice/">
       
       
-        <link rel="prev" href="../lrp-and-its-limits/">
+        <link rel="prev" href="../distributed-eval/">
       
+      
+        <link rel="next" href="../../reference/">
       
       
         
@@ -23,7 +25,7 @@
     
     
       
-        <title>Why no per-image AP - vernier</title>
+        <title>Per-class metrics by manifest slice - vernier</title>
       
     
     
@@ -76,7 +78,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#why-per_image-does-not-ship-an-ap-column" class="md-skip">
+        <a href="#per-class-metrics-broken-down-by-manifest-slice" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +112,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Why no per-image AP
+              Per-class metrics by manifest slice
             
           </span>
         </div>
@@ -316,11 +318,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../how-to/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
           
   
   
@@ -356,13 +360,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../explanation/" class="md-tabs__link">
           
   
   
@@ -876,26 +878,31 @@
       
   
   
+    
   
   
+  
     
     
     
     
+      
+        
+        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" checked>
         
           
-          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="">
             
   
   
@@ -913,7 +920,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_6">
             <span class="md-nav__icon md-icon"></span>
             
@@ -931,7 +938,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/" class="md-nav__link">
+      <a href="../" class="md-nav__link">
         
   
   
@@ -959,7 +966,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/configure-evaluator/" class="md-nav__link">
+      <a href="../configure-evaluator/" class="md-nav__link">
         
   
   
@@ -987,7 +994,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/custom-evaluation-grids/" class="md-nav__link">
+      <a href="../custom-evaluation-grids/" class="md-nav__link">
         
   
   
@@ -1015,7 +1022,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/cli-eval/" class="md-nav__link">
+      <a href="../cli-eval/" class="md-nav__link">
         
   
   
@@ -1043,7 +1050,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/result-tables/" class="md-nav__link">
+      <a href="../result-tables/" class="md-nav__link">
         
   
   
@@ -1071,7 +1078,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/boundary-iou/" class="md-nav__link">
+      <a href="../boundary-iou/" class="md-nav__link">
         
   
   
@@ -1099,7 +1106,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/keypoints-oks/" class="md-nav__link">
+      <a href="../keypoints-oks/" class="md-nav__link">
         
   
   
@@ -1127,7 +1134,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/background-evaluator/" class="md-nav__link">
+      <a href="../background-evaluator/" class="md-nav__link">
         
   
   
@@ -1155,7 +1162,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/array-ingest/" class="md-nav__link">
+      <a href="../array-ingest/" class="md-nav__link">
         
   
   
@@ -1183,7 +1190,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../how-to/distributed-eval/" class="md-nav__link">
+      <a href="../distributed-eval/" class="md-nav__link">
         
   
   
@@ -1208,10 +1215,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../how-to/per-class-by-slice/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1227,6 +1261,37 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#why-not-a-built-in-resultper_class_slices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why not a built-in result.per_class_slices?
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1642,31 +1707,26 @@
       
   
   
-    
   
   
-  
     
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1684,7 +1744,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1702,7 +1762,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../" class="md-nav__link">
+      <a href="../../explanation/" class="md-nav__link">
         
   
   
@@ -1730,7 +1790,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../three-paradigms/" class="md-nav__link">
+      <a href="../../explanation/three-paradigms/" class="md-nav__link">
         
   
   
@@ -1758,7 +1818,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../tide-and-its-limits/" class="md-nav__link">
+      <a href="../../explanation/tide-and-its-limits/" class="md-nav__link">
         
   
   
@@ -1786,7 +1846,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../lrp-and-its-limits/" class="md-nav__link">
+      <a href="../../explanation/lrp-and-its-limits/" class="md-nav__link">
         
   
   
@@ -1811,37 +1871,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Why no per-image AP
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../explanation/why-no-per-image-ap/" class="md-nav__link">
         
   
   
@@ -1857,81 +1890,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#ap-integrates-a-curve-that-a-single-image-cannot-draw" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        AP integrates a curve that a single image cannot draw
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#faster-coco-eval-and-pycocotools-cli-surface-this-anyway" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Faster-coco-eval and pycocotools-cli surface this anyway
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#what-the-project-ships-instead" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        What the project ships instead
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-dataset-level-analog" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The dataset-level analog
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See also
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1964,70 +1922,79 @@
   
 
 
-<h1 id="why-per_image-does-not-ship-an-ap-column">Why <code>per_image</code> does not ship an AP column</h1>
-<p>The <code>per_image</code> result table introduced by <a href="../../adr/0019-result-tables/">ADR-0019</a>
-deliberately omits <code>ap</code> and <code>ap_50</code> columns. Pycocotools-cli and
-faster-coco-eval both expose a per-image AP value; vernier does not.
-This page records why — long enough that an issue asking "where is
-per-image AP?" can be closed by a link.</p>
-<h2 id="ap-integrates-a-curve-that-a-single-image-cannot-draw">AP integrates a curve that a single image cannot draw</h2>
-<p>Average precision is the area under a precision-recall curve, swept
-over a sorted list of detections. The shape of the curve is the
-contribution. A <em>dataset-level</em> PR curve has thousands of points and
-is a meaningful signal.</p>
-<p>A <em>single-image</em> PR curve almost never does. Most images contribute
-fewer than ten detections and one or two ground truths. The resulting
-curve is a step function with one or two points, and its area is
-either 0.0 or 1.0 in the overwhelming majority of cells. The number
-is precisely defined; it just is not comparable across images,
-because images with three detections and images with three hundred
-produce the same statistic via incompatible curves.</p>
-<h2 id="faster-coco-eval-and-pycocotools-cli-surface-this-anyway">Faster-coco-eval and pycocotools-cli surface this anyway</h2>
-<p>Both tools compute per-image AP via the same <code>accumulate</code> machinery
-used for the dataset summary, applied to one image's detections. The
-output is a one-cell number that users plot, sort, and act on. The
-most common artifact is a histogram piled at exactly 0.0 and 1.0
-with an uninformative tail. Users then set thresholds, mine "hard
-images", and chase phantom regressions on a metric that has no
-statistical meaning at that granularity. We do not ship the column
-because we do not want to encode a default that misleads.</p>
-<h2 id="what-the-project-ships-instead">What the project ships instead</h2>
-<p>The <code>per_image</code> schema (see ADR-0019 §<code>per_image</code>) reports raw counts —
-<code>tp_at_50</code>, <code>fp_at_50</code>, <code>fn_at_50</code> and their <code>_75</code> siblings — plus
-<code>tp_mean_iou</code>. These are well-defined per-image, comparable across
-images of different sizes, and direct inputs to the failure-mining
-queries the table exists to enable. Users who genuinely want
-per-image PR curves have the data: <code>per_pair</code> carries IoU values
-keyed by <code>(detection_id, ground_truth_id, image_id)</code>, and the curve
-for a single image at IoU 0.50 is a 5-line polars expression:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">pairs</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">per_pair</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;image_id&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="mi">42</span><span class="p">)</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">matches</span> <span class="o">=</span> <span class="n">pairs</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;iou&quot;</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mf">0.5</span><span class="p">)</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Sort by score elsewhere (per_detection) to draw the curve.</span>
-</span></code></pre></div>
-<p>This is the same composition we ask of users elsewhere: vernier
-ships the data primitives; user-defined metrics layer on top.</p>
-<h2 id="the-dataset-level-analog">The dataset-level analog</h2>
-<p>Even the dataset-level pycocotools layout has the same problem in
-miniature. Quirk <strong>C5</strong> (see
-<a href="../../engineering/pycocotools-quirks/"><code>docs/engineering/pycocotools-quirks.md</code></a>)
-records that a category with no ground truths is initialized to <code>-1</code>
-and <em>filtered out</em> of the mean rather than counted as zero. Without
-that filter, an empty category would drag the headline AP to
-nonsense. The <code>per_image</code> AP omission is the same discipline applied
-one level deeper.</p>
-<h2 id="see-also">See also</h2>
+<h1 id="per-class-metrics-broken-down-by-manifest-slice">Per-class metrics broken down by manifest slice</h1>
+<p><code>Evaluator.evaluate(tables=...)</code> and <code>Evaluator.evaluate(manifest=...)</code>
+each ship the half a user typically needs:</p>
 <ul>
-<li><a href="../../adr/0019-result-tables/">ADR-0019</a> §<code>per_image</code> — schema
-  decision, including the explicit list of columns omitted.</li>
-<li><a href="../../engineering/pycocotools-quirks/"><code>docs/engineering/pycocotools-quirks.md</code></a>
-  §C5 — the absent-category sentinel that motivates the same
-  discipline at dataset scope.</li>
-<li><a href="../../how-to/result-tables/"><code>docs/how-to/result-tables.md</code></a> —
-  recipes that use <code>per_image</code> counts and <code>per_pair</code> IoUs in lieu of
-  a per-image AP column.</li>
+<li><code>tables=("per_class",)</code> produces a per-class table (one row per
+  category, columns are <code>ap_s</code> / <code>ap_m</code> / <code>ap_l</code> / etc.).</li>
+<li><code>manifest=...</code> produces a slices table (one row per <code>(axis, value)</code>
+  cell, columns are the same metric set).</li>
 </ul>
+<p><strong>Their cross product — per-class metrics broken down by manifest slice
+— is a deliberate non-feature.</strong> Combining the two kwargs raises
+<code>ValueError</code>:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">ev</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">tables</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;per_class&quot;</span><span class="p">,),</span> <span class="n">manifest</span><span class="o">=</span><span class="n">meta</span><span class="p">)</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="c1"># ValueError: tables= and manifest= cannot be combined; see</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="c1"># docs/how-to/per-class-by-slice.md for the recipe.</span>
+</span></code></pre></div>
+<p>If you actually need the cross product (AP for category 17 <em>within</em>
+<code>weather=fog</code>), assemble it client-side. The pattern is one
+<code>Evaluator.evaluate(tables=...)</code> call per slice over a filtered
+detection set:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">Evaluator</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">gt_bytes</span> <span class="o">=</span> <span class="nb">open</span><span class="p">(</span><span class="s2">&quot;gt.json&quot;</span><span class="p">,</span> <span class="s2">&quot;rb&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read</span><span class="p">()</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">dt_records</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="s2">&quot;dt.json&quot;</span><span class="p">))</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">manifest</span> <span class="o">=</span> <span class="n">json</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="nb">open</span><span class="p">(</span><span class="s2">&quot;weather.json&quot;</span><span class="p">))</span>  <span class="c1"># key_kind=&quot;image_id&quot;</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="p">)</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="c1"># 1) Build {image_id -&gt; {axis -&gt; value}} from the manifest.</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="n">assignments</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">int</span><span class="p">,</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span> <span class="o">=</span> <span class="p">{}</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">manifest</span><span class="p">[</span><span class="s2">&quot;rows&quot;</span><span class="p">]:</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>    <span class="n">image_id</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">row</span><span class="p">[</span><span class="s2">&quot;key&quot;</span><span class="p">])</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a>    <span class="n">assignments</span><span class="p">[</span><span class="n">image_id</span><span class="p">]</span> <span class="o">=</span> <span class="p">{</span><span class="n">k</span><span class="p">:</span> <span class="n">v</span> <span class="k">for</span> <span class="n">k</span><span class="p">,</span> <span class="n">v</span> <span class="ow">in</span> <span class="n">row</span><span class="o">.</span><span class="n">items</span><span class="p">()</span> <span class="k">if</span> <span class="n">k</span> <span class="o">!=</span> <span class="s2">&quot;key&quot;</span><span class="p">}</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="c1"># 2) For each (axis, value) cell the manifest reaches, run per_class</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="c1">#    over the slice&#39;s detections.</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="n">per_slice_per_class</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">str</span><span class="p">],</span> <span class="n">pl</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">]</span> <span class="o">=</span> <span class="p">{}</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="k">for</span> <span class="n">axis</span> <span class="ow">in</span> <span class="p">{</span><span class="n">a</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">assignments</span><span class="o">.</span><span class="n">values</span><span class="p">()</span> <span class="k">for</span> <span class="n">a</span> <span class="ow">in</span> <span class="n">row</span><span class="p">}:</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a>    <span class="n">values</span> <span class="o">=</span> <span class="p">{</span><span class="n">row</span><span class="p">[</span><span class="n">axis</span><span class="p">]</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">assignments</span><span class="o">.</span><span class="n">values</span><span class="p">()</span> <span class="k">if</span> <span class="n">axis</span> <span class="ow">in</span> <span class="n">row</span><span class="p">}</span>
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a>    <span class="k">for</span> <span class="n">value</span> <span class="ow">in</span> <span class="n">values</span><span class="p">:</span>
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a>        <span class="n">slice_image_ids</span> <span class="o">=</span> <span class="p">{</span>
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a>            <span class="n">iid</span> <span class="k">for</span> <span class="n">iid</span><span class="p">,</span> <span class="n">axes</span> <span class="ow">in</span> <span class="n">assignments</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a>            <span class="k">if</span> <span class="n">axes</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="n">axis</span><span class="p">)</span> <span class="o">==</span> <span class="n">value</span>
+</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a>        <span class="p">}</span>
+</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a>        <span class="n">slice_dt</span> <span class="o">=</span> <span class="p">[</span><span class="n">r</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">dt_records</span> <span class="k">if</span> <span class="n">r</span><span class="p">[</span><span class="s2">&quot;image_id&quot;</span><span class="p">]</span> <span class="ow">in</span> <span class="n">slice_image_ids</span><span class="p">]</span>
+</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a>        <span class="n">result</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">gt_bytes</span><span class="p">,</span> <span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">slice_dt</span><span class="p">)</span><span class="o">.</span><span class="n">encode</span><span class="p">(),</span> <span class="n">tables</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;per_class&quot;</span><span class="p">,))</span>
+</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a>        <span class="n">per_slice_per_class</span><span class="p">[(</span><span class="n">axis</span><span class="p">,</span> <span class="n">value</span><span class="p">)]</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">per_class</span>
+</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a>
+</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="c1"># 3) Stack into one long table for analysis.</span>
+</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="n">long</span> <span class="o">=</span> <span class="n">pl</span><span class="o">.</span><span class="n">concat</span><span class="p">([</span>
+</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a>    <span class="n">df</span><span class="o">.</span><span class="n">with_columns</span><span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">lit</span><span class="p">(</span><span class="n">axis</span><span class="p">)</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="s2">&quot;axis&quot;</span><span class="p">),</span> <span class="n">pl</span><span class="o">.</span><span class="n">lit</span><span class="p">(</span><span class="n">value</span><span class="p">)</span><span class="o">.</span><span class="n">alias</span><span class="p">(</span><span class="s2">&quot;value&quot;</span><span class="p">))</span>
+</span><span id="__span-1-34"><a id="__codelineno-1-34" name="__codelineno-1-34" href="#__codelineno-1-34"></a>    <span class="k">for</span> <span class="p">(</span><span class="n">axis</span><span class="p">,</span> <span class="n">value</span><span class="p">),</span> <span class="n">df</span> <span class="ow">in</span> <span class="n">per_slice_per_class</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+</span><span id="__span-1-35"><a id="__codelineno-1-35" name="__codelineno-1-35" href="#__codelineno-1-35"></a><span class="p">],</span> <span class="n">how</span><span class="o">=</span><span class="s2">&quot;diagonal&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<p>The pattern runs the matching engine <code>N</code> times (one per slice) — C1 in
+ADR-0046's terminology, not the C3 axiom the partitioned <code>result.slices</code>
+path honors. For most workflows this is fine because per-class queries
+aren't latency-sensitive (they're an offline analysis step, not part
+of training loop telemetry).</p>
+<h2 id="why-not-a-built-in-resultper_class_slices">Why not a built-in <code>result.per_class_slices</code>?</h2>
+<p>A built-in would need to retain each slice's <code>Accumulated</code> tensor (one
+per category × area × maxDets cell × slice) across the partition
+orchestrator and surface a paradigm-specific Arrow builder per slice.
+For the niche of users who actually need the cross product, the
+recipe above is one screen of code and runs in the same time as the
+built-in would (the per-slice eval inside vernier <em>is</em> the dominant
+cost).</p>
+<p>If your workflow needs the cross product on <strong>every</strong> evaluate call
+(e.g. for a regression-tracking bucket on a corruption sweep), please
+open an issue with the use case — the design space is shipped enough
+that a focused FFI surface drop-in is feasible if there's demand.</p>
 
 
 
