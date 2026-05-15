@@ -1624,6 +1624,17 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#accepted-input-shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accepted input shapes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#top-level-fields" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1675,6 +1686,23 @@
       
     </span>
   </a>
+  
+    <nav class="md-nav" aria-label="Metric column selection">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#canonical-mapping-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canonical mapping table
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1977,6 +2005,16 @@
 <h1 id="vernier-aggregate-emit-json-output-schema-aggregate_version-1"><code>vernier aggregate --emit json</code> output schema (<code>aggregate_version: "1"</code>)</h1>
 <p>The fan-in companion to <code>vernier eval --manifest</code> (ADR-0046). Reads N result documents (v1 or v2), joins each to a <code>key_kind=result</code> manifest by <code>--label</code> (falling back to the result file path's basename when a result has no label), groups runs by <code>(axis, value)</code>, and emits a comparative per-slice table.</p>
 <p>The output lives in its own version namespace — <code>aggregate_version</code>, not <code>version</code> — because the verb and consumer differ from <code>vernier eval</code>'s output. Coupling their version axes would force lockstep bumps the lifecycles do not warrant.</p>
+<h2 id="accepted-input-shapes">Accepted input shapes</h2>
+<p>Both the Rust CLI (<code>vernier aggregate</code>) and the Python entry point (<code>vernier.aggregate</code>) accept the same input shapes:</p>
+<ul>
+<li><strong>CLI v2 JSON envelope.</strong> The on-disk format <code>vernier eval --manifest --emit json=…</code> produces. Each <code>overall</code> / slice entry carries:</li>
+<li><code>lines: [{metric, iou_threshold, iou_threshold_label, area, max_dets, value}, …]</code> — one row per stat in plan order.</li>
+<li><code>stats: [v1, v2, …]</code> — the same values as <code>lines[].value</code>, kept for pycocotools-style positional access. <code>stats</code> is <strong>redundant</strong> with <code>lines</code> by construction; the aggregator reads <code>lines</code> and discards the positional <code>stats</code> array.</li>
+<li><strong>Dict-keyed <code>stats</code> shape.</strong> A v2 doc whose <code>stats</code> field is a <code>{name: value}</code> map. Used by Python-side fixtures and by callers that already key metrics by their final column name. Each key is the column name verbatim; no further canonicalization is applied.</li>
+<li><strong>Arrow <code>RecordBatch</code> / <code>Table</code></strong> (Python entry point only). The canonical wide slice-table shape with columns <code>axis</code>, <code>value</code>, plus metric Float64 columns. Column names are whatever the producer emitted (e.g. the in-process <code>vernier.instance.Evaluator</code> schema in <code>crates/vernier-ffi/src/tables.rs</code>).</li>
+</ul>
+<p>CLI v2 JSON output is a <strong>first-class input</strong> to <code>vernier.aggregate</code>: piping <code>vernier eval --manifest out.json</code> and then calling <code>vernier.aggregate([out.json], manifest=…)</code> is a supported flow.</p>
 <h2 id="top-level-fields">Top-level fields</h2>
 <table>
 <thead>
@@ -2060,6 +2098,120 @@
 <li><strong>Canonical.</strong> Every line is also exposed under the full canonical name <code>&lt;metric&gt;_&lt;iou_label&gt;_&lt;area&gt;_&lt;max_dets&gt;</code> (e.g. <code>AP_0.50:0.95_all_100</code>). Use this when an alias does not apply (custom area ranges, non-default <code>max_dets</code>).</li>
 </ul>
 <p>Both naming conventions resolve to the same column value, so <code>--metric ap</code> and <code>--metric AP_0.50:0.95_all_100</code> are equivalent on a default-shaped detection result.</p>
+<h3 id="canonical-mapping-table">Canonical mapping table</h3>
+<p>The CLI's <code>lines[]</code> entries deterministically map to the column names below. The Rust source of truth is <code>crates/vernier-cli/src/commands/aggregate.rs::position_alias</code>; <code>vernier.aggregate</code> mirrors it in <code>python/vernier/aggregate.py::_position_alias</code> so the two paths agree byte-for-byte on the same v2 JSON document.</p>
+<table>
+<thead>
+<tr>
+<th><code>metric</code></th>
+<th><code>iou_threshold_label</code></th>
+<th><code>area</code></th>
+<th><code>max_dets</code></th>
+<th>Alias</th>
+<th>Canonical</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>AP</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>all</code></td>
+<td>any</td>
+<td><code>ap</code></td>
+<td><code>AP_0.50:0.95_all_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AP</code></td>
+<td><code>0.50</code></td>
+<td><code>all</code></td>
+<td>any</td>
+<td><code>ap50</code></td>
+<td><code>AP_0.50_all_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AP</code></td>
+<td><code>0.75</code></td>
+<td><code>all</code></td>
+<td>any</td>
+<td><code>ap75</code></td>
+<td><code>AP_0.75_all_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AP</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>small</code></td>
+<td>any</td>
+<td><code>ap_small</code></td>
+<td><code>AP_0.50:0.95_small_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AP</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>medium</code></td>
+<td>any</td>
+<td><code>ap_medium</code></td>
+<td><code>AP_0.50:0.95_medium_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AP</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>large</code></td>
+<td>any</td>
+<td><code>ap_large</code></td>
+<td><code>AP_0.50:0.95_large_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AR</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>all</code></td>
+<td><code>1</code></td>
+<td><code>ar_1</code></td>
+<td><code>AR_0.50:0.95_all_1</code></td>
+</tr>
+<tr>
+<td><code>AR</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>all</code></td>
+<td><code>10</code></td>
+<td><code>ar_10</code></td>
+<td><code>AR_0.50:0.95_all_10</code></td>
+</tr>
+<tr>
+<td><code>AR</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>all</code></td>
+<td><code>100</code></td>
+<td><code>ar_100</code></td>
+<td><code>AR_0.50:0.95_all_100</code></td>
+</tr>
+<tr>
+<td><code>AR</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>small</code></td>
+<td>any</td>
+<td><code>ar_small</code></td>
+<td><code>AR_0.50:0.95_small_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AR</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>medium</code></td>
+<td>any</td>
+<td><code>ar_medium</code></td>
+<td><code>AR_0.50:0.95_medium_&lt;max_dets&gt;</code></td>
+</tr>
+<tr>
+<td><code>AR</code></td>
+<td><code>0.50:0.95</code></td>
+<td><code>large</code></td>
+<td>any</td>
+<td><code>ar_large</code></td>
+<td><code>AR_0.50:0.95_large_&lt;max_dets&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>A line whose tuple does not match any row above is exposed <strong>only</strong> under its canonical name. This applies to custom IoU thresholds, custom area ranges, and non-default <code>max_dets</code> ladders.</p>
+<p>Note: the Arrow-input path (<code>vernier.instance.Evaluator().slices</code>) uses a slightly different column convention (<code>ap50</code> / <code>ap75</code> / <code>ap_s</code> / <code>ap_m</code> / <code>ap_l</code> / <code>ar_max_1</code> / <code>ar_max_10</code> / <code>ar_max_100</code> / <code>ar_s</code> / <code>ar_m</code> / <code>ar_l</code>) because it is sourced from the FFI table schema in <code>crates/vernier-ffi/src/tables.rs</code>. The two conventions are pinned today; reconciling them is tracked separately.</p>
 <h2 id="worked-example">Worked example</h2>
 <div class="language-json highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">&quot;aggregate_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;1&quot;</span><span class="p">,</span>

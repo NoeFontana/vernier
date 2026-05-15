@@ -1848,6 +1848,28 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#vernier.panoptic.Dataset.image_ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;image_ids
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.panoptic.Dataset.subset_by_image_ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;subset_by_image_ids
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -1877,10 +1899,54 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#vernier.panoptic.Predictions.num_segments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;num_segments
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#vernier.panoptic.Predictions.from_arrays" class="md-nav__link">
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_arrays
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.panoptic.Predictions.image_ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;image_ids
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.panoptic.Predictions.num_segments_for" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;num_segments_for
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.panoptic.Predictions.subset_by_image_ids" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;subset_by_image_ids
       
     </span>
   </a>
@@ -2157,6 +2223,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;per_class
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.panoptic.EvalResult.slices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;slices
       
     </span>
   </a>
@@ -3808,6 +3885,61 @@ whose pixel values are panoptic segment ids
 
 </div>
 
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.panoptic.Dataset.image_ids" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">image_ids</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-method descriptor"><code>method descriptor</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">image_ids</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n"><span title="list">list</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Image ids present in this dataset. Order is unspecified — the
+caller must sort if a deterministic order is required.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.panoptic.Dataset.subset_by_image_ids" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">subset_by_image_ids</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-method descriptor"><code>method descriptor</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">subset_by_image_ids</span><span class="p">(</span><span class="n">ids</span><span class="p">:</span> <span class="n"><span title="list">list</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Dataset (vernier._core.PanopticDataset)" href="#vernier.panoptic.Dataset">PanopticDataset</a></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Build a new <code>PanopticDataset</code> retaining only the entries whose
+image id is in <code>ids</code> (ADR-0046 §"Panoptic / semantic partitioning").</p>
+<p>Ids absent from this dataset are skipped silently — the
+Python-level partition orchestrator has already done the
+known-key intersection at manifest parse time. Categories are
+preserved verbatim (they are a dataset-level taxonomy, not
+per-image).</p>
+
+
+    </div>
+
+</div>
+
 
 
   </div>
@@ -3877,6 +4009,31 @@ whose pixel values are panoptic segment ids
 
 </div>
 
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="vernier.panoptic.Predictions.num_segments" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">num_segments</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">num_segments</span><span class="p">:</span> <span class="n"><span title="int">int</span></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Total number of DT segments across all images. Used as the
+<code>n_detections</code> cell on the panoptic slices table (ADR-0046).</p>
+
+    </div>
+
+</div>
+
 
 
 
@@ -3906,6 +4063,88 @@ The DT-side validation runs the full S1/S11 PNG-vs-segments_info
 cross-check, recomputes per-segment areas from PNG marginals
 (quirk <strong>S3</strong>), and rejects duplicate ids
 ([<code>PanopticError::DuplicateSegmentId</code>]).</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.panoptic.Predictions.image_ids" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">image_ids</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-method descriptor"><code>method descriptor</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">image_ids</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n"><span title="list">list</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Image ids present in this predictions handle. Order is
+unspecified — the caller must sort if a deterministic order is
+required.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.panoptic.Predictions.num_segments_for" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">num_segments_for</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-method descriptor"><code>method descriptor</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">num_segments_for</span><span class="p">(</span><span class="n">ids</span><span class="p">:</span> <span class="n"><span title="list">list</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n"><span title="int">int</span></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Total number of DT segments across the images in <code>ids</code>. Lets
+the Python-side partition loop count <code>n_detections</code> per slice
+without rebuilding the per-slice [<code>PanopticPredictions</code>] just
+to read its [<code>Self::num_segments</code>].</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.panoptic.Predictions.subset_by_image_ids" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">subset_by_image_ids</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-method descriptor"><code>method descriptor</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">subset_by_image_ids</span><span class="p">(</span><span class="n">ids</span><span class="p">:</span> <span class="n"><span title="list">list</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">])</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Predictions (vernier._core.PanopticPredictions)" href="#vernier.panoptic.Predictions">PanopticPredictions</a></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Build a new <code>PanopticPredictions</code> retaining only the entries
+whose image id is in <code>ids</code> (ADR-0046 §"Panoptic / semantic
+partitioning"). Mirrors
+[<code>PyPanopticDataset::subset_by_image_ids</code>]; predictions do not
+carry a category taxonomy (quirk <strong>S9</strong>), so nothing else
+needs to be threaded through.</p>
 
 
     </div>
@@ -4649,7 +4888,10 @@ ADR or doc page).</p>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">EvalResult</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">summary</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.PanopticSummary)" href="#vernier.panoptic.Summary">PanopticSummary</a></span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">_per_class_batch</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">_slices_batch</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">overall_n_images</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">overall_n_detections</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4659,6 +4901,10 @@ ADR or doc page).</p>
         <p>Opt-in result of :meth:<code>Evaluator.evaluate</code> when <code>tables=</code> is
 passed. Carries :class:<code>Summary</code> plus a polars DataFrame view of
 the per-class panoptic-quality breakdown.</p>
+<p>Also returned when <code>manifest=</code> is passed (ADR-0046 partitioned
+eval): the <code>.summary</code> field carries the bit-identical-to-
+un-partitioned <code>overall</code> summary, and the :attr:<code>slices</code>
+DataFrame view exposes the per-<code>(axis, value)</code> cell metrics.</p>
 
 
 
@@ -4699,6 +4945,35 @@ the per-class panoptic-quality breakdown.</p>
 
         <p>One row per category. Columns: <code>category_id</code>, <code>pq</code>,
 <code>sq</code>, <code>rq</code>, <code>n_tp</code>, <code>n_fp</code>, <code>n_fn</code>, <code>iou_sum</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="vernier.panoptic.EvalResult.slices" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">slices</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">slices</span><span class="p">:</span> <span class="n"><span title="polars.DataFrame">DataFrame</span></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>One row per <code>(axis, value)</code> partition cell (ADR-0046).
+Columns: <code>axis</code>, <code>value</code>, <code>n_images</code>, <code>n_detections</code>,
+<code>pq</code>, <code>sq</code>, <code>rq</code>. Available only when the originating
+<code>evaluate(...)</code> call carried a <code>manifest=</code> keyword; raises
+:class:<code>RuntimeError</code> otherwise.</p>
 
     </div>
 
@@ -4897,6 +5172,19 @@ is in place.</p>
   
       dataclass
    (vernier.panoptic.EvalResult)" href="#vernier.panoptic.EvalResult">EvalResult</a></span>
+</span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">evaluate</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Dataset (vernier._core.PanopticDataset)" href="#vernier.panoptic.Dataset">PanopticDataset</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Predictions (vernier._core.PanopticPredictions)" href="#vernier.panoptic.Predictions">PanopticPredictions</a></span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><span title="object">object</span></span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+
+
+  
+      dataclass
+   (vernier.panoptic.EvalResult)" href="#vernier.panoptic.EvalResult">EvalResult</a></span>
 </span></code></pre></div>          </div>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">evaluate</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Dataset (vernier._core.PanopticDataset)" href="#vernier.panoptic.Dataset">PanopticDataset</a></span><span class="p">,</span>
@@ -4926,14 +5214,24 @@ Defaults to <code>None</code>, returning :class:<code>Summary</code> (existing
 behavior, bit-identical to the pre-tables release). Pass
 <code>"all"</code> or a tuple of :data:<code>TableName</code> values to opt into
 the wider :class:<code>EvalResult</code> return type.</p>
-<p><code>manifest=</code> for ADR-0046 partitioned eval is <strong>deferred</strong>
-on the panoptic paradigm. The panoptic substrate computes its
-summary from per-image accumulations rather than an AP-shaped
-accumulator tensor; cleanly subsetting requires either a
-<code>PanopticDataset.subset_by_image_ids</code> accessor (not yet
-exposed) or a Python-side per-slice reconstruction. Both are
-tracked as ADR-0046 phase-2 work. Pass <code>manifest=</code> to get a
-:class:<code>NotImplementedError</code> carrying the same pointer.</p>
+<p><code>manifest=</code> opts into ADR-0046 partitioned eval. Accepts a
+dict (the canonical JSON-records shape), a file path
+(<code>.json</code>), or any object exposing the Arrow PyCapsule
+Interface (a polars / pandas / pyarrow DataFrame of per-image
+metadata). Returns an :class:<code>EvalResult</code> whose <code>.summary</code>
+is bit-identical to the un-partitioned call and whose
+<code>.slices</code> property is a polars DataFrame with one row per
+<code>(axis, value)</code> cell. <code>cross_axes=</code> opts joint cells in
+(per ADR-0046 §E2; marginals are the default).</p>
+<p>Per ADR-0046 §"Performance", panoptic partitioned eval runs
+as one <code>evaluate_panoptic</code> call per slice (the C1 path)
+rather than the C3 path the instance paradigm uses: the
+panoptic substrate computes its summary from per-image
+accumulations rather than an AP-shaped accumulator tensor
+that <code>evaluate_partitioned</code> could fan out over. The
+<code>overall</code> summary is the un-partitioned eval over the full
+handles, preserving the bit-identical-overall parity contract
+by construction.</p>
 
 
     </div>
