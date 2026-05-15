@@ -1,0 +1,17 @@
+{
+  "metadata": {
+    "vernier.schema_version": "1",
+    "vernier.table": "calibration_reliability"
+  },
+  "fields": [
+    {"name": "bin_id", "type": "uint32", "nullable": false},
+    {"name": "score_lo", "type": "float64", "nullable": false},
+    {"name": "score_hi", "type": "float64", "nullable": false},
+    {"name": "mean_score", "type": "float64", "nullable": false},
+    {"name": "accuracy", "type": "float64", "nullable": false},
+    {"name": "count", "type": "uint64", "nullable": false},
+    {"name": "gap", "type": "float64", "nullable": false},
+    {"name": "ci_lo", "type": "float64", "nullable": false},
+    {"name": "ci_hi", "type": "float64", "nullable": false}
+  ]
+}

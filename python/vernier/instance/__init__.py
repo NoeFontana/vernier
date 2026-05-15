@@ -42,6 +42,7 @@ from vernier._core import (
     evaluate_boundary_partitioned,
     evaluate_boundary_summary,
     evaluate_boundary_summary_with_dataset,
+    evaluate_keypoints_grid,
     evaluate_keypoints_partitioned,
     evaluate_keypoints_summary,
     evaluate_keypoints_summary_with_dataset,
@@ -53,6 +54,9 @@ from vernier._core import (
     per_detection_to_arrow_pycapsule,
     per_image_to_arrow_pycapsule,
     per_pair_to_arrow_pycapsule,
+)
+from vernier._core import (
+    cells_from_grid as _cells_from_grid,
 )
 from vernier._core import (
     evaluate_instance_to_partial as _evaluate_instance_to_partial,
@@ -439,6 +443,7 @@ class Evaluator:
         tables_config: TablesConfig | None = None,
         manifest: None = None,
         cross_axes: None = None,
+        calibration: Literal[False] = False,
     ) -> Summary: ...
 
     @overload
@@ -451,6 +456,7 @@ class Evaluator:
         tables_config: TablesConfig | None = None,
         manifest: None = None,
         cross_axes: None = None,
+        calibration: bool = False,
     ) -> EvalResult: ...
 
     @overload
@@ -463,6 +469,20 @@ class Evaluator:
         tables_config: TablesConfig | None = None,
         manifest: Manifest,
         cross_axes: Sequence[Sequence[str]] | None = None,
+        calibration: Literal[False] = False,
+    ) -> EvalResult: ...
+
+    @overload
+    def evaluate(
+        self,
+        gt: bytes | CocoDataset,
+        dt: DetectionsInput,
+        *,
+        tables: None = None,
+        tables_config: TablesConfig | None = None,
+        manifest: None = None,
+        cross_axes: None = None,
+        calibration: Literal[True],
     ) -> EvalResult: ...
 
     def evaluate(
@@ -474,6 +494,7 @@ class Evaluator:
         tables_config: TablesConfig | None = None,
         manifest: Manifest | None = None,
         cross_axes: Sequence[Sequence[str]] | None = None,
+        calibration: bool = False,
     ) -> Summary | EvalResult:
         """Run the evaluation pipeline against a GT/DT pair.
 
@@ -503,6 +524,14 @@ class Evaluator:
         ``(axis, value)`` cell. ``cross_axes=`` opts joint cells in
         (per ADR-0046 §E2; marginals are the default).
 
+        ``calibration=`` opts into ADR-0018 detection-family calibration.
+        When ``True``, the per-image cell store is retained on the
+        returned :class:`EvalResult` (as ``_eval_cells``) and
+        :meth:`EvalResult.calibration` becomes available; the canonical
+        ``tables=None`` fast path is upgraded from :class:`Summary` to
+        :class:`EvalResult` to carry the handle. Not currently supported
+        on the ``manifest=`` partitioned path.
+
         Per ADR-0040, raises :class:`IncompatibleSummaryPlan` when
         ``iou_thresholds`` / ``recall_thresholds`` / ``area_ranges``
         is set explicitly: the canonical 12-stat summary plan is keyed
@@ -529,15 +558,27 @@ class Evaluator:
                     "per slice with a filtered detection set — see "
                     "docs/how-to/per-class-by-slice.md."
                 )
+            if calibration:
+                raise ValueError(
+                    "calibration=True and manifest= cannot be combined; "
+                    "calibration over the per-image cell store is not yet wired on "
+                    "the ADR-0046 partitioned path. Run un-partitioned with "
+                    "calibration=True to fold the full-dataset cells."
+                )
             if isinstance(gt, CocoDataset):
                 raise NotImplementedError(
                     "manifest= currently requires GT JSON bytes; CocoDataset handles "
                     "on the partitioned path are a follow-up."
                 )
             return self._evaluate_partitioned(gt, dt, max_dets_list, manifest, cross_axes)
-        if tables is not None:
+        if tables is not None or calibration:
             return self._evaluate_with_tables(
-                gt, dt, max_dets_list, tables, tables_config or TablesConfig()
+                gt,
+                dt,
+                max_dets_list,
+                tables,
+                tables_config or TablesConfig(),
+                calibration=calibration,
             )
         if isinstance(gt, CocoDataset):
             return self._evaluate_with_dataset(gt, dt, max_dets_list)
@@ -663,13 +704,25 @@ class Evaluator:
         gt: bytes | CocoDataset,
         dt: DetectionsInput,
         max_dets_list: list[int],
-        tables: Literal["all"] | tuple[TableName, ...],
+        tables: Literal["all"] | tuple[TableName, ...] | None,
         tables_config: TablesConfig,
+        *,
+        calibration: bool = False,
     ) -> EvalResult:
         """Tables-enabled evaluate path. Builds the EvalGrid, runs
         accumulate + summarize, then dispatches per-table FFI builders
-        for the requested set."""
-        requested = normalize_tables_arg(tables, SUPPORTED_TABLES)
+        for the requested set.
+
+        ``calibration=True`` additionally materializes an
+        :class:`vernier._core.EvalCells` handle off the grid and stashes
+        it on the returned :class:`EvalResult` for the ADR-0018
+        calibration fold. With both ``tables=None`` and
+        ``calibration=True`` we still go through this path so the grid
+        is available; only the per-table FFI calls are short-circuited.
+        """
+        requested: set[TableName] = (
+            normalize_tables_arg(tables, SUPPORTED_TABLES) if tables is not None else set()
+        )
 
         # The tables= path needs JSON bytes today; pre-parsed CocoDataset
         # handles aren't threaded through yet.
@@ -730,10 +783,23 @@ class Evaluator:
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
                 )
-            case Keypoints():
-                raise NotImplementedError(
-                    "tables= is detection-only in v0.5; keypoints uses a 3-bucket "
-                    "area grid that per_image/per_class do not target"
+            case Keypoints(sigmas=s):
+                if requested:
+                    raise NotImplementedError(
+                        "tables= is detection-only in v0.5; keypoints uses a 3-bucket "
+                        "area grid that per_image/per_class do not target"
+                    )
+                grid = evaluate_keypoints_grid(
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list[-1],
+                    self.use_cats,
+                    _normalize_sigmas(s),
+                    self.cast_inputs,
+                    iou_thresholds=custom_iou,
+                    recall_thresholds=custom_recall,
+                    area_ranges=custom_areas,
                 )
             case _:
                 _reject_unknown_iou(self.iou)
@@ -769,12 +835,14 @@ class Evaluator:
             if "per_pair" in requested
             else None
         )
+        eval_cells = _cells_from_grid(grid) if calibration else None
         return EvalResult(
             summary=summary,
             _per_image_batch=per_image_batch,
             _per_class_batch=per_class_batch,
             _per_detection_batch=per_detection_batch,
             _per_pair_batch=per_pair_batch,
+            _eval_cells=eval_cells,
         )
 
     def _evaluate_with_dataset(

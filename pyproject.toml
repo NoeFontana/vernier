@@ -260,6 +260,7 @@ markers = [
     "slow: marks tests as slow (skip with -m 'not slow')",
     "parity: parity tests against the pycocotools reference oracle",
     "parity_boundary: parity tests against the bowenc0221/boundary-iou-api reference oracle",
+    "parity_calibration: parity tests against the numpy calibration oracle (ADR-0018)",
     "parity_lvis: parity tests against the lvis-dataset/lvis-api reference oracle (ADR-0026)",
     "parity_lvis_val: LVIS v1 val whole-dataset parity smoke (skipped unless VERNIER_LVIS_*_PATH env vars point at real files)",
     "parity_panoptic: parity tests against the cocodataset/panopticapi reference oracle (ADR-0025)",

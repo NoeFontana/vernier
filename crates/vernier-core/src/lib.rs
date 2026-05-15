@@ -18,6 +18,7 @@
 pub mod accumulate;
 pub mod boundary_parity;
 pub mod breakdown;
+pub mod calibration;
 pub mod dataset;
 pub mod distributed;
 pub mod error;

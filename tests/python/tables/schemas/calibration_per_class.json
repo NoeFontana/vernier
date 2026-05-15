@@ -1,0 +1,12 @@
+{
+  "metadata": {
+    "vernier.schema_version": "1",
+    "vernier.table": "calibration_per_class"
+  },
+  "fields": [
+    {"name": "class_id", "type": "uint32", "nullable": false},
+    {"name": "ece", "type": "float64", "nullable": false},
+    {"name": "mce", "type": "float64", "nullable": false},
+    {"name": "n", "type": "uint64", "nullable": false}
+  ]
+}

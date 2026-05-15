@@ -19,9 +19,17 @@ from typing import TYPE_CHECKING, Final, Literal, TypeAlias, TypeVar
 
 from vernier._core import Summary
 from vernier._tables import arrow_to_dataframe
+from vernier.calibration import (
+    Aggregation,
+    Binning,
+    CalibrationResult,
+    Confidence,
+)
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker only
     import polars as pl
+
+    from vernier._core import EvalCells
 
 #: Parity mode (ADR-0002, amended 2026-05-10 — `aligned` collapsed
 #: into `strict`).
@@ -228,6 +236,10 @@ class EvalResult:
     can round-trip on the returned DataFrame, or call the underlying
     Arrow producer (``self._per_image_batch.__arrow_c_array__()``)
     directly — the leading-underscore name signals implementation detail.
+
+    Passing ``calibration=True`` to :meth:`Evaluator.evaluate` retains
+    the per-image cell store on :attr:`_eval_cells`; subsequent calls to
+    :meth:`calibration` re-fold over those cells lazily (ADR-0018).
     """
 
     #: Canonical pycocotools-shaped summary. ``None`` when the
@@ -260,6 +272,11 @@ class EvalResult:
     #: Detection count behind ``summary`` on the partitioned path;
     #: ``None`` on the un-partitioned path.
     overall_n_detections: int | None = field(default=None)
+    #: Opaque ``EvalCells`` handle (ADR-0018). Populated when
+    #: :meth:`Evaluator.evaluate` was called with ``calibration=True``;
+    #: ``None`` otherwise. Reading :meth:`calibration` without retention
+    #: raises :class:`RuntimeError`.
+    _eval_cells: EvalCells | None = field(default=None, repr=False)
 
     @property
     def stats(self) -> list[float]:
@@ -304,6 +321,54 @@ class EvalResult:
         carried a ``manifest=`` keyword; raises :class:`RuntimeError`
         otherwise."""
         return arrow_to_dataframe(self._slices_batch, "slices")
+
+    def calibration(
+        self,
+        *,
+        iou: float = 0.5,
+        n_bins: int = 15,
+        binning: Binning = "quantile",
+        min_score: float = 0.05,
+        confidence: Confidence = "wilson",
+        per_class: bool = False,
+        per_class_aggregation: Aggregation = "macro",
+    ) -> CalibrationResult:
+        """Fold the retained per-image cell store into a calibration
+        summary (ADR-0018).
+
+        Requires :meth:`Evaluator.evaluate` to have been called with
+        ``calibration=True``; raises :class:`RuntimeError` otherwise.
+        Re-folding with different ``n_bins`` / ``iou`` / aggregation is
+        cheap — matching does not re-run, only the histogram fold.
+
+        ``iou`` is resolved to the kernel's T-axis index against the
+        evaluator's pinned IoU ladder under :data:`PARITY_EPS`; values
+        that don't land on a pinned threshold raise :class:`ValueError`.
+        """
+        cells = self._eval_cells
+        if cells is None:
+            raise RuntimeError(
+                "calibration() requires Evaluator.evaluate(..., calibration=True); "
+                "the per-image cell store was not retained on this result."
+            )
+        iou_index = cells.iou_to_index(iou)
+        ece, mce, n_det, eff_bins, reliability_b, per_class_b = cells.calibrate(
+            iou_index,
+            n_bins,
+            binning,
+            min_score,
+            confidence,
+            per_class,
+            per_class_aggregation,
+        )
+        return CalibrationResult(
+            ece=ece,
+            mce=mce,
+            n_detections=n_det,
+            effective_n_bins=eff_bins,
+            _reliability_batch=reliability_b,
+            _per_class_batch=per_class_b,
+        )
 
 
 #: Tables the active build of vernier knows how to produce on the

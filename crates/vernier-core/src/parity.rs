@@ -58,6 +58,71 @@ pub fn recall_thresholds() -> &'static [f64] {
     RECALL_THRESHOLDS.get_or_init(|| linspace(0.0, 1.0, 101))
 }
 
+/// Quirk **P1** — strict. numpy quantile method `'linear'` for
+/// calibration bin-edges (ADR-0018; see
+/// `docs/engineering/calibration-quirks.md`).
+///
+/// Pinned as a string for documentation parity with numpy's `method=`
+/// kwarg; the actual computation is implemented in
+/// [`quantile_linear`]. Recorded here so any drift away from the
+/// pinned method shows up as a constant-rename in code review.
+pub const CALIBRATION_QUANTILE_METHOD: &str = "linear";
+
+/// Linear-interpolation quantile, bit-equivalent to
+/// `numpy.quantile(values, q, method='linear')` (Quirk **P1** — strict).
+///
+/// Used by the calibration summarizer (ADR-0018) to derive bin-edges
+/// from the score distribution. The caller is responsible for sorting
+/// `sorted_values` ascending; a debug-only assertion guards the
+/// invariant.
+///
+/// # Algorithm
+///
+/// For each `q` in `qs`, compute `pos = q * (n - 1)`, then
+/// `lo = floor(pos)`, `hi = ceil(pos)`, `frac = pos - lo`. The result
+/// is `values[lo] + (values[hi] - values[lo]) * frac`. This matches
+/// numpy's `'linear'` interpolation rule precisely.
+///
+/// # Edge cases
+///
+/// - Empty `sorted_values` returns an empty output (no quantiles to
+///   interpolate). Callers must guard against this case explicitly if
+///   it carries domain meaning.
+/// - `qs` values outside `[0, 1]` are not validated; the caller is
+///   expected to pass values produced by `linspace(0.0, 1.0, n+1)` or
+///   similar.
+pub(crate) fn quantile_linear(sorted_values: &[f64], qs: &[f64]) -> Vec<f64> {
+    if sorted_values.is_empty() {
+        return Vec::new();
+    }
+    debug_assert!(
+        sorted_values.windows(2).all(|w| w[0] <= w[1]),
+        "quantile_linear: sorted_values must be ascending"
+    );
+    let n = sorted_values.len();
+    if n == 1 {
+        let only = sorted_values[0];
+        return qs.iter().map(|_| only).collect();
+    }
+    let last = n - 1;
+    let mut out = Vec::with_capacity(qs.len());
+    for &q in qs {
+        let pos = q * (last as f64);
+        let lo_idx = pos.floor() as usize;
+        let hi_idx = pos.ceil() as usize;
+        // Clamp defensively in case of floating drift; with q in [0,1]
+        // the indices are already within bounds, but the clamp keeps
+        // the function total without panicking on out-of-domain inputs.
+        let lo_idx = lo_idx.min(last);
+        let hi_idx = hi_idx.min(last);
+        let frac = pos - (lo_idx as f64);
+        let lo = sorted_values[lo_idx];
+        let hi = sorted_values[hi_idx];
+        out.push(lo + (hi - lo) * frac);
+    }
+    out
+}
+
 /// Stable score-descending argsort. (Quirk **A1** — strict.)
 ///
 /// Mirrors `np.argsort(-scores, kind='mergesort')`: the returned
@@ -78,7 +143,7 @@ pub fn argsort_score_desc(scores: &[f64]) -> Vec<usize> {
 /// final element snapped to `stop` exactly. This implementation follows
 /// the same shape, so the resulting array is bit-equal to numpy's
 /// across the platforms we target.
-fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
+pub(crate) fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
     if num == 0 {
         return Vec::new();
     }
@@ -166,5 +231,54 @@ mod tests {
         // ADR-0002: corrected is the default for net-new users; strict
         // is the migration mode.
         assert_eq!(ParityMode::default(), ParityMode::Corrected);
+    }
+
+    #[test]
+    fn calibration_quantile_method_pinned_to_linear() {
+        // ADR-0018 / Quirk P1: bin-edges use numpy method='linear'.
+        assert_eq!(CALIBRATION_QUANTILE_METHOD, "linear");
+    }
+
+    #[test]
+    fn quantile_linear_matches_numpy_on_arange() {
+        // Reference values from numpy:
+        //   import numpy as np
+        //   v = np.arange(11, dtype=float)  # 0..10
+        //   np.quantile(v, [0.0, 0.25, 0.5, 0.75, 1.0], method='linear')
+        //   -> array([ 0. ,  2.5,  5. ,  7.5, 10. ])
+        let v: Vec<f64> = (0..=10).map(|x| x as f64).collect();
+        let got = quantile_linear(&v, &[0.0, 0.25, 0.5, 0.75, 1.0]);
+        assert_eq!(got, vec![0.0, 2.5, 5.0, 7.5, 10.0]);
+    }
+
+    #[test]
+    fn quantile_linear_interpolates_two_points() {
+        // np.quantile([0.0, 1.0], [0.0, 0.5, 1.0], method='linear')
+        //   -> array([0. , 0.5, 1. ])
+        let got = quantile_linear(&[0.0, 1.0], &[0.0, 0.5, 1.0]);
+        assert_eq!(got, vec![0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn quantile_linear_single_element_replicates() {
+        // Single-element input → that element for every q.
+        let got = quantile_linear(&[0.42], &[0.0, 0.3, 1.0]);
+        assert_eq!(got, vec![0.42, 0.42, 0.42]);
+    }
+
+    #[test]
+    fn quantile_linear_empty_input_is_empty() {
+        // Empty input is a no-op: the caller is expected to short-circuit
+        // before constructing bin-edges.
+        let got = quantile_linear(&[], &[0.0, 0.5, 1.0]);
+        assert!(got.is_empty());
+    }
+
+    #[test]
+    fn quantile_linear_endpoints_pinned() {
+        // q=0 → first, q=1 → last, regardless of distribution shape.
+        let v = [0.1, 0.2, 0.8, 0.9];
+        let got = quantile_linear(&v, &[0.0, 1.0]);
+        assert_eq!(got, vec![0.1, 0.9]);
     }
 }

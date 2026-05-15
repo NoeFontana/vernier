@@ -65,6 +65,7 @@ mod arrow_helpers;
 mod background;
 mod background_streaming;
 mod breakdown;
+mod calibration;
 mod confusion;
 mod dataset;
 mod dlpack;
@@ -358,6 +359,14 @@ impl PyEvalGrid {
     /// the image-id → flat-index map without re-parsing GT.
     pub(crate) fn dataset_snapshot(&self) -> dataset::DatasetSnapshot {
         self.retained_dataset.clone()
+    }
+
+    /// Parity-mode this grid was built under. Threaded by
+    /// [`calibration::cells_from_grid`] into the [`calibration::EvalCells`]
+    /// handle so the calibration summarizer receives the same flag the
+    /// matcher saw (ADR-0018 Unit 2).
+    pub(crate) fn parity_mode(&self) -> ParityMode {
+        self.parity
     }
 }
 
@@ -1470,7 +1479,7 @@ fn parse_summarize_plan(s: &str) -> PyResult<SummarizePlan> {
 /// [`NotImplemented`] variant maps to [`PyNotImplementedError`]. All
 /// other variants fall back to a `PyValueError` formatted via the
 /// underlying [`std::fmt::Display`] impl.
-fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
+pub(crate) fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
     match e {
         EvalError::OutOfBudget {
             used_bytes,
@@ -3105,6 +3114,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
         evaluate_keypoints_summary_with_dataset,
         m
     )?)?;
+    m.add_function(wrap_pyfunction!(calibration::cells_from_grid, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_class_to_arrow_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_image_to_arrow_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(
@@ -3183,6 +3193,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyBackgroundEvaluator>()?;
     m.add_class::<arrow_helpers::ArrowRecordBatchPy>()?;
     m.add_class::<breakdown::PyBreakdown>()?;
+    m.add_class::<calibration::EvalCells>()?;
     m.add("OutOfBudgetError", m.py().get_type::<OutOfBudgetError>())?;
     m.add("QueueFullError", m.py().get_type::<QueueFullError>())?;
     m.add(

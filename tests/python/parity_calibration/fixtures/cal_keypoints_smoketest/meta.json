@@ -1,0 +1,4 @@
+{
+  "iou_type": "keypoints",
+  "max_dets": 20
+}

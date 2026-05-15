@@ -202,6 +202,25 @@ class CocoDataset:
 class ArrowRecordBatch:
     def __arrow_c_array__(self, requested_schema: object | None = ...) -> tuple[object, object]: ...
 
+# ADR-0018 calibration: opaque cell-store handle. Constructed via
+# `cells_from_grid(grid)`; consumed by `EvalResult.calibration(...)`.
+
+class EvalCells:
+    def iou_to_index(self, iou: float) -> int: ...
+    def calibrate(
+        self,
+        iou_index: int,
+        n_bins: int,
+        binning: Literal["quantile", "equal_width"],
+        min_score: float,
+        confidence: Literal["wilson", "clopper_pearson"],
+        per_class: bool,
+        per_class_aggregation: Literal["macro", "micro"],
+    ) -> tuple[float, float, int, int, ArrowRecordBatch, ArrowRecordBatch | None]: ...
+    @staticmethod
+    def from_python_cells(cells_json: Mapping[str, object]) -> EvalCells: ...
+
+def cells_from_grid(grid: EvalGrid) -> EvalCells: ...
 def version() -> str: ...
 def evaluate_bbox_summary(
     gt_json: bytes,
