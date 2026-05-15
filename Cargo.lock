@@ -1561,7 +1561,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-cli"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "assert_cmd",
  "clap",
@@ -1575,7 +1575,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-core"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -1594,7 +1594,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-ffi"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "arrow-array",
  "arrow-buffer",
@@ -1615,7 +1615,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-mask"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "proptest",
  "thiserror",
@@ -1623,7 +1623,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-panoptic"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blake3",
  "divan",
@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-partial"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blake3",
  "crc32fast",
@@ -1651,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "vernier-semantic"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "blake3",
  "png",

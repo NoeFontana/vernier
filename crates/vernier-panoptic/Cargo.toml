@@ -26,12 +26,12 @@ serde_json = { workspace = true }
 # ADR) needs the Chebyshev erosion + boundary-band ops in vernier-mask.
 # Declaring the edge up front per ADR-0009 leaf direction so the future
 # work does not require a cross-crate refactor.
-vernier-mask = { path = "../vernier-mask", version = "0.0.2" }
+vernier-mask = { path = "../vernier-mask", version = "0.0.3" }
 # Shared partial wire envelope and merge policy (ADR-0032). Carries
 # magic + version + framing + the five typed errors used by every
 # paradigm. vernier-panoptic plugs its `WirePanopticBody` into the
 # same envelope without taking on `vernier-core`'s AP-fold surface.
-vernier-partial = { path = "../vernier-partial", version = "0.0.2" }
+vernier-partial = { path = "../vernier-partial", version = "0.0.3" }
 # rkyv archives the `WirePanopticBody` for the partial wire format
 # (ADR-0032).
 rkyv.workspace = true

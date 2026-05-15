@@ -996,9 +996,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// images with no DTs anywhere — see ADR-0013 §"Per-image cell
     /// coverage". Mutates `self` only to populate the lazy
     /// `gt_only_cells` cache on first call.
-    fn densify_with_gt_overlay(
-        &mut self,
-    ) -> Result<Vec<Option<Box<PerImageEval>>>, EvalError> {
+    fn densify_with_gt_overlay(&mut self) -> Result<Vec<Option<Box<PerImageEval>>>, EvalError> {
         let mut eval_imgs = self.cells.flatten(&self.grid_meta);
         if self.images_seen() >= self.grid_meta.n_images {
             return Ok(eval_imgs);

@@ -7,6 +7,16 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+## [0.0.3] — 2026-05-15
+
+This is the diagnostic-surfaces and scenario-slicing release: instance
+gains an oLRP error decomposition (Oksuz et al.), a detection-family
+calibration summarizer (ECE / MCE / reliability), and a manifest-driven
+slice-and-aggregate lane that runs one matching pass across N scenario
+cells. Panoptic picks up boundary PQ. No paradigm shifts, no
+crates.io additions — every kernel slots into the existing
+vernier-core / vernier-panoptic / vernier-semantic surface.
+
 ### Added
 
 - **LRP / oLRP error decomposition** (ADR-0043, ADR-0044, ADR-0045) —
@@ -489,6 +499,7 @@ crate set that ship the evaluator.
 - **Parity fixtures** — minimal per-quirk fixtures plus full COCO
   val2017 perfect-DT smoke for bbox, segm, boundary, and keypoints.
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.0.2...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.0.3...HEAD
+[0.0.3]: https://github.com/NoeFontana/vernier/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/NoeFontana/vernier/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/NoeFontana/vernier/releases/tag/v0.0.1
