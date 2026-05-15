@@ -274,8 +274,46 @@ pub fn evaluate_with_options(
     things_stuff_split: bool,
     options: &EvaluateOptions<'_>,
 ) -> Result<PanopticSummary, PanopticError> {
-    // Per-image fold: kernel + attribute + sum into per-category accumulators.
-    let mut acc: HashMap<CategoryId, PqStat> = HashMap::new();
+    let per_image = evaluate_per_image(gt, dt, mode, options)?;
+    let categories = options.categories_override.unwrap_or(&gt.categories);
+    let acc = fold_per_image(&per_image, None);
+    summarize_from_acc_with_options(
+        acc,
+        categories,
+        mode,
+        things_stuff_split,
+        &options.summarize,
+    )
+}
+
+/// Per-image accumulator delta produced by [`evaluate_per_image`]:
+/// the per-category [`PqStat`] map attributed to one image. The
+/// partition orchestrator stores a sorted `Vec<PerImageAccum>` once
+/// and folds it under different image-id filters per slice
+/// (ADR-0046 C3).
+pub type PerImageAccum = (ImageId, HashMap<CategoryId, PqStat>);
+
+/// Run the panoptic per-image matching + attribution pass and return
+/// the per-image `(image_id, per_category PqStat)` deltas in image-id
+/// order. The C3 partitioned path (ADR-0046) consumes this exactly
+/// once and then folds + summarizes per slice.
+///
+/// Storage is `Vec<PerImageAccum>` — a small per-image map, not a
+/// per-class tensor. At LVIS-class scale (1203 categories x thousands
+/// of images) the total memory stays in the "small map per image"
+/// regime because each image only touches the categories actually
+/// present in its GT or DT.
+///
+/// Determinism: images are walked in image-id order, matching the
+/// non-partitioned [`evaluate_with_options`]; the slot order in the
+/// returned vec is therefore canonical and a downstream filter
+/// preserves it.
+pub fn evaluate_per_image(
+    gt: &PanopticDataset,
+    dt: &PanopticPredictions,
+    mode: ParityMode,
+    options: &EvaluateOptions<'_>,
+) -> Result<Vec<PerImageAccum>, PanopticError> {
     // Sort references in image-id order so the f64 summation across
     // images is deterministic (matches panopticapi's annotation-list
     // iteration which is JSON order). The downstream summation is
@@ -293,6 +331,7 @@ pub fn evaluate_with_options(
         .unwrap_or(0);
     let mut gt_scratch = BoundaryScratch::new();
     let mut dt_scratch = BoundaryScratch::new();
+    let mut out: Vec<(ImageId, HashMap<CategoryId, PqStat>)> = Vec::with_capacity(sorted_gt.len());
     for (image_id, gt_entry) in sorted_gt {
         let dt_entry =
             dt.images
@@ -314,18 +353,36 @@ pub fn evaluate_with_options(
             )?,
         };
         let per_image = attribute_image(gt_entry, dt_entry, &report, mode);
-        for (cat, stat) in per_image {
-            acc.entry(cat).or_default().add_assign(&stat);
+        out.push((*image_id, per_image));
+    }
+    Ok(out)
+}
+
+/// Fold the per-image accumulator deltas produced by
+/// [`evaluate_per_image`] into a single per-category map, optionally
+/// restricted to an image-id filter set (the ADR-0046 C3 mechanism).
+///
+/// Passing `image_filter = None` reproduces the un-partitioned fold;
+/// passing `Some(&set)` aggregates only the deltas whose `image_id`
+/// is in `set` — the load-bearing partition operation. The walk
+/// preserves image-id order, so the f64 sums match the canonical
+/// (non-partitioned) summation under that filter.
+pub fn fold_per_image(
+    per_image: &[PerImageAccum],
+    image_filter: Option<&HashSet<ImageId>>,
+) -> HashMap<CategoryId, PqStat> {
+    let mut acc: HashMap<CategoryId, PqStat> = HashMap::new();
+    for (image_id, deltas) in per_image {
+        if let Some(set) = image_filter {
+            if !set.contains(image_id) {
+                continue;
+            }
+        }
+        for (cat, stat) in deltas {
+            acc.entry(*cat).or_default().add_assign(stat);
         }
     }
-
-    summarize_from_acc_with_options(
-        acc,
-        categories,
-        mode,
-        things_stuff_split,
-        &options.summarize,
-    )
+    acc
 }
 
 /// Build a [`PanopticSummary`] from an already-aggregated per-category
@@ -775,5 +832,115 @@ mod tests {
         let dt = PanopticPredictions::from_components(dt_images);
         let summary = evaluate(&gt, &dt, ParityMode::Corrected, false).unwrap();
         assert_eq!(summary.n, 0);
+    }
+
+    #[test]
+    fn evaluate_per_image_then_full_fold_matches_evaluate() {
+        // ADR-0046 C3: running `evaluate_per_image` then folding the
+        // result (no filter) must produce a summary bit-identical to
+        // `evaluate(...)` — this is the load-bearing parity contract
+        // that lets the partition orchestrator return the un-partitioned
+        // `overall` from the per-image deltas instead of a second
+        // matching pass.
+        let gt = entry(
+            1,
+            10,
+            vec![1, 1, 1, 1, 1, 2, 2, 2, 2, 2],
+            &[(1, 100, false, 5), (2, 200, false, 5)],
+        );
+        let dt = entry(
+            1,
+            10,
+            vec![10, 10, 10, 10, 10, 11, 11, 11, 11, 11],
+            &[(10, 100, false, 5), (11, 200, false, 5)],
+        );
+        let mut gt_images = HashMap::new();
+        gt_images.insert(1i64, gt);
+        let mut dt_images = HashMap::new();
+        dt_images.insert(1i64, dt);
+        let mut categories = HashMap::new();
+        categories.insert(
+            100,
+            CategoryMeta {
+                id: 100,
+                isthing: true,
+            },
+        );
+        categories.insert(
+            200,
+            CategoryMeta {
+                id: 200,
+                isthing: false,
+            },
+        );
+        let gt_dataset = PanopticDataset::from_components(gt_images, categories.clone());
+        let dt_predictions = PanopticPredictions::from_components(dt_images);
+
+        let direct = evaluate(&gt_dataset, &dt_predictions, ParityMode::Corrected, true).unwrap();
+
+        let opts = EvaluateOptions::default();
+        let per_image =
+            evaluate_per_image(&gt_dataset, &dt_predictions, ParityMode::Corrected, &opts).unwrap();
+        let acc = fold_per_image(&per_image, None);
+        let from_deltas =
+            summarize_from_acc(acc, &categories, ParityMode::Corrected, true).unwrap();
+
+        assert_eq!(direct.pq.to_bits(), from_deltas.pq.to_bits());
+        assert_eq!(direct.sq.to_bits(), from_deltas.sq.to_bits());
+        assert_eq!(direct.rq.to_bits(), from_deltas.rq.to_bits());
+        assert_eq!(direct.pq_things, from_deltas.pq_things);
+        assert_eq!(direct.pq_stuff, from_deltas.pq_stuff);
+    }
+
+    #[test]
+    fn fold_per_image_with_image_filter_restricts_aggregate() {
+        // Two images: image 1 has a perfect TP for cat 100; image 2
+        // has only an FN for cat 100. Filtering to {image 1} produces
+        // PQ=1; filtering to {image 2} produces PQ=0. Filtering to
+        // both produces the canonical merged result. Pins the C3
+        // image-id filter semantic.
+        let gt1 = entry(1, 4, vec![1, 1, 1, 1], &[(1, 100, false, 4)]);
+        let dt1 = entry(1, 4, vec![10, 10, 10, 10], &[(10, 100, false, 4)]);
+        let gt2 = entry(1, 4, vec![2, 2, 2, 2], &[(2, 100, false, 4)]);
+        let dt2 = entry(1, 4, vec![0, 0, 0, 0], &[]);
+
+        let mut gt_images = HashMap::new();
+        gt_images.insert(1i64, gt1);
+        gt_images.insert(2i64, gt2);
+        let mut dt_images = HashMap::new();
+        dt_images.insert(1i64, dt1);
+        dt_images.insert(2i64, dt2);
+        let mut categories = HashMap::new();
+        categories.insert(
+            100,
+            CategoryMeta {
+                id: 100,
+                isthing: true,
+            },
+        );
+        let gt_dataset = PanopticDataset::from_components(gt_images, categories.clone());
+        let dt_predictions = PanopticPredictions::from_components(dt_images);
+
+        let opts = EvaluateOptions::default();
+        let per_image =
+            evaluate_per_image(&gt_dataset, &dt_predictions, ParityMode::Corrected, &opts).unwrap();
+
+        let only_one: HashSet<ImageId> = HashSet::from([1]);
+        let acc_one = fold_per_image(&per_image, Some(&only_one));
+        let s_one = summarize_from_acc(acc_one, &categories, ParityMode::Corrected, false).unwrap();
+        assert_eq!(s_one.pq, 1.0);
+
+        let only_two: HashSet<ImageId> = HashSet::from([2]);
+        let acc_two = fold_per_image(&per_image, Some(&only_two));
+        let s_two = summarize_from_acc(acc_two, &categories, ParityMode::Corrected, false).unwrap();
+        assert_eq!(s_two.pq, 0.0);
+
+        // Both: matches the un-filtered call.
+        let both: HashSet<ImageId> = HashSet::from([1, 2]);
+        let acc_both = fold_per_image(&per_image, Some(&both));
+        let s_both =
+            summarize_from_acc(acc_both, &categories, ParityMode::Corrected, false).unwrap();
+        let s_full = evaluate(&gt_dataset, &dt_predictions, ParityMode::Corrected, false).unwrap();
+        assert_eq!(s_both.pq.to_bits(), s_full.pq.to_bits());
     }
 }

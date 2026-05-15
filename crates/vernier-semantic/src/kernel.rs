@@ -88,6 +88,27 @@ impl ConfusionMatrix {
         self.counts[g as usize * n + d as usize]
     }
 
+    /// Element-wise addition of `other` into `self` **without** the
+    /// typed shape-mismatch error path, as a fast path for the C3
+    /// partitioned summarize loop (ADR-0046). Both matrices must
+    /// share the same `n_classes` by construction — caller invariant,
+    /// debug-asserted.
+    ///
+    /// Callers that need the typed `SemanticError::ShapeMismatch`
+    /// error path should stay on [`Self::add_assign`]; this entry
+    /// point is for the internal partition orchestrator where the
+    /// per-image matrices are constructed against the same
+    /// `n_classes` as the target.
+    pub fn add_assign_unchecked(&mut self, other: &Self) {
+        debug_assert_eq!(
+            self.n_classes, other.n_classes,
+            "add_assign_unchecked contract: matrices must share n_classes",
+        );
+        for (lhs, rhs) in self.counts.iter_mut().zip(other.counts.iter()) {
+            *lhs += rhs;
+        }
+    }
+
     /// Element-wise addition of `other` into `self`. Both matrices
     /// must share the same `n_classes`. Used by the streaming
     /// evaluator (ADR-0013) and by the multi-image accumulator.
@@ -344,6 +365,23 @@ mod tests {
         let b = ConfusionMatrix::zeros(3);
         let err = a.add_assign(&b).unwrap_err();
         assert!(matches!(err, SemanticError::ShapeMismatch { .. }));
+    }
+
+    #[test]
+    fn add_assign_unchecked_equals_add_assign_on_matching_shape() {
+        // ADR-0046 C3 partitioned summarize uses the unchecked path
+        // for the hot per-slice fold; pin that it produces the same
+        // matrix as the typed-error variant on matching shapes.
+        let mut a_checked = ConfusionMatrix::zeros(3);
+        accumulate_confusion(&[0u32, 1, 2], &[0u32, 1, 2], None, &mut a_checked);
+        let mut a_unchecked = a_checked.clone();
+        let mut b = ConfusionMatrix::zeros(3);
+        accumulate_confusion(&[1u32, 1, 2], &[1u32, 0, 2], None, &mut b);
+
+        let mut checked_only = a_checked.clone();
+        checked_only.add_assign(&b).unwrap();
+        a_unchecked.add_assign_unchecked(&b);
+        assert_eq!(checked_only, a_unchecked);
     }
 
     #[test]

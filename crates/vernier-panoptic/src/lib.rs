@@ -42,8 +42,9 @@ pub use dataset::{PanopticDataset, PanopticPredictions};
 pub use error::PanopticError;
 pub use parity::{ParityMode, BOUNDARY_PANOPTIC_ORACLE_COMMIT_SHA};
 pub use summarize::{
-    evaluate, evaluate_with_options, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
-    PanopticSummary, SummarizeOptions,
+    evaluate, evaluate_per_image, evaluate_with_options, fold_per_image, summarize_from_acc,
+    summarize_from_acc_with_options, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
+    PanopticSummary, PerImageAccum, SummarizeOptions,
 };
 
 /// Library version string. Useful for parity tracing in fixtures and

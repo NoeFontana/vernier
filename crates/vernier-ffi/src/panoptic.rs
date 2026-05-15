@@ -34,19 +34,26 @@ use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList};
 use serde::Deserialize;
 use vernier_partial::PartialError;
 
+use crate::arrow_helpers::{wrap_batch, ArrowRecordBatchPy};
 use crate::background::BackgroundConfig;
 use crate::background_streaming::{
     BackgroundCapable, BackgroundCore, BackgroundLifecycle, SubmitError,
 };
+use crate::manifest_py::manifest_to_canonical_json;
 use crate::numpy_utils::parse_uint32_label_maps;
+use crate::tables::{slices_record_batch_panoptic, PanopticSliceRow};
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
+use std::collections::HashSet;
+use vernier_core::manifest::partition_spec_from_manifest;
+use vernier_panoptic::attribute::PqStat;
 use vernier_panoptic::dataset::{CategoryId, CategoryMeta, ImageEntry, ImageId, SegmentInfo};
 use vernier_panoptic::decode::decode_panoptic_png;
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
-    evaluate_with_options, BoundaryConfig, ClassPanopticStats, EvaluateOptions, GroupPanopticStats,
-    PanopticDataset, PanopticError, PanopticPredictions, PanopticSummary, ParityMode,
-    SummarizeOptions, BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
+    evaluate_per_image, evaluate_with_options, fold_per_image, summarize_from_acc_with_options,
+    BoundaryConfig, ClassPanopticStats, EvaluateOptions, GroupPanopticStats, PanopticDataset,
+    PanopticError, PanopticPredictions, PanopticSummary, ParityMode, SummarizeOptions,
+    BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
 };
 
 // ---------------------------------------------------------------------------
@@ -662,6 +669,338 @@ pub(crate) fn evaluate_panoptic(
         })
         .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     Ok(PyPanopticSummary { inner: summary })
+}
+
+// ---------------------------------------------------------------------------
+// Partitioned panoptic eval (ADR-0046 C3).
+//
+// Mirrors the instance-AP `evaluate_*_partitioned` shape: one matching
+// pass, then N+1 cheap summarize passes (one for `overall` plus one
+// per slice). The per-image accumulator deltas are retained once and
+// then folded under different image-id filters at summarize time —
+// the image-axis analogue of ADR-0026's K-axis subset-at-summarize.
+// ---------------------------------------------------------------------------
+
+/// Test-only call counter for [`evaluate_per_image`] invocations.
+///
+/// The Python perf test asserts the matching pass runs **exactly
+/// once** regardless of slice count. Wrapping the call in a counter
+/// here is the cheapest way to surface the invariant to Python —
+/// timing-based assertions are flaky on shared CI. Production builds
+/// pay zero overhead because the counter is gated behind
+/// `#[cfg(any(test, feature = "_test-counter"))]`. The Python side
+/// gates its assertion the same way.
+#[cfg(any(test, feature = "_test-counter"))]
+static PANOPTIC_MATCHING_PASS_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "_test-counter"))]
+fn inc_panoptic_matching_count() {
+    PANOPTIC_MATCHING_PASS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(any(test, feature = "_test-counter")))]
+fn inc_panoptic_matching_count() {}
+
+/// Reset the panoptic matching-pass counter and return the previous
+/// value. Test-only.
+#[cfg(any(test, feature = "_test-counter"))]
+#[pyfunction]
+pub(crate) fn _test_reset_panoptic_matching_count() -> u64 {
+    PANOPTIC_MATCHING_PASS_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Read the current panoptic matching-pass counter without resetting.
+/// Test-only.
+#[cfg(any(test, feature = "_test-counter"))]
+#[pyfunction]
+pub(crate) fn _test_read_panoptic_matching_count() -> u64 {
+    PANOPTIC_MATCHING_PASS_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Slice metric row carried over the FFI boundary from the C3
+/// partition orchestrator. Kept private — the Python lane reads the
+/// `slices` Arrow batch on [`PyPartitionedPanopticReport`].
+struct PanopticSliceMetrics {
+    axis: String,
+    value: String,
+    n_images: u64,
+    n_detections: u64,
+    pq: f64,
+    sq: f64,
+    rq: f64,
+}
+
+/// Result of an ADR-0046 C3 partitioned panoptic eval.
+///
+/// `overall` is bit-identical to a non-partitioned
+/// `evaluate_panoptic` over the same handles — the ADR-0046
+/// load-bearing parity contract. `slices_capsule()` exposes the
+/// per-`(axis, value)` cell metrics as an Arrow `RecordBatch` for
+/// zero-copy hand-off to polars / pandas / pyarrow.
+#[pyclass(module = "vernier._core", name = "PartitionedPanopticReport", frozen)]
+pub(crate) struct PyPartitionedPanopticReport {
+    summary: PanopticSummary,
+    overall_n_images: u64,
+    overall_n_detections: u64,
+    slice_rows: Vec<PanopticSliceRow>,
+}
+
+#[pymethods]
+impl PyPartitionedPanopticReport {
+    /// Bit-identical to a non-partitioned `evaluate_panoptic` over the
+    /// same handles.
+    #[getter]
+    fn overall(&self) -> PyPanopticSummary {
+        PyPanopticSummary {
+            inner: self.summary.clone(),
+        }
+    }
+
+    /// Dataset image count behind `overall`.
+    #[getter]
+    fn overall_n_images(&self) -> u64 {
+        self.overall_n_images
+    }
+
+    /// DT segment count behind `overall`.
+    #[getter]
+    fn overall_n_detections(&self) -> u64 {
+        self.overall_n_detections
+    }
+
+    /// Number of `(axis, value)` cells in the partition.
+    #[getter]
+    fn n_slices(&self) -> usize {
+        self.slice_rows.len()
+    }
+
+    /// Arrow `RecordBatch` of per-slice rows. Schema matches the C1
+    /// path's `slices_batch_panoptic` output verbatim, so the Python
+    /// wrapper's DataFrame coercion is identical across the C1 / C3
+    /// transition. Built fresh per call (cheap — slice count is
+    /// SLICES_CAP-bounded at 256 max).
+    fn slices_capsule(&self) -> PyResult<ArrowRecordBatchPy> {
+        let batch = slices_record_batch_panoptic(&self.slice_rows)
+            .map_err(|e| PyValueError::new_err(format!("arrow build failed: {e}")))?;
+        Ok(wrap_batch(batch))
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "PartitionedPanopticReport(overall_n_images={}, overall_n_detections={}, n_slices={})",
+            self.overall_n_images,
+            self.overall_n_detections,
+            self.slice_rows.len(),
+        )
+    }
+}
+
+/// Surface a `Vec<ManifestWarning>` through Python's `warnings` module
+/// so the caller observes them at `evaluate(manifest=...)` call time.
+/// Mirrors the instance partition path's `warn_about_manifest`; kept
+/// local to the panoptic FFI rather than re-imported because the
+/// `partition_py` module is `pub(crate)` to a different paradigm.
+fn warn_about_manifest(
+    py: Python<'_>,
+    warnings: &[vernier_core::manifest::ManifestWarning],
+) -> PyResult<()> {
+    if warnings.is_empty() {
+        return Ok(());
+    }
+    let warnings_mod = py.import("warnings")?;
+    for w in warnings {
+        let msg = match w {
+            vernier_core::manifest::ManifestWarning::UnknownKey { key } => {
+                format!("manifest key {key:?} is not present in the dataset; skipping")
+            }
+        };
+        warnings_mod.call_method1("warn", (msg,))?;
+    }
+    Ok(())
+}
+
+/// C3 partitioned panoptic eval (ADR-0046 §"Performance").
+///
+/// Runs `evaluate_per_image` exactly **once** to retain per-image
+/// per-category accumulator deltas, then folds + summarizes those
+/// deltas under (a) no filter for `overall` and (b) each slice's
+/// image-id set for the per-slice rows. The matching pass is never
+/// re-run per slice — the load-bearing C3 axiom. Empty slices
+/// (legal in the partition spec for `__unassigned__` buckets) emit a
+/// zero-valued row instead of routing through the kernel's empty-set
+/// rejection (same convention as the C1 fallback path).
+#[pyfunction]
+#[pyo3(signature = (
+    gt,
+    dt,
+    parity_mode,
+    things_stuff_split,
+    boundary,
+    dilation_ratio,
+    manifest,
+    cross_axes = None,
+    key_kind = "image_id",
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_panoptic_partitioned(
+    py: Python<'_>,
+    gt: &PyPanopticDataset,
+    dt: &PyPanopticPredictions,
+    parity_mode: &str,
+    things_stuff_split: bool,
+    boundary: bool,
+    dilation_ratio: f64,
+    manifest: &Bound<'_, PyAny>,
+    cross_axes: Option<Vec<Vec<String>>>,
+    key_kind: &str,
+) -> PyResult<PyPartitionedPanopticReport> {
+    let mode = parse_panoptic_parity_mode(parity_mode)?;
+    let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
+
+    let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
+    let cross = cross_axes.unwrap_or_default();
+
+    // Build image_id -> idx map in id-ascending order (the canonical
+    // I-axis order used elsewhere). The spec builder requires it to
+    // resolve `image_indices`; the C3 partition path itself filters
+    // on `image_ids` (the manifest's primary key) directly, but the
+    // spec builder shares the resolution with the instance lane.
+    //
+    // `vernier_panoptic::ImageId = i64` and
+    // `vernier_core::dataset::ImageId` is the i64-wrapper struct; we
+    // lift through the wrapper for the spec builder and convert back
+    // when materializing the per-slice id sets below.
+    let mut sorted_image_ids: Vec<ImageId> = gt.inner.images.keys().copied().collect();
+    sorted_image_ids.sort_unstable();
+    let image_id_to_idx: HashMap<vernier_core::dataset::ImageId, usize> = sorted_image_ids
+        .iter()
+        .enumerate()
+        .map(|(i, id)| (vernier_core::dataset::ImageId(*id), i))
+        .collect();
+
+    let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &image_id_to_idx, &cross)
+        .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
+    warn_about_manifest(py, &warnings)?;
+
+    // Pre-compute per-slice (image_ids, n_segments) on the FFI thread
+    // — the data is on the Python side anyway via the bound handles.
+    let total_segments: u64 = dt
+        .inner
+        .images
+        .values()
+        .map(|e| e.segments.len() as u64)
+        .sum();
+    let n_images_overall: u64 = gt.inner.images.len() as u64;
+    let mut slice_inputs: Vec<(String, String, HashSet<ImageId>, u64, u64)> =
+        Vec::with_capacity(spec.slices.len());
+    for sl in &spec.slices {
+        // `Slice::image_ids` holds `vernier_core::dataset::ImageId`
+        // (i64-wrapper). Convert into the panoptic-side ImageId alias.
+        let panoptic_ids: HashSet<ImageId> = sl.image_ids.iter().map(|id| id.0).collect();
+        let n_images = panoptic_ids.len() as u64;
+        let n_segments: u64 = dt
+            .inner
+            .images
+            .iter()
+            .filter(|(id, _)| panoptic_ids.contains(id))
+            .map(|(_, e)| e.segments.len() as u64)
+            .sum();
+        slice_inputs.push((
+            sl.axis.clone(),
+            sl.value.clone(),
+            panoptic_ids,
+            n_images,
+            n_segments,
+        ));
+    }
+
+    let gt_arc = Arc::clone(&gt.inner);
+    let dt_arc = Arc::clone(&dt.inner);
+    let categories = gt_arc.categories.clone();
+
+    type PerImageVec = Vec<(ImageId, HashMap<CategoryId, PqStat>)>;
+    type C3Out = (PanopticSummary, Vec<PanopticSliceMetrics>);
+
+    let (overall_summary, slice_metrics) = py
+        .detach(move || -> Result<C3Out, PanopticError> {
+            inc_panoptic_matching_count();
+            let opts = EvaluateOptions {
+                pq_iou_threshold: None,
+                categories_override: None,
+                summarize: SummarizeOptions::default(),
+                boundary: boundary_cfg,
+            };
+            let per_image: PerImageVec = evaluate_per_image(&gt_arc, &dt_arc, mode, &opts)?;
+
+            // Overall — un-filtered fold + summarize.
+            let acc_all = fold_per_image(&per_image, None);
+            let overall = summarize_from_acc_with_options(
+                acc_all,
+                &categories,
+                mode,
+                things_stuff_split,
+                &SummarizeOptions::default(),
+            )?;
+
+            // Per-slice — N folds under each slice's image-id filter.
+            // Empty slices (legal for __unassigned__ buckets) emit a
+            // zero-valued row instead of routing through the kernel's
+            // empty-filter rejection.
+            let mut metrics: Vec<PanopticSliceMetrics> = Vec::with_capacity(slice_inputs.len());
+            for (axis, value, ids, n_images, n_segments) in slice_inputs {
+                if ids.is_empty() {
+                    metrics.push(PanopticSliceMetrics {
+                        axis,
+                        value,
+                        n_images: 0,
+                        n_detections: 0,
+                        pq: 0.0,
+                        sq: 0.0,
+                        rq: 0.0,
+                    });
+                    continue;
+                }
+                let acc = fold_per_image(&per_image, Some(&ids));
+                let summary = summarize_from_acc_with_options(
+                    acc,
+                    &categories,
+                    mode,
+                    things_stuff_split,
+                    &SummarizeOptions::default(),
+                )?;
+                metrics.push(PanopticSliceMetrics {
+                    axis,
+                    value,
+                    n_images,
+                    n_detections: n_segments,
+                    pq: summary.pq,
+                    sq: summary.sq,
+                    rq: summary.rq,
+                });
+            }
+            Ok((overall, metrics))
+        })
+        .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+
+    let slice_rows: Vec<PanopticSliceRow> = slice_metrics
+        .into_iter()
+        .map(|m| PanopticSliceRow {
+            axis: m.axis,
+            value: m.value,
+            n_images: m.n_images,
+            n_detections: m.n_detections,
+            pq: m.pq,
+            sq: m.sq,
+            rq: m.rq,
+        })
+        .collect();
+    Ok(PyPartitionedPanopticReport {
+        summary: overall_summary,
+        overall_n_images: n_images_overall,
+        overall_n_detections: total_segments,
+        slice_rows,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1369,8 +1708,15 @@ pub(crate) fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyClassPanopticStats>()?;
     m.add_class::<PyGroupPanopticStats>()?;
     m.add_class::<PyBackgroundPanopticEvaluator>()?;
+    m.add_class::<PyPartitionedPanopticReport>()?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_panoptic_to_partial, m)?)?;
     m.add_function(wrap_pyfunction!(merge_panoptic_partials, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_panoptic_partitioned, m)?)?;
+    #[cfg(any(test, feature = "_test-counter"))]
+    {
+        m.add_function(wrap_pyfunction!(_test_reset_panoptic_matching_count, m)?)?;
+        m.add_function(wrap_pyfunction!(_test_read_panoptic_matching_count, m)?)?;
+    }
     Ok(())
 }

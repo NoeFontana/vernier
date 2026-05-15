@@ -511,6 +511,107 @@ def test_lrp_partitioned_slice_shape_and_axes() -> None:
     assert cells == expected
 
 
+# ---------------------------------------------------------------------------
+# C3 verification — panoptic + semantic matching pass runs exactly once
+# regardless of slice count (ADR-0046 C3 axiom).
+# ---------------------------------------------------------------------------
+
+
+def _has_counter_fns() -> bool:
+    """`vernier._core` exposes the `_test_*_count` symbols only when the
+    wheel is built with `--features _test-counter`. Tests gate on the
+    symbol's presence so the production wheel skips this check
+    silently."""
+    import vernier._core as _core
+
+    return hasattr(_core, "_test_read_panoptic_matching_count") and hasattr(
+        _core, "_test_read_semantic_fold_count"
+    )
+
+
+@pytest.mark.skipif(
+    not _has_counter_fns(),
+    reason="wheel built without --features _test-counter; C3 counter not exposed",
+)
+def test_panoptic_partition_c3_runs_matching_pass_once() -> None:
+    """C3 axiom: the panoptic matching + attribution pass runs exactly
+    once per `evaluate(manifest=...)` call regardless of slice count.
+
+    The earlier C1 fallback ran `evaluate_panoptic` once per slice
+    (`1 + len(spec.slices)` total matching passes). The C3 promotion
+    folds retained per-image deltas under each slice's filter at
+    summarize time — one matching pass, many cheap summaries.
+    """
+    import vernier._core as _core
+
+    # The counter symbols are gated behind the `_test-counter` feature
+    # so they don't appear in the stub or shipped wheel; pull them
+    # through getattr() to stay typecheck-clean.
+    reset = getattr(_core, "_test_reset_panoptic_matching_count")
+    read = getattr(_core, "_test_read_panoptic_matching_count")
+
+    gt, dt = _build_panoptic_inputs()
+
+    # Reset before the call; the helper returns the previous count so
+    # we can sanity-check the no-op baseline.
+    _ = reset()
+    # 6 marginal slices, the partition_tiny shape.
+    pq.Evaluator(parity_mode="corrected").evaluate(gt, dt, manifest=_panoptic_manifest())
+    after_marginals = read()
+    assert after_marginals == 1, (
+        f"expected exactly one matching pass for the marginal partition; got {after_marginals}"
+    )
+
+    # Cross-product opt-in adds ~5 joint cells (2x2 + unassigned) on
+    # top of the 6 marginals — 11 slices. C3 must still be one pass.
+    _ = reset()
+    pq.Evaluator(parity_mode="corrected").evaluate(
+        gt,
+        dt,
+        manifest=_panoptic_manifest(),
+        cross_axes=[["weather", "time_of_day"]],
+    )
+    after_cross = read()
+    assert after_cross == 1, (
+        f"expected exactly one matching pass under cross-product partition; got {after_cross}"
+    )
+
+
+@pytest.mark.skipif(
+    not _has_counter_fns(),
+    reason="wheel built without --features _test-counter; C3 counter not exposed",
+)
+def test_semantic_partition_c3_runs_fold_pass_once() -> None:
+    """C3 axiom: the semantic per-image confusion-matrix fold runs
+    exactly once per `evaluate(manifest=...)` call regardless of slice
+    count. Mirrors the panoptic test."""
+    import vernier._core as _core
+
+    reset = getattr(_core, "_test_reset_semantic_fold_count")
+    read = getattr(_core, "_test_read_semantic_fold_count")
+
+    gt, dt = _build_semantic_inputs()
+
+    _ = reset()
+    sem.Evaluator(parity_mode="corrected").evaluate(gt, dt, manifest=_semantic_manifest())
+    after_marginals = read()
+    assert after_marginals == 1, (
+        f"expected exactly one fold pass for the marginal partition; got {after_marginals}"
+    )
+
+    _ = reset()
+    sem.Evaluator(parity_mode="corrected").evaluate(
+        gt,
+        dt,
+        manifest=_semantic_manifest(),
+        cross_axes=[["weather", "time_of_day"]],
+    )
+    after_cross = read()
+    assert after_cross == 1, (
+        f"expected exactly one fold pass under cross-product partition; got {after_cross}"
+    )
+
+
 def test_lrp_partitioned_per_slice_olrp_hand_computed() -> None:
     """Hand-computed per-slice oLRP on the partition_tiny fixture.
 

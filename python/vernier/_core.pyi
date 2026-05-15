@@ -828,6 +828,29 @@ def merge_panoptic_partials(
     dilation_ratio: float = ...,
 ) -> PanopticSummary: ...
 
+class PartitionedPanopticReport:
+    @property
+    def overall(self) -> PanopticSummary: ...
+    @property
+    def overall_n_images(self) -> int: ...
+    @property
+    def overall_n_detections(self) -> int: ...
+    @property
+    def n_slices(self) -> int: ...
+    def slices_capsule(self) -> ArrowRecordBatch: ...
+
+def evaluate_panoptic_partitioned(
+    gt: PanopticDataset,
+    dt: PanopticPredictions,
+    parity_mode: str,
+    things_stuff_split: bool,
+    boundary: bool,
+    dilation_ratio: float,
+    manifest: object,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedPanopticReport: ...
+
 # ---------------------------------------------------------------------------
 # Semantic-segmentation surface (ADR-0028).
 # ---------------------------------------------------------------------------
@@ -919,6 +942,32 @@ def merge_semantic_partials(
     *,
     ignore_label: int | None = ...,
 ) -> SemanticSummary: ...
+
+class PartitionedSemanticReport:
+    @property
+    def overall(self) -> SemanticSummary: ...
+    @property
+    def overall_n_images(self) -> int: ...
+    @property
+    def overall_n_detections(self) -> int: ...
+    @property
+    def n_slices(self) -> int: ...
+    def slices_capsule(self) -> ArrowRecordBatch: ...
+
+def evaluate_semantic_partitioned(
+    gt_label_maps: dict[int, NDArray[np.unsignedinteger[Any]]],
+    dt_label_maps: dict[int, NDArray[np.unsignedinteger[Any]]],
+    n_classes: int,
+    parity_mode: str,
+    manifest: object,
+    *,
+    ignore_label: int | None = ...,
+    label_remap: dict[int, int] | None = ...,
+    class_filter: list[int] | None = ...,
+    class_grouping: list[tuple[str, list[int]]] | None = ...,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedSemanticReport: ...
 
 class BackgroundSemanticEvaluator:
     def __init__(

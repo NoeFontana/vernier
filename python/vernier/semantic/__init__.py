@@ -670,13 +670,15 @@ class Evaluator:
         ``(axis, value)`` cell. ``cross_axes=`` opts joint cells in
         (per ADR-0046 §E2; marginals are the default).
 
-        Per ADR-0046 §"Performance", semantic partitioned eval runs as
-        one :func:`evaluate_semantic_from_arrays` call per slice (the
-        C1 path) — the semantic substrate accumulates per-image
-        confusion matrices into a global matrix without an image-id
-        filter at summarize time. The ``overall`` summary is the
-        un-partitioned eval over the full mappings, preserving the
-        bit-identical-overall parity contract by construction.
+        Per ADR-0046's C3 axiom, the per-image confusion-matrix fold
+        runs exactly once regardless of slice count: the FFI retains a
+        ``Vec<(image_id, ConfusionMatrix)>`` of per-image deltas and
+        the partition orchestrator sums them under (a) no filter for
+        ``overall`` and (b) each slice's image-id set for the per-slice
+        rows. Confusion-matrix sums are u64-additive, so the parity
+        contract is unconditional (no f64 non-associativity to worry
+        about, unlike the panoptic path); the ``overall`` summary is
+        bit-identical to the un-partitioned call by construction.
         """
         if manifest is not None:
             from vernier.semantic._partition import (
