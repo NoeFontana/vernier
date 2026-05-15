@@ -551,7 +551,7 @@ class Evaluator:
                 raise ValueError(
                     "tables= and manifest= cannot be combined. The partitioned eval "
                     "returns headline metrics per slice on `result.slices`; for the "
-                    "per-class × per-slice cross product, run per_class evaluate once "
+                    "per-class by per-slice cross product, run per_class evaluate once "
                     "per slice with a filtered prediction set — see "
                     "docs/how-to/per-class-by-slice.md."
                 )
