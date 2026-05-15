@@ -7,55 +7,50 @@
 [![crates.io vernier-cli](https://img.shields.io/crates/v/vernier-cli.svg?label=crates.io%20%7C%20vernier-cli)](https://crates.io/crates/vernier-cli)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-> Fast, parity-preserving evaluation for object detection, instance /
-> panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS
-> federated, and LRP / oLRP error decomposition. Rust core, Python
-> frontend, optional CLI.
+Fast, parity-preserving evaluation for object detection, instance / panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS federated, and LRP / oLRP error decomposition. Rust core, Python frontend, optional CLI.
 
-`pycocotools==2.0.11` is the de-facto reference for COCO evaluation —
-slow, unmaintained, and full of edge-case quirks. Faster
-reimplementations exist, but each silently fixes some quirks and not
-others, so you discover the divergences empirically. vernier takes a
-third path:
+## 60-second example
 
-- **Auditable parity.** Every divergence from pycocotools is filed in
-  the quirks survey under
-  [ADR-0002](docs/adr/0002-three-tier-parity-model.md) as either
-  `strict` (bit-equal output, even when vernier's implementation is
-  structurally different) or `corrected` (opt-in opinionated fix).
-  Strict is the default; corrected fixes are itemized so you always
-  know when your numbers diverge from a reference run. A drop-in shim
-  (`vernier.patch_pycocotools()`) keeps existing pycocotools-based
-  scripts working with one line.
-- **One toolkit instead of five.** bbox / segm / boundary / keypoints
-  AP, panoptic PQ, semantic mIoU, and LVIS federated all live behind
-  one Python API and one CLI. Per-paradigm migration guides under
-  [`docs/migrate/`](docs/migrate/) show how to replace `pycocotools`,
-  `faster-coco-eval`, `panopticapi`, `lvis-api`, and
-  `mmsegmentation` one at a time.
-- **Rust core, Python frontend.** The matching kernel is pure Rust
-  with runtime SIMD dispatch; the FFI layer is data conversion only.
-  The CLI ships as a static binary, so CI pipelines call vernier
-  without provisioning a Python interpreter.
+One-shot — predictions already serialized to JSON (end-of-epoch
+checkpoint, CI gate, post-training inspection):
 
-## Status & validation
+```python
+from pathlib import Path
+from vernier.instance import Bbox, CocoDataset, Evaluator
 
-Pre-1.0; public API is unstable. See [`docs/adr/`](docs/adr/) for the
-design decisions shaping it. Per-paradigm parity status:
+gt_bytes = Path("instances_val2017.json").read_bytes()
+dt_bytes = Path("detections.json").read_bytes()
 
-| Paradigm / metric | Oracle | Parity tier | Open caveat |
-| --- | --- | --- | --- |
-| Instance bbox / segm / keypoints AP | `pycocotools==2.0.11` | strict bit-equal | none |
-| Instance boundary IoU | `boundary-iou-api` | strict bit-equal | none |
-| Segm + boundary TIDE thresholds (`t_b`) | none yet | corrected-only | [ADR-0022](docs/adr/0022-tide-thresholds.md) still `proposed`; defaults extrapolated, not measured |
-| Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | none |
-| Panoptic boundary PQ | `bowenc0221/boundary-iou-api` (single-core path, same SHA as the instance vendor) | strict bit-equal | [ADR-0025 §Z1/Z2 amendment](docs/adr/0025-panoptic-api.md); Cityscapes panoptic (Z3) deferred |
-| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | strict bit-equal on the four per-class u64 marginals at val2017 scale | [ADR-0028](docs/adr/0028-sem-seg.md); ADE20K-scale bench gated on license-cleared cache |
-| LVIS federated AP | `lvis-api` (vendored at `031ac21f`, ORACLE_LVIS_COMMIT_SHA) | strict bit-equal on the `(T, R, K, A)` precision tensor at full LVIS v1 val | bench paradigm wired; segm cell waits on `evaluate_segm_grid_with_dataset` |
-| LRP / oLRP error decomposition (instance bbox / segm / boundary / keypoints) | pure-NumPy oracle ([ADR-0043](docs/adr/0043-lrp-oracle-and-namespace.md)) | strict against the oracle within 1e-9; `kemaloksuz/LRP-Error` tripwire vendored opt-in | panoptic LRP is a typed `NotImplementedError` stub — panoptic predictions carry no per-segment scores (ADR follow-up) |
+dataset = CocoDataset.from_json(gt_bytes)
+summary = Evaluator(iou=Bbox()).evaluate(dataset, dt_bytes)
+for line in summary.pretty_lines():
+    print(line)
+```
 
-Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
-per-library comparison: [`docs/comparison.md`](docs/comparison.md).
+In a training loop — overlap eval with the next training step. The
+matching kernel runs on a worker thread, so `submit(...)` returns
+immediately and the training thread keeps moving. Passing a
+`CocoDataset` reuses the parsed-once GT and its per-kernel
+derivation cache across every epoch (ADR-0020):
+
+```python
+import json
+from pathlib import Path
+from vernier.instance import Bbox, CocoDataset, Evaluator
+
+gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
+evaluator = Evaluator(iou=Bbox())
+with evaluator.background(gt) as bg:
+    for images, _ in val_loader:
+        detections = model(images)  # list[{image_id, category_id, bbox, score}]
+        bg.submit(json.dumps(detections).encode())
+    summary = bg.finalize()
+print("AP =", summary.stats[0])
+```
+
+Both end in the same 12-line `pycocotools`-shaped Summary;
+[`docs/tutorials/first-evaluation.md`](docs/tutorials/first-evaluation.md)
+walks each end-to-end.
 
 ## Benchmarks
 
@@ -111,53 +106,50 @@ crates.io is held as a `0.0.0` placeholder; `vernier-core` is the real
 Rust entry point — see
 [`docs/engineering/registry-reservations.md`](docs/engineering/registry-reservations.md).
 
-## 60-second example
+## Status & validation
 
-One-shot — predictions already serialized to JSON (end-of-epoch
-checkpoint, CI gate, post-training inspection):
+Pre-1.0; public API is unstable. See [`docs/adr/`](docs/adr/) for the design decisions shaping it.
 
-```python
-from pathlib import Path
-from vernier.instance import Bbox, CocoDataset, Evaluator
+`pycocotools==2.0.11` is the de-facto reference for COCO evaluation — slow, unmaintained, and full of edge-case quirks. Faster reimplementations exist, but each silently fixes some quirks and not others, so you discover the divergences empirically. vernier takes a third path:
 
-gt_bytes = Path("instances_val2017.json").read_bytes()
-dt_bytes = Path("detections.json").read_bytes()
+- **Auditable parity.** Every divergence from pycocotools is filed in the quirks survey under
+  [ADR-0002](docs/adr/0002-three-tier-parity-model.md) as either
+  `strict` (bit-equal output, even when vernier's implementation is
+  structurally different) or `corrected` (opt-in opinionated fix).
+  Strict is the default; corrected fixes are itemized so you always
+  know when your numbers diverge from a reference run. A drop-in shim
+  (`vernier.patch_pycocotools()`) keeps existing pycocotools-based
+  scripts working with one line.
+- **Rust core, Python frontend.** The matching kernel is pure Rust
+  with runtime SIMD dispatch; the FFI layer is data conversion only.
+  The CLI ships as a static binary, so CI pipelines call vernier
+  without provisioning a Python interpreter.
+- **One toolkit instead of five.** bbox / segm / boundary / keypoints
+  AP, panoptic PQ, semantic mIoU, and LVIS federated all live behind
+  one Python API and one CLI. Per-paradigm migration guides under
+  [`docs/migrate/`](docs/migrate/) show how to replace `pycocotools`,
+  `faster-coco-eval`, `panopticapi`, `lvis-api`, and
+  `mmsegmentation` one at a time.
 
-dataset = CocoDataset.from_json(gt_bytes)
-summary = Evaluator(iou=Bbox()).evaluate(dataset, dt_bytes)
-for line in summary.pretty_lines():
-    print(line)
-```
+Per-paradigm parity status:
 
-In a training loop — overlap eval with the next training step. The
-matching kernel runs on a worker thread, so `submit(...)` returns
-immediately and the training thread keeps moving. Passing a
-`CocoDataset` reuses the parsed-once GT and its per-kernel
-derivation cache across every epoch (ADR-0020):
+| Paradigm / metric | Oracle | Parity tier | Open caveat |
+| --- | --- | --- | --- |
+| Instance bbox / segm / keypoints AP | `pycocotools==2.0.11` | strict bit-equal | none |
+| Instance boundary IoU | `boundary-iou-api` | strict bit-equal | none |
+| Segm + boundary TIDE thresholds (`t_b`) | none yet | corrected-only | [ADR-0022](docs/adr/0022-tide-thresholds.md) still `proposed`; defaults extrapolated, not measured |
+| Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | none |
+| Panoptic boundary PQ | `bowenc0221/boundary-iou-api` (single-core path, same SHA as the instance vendor) | strict bit-equal | [ADR-0025 §Z1/Z2 amendment](docs/adr/0025-panoptic-api.md); Cityscapes panoptic (Z3) deferred |
+| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | strict bit-equal on the four per-class u64 marginals at val2017 scale | [ADR-0028](docs/adr/0028-sem-seg.md); ADE20K-scale bench gated on license-cleared cache |
+| LVIS federated AP | `lvis-api` (vendored at `031ac21f`, ORACLE_LVIS_COMMIT_SHA) | strict bit-equal on the `(T, R, K, A)` precision tensor at full LVIS v1 val | bench paradigm wired; segm cell waits on `evaluate_segm_grid_with_dataset` |
+| LRP / oLRP error decomposition (instance bbox / segm / boundary / keypoints) | pure-NumPy oracle ([ADR-0043](docs/adr/0043-lrp-oracle-and-namespace.md)) | strict against the oracle within 1e-9; `kemaloksuz/LRP-Error` tripwire vendored opt-in | panoptic LRP is a typed `NotImplementedError` stub — panoptic predictions carry no per-segment scores (ADR follow-up) |
 
-```python
-import json
-from pathlib import Path
-from vernier.instance import Bbox, CocoDataset, Evaluator
-
-gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
-evaluator = Evaluator(iou=Bbox())
-with evaluator.background(gt) as bg:
-    for images, _ in val_loader:
-        detections = model(images)  # list[{image_id, category_id, bbox, score}]
-        bg.submit(json.dumps(detections).encode())
-    summary = bg.finalize()
-print("AP =", summary.stats[0])
-```
-
-Both end in the same 12-line `pycocotools`-shaped Summary;
-[`docs/tutorials/first-evaluation.md`](docs/tutorials/first-evaluation.md)
-walks each end-to-end.
+Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
+per-library comparison: [`docs/comparison.md`](docs/comparison.md).
 
 ## Three evaluation paradigms
 
-Pick the submodule whose **input shape** matches your model's output —
-they have different data models, different matching rules, and
+They have different data models, different matching rules, and
 different parity oracles:
 
 - `vernier.instance` — detections with scores → bbox / segm /
@@ -167,8 +159,7 @@ different parity oracles:
 - `vernier.semantic` — single-channel class-id label maps → mIoU /
   FWIoU / pAcc / mAcc.
 
-See [Three paradigms](docs/explanation/three-paradigms.md) for when to
-use which.
+See [Three paradigms](docs/explanation/three-paradigms.md).
 
 ## Documentation
 
