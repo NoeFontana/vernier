@@ -1171,6 +1171,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#boundary-panoptic-quality" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boundary Panoptic Quality
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#cli-flag" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1300,6 +1311,34 @@
     
   
     Distributed evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
   
 
     
@@ -1635,6 +1674,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/coco-summary-stats/" class="md-nav__link">
         
   
@@ -1806,6 +1901,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../explanation/why-no-per-image-ap/" class="md-nav__link">
         
   
@@ -1889,9 +2012,25 @@ on the same overlap geometry, so the boundary-kernel default is
 <code>t_b=0.05</code> (vs <code>0.1</code> for bbox / segm). The tutorial
 <a href="../../tutorials/debugging-with-tide/#choosing-thresholds"><code>tutorials/debugging-with-tide.md</code></a>
 explains why.</p>
+<h2 id="boundary-panoptic-quality">Boundary Panoptic Quality</h2>
+<p>For panoptic outputs, <code>Evaluator(boundary=True)</code> switches the
+matching IoU to <code>min(mask_iou, boundary_iou)</code> per ADR-0025 §Z1/Z2
+amendment (mirrors <code>bowenc0221/boundary-iou-api</code>'s
+<code>coco_panoptic_api/evaluation.py</code>):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.panoptic</span><span class="w"> </span><span class="kn">import</span> <span class="n">Evaluator</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">boundary</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">dilation_ratio</span><span class="o">=</span><span class="mf">0.02</span><span class="p">)</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>
+</span></code></pre></div>
+<p><code>parity_mode="corrected"</code> (the default) is order-independent;
+<code>parity_mode="strict"</code> reproduces upstream's JSON-order in-place
+boundary-map mutation bit-exactly. Both modes share the
+<code>vernier-mask</code> erosion primitives the instance Boundary path uses
+(M1–M5 of the quirks survey). Cityscapes panoptic (ADR-0025 Z3)
+remains deferred.</p>
 <h2 id="cli-flag">CLI flag</h2>
 <p>The CLI takes the kernel as <code>--iou boundary</code>:</p>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>vernier<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--iou<span class="w"> </span>boundary<span class="w"> </span>--gt<span class="w"> </span>instances_val2017.json<span class="w"> </span>--dt<span class="w"> </span>detections.json
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>vernier<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--iou<span class="w"> </span>boundary<span class="w"> </span>--gt<span class="w"> </span>instances_val2017.json<span class="w"> </span>--dt<span class="w"> </span>detections.json
 </span></code></pre></div>
 <p><code>--dilation-ratio</code> overrides the default (<code>0.02</code>); pass <code>0.008</code>
 for the LVIS convention. Recipe in

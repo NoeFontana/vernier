@@ -8,10 +8,8 @@
       
       
       
-        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/explanation/why-no-per-image-ap/">
+        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/explanation/calibration-and-its-limits/">
       
-      
-        <link rel="prev" href="../lrp-and-its-limits/">
       
       
       
@@ -23,7 +21,7 @@
     
     
       
-        <title>Why no per-image AP - vernier</title>
+        <title>Calibration: what it answers, and what it doesn't - vernier</title>
       
     
     
@@ -76,7 +74,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#why-per_image-does-not-ship-an-ap-column" class="md-skip">
+        <a href="#calibration-what-it-answers-and-what-it-doesnt" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +108,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Why no per-image AP
+              Calibration: what it answers, and what it doesn't
             
           </span>
         </div>
@@ -356,12 +354,10 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
+      <li class="md-tabs__item">
         <a href="../" class="md-tabs__link">
           
   
@@ -1642,31 +1638,26 @@
       
   
   
-    
   
   
-  
     
     
     
     
-      
-        
-        
       
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
         
           
-          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="">
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
             
   
   
@@ -1684,7 +1675,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_8">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1811,37 +1802,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Why no per-image AP
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../why-no-per-image-ap/" class="md-nav__link">
         
   
   
@@ -1857,81 +1821,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#ap-integrates-a-curve-that-a-single-image-cannot-draw" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        AP integrates a curve that a single image cannot draw
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#faster-coco-eval-and-pycocotools-cli-surface-this-anyway" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Faster-coco-eval and pycocotools-cli surface this anyway
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#what-the-project-ships-instead" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        What the project ships instead
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#the-dataset-level-analog" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        The dataset-level analog
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#see-also" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        See also
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -1964,69 +1853,157 @@
   
 
 
-<h1 id="why-per_image-does-not-ship-an-ap-column">Why <code>per_image</code> does not ship an AP column</h1>
-<p>The <code>per_image</code> result table introduced by <a href="../../adr/0019-result-tables/">ADR-0019</a>
-deliberately omits <code>ap</code> and <code>ap_50</code> columns. Pycocotools-cli and
-faster-coco-eval both expose a per-image AP value; vernier does not.
-This page records why — long enough that an issue asking "where is
-per-image AP?" can be closed by a link.</p>
-<h2 id="ap-integrates-a-curve-that-a-single-image-cannot-draw">AP integrates a curve that a single image cannot draw</h2>
-<p>Average precision is the area under a precision-recall curve, swept
-over a sorted list of detections. The shape of the curve is the
-contribution. A <em>dataset-level</em> PR curve has thousands of points and
-is a meaningful signal.</p>
-<p>A <em>single-image</em> PR curve almost never does. Most images contribute
-fewer than ten detections and one or two ground truths. The resulting
-curve is a step function with one or two points, and its area is
-either 0.0 or 1.0 in the overwhelming majority of cells. The number
-is precisely defined; it just is not comparable across images,
-because images with three detections and images with three hundred
-produce the same statistic via incompatible curves.</p>
-<h2 id="faster-coco-eval-and-pycocotools-cli-surface-this-anyway">Faster-coco-eval and pycocotools-cli surface this anyway</h2>
-<p>Both tools compute per-image AP via the same <code>accumulate</code> machinery
-used for the dataset summary, applied to one image's detections. The
-output is a one-cell number that users plot, sort, and act on. The
-most common artifact is a histogram piled at exactly 0.0 and 1.0
-with an uninformative tail. Users then set thresholds, mine "hard
-images", and chase phantom regressions on a metric that has no
-statistical meaning at that granularity. We do not ship the column
-because we do not want to encode a default that misleads.</p>
-<h2 id="what-the-project-ships-instead">What the project ships instead</h2>
-<p>The <code>per_image</code> schema (see ADR-0019 §<code>per_image</code>) reports raw counts —
-<code>tp_at_50</code>, <code>fp_at_50</code>, <code>fn_at_50</code> and their <code>_75</code> siblings — plus
-<code>tp_mean_iou</code>. These are well-defined per-image, comparable across
-images of different sizes, and direct inputs to the failure-mining
-queries the table exists to enable. Users who genuinely want
-per-image PR curves have the data: <code>per_pair</code> carries IoU values
-keyed by <code>(detection_id, ground_truth_id, image_id)</code>, and the curve
-for a single image at IoU 0.50 is a 5-line polars expression:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="kn">import</span><span class="w"> </span><span class="nn">polars</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pl</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="n">pairs</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">per_pair</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;image_id&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="mi">42</span><span class="p">)</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="n">matches</span> <span class="o">=</span> <span class="n">pairs</span><span class="o">.</span><span class="n">filter</span><span class="p">(</span><span class="n">pl</span><span class="o">.</span><span class="n">col</span><span class="p">(</span><span class="s2">&quot;iou&quot;</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="mf">0.5</span><span class="p">)</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Sort by score elsewhere (per_detection) to draw the curve.</span>
-</span></code></pre></div>
-<p>This is the same composition we ask of users elsewhere: vernier
-ships the data primitives; user-defined metrics layer on top.</p>
-<h2 id="the-dataset-level-analog">The dataset-level analog</h2>
-<p>Even the dataset-level pycocotools layout has the same problem in
-miniature. Quirk <strong>C5</strong> (see
-<a href="../../engineering/pycocotools-quirks/"><code>docs/engineering/pycocotools-quirks.md</code></a>)
-records that a category with no ground truths is initialized to <code>-1</code>
-and <em>filtered out</em> of the mean rather than counted as zero. Without
-that filter, an empty category would drag the headline AP to
-nonsense. The <code>per_image</code> AP omission is the same discipline applied
-one level deeper.</p>
+<h1 id="calibration-what-it-answers-and-what-it-doesnt">Calibration: what it answers, and what it doesn't</h1>
+<p>vernier ships a detection-family calibration summarizer (ADR-0018)
+via <code>Evaluator.evaluate(..., calibration=True)</code> and the lazy
+<code>result.calibration(...)</code> fold. Three things come out: a scalar
+<strong>ECE</strong> (Expected Calibration Error), a scalar <strong>MCE</strong> (Maximum
+Calibration Error), and a <strong>reliability table</strong> of per-bin gaps.
+The how-to (<a href="../../how-to/calibration/"><code>calibration.md</code></a>) walks the
+<em>how</em>; this page is the <em>what for, and what against</em>.</p>
+<h2 id="what-calibration-answers">What calibration answers</h2>
+<p><strong>Are my model's confidence scores trustworthy as probabilities?</strong>
+A perfectly calibrated detector that emits score <code>0.7</code> for a set of
+predictions has those predictions correct 70% of the time. The
+reliability table is the per-bin breakdown; ECE is a single-number
+summary of how far the model deviates from that diagonal.</p>
+<p><strong>At which scores does my model lie most?</strong> MCE — the worst-bin gap
+— answers "what is the largest amount of confidence I am ever wrong
+by, in a populated bin?" When you tune a downstream decision rule
+("only accept detections above 0.9"), MCE is the right alarm to
+read; ECE averages a true overconfidence pocket in with calibrated
+mid-range bins it would otherwise drown.</p>
+<p><strong>Which classes are uncalibrated?</strong> With <code>per_class=True</code>, the
+per-class table surfaces ECE per category. <code>result.calibration(...).worst(5)</code>
+returns the top-5 most miscalibrated classes — the headline read for
+a regression triage pass.</p>
+<h2 id="how-calibration-differs-from-ap-and-olrp">How calibration differs from AP and oLRP</h2>
+<p>AP and oLRP measure different things than calibration. The
+three are orthogonal, and a model can be excellent on one while
+catastrophic on another:</p>
+<ul>
+<li><strong>AP</strong> integrates the precision-recall curve over every threshold.
+  A miscalibrated model can have perfect AP if its score <em>ordering</em>
+  is correct — AP is invariant to monotone score transformations.
+  Calibration is not: rescale every score by <code>score ** 2</code> and AP
+  stays the same; ECE moves.</li>
+<li><strong>oLRP</strong> (<a href="../lrp-and-its-limits/"><code>lrp-and-its-limits.md</code></a>) finds
+  a single operating point and reports the error structure there.
+  oLRP cares about the threshold; calibration cares about <em>every</em>
+  score. A model whose oLRP <code>tau</code> is <code>0.42</code> can still be wildly
+  miscalibrated below <code>0.42</code> (the threshold filtered those scores
+  out before oLRP looked).</li>
+</ul>
+<p>Read together: AP says "is the ranking right?"; oLRP says "at the
+best threshold, what's costing me?"; calibration says "do my scores
+mean what they claim?" Three different questions, three different
+diagnoses.</p>
+<h2 id="why-detr-era-defaults">Why DETR-era defaults</h2>
+<p>Modern transformer detectors (DETR-family, Deformable-DETR,
+DINO-DETR, RT-DETR) produce degenerate score distributions that
+break the obvious choices for ECE:</p>
+<ul>
+<li><strong>Quantile binning, not equal-width.</strong> DETR-family models emit a
+  pile of low-score padding queries (typically <code>~270</code> of <code>300</code>
+  queries score below <code>0.05</code>). Equal-width binning lands ~9 of 15
+  bins inside that pile, leaving the high-score region — the one
+  practitioners actually care about — under-resolved. Quantile
+  bins (parity-pinned to <code>numpy.quantile(method='linear')</code>, quirk
+  P1) put the histogram resolution where the detections live. On
+  degenerate score distributions, duplicate edges get merged
+  (quirk P5), so <code>effective_n_bins</code> may be <code>&lt; n_bins</code>; arithmetic
+  over bins should reference <code>effective_n_bins</code>.</li>
+<li><strong><code>min_score = 0.05</code>.</strong> Below this threshold the predictions are
+  padding-token artifacts of the architecture, not the model's
+  actual epistemic uncertainty. The default cutoff matches the
+  filter every DETR evaluation script applies before doing anything
+  else. Override with <code>min_score=0.0</code> to include them; you will see
+  spuriously high "accuracy" in the low-score bins (the model is
+  right that those aren't objects, but it's right in a degenerate
+  way).</li>
+<li><strong>Wilson confidence intervals, not Clopper-Pearson.</strong> Per-bin
+  accuracies have small <code>n</code> in the tails. Wilson intervals are
+  closed-form, well-defined down to <code>n = 1</code>, and contract slightly
+  faster than Clopper-Pearson for the bin sizes that typically
+  result from quantile binning at <code>n_bins = 15</code> on a COCO-scale
+  evaluation. The Clopper-Pearson alternative is wired in
+  (<code>confidence="clopper_pearson"</code>) but documented Phase-2 — the
+  kernel-level tests pin only the Wilson path today.</li>
+<li><strong>Macro per-class aggregation.</strong> With <code>per_class=True</code>, the
+  marginal ECE/MCE are the unweighted mean across classes
+  (quirk P6) — the same scale invariance the COCO AP convention
+  uses. Override with <code>per_class_aggregation="micro"</code> to pool
+  detections globally; the per-class table is unchanged either way.</li>
+</ul>
+<p>The full quirk survey (P1–P10) and three-tier dispositions live in
+<a href="../../engineering/calibration-quirks/"><code>calibration-quirks.md</code></a>.</p>
+<h2 id="why-detection-family-only-today">Why detection-family only today</h2>
+<p>ADR-0018's per-paradigm shape map sorts every kernel into one of
+three shapes:</p>
+<ul>
+<li><strong>Shape 1 (instance / bbox / segm / boundary / keypoints).</strong> Each
+  detection has a scalar score; the histogram fold is unambiguous.
+  This ships.</li>
+<li><strong>Shape 2 (panoptic).</strong> Predictions are dense label maps. Per-
+  segment scores exist in the dataset format but are not part of the
+  matching contract — the PQ kernel ignores them. Calibrating
+  panoptic outputs needs a per-segment confidence convention the
+  paradigm does not yet pin; gated on that data-model decision.</li>
+<li><strong>Shape 3 (semantic).</strong> Per-pixel softmax outputs are scores, but
+  there's no notion of a "prediction" to bin against. Calibration
+  here is pixel-wise (per-class ECE over pixels), which is a
+  different kernel than the detection fold. Gated on that work.</li>
+</ul>
+<p>These deferrals are explicit in the ADR. Today
+<code>Evaluator.evaluate(..., calibration=True)</code> only appears on
+<code>vernier.instance.Evaluator</code>.</p>
+<h2 id="limits">Limits</h2>
+<h3 id="ece-is-a-single-number-summarizing-many-gaps">ECE is a single number summarizing many gaps</h3>
+<p>By design, ECE collapses the reliability table to one scalar. Two
+detectors with very different error structures can have identical
+ECE — a uniform 5%-off bias across every bin, versus a perfectly-
+calibrated mid-range with two pathologically broken bins at the
+extremes. ECE alone cannot distinguish them.</p>
+<p>The reliability table is what differentiates. If you read only ECE,
+you read only the integral; the per-bin breakdown is where the
+actionable information lives.</p>
+<h3 id="small-per-class-supports-wide-cis">Small per-class supports → wide CIs</h3>
+<p>Per-class accuracy estimates ride on per-class detection counts.
+COCO has 80 categories but the long tail of those categories has
+hundreds of detections at best; LVIS makes this dramatically worse
+(1203 categories, many with <code>&lt;10</code> detections in val). The Wilson CI
+on a 7-out-of-10 bin is <code>[0.40, 0.89]</code> — useful, but you cannot read
+"73% accuracy" off it. The <code>n</code> column in the per-class table is the
+disclaimer.</p>
+<h3 id="calibration-is-post-hoc-it-does-not-fix-anything">Calibration is post-hoc; it does not fix anything</h3>
+<p>Like AP and oLRP, calibration is a measurement. It tells you the
+calibration is bad; it does not improve calibration. The
+deployment-side fix is a post-hoc calibrator (temperature scaling,
+isotonic regression) trained on a held-out set. vernier's job ends
+at the measurement; the calibrator is downstream tooling.</p>
+<h3 id="strict-mode-is-bit-equal-to-an-oracle-that-doesnt-exist-publicly">Strict mode is bit-equal to an oracle that doesn't exist publicly</h3>
+<p>vernier's calibration kernel has no canonical reference implementation
+the way pycocotools is the COCO AP oracle. The parity contract is a
+clean-room NumPy oracle (<code>tests/python/parity_calibration/numpy_oracle.py</code>,
+hand-derived from the ADR), bit-equal to the Rust kernel at strict
+mode. Three-tier dispositions live in
+<a href="../../engineering/calibration-quirks/"><code>calibration-quirks.md</code></a>;
+where the literature disagrees on a definition (binning convention,
+CI flavor), the disposition makes the choice explicit. There is no
+upstream library to cite as "we match X" — the calibrator survey is
+the receipt.</p>
 <h2 id="see-also">See also</h2>
 <ul>
-<li><a href="../../adr/0019-result-tables/">ADR-0019</a> §<code>per_image</code> — schema
-  decision, including the explicit list of columns omitted.</li>
-<li><a href="../../engineering/pycocotools-quirks/"><code>docs/engineering/pycocotools-quirks.md</code></a>
-  §C5 — the absent-category sentinel that motivates the same
-  discipline at dataset scope.</li>
-<li><a href="../../how-to/result-tables/"><code>docs/how-to/result-tables.md</code></a> —
-  recipes that use <code>per_image</code> counts and <code>per_pair</code> IoUs in lieu of
-  a per-image AP column.</li>
+<li><a href="../../adr/0018-calibration/">ADR-0018</a> — correctness model,
+  per-paradigm shape map, deferral table.</li>
+<li><a href="../../how-to/calibration/"><code>docs/how-to/calibration.md</code></a> —
+  recipe-style guide.</li>
+<li><a href="../../engineering/calibration-quirks/"><code>docs/engineering/calibration-quirks.md</code></a>
+  — P1–P10 disposition survey.</li>
+<li><a href="../lrp-and-its-limits/"><code>lrp-and-its-limits.md</code></a> — the operating-
+  point sibling diagnostic.</li>
+<li><a href="../tide-and-its-limits/"><code>tide-and-its-limits.md</code></a> — the error-
+  structure sibling diagnostic. Calibration is orthogonal to both.</li>
 </ul>
 
 

@@ -11,7 +11,7 @@
         <link rel="canonical" href="https://noefontana.github.io/vernier/stable/reference/">
       
       
-        <link rel="prev" href="../how-to/distributed-eval/">
+        <link rel="prev" href="../how-to/per-class-by-slice/">
       
       
         <link rel="next" href="python/vernier/">
@@ -1206,6 +1206,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1605,6 +1633,62 @@
   
   
     <li class="md-nav__item">
+      <a href="manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="coco-summary-stats/" class="md-nav__link">
         
   
@@ -1776,6 +1860,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../explanation/why-no-per-image-ap/" class="md-nav__link">
         
   
@@ -1848,9 +1960,16 @@ Rust reference is <a href="https://docs.rs/vernier-core">docs.rs</a>.</p>
 <h2 id="schemas-and-stat-definitions">Schemas and stat definitions</h2>
 <ul>
 <li><a href="cli-output-schema/"><code>vernier eval --emit json</code> output schema</a> —
-  field-by-field shape of the CLI's JSON output.</li>
+  field-by-field shape of the CLI's JSON output (v1 un-partitioned
+  envelope and the v2 <code>--manifest</code> envelope).</li>
 <li><a href="coco-summary-stats/">COCO 12-stat detection summary</a> —
   index-by-index definition of <code>summary.stats[0..12]</code>.</li>
+<li><a href="manifest-schema/">Partition manifest schema</a> — the
+  <code>manifest_version: "1"</code> table that drives <code>vernier eval --manifest</code>
+  and <code>vernier aggregate</code> (ADR-0046).</li>
+<li><a href="aggregate-schema/"><code>vernier aggregate --emit json</code> output schema</a> —
+  the <code>aggregate_version: "1"</code> fan-in document with mPC / rPC
+  columns.</li>
 </ul>
 
 

@@ -1206,6 +1206,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../how-to/per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -2075,6 +2103,17 @@
   
 </li>
         
+          <li class="md-nav__item">
+  <a href="#vernier.semantic.EvalResult.slices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;slices
+      
+    </span>
+  </a>
+  
+</li>
+        
       </ul>
     </nav>
   
@@ -2486,6 +2525,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../../manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../coco-summary-stats/" class="md-nav__link">
         
   
@@ -2637,6 +2732,34 @@
     
   
     TIDE and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
   
 
     
@@ -4413,7 +4536,10 @@ ADR or doc page).</p>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">EvalResult</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">summary</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.SemanticSummary)" href="#vernier.semantic.Summary">SemanticSummary</a></span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">_per_class_batch</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="p">)</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">_slices_batch</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">overall_n_images</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">overall_n_detections</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -4425,6 +4551,10 @@ passed. Carries :class:<code>Summary</code> plus a polars DataFrame view of
 the per-class semantic breakdown in the canonical mmseg / ADE20K
 column order. Tables on :meth:<code>Evaluator.evaluate_from_pngs</code>
 (ADR-0037 fused path) are deferred.</p>
+<p>Also returned when <code>manifest=</code> is passed (ADR-0046 partitioned
+eval): the <code>.summary</code> field carries the bit-identical-to-
+un-partitioned <code>overall</code> summary, and the :attr:<code>slices</code>
+DataFrame view exposes the per-<code>(axis, value)</code> cell metrics.</p>
 
 
 
@@ -4466,6 +4596,38 @@ column order. Tables on :meth:<code>Evaluator.evaluate_from_pngs</code>
         <p>One row per class. Columns: <code>category_id</code>, <code>iou</code>,
 <code>accuracy</code>, <code>precision</code>, <code>n_gt_pixels</code>, <code>n_dt_pixels</code>,
 <code>tp_pixels</code>, <code>fp_pixels</code>, <code>fn_pixels</code>.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="vernier.semantic.EvalResult.slices" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">slices</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-cached"><code>cached</code></small>
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">slices</span><span class="p">:</span> <span class="n"><span title="polars.DataFrame">DataFrame</span></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>One row per <code>(axis, value)</code> partition cell (ADR-0046).
+Columns: <code>axis</code>, <code>value</code>, <code>n_images</code>, <code>n_detections</code>,
+<code>miou</code>, <code>fwiou</code>, <code>pixel_accuracy</code>, <code>mean_accuracy</code>.
+<code>n_detections</code> is always 0 — semantic has no detection
+notion; the column is shape-parity with panoptic / instance.
+Available only when the originating <code>evaluate(...)</code> call
+carried a <code>manifest=</code> keyword; raises :class:<code>RuntimeError</code>
+otherwise.</p>
 
     </div>
 
@@ -4988,13 +5150,18 @@ it). Until that lands, <code>evaluate()</code> raises
 
   
       dataclass
-   (vernier.semantic.Dataset)" href="#vernier.semantic.Dataset">Dataset</a></span><span class="p">,</span> <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Predictions
+   (vernier.semantic.Dataset)" href="#vernier.semantic.Dataset">Dataset</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Predictions
 
 
   
       dataclass
-   (vernier.semantic.Predictions)" href="#vernier.semantic.Predictions">Predictions</a></span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">tables</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.SemanticSummary)" href="#vernier.semantic.Summary">SemanticSummary</a></span>
+   (vernier.semantic.Predictions)" href="#vernier.semantic.Predictions">Predictions</a></span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.SemanticSummary)" href="#vernier.semantic.Summary">SemanticSummary</a></span>
 </span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">evaluate</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Dataset
 
@@ -5010,7 +5177,32 @@ it). Until that lands, <code>evaluate()</code> raises
    (vernier.semantic.Predictions)" href="#vernier.semantic.Predictions">Predictions</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span> <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier.semantic.TableName" href="#vernier.semantic.TableName">TableName</a></span><span class="p">,</span> <span class="o">...</span><span class="p">],</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+
+
+  
+      dataclass
+   (vernier.semantic.EvalResult)" href="#vernier.semantic.EvalResult">EvalResult</a></span>
+</span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">evaluate</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Dataset
+
+
+  
+      dataclass
+   (vernier.semantic.Dataset)" href="#vernier.semantic.Dataset">Dataset</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Predictions
+
+
+  
+      dataclass
+   (vernier.semantic.Predictions)" href="#vernier.semantic.Predictions">Predictions</a></span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><span title="object">object</span></span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
 
   
@@ -5034,7 +5226,9 @@ it). Until that lands, <code>evaluate()</code> raises
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="s2">&quot;all&quot;</span><span class="p">]</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">|</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier.semantic.TableName" href="#vernier.semantic.TableName">TableName</a></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.SemanticSummary)" href="#vernier.semantic.Summary">SemanticSummary</a></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.SemanticSummary)" href="#vernier.semantic.Summary">SemanticSummary</a></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
 
   
@@ -5056,6 +5250,24 @@ breakdown, and the accumulated :class:<code>ConfusionMatrix</code>.</p>
 Defaults to <code>None</code>, returning :class:<code>Summary</code> (existing
 behavior). Pass <code>"all"</code> or a tuple of :data:<code>TableName</code>
 values to opt into the wider :class:<code>EvalResult</code> return type.</p>
+<p><code>manifest=</code> opts into ADR-0046 partitioned eval. Accepts a
+dict (the canonical JSON-records shape), a file path
+(<code>.json</code>), or any object exposing the Arrow PyCapsule
+Interface (a polars / pandas / pyarrow DataFrame of per-image
+metadata). Returns an :class:<code>EvalResult</code> whose <code>.summary</code>
+is bit-identical to the un-partitioned call and whose
+<code>.slices</code> property is a polars DataFrame with one row per
+<code>(axis, value)</code> cell. <code>cross_axes=</code> opts joint cells in
+(per ADR-0046 §E2; marginals are the default).</p>
+<p>Per ADR-0046's C3 axiom, the per-image confusion-matrix fold
+runs exactly once regardless of slice count: the FFI retains a
+<code>Vec&lt;(image_id, ConfusionMatrix)&gt;</code> of per-image deltas and
+the partition orchestrator sums them under (a) no filter for
+<code>overall</code> and (b) each slice's image-id set for the per-slice
+rows. Confusion-matrix sums are u64-additive, so the parity
+contract is unconditional (no f64 non-associativity to worry
+about, unlike the panoptic path); the <code>overall</code> summary is
+bit-identical to the un-partitioned call by construction.</p>
 
 
     </div>

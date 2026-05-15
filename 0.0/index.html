@@ -1306,6 +1306,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="how-to/per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1628,6 +1656,62 @@
   
   
     <li class="md-nav__item">
+      <a href="reference/manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="reference/aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="reference/coco-summary-stats/" class="md-nav__link">
         
   
@@ -1799,6 +1883,34 @@
   
   
     <li class="md-nav__item">
+      <a href="explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="explanation/why-no-per-image-ap/" class="md-nav__link">
         
   
@@ -1849,10 +1961,12 @@
 
 <h1 id="vernier">vernier</h1>
 <p>A parity-preserving COCO-style evaluator for instance segmentation, panoptic
-segmentation, boundary IoU, OKS keypoints, semantic segmentation, and LVIS
-federated evaluation. Bit-exact against <code>pycocotools==2.0.11</code>, <code>panopticapi</code>,
-and <code>lvis-api</code> in strict parity mode; semantic mIoU is calibrated against
-a vendored <code>mmsegmentation</code> <code>IoUMetric</code>. See the per-paradigm matrix in the
+segmentation, boundary IoU, OKS keypoints, semantic segmentation, LVIS
+federated evaluation, LRP / oLRP error decomposition, and detection-family
+calibration (ECE / MCE / reliability). Bit-exact against
+<code>pycocotools==2.0.11</code>, <code>panopticapi</code>, and <code>lvis-api</code> in strict parity mode;
+semantic mIoU is calibrated against a vendored <code>mmsegmentation</code> <code>IoUMetric</code>.
+See the per-paradigm matrix in the
 <a href="https://github.com/NoeFontana/vernier/#status--validation">README §Status &amp; validation</a>
 for the full per-paradigm picture, plus a documented quirks survey for every
 place the reference implementations disagree with themselves.</p>
@@ -1876,6 +1990,11 @@ empirically. vernier takes a third path:</p>
   fragmented <code>pycocotools</code>, <code>boundary-iou-api</code>, <code>panopticapi</code>, <code>lvis-api</code>,
   and <code>mmsegmentation</code> installs (each has a per-paradigm
   <a href="migrate/">migration guide</a>).</li>
+<li><strong>Scenario slicing and cross-run aggregation.</strong> A partition manifest
+  (<code>weather</code>, <code>time_of_day</code>, …) feeds <code>vernier eval --manifest</code> for
+  per-slice headline metrics and <code>vernier aggregate</code> for cross-run
+  corruption tables (mPC / rPC) — one matching pass, N slices
+  (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0046-slice-and-aggregate.md">ADR-0046</a>).</li>
 <li><strong>Drop-in shim.</strong> <code>vernier.patch_pycocotools()</code> swaps the <code>COCOeval</code> symbol
   in place — existing pycocotools-based scripts switch with one line
   (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0007-patch-pycocotools-policy.md">ADR-0007</a>).</li>

@@ -933,10 +933,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#boundary-pq-raises-notimplementederror" class="md-nav__link">
+  <a href="#boundary-pq" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Boundary PQ raises NotImplementedError
+        Boundary PQ
       
     </span>
   </a>
@@ -1368,6 +1368,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../how-to/per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1690,6 +1718,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/coco-summary-stats/" class="md-nav__link">
         
   
@@ -1861,6 +1945,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../explanation/why-no-per-image-ap/" class="md-nav__link">
         
   
@@ -1975,13 +2087,26 @@ budget, not a runtime mode.</p>
 the implicit pool: expect last-bit PQ drift on the first run (your
 prior numbers are host-dependent; vernier's are not). The strict-mode
 parity claim against the single-core path is the deterministic anchor.</p>
-<h2 id="boundary-pq-raises-notimplementederror">Boundary PQ raises <code>NotImplementedError</code></h2>
-<p><code>Evaluator(boundary=True)</code> raises <code>NotImplementedError</code> pointing at
-the <strong>Q3 / Z1</strong> follow-up ADR. The
-composition rule in the <a href="https://github.com/bowenc0221/boundary-iou-api"><code>bowenc0221/boundary-iou-api</code></a>
-fork's panoptic path is <em>not</em> the instance-case
-<code>min(mask_iou, boundary_iou)</code> and resolving it requires its own pass.
-ADR-0025 §"explicitly does not decide" anchors the deferral.</p>
+<h2 id="boundary-pq">Boundary PQ</h2>
+<p><code>Evaluator(boundary=True, dilation_ratio=0.02)</code> now ships
+(<a href="../../adr/0025-panoptic-api/#z1z2-amendment-2026-05-14">ADR-0025 §Z1/Z2 amendment</a>). The composition rule is
+<code>iou = min(mask_iou, boundary_iou)</code> — identical to instance Boundary;
+upstream <code>coco_panoptic_api/evaluation.py:195</code> is literally
+<code>iou = min(iou, boundary_iou)</code>. What is non-trivial is the iterative,
+JSON-order-dependent construction of the boundary panoptic map (the
+<a href="https://github.com/bowenc0221/boundary-iou-api"><code>bowenc0221/boundary-iou-api</code></a> fork erodes each segment
+against the <em>partially-mutated</em> id-map, so later segments lose pixels
+their predecessors' bands stomped).</p>
+<p>Two parity modes, same <code>parity_mode</code> field used elsewhere:</p>
+<ul>
+<li><code>parity_mode="strict"</code> mirrors upstream's in-place JSON-order
+  mutation bit-exactly. Pick this for cross-tool comparisons.</li>
+<li><code>parity_mode="corrected"</code> (default) snapshots the input id-map and
+  processes segments in sorted-id order. Equal to strict whenever
+  segment bands do not overlap; documented divergence otherwise.</li>
+</ul>
+<p>Cityscapes panoptic boundary (ADR-0025 Z3) is still deferred — out of
+scope for this migration.</p>
 <h2 id="sentinels-1-vs-0-vs-nan">Sentinels: <code>-1</code> vs <code>0</code> vs <code>nan</code></h2>
 <p>panopticapi, LVIS, and pycocotools each surface a different value
 when a summary entry has no input data. <strong>Take care when comparing

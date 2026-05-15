@@ -1159,6 +1159,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#evaluate-with-metric-olrp-lrp-olrp-error-decomposition" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Evaluate with --metric olrp (LRP / oLRP error decomposition)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#pin-the-json-schema-version-for-archived-results" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1344,6 +1355,34 @@
     
   
     Distributed evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
   
 
     
@@ -1679,6 +1718,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../../reference/manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../reference/coco-summary-stats/" class="md-nav__link">
         
   
@@ -1850,6 +1945,34 @@
   
   
     <li class="md-nav__item">
+      <a href="../../explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../../explanation/why-no-per-image-ap/" class="md-nav__link">
         
   
@@ -1949,9 +2072,27 @@
 <div class="language-sh highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>vernier<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--gt<span class="w"> </span>gt.json<span class="w"> </span>--dt<span class="w"> </span>dt.json<span class="w"> </span>--iou-type<span class="w"> </span>bbox<span class="w"> </span>--quiet
 </span></code></pre></div>
 <p><code>--quiet</code> silences the (currently-empty, but reserved) stderr diagnostic stream. Stdout — the summary itself — is unaffected; <code>--quiet</code> and <code>--emit text</code> compose without surprises. Errors that abort the run still write a typed message to stderr and exit non-zero regardless of <code>--quiet</code>. The CLI does not ship a <code>--verbose</code> flag in the current 0.0.x release line; structured logging is a follow-up ADR (ADR-0015 §"What this ADR explicitly does <em>not</em> decide").</p>
+<h2 id="evaluate-with-metric-olrp-lrp-olrp-error-decomposition">Evaluate with <code>--metric olrp</code> (LRP / oLRP error decomposition)</h2>
+<p>Per <a href="../../adr/0043-lrp-oracle-and-namespace/">ADR-0043</a>, the headline
+metric is selectable via <code>--metric {ap,olrp}</code> (default <code>ap</code>,
+preserving the existing AP/AR summary). <code>olrp</code> swaps the headline for
+the four-row oLRP decomposition (<code>oLRP</code>, <code>Loc</code>, <code>FP</code>, <code>FN</code>) and
+reports the per-class argmin tau as the operating-point recommendation:</p>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>vernier<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--gt<span class="w"> </span>gt.json<span class="w"> </span>--dt<span class="w"> </span>dt.json<span class="w"> </span>--iou-type<span class="w"> </span>bbox<span class="w"> </span>--metric<span class="w"> </span>olrp
+</span></code></pre></div>
+<p><code>--metric olrp</code> composes with <code>--iou-type {bbox,segm,boundary,keypoints}</code>:
+boundary uses <code>--dilation-ratio</code> (default <code>0.02</code>); keypoints uses
+<code>--sigmas</code> and ships per <a href="../../adr/0045-lrp-keypoints-shipped/">ADR-0045</a>.
+Panoptic does not yet ship LRP — predictions carry no per-segment
+score; the Python <code>vernier.panoptic.optimal_lrp</code> is a typed
+<code>NotImplementedError</code> stub pending a follow-up ADR.</p>
+<p>The JSON formatter under <code>--metric olrp</code> writes the same <code>"version":
+"1"</code> envelope as <code>ap</code> with <code>"metric": "olrp"</code> and the headline fields
+replaced by the four-row block + <code>tau_per_class</code>. See
+<a href="../../reference/cli-output-schema/"><code>reference/cli-output-schema.md</code></a>.</p>
 <h2 id="pin-the-json-schema-version-for-archived-results">Pin the JSON schema version for archived results</h2>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Today the only shipped schema is &quot;1&quot;; this is what every --emit json writes.</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>vernier<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--gt<span class="w"> </span>gt.json<span class="w"> </span>--dt<span class="w"> </span>dt.json<span class="w"> </span>--iou-type<span class="w"> </span>bbox<span class="w"> </span>--emit<span class="w"> </span><span class="nv">json</span><span class="o">=</span>result.json
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="c1"># Today the only shipped schema is &quot;1&quot;; this is what every --emit json writes.</span>
+</span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a>vernier<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--gt<span class="w"> </span>gt.json<span class="w"> </span>--dt<span class="w"> </span>dt.json<span class="w"> </span>--iou-type<span class="w"> </span>bbox<span class="w"> </span>--emit<span class="w"> </span><span class="nv">json</span><span class="o">=</span>result.json
 </span></code></pre></div>
 <p>The JSON formatter writes <code>"version": "1"</code> and there is no other shipped schema — <code>--emit json,version=N</code> is the planned per-formatter knob (ADR-0015 §"Formatter: JSON") for opting into a future schema. The schema version is a contract surface independent of the package version: archived <code>"version": "1"</code> documents remain consumable across 0.0.x patches and through any future deprecation window before <code>"1"</code> is retired. If you store eval results long-term, pin both <code>vernier-cli</code> to a specific 0.0.x patch and the schema version field on read — <code>jq -e '.version == "1"' result.json</code> is enough to fail fast when a future toolchain change starts emitting a different shape.</p>
 <h2 id="see-also">See also</h2>

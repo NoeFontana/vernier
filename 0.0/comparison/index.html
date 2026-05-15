@@ -621,6 +621,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#metrics-beyond-ap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics beyond AP
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scenario-slicing-and-cross-run-aggregation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scenario slicing and cross-run aggregation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#what-vernier-doesnt-do-yet" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1341,6 +1363,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1663,6 +1713,62 @@
   
   
     <li class="md-nav__item">
+      <a href="../reference/manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
       <a href="../reference/coco-summary-stats/" class="md-nav__link">
         
   
@@ -1814,6 +1920,34 @@
     
   
     TIDE and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
   
 
     
@@ -2068,6 +2202,57 @@ harness lands under
 framework: model registry, training loop, dataset pipelines, config
 system. vernier-semantic is the evaluation half only; the training half
 is out of scope.</p>
+<h2 id="metrics-beyond-ap">Metrics beyond AP</h2>
+<p>The alternatives above all measure the same metric family — COCO-style
+average precision (plus PQ / mIoU on the panoptic / semantic side).
+vernier additionally ships two diagnostic surfaces that none of the
+above expose, alongside the same matching pass:</p>
+<ul>
+<li><strong>LRP / oLRP error decomposition</strong> (Oksuz et al., ECCV 2018 / TPAMI
+  2021). <code>vernier.instance.optimal_lrp(...)</code> and
+  <code>vernier eval --metric olrp</code> return <code>oLRP_Loc + oLRP_FP + oLRP_FN</code>
+  plus a per-class operating-point <code>tau</code>. The first-party reference
+  is <a href="https://github.com/kemaloksuz/LRP-Error"><code>kemaloksuz/LRP-Error</code></a>
+  — vernier vendors it commit-pinned as a CI tripwire, not as a
+  parity oracle (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0043-lrp-oracle-and-namespace.md">ADR-0043</a>).
+  The correctness contract is a clean-room NumPy oracle in
+  <code>tests/python/oracle/lrp/</code>. Among the alternatives in the table,
+  none expose an oLRP surface. See
+  <a href="../explanation/lrp-and-its-limits/">LRP and its limits</a>.</li>
+<li><strong>Detection-family calibration</strong> (ECE / MCE / reliability table).
+  <code>Evaluator.evaluate(..., calibration=True)</code> plus the lazy
+  <code>result.calibration(...)</code> fold over the retained per-image cell
+  store (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0018-calibration.md">ADR-0018</a>).
+  The obvious comparison is <em>not</em> a COCO library but the general-
+  purpose calibration toolkits — most prominently
+  <a href="https://lightning.ai/docs/torchmetrics/"><code>torchmetrics</code></a> and
+  <a href="https://github.com/EFS-OpenSource/calibration-framework"><code>netcal</code></a>.
+  Both compute ECE on a score / label pair, but neither knows what
+  a COCO match is — the user has to thread the AP fold's per-pair
+  TP/FP labels into the calibrator manually. vernier folds against
+  the same ADR-0013 cell store the AP fold writes, so the matching
+  pass is shared and the score / label pairs are bit-identical to
+  the AP path. Calibration is detection-family today; panoptic and
+  semantic are deferred (see
+  <a href="../explanation/calibration-and-its-limits/">Calibration and its limits</a>).</li>
+</ul>
+<p>These surfaces are stacked on the matching engine, not bolted on:
+the same <code>Evaluator.evaluate(...)</code> call returns AP-side metrics,
+oLRP, and calibration over one pass. The alternative is N libraries
+in N matching passes with N divergent definitions of "true positive."</p>
+<h2 id="scenario-slicing-and-cross-run-aggregation">Scenario slicing and cross-run aggregation</h2>
+<p>The alternatives above evaluate one dataset against one detection set.
+vernier additionally accepts a <em>partition manifest</em> — a tiny CSV/JSON
+table mapping image ids to scenario axes (<code>weather</code>, <code>time_of_day</code>,
+…) — and emits one row of headline metrics per <code>(axis, value)</code> cell
+alongside the overall summary, in one matching pass
+(<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0046-slice-and-aggregate.md">ADR-0046</a>).
+<code>vernier aggregate</code> then fans N corruption runs into a single
+comparative table with mPC / rPC columns matching the Michaelis et
+al. (NeurIPS-W 2019) corruption-benchmark convention. None of the
+alternatives in the table above ship this lane; the typical pattern
+elsewhere is N invocations + glue code per row. See
+<a href="../how-to/scenario-slicing/">Slice an evaluation by scenario</a>.</p>
 <h2 id="what-vernier-doesnt-do-yet">What vernier doesn't do (yet)</h2>
 <p>A short, honest list:</p>
 <ul>
