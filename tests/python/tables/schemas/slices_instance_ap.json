@@ -13,14 +13,14 @@
     {"name": "ap", "type": "float64", "nullable": false},
     {"name": "ap50", "type": "float64", "nullable": false},
     {"name": "ap75", "type": "float64", "nullable": false},
-    {"name": "ap_s", "type": "float64", "nullable": false},
-    {"name": "ap_m", "type": "float64", "nullable": false},
-    {"name": "ap_l", "type": "float64", "nullable": false},
-    {"name": "ar_max_1", "type": "float64", "nullable": false},
-    {"name": "ar_max_10", "type": "float64", "nullable": false},
-    {"name": "ar_max_100", "type": "float64", "nullable": false},
-    {"name": "ar_s", "type": "float64", "nullable": false},
-    {"name": "ar_m", "type": "float64", "nullable": false},
-    {"name": "ar_l", "type": "float64", "nullable": false}
+    {"name": "ap_small", "type": "float64", "nullable": false},
+    {"name": "ap_medium", "type": "float64", "nullable": false},
+    {"name": "ap_large", "type": "float64", "nullable": false},
+    {"name": "ar_1", "type": "float64", "nullable": false},
+    {"name": "ar_10", "type": "float64", "nullable": false},
+    {"name": "ar_100", "type": "float64", "nullable": false},
+    {"name": "ar_small", "type": "float64", "nullable": false},
+    {"name": "ar_medium", "type": "float64", "nullable": false},
+    {"name": "ar_large", "type": "float64", "nullable": false}
   ]
 }
