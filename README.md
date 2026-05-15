@@ -11,8 +11,7 @@ Fast, parity-preserving evaluation for object detection, instance / panoptic / s
 
 ## 60-second example
 
-One-shot — predictions already serialized to JSON (end-of-epoch
-checkpoint, CI gate, post-training inspection):
+One-shot — predictions already serialized to JSON (end-of-epoch checkpoint, CI gate, post-training inspection):
 
 ```python
 from pathlib import Path
@@ -27,11 +26,7 @@ for line in summary.pretty_lines():
     print(line)
 ```
 
-In a training loop — overlap eval with the next training step. The
-matching kernel runs on a worker thread, so `submit(...)` returns
-immediately and the training thread keeps moving. Passing a
-`CocoDataset` reuses the parsed-once GT and its per-kernel
-derivation cache across every epoch (ADR-0020):
+In a training loop — overlap eval with the data loading and inference. The matching kernel runs on a worker thread, so `submit(...)` returns immediately and the main thread keeps moving. Passing a `CocoDataset` reuses the parsed-once GT and its per-kernel derivation cache across every epoch (ADR-0020):
 
 ```python
 import json
