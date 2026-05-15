@@ -6,8 +6,8 @@ re-exported from each paradigm namespace (`vernier.instance`,
 `ValueError` (data / config errors the caller could have prevented) or
 `RuntimeError` (state-machine or coordination errors that arise
 mid-run). The stringified message is the canonical, human-readable
-explanation produced by the Rust [`EvalError`](../../crates/vernier-core/src/error.rs)
-`Display` impl; attributes carry structured data callers may branch on.
+explanation produced by the Rust `EvalError::Display` impl; attributes
+carry structured data callers may branch on.
 
 | Python class | Rust variant | Base | Trigger |
 |---|---|---|---|
