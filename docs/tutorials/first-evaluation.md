@@ -1,5 +1,7 @@
 # Your first evaluation
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NoeFontana/vernier/blob/main/docs/tutorials/notebooks/colab_smoke.ipynb)
+
 This tutorial runs vernier end-to-end on COCO val2017 in the two
 shapes most users start with:
 

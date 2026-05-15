@@ -102,6 +102,31 @@ create_exception!(
     "Streaming evaluator's memory usage crossed the soft-warn threshold."
 );
 
+create_exception!(
+    vernier._core,
+    InvalidAnnotationError,
+    pyo3::exceptions::PyValueError,
+    "Annotation could not be parsed or references an unknown image_id / category_id."
+);
+create_exception!(
+    vernier._core,
+    NonFiniteError,
+    pyo3::exceptions::PyValueError,
+    "A NaN or infinity reached arithmetic that cannot tolerate it (e.g., a detection score)."
+);
+create_exception!(
+    vernier._core,
+    DimensionMismatchError,
+    pyo3::exceptions::PyValueError,
+    "Two annotations or two RLEs disagree on dimensions in a way that makes the operation undefined."
+);
+create_exception!(
+    vernier._core,
+    InvalidConfigError,
+    pyo3::exceptions::PyValueError,
+    "Caller-supplied evaluation parameters are inconsistent with the data they are being applied to."
+);
+
 // ADR-0031 distributed-eval merge errors. Each carries typed
 // attributes so a CI gate can match on them directly without
 // parsing a string message.
@@ -1531,6 +1556,10 @@ pub(crate) fn eval_error_to_pyerr(py: Python<'_>, e: EvalError) -> PyErr {
         EvalError::PartialRankCollision { rank_id } => {
             partial_rank_collision_to_pyerr(py, format!("{e}"), rank_id)
         }
+        EvalError::InvalidAnnotation { .. } => InvalidAnnotationError::new_err(format!("{e}")),
+        EvalError::NonFinite { .. } => NonFiniteError::new_err(format!("{e}")),
+        EvalError::DimensionMismatch { .. } => DimensionMismatchError::new_err(format!("{e}")),
+        EvalError::InvalidConfig { .. } => InvalidConfigError::new_err(format!("{e}")),
         other => PyValueError::new_err(format!("{other}")),
     }
 }
@@ -3246,6 +3275,19 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add(
         "MemoryBudgetWarning",
         m.py().get_type::<MemoryBudgetWarning>(),
+    )?;
+    m.add(
+        "InvalidAnnotationError",
+        m.py().get_type::<InvalidAnnotationError>(),
+    )?;
+    m.add("NonFiniteError", m.py().get_type::<NonFiniteError>())?;
+    m.add(
+        "DimensionMismatchError",
+        m.py().get_type::<DimensionMismatchError>(),
+    )?;
+    m.add(
+        "InvalidConfigError",
+        m.py().get_type::<InvalidConfigError>(),
     )?;
     m.add(
         "PartialFormatMismatch",

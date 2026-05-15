@@ -6,6 +6,7 @@
 [![crates.io vernier-mask](https://img.shields.io/crates/v/vernier-mask.svg?label=crates.io%20%7C%20vernier-mask)](https://crates.io/crates/vernier-mask)
 [![crates.io vernier-cli](https://img.shields.io/crates/v/vernier-cli.svg?label=crates.io%20%7C%20vernier-cli)](https://crates.io/crates/vernier-cli)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NoeFontana/vernier/blob/main/docs/tutorials/notebooks/colab_smoke.ipynb)
 
 Fast, parity-preserving evaluation for object detection, instance / panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS federated, LRP / oLRP error decomposition, and detection-family calibration (ECE / MCE / reliability). Rust core, Python frontend, optional CLI.
 

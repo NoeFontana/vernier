@@ -57,3 +57,73 @@ jobs:
       - uses: taiki-e/install-action@nextest
       - name: cargo nextest (release)
         run: cargo nextest run --workspace --release
+
+  platform-matrix:
+    name: platform smoke (py ${{ matrix.python }} · numpy ${{ matrix.numpy }} · torch ${{ matrix.torch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.10"
+            numpy: "1.26"
+            torch: "2.4"
+          - python: "3.13"
+            numpy: "2.2"
+            torch: "2.6"
+          - python: "3.14"
+            numpy: "latest"
+            torch: "latest"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v8.1.0
+        with:
+          enable-cache: true
+      - name: install python
+        run: uv python install ${{ matrix.python }}
+      - name: install numpy + torch (matrix-pinned)
+        run: |
+          set -euxo pipefail
+          uv venv --python ${{ matrix.python }}
+          if [ "${{ matrix.numpy }}" = "latest" ]; then
+            uv pip install numpy torch
+          else
+            uv pip install "numpy==${{ matrix.numpy }}" "torch==${{ matrix.torch }}"
+          fi
+          uv pip install maturin
+      - name: maturin develop (release)
+        run: uv run --no-sync maturin develop --release
+      - name: tutorial smoke
+        run: uv run --no-sync python tests/python/tutorial_smoke.py
+
+  fuzz-smoke:
+    name: fuzz smoke (120s/target)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: install cargo-fuzz
+        run: cargo install cargo-fuzz
+      - name: build all fuzz targets (shared link step)
+        working-directory: tools/fuzz
+        run: cargo +nightly fuzz build
+      - name: run fuzz targets (120s each)
+        working-directory: tools/fuzz
+        run: |
+          set -e
+          for target in \
+            fuzz_coco_dataset \
+            fuzz_coco_detections \
+            fuzz_manifest \
+            fuzz_rle_counts \
+            fuzz_segmentation \
+            fuzz_panoptic_segments; do
+            echo "::group::$target"
+            cargo +nightly fuzz run "$target" -- -max_total_time=120 -timeout=10
+            echo "::endgroup::"
+          done

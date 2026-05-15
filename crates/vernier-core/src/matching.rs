@@ -59,6 +59,69 @@ use ndarray::{Array2, ArrayView2};
 use crate::error::EvalError;
 use crate::parity::{argsort_score_desc, ParityMode, IOU_BOUNDARY_EPS};
 
+/// Per-call `(g, d, wall_ns)` recorder, gated on `bench-histogram`.
+#[cfg(feature = "bench-histogram")]
+pub mod histogram {
+    use std::path::Path;
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    static RECORDS: Mutex<Vec<(u32, u32, u64)>> = Mutex::new(Vec::new());
+
+    /// Drop-on-end timer. Constructed at the top of `match_image`;
+    /// pushes `(g, d, wall_ns)` into the global buffer when it drops.
+    pub(super) struct CallTimer {
+        g: u32,
+        d: u32,
+        start: Instant,
+    }
+
+    impl CallTimer {
+        pub(super) fn new(g: usize, d: usize) -> Self {
+            Self {
+                g: u32::try_from(g).unwrap_or(u32::MAX),
+                d: u32::try_from(d).unwrap_or(u32::MAX),
+                start: Instant::now(),
+            }
+        }
+    }
+
+    impl Drop for CallTimer {
+        fn drop(&mut self) {
+            let elapsed = self.start.elapsed().as_nanos();
+            let wall_ns = u64::try_from(elapsed).unwrap_or(u64::MAX);
+            if let Ok(mut records) = RECORDS.lock() {
+                records.push((self.g, self.d, wall_ns));
+            }
+        }
+    }
+
+    /// Write every recorded `match_image` call to `path` as CSV (header
+    /// `g,d,wall_ns`), then clear the in-process buffer. Returns the
+    /// number of records written.
+    pub fn dump_csv(path: &Path) -> std::io::Result<usize> {
+        use std::io::Write;
+        let mut records = RECORDS.lock().unwrap_or_else(|p| p.into_inner());
+        let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(file, "g,d,wall_ns")?;
+        for (g, d, w) in records.iter() {
+            writeln!(file, "{},{},{}", g, d, w)?;
+        }
+        let n = records.len();
+        records.clear();
+        file.flush()?;
+        Ok(n)
+    }
+
+    /// Number of records currently buffered. Test-only hook for the
+    /// smoke test.
+    #[cfg(test)]
+    pub(super) fn len() -> usize {
+        let records = RECORDS.lock().unwrap_or_else(|p| p.into_inner());
+        records.len()
+    }
+}
+
 /// Per-image, per-category greedy match between ground-truth and
 /// detection annotations across every IoU threshold.
 ///
@@ -124,6 +187,9 @@ pub(crate) fn match_image(
     let n_g = gt_ignore.len();
     let n_d = dt_scores.len();
     let n_t = iou_thresholds.len();
+
+    #[cfg(feature = "bench-histogram")]
+    let _hist_guard = histogram::CallTimer::new(n_g, n_d);
 
     if gt_iscrowd.len() != n_g {
         return Err(EvalError::DimensionMismatch {
