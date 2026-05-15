@@ -22,7 +22,7 @@
 //! survey row is the single source of truth for each disposition).
 //!
 //! - **P1** (`strict`): bin-edges via numpy `quantile(method='linear')`
-//!   — see [`crate::parity::quantile_linear`].
+//!   — see the crate-private `crate::parity::quantile_linear`.
 //! - **P2** (`strict`): detections matched to ignore regions
 //!   (`dt_ignore[t, d] == true`) drop from the histogram entirely
 //!   (R3 mitigation).
@@ -40,9 +40,8 @@
 //! ## Numerical policy
 //!
 //! All histogram math is `f64` end-to-end (ADR-0004). Per-bin score
-//! and accuracy sums route through
-//! [`crate::summarize::pairwise_sum`] for numpy-compatible reduction
-//! order.
+//! and accuracy sums route through `crate::summarize::pairwise_sum`
+//! for numpy-compatible reduction order.
 
 use crate::accumulate::PerImageEval;
 use crate::error::EvalError;
@@ -160,7 +159,8 @@ pub struct ReliabilityTable {
     /// Lower edge of each bin (inclusive).
     pub score_lo: Vec<f64>,
     /// Upper edge of each bin (right-inclusive on the last bin only;
-    /// see [`assign_bin`] for the exact assignment rule).
+    /// see the crate-private `assign_bin` for the exact assignment
+    /// rule).
     pub score_hi: Vec<f64>,
     /// Per-bin mean score. `NaN` when `count == 0`.
     pub mean_score: Vec<f64>,
@@ -221,9 +221,9 @@ pub struct CalibrationSummary {
 /// Outcome of one filtered detection contributing to the histogram.
 ///
 /// Encoded as `(score, correct)` with `correct` in `{0.0, 1.0}` so
-/// the per-bin sum can route through
-/// [`crate::summarize::pairwise_sum`] without a separate integer
-/// path. Class id is carried alongside for per-class slicing.
+/// the per-bin sum can route through the crate-private
+/// `crate::summarize::pairwise_sum` without a separate integer path.
+/// Class id is carried alongside for per-class slicing.
 #[derive(Debug, Clone, Copy)]
 struct Detection {
     score: f64,

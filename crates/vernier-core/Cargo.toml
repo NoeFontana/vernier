@@ -34,12 +34,12 @@ serde_json = { workspace = true }
 pulp.workspace = true
 # Pure-Rust mask kernels per ADR-0009. One-way dependency: core consumes
 # the codec/rasterizer/ops surface; mask never depends on core.
-vernier-mask = { path = "../vernier-mask", version = "0.0.2" }
+vernier-mask = { path = "../vernier-mask", version = "0.0.3" }
 # Shared partial wire envelope and merge policy (ADR-0032). Carries
 # magic + version + framing + the five typed errors used by all three
 # paradigms. Each crate that consumes partials depends on this leaf;
 # nothing depends back.
-vernier-partial = { path = "../vernier-partial", version = "0.0.2" }
+vernier-partial = { path = "../vernier-partial", version = "0.0.3" }
 # Distributed-eval wire format (ADR-0031). rkyv archives the partial
 # state; blake3 fingerprints the dataset + params; crc32fast guards the
 # wire footer. All three are new top-level deps (the ADR's claim that
