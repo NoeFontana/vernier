@@ -1600,6 +1600,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#vernier.instance.BackgroundEvaluator.finalize_with_cells" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;finalize_with_cells
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#vernier.instance.BackgroundEvaluator.finalize_with_tables" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2223,6 +2234,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;slices
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.instance.EvalResult.calibration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;calibration
       
     </span>
   </a>
@@ -3403,6 +3425,37 @@ Subsequent calls error with the "already finalized" message.</p>
         <p>ADR-0031 / ADR-0035: drain the queue, serialize the worker's
 final state as a partial blob, and shut the worker down.
 Subsequent calls raise "already finalized".</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.instance.BackgroundEvaluator.finalize_with_cells" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">finalize_with_cells</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-method descriptor"><code>method descriptor</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">finalize_with_cells</span><span class="p">()</span> <span class="o">-&gt;</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.Summary)" href="#vernier.instance.Summary">Summary</a></span><span class="p">,</span> <span class="n"><span title="vernier._core.EvalCells">EvalCells</span></span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>ADR-0018 Unit 6: drain the queue, finalize the evaluator, and
+return both the canonical :class:<code>Summary</code> and the opaque
+:class:<code>EvalCells</code> handle the calibration summarizer consumes.</p>
+<p>The summary axis is bit-identical to :meth:<code>finalize</code>; this
+variant only adds cell retention. Subsequent calls raise
+"already finalized". The Python-side adapter that wraps the
+returned tuple into a :class:<code>StreamingSnapshot</code> lives in
+<code>vernier.calibration</code>.</p>
 
 
     </div>
@@ -5397,7 +5450,8 @@ paradigms.</p>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">_slices_batch</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">overall_n_images</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">overall_n_detections</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">_eval_cells</span><span class="p">:</span> <span class="n"><span title="vernier._core.EvalCells">EvalCells</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -5416,6 +5470,9 @@ the <code>vernier[tables]</code> extra). pandas / duckdb / pyarrow consumers
 can round-trip on the returned DataFrame, or call the underlying
 Arrow producer (<code>self._per_image_batch.__arrow_c_array__()</code>)
 directly — the leading-underscore name signals implementation detail.</p>
+<p>Passing <code>calibration=True</code> to :meth:<code>Evaluator.evaluate</code> retains
+the per-image cell store on :attr:<code>_eval_cells</code>; subsequent calls to
+:meth:<code>calibration</code> re-fold over those cells lazily (ADR-0018).</p>
 
 
 
@@ -5595,6 +5652,43 @@ otherwise.</p>
 
 
 
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.instance.EvalResult.calibration" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">calibration</span>
+
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">calibration</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">n_bins</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">15</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">binning</span><span class="p">:</span> <span class="n"><span title="vernier.calibration.Binning">Binning</span></span> <span class="o">=</span> <span class="s2">&quot;quantile&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">min_score</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">0.05</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">confidence</span><span class="p">:</span> <span class="n"><span title="vernier.calibration.Confidence">Confidence</span></span> <span class="o">=</span> <span class="s2">&quot;wilson&quot;</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">per_class</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">per_class_aggregation</span><span class="p">:</span> <span class="n"><span title="vernier.calibration.Aggregation">Aggregation</span></span> <span class="o">=</span> <span class="s2">&quot;macro&quot;</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="vernier.calibration.CalibrationResult">CalibrationResult</span></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Fold the retained per-image cell store into a calibration
+summary (ADR-0018).</p>
+<p>Requires :meth:<code>Evaluator.evaluate</code> to have been called with
+<code>calibration=True</code>; raises :class:<code>RuntimeError</code> otherwise.
+Re-folding with different <code>n_bins</code> / <code>iou</code> / aggregation is
+cheap — matching does not re-run, only the histogram fold.</p>
+<p><code>iou</code> is resolved to the kernel's T-axis index against the
+evaluator's pinned IoU ladder under :data:<code>PARITY_EPS</code>; values
+that don't land on a pinned threshold raise :class:<code>ValueError</code>.</p>
+
+
+    </div>
+
+</div>
 
 
 
@@ -6195,7 +6289,8 @@ explicit override.</p>
    (vernier._types.TablesConfig)" href="#vernier.instance.TablesConfig">TablesConfig</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.Summary)" href="#vernier.instance.Summary">Summary</a></span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">calibration</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.Summary)" href="#vernier.instance.Summary">Summary</a></span>
 </span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">evaluate</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
@@ -6209,7 +6304,8 @@ explicit override.</p>
    (vernier._types.TablesConfig)" href="#vernier.instance.TablesConfig">TablesConfig</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">calibration</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
 
   
@@ -6228,7 +6324,28 @@ explicit override.</p>
    (vernier._types.TablesConfig)" href="#vernier.instance.TablesConfig">TablesConfig</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier.instance.Manifest" href="#vernier.instance.Manifest">Manifest</a></span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">calibration</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+
+
+  
+      dataclass
+   (vernier._types.EvalResult)" href="#vernier.instance.EvalResult">EvalResult</a></span>
+</span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">evaluate</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">tables</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">tables_config</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            TablesConfig
+
+
+  
+      dataclass
+   (vernier._types.TablesConfig)" href="#vernier.instance.TablesConfig">TablesConfig</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">calibration</span><span class="p">:</span> <span class="n"><span title="typing.Literal">Literal</span></span><span class="p">[</span><span class="kc">True</span><span class="p">],</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
 
   
@@ -6250,7 +6367,8 @@ explicit override.</p>
    (vernier._types.TablesConfig)" href="#vernier.instance.TablesConfig">TablesConfig</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier.instance.Manifest" href="#vernier.instance.Manifest">Manifest</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.Summary)" href="#vernier.instance.Summary">Summary</a></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">calibration</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Summary (vernier._core.Summary)" href="#vernier.instance.Summary">Summary</a></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            EvalResult
 
 
   
@@ -6283,6 +6401,13 @@ is bit-identical to the un-partitioned call and whose
 <code>.slices</code> property is a polars DataFrame with one row per
 <code>(axis, value)</code> cell. <code>cross_axes=</code> opts joint cells in
 (per ADR-0046 §E2; marginals are the default).</p>
+<p><code>calibration=</code> opts into ADR-0018 detection-family calibration.
+When <code>True</code>, the per-image cell store is retained on the
+returned :class:<code>EvalResult</code> (as <code>_eval_cells</code>) and
+:meth:<code>EvalResult.calibration</code> becomes available; the canonical
+<code>tables=None</code> fast path is upgraded from :class:<code>Summary</code> to
+:class:<code>EvalResult</code> to carry the handle. Not currently supported
+on the <code>manifest=</code> partitioned path.</p>
 <p>Per ADR-0040, raises :class:<code>IncompatibleSummaryPlan</code> when
 <code>iou_thresholds</code> / <code>recall_thresholds</code> / <code>area_ranges</code>
 is set explicitly: the canonical 12-stat summary plan is keyed
