@@ -122,6 +122,12 @@ def test_json_malformed_payload_raises_value_error() -> None:
 def test_mask_bad_rle_raises_value_error() -> None:
     """A detection with an unparseable compressed-RLE segmentation
     surfaces through `EvalError::Mask` as a generic `ValueError`."""
+    # Give the GT a polygon segmentation so the bad-RLE on the DT side
+    # is the first thing the evaluator chokes on (segm IoU in corrected
+    # mode rejects GT without `segmentation`).
+    gt_obj = json.loads(_GT_OK)
+    gt_obj["annotations"][0]["segmentation"] = [[0, 0, 10, 0, 10, 10, 0, 10]]
+    gt = json.dumps(gt_obj).encode()
     dt_obj = [
         {
             "image_id": 1,
@@ -133,7 +139,7 @@ def test_mask_bad_rle_raises_value_error() -> None:
     ]
     dt = json.dumps(dt_obj).encode()
     with pytest.raises(ValueError, match=r"(?i)rle|mask|malformed"):
-        instance.Evaluator(iou=instance.Segm()).evaluate(_GT_OK, dt)
+        instance.Evaluator(iou=instance.Segm()).evaluate(gt, dt)
 
 
 def test_out_of_budget_attribute_shape() -> None:

@@ -545,12 +545,26 @@ impl PyAccumulated {
 /// Parse a COCO GT payload, lifting `EvalError` into `PyValueError`.
 /// One helper per FFI entry — keeps the error mapping uniform.
 pub(crate) fn parse_gt(bytes: &[u8]) -> PyResult<CocoDataset> {
-    CocoDataset::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+    CocoDataset::from_json_bytes(bytes).map_err(coco_load_error_to_pyerr)
 }
 
 /// Parse a COCO detections payload (sibling of [`parse_gt`]).
 pub(crate) fn parse_dt(bytes: &[u8]) -> PyResult<CocoDetections> {
-    CocoDetections::from_json_bytes(bytes).map_err(|e| PyValueError::new_err(format!("{e}")))
+    CocoDetections::from_json_bytes(bytes).map_err(coco_load_error_to_pyerr)
+}
+
+/// GIL-free subset of [`eval_error_to_pyerr`] for the variants that can
+/// fire during JSON loading. The Partial* / OutOfBudget arms need a
+/// `Python<'_>` token to attach attributes and are unreachable here, so
+/// they collapse into the generic `PyValueError` fallback.
+fn coco_load_error_to_pyerr(e: EvalError) -> PyErr {
+    match e {
+        EvalError::InvalidAnnotation { .. } => InvalidAnnotationError::new_err(format!("{e}")),
+        EvalError::NonFinite { .. } => NonFiniteError::new_err(format!("{e}")),
+        EvalError::DimensionMismatch { .. } => DimensionMismatchError::new_err(format!("{e}")),
+        EvalError::InvalidConfig { .. } => InvalidConfigError::new_err(format!("{e}")),
+        other => PyValueError::new_err(format!("{other}")),
+    }
 }
 
 /// Build a single pycocotools-shaped `evalImgs` dict from one cell.
