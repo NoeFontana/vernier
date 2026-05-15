@@ -1885,6 +1885,9 @@ accomplish.</p>
   stalls the main thread.</li>
 <li><a href="boundary-iou/">Evaluate with boundary IoU</a> — the <code>Boundary()</code>
   kernel and its dilation knob.</li>
+<li><a href="calibration/">Evaluate model calibration</a> — ECE / MCE /
+  reliability table for the detection family (ADR-0018), including
+  the <code>StreamingSnapshot</code> pairing for training-loop folds.</li>
 <li><a href="cli-eval/">Evaluate with <code>vernier eval</code></a> — the static CLI binary
   for CI pipelines without a Python interpreter.</li>
 <li><a href="configure-evaluator/">Configure the evaluator</a> — the entry-point
@@ -1902,6 +1905,9 @@ accomplish.</p>
   non-feature; the kwargs reject in combination).</li>
 <li><a href="result-tables/">Use result tables</a> — the per-image / per-class /
   per-detection / per-pair polars DataFrames.</li>
+<li><a href="scenario-slicing/">Slice an evaluation by scenario</a> —
+  manifest-driven <code>(axis, value)</code> cells, joint cells via <code>cross_axes</code>,
+  and <code>vernier aggregate</code> for cross-run corruption tables (ADR-0046).</li>
 </ul>
 
 
