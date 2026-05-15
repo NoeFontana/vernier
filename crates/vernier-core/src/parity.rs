@@ -63,9 +63,9 @@ pub fn recall_thresholds() -> &'static [f64] {
 /// `docs/engineering/calibration-quirks.md`).
 ///
 /// Pinned as a string for documentation parity with numpy's `method=`
-/// kwarg; the actual computation is implemented in
-/// [`quantile_linear`]. Recorded here so any drift away from the
-/// pinned method shows up as a constant-rename in code review.
+/// kwarg; the actual computation is implemented in the crate-private
+/// `quantile_linear`. Recorded here so any drift away from the pinned
+/// method shows up as a constant-rename in code review.
 pub const CALIBRATION_QUANTILE_METHOD: &str = "linear";
 
 /// Linear-interpolation quantile, bit-equivalent to
