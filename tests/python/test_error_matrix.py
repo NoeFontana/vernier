@@ -150,5 +150,3 @@ def test_queue_full_error_class_shape() -> None:
     here we only pin the class hierarchy so the manifest stays
     discoverable."""
     assert issubclass(instance.QueueFullError, RuntimeError)
-
-

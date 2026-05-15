@@ -8,8 +8,6 @@ numpy for torch / jax / cupy at the model boundary needs no code
 changes downstream.
 """
 
-from __future__ import annotations
-
 import json
 
 import numpy as np
@@ -32,20 +30,24 @@ def _make_gt() -> bytes:
             y = float(rng.integers(0, 32))
             w = float(rng.integers(8, 24))
             h = float(rng.integers(8, 24))
-            anns.append({
-                "id": ann_id,
-                "image_id": img["id"],
-                "category_id": int(rng.choice([1, 2])),
-                "bbox": [x, y, w, h],
-                "area": w * h,
-                "iscrowd": 0,
-            })
+            anns.append(
+                {
+                    "id": ann_id,
+                    "image_id": img["id"],
+                    "category_id": int(rng.choice([1, 2])),
+                    "bbox": [x, y, w, h],
+                    "area": w * h,
+                    "iscrowd": 0,
+                }
+            )
             ann_id += 1
-    return json.dumps({
-        "images": images,
-        "categories": categories,
-        "annotations": anns,
-    }).encode()
+    return json.dumps(
+        {
+            "images": images,
+            "categories": categories,
+            "annotations": anns,
+        }
+    ).encode()
 
 
 def _per_image(image_id: int) -> Detections:
