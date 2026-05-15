@@ -2375,6 +2375,21 @@ impl BackgroundEvalState {
         )
     }
 
+    /// ADR-0018 Unit 6: consume the inner background evaluator and
+    /// return both the canonical [`Summary`] and the per-image cell
+    /// store needed by the calibration summarizer. The summary axis is
+    /// bit-identical to [`Self::take_and_finalize`]; this variant only
+    /// adds cell retention.
+    fn take_and_finalize_with_cells(
+        &mut self,
+    ) -> Result<vernier_core::stream::SnapshotWithCells, EvalError> {
+        dispatch_state_consuming!(
+            self,
+            ev => ev.finalize_with_cells(),
+            Err(background_finalized_error())
+        )
+    }
+
     fn take_scheduling_outcome(&self) -> Option<Result<(), String>> {
         dispatch_state_ref!(self, ev => ev.take_scheduling_outcome(), None)
     }
@@ -2981,6 +2996,38 @@ impl PyBackgroundEvaluator {
             })
             .map_err(|e| eval_error_to_pyerr(py, e))?;
         streaming_tables_result(summary, tables)
+    }
+
+    /// ADR-0018 Unit 6: drain the queue, finalize the evaluator, and
+    /// return both the canonical :class:`Summary` and the opaque
+    /// :class:`EvalCells` handle the calibration summarizer consumes.
+    ///
+    /// The summary axis is bit-identical to :meth:`finalize`; this
+    /// variant only adds cell retention. Subsequent calls raise
+    /// "already finalized". The Python-side adapter that wraps the
+    /// returned tuple into a :class:`StreamingSnapshot` lives in
+    /// ``vernier.calibration``.
+    fn finalize_with_cells(&self, py: Python<'_>) -> PyResult<(PySummary, calibration::EvalCells)> {
+        let state_mutex = &self.state;
+        let bundle = py
+            .detach(move || {
+                let mut guard = state_mutex.lock().map_err(|_| EvalError::InvalidConfig {
+                    detail: "BackgroundEvaluator state mutex poisoned".into(),
+                })?;
+                guard.take_and_finalize_with_cells()
+            })
+            .map_err(|e| eval_error_to_pyerr(py, e))?;
+        let summary = PySummary {
+            inner: bundle.summary,
+        };
+        let cells = calibration::EvalCells::new(
+            bundle.eval_imgs,
+            bundle.n_categories,
+            bundle.n_area_ranges,
+            bundle.iou_thresholds,
+            bundle.parity_mode,
+        );
+        Ok((summary, cells))
     }
 
     /// ADR-0031 / ADR-0035: drain the queue, serialize the worker's

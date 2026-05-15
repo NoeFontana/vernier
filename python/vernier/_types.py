@@ -24,6 +24,7 @@ from vernier.calibration import (
     Binning,
     CalibrationResult,
     Confidence,
+    _calibrate_from_cells,  # pyright: ignore[reportPrivateUsage]
 )
 
 if TYPE_CHECKING:  # pragma: no cover — type-checker only
@@ -351,23 +352,15 @@ class EvalResult:
                 "calibration() requires Evaluator.evaluate(..., calibration=True); "
                 "the per-image cell store was not retained on this result."
             )
-        iou_index = cells.iou_to_index(iou)
-        ece, mce, n_det, eff_bins, reliability_b, per_class_b = cells.calibrate(
-            iou_index,
-            n_bins,
-            binning,
-            min_score,
-            confidence,
-            per_class,
-            per_class_aggregation,
-        )
-        return CalibrationResult(
-            ece=ece,
-            mce=mce,
-            n_detections=n_det,
-            effective_n_bins=eff_bins,
-            _reliability_batch=reliability_b,
-            _per_class_batch=per_class_b,
+        return _calibrate_from_cells(
+            cells,
+            iou=iou,
+            n_bins=n_bins,
+            binning=binning,
+            min_score=min_score,
+            confidence=confidence,
+            per_class=per_class,
+            per_class_aggregation=per_class_aggregation,
         )
 
 

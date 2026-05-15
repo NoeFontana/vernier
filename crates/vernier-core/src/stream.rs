@@ -180,6 +180,37 @@ impl PerImageEvalStore {
     }
 }
 
+/// Bundle returned by [`StreamingEvaluator::snapshot_with_cells`]:
+/// the canonical [`Summary`] plus the per-image cell store needed by
+/// the ADR-0018 calibration summarizer.
+///
+/// The cell store is a dense `Vec<Option<Box<PerImageEval>>>` in
+/// `k * A * I + a * I + i` row-major order — the same shape
+/// [`crate::accumulate`] and
+/// [`crate::calibration::summarize_calibration`] both consume directly.
+/// `n_categories`, `n_area_ranges`, `iou_thresholds`, and `parity_mode`
+/// are mirrored alongside so the FFI handle can build an
+/// `EvalCells` without re-deriving them from a [`StreamingEvaluator`]
+/// reference that may be on the worker thread.
+#[derive(Debug, Clone)]
+pub struct SnapshotWithCells {
+    /// Canonical [`Summary`] — bit-identical to what
+    /// [`StreamingEvaluator::snapshot`] would have produced for the
+    /// same evaluator state.
+    pub summary: Summary,
+    /// Dense per-image cell store, GT-only overlay applied — directly
+    /// consumable by [`crate::calibration::summarize_calibration`].
+    pub eval_imgs: Vec<Option<Box<PerImageEval>>>,
+    /// `K` axis size mirrored from [`EvalGridMeta::n_categories`].
+    pub n_categories: usize,
+    /// `A` axis size mirrored from [`EvalGridMeta::n_area_ranges`].
+    pub n_area_ranges: usize,
+    /// Pinned IoU thresholds — the kernel's T-axis.
+    pub iou_thresholds: Vec<f64>,
+    /// Parity mode the evaluator was constructed under.
+    pub parity_mode: ParityMode,
+}
+
 /// Diagnostics returned from each [`StreamingEvaluator::update`] call.
 ///
 /// Useful for training-loop logging (TensorBoard, console). All counters
@@ -636,6 +667,33 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         self.compute_summary()
     }
 
+    /// Snapshot the current state, returning both the canonical
+    /// [`Summary`] and a deep copy of the per-image cell store needed
+    /// by the ADR-0018 calibration summarizer.
+    ///
+    /// The [`Summary`] is bit-identical to what [`Self::snapshot`] would
+    /// have produced for the same evaluator state — this method only
+    /// adds the cell-store retention; the kernel maths are unchanged.
+    /// Callers that don't need calibration should prefer
+    /// [`Self::snapshot`] / [`Self::finalize`]: this variant pays for
+    /// an extra densification of the sparse `(k, a, i)` store, with
+    /// GT-only overlay applied so the cells are immediately consumable
+    /// by [`crate::calibration::summarize_calibration`] (which folds
+    /// over `dt_scores` / `dt_matched` / `dt_ignore` and ignores
+    /// GT-only slots anyway, but the consistency keeps the streaming
+    /// and batch surfaces interchangeable).
+    ///
+    /// Takes `&mut self` for the same reason as [`Self::snapshot`]: the
+    /// first call materializes the cached GT-only `(K, A, I)` grid.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EvalError`] from the underlying [`accumulate`] or
+    /// summarize call.
+    pub fn snapshot_with_cells(&mut self) -> Result<SnapshotWithCells, EvalError> {
+        self.compute_summary_and_cells()
+    }
+
     /// Consume the evaluator and return both its final [`Summary`] and
     /// the requested result tables.
     ///
@@ -966,6 +1024,84 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         Ok(())
     }
 
+    /// Internal: shared implementation of [`Self::snapshot_with_cells`].
+    /// Densifies the cell store (with GT-only overlay) once, summarizes
+    /// over the dense slice, and returns both the [`Summary`] and the
+    /// dense store. Bit-identical to [`Self::compute_summary`] on the
+    /// summary axis — the only divergence is that the densified
+    /// `eval_imgs` is retained alongside the summary instead of being
+    /// dropped at the end of the call.
+    fn compute_summary_and_cells(&mut self) -> Result<SnapshotWithCells, EvalError> {
+        let mut eval_imgs = self.cells.flatten(&self.grid_meta);
+
+        if self.images_seen() < self.grid_meta.n_images {
+            self.ensure_gt_only_cells()?;
+            let n_k = self.grid_meta.n_categories;
+            let n_a = self.grid_meta.n_area_ranges;
+            let n_i = self.grid_meta.n_images;
+            let gt_only = self
+                .gt_only_cells
+                .as_ref()
+                .ok_or_else(|| EvalError::InvalidConfig {
+                    detail: "gt_only_cells cache missing after init".into(),
+                })?;
+            for i in 0..n_i {
+                if self.seen_image_indices.contains(&i) {
+                    continue;
+                }
+                for k in 0..n_k {
+                    for a in 0..n_a {
+                        let flat = k * n_a * n_i + a * n_i + i;
+                        if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
+                            eval_imgs[flat] = Some(cell.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let max_dets: [usize; 3] = [1, 10, 100];
+        let accum_params = AccumulateParams {
+            iou_thresholds: &self.params.iou_thresholds,
+            recall_thresholds: recall_thresholds(),
+            max_dets: &max_dets,
+            n_categories: self.grid_meta.n_categories,
+            n_area_ranges: self.grid_meta.n_area_ranges,
+            n_images: self.grid_meta.n_images,
+        };
+        let accumulated = accumulate(&eval_imgs, accum_params, self.parity_mode)?;
+        let summary = if self.kernel.is_keypoints() {
+            let kp_max_dets: [usize; 1] = [20];
+            let accum_params_kp = AccumulateParams {
+                iou_thresholds: &self.params.iou_thresholds,
+                recall_thresholds: recall_thresholds(),
+                max_dets: &kp_max_dets,
+                n_categories: self.grid_meta.n_categories,
+                n_area_ranges: self.grid_meta.n_area_ranges,
+                n_images: self.grid_meta.n_images,
+            };
+            let accumulated_kp = accumulate(&eval_imgs, accum_params_kp, self.parity_mode)?;
+            let plan = StatRequest::coco_keypoints_default();
+            summarize_with(
+                &accumulated_kp,
+                &plan,
+                &self.params.iou_thresholds,
+                &kp_max_dets,
+            )?
+        } else {
+            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
+        };
+
+        Ok(SnapshotWithCells {
+            summary,
+            eval_imgs,
+            n_categories: self.grid_meta.n_categories,
+            n_area_ranges: self.grid_meta.n_area_ranges,
+            iou_thresholds: self.params.iou_thresholds.clone(),
+            parity_mode: self.parity_mode,
+        })
+    }
+
     /// Internal: shared implementation of `snapshot` and `finalize`.
     /// Mutates `self` only to populate the lazy `gt_only_cells` cache
     /// on its first call.
@@ -1253,6 +1389,49 @@ mod tests {
         .unwrap();
         let summary = ev.finalize().unwrap();
         assert_eq!(summary.lines.len(), 12);
+    }
+
+    #[test]
+    fn snapshot_with_cells_matches_snapshot_summary() {
+        // ADR-0018 Unit 6: the cell-retention snapshot must produce a
+        // bit-identical Summary to the canonical `snapshot()` path —
+        // calibration adds the cells alongside, never mutates the
+        // canonical kernel maths. Drive both paths from the same
+        // evaluator state and compare stats[] element-wise.
+        let ds = tiny_dataset();
+        let mut ev = StreamingEvaluator::new(
+            ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Strict,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        let batch = br#"[{"image_id": 1, "category_id": 1, "score": 0.9, "bbox": [0, 0, 10, 10]}]"#;
+        ev.update(batch).unwrap();
+
+        let canonical = ev.snapshot().unwrap();
+        let bundle = ev.snapshot_with_cells().unwrap();
+        // Bit-equal — these come from the same evaluator state with no
+        // intermediate mutation; the summary kernel is deterministic.
+        assert_eq!(bundle.summary.lines.len(), canonical.lines.len());
+        for (a, b) in canonical.lines.iter().zip(bundle.summary.lines.iter()) {
+            // `StatLine` is just floats; bit-equal under f64 ==.
+            assert_eq!(a.value.to_bits(), b.value.to_bits());
+        }
+        // Axes + parity mirrored — these are the values the FFI handle
+        // (`EvalCells`) needs to hand off to the calibration kernel.
+        assert_eq!(bundle.n_categories, ev.grid_meta().n_categories);
+        assert_eq!(bundle.n_area_ranges, ev.grid_meta().n_area_ranges);
+        assert_eq!(bundle.iou_thresholds, ev.params.iou_thresholds);
+        assert!(matches!(bundle.parity_mode, ParityMode::Strict));
+        // Cell store densified to K * A * I — same shape `accumulate`
+        // and `summarize_calibration` consume.
+        let expected_len =
+            ev.grid_meta().n_categories * ev.grid_meta().n_area_ranges * ev.grid_meta().n_images;
+        assert_eq!(bundle.eval_imgs.len(), expected_len);
+        // At least one populated cell from the single submitted batch.
+        assert!(bundle.eval_imgs.iter().any(|c| c.is_some()));
     }
 
     #[test]

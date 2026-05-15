@@ -27,7 +27,8 @@ from pathlib import Path
 import pytest
 
 import vernier._core as _vernier_core
-from vernier.instance import Bbox, Evaluator
+from vernier.calibration import StreamingSnapshot
+from vernier.instance import BackgroundEvaluator, Bbox, Evaluator
 
 from .harness import (
     assert_snapshots_match,
@@ -250,3 +251,54 @@ def test_calibration_end_to_end_smoke() -> None:
         "ci_hi",
     }
     assert set(reliability.columns) == expected_cols
+
+
+# ---------------------------------------------------------------------------
+# ADR-0018 Unit 6 — streaming integration end-to-end.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parity_calibration
+def test_streaming_calibration_end_to_end_smoke() -> None:
+    """Drive ``BackgroundEvaluator.finalize_with_cells`` through the
+    ``StreamingSnapshot`` Python wrapper and assert the streaming
+    calibration surface matches the batch surface bit-for-bit on the
+    same GT/DT pair (ADR-0018 Unit 6).
+
+    Both paths consume the same per-image cells; what differs is
+    plumbing — batch fills the cell store inline via ``evaluate``,
+    streaming via a single ``submit`` round-trip through the worker
+    thread. The summary axis must be bit-equal and the calibration
+    fold (post-cells) must produce the same ``ece`` / ``mce`` /
+    ``n_detections`` because the kernel is deterministic over
+    identical inputs.
+    """
+    gt_path = Path(__file__).parent.parent / "parity" / "fixtures" / "partition_tiny" / "gt.json"
+    dt_path = Path(__file__).parent.parent / "parity" / "fixtures" / "partition_tiny" / "dt.json"
+    gt_bytes = gt_path.read_bytes()
+    dt_bytes = dt_path.read_bytes()
+
+    # Batch reference.
+    evaluator = Evaluator(iou=Bbox(), parity_mode="strict")
+    batch_result = evaluator.evaluate(gt_bytes, dt_bytes, calibration=True)
+    batch_cal = batch_result.calibration(iou=0.5, n_bins=15)
+
+    # Streaming candidate.
+    bg = BackgroundEvaluator(gt_bytes, parity_mode="strict")
+    bg.submit(dt_bytes)
+    snap = StreamingSnapshot.from_background(bg)
+
+    assert isinstance(snap._eval_cells, _vernier_core.EvalCells)
+    # Summary axis: bit-equal stat-by-stat. Streaming `finalize` on the
+    # same GT/DT input must reproduce the batch summary exactly under
+    # `strict` mode.
+    assert batch_result.summary is not None  # default-grid path always populates this
+    assert list(snap.summary.stats) == list(batch_result.summary.stats)
+
+    snap_cal = snap.calibration(iou=0.5, n_bins=15)
+    assert snap_cal.ece == batch_cal.ece
+    assert snap_cal.mce == batch_cal.mce
+    assert snap_cal.n_detections == batch_cal.n_detections
+    assert snap_cal.effective_n_bins == batch_cal.effective_n_bins
+    # Reliability table shape mirrors the batch surface.
+    assert snap_cal.reliability.shape == (snap_cal.effective_n_bins, 9)

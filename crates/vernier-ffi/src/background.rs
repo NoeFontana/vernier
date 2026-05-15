@@ -32,7 +32,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use vernier_core::evaluate::EvalKernel;
-use vernier_core::stream::{ParsedDetections, StreamingEvaluator};
+use vernier_core::stream::{ParsedDetections, SnapshotWithCells, StreamingEvaluator};
 use vernier_core::tables::{Tables, TablesConfig, TablesRequest};
 use vernier_core::{EvalError, Summary};
 
@@ -74,9 +74,10 @@ impl Default for BackgroundConfig {
 ///
 /// Per ADR-0035, `BackgroundEvaluator`'s public surface is
 /// submit / finalize / finalize_with_tables / finalize_to_partial.
-/// The worker handles those four request shapes plus cooperative
-/// shutdown; mid-flight snapshot variants were removed alongside the
-/// public method.
+/// ADR-0018 Unit 6 adds `finalize_with_cells` for the calibration
+/// summarizer. The worker handles those five request shapes plus
+/// cooperative shutdown; mid-flight snapshot variants were removed
+/// alongside the public method.
 pub(crate) enum WorkerMessage<K: EvalKernel + Send + 'static> {
     /// Hand a parsed detection batch to the worker. The worker either
     /// applies it or stashes the resulting [`EvalError`] in
@@ -92,6 +93,15 @@ pub(crate) enum WorkerMessage<K: EvalKernel + Send + 'static> {
         reply: SyncSender<Result<(Summary, Tables), EvalError>>,
         request: TablesRequest,
         config: TablesConfig,
+    },
+    /// ADR-0018 Unit 6: finalize variant that also hands back the
+    /// per-image cell store needed by the calibration summarizer. The
+    /// summary axis is bit-identical to [`Self::Finalize`]; the cells
+    /// payload mirrors the canonical
+    /// [`StreamingEvaluator::snapshot_with_cells`] return shape. Worker
+    /// exits after sending the reply.
+    FinalizeWithCells {
+        reply: SyncSender<Result<SnapshotWithCells, EvalError>>,
     },
     /// ADR-0031: drain and serialize as a partial blob. Worker exits
     /// after sending the reply.
@@ -424,6 +434,41 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
         }
     }
 
+    /// ADR-0018 Unit 6: finalize variant that also returns the
+    /// per-image cell store needed by the calibration summarizer.
+    ///
+    /// Same shape as [`Self::finalize`]; consumes the wrapper. The
+    /// returned [`SnapshotWithCells::summary`] is bit-identical to what
+    /// [`Self::finalize`] would have produced for the same evaluator
+    /// state — this variant only adds cell retention.
+    pub(crate) fn finalize_with_cells(self) -> Result<SnapshotWithCells, EvalError> {
+        self.take_last_error()?;
+        let (reply_tx, reply_rx) = sync_channel::<Result<SnapshotWithCells, EvalError>>(1);
+        self.sender
+            .send(WorkerMessage::FinalizeWithCells { reply: reply_tx })
+            .map_err(|_| EvalError::InvalidConfig {
+                detail: "background worker is no longer accepting finalize requests".to_string(),
+            })?;
+        let bundle = match reply_rx.recv() {
+            Ok(r) => r,
+            Err(_) => Err(EvalError::InvalidConfig {
+                detail: "background worker dropped finalize reply channel".to_string(),
+            }),
+        };
+
+        let join_result = match self.take_worker() {
+            Some(handle) => handle.join(),
+            None => return bundle,
+        };
+        match join_result {
+            Ok(Ok(())) => bundle,
+            Ok(Err(worker_err)) => Err(worker_err),
+            Err(payload) => Err(EvalError::InvalidConfig {
+                detail: format!("background worker panicked: {payload:?}"),
+            }),
+        }
+    }
+
     /// Tables-aware finalize. Same shape as [`Self::finalize`]; consumes
     /// the wrapper.
     pub(crate) fn finalize_with_tables(
@@ -670,6 +715,14 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
                 let _ = reply.send(s);
                 return Ok(());
             }
+            Ok(WorkerMessage::FinalizeWithCells { reply }) => {
+                // `snapshot_with_cells` takes `&mut self`; the worker
+                // owns the evaluator outright, so we satisfy the borrow
+                // and exit the loop without ever moving it.
+                let s = evaluator.snapshot_with_cells();
+                let _ = reply.send(s);
+                return Ok(());
+            }
             Ok(WorkerMessage::FinalizeToPartial { reply }) => {
                 let p = evaluator.finalize_to_partial();
                 let _ = reply.send(p);
@@ -687,5 +740,133 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    //! End-to-end smoke tests for the FFI background worker (the
+    //! `StreamingEvaluator<K>`-flavored sibling of
+    //! `crate::background_streaming`). Today this covers the ADR-0018
+    //! Unit 6 `finalize_with_cells` round-trip — the only worker
+    //! message the generic core doesn't already exercise.
+    use super::*;
+    use vernier_core::dataset::{AnnId, Bbox, CategoryId, ImageId};
+    use vernier_core::dataset::{
+        CategoryMeta, CocoAnnotation, CocoDataset, CocoDetections, ImageMeta,
+    };
+    use vernier_core::evaluate::{AreaRange, OwnedEvaluateParams};
+    use vernier_core::parity::iou_thresholds;
+    use vernier_core::similarity::BboxIou;
+    use vernier_core::stream::{MemoryBudget, ParsedDetections, StreamingEvaluator};
+    use vernier_core::ParityMode;
+
+    fn tiny_dataset() -> CocoDataset {
+        let images = vec![ImageMeta {
+            id: ImageId(1),
+            width: 100,
+            height: 100,
+            file_name: None,
+        }];
+        let cats = vec![CategoryMeta {
+            id: CategoryId(1),
+            name: "thing".into(),
+            supercategory: None,
+        }];
+        let anns = vec![CocoAnnotation {
+            id: AnnId(1),
+            image_id: ImageId(1),
+            category_id: CategoryId(1),
+            area: 100.0,
+            is_crowd: false,
+            ignore_flag: None,
+            bbox: Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 10.0,
+                h: 10.0,
+            },
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+        }];
+        CocoDataset::from_parts(images, anns, cats).unwrap()
+    }
+
+    fn default_params() -> OwnedEvaluateParams {
+        OwnedEvaluateParams {
+            iou_thresholds: iou_thresholds().to_vec(),
+            area_ranges: AreaRange::coco_default().to_vec(),
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        }
+    }
+
+    fn spawn_test_worker() -> BackgroundEvaluator<BboxIou> {
+        let ev = StreamingEvaluator::new(
+            tiny_dataset(),
+            BboxIou,
+            default_params(),
+            ParityMode::Strict,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        BackgroundEvaluator::spawn(ev, BackgroundConfig::default()).unwrap()
+    }
+
+    /// ADR-0018 Unit 6 smoke test: update → finalize_with_cells round-
+    /// trips through the worker thread, returning a [`SnapshotWithCells`]
+    /// whose summary axis is well-formed and whose cell-store carries
+    /// at least one populated cell (the single submitted detection).
+    #[test]
+    fn finalize_with_cells_round_trips_through_worker() {
+        let bg = spawn_test_worker();
+        let parsed = ParsedDetections::<BboxIou>::from_json_bytes(
+            br#"[{"image_id": 1, "category_id": 1, "score": 0.9, "bbox": [0, 0, 10, 10]}]"#,
+        )
+        .unwrap();
+        bg.submit_blocking(parsed).unwrap();
+
+        let bundle = bg.finalize_with_cells().unwrap();
+        // 12-stat detection plan; identical to what `finalize()` would
+        // have produced — the parity test in `vernier-core::stream`
+        // pins bit-equality, this just confirms the worker hands the
+        // bundle back unmodified.
+        assert_eq!(bundle.summary.lines.len(), 12);
+        assert_eq!(bundle.n_categories, 1);
+        assert_eq!(bundle.n_area_ranges, AreaRange::coco_default().len());
+        assert!(!bundle.iou_thresholds.is_empty());
+        assert!(matches!(bundle.parity_mode, ParityMode::Strict));
+        // One detection submitted → at least one populated cell.
+        assert!(bundle.eval_imgs.iter().any(|c| c.is_some()));
+    }
+
+    /// `finalize_with_cells` consumes the wrapper exactly like
+    /// `finalize`: the worker thread joins cleanly afterwards. Smoke-
+    /// check by making sure no panic propagates and that an empty
+    /// finalize (no submitted detections) still produces a
+    /// well-formed summary + dense cell store.
+    #[test]
+    fn finalize_with_cells_empty_evaluator_still_returns_dense_store() {
+        let bg = spawn_test_worker();
+        let bundle = bg.finalize_with_cells().unwrap();
+        assert_eq!(bundle.summary.lines.len(), 12);
+        // Dense store length is K * A * I; the tiny dataset has 1 cat,
+        // 4 area ranges, 1 image.
+        // 1 cat * 4 area ranges * 1 image = 4 slots.
+        assert_eq!(bundle.eval_imgs.len(), 4);
+    }
+
+    /// Compile-time sanity: `CocoDetections` is referenced only to keep
+    /// the imports section honest (the parser consumes it indirectly
+    /// via `ParsedDetections`).
+    #[test]
+    fn coco_detections_type_compiles_at_test_site() {
+        // No-op: just confirm the type is in scope; if `from_records`
+        // disappears we'll find out here rather than via a stale
+        // `use` in another file.
+        let _ = CocoDetections::from_records(Vec::new());
     }
 }
