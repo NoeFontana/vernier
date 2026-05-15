@@ -26,6 +26,13 @@ Rust reference is [docs.rs](https://docs.rs/vernier-core).
 ## Schemas and stat definitions
 
 - [`vernier eval --emit json` output schema](cli-output-schema.md) —
-  field-by-field shape of the CLI's JSON output.
+  field-by-field shape of the CLI's JSON output (v1 un-partitioned
+  envelope and the v2 `--manifest` envelope).
 - [COCO 12-stat detection summary](coco-summary-stats.md) —
   index-by-index definition of `summary.stats[0..12]`.
+- [Partition manifest schema](manifest-schema.md) — the
+  `manifest_version: "1"` table that drives `vernier eval --manifest`
+  and `vernier aggregate` (ADR-0046).
+- [`vernier aggregate --emit json` output schema](aggregate-schema.md) —
+  the `aggregate_version: "1"` fan-in document with mPC / rPC
+  columns.
