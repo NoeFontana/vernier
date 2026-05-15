@@ -19,12 +19,15 @@ use std::path::Path;
 use vernier_core::accumulate::sort_max_dets;
 use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
 use vernier_core::dataset::ImageId;
+use vernier_core::lrp::{self, LrpKernelMarker, LrpParams};
 use vernier_core::manifest;
 use vernier_core::manifest_csv;
 use vernier_core::parity::iou_thresholds;
 use vernier_core::partition::{
-    self, image_id_to_idx as build_image_id_to_idx, GridDims, KeyKind, PartitionSpec, SummaryPlan,
+    self, evaluate_partitioned_lrp, image_id_to_idx as build_image_id_to_idx, GridDims, KeyKind,
+    PartitionSpec, PartitionedLrpReport, SummaryPlan,
 };
+use vernier_core::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
 use vernier_core::{
     evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, AreaRange, CocoDataset,
     CocoDetections, EvalError, EvalGrid, EvaluateParams, ParityMode,
@@ -51,15 +54,7 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
     let use_cats = args.effective_use_cats();
 
     if matches!(args.metric, MetricArg::Olrp) {
-        // Partitioned LRP is not yet wired through `vernier-core`;
-        // explicit typed-error keeps the CLI surface honest while the
-        // sibling agent lands the partition::evaluate_partitioned_lrp
-        // entry point.
-        return Err(CliError::Validation(
-            "partitioned LRP is not yet wired in the CLI lane; use --metric ap for now \
-             (the partition::evaluate_partitioned_lrp entry point ships in a follow-on PR)"
-                .into(),
-        ));
+        return run_lrp(args, &emits, parity_mode, use_cats);
     }
 
     let parsed_max_dets = args.parsed_max_dets()?;
@@ -294,6 +289,196 @@ fn report_warnings(warnings: &[CoreWarning]) {
 
 fn lookup_formatter(name: FormatName) -> Option<&'static dyn Formatter> {
     registry().iter().copied().find(|f| f.id() == name)
+}
+
+/// Partitioned LRP dispatch (ADR-0046 + ADR-0043). Mirrors the AP
+/// arm's shape but routes through `evaluate_partitioned_lrp` — the LRP
+/// kernel runs its own internal matching pass, so we never build an
+/// `EvalGrid` here.
+fn run_lrp(
+    args: &EvalArgs,
+    emits: &[crate::cli::EmitSpec],
+    parity_mode: ParityMode,
+    use_cats: bool,
+) -> Result<(), CliError> {
+    let parsed_max_dets = args.parsed_max_dets()?;
+    let mut max_dets: Vec<usize> = match (parsed_max_dets, args.iou_type) {
+        (Some(d), _) => d,
+        (None, IouTypeArg::Keypoints) => KEYPOINTS_MAX_DETS_DEFAULT.to_vec(),
+        (None, _) => DETECTION_MAX_DETS_DEFAULT.to_vec(),
+    };
+    sort_max_dets(&mut max_dets);
+    // LRP runs at a single `max_dets_per_image` rung — the top of the
+    // ladder (mirrors the un-partitioned LRP path in `eval.rs`).
+    let max_dets_per_image = max_dets.iter().copied().max().unwrap_or(100);
+
+    let gt_bytes = fs::read(&args.gt).map_err(|source| CliError::InputRead {
+        path: args.gt.clone(),
+        source,
+    })?;
+    let dt_bytes = fs::read(&args.dt).map_err(|source| CliError::InputRead {
+        path: args.dt.clone(),
+        source,
+    })?;
+    let gt = CocoDataset::from_json_bytes(&gt_bytes)?;
+    let dt = CocoDetections::from_json_bytes(&dt_bytes)?;
+
+    let sigmas = match (&args.sigmas, args.iou_type) {
+        (Some(path), IouTypeArg::Keypoints) => Some(load_sigmas(path)?),
+        (Some(_), _) => {
+            return Err(CliError::Validation(
+                "--sigmas is only valid with --iou-type keypoints".into(),
+            ));
+        }
+        (None, _) => None,
+    };
+
+    let dilation_ratio = match (args.dilation_ratio, args.iou_type) {
+        (Some(d), IouTypeArg::Boundary) => d,
+        (None, IouTypeArg::Boundary) => BOUNDARY_DILATION_RATIO_DEFAULT,
+        _ => 0.0,
+    };
+
+    let image_id_to_idx = build_image_id_to_idx(&gt);
+
+    let manifest_path = args.manifest.as_ref().ok_or_else(|| {
+        CliError::Validation("internal: partitioned dispatch invoked without --manifest".into())
+    })?;
+    let manifest_bytes = fs::read(manifest_path).map_err(|source| CliError::InputRead {
+        path: manifest_path.clone(),
+        source,
+    })?;
+
+    let cross_axes = args.parsed_cross_axes()?;
+
+    let (spec, warnings) = build_spec(
+        manifest_path,
+        &manifest_bytes,
+        &image_id_to_idx,
+        &cross_axes,
+    )?;
+
+    if !args.quiet {
+        report_warnings(&warnings);
+    }
+
+    // Resolve LRP params per ADR-0044 (single threshold, canonical
+    // tau grid). Same shape as `run_lrp_pipeline` in `eval.rs` — the
+    // partitioned and un-partitioned paths share the same kernel
+    // defaults.
+    let tp_threshold = lrp::tp_threshold_for(args.iou_type.kernel_kind());
+    let iou_thr = [tp_threshold];
+    let tau_grid = lrp::default_tau_grid();
+    let area: Vec<AreaRange> = args.iou_type.default_area_ranges();
+    let params = LrpParams {
+        tp_threshold,
+        tau_grid,
+        max_dets_per_image,
+        use_cats,
+        iou_thresholds: &iou_thr,
+        area_ranges: &area,
+    };
+
+    let partitioned = run_lrp_kernel(
+        args.iou_type,
+        &gt,
+        &dt,
+        params,
+        parity_mode,
+        &spec,
+        dilation_ratio,
+        sigmas,
+    )?;
+
+    let ctx = FormatContext {
+        iou_type: args.iou_type,
+        parity_mode,
+        max_dets: &max_dets,
+        use_cats,
+    };
+    let artifact = EvalArtifact::PartitionedLrp {
+        summary: &partitioned,
+        label: args.label.as_deref(),
+    };
+
+    for spec in emits {
+        let formatter = lookup_formatter(spec.format).ok_or_else(|| {
+            CliError::Validation(format!(
+                "internal: format {:?} disappeared from registry",
+                spec.format
+            ))
+        })?;
+        match &spec.destination {
+            EmitDestination::Stdout => {
+                let stdout = io::stdout();
+                let mut handle = stdout.lock();
+                formatter.render(&artifact, &ctx, &mut handle)?;
+            }
+            EmitDestination::File(path) => {
+                write_atomic(path, |w| formatter.render(&artifact, &ctx, w))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_lrp_kernel(
+    iou_type: IouTypeArg,
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: LrpParams<'_>,
+    parity: ParityMode,
+    spec: &PartitionSpec,
+    dilation_ratio: f64,
+    sigmas: Option<HashMap<i64, Vec<f64>>>,
+) -> Result<PartitionedLrpReport, CliError> {
+    let report = match iou_type {
+        IouTypeArg::Bbox => evaluate_partitioned_lrp(
+            gt,
+            dt,
+            &BboxIou,
+            LrpKernelMarker::Bbox,
+            params,
+            parity,
+            spec,
+        ),
+        IouTypeArg::Segm => evaluate_partitioned_lrp(
+            gt,
+            dt,
+            &SegmIou,
+            LrpKernelMarker::Segm,
+            params,
+            parity,
+            spec,
+        ),
+        IouTypeArg::Boundary => {
+            let kernel = BoundaryIou { dilation_ratio };
+            evaluate_partitioned_lrp(
+                gt,
+                dt,
+                &kernel,
+                LrpKernelMarker::Boundary,
+                params,
+                parity,
+                spec,
+            )
+        }
+        IouTypeArg::Keypoints => {
+            let kernel = OksSimilarity::new(sigmas.unwrap_or_default());
+            evaluate_partitioned_lrp(
+                gt,
+                dt,
+                &kernel,
+                LrpKernelMarker::Keypoints,
+                params,
+                parity,
+                spec,
+            )
+        }
+    }
+    .map_err(CliError::from)?;
+    Ok(report)
 }
 
 fn load_sigmas(path: &Path) -> Result<HashMap<i64, Vec<f64>>, CliError> {

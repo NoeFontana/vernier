@@ -217,6 +217,158 @@ fn label_stamps_into_document() {
 }
 
 #[test]
+fn lrp_manifest_produces_v2_olrp_envelope() {
+    // ADR-0046 LRP partition: the previous CLI deferred this with a
+    // typed `CliError::Validation`. This test asserts the dispatch
+    // now lands and emits the LRP-flavored v2 envelope (different
+    // shape from AP — `overall.olrp` rather than `overall.stats[]`).
+    let tmp = tempdir();
+    let (gt, dt, mjson, _) = write_fixture(tmp.path());
+    let out = tmp.path().join("olrp_result.json");
+
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let output = cmd
+        .args([
+            "eval",
+            "--gt",
+            gt.to_string_lossy().as_ref(),
+            "--dt",
+            dt.to_string_lossy().as_ref(),
+            "--iou-type",
+            "bbox",
+            "--metric",
+            "olrp",
+            "--manifest",
+            mjson.to_string_lossy().as_ref(),
+            "--emit",
+            &format!("json={}", out.display()),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let parsed: serde_json::Value = serde_json::from_slice(&std::fs::read(&out).unwrap()).unwrap();
+    assert_eq!(parsed["version"], "2");
+    assert_eq!(parsed["metric"], "olrp");
+    assert_eq!(parsed["iou_type"], "bbox");
+
+    // The overall block carries the four LRP headline numbers plus
+    // the resolved config and the image / detection counts.
+    let overall = &parsed["overall"];
+    assert!(
+        overall["olrp"].is_number(),
+        "overall.olrp must be a number: {overall}"
+    );
+    assert!(overall["olrp_loc"].is_number());
+    assert!(overall["olrp_fp"].is_number());
+    assert!(overall["olrp_fn"].is_number());
+    assert_eq!(overall["n_images"], 4);
+    assert_eq!(overall["n_detections"], 4);
+    assert_eq!(overall["config"]["kernel"], "bbox");
+    // The 12-stat AP plan must not leak into the LRP envelope.
+    assert!(
+        overall.get("stats").is_none(),
+        "LRP envelope must not carry AP `stats`: {overall}"
+    );
+
+    // Per ADR-0046 design: `per_class` is omitted from the JSON
+    // envelope by default (large at LVIS scale; the headline numbers
+    // are what the slice document is for).
+    assert!(
+        overall.get("per_class").is_none(),
+        "per_class is intentionally omitted from the LRP v2 envelope"
+    );
+
+    let slices = parsed["slices"].as_array().unwrap();
+    // Same partition shape as the AP test: 6 marginals (no --cross).
+    assert_eq!(slices.len(), 6);
+    let s0 = &slices[0];
+    assert!(s0["olrp"].is_number(), "slice[0].olrp must be present");
+    assert!(s0["olrp_loc"].is_number());
+    assert!(s0["olrp_fp"].is_number());
+    assert!(s0["olrp_fn"].is_number());
+    assert!(s0["n_images"].is_number());
+}
+
+#[test]
+fn lrp_manifest_typed_error_is_gone() {
+    // Previously: `vernier eval --metric olrp --manifest ...` returned
+    // `CliError::Validation("partitioned LRP is not yet wired ...")`
+    // with exit code 2. Now it dispatches successfully. This test
+    // guards against accidental regression of the deferral.
+    let tmp = tempdir();
+    let (gt, dt, mjson, _) = write_fixture(tmp.path());
+
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let output = cmd
+        .args([
+            "eval",
+            "--gt",
+            gt.to_string_lossy().as_ref(),
+            "--dt",
+            dt.to_string_lossy().as_ref(),
+            "--iou-type",
+            "bbox",
+            "--metric",
+            "olrp",
+            "--manifest",
+            mjson.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "regression: --metric olrp --manifest must now succeed; stderr: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("partitioned LRP is not yet wired"),
+        "deferral error must not surface: {stderr}"
+    );
+}
+
+#[test]
+fn lrp_manifest_text_renders_overall_and_per_slice_block() {
+    let tmp = tempdir();
+    let (gt, dt, mjson, _) = write_fixture(tmp.path());
+
+    let mut cmd = Command::cargo_bin("vernier").unwrap();
+    let output = cmd
+        .args([
+            "eval",
+            "--gt",
+            gt.to_string_lossy().as_ref(),
+            "--dt",
+            dt.to_string_lossy().as_ref(),
+            "--iou-type",
+            "bbox",
+            "--metric",
+            "olrp",
+            "--manifest",
+            mjson.to_string_lossy().as_ref(),
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(0));
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("overall"),
+        "overall header missing: {stdout}"
+    );
+    assert!(stdout.contains("oLRP"), "oLRP header missing: {stdout}");
+    assert!(stdout.contains("==>"), "per-slice header missing: {stdout}");
+    assert!(stdout.contains("weather"));
+    assert!(stdout.contains("time_of_day"));
+}
+
+#[test]
 fn text_output_renders_overall_and_per_slice_block() {
     let tmp = tempdir();
     let (gt, dt, mjson, _) = write_fixture(tmp.path());
