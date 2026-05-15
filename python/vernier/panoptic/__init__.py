@@ -152,16 +152,41 @@ def optimal_lrp(
 class EvalResult:
     """Opt-in result of :meth:`Evaluator.evaluate` when ``tables=`` is
     passed. Carries :class:`Summary` plus a polars DataFrame view of
-    the per-class panoptic-quality breakdown."""
+    the per-class panoptic-quality breakdown.
+
+    Also returned when ``manifest=`` is passed (ADR-0046 partitioned
+    eval): the ``.summary`` field carries the bit-identical-to-
+    un-partitioned ``overall`` summary, and the :attr:`slices`
+    DataFrame view exposes the per-``(axis, value)`` cell metrics."""
 
     summary: Summary
     _per_class_batch: object | None = field(default=None, repr=False)
+    #: Slices RecordBatch (ADR-0046). ``None`` unless ``manifest=`` was
+    #: passed to :meth:`Evaluator.evaluate`. The cached
+    #: :attr:`slices` DataFrame view reads it.
+    _slices_batch: object | None = field(default=None, repr=False)
+    #: Image count behind ``summary`` on the partitioned path; ``None``
+    #: on the un-partitioned path (where it equals
+    #: ``gt.num_images``).
+    overall_n_images: int | None = field(default=None)
+    #: DT-segment count behind ``summary`` on the partitioned path;
+    #: ``None`` on the un-partitioned path.
+    overall_n_detections: int | None = field(default=None)
 
     @cached_property
     def per_class(self) -> pl.DataFrame:
         """One row per category. Columns: ``category_id``, ``pq``,
         ``sq``, ``rq``, ``n_tp``, ``n_fp``, ``n_fn``, ``iou_sum``."""
         return arrow_to_dataframe(self._per_class_batch, "per_class")
+
+    @cached_property
+    def slices(self) -> pl.DataFrame:
+        """One row per ``(axis, value)`` partition cell (ADR-0046).
+        Columns: ``axis``, ``value``, ``n_images``, ``n_detections``,
+        ``pq``, ``sq``, ``rq``. Available only when the originating
+        ``evaluate(...)`` call carried a ``manifest=`` keyword; raises
+        :class:`RuntimeError` otherwise."""
+        return arrow_to_dataframe(self._slices_batch, "slices")
 
 
 def decode_label_map_png(path: str | Path) -> NDArray[np.uint32]:
@@ -464,6 +489,17 @@ class Evaluator:
         cross_axes: None = None,
     ) -> EvalResult: ...
 
+    @overload
+    def evaluate(
+        self,
+        gt: Dataset,
+        dt: Predictions,
+        *,
+        tables: None = None,
+        manifest: object,
+        cross_axes: Sequence[Sequence[str]] | None = None,
+    ) -> EvalResult: ...
+
     def evaluate(
         self,
         gt: Dataset,
@@ -485,23 +521,71 @@ class Evaluator:
         ``"all"`` or a tuple of :data:`TableName` values to opt into
         the wider :class:`EvalResult` return type.
 
-        ``manifest=`` for ADR-0046 partitioned eval is **deferred**
-        on the panoptic paradigm. The panoptic substrate computes its
-        summary from per-image accumulations rather than an AP-shaped
-        accumulator tensor; cleanly subsetting requires either a
-        `PanopticDataset.subset_by_image_ids` accessor (not yet
-        exposed) or a Python-side per-slice reconstruction. Both are
-        tracked as ADR-0046 phase-2 work. Pass ``manifest=`` to get a
-        :class:`NotImplementedError` carrying the same pointer.
+        ``manifest=`` opts into ADR-0046 partitioned eval. Accepts a
+        dict (the canonical JSON-records shape), a file path
+        (``.json``), or any object exposing the Arrow PyCapsule
+        Interface (a polars / pandas / pyarrow DataFrame of per-image
+        metadata). Returns an :class:`EvalResult` whose ``.summary``
+        is bit-identical to the un-partitioned call and whose
+        ``.slices`` property is a polars DataFrame with one row per
+        ``(axis, value)`` cell. ``cross_axes=`` opts joint cells in
+        (per ADR-0046 §E2; marginals are the default).
+
+        Per ADR-0046 §"Performance", panoptic partitioned eval runs
+        as one ``evaluate_panoptic`` call per slice (the C1 path)
+        rather than the C3 path the instance paradigm uses: the
+        panoptic substrate computes its summary from per-image
+        accumulations rather than an AP-shaped accumulator tensor
+        that ``evaluate_partitioned`` could fan out over. The
+        ``overall`` summary is the un-partitioned eval over the full
+        handles, preserving the bit-identical-overall parity contract
+        by construction.
         """
-        if manifest is not None or cross_axes is not None:
-            raise NotImplementedError(
-                "panoptic partitioned eval (manifest=) is deferred to ADR-0046 "
-                "phase 2 — the panoptic substrate's per-image accumulation does "
-                "not subset cleanly without adding a `subset_by_image_ids` "
-                "accessor on PanopticDataset / PanopticPredictions, or a "
-                "Python-level loop that rebuilds the panoptic handles per slice. "
-                "Tracked at docs/adr/0046-slice-and-aggregate.md."
+        if manifest is not None:
+            from vernier.panoptic._partition import (
+                evaluate_partitioned as _evaluate_partitioned,
+            )
+
+            if tables is not None:
+                raise ValueError(
+                    "tables= and manifest= cannot be combined on the panoptic "
+                    "paradigm yet; the partitioned evaluate returns EvalResult "
+                    "carrying the slices RecordBatch but per-class partitioned "
+                    "tables are a follow-up."
+                )
+            if self._has_custom_class_params():
+                raise InvalidPanopticParams(
+                    field="manifest",
+                    value=manifest,
+                    remediation=(
+                        "panoptic partitioned eval does not yet propagate the "
+                        "ADR-0042 custom fields (pq_iou_threshold / "
+                        "category_filter / class_grouping / stuff_thing_partition). "
+                        "Re-run with a default-config evaluator, or run "
+                        "manifest= and custom params separately."
+                    ),
+                )
+            overall, slices_batch, n_images, n_segments = _evaluate_partitioned(
+                gt,
+                dt,
+                parity_mode=self.parity_mode,
+                things_stuff_split=self.things_stuff_split,
+                boundary=self.boundary,
+                dilation_ratio=self.dilation_ratio,
+                manifest=manifest,
+                cross_axes=cross_axes,
+            )
+            return EvalResult(
+                summary=overall,
+                _slices_batch=slices_batch,
+                overall_n_images=n_images,
+                overall_n_detections=n_segments,
+            )
+        if cross_axes is not None:
+            raise ValueError(
+                "cross_axes= is only meaningful alongside manifest= (it opts "
+                "joint cells into the manifest partition spec; with no "
+                "manifest there is nothing to cross)"
             )
         # ADR-0042 custom axes resolve Python-side. ByGrouping → ByIds;
         # the kernel's category-filter primitive is id-keyed only.

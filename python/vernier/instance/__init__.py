@@ -64,6 +64,7 @@ from vernier._lrp import (
     LrpConfig,
     LrpPerClass,
     LrpReport,
+    PartitionedLrpReport,
     optimal_lrp,
 )
 from vernier._tide import (
@@ -124,6 +125,7 @@ __all__ = [
     "PartialParamsMismatch",
     "PartialPartitionOverlap",
     "PartialRankCollision",
+    "PartitionedLrpReport",
     "QueueFullError",
     "RLEInput",
     "Segm",

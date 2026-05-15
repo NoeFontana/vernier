@@ -5,7 +5,6 @@
     "vernier.paradigm": "instance",
     "vernier.metric": "lrp"
   },
-  "deferred": true,
   "fields": [
     {"name": "axis", "type": "utf8", "nullable": false},
     {"name": "value", "type": "utf8", "nullable": false},

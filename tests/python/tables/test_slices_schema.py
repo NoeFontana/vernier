@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from vernier._core import slices_batch_panoptic, slices_batch_semantic
-from vernier.instance import Evaluator
+from vernier.instance import Evaluator, optimal_lrp
 
 if TYPE_CHECKING:
     import pyarrow as pa
@@ -121,6 +121,13 @@ def test_slices_semantic_schema() -> None:
     _assert_matches_golden(batch.schema, "slices_semantic")
 
 
-@pytest.mark.skip(reason="LRP partitioning is deferred (ADR-0046 phase 1 follow-up)")
-def test_slices_instance_lrp_schema() -> None:  # pragma: no cover — deferred
-    pass
+def test_slices_instance_lrp_schema() -> None:
+    pa = pytest.importorskip("pyarrow")
+    gt = (_FIXTURE / "gt.json").read_bytes()
+    dt = (_FIXTURE / "dt.json").read_bytes()
+    manifest = json.loads((_FIXTURE / "weather_x_tod.json").read_bytes())
+    report = optimal_lrp(gt, dt, manifest=manifest)
+    # Pull the RecordBatch from the partitioned-LRP report's PyCapsule
+    # producer. Same access pattern as the AP path.
+    batch = pa.record_batch(report._slices_batch)
+    _assert_matches_golden(batch.schema, "slices_instance_lrp")

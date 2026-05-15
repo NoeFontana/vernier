@@ -179,6 +179,37 @@ impl PyPanopticDataset {
         self.inner.categories.len()
     }
 
+    /// Image ids present in this dataset. Order is unspecified — the
+    /// caller must sort if a deterministic order is required.
+    fn image_ids(&self) -> Vec<i64> {
+        self.inner.images.keys().copied().collect()
+    }
+
+    /// Build a new `PanopticDataset` retaining only the entries whose
+    /// image id is in `ids` (ADR-0046 §"Panoptic / semantic partitioning").
+    ///
+    /// Ids absent from this dataset are skipped silently — the
+    /// Python-level partition orchestrator has already done the
+    /// known-key intersection at manifest parse time. Categories are
+    /// preserved verbatim (they are a dataset-level taxonomy, not
+    /// per-image).
+    fn subset_by_image_ids(&self, ids: Vec<i64>) -> Self {
+        let keep: std::collections::HashSet<ImageId> = ids.into_iter().collect();
+        let images: HashMap<ImageId, ImageEntry> = self
+            .inner
+            .images
+            .iter()
+            .filter(|(id, _)| keep.contains(id))
+            .map(|(id, entry)| (*id, entry.clone()))
+            .collect();
+        Self {
+            inner: Arc::new(PanopticDataset::from_components(
+                images,
+                self.inner.categories.clone(),
+            )),
+        }
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "PanopticDataset(images={}, categories={})",
@@ -238,6 +269,58 @@ impl PyPanopticPredictions {
     #[getter]
     fn num_images(&self) -> usize {
         self.inner.images.len()
+    }
+
+    /// Total number of DT segments across all images. Used as the
+    /// `n_detections` cell on the panoptic slices table (ADR-0046).
+    #[getter]
+    fn num_segments(&self) -> u64 {
+        self.inner
+            .images
+            .values()
+            .map(|e| e.segments.len() as u64)
+            .sum()
+    }
+
+    /// Image ids present in this predictions handle. Order is
+    /// unspecified — the caller must sort if a deterministic order is
+    /// required.
+    fn image_ids(&self) -> Vec<i64> {
+        self.inner.images.keys().copied().collect()
+    }
+
+    /// Total number of DT segments across the images in `ids`. Lets
+    /// the Python-side partition loop count `n_detections` per slice
+    /// without rebuilding the per-slice [`PanopticPredictions`] just
+    /// to read its [`Self::num_segments`].
+    fn num_segments_for(&self, ids: Vec<i64>) -> u64 {
+        let keep: std::collections::HashSet<ImageId> = ids.into_iter().collect();
+        self.inner
+            .images
+            .iter()
+            .filter(|(id, _)| keep.contains(id))
+            .map(|(_, e)| e.segments.len() as u64)
+            .sum()
+    }
+
+    /// Build a new `PanopticPredictions` retaining only the entries
+    /// whose image id is in `ids` (ADR-0046 §"Panoptic / semantic
+    /// partitioning"). Mirrors
+    /// [`PyPanopticDataset::subset_by_image_ids`]; predictions do not
+    /// carry a category taxonomy (quirk **S9**), so nothing else
+    /// needs to be threaded through.
+    fn subset_by_image_ids(&self, ids: Vec<i64>) -> Self {
+        let keep: std::collections::HashSet<ImageId> = ids.into_iter().collect();
+        let images: HashMap<ImageId, ImageEntry> = self
+            .inner
+            .images
+            .iter()
+            .filter(|(id, _)| keep.contains(id))
+            .map(|(id, entry)| (*id, entry.clone()))
+            .collect();
+        Self {
+            inner: Arc::new(PanopticPredictions::from_components(images)),
+        }
     }
 
     fn __repr__(&self) -> String {

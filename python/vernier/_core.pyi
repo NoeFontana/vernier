@@ -433,10 +433,68 @@ def evaluate_keypoints_partitioned(
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
 ) -> PartitionedSummary: ...
-def evaluate_bbox_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
-def evaluate_segm_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
-def evaluate_boundary_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
-def evaluate_keypoints_partitioned_lrp(*args: object, **kwargs: object) -> None: ...
+
+class PartitionedLrpReport:
+    @property
+    def overall(self) -> _LrpReportDict: ...
+    @property
+    def overall_n_images(self) -> int: ...
+    @property
+    def overall_n_detections(self) -> int: ...
+    @property
+    def n_slices(self) -> int: ...
+    def slices_capsule(self) -> ArrowRecordBatch: ...
+
+def evaluate_bbox_partitioned_lrp(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+    manifest: object,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedLrpReport: ...
+def evaluate_segm_partitioned_lrp(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+    manifest: object,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedLrpReport: ...
+def evaluate_boundary_partitioned_lrp(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+    dilation_ratio: float,
+    manifest: object,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedLrpReport: ...
+def evaluate_keypoints_partitioned_lrp(
+    gt_bytes: bytes,
+    dt_bytes: bytes,
+    parity_mode: str,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+    sigmas: dict[int, list[float]],
+    manifest: object,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+) -> PartitionedLrpReport: ...
 def slices_batch_panoptic(
     rows: list[tuple[str, str, int, int, float, float, float]],
 ) -> ArrowRecordBatch: ...
@@ -718,6 +776,8 @@ class PanopticDataset:
     def num_images(self) -> int: ...
     @property
     def num_categories(self) -> int: ...
+    def image_ids(self) -> list[int]: ...
+    def subset_by_image_ids(self, ids: list[int]) -> PanopticDataset: ...
 
 class PanopticPredictions:
     @staticmethod
@@ -727,6 +787,11 @@ class PanopticPredictions:
     ) -> PanopticPredictions: ...
     @property
     def num_images(self) -> int: ...
+    @property
+    def num_segments(self) -> int: ...
+    def image_ids(self) -> list[int]: ...
+    def num_segments_for(self, ids: list[int]) -> int: ...
+    def subset_by_image_ids(self, ids: list[int]) -> PanopticPredictions: ...
 
 def evaluate_panoptic(
     gt: PanopticDataset,

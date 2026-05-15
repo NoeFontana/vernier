@@ -127,10 +127,26 @@ class EvalResult:
     passed. Carries :class:`Summary` plus a polars DataFrame view of
     the per-class semantic breakdown in the canonical mmseg / ADE20K
     column order. Tables on :meth:`Evaluator.evaluate_from_pngs`
-    (ADR-0037 fused path) are deferred."""
+    (ADR-0037 fused path) are deferred.
+
+    Also returned when ``manifest=`` is passed (ADR-0046 partitioned
+    eval): the ``.summary`` field carries the bit-identical-to-
+    un-partitioned ``overall`` summary, and the :attr:`slices`
+    DataFrame view exposes the per-``(axis, value)`` cell metrics."""
 
     summary: Summary
     _per_class_batch: object | None = field(default=None, repr=False)
+    #: Slices RecordBatch (ADR-0046). ``None`` unless ``manifest=`` was
+    #: passed to :meth:`Evaluator.evaluate`. The cached
+    #: :attr:`slices` DataFrame view reads it.
+    _slices_batch: object | None = field(default=None, repr=False)
+    #: Image count behind ``summary`` on the partitioned path; ``None``
+    #: on the un-partitioned path.
+    overall_n_images: int | None = field(default=None)
+    #: Always ``0`` for semantic on the partitioned path (semantic has
+    #: no detection notion; the column is shape-parity with panoptic /
+    #: instance). ``None`` on the un-partitioned path.
+    overall_n_detections: int | None = field(default=None)
 
     @cached_property
     def per_class(self) -> pl.DataFrame:
@@ -138,6 +154,18 @@ class EvalResult:
         ``accuracy``, ``precision``, ``n_gt_pixels``, ``n_dt_pixels``,
         ``tp_pixels``, ``fp_pixels``, ``fn_pixels``."""
         return arrow_to_dataframe(self._per_class_batch, "per_class")
+
+    @cached_property
+    def slices(self) -> pl.DataFrame:
+        """One row per ``(axis, value)`` partition cell (ADR-0046).
+        Columns: ``axis``, ``value``, ``n_images``, ``n_detections``,
+        ``miou``, ``fwiou``, ``pixel_accuracy``, ``mean_accuracy``.
+        ``n_detections`` is always 0 — semantic has no detection
+        notion; the column is shape-parity with panoptic / instance.
+        Available only when the originating ``evaluate(...)`` call
+        carried a ``manifest=`` keyword; raises :class:`RuntimeError`
+        otherwise."""
+        return arrow_to_dataframe(self._slices_batch, "slices")
 
 
 #: Cityscapes ignore-label convention (255). Mirrors
@@ -596,6 +624,17 @@ class Evaluator:
         cross_axes: None = None,
     ) -> EvalResult: ...
 
+    @overload
+    def evaluate(
+        self,
+        gt: Dataset,
+        dt: Predictions,
+        *,
+        tables: None = None,
+        manifest: object,
+        cross_axes: Sequence[Sequence[str]] | None = None,
+    ) -> EvalResult: ...
+
     def evaluate(
         self,
         gt: Dataset,
@@ -621,21 +660,72 @@ class Evaluator:
         behavior). Pass ``"all"`` or a tuple of :data:`TableName`
         values to opt into the wider :class:`EvalResult` return type.
 
-        ``manifest=`` for ADR-0046 partitioned eval is **deferred**
-        on the semantic paradigm. The semantic :class:`EvalResult`
-        does not yet carry a slices field; routing through the
-        partitioned path requires a coordinated update to the
-        per-class table emission as well. Tracked as ADR-0046 phase-2
-        work; pass ``manifest=`` to get a :class:`NotImplementedError`
-        carrying the same pointer.
+        ``manifest=`` opts into ADR-0046 partitioned eval. Accepts a
+        dict (the canonical JSON-records shape), a file path
+        (``.json``), or any object exposing the Arrow PyCapsule
+        Interface (a polars / pandas / pyarrow DataFrame of per-image
+        metadata). Returns an :class:`EvalResult` whose ``.summary``
+        is bit-identical to the un-partitioned call and whose
+        ``.slices`` property is a polars DataFrame with one row per
+        ``(axis, value)`` cell. ``cross_axes=`` opts joint cells in
+        (per ADR-0046 §E2; marginals are the default).
+
+        Per ADR-0046 §"Performance", semantic partitioned eval runs as
+        one :func:`evaluate_semantic_from_arrays` call per slice (the
+        C1 path) — the semantic substrate accumulates per-image
+        confusion matrices into a global matrix without an image-id
+        filter at summarize time. The ``overall`` summary is the
+        un-partitioned eval over the full mappings, preserving the
+        bit-identical-overall parity contract by construction.
         """
-        if manifest is not None or cross_axes is not None:
-            raise NotImplementedError(
-                "semantic partitioned eval (manifest=) is deferred to ADR-0046 "
-                "phase 2 — the semantic EvalResult does not yet carry a "
-                "slices field, and the per-class table emission needs a "
-                "coordinated update for the partitioned path. Tracked at "
-                "docs/adr/0046-slice-and-aggregate.md."
+        if manifest is not None:
+            from vernier.semantic._partition import (
+                evaluate_partitioned as _evaluate_partitioned,
+            )
+
+            if tables is not None:
+                raise ValueError(
+                    "tables= and manifest= cannot be combined on the semantic "
+                    "paradigm yet; the partitioned evaluate returns EvalResult "
+                    "carrying the slices RecordBatch but per-class partitioned "
+                    "tables are a follow-up."
+                )
+            if self._has_custom_class_params():
+                raise InvalidSemanticParams(
+                    field="manifest",
+                    value=manifest,
+                    remediation=(
+                        "semantic partitioned eval does not yet propagate the "
+                        "ADR-0041 custom fields (class_filter / class_grouping). "
+                        "Re-run with a default-config evaluator, or run "
+                        "manifest= and custom params separately."
+                    ),
+                )
+            resolved_filter = _resolve_class_filter(self.class_filter, self.class_grouping)
+            resolved_groups = _resolve_class_grouping(self.class_grouping)
+            overall, slices_batch, n_images, n_dets = _evaluate_partitioned(
+                gt.label_maps,
+                dt.label_maps,
+                n_classes=gt.n_classes,
+                parity_mode=self.parity_mode,
+                ignore_label=gt.ignore_label,
+                label_remap=dict(self.label_remap) if self.label_remap is not None else None,
+                class_filter=resolved_filter,
+                class_grouping=resolved_groups,
+                manifest=manifest,
+                cross_axes=cross_axes,
+            )
+            return EvalResult(
+                summary=overall,
+                _slices_batch=slices_batch,
+                overall_n_images=n_images,
+                overall_n_detections=n_dets,
+            )
+        if cross_axes is not None:
+            raise ValueError(
+                "cross_axes= is only meaningful alongside manifest= (it opts "
+                "joint cells into the manifest partition spec; with no "
+                "manifest there is nothing to cross)"
             )
         # ADR-0041 custom axes resolve Python-side. ByGrouping → ByIds
         # via the active class_grouping (the kernel's filter primitive

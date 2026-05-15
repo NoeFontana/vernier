@@ -34,11 +34,13 @@
 //! threshold pass is both simpler (the loop is ~20 lines) and more
 //! faithful to the oracle the metric is validated against.
 
+use std::collections::HashSet;
+
 use ndarray::ArrayView2;
 
 use crate::dataset::{Annotation, CategoryId, CocoDataset, CocoDetections, EvalDataset, ImageMeta};
 use crate::error::EvalError;
-use crate::evaluate::{evaluate_with, EvalKernel, EvaluateParams};
+use crate::evaluate::{evaluate_with, EvalGrid, EvalKernel, EvaluateParams};
 use crate::parity::ParityMode;
 use crate::tables::RetainedIous;
 
@@ -84,6 +86,19 @@ pub(crate) struct PerClassDecomposition {
 /// effective ignore flag from the original [`CocoDataset`] —
 /// retained_ious does not carry these, by design (it is geometry
 /// only).
+///
+/// `image_mask` opts into ADR-0046 partitioned LRP: when `Some(mask)`,
+/// only images `i` where `mask[i]` is `true` contribute to the per-
+/// class arrays and `n_pos_gt` count. The matching pass itself is not
+/// re-run — partitioning is a filter on the post-match decompose
+/// walk, exactly the C3 axiom AP partitioning honours.
+///
+/// Note: `image_mask` is a dense `Vec<bool>` of length `n_images`,
+/// materialised once per slice by [`decompose_all_classes`]. A
+/// `HashSet` lookup inside the `n_cats × n_slices × n_images` inner
+/// loop showed ~30–75 s of probe overhead per partitioned LRP call at
+/// LVIS scale (1203 × 5k × 256); the dense mask reduces that to a
+/// branch-predictable array read.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn decompose_class(
     gt: &CocoDataset,
@@ -91,10 +106,11 @@ pub(crate) fn decompose_class(
     category_id: Option<CategoryId>,
     n_images: usize,
     image_order: &[&ImageMeta],
-    retained: &mut RetainedIous,
+    retained: &RetainedIous,
     grid: &crate::evaluate::EvalGrid,
     parity_mode: ParityMode,
     params: &LrpParams<'_>,
+    image_mask: Option<&[bool]>,
 ) -> Result<PerClassDecomposition, EvalError> {
     // Per-class concatenated arrays. We size to a per-class upper bound
     // (max_dets_per_image * n_images) so the inner loop never
@@ -118,6 +134,16 @@ pub(crate) fn decompose_class(
     let gt_anns = gt.annotations();
 
     for (i, image) in image_order.iter().enumerate() {
+        // ADR-0046 partitioned LRP: skip cells whose image index is
+        // not in the slice. Filter applies uniformly to the n_pos_gt
+        // count and the per-cell matching emission below — both must
+        // be restricted to the slice so the per-class arrays and the
+        // denominator are consistent.
+        if let Some(mask) = image_mask {
+            if !mask[i] {
+                continue;
+            }
+        }
         let cell = match grid.cell(k, 0, i) {
             Some(c) => c,
             None => continue,
@@ -159,16 +185,17 @@ pub(crate) fn decompose_class(
         // rows are GT in the matching engine's sorted order, cols are
         // DT in score-desc order. `dt_scores` is in the same DT
         // order; the GT id at sorted-row `r` is `meta.gt_ids[r]`.
-        // Pop the matrix so the retained_ious store shrinks
-        // monotonically as we walk classes — keeps peak working set
-        // bounded by the largest residual class.
-        let iou_mat = match retained.remove(k, i) {
-            Some(m) => m,
+        // Borrow (not pop) so the retained_ious store can serve a
+        // second decompose pass — the ADR-0046 partitioned LRP path
+        // re-walks the grid once per slice, all sharing one matching
+        // pass (C3).
+        let iou_view = match retained.get(k, i) {
+            Some(v) => v,
             None => continue, // No DTs and/or no GTs in this cell.
         };
 
         run_cell_matching(
-            &iou_mat.view(),
+            &iou_view,
             cell,
             gt_indices,
             gt_anns,
@@ -386,18 +413,45 @@ fn run_cell_matching(
     }
 }
 
-/// Run the kernel-generic LRP pass: evaluate, walk per-class
-/// decompositions, return them.
+/// Pre-computed state shared across one (overall + N slices)
+/// partitioned LRP pass.
 ///
-/// `kernel_marker` is recorded verbatim on the resulting report (per
-/// ADR-0044 the resolved configuration is part of the result).
-pub(crate) fn run_lrp_pass<K: EvalKernel>(
-    gt: &CocoDataset,
+/// Built by [`prepare_lrp_pass`] in one matching pass (the C3 axiom of
+/// ADR-0046) and re-used by [`decompose_all_classes`] for every
+/// `image_filter` value: `None` for the overall report and
+/// `Some(&slice.image_indices)` for each slice. The matching engine
+/// is invoked exactly once per partitioned LRP call regardless of how
+/// many slices the user requested.
+pub(crate) struct LrpPassContext<'gt> {
+    /// Borrowed GT dataset; used for the post-match annotation
+    /// lookups (crowd/ignore flags + n_pos_gt counting).
+    pub(crate) gt: &'gt CocoDataset,
+    /// Per-`(category_index, image_index)` IoU matrices retained from
+    /// the matching pass.
+    pub(crate) retained: RetainedIous,
+    /// Owned `EvalGrid` post-`retained_ious.take()`; carries the
+    /// `eval_imgs` / `eval_imgs_meta` slabs the decompose pass reads.
+    pub(crate) grid: EvalGrid,
+    /// Image-metadata views in the id-ascending order the matching
+    /// pass's I-axis uses. Indexing this slice by `i` reproduces the
+    /// grid's `(k, a, i)` coordinate.
+    pub(crate) image_order: Vec<&'gt ImageMeta>,
+    /// Category id bucket per K-axis position; `None` collapses to a
+    /// single class-agnostic bucket when `use_cats = false`.
+    pub(crate) category_buckets: Vec<Option<CategoryId>>,
+}
+
+/// Run the matching pass once and surface the per-class decompose
+/// context. Invoked once per `optimal_lrp_*` call — including the
+/// partitioned path, where it serves N+1 decompose walks (overall
+/// plus one per slice) from a single matching pass.
+pub(crate) fn prepare_lrp_pass<'gt, K: EvalKernel>(
+    gt: &'gt CocoDataset,
     dt: &CocoDetections,
     kernel: &K,
     params: &LrpParams<'_>,
     parity_mode: ParityMode,
-) -> Result<Vec<PerClassDecomposition>, EvalError> {
+) -> Result<LrpPassContext<'gt>, EvalError> {
     // Force `retain_iou` on so the per-cell matrices land on
     // `EvalGrid.retained_ious`. Per ADR-0043 this is engine-internal
     // — the LRP user never sees the flag.
@@ -410,11 +464,10 @@ pub(crate) fn run_lrp_pass<K: EvalKernel>(
     };
     let mut grid = evaluate_with(gt, dt, eval_params, parity_mode, kernel)?;
 
-    // Take ownership of the retained-IoU store so decompose_class can
-    // pop each `(k, i)` matrix as it consumes it. Holding `&` would
-    // pin the entire ~hundreds-of-MB store for the whole K loop;
-    // popping shrinks the working set monotonically.
-    let mut retained = grid
+    // Lift the retained-IoU store out of the grid so the context owns
+    // it. The store is borrowed (not consumed) by each decompose pass
+    // — the partition path runs N+1 passes against the same store.
+    let retained = grid
         .retained_ious
         .take()
         .ok_or_else(|| EvalError::InvalidConfig {
@@ -426,7 +479,6 @@ pub(crate) fn run_lrp_pass<K: EvalKernel>(
     // line up with what we walk here.
     let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
     images.sort_unstable_by_key(|im| im.id.0);
-    let n_images = images.len();
 
     let category_buckets: Vec<Option<CategoryId>> = if params.use_cats {
         let mut cats: Vec<_> = gt.categories().iter().map(|c| c.id).collect();
@@ -437,21 +489,60 @@ pub(crate) fn run_lrp_pass<K: EvalKernel>(
     };
     debug_assert_eq!(category_buckets.len(), grid.n_categories);
 
-    let mut out: Vec<PerClassDecomposition> = Vec::with_capacity(category_buckets.len());
-    for (k, cat) in category_buckets.iter().enumerate() {
+    Ok(LrpPassContext {
+        gt,
+        retained,
+        grid,
+        image_order: images,
+        category_buckets,
+    })
+}
+
+/// Walk the per-class decompositions over an already-prepared
+/// [`LrpPassContext`], optionally filtered to a slice's image set.
+///
+/// `image_filter == None` reproduces the un-partitioned LRP shape;
+/// `image_filter == Some(&set)` is the ADR-0046 partitioned LRP per-
+/// slice walk.
+pub(crate) fn decompose_all_classes(
+    ctx: &LrpPassContext<'_>,
+    parity_mode: ParityMode,
+    params: &LrpParams<'_>,
+    image_filter: Option<&HashSet<usize>>,
+) -> Result<Vec<PerClassDecomposition>, EvalError> {
+    let n_images = ctx.image_order.len();
+
+    // Materialise the (sparse) HashSet filter into a dense Vec<bool>
+    // once per pass. The per-class loop visits every image and the
+    // HashSet probe in the inner loop dominates at LVIS scale; a
+    // contiguous Vec is branch-predictable and ~5–10× faster on the
+    // hot path (`decompose_class` docstring).
+    let mask_storage: Option<Vec<bool>> = image_filter.map(|set| {
+        let mut m = vec![false; n_images];
+        for &i in set {
+            if i < n_images {
+                m[i] = true;
+            }
+        }
+        m
+    });
+    let image_mask = mask_storage.as_deref();
+
+    let mut out: Vec<PerClassDecomposition> = Vec::with_capacity(ctx.category_buckets.len());
+    for (k, cat) in ctx.category_buckets.iter().enumerate() {
         let d = decompose_class(
-            gt,
+            ctx.gt,
             k,
             *cat,
             n_images,
-            &images,
-            &mut retained,
-            &grid,
+            &ctx.image_order,
+            &ctx.retained,
+            &ctx.grid,
             parity_mode,
             params,
+            image_mask,
         )?;
         out.push(d);
     }
-
     Ok(out)
 }

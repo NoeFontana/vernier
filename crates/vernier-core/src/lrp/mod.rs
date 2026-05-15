@@ -46,7 +46,7 @@ use crate::evaluate::COLLAPSED_CATEGORY_SENTINEL;
 use crate::parity::ParityMode;
 use crate::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Closed set of kernels LRP supports today (per ADR-0043 +
 /// ADR-0045). Mirrors [`crate::tide::report::KernelMarker`] but adds
@@ -206,15 +206,90 @@ pub fn optimal_lrp_with<K: crate::evaluate::EvalKernel>(
     parity_mode: ParityMode,
 ) -> Result<LrpReport, EvalError> {
     validate_params(&params)?;
+    let ctx = decompose::prepare_lrp_pass(gt, dt, kernel, &params, parity_mode)?;
+    let decompositions = decompose::decompose_all_classes(&ctx, parity_mode, &params, None)?;
+    Ok(build_report(
+        gt,
+        &decompositions,
+        params.use_cats,
+        params.tp_threshold,
+        params.tau_grid.len(),
+        kernel_marker,
+    ))
+}
 
-    let decompositions = decompose::run_lrp_pass(gt, dt, kernel, &params, parity_mode)?;
+/// End-to-end LRP for a kernel + partition spec (ADR-0046).
+///
+/// Runs the matching engine **once** (the C3 axiom) and then runs the
+/// post-match decompose pipeline `1 + slices.len()` times: once for
+/// the overall report, then once per slice filtering the decompose
+/// walk to that slice's image indices. The matching pass is never
+/// re-invoked per slice — partitioned LRP enjoys the same "1× match
+/// + N cheap aggregate passes" performance shape as partitioned AP.
+///
+/// `image_filters` is the parallel vector of `image_indices` sets,
+/// one per slice in the caller's intended output order. The returned
+/// vector pairs them: index `0` is the overall report; indices `1..=N`
+/// are the slice reports in the same order as `image_filters`.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying matching / decompose
+/// passes.
+pub fn optimal_lrp_with_partitioned<K: crate::evaluate::EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    kernel: &K,
+    kernel_marker: LrpKernelMarker,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+    image_filters: &[HashSet<usize>],
+) -> Result<Vec<LrpReport>, EvalError> {
+    validate_params(&params)?;
+    let ctx = decompose::prepare_lrp_pass(gt, dt, kernel, &params, parity_mode)?;
+    let mut reports: Vec<LrpReport> = Vec::with_capacity(image_filters.len() + 1);
 
-    // Map category-index back to category_id using the same
-    // id-ascending ordering evaluate_with uses on its K axis.
-    let cat_id_by_index = build_category_id_lookup(gt, params.use_cats);
+    let overall = decompose::decompose_all_classes(&ctx, parity_mode, &params, None)?;
+    reports.push(build_report(
+        gt,
+        &overall,
+        params.use_cats,
+        params.tp_threshold,
+        params.tau_grid.len(),
+        kernel_marker,
+    ));
 
+    for filter in image_filters {
+        let sliced = decompose::decompose_all_classes(&ctx, parity_mode, &params, Some(filter))?;
+        reports.push(build_report(
+            gt,
+            &sliced,
+            params.use_cats,
+            params.tp_threshold,
+            params.tau_grid.len(),
+            kernel_marker,
+        ));
+    }
+    Ok(reports)
+}
+
+/// Translate a vector of per-class decompositions into a public
+/// [`LrpReport`], plus aggregate the headline numbers.
+///
+/// Shared between [`optimal_lrp_with`] (single-pass) and
+/// [`optimal_lrp_with_partitioned`] (one call per `(overall, slice...)`
+/// decompose walk).
+fn build_report(
+    gt: &CocoDataset,
+    decompositions: &[decompose::PerClassDecomposition],
+    use_cats: bool,
+    tp_threshold: f64,
+    tau_grid_len: usize,
+    kernel_marker: LrpKernelMarker,
+) -> LrpReport {
+    let cat_id_by_index = build_category_id_lookup(gt, use_cats);
     let mut per_class: Vec<LrpPerClass> = Vec::with_capacity(decompositions.len());
-    for d in &decompositions {
+    for d in decompositions {
         let category_id = cat_id_by_index
             .get(&d.category_index)
             .copied()
@@ -228,10 +303,8 @@ pub fn optimal_lrp_with<K: crate::evaluate::EvalKernel>(
             tau: d.tau,
         });
     }
-
     let (olrp, olrp_loc, olrp_fp, olrp_fn, n_empty) = aggregate(&per_class);
-
-    Ok(LrpReport {
+    LrpReport {
         olrp,
         olrp_loc,
         olrp_fp,
@@ -239,11 +312,11 @@ pub fn optimal_lrp_with<K: crate::evaluate::EvalKernel>(
         per_class,
         n_empty_classes: n_empty,
         config: LrpConfig {
-            tp_threshold: params.tp_threshold,
-            tau_grid_len: params.tau_grid.len(),
+            tp_threshold,
+            tau_grid_len,
             kernel: kernel_marker,
         },
-    })
+    }
 }
 
 /// End-to-end LRP for the bbox kernel.
@@ -332,6 +405,105 @@ pub fn optimal_lrp_keypoints(
         LrpKernelMarker::Keypoints,
         params,
         parity_mode,
+    )
+}
+
+/// Partitioned-LRP entry point for the bbox kernel (ADR-0046).
+///
+/// Thin wrapper over [`optimal_lrp_with_partitioned`] pinning the
+/// [`BboxIou`] kernel.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation pass.
+pub fn optimal_lrp_bbox_partitioned(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+    image_filters: &[HashSet<usize>],
+) -> Result<Vec<LrpReport>, EvalError> {
+    optimal_lrp_with_partitioned(
+        gt,
+        dt,
+        &BboxIou,
+        LrpKernelMarker::Bbox,
+        params,
+        parity_mode,
+        image_filters,
+    )
+}
+
+/// Partitioned-LRP entry point for the segm (mask) kernel.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation pass.
+pub fn optimal_lrp_segm_partitioned(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+    image_filters: &[HashSet<usize>],
+) -> Result<Vec<LrpReport>, EvalError> {
+    optimal_lrp_with_partitioned(
+        gt,
+        dt,
+        &SegmIou,
+        LrpKernelMarker::Segm,
+        params,
+        parity_mode,
+        image_filters,
+    )
+}
+
+/// Partitioned-LRP entry point for the boundary-segm kernel.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation pass.
+pub fn optimal_lrp_boundary_partitioned(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+    dilation_ratio: f64,
+    image_filters: &[HashSet<usize>],
+) -> Result<Vec<LrpReport>, EvalError> {
+    let kernel = BoundaryIou { dilation_ratio };
+    optimal_lrp_with_partitioned(
+        gt,
+        dt,
+        &kernel,
+        LrpKernelMarker::Boundary,
+        params,
+        parity_mode,
+        image_filters,
+    )
+}
+
+/// Partitioned-LRP entry point for the keypoints (OKS) kernel.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation pass.
+pub fn optimal_lrp_keypoints_partitioned(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+    sigmas: HashMap<i64, Vec<f64>>,
+    image_filters: &[HashSet<usize>],
+) -> Result<Vec<LrpReport>, EvalError> {
+    let kernel = OksSimilarity::new(sigmas);
+    optimal_lrp_with_partitioned(
+        gt,
+        dt,
+        &kernel,
+        LrpKernelMarker::Keypoints,
+        params,
+        parity_mode,
+        image_filters,
     )
 }
 
@@ -558,6 +730,72 @@ mod tests {
         assert_eq!(cls.olrp, Some(1.0));
         assert!(cls.tau.is_none());
         assert_eq!(cls.olrp_loc, None);
+    }
+
+    #[test]
+    fn partitioned_overall_matches_unpartitioned() {
+        // ADR-0046 load-bearing parity claim: index 0 of the
+        // partitioned reports vector must be bit-identical to the
+        // un-partitioned LRP report (the matching pass runs once
+        // and the slice filter is identity over the empty-set filter).
+        let (gt, dt) = build_perfect_dataset();
+        let iou_thr = [0.5];
+        let area = crate::evaluate::AreaRange::coco_default();
+        let tau_grid = default_tau_grid();
+        let params = default_params(&iou_thr, &area, tau_grid);
+        let baseline =
+            optimal_lrp_bbox(&gt, &dt, params, ParityMode::Corrected).expect("baseline eval");
+        let part = optimal_lrp_bbox_partitioned(
+            &gt,
+            &dt,
+            params,
+            ParityMode::Corrected,
+            &[HashSet::from([0])],
+        )
+        .expect("partitioned eval");
+        assert_eq!(part.len(), 2);
+        // Overall must match un-partitioned bit-identically.
+        assert_eq!(part[0].olrp, baseline.olrp);
+        assert_eq!(part[0].olrp_loc, baseline.olrp_loc);
+        assert_eq!(part[0].olrp_fp, baseline.olrp_fp);
+        assert_eq!(part[0].olrp_fn, baseline.olrp_fn);
+        assert_eq!(part[0].per_class.len(), baseline.per_class.len());
+        for (p, b) in part[0].per_class.iter().zip(baseline.per_class.iter()) {
+            assert_eq!(p.olrp, b.olrp);
+            assert_eq!(p.olrp_loc, b.olrp_loc);
+        }
+        // With a filter selecting the only image, the slice report
+        // should also match overall.
+        assert_eq!(part[1].olrp, baseline.olrp);
+    }
+
+    #[test]
+    fn partitioned_empty_filter_yields_empty_class() {
+        // No images in the filter → every class is "no positive GTs"
+        // → olrp/loc/fp/fn = None for each per-class entry.
+        let (gt, dt) = build_perfect_dataset();
+        let iou_thr = [0.5];
+        let area = crate::evaluate::AreaRange::coco_default();
+        let tau_grid = default_tau_grid();
+        let params = default_params(&iou_thr, &area, tau_grid);
+        let part = optimal_lrp_bbox_partitioned(
+            &gt,
+            &dt,
+            params,
+            ParityMode::Corrected,
+            &[HashSet::new()],
+        )
+        .expect("partitioned eval");
+        assert_eq!(part.len(), 2);
+        // The empty-filter slice carries no positive GTs (the only
+        // image is filtered out), so the per-class entry is the
+        // "no positive GTs" shape: every value is None.
+        let cls = part[1].per_class[0];
+        assert_eq!(cls.olrp, None);
+        assert_eq!(cls.olrp_loc, None);
+        assert_eq!(cls.olrp_fp, None);
+        assert_eq!(cls.olrp_fn, None);
+        assert_eq!(part[1].n_empty_classes, 1);
     }
 
     #[test]

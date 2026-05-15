@@ -14,26 +14,41 @@ here as Python constants so callers reading
 ``optimal_lrp(...)`` need not chase the Rust source to know what
 ``tp_threshold=None`` resolves to. The defaults table in ADR-0044 is
 the canonical home; if it changes there, change it here.
+
+Partitioned LRP (ADR-0046 phase-1 follow-up): :func:`optimal_lrp`
+accepts a ``manifest=`` keyword that routes through the per-kernel
+``evaluate_*_partitioned_lrp`` FFI surfaces and returns a
+:class:`PartitionedLrpReport` carrying the overall LRP report plus a
+slices :class:`polars.DataFrame` keyed on ``(axis, value)``.
 """
 
 from __future__ import annotations
 
 import math
+import os
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from dataclasses import dataclass, field
+from functools import cached_property
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, overload
 
 from vernier._core import (
     CocoDataset,
+    evaluate_bbox_partitioned_lrp,
+    evaluate_boundary_partitioned_lrp,
+    evaluate_keypoints_partitioned_lrp,
+    evaluate_segm_partitioned_lrp,
     lrp_default_tau_grid,
     optimal_lrp_bbox,
     optimal_lrp_boundary,
     optimal_lrp_keypoints,
     optimal_lrp_segm,
 )
+from vernier._tables import arrow_to_dataframe
 from vernier._types import ParityMode
 
 if TYPE_CHECKING:
+    import polars as pl
+
     from vernier._core import (
         _LrpReportDict as _FFILrpReportDict,  # pyright: ignore[reportPrivateUsage]
     )
@@ -181,6 +196,46 @@ class LrpReport:
         )
 
 
+#: Acceptable shapes for the ``manifest=`` keyword on
+#: :func:`optimal_lrp` (ADR-0046 phase-1 follow-up). Same union as
+#: :data:`vernier.instance.Manifest`: dict / file path / Arrow-PyCapsule
+#: producer.
+LrpManifest: TypeAlias = Mapping[str, Any] | str | os.PathLike[str] | Any
+
+
+@dataclass(frozen=True)
+class PartitionedLrpReport:
+    """Output of a partitioned :func:`optimal_lrp` call (ADR-0046).
+
+    Carries an ``overall`` :class:`LrpReport` bit-identical to the
+    un-partitioned call, plus a :attr:`slices` :class:`polars.DataFrame`
+    with one row per ``(axis, value)`` cell in the partition. ``slices``
+    is lazily materialized from the Arrow ``RecordBatch`` the FFI
+    returns via the zero-copy PyCapsule path; pyarrow is the only
+    runtime dependency.
+    """
+
+    #: Bit-identical to the un-partitioned :class:`LrpReport`.
+    overall: LrpReport
+    #: Number of dataset images behind ``overall``.
+    overall_n_images: int
+    #: Number of detections behind ``overall``.
+    overall_n_detections: int
+    #: Backing Arrow ``RecordBatch`` (PyCapsule producer). Leading
+    #: underscore signals implementation detail; the supported access
+    #: path is the cached :attr:`slices` property.
+    _slices_batch: object | None = field(default=None, repr=False)
+
+    @cached_property
+    def slices(self) -> pl.DataFrame:
+        """One row per ``(axis, value)`` partition cell, with the four
+        headline LRP stats (``olrp``, ``olrp_loc``, ``olrp_fp``,
+        ``olrp_fn``) as columns. Read via :mod:`polars` zero-copy from
+        the underlying Arrow batch."""
+        return arrow_to_dataframe(self._slices_batch, "slices")
+
+
+@overload
 def optimal_lrp(
     gt: bytes | CocoDataset,
     dt: bytes,
@@ -191,7 +246,40 @@ def optimal_lrp(
     max_dets_per_image: int = 100,
     use_cats: bool = True,
     parity_mode: ParityMode = "corrected",
-) -> LrpReport:
+    manifest: None = None,
+    cross_axes: None = None,
+) -> LrpReport: ...
+
+
+@overload
+def optimal_lrp(
+    gt: bytes | CocoDataset,
+    dt: bytes,
+    *,
+    iou: object = None,
+    tp_threshold: float | None = None,
+    tau_grid: Sequence[float] | None = None,
+    max_dets_per_image: int = 100,
+    use_cats: bool = True,
+    parity_mode: ParityMode = "corrected",
+    manifest: LrpManifest,
+    cross_axes: Sequence[Sequence[str]] | None = None,
+) -> PartitionedLrpReport: ...
+
+
+def optimal_lrp(
+    gt: bytes | CocoDataset,
+    dt: bytes,
+    *,
+    iou: object = None,
+    tp_threshold: float | None = None,
+    tau_grid: Sequence[float] | None = None,
+    max_dets_per_image: int = 100,
+    use_cats: bool = True,
+    parity_mode: ParityMode = "corrected",
+    manifest: LrpManifest | None = None,
+    cross_axes: Sequence[Sequence[str]] | None = None,
+) -> LrpReport | PartitionedLrpReport:
     """LRP / oLRP error decomposition (Oksuz et al., ECCV 2018; TPAMI 2021).
 
     Splits a detection model's performance into a single number (oLRP)
@@ -234,9 +322,19 @@ def optimal_lrp(
     crowd / ignore semantics that both strict and corrected paths
     honour identically for the LRP-specific quirk set.
 
+    ``manifest=`` opts into ADR-0046 partitioned LRP. Accepts a dict
+    (canonical JSON-records shape), a file path (``.json``), or any
+    object exposing the Arrow PyCapsule Interface. Returns a
+    :class:`PartitionedLrpReport` whose ``.overall`` is bit-identical
+    to the un-partitioned call and whose ``.slices`` is a
+    :class:`polars.DataFrame` with one row per ``(axis, value)`` cell.
+    ``cross_axes=`` opts joint cells in (per ADR-0046 §E2; marginals
+    are the default).
+
     Returns an :class:`LrpReport` carrying the four aggregated
     numbers, the per-class breakdown (one row per class — including
-    the deployable ``tau``), and the resolved :class:`LrpConfig`.
+    the deployable ``tau``), and the resolved :class:`LrpConfig` —
+    or a :class:`PartitionedLrpReport` when ``manifest`` is supplied.
     """
     iou_kind = _resolve_iou(iou)
     kernel = _kernel_for(iou_kind)
@@ -250,6 +348,20 @@ def optimal_lrp(
         raise NotImplementedError(
             "vernier.instance.optimal_lrp does not yet accept a CocoDataset handle; "
             "pass GT JSON bytes for now. CocoDataset support is a 0.5.x follow-up."
+        )
+
+    if manifest is not None:
+        return _dispatch_partitioned(
+            iou_kind,
+            gt,
+            dt,
+            parity_mode,
+            resolved_tp,
+            resolved_grid,
+            max_dets_per_image,
+            use_cats,
+            manifest,
+            cross_axes,
         )
 
     raw = _dispatch(
@@ -374,6 +486,90 @@ def _dispatch(
             )
         case _:
             _reject_unknown_iou(iou_kind)
+
+
+def _dispatch_partitioned(
+    iou_kind: object,
+    gt: bytes,
+    dt: bytes,
+    parity_mode: ParityMode,
+    tp_threshold: float,
+    tau_grid: list[float],
+    max_dets_per_image: int,
+    use_cats: bool,
+    manifest: LrpManifest,
+    cross_axes: Sequence[Sequence[str]] | None,
+) -> PartitionedLrpReport:
+    """Call the right ``vernier._core.evaluate_*_partitioned_lrp``
+    entry and wrap the result in a :class:`PartitionedLrpReport`."""
+    from vernier.instance import Bbox, Boundary, Keypoints, Segm
+
+    cross = None if cross_axes is None else [list(axes) for axes in cross_axes]
+
+    match iou_kind:
+        case Bbox():
+            pr = evaluate_bbox_partitioned_lrp(
+                gt,
+                dt,
+                parity_mode,
+                tp_threshold,
+                tau_grid,
+                max_dets_per_image,
+                use_cats,
+                manifest,
+                cross_axes=cross,
+            )
+        case Segm():
+            pr = evaluate_segm_partitioned_lrp(
+                gt,
+                dt,
+                parity_mode,
+                tp_threshold,
+                tau_grid,
+                max_dets_per_image,
+                use_cats,
+                manifest,
+                cross_axes=cross,
+            )
+        case Boundary(dilation_ratio=r):
+            pr = evaluate_boundary_partitioned_lrp(
+                gt,
+                dt,
+                parity_mode,
+                tp_threshold,
+                tau_grid,
+                max_dets_per_image,
+                use_cats,
+                r,
+                manifest,
+                cross_axes=cross,
+            )
+        case Keypoints(sigmas=sigmas):
+            sigma_map: dict[int, list[float]] = {int(k): list(v) for k, v in sigmas.items()}
+            pr = evaluate_keypoints_partitioned_lrp(
+                gt,
+                dt,
+                parity_mode,
+                tp_threshold,
+                tau_grid,
+                max_dets_per_image,
+                use_cats,
+                sigma_map,
+                manifest,
+                cross_axes=cross,
+            )
+        case _:
+            _reject_unknown_iou(iou_kind)
+
+    overall_dict = pr.overall
+    overall = LrpReport._from_dict(overall_dict)  # pyright: ignore[reportPrivateUsage]
+    slices_batch = pr.slices_capsule()
+    return PartitionedLrpReport(
+        overall=overall,
+        overall_n_images=int(pr.overall_n_images),
+        overall_n_detections=int(pr.overall_n_detections),
+        _slices_batch=slices_batch,
+    )
 
 
 def _kernel_name(value: object) -> KernelName:
