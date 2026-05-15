@@ -149,7 +149,6 @@ fn evaluate_instance_partitioned_impl(
     key_kind: &str,
     is_keypoints: bool,
 ) -> PyResult<PyPartitionedSummary> {
-    // 1) Build the grid (the locked-spine matching pass).
     let grid = evaluate_grid_impl(
         py,
         iou_type,
@@ -165,25 +164,22 @@ fn evaluate_instance_partitioned_impl(
         area_ranges,
     )?;
 
-    // 2) Build image_id -> sorted-index map from the grid's GT
-    //    snapshot. Image ordering matches `evaluate_with` exactly
-    //    (id-ascending sort).
+    // image_id -> sorted-index map matches `evaluate_with` exactly
+    // (id-ascending sort).
     let snapshot = grid.dataset_snapshot();
     let image_id_to_idx = image_id_to_idx(&*snapshot.gt);
 
-    // 3) Materialise canonical JSON for the manifest input.
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
 
-    // 4) Resolve into a PartitionSpec.
     let cross = parse_cross_axes(cross_axes);
     let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &image_id_to_idx, &cross)
         .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
     warn_about_manifest(py, &warnings)?;
 
-    // 5) Run the partitioned summarize pass. Capture eval_imgs by
-    //    reference into the GIL-released closure — at LVIS scale the
-    //    dense vec is ~760 MB of pointer slots plus ~hundreds of MB
-    //    of deep-cloned cells; the closure only needs a borrow.
+    // Capture eval_imgs by reference into the GIL-released closure —
+    // at LVIS scale the dense vec is ~760 MB of pointer slots plus
+    // hundreds of MB of deep-cloned cells; the closure only needs a
+    // borrow.
     let parity = parse_parity_mode(parity_mode)?;
     let iou_thr = grid.iou_thresholds_vec();
     let grid_inner = grid.eval_grid_ref();
@@ -534,7 +530,6 @@ fn evaluate_instance_partitioned_lrp_impl(
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
     let cross = cross_axes.unwrap_or_default();
 
-    // 1) Parse GT + DT off the GIL.
     type ParseResult = (CocoDataset, CocoDetections);
     let (gt, dt) = py
         .detach(move || -> Result<ParseResult, EvalError> {
@@ -548,14 +543,13 @@ fn evaluate_instance_partitioned_lrp_impl(
         })
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;
 
-    // 2) Resolve manifest under the GIL so manifest warnings can
-    //    surface to Python's warnings module before the heavy work.
+    // Resolve manifest under the GIL so warnings surface to Python's
+    // warnings module before the heavy work runs off-GIL.
     let id_map = image_id_to_idx(&gt);
     let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &id_map, &cross)
         .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
     warn_about_manifest(py, &warnings)?;
 
-    // 3) Run partition LRP off the GIL.
     let report = py
         .detach(move || -> Result<PartitionedLrpReport, EvalError> {
             // LRP runs the matching pass internally; `[tp_threshold]`

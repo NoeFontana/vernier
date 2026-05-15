@@ -759,8 +759,6 @@ def aggregate(
         raise AggregateError("results must be a non-empty sequence")
     manifest_map = _coerce_manifest(manifest)
 
-    # 1. Coerce every result entry; drop runs missing from the manifest
-    #    with a warning.
     coerced: list[tuple[str, pa.RecordBatch, dict[str, str]]] = []
     for i, entry in enumerate(results):
         label, batch = _coerce_result_entry(entry, i)
@@ -780,9 +778,9 @@ def aggregate(
             "vernier.label Arrow metadata key on Arrow inputs)",
         )
 
-    # 2. Resolve the metric column set from the first batch (sanity-
-    #    checked against every other batch below). The selection is
-    #    deterministic (alphabetical) per ADR-0019.
+    # Selection is deterministic (alphabetical) per ADR-0019; the
+    # first batch's columns are the canonical set and every other
+    # batch is sanity-checked against it in the group loop below.
     metric_cols = _select_metric_columns(coerced[0][1], metric)
     if not metric_cols:
         raise AggregateError(
@@ -790,12 +788,12 @@ def aggregate(
             "Float64 columns outside {axis, value, n_images, n_detections}",
         )
 
-    # 3. Group across runs. Key: (axis, value) — the *manifest* axis
-    #    and value, not the slice-table's (axis, value). The slice
-    #    table's (axis, value) is the slicing axis the run was
-    #    partitioned on; the manifest tells us which corruption-axis
-    #    value the *run as a whole* corresponds to. We mean each
-    #    metric across runs sharing the same manifest assignment.
+    # Grouping key is the *manifest* (axis, value), not the slice-
+    # table's (axis, value). The slice table's pair is the slicing
+    # axis the run was partitioned on; the manifest tells us which
+    # corruption-axis value the *run as a whole* corresponds to. We
+    # mean each metric across runs sharing the same manifest
+    # assignment.
     groups: dict[tuple[str, str], dict[str, list[float]]] = {}
     n_runs_per_group: dict[tuple[str, str], int] = {}
 
@@ -830,9 +828,8 @@ def aggregate(
                     grp[m].append(v)
             n_runs_per_group[key] = n_runs_per_group.get(key, 0) + 1
 
-    # 4. Build the output table. Deterministic order: (axis asc,
-    #    value asc) with __unassigned__ floated to the end per
-    #    ADR-0046 §"Determinism".
+    # Deterministic output order: (axis asc, value asc) with
+    # __unassigned__ floated to the end per ADR-0046 §"Determinism".
     ordered_keys = sorted(groups.keys(), key=_axis_value_sort_key)
 
     out_axes = [k[0] for k in ordered_keys]
@@ -854,10 +851,10 @@ def aggregate(
         arrays.append(pa.array(out_metrics[m], type=pa.float64()))
         names.append(m)
 
-    # 5. rPC: per axis, divide each non-baseline slice metric by the
-    #    baseline-slice metric. Axes lacking the baseline value get
-    #    null rPC cells (the column is still emitted so the schema
-    #    stays consistent across axes).
+    # rPC: per axis, divide each non-baseline slice metric by the
+    # baseline-slice metric. Axes lacking the baseline value get null
+    # rPC cells (the column is still emitted so the schema stays
+    # consistent across axes).
     if baseline is not None:
         baseline_means: dict[str, dict[str, float | None]] = {}
         for (axis, value), per_metric_lists in groups.items():
