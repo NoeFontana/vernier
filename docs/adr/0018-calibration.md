@@ -1,8 +1,9 @@
 # ADR-0018: Calibration metrics — detection-family summarizer and the per-paradigm shape map
 
-- **Status:** proposed (revised)
+- **Status:** accepted
 - **Original date:** 2026-05-01
 - **Revised:** 2026-05-14
+- **Accepted:** 2026-05-15
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
