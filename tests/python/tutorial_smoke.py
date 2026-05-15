@@ -1,4 +1,11 @@
-"""Platform-matrix smoke test (ADR-0006 streaming API). Used by slow.yml platform-matrix job."""
+"""Platform-matrix smoke test (ADR-0030 array ingest via DLPack).
+
+Mocks a detector that emits per-image numpy arrays — boxes / scores /
+labels — and submits them straight into `BackgroundEvaluator` without
+any JSON encoding. vernier consumes the arrays zero-copy through
+DLPack, so a real training loop swapping numpy for torch / jax /
+cupy tensors works identically.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +13,7 @@ import json
 
 import numpy as np
 
-from vernier.instance import Bbox, CocoDataset, Evaluator
+from vernier.instance import Bbox, CocoDataset, Detections, Evaluator
 
 
 def _make_gt() -> bytes:
@@ -38,22 +45,25 @@ def _make_gt() -> bytes:
     }).encode()
 
 
-def _make_dt_batch(image_ids: list[int], seed: int) -> bytes:
-    rng = np.random.default_rng(seed)
-    dets = []
-    for img_id in image_ids:
-        for _ in range(4):
-            x = float(rng.integers(0, 32))
-            y = float(rng.integers(0, 32))
-            w = float(rng.integers(8, 24))
-            h = float(rng.integers(8, 24))
-            dets.append({
-                "image_id": img_id,
-                "category_id": int(rng.choice([1, 2])),
-                "bbox": [x, y, w, h],
-                "score": float(rng.random()),
-            })
-    return json.dumps(dets).encode()
+def fake_model(image_id: int) -> Detections:
+    """Stand-in for ``model(image)``. Returns the per-image output of a
+    typical detector — boxes (xywh, float64), scores (float64),
+    labels (int64) — as numpy arrays. A real loop would yield
+    `torch.Tensor` / `jax.Array` / `cupy.ndarray` here; vernier ingests
+    any DLPack-producing array library without translation."""
+    rng = np.random.default_rng(image_id)
+    n_dets = 4
+    boxes = np.empty((n_dets, 4), dtype=np.float64)
+    boxes[:, 0] = rng.integers(0, 32, size=n_dets)
+    boxes[:, 1] = rng.integers(0, 32, size=n_dets)
+    boxes[:, 2] = rng.integers(8, 24, size=n_dets)
+    boxes[:, 3] = rng.integers(8, 24, size=n_dets)
+    return {
+        "image_id": image_id,
+        "boxes": boxes,
+        "scores": rng.random(size=n_dets).astype(np.float64),
+        "labels": rng.choice([1, 2], size=n_dets).astype(np.int64),
+    }
 
 
 def main() -> None:
@@ -61,8 +71,8 @@ def main() -> None:
     dataset = CocoDataset.from_json(gt_bytes)
     evaluator = Evaluator(iou=Bbox())
     with evaluator.background(dataset) as bg:
-        for batch_idx in range(5):
-            bg.submit(_make_dt_batch([batch_idx + 1], seed=batch_idx + 1))
+        for image_id in range(1, 6):
+            bg.submit(fake_model(image_id))
         summary = bg.finalize()
     for line in summary.pretty_lines():
         print(line)
