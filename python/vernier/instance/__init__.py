@@ -523,9 +523,11 @@ class Evaluator:
         if manifest is not None:
             if tables is not None:
                 raise ValueError(
-                    "tables= and manifest= cannot be combined yet; the partitioned "
-                    "evaluate returns EvalResult carrying the slices RecordBatch "
-                    "but per-class / per-image partitioned tables are a follow-up."
+                    "tables= and manifest= cannot be combined. The partitioned eval "
+                    "returns headline metrics per slice on `result.slices`; for the "
+                    "per-class × per-slice cross product, run per_class evaluate once "
+                    "per slice with a filtered detection set — see "
+                    "docs/how-to/per-class-by-slice.md."
                 )
             if isinstance(gt, CocoDataset):
                 raise NotImplementedError(

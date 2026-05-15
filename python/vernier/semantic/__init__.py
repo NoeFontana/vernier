@@ -687,10 +687,11 @@ class Evaluator:
 
             if tables is not None:
                 raise ValueError(
-                    "tables= and manifest= cannot be combined on the semantic "
-                    "paradigm yet; the partitioned evaluate returns EvalResult "
-                    "carrying the slices RecordBatch but per-class partitioned "
-                    "tables are a follow-up."
+                    "tables= and manifest= cannot be combined. The partitioned eval "
+                    "returns headline metrics per slice on `result.slices`; for the "
+                    "per-class × per-slice cross product, run per_class evaluate once "
+                    "per slice with a filtered label-map set — see "
+                    "docs/how-to/per-class-by-slice.md."
                 )
             if self._has_custom_class_params():
                 raise InvalidSemanticParams(

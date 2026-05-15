@@ -93,6 +93,7 @@ nav:
       - Evaluate on a background thread: how-to/background-evaluator.md
       - Ingest detection arrays: how-to/array-ingest.md
       - Distributed evaluation: how-to/distributed-eval.md
+      - Per-class metrics by manifest slice: how-to/per-class-by-slice.md
   - Reference:
       - reference/README.md
       - Python API:
