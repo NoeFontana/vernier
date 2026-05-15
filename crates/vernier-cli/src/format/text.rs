@@ -46,6 +46,9 @@ impl Formatter for Text {
             EvalArtifact::Partitioned { summary, label } => {
                 render_partitioned(summary, *label, out)
             }
+            EvalArtifact::PartitionedLrp { summary, label } => {
+                render_partitioned_lrp(summary, *label, out)
+            }
         }
     }
 }
@@ -103,27 +106,112 @@ fn render_partitioned(
     label: Option<&str>,
     out: &mut dyn io::Write,
 ) -> Result<(), CliError> {
-    if let Some(label) = label {
-        writeln!(out, "label = {label}")?;
-    }
-    writeln!(
+    write_partitioned_preamble(
         out,
-        "overall  (n_images={}, n_detections={})",
-        summary.overall_n_images, summary.overall_n_detections
+        label,
+        summary.overall_n_images,
+        summary.overall_n_detections,
     )?;
     for line in summary.overall.pretty_lines() {
         writeln!(out, "{line}")?;
     }
     for sr in &summary.slices {
         writeln!(out)?;
-        writeln!(
+        write_slice_header(
             out,
-            "==>  {} = {}  (n_images={}, n_detections={})",
-            sr.slice.axis, sr.slice.value, sr.n_images, sr.n_detections
+            &sr.slice.axis,
+            &sr.slice.value,
+            sr.n_images,
+            sr.n_detections,
         )?;
         for line in sr.summary.pretty_lines() {
             writeln!(out, "{line}")?;
         }
+    }
+    Ok(())
+}
+
+/// Shared label + overall header, written by both `render_partitioned`
+/// (AP) and `render_partitioned_lrp` (LRP). Centralised so the two
+/// output formats can't drift on the canonical preamble shape.
+fn write_partitioned_preamble(
+    out: &mut dyn io::Write,
+    label: Option<&str>,
+    overall_n_images: u64,
+    overall_n_detections: u64,
+) -> Result<(), CliError> {
+    if let Some(label) = label {
+        writeln!(out, "label = {label}")?;
+    }
+    writeln!(
+        out,
+        "overall  (n_images={overall_n_images}, n_detections={overall_n_detections})"
+    )?;
+    Ok(())
+}
+
+/// Shared per-slice header. Same canonical shape across AP and LRP
+/// partitioned text output.
+fn write_slice_header(
+    out: &mut dyn io::Write,
+    axis: &str,
+    value: &str,
+    n_images: u64,
+    n_detections: u64,
+) -> Result<(), CliError> {
+    writeln!(
+        out,
+        "==>  {axis} = {value}  (n_images={n_images}, n_detections={n_detections})"
+    )?;
+    Ok(())
+}
+
+/// Render a partitioned LRP (ADR-0046 / v2) result: the overall block
+/// (mirrors the un-partitioned `render_lrp` headline shape, minus the
+/// per-class table — that is omitted at LVIS scale by design, same as
+/// the JSON envelope) then one labelled block per slice with the four
+/// headline numbers (`oLRP` / `oLRP_Loc` / `oLRP_FP` / `oLRP_FN`).
+fn render_partitioned_lrp(
+    summary: &vernier_core::partition::PartitionedLrpReport,
+    label: Option<&str>,
+    out: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    write_partitioned_preamble(
+        out,
+        label,
+        summary.overall_n_images,
+        summary.overall_n_detections,
+    )?;
+    writeln!(out, "oLRP     = {olrp:.4}", olrp = summary.overall.olrp)?;
+    writeln!(out, "oLRP_Loc = {v:.4}", v = summary.overall.olrp_loc)?;
+    writeln!(out, "oLRP_FP  = {v:.4}", v = summary.overall.olrp_fp)?;
+    writeln!(out, "oLRP_FN  = {v:.4}", v = summary.overall.olrp_fn)?;
+    writeln!(
+        out,
+        "n_empty_classes = {n}",
+        n = summary.overall.n_empty_classes
+    )?;
+    writeln!(
+        out,
+        "config: kernel={kernel} tp_threshold={tp:.3} tau_grid_len={g}",
+        kernel = summary.overall.config.kernel.as_str(),
+        tp = summary.overall.config.tp_threshold,
+        g = summary.overall.config.tau_grid_len,
+    )?;
+    for sr in &summary.slices {
+        writeln!(out)?;
+        write_slice_header(
+            out,
+            &sr.slice.axis,
+            &sr.slice.value,
+            sr.n_images,
+            sr.n_detections,
+        )?;
+        writeln!(out, "oLRP     = {v:.4}", v = sr.report.olrp)?;
+        writeln!(out, "oLRP_Loc = {v:.4}", v = sr.report.olrp_loc)?;
+        writeln!(out, "oLRP_FP  = {v:.4}", v = sr.report.olrp_fp)?;
+        writeln!(out, "oLRP_FN  = {v:.4}", v = sr.report.olrp_fn)?;
+        writeln!(out, "n_empty_classes = {n}", n = sr.report.n_empty_classes)?;
     }
     Ok(())
 }

@@ -18,7 +18,7 @@ pub(crate) mod text;
 use std::io;
 
 use vernier_core::lrp::LrpReport;
-use vernier_core::partition::PartitionedSummary;
+use vernier_core::partition::{PartitionedLrpReport, PartitionedSummary};
 use vernier_core::{ParityMode, Summary};
 
 use crate::cli::IouTypeArg;
@@ -41,6 +41,17 @@ pub(crate) enum EvalArtifact<'a> {
     Partitioned {
         /// The partitioned summary (overall + per-slice).
         summary: &'a PartitionedSummary,
+        /// `--label` value, surfaced as a top-level field in the
+        /// emitted JSON / text so `vernier aggregate` can join by it.
+        label: Option<&'a str>,
+    },
+    /// Partitioned LRP / oLRP result per ADR-0046. Mirrors the
+    /// [`Self::Partitioned`] AP shape but carries the LRP-flavored
+    /// per-slice headline numbers (`olrp` / `olrp_loc` / `olrp_fp` /
+    /// `olrp_fn`).
+    PartitionedLrp {
+        /// The partitioned LRP report (overall + per-slice).
+        summary: &'a PartitionedLrpReport,
         /// `--label` value, surfaced as a top-level field in the
         /// emitted JSON / text so `vernier aggregate` can join by it.
         label: Option<&'a str>,

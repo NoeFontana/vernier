@@ -249,6 +249,106 @@ The v1 determinism rules carry through verbatim. Additionally:
 
 See [`docs/reference/manifest-schema.md`](manifest-schema.md) for the manifest input and [`docs/reference/aggregate-schema.md`](aggregate-schema.md) for the `vernier aggregate` companion output.
 
+## Schema v2 — partitioned LRP output (`--metric olrp --manifest`)
+
+ADR-0046 (with ADR-0043 / ADR-0044 / ADR-0045 for the LRP semantics) extends the partition fan-out to the LRP / oLRP metric. When `--metric olrp --manifest PATH` is supplied, the binary emits a *partitioned LRP* JSON document under `"version": "2"`, distinguished from the AP v2 envelope by a `"metric": "olrp"` discriminator.
+
+> **Rule:** `--metric olrp` without `--manifest` keeps emitting the un-partitioned LRP shape under `"version": "1"`. The partitioned-LRP envelope is **only** emitted when both `--metric olrp` and `--manifest` are present.
+
+### LRP v2 top-level fields
+
+| Field         | Type                       | Notes                                                                                                                |
+|---------------|----------------------------|----------------------------------------------------------------------------------------------------------------------|
+| `version`     | string                     | `"2"` for partitioned output.                                                                                        |
+| `metric`      | string                     | `"olrp"` — discriminator for parsers that switch on `(version, metric)`.                                              |
+| `label`       | string or `null`           | `--label` value stamped on this run. `null` when omitted.                                                            |
+| `iou_type`    | string                     | As v1.                                                                                                                |
+| `parity_mode` | string                     | As v1.                                                                                                                |
+| `use_cats`    | boolean                    | As v1.                                                                                                                |
+| `overall`     | [`LrpOverall` object](#lrp-overall-subfields) | The un-partitioned LRP block. Bit-identical to a single `optimal_lrp_*` call over the same `(GT, DT)`. |
+| `slices`      | array of [`LrpSlice` objects](#lrp-slices-subfields) | One entry per partition slice, in the same canonical order as the AP v2 envelope.            |
+
+Note: the LRP envelope does **not** carry the AP `max_dets` top-level field. LRP runs at a single `max_dets_per_image` rung (the top of the resolved ladder); the value is implicit in the kernel-canonical defaults and is recorded inside the resolved `config` for documentation rather than as a wire-level array.
+
+### `LrpOverall` subfields
+
+| Field             | Type                       | Notes                                                                                                |
+|-------------------|----------------------------|------------------------------------------------------------------------------------------------------|
+| `olrp`            | float                      | Mean per-class oLRP across classes with at least one positive GT (per ADR-0043).                     |
+| `olrp_loc`        | float                      | Mean per-class `oLRP_Loc` across classes with at least one TP at the optimal tau.                     |
+| `olrp_fp`         | float                      | Mean per-class `oLRP_FP` (same denominator as `olrp_loc`).                                            |
+| `olrp_fn`         | float                      | Mean per-class `oLRP_FN` (same denominator as `olrp`).                                                |
+| `n_empty_classes` | non-negative integer       | Number of classes with no positive GTs (excluded from the headline means).                            |
+| `n_images`        | non-negative integer       | Number of dataset images behind the overall report.                                                    |
+| `n_detections`    | non-negative integer       | Total detection count behind the overall report.                                                       |
+| `config`          | [`LrpConfig` object](#lrpconfig-subfields) | Resolved configuration (kernel, `tp_threshold`, `tau_grid_len`) — every report self-describes per ADR-0044. |
+
+### `LrpSlice` subfields
+
+| Field             | Type                       | Notes                                                                                                                |
+|-------------------|----------------------------|----------------------------------------------------------------------------------------------------------------------|
+| `axis`            | string                     | The manifest axis name. For joint cells, the `::`-joined tuple.                                                       |
+| `value`           | string                     | The categorical level. For joint cells, the `::`-joined value tuple. `__unassigned__` for unassigned.                |
+| `n_images`        | non-negative integer       | Number of dataset images in this slice.                                                                              |
+| `n_detections`    | non-negative integer       | Detection count in this slice.                                                                                       |
+| `olrp`            | float                      | Per-slice headline oLRP, computed by restricting the LRP decompose walk to this slice's image set.                   |
+| `olrp_loc`        | float                      | Per-slice `oLRP_Loc`.                                                                                                 |
+| `olrp_fp`         | float                      | Per-slice `oLRP_FP`.                                                                                                  |
+| `olrp_fn`         | float                      | Per-slice `oLRP_FN`.                                                                                                  |
+| `n_empty_classes` | non-negative integer       | Per-slice count of classes with no positive GTs (a slice may be more sparsely class-covered than the overall dataset). |
+
+### `LrpConfig` subfields
+
+| Field           | Type                  | Notes                                                                                                                |
+|-----------------|-----------------------|----------------------------------------------------------------------------------------------------------------------|
+| `tp_threshold`  | float                 | IoU/OKS floor for TP — resolved per ADR-0044 (`0.5` for every kernel by default).                                   |
+| `tau_grid_len`  | non-negative integer  | Length of the confidence-threshold grid the LRP search ran on (101 for the canonical default grid).                   |
+| `kernel`        | string                | Canonical kernel name (`"bbox"` / `"segm"` / `"boundary"` / `"keypoints"`).                                          |
+
+### `per_class` is omitted by default
+
+The un-partitioned LRP v1 envelope ships a `per_class` array (one row per category) carrying the deployable `tau` plus the four per-class decomposition fields. The partitioned LRP v2 envelope **omits `per_class` from both `overall` and `slices`** by default, for two reasons:
+
+- **Size at LVIS scale.** A 1203-category dataset crossed with 8 slices would balloon the document by ~10k per-class rows — the bulk of which downstream `vernier aggregate` flows do not consume.
+- **Wrong surface for the partitioned use-case.** The partitioned document is the comparative table — the headline numbers per slice are the reason to slice. Per-class detail is the un-partitioned `--metric olrp` run's job; users who want both spawn both.
+
+A future `--per-class` opt-in flag is anticipated if a workload ever needs the per-class table embedded in the partitioned envelope.
+
+### Determinism guarantees (LRP v2)
+
+The v1 / AP-v2 determinism rules carry through verbatim: fixed key order, no timestamps, no environment leakage, round-trip-safe float formatting, atomic file writes. Additionally:
+
+- **Slice order is canonical**, same rule as the AP v2 envelope: `(axis ascending, value ascending, __unassigned__ last)` for marginals; joint cells follow the marginals.
+- **`overall` is bit-identical** to a v1 LRP run on the same `(GT, DT)` pair — the partitioned LRP dispatch invokes the same matching engine once and runs the decompose walk over the un-filtered image set for `overall`.
+
+### Worked example (LRP v2)
+
+```json
+{
+  "version": "2",
+  "metric": "olrp",
+  "label": "run_2026_05_14",
+  "iou_type": "bbox",
+  "parity_mode": "strict",
+  "use_cats": true,
+  "overall": {
+    "olrp": 0.412,
+    "olrp_loc": 0.183,
+    "olrp_fp": 0.092,
+    "olrp_fn": 0.137,
+    "n_empty_classes": 0,
+    "n_images": 5000,
+    "n_detections": 31_500,
+    "config": {"tp_threshold": 0.5, "tau_grid_len": 101, "kernel": "bbox"}
+  },
+  "slices": [
+    {"axis": "weather", "value": "clear",          "n_images": 3700, "n_detections": 22_900, "olrp": 0.398, "olrp_loc": 0.177, "olrp_fp": 0.086, "olrp_fn": 0.135, "n_empty_classes": 0},
+    {"axis": "weather", "value": "fog",            "n_images": 1100, "n_detections":  7_300, "olrp": 0.487, "olrp_loc": 0.221, "olrp_fp": 0.121, "olrp_fn": 0.145, "n_empty_classes": 2},
+    {"axis": "weather", "value": "__unassigned__", "n_images":  200, "n_detections":  1_300, "olrp": 0.453, "olrp_loc": 0.198, "olrp_fp": 0.114, "olrp_fn": 0.141, "n_empty_classes": 4}
+  ]
+}
+```
+
 ## See also
 
 - [`docs/adr/0015-vernier-cli.md`](../adr/0015-vernier-cli.md) — the source of truth for the CLI surface, the formatter abstraction, and the determinism contract.
@@ -256,3 +356,4 @@ See [`docs/reference/manifest-schema.md`](manifest-schema.md) for the manifest i
 - [`docs/reference/coco-summary-stats.md`](coco-summary-stats.md) — the `stats[i]` ↔ slice mapping for the bbox / segm 12-stat plan.
 - [`docs/adr/0012-oks-keypoints-surface.md`](../adr/0012-oks-keypoints-surface.md) — keypoints plan order and kernel-canonical `max_dets = [20]`.
 - [`docs/adr/0010-boundary-iou-isolated-subsystem.md`](../adr/0010-boundary-iou-isolated-subsystem.md) — boundary IoU metric definition consumed by `iou_type = "boundary"`.
+- [`docs/adr/0043-lrp-oracle-and-namespace.md`](../adr/0043-lrp-oracle-and-namespace.md) / [`docs/adr/0044-lrp-thresholds-and-tau-grid.md`](../adr/0044-lrp-thresholds-and-tau-grid.md) / [`docs/adr/0045-lrp-keypoints-shipped.md`](../adr/0045-lrp-keypoints-shipped.md) — the LRP / oLRP semantics, per-kernel defaults, and keypoints support consumed by `--metric olrp`.

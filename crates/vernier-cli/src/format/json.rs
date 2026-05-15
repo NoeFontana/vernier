@@ -21,7 +21,7 @@ use std::io;
 
 use serde::Serialize;
 use vernier_core::lrp::LrpReport;
-use vernier_core::partition::PartitionedSummary;
+use vernier_core::partition::{PartitionedLrpReport, PartitionedSummary};
 use vernier_core::summarize::{Metric, StatLine};
 use vernier_core::{ParityMode, Summary};
 
@@ -110,6 +110,9 @@ impl Formatter for Json {
             EvalArtifact::Lrp(report) => render_lrp(report, ctx, out),
             EvalArtifact::Partitioned { summary, label } => {
                 render_partitioned(summary, *label, ctx, out)
+            }
+            EvalArtifact::PartitionedLrp { summary, label } => {
+                render_partitioned_lrp(summary, *label, ctx, out)
             }
         }
     }
@@ -324,6 +327,137 @@ fn render_partitioned(
         iou_type: ctx.iou_type.as_str(),
         parity_mode: parity_mode_str(ctx.parity_mode),
         max_dets: ctx.max_dets,
+        use_cats: ctx.use_cats,
+        overall,
+        slices,
+    };
+    serde_json::to_writer(&mut *out, &doc)?;
+    writeln!(out)?;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// LRP schema v2 — partitioned LRP / oLRP (ADR-0046 + ADR-0043).
+//
+// LRP has a different column shape from AP (`olrp` / `olrp_loc` /
+// `olrp_fp` / `olrp_fn` headline numbers rather than the 12/10-stat
+// plan) so it gets its own v2 envelope. The `metric` field is the
+// discriminator: parsers handle both v2 shapes by switching on
+// `(version, metric)` rather than guessing from key presence.
+//
+// `per_class` is intentionally omitted from the JSON envelope by
+// default. At LVIS scale (1203 categories) each slice would carry a
+// 1203-row breakdown, and a partition with 8 slices would balloon the
+// document past 10k rows of per-class data — most of which the
+// downstream `vernier aggregate` flow does not consume. The headline
+// numbers per slice are what the slice document is for; per-class
+// detail belongs to the un-partitioned `--metric olrp` run that the
+// user can spawn alongside. A `--per-class` opt-in is anticipated as a
+// follow-up if a workload ever needs it.
+// ---------------------------------------------------------------------------
+
+/// Top-level v2 document for partitioned LRP. Field order is the wire
+/// order — serde follows struct declaration order — same determinism
+/// contract as the AP v2 envelope.
+#[derive(Debug, Serialize)]
+struct LrpSchemaV2<'a> {
+    /// Schema version pin (`"2"` for partitioned output).
+    version: &'a str,
+    /// Always `"olrp"` for this variant — discriminator so a single
+    /// JSON parser handles both v2 metric shapes.
+    metric: &'static str,
+    /// `--label` value stamped on this run, or `null` when omitted.
+    label: Option<&'a str>,
+    iou_type: &'a str,
+    parity_mode: &'a str,
+    use_cats: bool,
+    /// Un-partitioned LRP block (bit-identical to a single
+    /// `optimal_lrp_*` call over the same `(GT, DT)` — load-bearing
+    /// parity contract per ADR-0046).
+    overall: LrpOverallV2<'a>,
+    /// One entry per slice in the spec's canonical order (axis
+    /// ascending, value ascending, `__unassigned__` last; joint cells
+    /// follow the marginals).
+    slices: Vec<LrpSliceV2<'a>>,
+}
+
+/// `overall` sub-object on the LRP v2 document.
+#[derive(Debug, Serialize)]
+struct LrpOverallV2<'a> {
+    olrp: f64,
+    olrp_loc: f64,
+    olrp_fp: f64,
+    olrp_fn: f64,
+    n_empty_classes: u32,
+    n_images: u64,
+    n_detections: u64,
+    config: LrpConfigV2<'a>,
+}
+
+/// Per-slice entry under `slices` on the LRP v2 document.
+#[derive(Debug, Serialize)]
+struct LrpSliceV2<'a> {
+    axis: &'a str,
+    value: &'a str,
+    n_images: u64,
+    n_detections: u64,
+    olrp: f64,
+    olrp_loc: f64,
+    olrp_fp: f64,
+    olrp_fn: f64,
+    n_empty_classes: u32,
+}
+
+/// Resolved LRP configuration, mirroring [`vernier_core::lrp::LrpConfig`].
+#[derive(Debug, Serialize)]
+struct LrpConfigV2<'a> {
+    tp_threshold: f64,
+    tau_grid_len: usize,
+    kernel: &'a str,
+}
+
+fn render_partitioned_lrp(
+    summary: &PartitionedLrpReport,
+    label: Option<&str>,
+    ctx: &FormatContext<'_>,
+    out: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    let overall = LrpOverallV2 {
+        olrp: summary.overall.olrp,
+        olrp_loc: summary.overall.olrp_loc,
+        olrp_fp: summary.overall.olrp_fp,
+        olrp_fn: summary.overall.olrp_fn,
+        n_empty_classes: summary.overall.n_empty_classes,
+        n_images: summary.overall_n_images,
+        n_detections: summary.overall_n_detections,
+        config: LrpConfigV2 {
+            tp_threshold: summary.overall.config.tp_threshold,
+            tau_grid_len: summary.overall.config.tau_grid_len,
+            kernel: summary.overall.config.kernel.as_str(),
+        },
+    };
+
+    let mut slices: Vec<LrpSliceV2<'_>> = Vec::with_capacity(summary.slices.len());
+    for sr in &summary.slices {
+        slices.push(LrpSliceV2 {
+            axis: sr.slice.axis.as_str(),
+            value: sr.slice.value.as_str(),
+            n_images: sr.n_images,
+            n_detections: sr.n_detections,
+            olrp: sr.report.olrp,
+            olrp_loc: sr.report.olrp_loc,
+            olrp_fp: sr.report.olrp_fp,
+            olrp_fn: sr.report.olrp_fn,
+            n_empty_classes: sr.report.n_empty_classes,
+        });
+    }
+
+    let doc = LrpSchemaV2 {
+        version: SCHEMA_VERSION_V2,
+        metric: "olrp",
+        label,
+        iou_type: ctx.iou_type.as_str(),
+        parity_mode: parity_mode_str(ctx.parity_mode),
         use_cats: ctx.use_cats,
         overall,
         slices,
