@@ -7,6 +7,69 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+## [0.0.4] — 2026-05-16
+
+Robustness follow-up to 0.0.3. No new evaluation paradigms or kernel
+changes — this release widens the typed-error surface, adds a fuzz
+harness, and pins the platform-compat matrix in CI. The cross-paradigm
+benchmark page is refreshed against the post-0.0.3 SHA on a single
+fingerprint (no more dual-SHA LVIS caveat).
+
+### Added
+
+- **Typed Python error surface** (#249) — four new `PyValueError`
+  subclasses (`InvalidAnnotationError`, `NonFiniteError`,
+  `DimensionMismatchError`, `InvalidConfigError`) with the public
+  surface pinned by `tests/python/test_error_matrix.py` and documented
+  at `docs/reference/errors.md`. Previously these all surfaced as bare
+  `ValueError`; existing `except ValueError:` catches still match the
+  new subclasses.
+- **Fuzz harness** (#249) — `tools/fuzz/` cargo-fuzz targets for the
+  COCO / manifest / RLE / segmentation parsers (non-workspace crate so
+  the nightly cargo-fuzz toolchain stays out of the publishable
+  workspace). The `vernier_core::fuzz_regressions` integration test
+  replays minimised crashes on every `cargo nextest run`; CI's
+  `slow.yml` carries a 120 s/target smoke that builds once and exits.
+- **Platform-compat matrix** (#249) — `slow.yml` adds a
+  py3.10 × py3.13 × py3.14 ladder crossed with numpy / torch combos,
+  exercising the `BackgroundEvaluator` tutorial end-to-end. Catches
+  ABI / DLPack regressions that the single-version `ci.yml` matrix
+  doesn't surface.
+- **`bench-histogram` Cargo feature** (#249) — opt-in `(G, D, wall_ns)`
+  per-call recorder on `match_image`, off by default and stripped from
+  the shipped wheel. Powers the 10× val2017 scaling proof at
+  `docs/engineering/matching-scaling.md`. Gated on
+  `vernier-core` / `vernier-ffi` / `vernier-mask`; no production cost.
+- **Stress-matrix workloads** (#249) — 6 named regimes
+  (`coco-baseline`, `detr-output`, `lvis-crowded`, `open-images-cats`,
+  `satellite-4k`, `pathology-8k`) plus per-axis sweeps in
+  `bench/workloads/stress_matrix.py`; runner at
+  `bench/runners/stress_runner.py`. Catalogue and expected behaviour
+  per axis in `docs/engineering/stress-matrix.md`.
+- **Memory-under-training-load runner** (#249) —
+  `bench/bench/runners/memory_bench.py` (reuses
+  `bench.harness.rss.RSSSampler`); methodology and reading guide at
+  `docs/engineering/memory-under-training.md`.
+- **Colab smoke notebook** (#249) — free-tier platform-check entry
+  point; README badge links to it.
+
+### Changed
+
+- **Tutorial smoke** now ingests via the DLPack array path —
+  `fake_model(image_ids) -> list[Detections]` returning numpy arrays
+  submitted batch-mode (matches torchvision's detection-API
+  convention). Notebook cell-3 stays byte-identical to the `.py` body
+  modulo the module docstring and `__main__` guard.
+- **Bench page** refreshed against the AMD EPYC-Milan host on a fresh
+  machine fingerprint (`37652a58e939`). Speedups hold within VPS
+  variance; absolute medians shift by ±3% versus the 0.0.3 snapshot.
+  The dual-SHA LVIS caveat retires — every section now lives at the
+  same SHA / fingerprint. The panoptic and synthetic-semantic cells
+  exceeded the 5% relative-IQR gate (chronically noisy on this host —
+  PNG decode dominates panoptic wall time, mmseg synthetic sits at the
+  noise floor at 200-image scale); flagged inline with `*` per the
+  renderer's existing convention.
+
 ## [0.0.3] — 2026-05-15
 
 This is the diagnostic-surfaces and scenario-slicing release: instance

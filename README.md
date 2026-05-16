@@ -63,13 +63,15 @@ walks each end-to-end.
 
 | Workload | vernier median | Speedup vs alternatives |
 | --- | ---: | --- |
-| Instance — bbox AP (val2017) | 360 ms | **5.9×** faster-coco-eval · **16.2×** pycocotools |
-| Instance — segm AP (val2017) | 968 ms | **3.7×** faster-coco-eval · **7.1×** pycocotools |
-| Instance — boundary AP (val2017) | 3.1 s | **5.7×** faster-coco-eval · **19.9×** boundary-iou-api |
-| Instance — keypoints AP (val2017, OKS) | 136 ms | **12.5×** faster-coco-eval · **17.1×** pycocotools |
-| Panoptic — PQ (val2017) | 11.6 s | **3.04×** panopticapi |
-| Semantic — mIoU (val2017) | 5.1 s | **4.2×** mmsegmentation |
-| Instance — LVIS bbox AP (v1 val, perfect-DT) | 3.7 s | **56.9×** lvis-api · 10× lower peak RSS (1.49 GiB vs 15.01 GiB) |
+| Instance — bbox AP (val2017) | 371 ms | **5.6×** faster-coco-eval · **15.5×** pycocotools |
+| Instance — segm AP (val2017) | 971 ms | **3.6×** faster-coco-eval · **6.8×** pycocotools |
+| Instance — boundary AP (val2017) | 3.1 s | **5.6×** faster-coco-eval · **19.6×** boundary-iou-api |
+| Instance — keypoints AP (val2017, OKS) | 137 ms | **12.1×** faster-coco-eval · **16.5×** pycocotools |
+| Panoptic — PQ (val2017) | 12.6 s | **2.7×** panopticapi <sup>†</sup> |
+| Semantic — mIoU (val2017) | 5.0 s | **4.1×** mmsegmentation |
+| Instance — LVIS bbox AP (v1 val, perfect-DT) | 3.7 s | **56.5×** lvis-api · 10× lower peak RSS (1.48 GiB vs 15.01 GiB) |
+
+<sup>†</sup> Panoptic cell exceeded the 5% relative-IQR gate (21% on this snapshot — chronically noisy because PNG decode dominates wall time). The 2.7× speedup is the load-bearing signal; the precise ratio carries a wider confidence band than the others.
 
 Median total-stage wall time on a KVM VPS (AMD EPYC-Milan, 4 cores ×
 2 threads = 8 logical CPUs, `x86_64` — not a bare-metal Milan box),
@@ -89,10 +91,10 @@ when to pick which in [`docs/comparison.md`](docs/comparison.md).
 [`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8) (vendored),
 [`lvis-api` @ `031ac21`](https://github.com/lvis-dataset/lvis-api/commit/031ac21f939b)
 (PyPI `lvis==0.5.3`).
-COCO and panoptic / semantic numbers were measured at HEAD `1fd5720bf56c`;
-the LVIS row was added at HEAD `e9d9c4d71303` after the bench
-paradigm landed. Each baseline is locked in its own uv-managed venv per
-[ADR-0017](docs/adr/0017-local-bench-harness.md).
+All cells were measured at HEAD `885d385d63e1` (machine fingerprint
+`37652a58e939` — the prior snapshot's `1655eb18a194` retired alongside
+the dual-SHA LVIS caveat). Each baseline is locked in its own
+uv-managed venv per [ADR-0017](docs/adr/0017-local-bench-harness.md).
 
 ## Install
 
