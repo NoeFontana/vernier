@@ -1,7 +1,7 @@
 //! Parallel sibling of [`crate::evaluate::evaluate_with`] (ADR-0047).
 //!
 //! The outer `(k, i)` cell loop is dispatched via `par_iter` against a
-//! per-worker [`CellScratch`]; the calling thread folds the results
+//! per-worker `CellScratch`; the calling thread folds the results
 //! into pre-sized output `Vec`s at deterministic flat indices.
 //!
 //! Strict-mode bit-equality across thread counts holds by construction:
