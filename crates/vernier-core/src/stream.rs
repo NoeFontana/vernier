@@ -26,6 +26,7 @@ use crate::dataset::{
 };
 use crate::error::EvalError;
 use crate::evaluate::{evaluate_with, EvalImageMeta, EvalKernel, OwnedEvaluateParams};
+use crate::evaluate_parallel::evaluate_with_parallel;
 use crate::parity::{recall_thresholds, ParityMode};
 use crate::summarize::{summarize_detection, summarize_with, StatRequest, Summary};
 
@@ -509,14 +510,66 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             self.parity_mode,
             &self.kernel,
         )?;
+        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
+    }
 
+    /// Parallel sibling of [`Self::update_parsed`] (ADR-0047). Same
+    /// body but routes the per-batch matching pass through
+    /// [`evaluate_with_parallel`]; caller `install`s a
+    /// `rayon::ThreadPool` around the call. Post-matching bookkeeping
+    /// is shared, so strict-mode bit-equality across thread counts
+    /// follows from [`evaluate_with_parallel`]'s contract.
+    ///
+    /// # Errors
+    /// Same set as [`Self::update_parsed`].
+    pub fn update_parsed_parallel(
+        &mut self,
+        parsed: ParsedDetections<K>,
+    ) -> Result<UpdateReport, EvalError> {
+        let detections = parsed.detections;
+
+        let mut batch_image_ids: HashSet<i64> = HashSet::new();
+        for dt in detections.detections() {
+            let id = dt.image_id.0;
+            if self.seen_images.contains(&id) {
+                return Err(EvalError::InvalidAnnotation {
+                    detail: format!(
+                        "image_id={id} was already submitted in a prior update(); \
+                         StreamingEvaluator does not silently merge — submit all \
+                         detections for an image in a single batch"
+                    ),
+                });
+            }
+            batch_image_ids.insert(id);
+        }
+
+        let mut grid = evaluate_with_parallel(
+            &self.dataset,
+            &detections,
+            self.params.borrow(),
+            self.parity_mode,
+            &self.kernel,
+        )?;
+        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
+    }
+
+    /// Shared post-matching bookkeeping for [`Self::update_parsed`] and
+    /// [`Self::update_parsed_parallel`]. Filters the per-batch grid down
+    /// to images the batch actually carried, runs the budget check, and
+    /// commits the resulting cells into the streaming store.
+    fn merge_batch_grid(
+        &mut self,
+        detections: &CocoDetections,
+        batch_image_ids: &HashSet<i64>,
+        grid: &mut crate::evaluate::EvalGrid,
+    ) -> Result<UpdateReport, EvalError> {
         // Map batch image_ids to their I-axis indices so we can keep
         // only the cells whose image appears in this batch. Anything
         // else would (a) double-count GTs on every empty / partial
         // update and (b) trip the duplicate-image_id guard the next
         // time those images receive their own detections.
         let mut batch_image_indices: HashSet<usize> = HashSet::with_capacity(batch_image_ids.len());
-        for id in &batch_image_ids {
+        for id in batch_image_ids {
             if let Some(&idx) = self.grid_meta.image_id_to_idx.get(&ImageId(*id)) {
                 batch_image_indices.insert(idx);
             }
@@ -618,7 +671,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         let n_detections_accepted = detections.detections().len();
         self.n_detections += n_detections_accepted;
         self.next_dt_id = self.next_dt_id.saturating_add(n_detections_accepted as i64);
-        for id in &batch_image_ids {
+        for id in batch_image_ids {
             self.seen_images.insert(*id);
         }
         for idx in &batch_image_indices {

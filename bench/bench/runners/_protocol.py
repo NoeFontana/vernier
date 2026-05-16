@@ -119,6 +119,18 @@ def parse_runner_args() -> argparse.Namespace:
             "paradigm-specific argspec (parse_panoptic_runner_args, etc.)."
         ),
     )
+    p.add_argument(
+        "--num-threads",
+        type=int,
+        default=None,
+        help=(
+            "ADR-0047 threading axis. None (default) preserves the single-"
+            "threaded library default; an explicit int is forwarded to "
+            "``vernier.instance.Evaluator.evaluate``'s ``num_threads`` "
+            "kwarg. Non-vernier runners accept the flag for argspec "
+            "uniformity and ignore the value."
+        ),
+    )
     return p.parse_args()
 
 

@@ -673,6 +673,7 @@ mod tests {
             worker_affinity: None,
             worker_nice: 0,
             shutdown_timeout: Duration::from_millis(200),
+            num_threads: None,
         }
     }
 

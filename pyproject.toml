@@ -267,6 +267,7 @@ markers = [
     "parity_panoptic_val: COCO panoptic val2017 whole-dataset parity smoke (skipped unless VERNIER_PANOPTIC_*_PATH env vars point at real files)",
     "parity_semantic: parity tests against the open-mmlab/mmsegmentation IoUMetric reference oracle (ADR-0036)",
     "parity_semantic_val: COCO val2017 panoptic-derived semantic whole-dataset parity smoke (skipped unless the panoptic cache is provisioned via `python -m panoptic_val_cache`)",
+    "parity_threads: ADR-0047 cross-thread strict-mode bit-equality (vernier `num_threads=N` vs vernier `num_threads=None`)",
     "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
     "real_models: real-model validation harness (rfdetr) — heavy, opt-in only, skipped unless the real-models extra is installed and VERNIER_COCO_CACHE points at val2017 GT + images",
     "tripwire: sanity gates against vendored first-party references (e.g., kemaloksuz/LRP-Error). Not a parity contract — when a tripwire fires, investigate manually; do not auto-resolve.",

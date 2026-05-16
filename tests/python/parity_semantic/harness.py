@@ -91,6 +91,39 @@ def _project_totals(
     )
 
 
+def run_vernier_batch(
+    pairs: Iterable[tuple[int, NDArray[np.integer[Any]], NDArray[np.integer[Any]]]],
+    *,
+    num_classes: int,
+    ignore_index: int,
+    num_threads: int | None = None,
+) -> SemanticSnapshot:
+    """Vernier batch runner with optional ADR-0047 ``num_threads``.
+
+    Builds a ``vernier.semantic.Dataset`` / ``Predictions`` from the
+    iterable of ``(image_id, gt, dt)`` triples and invokes
+    :meth:`vernier.semantic.Evaluator.evaluate` with the requested
+    thread count. ``num_threads=None`` exercises today's sequential
+    code path; ``num_threads=N`` builds a scoped rayon pool of exactly
+    ``N`` threads around the per-image fold (ADR-0047 Stage B).
+
+    Returns a :class:`SemanticSnapshot` projected through the same
+    integer-totals helper the mmsegmentation oracle uses, so two
+    snapshots compare elementwise without paradigm-specific glue.
+    """
+    gt_maps: dict[int, NDArray[np.uint32]] = {}
+    dt_maps: dict[int, NDArray[np.uint32]] = {}
+    for image_id, gt, dt in pairs:
+        gt_maps[image_id] = np.ascontiguousarray(gt).astype(np.uint32, copy=False)
+        dt_maps[image_id] = np.ascontiguousarray(dt).astype(np.uint32, copy=False)
+    summary = vsem.Evaluator(parity_mode=PARITY_STRICT).evaluate(
+        vsem.Dataset.from_arrays(gt_maps, n_classes=num_classes, ignore_label=ignore_index),
+        vsem.Predictions.from_arrays(dt_maps),
+        num_threads=num_threads,
+    )
+    return _summary_to_snapshot(summary)
+
+
 def run_mmsegmentation(
     pred: NDArray[np.integer[Any]],
     gt: NDArray[np.integer[Any]],

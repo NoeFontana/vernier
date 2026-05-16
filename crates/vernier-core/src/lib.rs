@@ -23,6 +23,7 @@ pub mod dataset;
 pub mod distributed;
 pub mod error;
 pub mod evaluate;
+pub mod evaluate_parallel;
 pub mod lrp;
 pub mod lvis_parity;
 pub mod manifest;
@@ -47,6 +48,11 @@ pub use error::EvalError;
 pub use evaluate::{
     evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, evaluate_with, AreaRange,
     EvalGrid, EvaluateParams,
+};
+pub use evaluate_parallel::{
+    evaluate_bbox_parallel, evaluate_boundary_cached_parallel, evaluate_boundary_parallel,
+    evaluate_keypoints_parallel, evaluate_segm_cached_parallel, evaluate_segm_parallel,
+    evaluate_with_parallel,
 };
 pub use parity::ParityMode;
 pub use summarize::Summary;

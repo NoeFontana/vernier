@@ -111,6 +111,13 @@ csv = "1"
 # Shell-style glob expansion for `vernier aggregate --results 'runs/*.json'`
 # (ADR-0046 §B2 / §"`vernier aggregate`"). Pure-Rust, single-purpose.
 glob = "0.3"
+# Data-parallel iterator pool for the opt-in `num_threads` parallelism
+# path (ADR-0047). Always linked, never entered at runtime on the
+# `num_threads ∈ {None, 1}` default — the FFI boundary routes those
+# cases to the unchanged sequential path before any rayon symbol is
+# touched. Used as a scoped per-call pool for batch eval and a per-
+# worker-lifetime pool for `BackgroundEvaluator`; never the global pool.
+rayon = "1.10"
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit

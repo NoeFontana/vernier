@@ -69,11 +69,21 @@ def snapshot(
     iou_type: IouType,
     *,
     sigmas: SigmasMap | None = None,
+    num_threads: int | None = None,
 ) -> EvalSnapshot:
+    """Run the requested implementation on a fixture pair and return an
+    :class:`EvalSnapshot`.
+
+    ``num_threads`` (ADR-0047) only affects the vernier candidate. The
+    pycocotools reference oracle is sequential; the kwarg is silently
+    ignored on that path. The parity harness asserts vernier-vs-vernier
+    bit-equality across thread counts in addition to the existing
+    vernier-vs-pycocotools assertion.
+    """
     if impl == "pycocotools":
         return _run_pycocotools(gt_path, dt_path, iou_type, sigmas=sigmas)
     if impl == "vernier":
-        return _run_vernier(gt_path, dt_path, iou_type, sigmas=sigmas)
+        return _run_vernier(gt_path, dt_path, iou_type, sigmas=sigmas, num_threads=num_threads)
     raise ValueError(f"unknown impl: {impl!r}")
 
 
@@ -144,6 +154,7 @@ def _run_vernier(
     iou_type: IouType,
     *,
     sigmas: SigmasMap | None = None,
+    num_threads: int | None = None,
 ) -> EvalSnapshot:
     gt_bytes = gt_path.read_bytes()
     # pycocotools' DT JSON is a bare list of detections; vernier accepts
@@ -156,7 +167,13 @@ def _run_vernier(
             {} if sigmas is None else {cat: list(sig) for cat, sig in sigmas.items()}
         )
         grid = _vernier_core.evaluate_keypoints_grid(
-            gt_bytes, dt_bytes, _PARITY_MODE, max(max_dets), True, sigmas_dict
+            gt_bytes,
+            dt_bytes,
+            _PARITY_MODE,
+            max(max_dets),
+            True,
+            sigmas_dict,
+            num_threads=num_threads,
         )
         acc = grid.accumulate(max_dets)
         summary = acc.summarize(max_dets, plan="keypoints")
@@ -167,7 +184,14 @@ def _run_vernier(
             if iou_type == "segm"
             else _vernier_core.evaluate_bbox_grid
         )
-        grid = grid_fn(gt_bytes, dt_bytes, _PARITY_MODE, max(max_dets), use_cats=True)
+        grid = grid_fn(
+            gt_bytes,
+            dt_bytes,
+            _PARITY_MODE,
+            max(max_dets),
+            use_cats=True,
+            num_threads=num_threads,
+        )
         acc = grid.accumulate(max_dets)
         summary = acc.summarize(max_dets)
 

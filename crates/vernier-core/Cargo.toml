@@ -51,6 +51,10 @@ crc32fast.workspace = true
 # CSV manifest adapter (ADR-0046 §D2). Converts spreadsheet-shaped
 # attribute tables to the canonical JSON-records shape at parse time.
 csv = { workspace = true }
+# Opt-in inter-image parallelism (ADR-0047). The sequential
+# `evaluate_with` path never enters a rayon symbol; the sibling
+# `evaluate_with_parallel` is the only consumer.
+rayon = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

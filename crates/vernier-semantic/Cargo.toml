@@ -46,6 +46,13 @@ blake3.workspace = true
 # second user materializes, factoring through a `vernier-image` leaf is
 # the right cleanup (ADR-0028 §"Workspace and dependency direction").
 png = { workspace = true }
+# Opt-in inter-image parallelism (ADR-0047 Stage B). Per-image
+# confusion-matrix folds are u64-additive and commutative; tree-
+# reductions across threads are bit-equal to the sequential fold
+# trivially. The parallel path is reachable only when the FFI builds
+# a scoped `rayon::ThreadPool` and `install`s the work inside it; the
+# default `num_threads=None` callsite never enters a rayon symbol.
+rayon = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

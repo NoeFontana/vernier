@@ -173,6 +173,7 @@ def _spawn_one_rep(
     rep_index: int,
     intermediate_dir: Path,
     warmup: bool,
+    num_threads: int | None = None,
 ) -> _SpawnResult:
     rep_json = intermediate_dir / f"{impl}-rep{rep_index}.json"
     rep_npy = intermediate_dir / f"{impl}-rep{rep_index}.npy"
@@ -194,6 +195,12 @@ def _spawn_one_rep(
         "--tensor-output",
         str(rep_npy),
     )
+    # ADR-0047 — append the optional threading axis when the cell pins
+    # a thread count. Non-vernier runners accept the flag (it's wired
+    # into the shared argspec) but ignore the value; vernier_runner
+    # forwards it to ``Evaluator.evaluate``.
+    if num_threads is not None:
+        cmd.extend(["--num-threads", str(num_threads)])
     status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
@@ -798,6 +805,12 @@ class CellSpec:
     dt_label_map_dir: Path | None = None
     n_classes: int | None = None
     ignore_label: int | None = None
+    # ADR-0047 threading axis. ``None`` (the default) preserves the
+    # pre-ADR-0047 single-threaded behavior at every callsite; an
+    # explicit int forwards through the runner to
+    # :meth:`vernier.instance.Evaluator.evaluate`'s ``num_threads``.
+    # Non-vernier impls ignore the value (they have no rayon pool).
+    num_threads: int | None = None
 
 
 @dataclass(frozen=True)
@@ -927,6 +940,7 @@ def run_cell(
                 rep_index=rep_idx,
                 intermediate_dir=intermediate_dir,
                 warmup=warmup,
+                num_threads=cell.num_threads,
             )
 
     impl_jsons: dict[str, Path] = {}

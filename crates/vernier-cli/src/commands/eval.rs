@@ -22,8 +22,10 @@ use vernier_core::lrp::{self, LrpParams, LrpReport};
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::summarize::{summarize_detection, summarize_with, StatRequest};
 use vernier_core::{
-    evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, AreaRange, CocoDataset,
-    CocoDetections, EvalError, EvaluateParams, ParityMode, Summary,
+    evaluate_bbox, evaluate_bbox_parallel, evaluate_boundary, evaluate_boundary_parallel,
+    evaluate_keypoints, evaluate_keypoints_parallel, evaluate_segm, evaluate_segm_parallel,
+    AreaRange, CocoDataset, CocoDetections, EvalError, EvalGrid, EvaluateParams, ParityMode,
+    Summary,
 };
 
 use crate::cli::{EmitDestination, EmitSpec, EvalArgs, IouTypeArg, MetricArg};
@@ -121,6 +123,7 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
                 use_cats,
                 dilation_ratio,
                 sigmas,
+                args.threads,
             )?;
             dispatch_emits(&emits, &EvalArtifact::Ap(&summary), &ctx)
         }
@@ -177,6 +180,7 @@ fn run_pipeline(
     use_cats: bool,
     dilation_ratio: f64,
     sigmas: Option<HashMap<i64, Vec<f64>>>,
+    threads: usize,
 ) -> Result<Summary, EvalError> {
     let iou_thr = iou_thresholds();
     let area: Vec<AreaRange> = iou_type.default_area_ranges();
@@ -189,14 +193,16 @@ fn run_pipeline(
         retain_iou: false,
     };
 
-    let grid = match iou_type {
-        IouTypeArg::Bbox => evaluate_bbox(gt, dt, eval_params, parity)?,
-        IouTypeArg::Segm => evaluate_segm(gt, dt, eval_params, parity)?,
-        IouTypeArg::Boundary => evaluate_boundary(gt, dt, eval_params, parity, dilation_ratio)?,
-        IouTypeArg::Keypoints => {
-            evaluate_keypoints(gt, dt, eval_params, parity, sigmas.unwrap_or_default())?
-        }
-    };
+    let grid = run_grid_for_threads(
+        iou_type,
+        gt,
+        dt,
+        eval_params,
+        parity,
+        dilation_ratio,
+        sigmas,
+        threads,
+    )?;
 
     let acc_params = AccumulateParams {
         iou_thresholds: iou_thr,
@@ -290,6 +296,59 @@ fn run_lrp_pipeline(
 
 fn lookup_formatter(name: crate::format::FormatName) -> Option<&'static dyn Formatter> {
     registry().iter().copied().find(|f| f.id() == name)
+}
+
+/// Dispatch the grid run based on `threads` (ADR-0047).
+///
+/// - `threads <= 1`: sequential — today's `evaluate_*` entry points.
+/// - `threads == 0`: auto via [`std::thread::available_parallelism`].
+/// - `threads >= 2`: scoped `rayon::ThreadPool` built around the call,
+///   parallel `evaluate_*_parallel` entry points dispatched via
+///   `pool.install`.
+#[allow(clippy::too_many_arguments)]
+fn run_grid_for_threads(
+    iou_type: IouTypeArg,
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    eval_params: EvaluateParams<'_>,
+    parity: ParityMode,
+    dilation_ratio: f64,
+    sigmas: Option<HashMap<i64, Vec<f64>>>,
+    threads: usize,
+) -> Result<EvalGrid, EvalError> {
+    let resolved = match threads {
+        0 => std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1),
+        n => n,
+    };
+    if resolved <= 1 {
+        return match iou_type {
+            IouTypeArg::Bbox => evaluate_bbox(gt, dt, eval_params, parity),
+            IouTypeArg::Segm => evaluate_segm(gt, dt, eval_params, parity),
+            IouTypeArg::Boundary => evaluate_boundary(gt, dt, eval_params, parity, dilation_ratio),
+            IouTypeArg::Keypoints => {
+                evaluate_keypoints(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
+            }
+        };
+    }
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(resolved)
+        .thread_name(|i| format!("vernier-rayon-{i}"))
+        .build()
+        .map_err(|e| EvalError::InvalidConfig {
+            detail: format!("failed to build rayon pool of {resolved} threads: {e}"),
+        })?;
+    pool.install(|| match iou_type {
+        IouTypeArg::Bbox => evaluate_bbox_parallel(gt, dt, eval_params, parity),
+        IouTypeArg::Segm => evaluate_segm_parallel(gt, dt, eval_params, parity),
+        IouTypeArg::Boundary => {
+            evaluate_boundary_parallel(gt, dt, eval_params, parity, dilation_ratio)
+        }
+        IouTypeArg::Keypoints => {
+            evaluate_keypoints_parallel(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
+        }
+    })
 }
 
 fn read_input(path: &Path) -> Result<Vec<u8>, CliError> {

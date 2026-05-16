@@ -45,6 +45,11 @@ png = { workspace = true }
 # FxHashMap for the per-image intersection histogram. SipHash is wasted
 # work on internal `(u32, u32)` keys that never come from user input.
 rustc-hash = { workspace = true }
+# Opt-in `num_threads` parallel update path (ADR-0047 Stage B). The
+# sequential `update` path is unchanged and does not enter any rayon
+# symbol at runtime — rayon is linked but the per-image dispatch lives
+# under `update_parsed_parallel` only.
+rayon = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -76,6 +76,15 @@ PARITY_CASES: list[tuple[str, IouType]] = [
     *((f, "segm") for f in SEGM_FIXTURES),
 ]
 
+# ADR-0047: cross-thread strict-mode bit-equality axis. The vernier
+# candidate runs at each thread count and the result is asserted bit-
+# equal both to pycocotools (the existing oracle) and to its own
+# sequential output (the new property). `None` is the library default
+# and exercises the `VERNIER_NUM_THREADS`-fallback path; `1` pins the
+# explicit-sequential shape; `2/4/8` exercise the parallel path under
+# different rayon scheduling regimes.
+ADR_0047_THREAD_COUNTS: tuple[int | None, ...] = (None, 1, 2, 4, 8)
+
 
 @pytest.mark.parity
 @pytest.mark.parametrize(("fixture", "iou_type"), PARITY_CASES)
@@ -95,6 +104,112 @@ def test_keypoints_parity_against_reference(fixture: str, sigmas: SigmasMap | No
     ref = snapshot("pycocotools", gt, dt, "keypoints", sigmas=sigmas)
     cand = snapshot("vernier", gt, dt, "keypoints", sigmas=sigmas)
     assert_snapshots_equal(ref, cand)
+
+
+@pytest.mark.parity_threads
+@pytest.mark.parametrize(("fixture", "iou_type"), PARITY_CASES)
+@pytest.mark.parametrize("num_threads", ADR_0047_THREAD_COUNTS)
+def test_parity_across_thread_counts_strict_bit_equal(
+    fixture: str, iou_type: IouType, num_threads: int | None
+) -> None:
+    """ADR-0047 load-bearing parity assertion: every existing fixture,
+    every paradigm, every thread count produces stats bit-equal to the
+    sequential (`num_threads=None`) baseline.
+
+    This is a stronger property than vernier-vs-pycocotools — it
+    catches future regressions that introduce a parallel f64 reduction
+    in the wrong place, even when the parallel result still
+    incidentally agrees with pycocotools to 4 ULP.
+    """
+    gt = FIXTURES / fixture / "gt.json"
+    dt = FIXTURES / fixture / "dt.json"
+    baseline = snapshot("vernier", gt, dt, iou_type, num_threads=None)
+    cand = snapshot("vernier", gt, dt, iou_type, num_threads=num_threads)
+    assert_snapshots_equal(baseline, cand)
+
+
+@pytest.mark.parity_threads
+@pytest.mark.parametrize(("fixture", "sigmas"), KEYPOINTS_FIXTURES)
+@pytest.mark.parametrize("num_threads", ADR_0047_THREAD_COUNTS)
+def test_keypoints_parity_across_thread_counts(
+    fixture: str, sigmas: SigmasMap | None, num_threads: int | None
+) -> None:
+    """ADR-0047 cross-thread bit-equality for the keypoints (OKS) kernel."""
+    gt = FIXTURES / fixture / "gt.json"
+    dt = FIXTURES / fixture / "dt.json"
+    baseline = snapshot("vernier", gt, dt, "keypoints", sigmas=sigmas, num_threads=None)
+    cand = snapshot("vernier", gt, dt, "keypoints", sigmas=sigmas, num_threads=num_threads)
+    assert_snapshots_equal(baseline, cand)
+
+
+# ADR-0047 Stage B: BackgroundEvaluator's per-worker scoped pool must
+# produce the same stats as the batch `Evaluator.evaluate(num_threads=N)`
+# path on the same inputs. The substrate is shared, the property
+# carries through — this test pins it across the full thread-count
+# sweep so a regression in either surface is caught here, not at
+# integration time. Bbox `perfect_match` is the canonical fixture; one
+# fixture is sufficient because the cross-thread bit-equality property
+# is already exercised on every existing fixture by the two tests
+# above — this test asserts the batch-vs-streaming axis specifically.
+_BACKGROUND_THREAD_COUNTS: tuple[int | None, ...] = (None, 1, 2, 4)
+
+
+@pytest.mark.parity_threads
+@pytest.mark.parametrize("num_threads", _BACKGROUND_THREAD_COUNTS)
+def test_background_matches_batch_across_thread_counts(num_threads: int | None) -> None:
+    """ADR-0047 Stage B: ``BackgroundEvaluator(num_threads=N)`` and
+    ``Evaluator.evaluate(..., num_threads=N)`` produce bit-equal stats
+    for the same fixture, across every thread count in the sweep.
+
+    Pins:
+    - ``None`` (today's BackgroundEvaluator default) is byte-equal to
+      the batch sequential path — ADR-0014's one-core bound is the
+      default and the trainer persona observes zero change.
+    - ``1`` collapses to the same code path as ``None``.
+    - ``2``/``4`` exercise the per-worker scoped rayon pool (built at
+      worker spawn, owned by the worker, dropped at worker exit).
+    """
+    import vernier._core as _vernier_core
+    from vernier.instance import Bbox, Evaluator
+
+    gt_path = FIXTURES / "perfect_match" / "gt.json"
+    dt_path = FIXTURES / "perfect_match" / "dt.json"
+    gt_bytes = gt_path.read_bytes()
+    dt_bytes = dt_path.read_bytes()
+
+    # Batch path: `Evaluator(...).evaluate(gt, dt, num_threads=N)`.
+    # `parity_mode="strict"` matches the parity harness's contract;
+    # `use_cats` defaults to True; default max_dets=(1, 10, 100).
+    evaluator = Evaluator(iou=Bbox(), parity_mode="strict")
+    batch_summary = evaluator.evaluate(gt_bytes, dt_bytes, num_threads=num_threads)
+    batch_stats = list(batch_summary.stats)
+
+    # Streaming path: spawn a BackgroundEvaluator, submit the whole
+    # batch in one shot, finalize. The single-submit shape is the
+    # bit-equal-to-batch slice of ADR-0013's determinism contract.
+    bg = _vernier_core.BackgroundEvaluator(
+        gt_bytes,
+        iou_type="bbox",
+        parity_mode="strict",
+        max_dets=[1, 10, 100],
+        use_cats=True,
+        num_threads=num_threads,
+    )
+    try:
+        bg.submit(dt_bytes)
+        stream_summary = bg.finalize()
+    finally:
+        # finalize() consumes the worker; the `try/finally` is here for
+        # the early-error path. No-op once finalize() succeeded.
+        pass
+    stream_stats = list(stream_summary.stats)
+
+    assert batch_stats == stream_stats, (
+        f"BackgroundEvaluator(num_threads={num_threads}) vs "
+        f"Evaluator.evaluate(num_threads={num_threads}) stats differ:\n"
+        f"  batch:  {batch_stats}\n"
+        f"  stream: {stream_stats}"
+    )
 
 
 @pytest.mark.parity

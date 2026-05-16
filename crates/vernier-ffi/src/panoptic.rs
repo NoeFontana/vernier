@@ -42,6 +42,7 @@ use crate::background_streaming::{
 use crate::manifest_py::manifest_to_canonical_json;
 use crate::numpy_utils::parse_uint32_label_maps;
 use crate::tables::{slices_record_batch_panoptic, PanopticSliceRow};
+use crate::threads;
 use crate::{poll_scheduling_warning, queue_full_to_pyerr, validate_shutdown_timeout};
 use std::collections::HashSet;
 use vernier_core::manifest::partition_spec_from_manifest;
@@ -50,7 +51,8 @@ use vernier_panoptic::dataset::{CategoryId, CategoryMeta, ImageEntry, ImageId, S
 use vernier_panoptic::decode::decode_panoptic_png;
 use vernier_panoptic::stream::StreamingPanopticEvaluator;
 use vernier_panoptic::{
-    evaluate_per_image, evaluate_with_options, fold_per_image, summarize_from_acc_with_options,
+    evaluate_per_image, evaluate_per_image_parallel, evaluate_with_options,
+    evaluate_with_options_parallel, fold_per_image, summarize_from_acc_with_options,
     BoundaryConfig, ClassPanopticStats, EvaluateOptions, GroupPanopticStats, PanopticDataset,
     PanopticError, PanopticPredictions, PanopticSummary, ParityMode, SummarizeOptions,
     BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
@@ -616,6 +618,7 @@ impl PyPanopticSummary {
     stuff_thing_partition=None,
     boundary=false,
     dilation_ratio=BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
+    num_threads=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_panoptic(
@@ -630,9 +633,13 @@ pub(crate) fn evaluate_panoptic(
     stuff_thing_partition: Option<(Vec<u32>, Vec<u32>)>,
     boundary: bool,
     dilation_ratio: f64,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPanopticSummary> {
     let mode = parse_panoptic_parity_mode(parity_mode)?;
     let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
+    // Resolve `num_threads` under the GIL so the env-var / re-entry
+    // `UserWarning` can fire to Python before we detach.
+    let thread_policy = threads::resolve_threads(py, num_threads);
     let gt_arc = Arc::clone(&gt.inner);
     let dt_arc = Arc::clone(&dt.inner);
     // Build the isthing-overridden categories map up front so the
@@ -665,10 +672,44 @@ pub(crate) fn evaluate_panoptic(
                 summarize: summarize_opts,
                 boundary: boundary_cfg,
             };
-            evaluate_with_options(&gt_arc, &dt_arc, mode, things_stuff_split, &opts)
+            run_panoptic_with_policy(
+                &gt_arc,
+                &dt_arc,
+                mode,
+                things_stuff_split,
+                &opts,
+                thread_policy,
+            )
         })
         .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     Ok(PyPanopticSummary { inner: summary })
+}
+
+/// Dispatch between sequential [`evaluate_with_options`] and the
+/// parallel sibling [`evaluate_with_options_parallel`] (ADR-0047).
+/// `Sequential` is the zero-overhead path — no rayon symbol entered.
+/// `Pool(n)` builds a scoped per-call `rayon::ThreadPool` of exactly
+/// `n` threads, `install`s the parallel evaluator inside it, and
+/// drops the pool on return.
+fn run_panoptic_with_policy(
+    gt: &PanopticDataset,
+    dt: &PanopticPredictions,
+    mode: ParityMode,
+    things_stuff_split: bool,
+    opts: &EvaluateOptions<'_>,
+    thread_policy: threads::ThreadPolicy,
+) -> Result<PanopticSummary, PanopticError> {
+    match thread_policy.thread_count() {
+        None => evaluate_with_options(gt, dt, mode, things_stuff_split, opts),
+        Some(n) => {
+            let pool = threads::build_scoped_pool(n).map_err(|detail| {
+                PanopticError::Partial(vernier_partial::PartialError::Format {
+                    kind: vernier_partial::PartialFormatErrorKind::Internal { detail },
+                })
+            })?;
+            pool.install(|| evaluate_with_options_parallel(gt, dt, mode, things_stuff_split, opts))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +860,8 @@ use crate::partition_py::warn_about_manifest;
     manifest,
     cross_axes = None,
     key_kind = "image_id",
+    *,
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_panoptic_partitioned(
@@ -832,9 +875,11 @@ pub(crate) fn evaluate_panoptic_partitioned(
     manifest: &Bound<'_, PyAny>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedPanopticReport> {
     let mode = parse_panoptic_parity_mode(parity_mode)?;
     let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
+    let thread_policy = threads::resolve_threads(py, num_threads);
 
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
     let cross = cross_axes.unwrap_or_default();
@@ -909,7 +954,22 @@ pub(crate) fn evaluate_panoptic_partitioned(
                 summarize: SummarizeOptions::default(),
                 boundary: boundary_cfg,
             };
-            let per_image: PerImageVec = evaluate_per_image(&gt_arc, &dt_arc, mode, &opts)?;
+            // ADR-0047: route the matching pass through the parallel
+            // sibling when `num_threads > 1`; otherwise stay on the
+            // sequential path. The per-image deltas are sorted by
+            // image_id in both cases, so the downstream fold + per-
+            // slice folds are bit-equal across thread counts.
+            let per_image: PerImageVec = match thread_policy.thread_count() {
+                None => evaluate_per_image(&gt_arc, &dt_arc, mode, &opts)?,
+                Some(n) => {
+                    let pool = threads::build_scoped_pool(n).map_err(|detail| {
+                        PanopticError::Partial(vernier_partial::PartialError::Format {
+                            kind: vernier_partial::PartialFormatErrorKind::Internal { detail },
+                        })
+                    })?;
+                    pool.install(|| evaluate_per_image_parallel(&gt_arc, &dt_arc, mode, &opts))?
+                }
+            };
 
             // Overall — un-filtered fold + summarize.
             let acc_all = fold_per_image(&per_image, None);
@@ -1175,6 +1235,37 @@ fn build_image_entry_from_png(
         .map_err(|e| panoptic_error_to_pyerr(py, e))
 }
 
+/// Unpack one 5-tuple `(image_id, gt_label_map, gt_segments_info,
+/// dt_label_map, dt_segments_info)` from the Python side into an
+/// owned `(ImageId, gt ImageEntry, dt ImageEntry)`. Shared between
+/// the sequential and parallel paths of [`evaluate_panoptic_to_partial`]
+/// — the unpack is identical, only the downstream dispatch differs.
+fn panoptic_unpack_image_tuple_array<'py>(
+    py: Python<'py>,
+    item: &Bound<'py, PyAny>,
+) -> PyResult<(ImageId, ImageEntry, ImageEntry)> {
+    let tup = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
+        PyValueError::new_err(
+            "evaluate_panoptic_to_partial expects a list of 5-tuples \
+             (image_id, gt_label_map, gt_segments_info, dt_label_map, dt_segments_info)",
+        )
+    })?;
+    if tup.len() != 5 {
+        return Err(PyValueError::new_err(format!(
+            "evaluate_panoptic_to_partial expects 5-tuples; got {}-tuple",
+            tup.len()
+        )));
+    }
+    let image_id: ImageId = tup.get_item(0)?.extract()?;
+    let gt_label_map: PyReadonlyArray2<'py, u32> = tup.get_item(1)?.extract()?;
+    let gt_segs_bytes: Vec<u8> = tup.get_item(2)?.extract()?;
+    let dt_label_map: PyReadonlyArray2<'py, u32> = tup.get_item(3)?.extract()?;
+    let dt_segs_bytes: Vec<u8> = tup.get_item(4)?.extract()?;
+    let gt_entry = build_image_entry(py, image_id, &gt_label_map, &gt_segs_bytes, "gt")?;
+    let dt_entry = build_image_entry(py, image_id, &dt_label_map, &dt_segs_bytes, "dt")?;
+    Ok((image_id, gt_entry, dt_entry))
+}
+
 /// One-shot per-rank streaming submit + serialize partial (ADR-0035).
 ///
 /// Functionally equivalent to constructing a `StreamingPanopticEvaluator`,
@@ -1193,6 +1284,7 @@ fn build_image_entry_from_png(
     retain_per_image_deltas = false,
     boundary = false,
     dilation_ratio = BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_panoptic_to_partial<'py>(
@@ -1205,10 +1297,12 @@ pub(crate) fn evaluate_panoptic_to_partial<'py>(
     retain_per_image_deltas: bool,
     boundary: bool,
     dilation_ratio: f64,
+    num_threads: Option<usize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let mode = parse_panoptic_parity_mode(parity_mode)?;
     let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
     let boundary_cfg = boundary_cfg_from_ffi(boundary, dilation_ratio, mode)?;
+    let thread_policy = threads::resolve_threads(py, num_threads);
     let mut ev =
         StreamingPanopticEvaluator::new(cats, mode, things_stuff_split, retain_per_image_deltas)
             .with_rank(rank_id)
@@ -1219,32 +1313,39 @@ pub(crate) fn evaluate_panoptic_to_partial<'py>(
             .map_err(|e| panoptic_error_to_pyerr(py, e))?;
     }
 
-    // Process per image so we never hold the full label-map corpus in
-    // memory at once (PR #187 streaming-runner property; the eager
-    // Vec<ImageEntry> form regressed from ~120 MiB to ~12 GiB on
-    // COCO panoptic val).
-    for item in images.iter() {
-        let tup = item.cast::<pyo3::types::PyTuple>().map_err(|_| {
-            PyValueError::new_err(
-                "evaluate_panoptic_to_partial expects a list of 5-tuples \
-                 (image_id, gt_label_map, gt_segments_info, dt_label_map, dt_segments_info)",
-            )
-        })?;
-        if tup.len() != 5 {
-            return Err(PyValueError::new_err(format!(
-                "evaluate_panoptic_to_partial expects 5-tuples; got {}-tuple",
-                tup.len()
-            )));
+    match thread_policy.thread_count() {
+        None => {
+            // Sequential streaming path: process per image so we never
+            // hold the full label-map corpus in memory at once (PR #187
+            // streaming-runner property; the eager Vec<ImageEntry>
+            // form regressed from ~120 MiB to ~12 GiB on COCO panoptic
+            // val).
+            for item in images.iter() {
+                let (image_id, gt_entry, dt_entry) = panoptic_unpack_image_tuple_array(py, &item)?;
+                py.detach(|| ev.update(image_id, &gt_entry, &dt_entry))
+                    .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+            }
         }
-        let image_id: ImageId = tup.get_item(0)?.extract()?;
-        let gt_label_map: PyReadonlyArray2<'py, u32> = tup.get_item(1)?.extract()?;
-        let gt_segs_bytes: Vec<u8> = tup.get_item(2)?.extract()?;
-        let dt_label_map: PyReadonlyArray2<'py, u32> = tup.get_item(3)?.extract()?;
-        let dt_segs_bytes: Vec<u8> = tup.get_item(4)?.extract()?;
-        let gt_entry = build_image_entry(py, image_id, &gt_label_map, &gt_segs_bytes, "gt")?;
-        let dt_entry = build_image_entry(py, image_id, &dt_label_map, &dt_segs_bytes, "dt")?;
-        py.detach(|| ev.update(image_id, &gt_entry, &dt_entry))
-            .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        Some(n) => {
+            // Parallel path: build the full per-image owned vector
+            // under GIL (validation + numpy conversion happens here),
+            // then dispatch the matching pass under a scoped pool.
+            // The memory regression PR #187 guarded against is for the
+            // sequential path's "submit eagerly" mode; the parallel
+            // path explicitly opts in to "hold the batch", paying the
+            // RAM cost in exchange for the throughput.
+            let mut batch: Vec<(ImageId, ImageEntry, ImageEntry)> =
+                Vec::with_capacity(images.len());
+            for item in images.iter() {
+                let triple = panoptic_unpack_image_tuple_array(py, &item)?;
+                batch.push(triple);
+            }
+            let pool = threads::build_scoped_pool(n).map_err(|detail| {
+                PyValueError::new_err(format!("rayon pool build failed: {detail}"))
+            })?;
+            py.detach(|| pool.install(|| ev.update_parsed_parallel(batch)))
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+        }
     }
 
     let bytes = py
@@ -1442,6 +1543,9 @@ impl PyBackgroundPanopticEvaluator {
             worker_affinity,
             worker_nice,
             shutdown_timeout: validate_shutdown_timeout(shutdown_timeout_seconds)?,
+            // ADR-0047 Stage B: instance paradigm only; panoptic
+            // worker stays sequential (default-path discipline).
+            num_threads: None,
         };
         let core = BackgroundCore::spawn(inner, config).map_err(|e| {
             PyRuntimeError::new_err(format!("failed to spawn background worker: {e}"))

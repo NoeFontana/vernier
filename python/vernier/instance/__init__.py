@@ -452,6 +452,7 @@ class Evaluator:
         manifest: None = None,
         cross_axes: None = None,
         calibration: Literal[False] = False,
+        num_threads: int | None = None,
     ) -> Summary: ...
 
     @overload
@@ -465,6 +466,7 @@ class Evaluator:
         manifest: None = None,
         cross_axes: None = None,
         calibration: bool = False,
+        num_threads: int | None = None,
     ) -> EvalResult: ...
 
     @overload
@@ -478,6 +480,7 @@ class Evaluator:
         manifest: Manifest,
         cross_axes: Sequence[Sequence[str]] | None = None,
         calibration: Literal[False] = False,
+        num_threads: int | None = None,
     ) -> EvalResult: ...
 
     @overload
@@ -491,6 +494,7 @@ class Evaluator:
         manifest: None = None,
         cross_axes: None = None,
         calibration: Literal[True],
+        num_threads: int | None = None,
     ) -> EvalResult: ...
 
     def evaluate(
@@ -503,6 +507,7 @@ class Evaluator:
         manifest: Manifest | None = None,
         cross_axes: Sequence[Sequence[str]] | None = None,
         calibration: bool = False,
+        num_threads: int | None = None,
     ) -> Summary | EvalResult:
         """Run the evaluation pipeline against a GT/DT pair.
 
@@ -578,7 +583,9 @@ class Evaluator:
                     "manifest= currently requires GT JSON bytes; CocoDataset handles "
                     "on the partitioned path are a follow-up."
                 )
-            return self._evaluate_partitioned(gt, dt, max_dets_list, manifest, cross_axes)
+            return self._evaluate_partitioned(
+                gt, dt, max_dets_list, manifest, cross_axes, num_threads=num_threads
+            )
         if tables is not None or calibration:
             return self._evaluate_with_tables(
                 gt,
@@ -587,21 +594,41 @@ class Evaluator:
                 tables,
                 tables_config or TablesConfig(),
                 calibration=calibration,
+                num_threads=num_threads,
             )
         if isinstance(gt, CocoDataset):
-            return self._evaluate_with_dataset(gt, dt, max_dets_list)
+            return self._evaluate_with_dataset(gt, dt, max_dets_list, num_threads=num_threads)
         match self.iou:
             case Bbox():
                 return evaluate_bbox_summary(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case Segm():
                 return evaluate_segm_summary(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case Boundary(dilation_ratio=r):
                 return evaluate_boundary_summary(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r, self.cast_inputs
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    r,
+                    self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case Keypoints(sigmas=s):
                 return evaluate_keypoints_summary(
@@ -612,6 +639,7 @@ class Evaluator:
                     self.use_cats,
                     _normalize_sigmas(s),
                     self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case _:
                 _reject_unknown_iou(self.iou)
@@ -623,6 +651,8 @@ class Evaluator:
         max_dets_list: list[int],
         manifest: Manifest,
         cross_axes: Sequence[Sequence[str]] | None,
+        *,
+        num_threads: int | None = None,
     ) -> EvalResult:
         """ADR-0046 partitioned eval dispatch. Routes the user's
         manifest input through the kernel-specific FFI entry, then
@@ -640,6 +670,7 @@ class Evaluator:
                     manifest,
                     self.cast_inputs,
                     cross_axes=cross,
+                    num_threads=num_threads,
                 )
             case Segm():
                 psum = evaluate_segm_partitioned(
@@ -651,6 +682,7 @@ class Evaluator:
                     manifest,
                     self.cast_inputs,
                     cross_axes=cross,
+                    num_threads=num_threads,
                 )
             case Boundary(dilation_ratio=r):
                 psum = evaluate_boundary_partitioned(
@@ -663,6 +695,7 @@ class Evaluator:
                     manifest,
                     self.cast_inputs,
                     cross_axes=cross,
+                    num_threads=num_threads,
                 )
             case Keypoints(sigmas=s):
                 psum = evaluate_keypoints_partitioned(
@@ -675,6 +708,7 @@ class Evaluator:
                     manifest,
                     self.cast_inputs,
                     cross_axes=cross,
+                    num_threads=num_threads,
                 )
             case _:
                 _reject_unknown_iou(self.iou)
@@ -716,6 +750,7 @@ class Evaluator:
         tables_config: TablesConfig,
         *,
         calibration: bool = False,
+        num_threads: int | None = None,
     ) -> EvalResult:
         """Tables-enabled evaluate path. Builds the EvalGrid, runs
         accumulate + summarize, then dispatches per-table FFI builders
@@ -763,6 +798,7 @@ class Evaluator:
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
+                    num_threads=num_threads,
                 )
             case Segm():
                 grid = evaluate_segm_grid(
@@ -776,6 +812,7 @@ class Evaluator:
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
+                    num_threads=num_threads,
                 )
             case Boundary(dilation_ratio=r):
                 grid = evaluate_boundary_grid(
@@ -790,6 +827,7 @@ class Evaluator:
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
+                    num_threads=num_threads,
                 )
             case Keypoints(sigmas=s):
                 if requested:
@@ -808,6 +846,7 @@ class Evaluator:
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
+                    num_threads=num_threads,
                 )
             case _:
                 _reject_unknown_iou(self.iou)
@@ -854,20 +893,44 @@ class Evaluator:
         )
 
     def _evaluate_with_dataset(
-        self, gt: CocoDataset, dt: DetectionsInput, max_dets_list: list[int]
+        self,
+        gt: CocoDataset,
+        dt: DetectionsInput,
+        max_dets_list: list[int],
+        *,
+        num_threads: int | None = None,
     ) -> Summary:
         match self.iou:
             case Bbox():
                 return evaluate_bbox_summary_with_dataset(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case Segm():
                 return evaluate_segm_summary_with_dataset(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, self.cast_inputs
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case Boundary(dilation_ratio=r):
                 return evaluate_boundary_summary_with_dataset(
-                    gt, dt, self.parity_mode, max_dets_list, self.use_cats, r, self.cast_inputs
+                    gt,
+                    dt,
+                    self.parity_mode,
+                    max_dets_list,
+                    self.use_cats,
+                    r,
+                    self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case Keypoints(sigmas=s):
                 return evaluate_keypoints_summary_with_dataset(
@@ -878,6 +941,7 @@ class Evaluator:
                     self.use_cats,
                     _normalize_sigmas(s),
                     self.cast_inputs,
+                    num_threads=num_threads,
                 )
             case _:
                 _reject_unknown_iou(self.iou)
@@ -1000,6 +1064,7 @@ class Evaluator:
         retain_iou: bool = False,
         rank_id: int | None = None,
         record_latency_samples: bool = False,
+        num_threads: int | None = None,
     ) -> BackgroundEvaluator:
         """Build a :class:`BackgroundEvaluator` (ADR-0014, ADR-0020) that
         shares this evaluator's ``iou``, ``parity_mode``, ``max_dets``,
@@ -1015,6 +1080,15 @@ class Evaluator:
 
         The five queueing / scheduling knobs mirror the keyword-only
         parameters on :class:`BackgroundEvaluator`'s constructor.
+
+        ``num_threads`` (ADR-0047 Stage B) opts the worker into inner
+        parallel matching. ``None`` (default) preserves ADR-0014's
+        one-core bound — exactly today's behavior. ``num_threads > 1``
+        builds a per-worker scoped ``rayon::ThreadPool`` at worker
+        spawn, owned by the worker thread, and dropped on worker exit;
+        each ``submit()``'s per-image matching pass dispatches through
+        that pool. The val-loader persona opts in here; the trainer
+        persona leaves it ``None``.
         """
         kwargs = self._streaming_kwargs()
         return BackgroundEvaluator(
@@ -1027,6 +1101,7 @@ class Evaluator:
             retain_iou=retain_iou,
             rank_id=rank_id,
             record_latency_samples=record_latency_samples,
+            num_threads=num_threads,
             **kwargs,
         )
 

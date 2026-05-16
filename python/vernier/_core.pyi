@@ -93,6 +93,7 @@ class BackgroundEvaluator:
         cast_inputs: bool = ...,
         rank_id: int | None = ...,
         record_latency_samples: bool = ...,
+        num_threads: int | None = ...,
     ) -> None: ...
     def finalize_to_partial(self) -> bytes: ...
     def submit(self, detections: DetectionsInput, *, timeout: float | None = ...) -> None: ...
@@ -234,6 +235,7 @@ def evaluate_bbox_summary(
     max_dets: list[int],
     use_cats: bool,
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_instance_to_partial(
     gt_json: bytes,
@@ -271,6 +273,7 @@ def evaluate_bbox_summary_with_dataset(
     max_dets: list[int],
     use_cats: bool,
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_bbox_grid(
     gt_json: bytes,
@@ -283,6 +286,7 @@ def evaluate_bbox_grid(
     iou_thresholds: list[float] | None = ...,
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
 ) -> EvalGrid: ...
 def evaluate_bbox_grid_with_dataset(
     gt: CocoDataset,
@@ -295,6 +299,7 @@ def evaluate_bbox_grid_with_dataset(
     iou_thresholds: list[float] | None = ...,
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
@@ -303,6 +308,7 @@ def evaluate_segm_summary(
     max_dets: list[int],
     use_cats: bool,
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_segm_summary_with_dataset(
     gt: CocoDataset,
@@ -311,6 +317,7 @@ def evaluate_segm_summary_with_dataset(
     max_dets: list[int],
     use_cats: bool,
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_segm_grid(
     gt_json: bytes,
@@ -323,6 +330,7 @@ def evaluate_segm_grid(
     iou_thresholds: list[float] | None = ...,
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
     gt_json: bytes,
@@ -332,6 +340,7 @@ def evaluate_boundary_summary(
     use_cats: bool,
     dilation_ratio: float,
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_boundary_summary_with_dataset(
     gt: CocoDataset,
@@ -341,6 +350,7 @@ def evaluate_boundary_summary_with_dataset(
     use_cats: bool,
     dilation_ratio: float,
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_boundary_grid(
     gt_json: bytes,
@@ -354,6 +364,7 @@ def evaluate_boundary_grid(
     iou_thresholds: list[float] | None = ...,
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
     gt_json: bytes,
@@ -363,6 +374,7 @@ def evaluate_keypoints_summary(
     use_cats: bool,
     sigmas: dict[int, list[float]],
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_keypoints_summary_with_dataset(
     gt: CocoDataset,
@@ -372,6 +384,7 @@ def evaluate_keypoints_summary_with_dataset(
     use_cats: bool,
     sigmas: dict[int, list[float]],
     cast_inputs: bool = ...,
+    num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_keypoints_grid(
     gt_json: bytes,
@@ -384,6 +397,7 @@ def evaluate_keypoints_grid(
     iou_thresholds: list[float] | None = ...,
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
 ) -> EvalGrid: ...
 
 # ADR-0046 partitioned-eval surface.
@@ -412,6 +426,7 @@ def evaluate_bbox_partitioned(
     area_ranges: Breakdown | None = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
+    num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_segm_partitioned(
     gt_json: bytes,
@@ -426,6 +441,7 @@ def evaluate_segm_partitioned(
     area_ranges: Breakdown | None = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
+    num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_boundary_partitioned(
     gt_json: bytes,
@@ -441,6 +457,7 @@ def evaluate_boundary_partitioned(
     area_ranges: Breakdown | None = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
+    num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_keypoints_partitioned(
     gt_json: bytes,
@@ -456,6 +473,7 @@ def evaluate_keypoints_partitioned(
     area_ranges: Breakdown | None = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
+    num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 
 class PartitionedLrpReport:
@@ -829,6 +847,7 @@ def evaluate_panoptic(
     stuff_thing_partition: tuple[list[int], list[int]] | None = ...,
     boundary: bool = ...,
     dilation_ratio: float = ...,
+    num_threads: int | None = ...,
 ) -> PanopticSummary: ...
 def evaluate_panoptic_to_partial(
     images: Sequence[tuple[int, NDArray[np.uint32], bytes, NDArray[np.uint32], bytes]],
@@ -840,6 +859,7 @@ def evaluate_panoptic_to_partial(
     retain_per_image_deltas: bool = ...,
     boundary: bool = ...,
     dilation_ratio: float = ...,
+    num_threads: int | None = ...,
 ) -> bytes: ...
 def merge_panoptic_partials(
     categories: bytes,
@@ -873,6 +893,8 @@ def evaluate_panoptic_partitioned(
     manifest: object,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
+    *,
+    num_threads: int | None = ...,
 ) -> PartitionedPanopticReport: ...
 
 # ---------------------------------------------------------------------------
@@ -941,6 +963,7 @@ def evaluate_semantic_from_arrays(
     label_remap: dict[int, int] | None = ...,
     class_filter: list[int] | None = ...,
     class_grouping: list[tuple[str, list[int]]] | None = ...,
+    num_threads: int | None = ...,
 ) -> SemanticSummary: ...
 def evaluate_semantic_from_pngs(
     gt_paths: dict[int, str | os.PathLike[str]],
@@ -949,6 +972,7 @@ def evaluate_semantic_from_pngs(
     parity_mode: str,
     *,
     ignore_label: int | None = ...,
+    num_threads: int | None = ...,
 ) -> SemanticSummary: ...
 def evaluate_semantic_to_partial(
     gt_label_maps: dict[int, NDArray[np.unsignedinteger[Any]]],
@@ -958,6 +982,7 @@ def evaluate_semantic_to_partial(
     rank_id: int,
     *,
     ignore_label: int | None = ...,
+    num_threads: int | None = ...,
 ) -> bytes: ...
 def merge_semantic_partials(
     n_classes: int,
@@ -965,6 +990,7 @@ def merge_semantic_partials(
     parity_mode: str,
     *,
     ignore_label: int | None = ...,
+    num_threads: int | None = ...,
 ) -> SemanticSummary: ...
 
 class PartitionedSemanticReport:
@@ -991,6 +1017,7 @@ def evaluate_semantic_partitioned(
     class_grouping: list[tuple[str, list[int]]] | None = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
+    num_threads: int | None = ...,
 ) -> PartitionedSemanticReport: ...
 
 class BackgroundSemanticEvaluator:

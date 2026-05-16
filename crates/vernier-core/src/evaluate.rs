@@ -1165,7 +1165,7 @@ pub fn evaluate_segm_cached(
     evaluate_with(gt, dt, params, parity_mode, &segm_kernel(Some(cache)))
 }
 
-fn segm_kernel(gt_cache: Option<&SegmGtCache>) -> SegmIouCached<'_> {
+pub(crate) fn segm_kernel(gt_cache: Option<&SegmGtCache>) -> SegmIouCached<'_> {
     SegmIouCached {
         scratch: Mutex::new(SegmComputeScratch::new()),
         gt_cache: gt_cache.map(GtCacheRef::Borrowed),
@@ -1274,7 +1274,13 @@ pub fn evaluate_boundary(
     parity_mode: ParityMode,
     dilation_ratio: f64,
 ) -> Result<EvalGrid, EvalError> {
-    evaluate_with(gt, dt, params, parity_mode, &kernel(dilation_ratio, None))
+    evaluate_with(
+        gt,
+        dt,
+        params,
+        parity_mode,
+        &boundary_kernel(dilation_ratio, None),
+    )
 }
 
 /// Cached variant of [`evaluate_boundary`]: reuses GT bands across
@@ -1308,11 +1314,14 @@ pub fn evaluate_boundary_cached(
         dt,
         params,
         parity_mode,
-        &kernel(dilation_ratio, Some(cache)),
+        &boundary_kernel(dilation_ratio, Some(cache)),
     )
 }
 
-fn kernel(dilation_ratio: f64, gt_cache: Option<&BoundaryGtCache>) -> BoundaryIouCached<'_> {
+pub(crate) fn boundary_kernel(
+    dilation_ratio: f64,
+    gt_cache: Option<&BoundaryGtCache>,
+) -> BoundaryIouCached<'_> {
     BoundaryIouCached {
         dilation_ratio,
         scratch: Mutex::new(BoundaryComputeScratch::new()),
@@ -1459,7 +1468,11 @@ pub fn evaluate_keypoints(
     evaluate_with(gt, dt, params, parity_mode, &OksSimilarity::new(sigmas))
 }
 
-fn gt_indices_for_cell(gt: &CocoDataset, image: ImageId, cat: Option<CategoryId>) -> &[usize] {
+pub(crate) fn gt_indices_for_cell(
+    gt: &CocoDataset,
+    image: ImageId,
+    cat: Option<CategoryId>,
+) -> &[usize] {
     match cat {
         Some(c) => gt.ann_indices_for(image, c),
         None => gt.ann_indices_for_image(image),
@@ -1470,7 +1483,7 @@ fn gt_indices_for_cell(gt: &CocoDataset, image: ImageId, cat: Option<CategoryId>
 /// loop in [`evaluate_with`] uses this to short-circuit empty cells
 /// before incurring the score gather + sort cost in
 /// [`dt_top_indices_for_cell_into`].
-fn raw_dt_indices_for_cell(
+pub(crate) fn raw_dt_indices_for_cell(
     dt: &CocoDetections,
     image: ImageId,
     cat: Option<CategoryId>,
@@ -1509,7 +1522,7 @@ pub(crate) fn dt_top_indices_for_cell(
 /// would otherwise pay three allocator round-trips per `(image,
 /// category)` cell — across val2017's 14k non-empty cells that
 /// dominates the score-sort wall time.
-fn dt_top_indices_for_cell_into(
+pub(crate) fn dt_top_indices_for_cell_into(
     out: &mut Vec<usize>,
     score_buf: &mut Vec<f64>,
     perm_buf: &mut Vec<usize>,
@@ -1539,61 +1552,61 @@ fn dt_top_indices_for_cell_into(
 /// this elides ~11 allocations per cell × 14k cells = ~154k allocator
 /// round-trips.
 #[derive(Default)]
-struct CellScratch {
+pub(crate) struct CellScratch {
     /// Cell-level GT gathers — sized to `gt_indices.len()` per cell.
-    gt_areas: Vec<f64>,
-    gt_iscrowd: Vec<bool>,
-    gt_base_ignore: Vec<bool>,
-    gt_ids: Vec<i64>,
+    pub(crate) gt_areas: Vec<f64>,
+    pub(crate) gt_iscrowd: Vec<bool>,
+    pub(crate) gt_base_ignore: Vec<bool>,
+    pub(crate) gt_ids: Vec<i64>,
     /// Top-N filtered DT input indices. Filled by
     /// [`dt_top_indices_for_cell_into`].
-    dt_indices: Vec<usize>,
+    pub(crate) dt_indices: Vec<usize>,
     /// Cell-level DT gathers — sized to `dt_indices.len()` per cell.
-    dt_areas: Vec<f64>,
-    dt_scores: Vec<f64>,
-    dt_ids: Vec<i64>,
+    pub(crate) dt_areas: Vec<f64>,
+    pub(crate) dt_scores: Vec<f64>,
+    pub(crate) dt_ids: Vec<i64>,
     /// Backing storage for the `(g, d)` IoU matrix. Resized + zeroed
     /// per cell; the kernel writes through an `ArrayViewMut2` that
     /// borrows this buffer in place.
-    iou_buf: Vec<f64>,
+    pub(crate) iou_buf: Vec<f64>,
     /// Score gather scratch for [`dt_top_indices_for_cell_into`].
-    dt_score_buf: Vec<f64>,
+    pub(crate) dt_score_buf: Vec<f64>,
     /// Permutation scratch for [`dt_top_indices_for_cell_into`].
-    dt_perm_buf: Vec<usize>,
+    pub(crate) dt_perm_buf: Vec<usize>,
     /// Per-area-range `gt_ignore` mask reused across each call to
     /// [`evaluate_cell`] (the four COCO area ranges times every cell —
     /// passing through scratch elides one `Vec<bool>` allocation per
     /// area-range pass).
-    gt_ignore_buf: Vec<bool>,
+    pub(crate) gt_ignore_buf: Vec<bool>,
 }
 
 impl CellScratch {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 }
 
 /// Area-invariant per-cell buffers shared across every area-range pass.
-struct CellBuffers<'a> {
-    image_id: i64,
-    category_id: i64,
-    max_det: usize,
-    gt_areas: &'a [f64],
-    gt_iscrowd: &'a [bool],
-    gt_base_ignore: &'a [bool],
-    gt_ids: &'a [i64],
-    dt_areas: &'a [f64],
-    dt_scores: &'a [f64],
-    dt_ids: &'a [i64],
-    iou: ArrayView2<'a, f64>,
+pub(crate) struct CellBuffers<'a> {
+    pub(crate) image_id: i64,
+    pub(crate) category_id: i64,
+    pub(crate) max_det: usize,
+    pub(crate) gt_areas: &'a [f64],
+    pub(crate) gt_iscrowd: &'a [bool],
+    pub(crate) gt_base_ignore: &'a [bool],
+    pub(crate) gt_ids: &'a [i64],
+    pub(crate) dt_areas: &'a [f64],
+    pub(crate) dt_scores: &'a [f64],
+    pub(crate) dt_ids: &'a [i64],
+    pub(crate) iou: ArrayView2<'a, f64>,
     /// LVIS federated AA3: when `true`, the entire `(image, category)`
     /// cell is in `not_exhaustive_category_ids[image]`, so every
     /// unmatched DT in the cell gets `dt_ignore = true` (mirrors
     /// lvis-api `eval.py:278`). `false` outside LVIS evaluation.
-    not_exhaustive: bool,
+    pub(crate) not_exhaustive: bool,
 }
 
-fn evaluate_cell(
+pub(crate) fn evaluate_cell(
     gt_ignore_buf: &mut Vec<bool>,
     buf: &CellBuffers<'_>,
     area: &AreaRange,

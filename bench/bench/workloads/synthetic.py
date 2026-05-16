@@ -201,3 +201,34 @@ def make_workload_scaled(
         seed=seed,
         iscrowd_fraction=iscrowd_fraction,
     )
+
+
+# ADR-0047 threading-scaling smoke fixture. Intentionally small —
+# this exists to validate the plumbing of the ``num_threads`` axis end
+# to end (workload → CellSpec → runner → result-store path), not to
+# produce release-gated scaling numbers. The full sweep
+# (val2017 / LVIS / panoptic / ADE20K) is its own operation. Keep this
+# small enough that ``just bench-threads-smoke`` finishes in <60s on a
+# laptop.
+THREADS_SMOKE_WORKLOAD_ID = "synthetic_threads_smoke"
+THREADS_SMOKE_N_IMAGES = 100
+THREADS_SMOKE_N_CATEGORIES = 10
+THREADS_SMOKE_SEED = 0
+THREADS_SMOKE_NUM_THREADS: tuple[int, ...] = (1, 2, 4, 8)
+# Match the registry defaults in :mod:`bench.workloads.__init__` so the
+# smoke fixture's on-disk cache slot is shared with a hypothetical
+# ``synthetic:n_images=100,n_categories=10,seed=0`` invocation.
+_THREADS_SMOKE_DT_PER_IMAGE = 30
+_THREADS_SMOKE_GT_PER_IMAGE = 10
+
+
+def threads_smoke_paths() -> tuple[Path, Path]:
+    """Materialize (or look up) the GT/DT pair backing the
+    ``synthetic_threads_smoke`` workload."""
+    return make_workload(
+        n_images=THREADS_SMOKE_N_IMAGES,
+        n_categories=THREADS_SMOKE_N_CATEGORIES,
+        dt_per_image=_THREADS_SMOKE_DT_PER_IMAGE,
+        gt_per_image=_THREADS_SMOKE_GT_PER_IMAGE,
+        seed=THREADS_SMOKE_SEED,
+    )

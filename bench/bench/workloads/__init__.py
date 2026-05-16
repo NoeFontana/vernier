@@ -73,11 +73,18 @@ class _WorkloadBase(BaseModel):
     """Common base — every variant is frozen and rejects unknown
     fields. Carries the ``workload_id`` (the human-facing handle the
     CLI prints) and the discriminator field on subclasses.
+
+    ``num_threads`` is the ADR-0047 fan-out axis: a tuple of thread
+    counts (``None`` = library default, i.e. single-threaded) the CLI
+    expands into one :class:`CellSpec` per entry. The default
+    ``(None,)`` preserves the pre-ADR-0047 single-cell behavior — every
+    existing workload keeps emitting exactly one cell.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
     workload_id: str
+    num_threads: tuple[int | None, ...] = (None,)
 
 
 class InstanceWorkload(_WorkloadBase):
@@ -294,6 +301,20 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             gt_path=gt,
             dt_path=dt,
             supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
+        )
+
+    # ADR-0047 threading-scaling smoke fixture. Reuses the synthetic
+    # GT/DT factory but pins ``num_threads`` so the CLI fans out one
+    # cell per thread count. Bbox-only — that's the kernel ADR-0047
+    # Stage A parallelized first.
+    if workload_name == synthetic.THREADS_SMOKE_WORKLOAD_ID:
+        gt, dt = synthetic.threads_smoke_paths()
+        return InstanceWorkload(
+            workload_id=synthetic.THREADS_SMOKE_WORKLOAD_ID,
+            gt_path=gt,
+            dt_path=dt,
+            supported_iou_types=frozenset({"bbox"}),
+            num_threads=synthetic.THREADS_SMOKE_NUM_THREADS,
         )
 
     if m := _COCO_JITTERED_RE.match(workload_name):

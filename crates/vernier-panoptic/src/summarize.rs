@@ -15,6 +15,8 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use rayon::prelude::*;
+
 use crate::attribute::{attribute_image, PqStat};
 use crate::boundary::{BoundaryConfig, BoundaryScratch};
 use crate::dataset::{
@@ -286,6 +288,33 @@ pub fn evaluate_with_options(
     )
 }
 
+/// Parallel sibling of [`evaluate_with_options`] (ADR-0047). Caller
+/// `install`s a `rayon::ThreadPool` around the call; the per-image
+/// deltas are folded in image-id-ascending order so the result is
+/// bit-equal to the sequential path regardless of par_iter completion
+/// order.
+///
+/// # Errors
+/// Propagates [`PanopticError`] from any per-image kernel call.
+pub fn evaluate_with_options_parallel(
+    gt: &PanopticDataset,
+    dt: &PanopticPredictions,
+    mode: ParityMode,
+    things_stuff_split: bool,
+    options: &EvaluateOptions<'_>,
+) -> Result<PanopticSummary, PanopticError> {
+    let per_image = evaluate_per_image_parallel(gt, dt, mode, options)?;
+    let categories = options.categories_override.unwrap_or(&gt.categories);
+    let acc = fold_per_image(&per_image, None);
+    summarize_from_acc_with_options(
+        acc,
+        categories,
+        mode,
+        things_stuff_split,
+        &options.summarize,
+    )
+}
+
 /// Per-image accumulator delta produced by [`evaluate_per_image`]:
 /// the per-category [`PqStat`] map attributed to one image. The
 /// partition orchestrator stores a sorted `Vec<PerImageAccum>` once
@@ -355,6 +384,78 @@ pub fn evaluate_per_image(
         let per_image = attribute_image(gt_entry, dt_entry, &report, mode);
         out.push((*image_id, per_image));
     }
+    Ok(out)
+}
+
+/// Parallel sibling of [`evaluate_per_image`] (ADR-0047). Per-image
+/// matching + attribution under `par_iter` against the ambient rayon
+/// pool; results re-sorted by `image_id` before returning so
+/// [`fold_per_image`] runs the f64 sum in canonical order — strict-
+/// mode bit-equality follows by construction. Per-thread
+/// [`BoundaryScratch`] via `map_init`; no cross-thread state.
+///
+/// # Errors
+/// First [`PanopticError`] from any per-image kernel call.
+pub fn evaluate_per_image_parallel(
+    gt: &PanopticDataset,
+    dt: &PanopticPredictions,
+    mode: ParityMode,
+    options: &EvaluateOptions<'_>,
+) -> Result<Vec<PerImageAccum>, PanopticError> {
+    let mut sorted_gt: Vec<(&ImageId, &ImageEntry)> = gt.images.iter().collect();
+    sorted_gt.sort_unstable_by_key(|(id, _)| *id);
+    let threshold = options.pq_iou_threshold.unwrap_or(PANOPTIC_IOU_THRESHOLD);
+    let categories = options.categories_override.unwrap_or(&gt.categories);
+    let max_category_id: u32 = categories
+        .keys()
+        .copied()
+        .filter_map(|id| u32::try_from(id).ok())
+        .max()
+        .unwrap_or(0);
+    let boundary = options.boundary;
+
+    // Resolve dt entries up front so the par_iter body is `&` borrows
+    // only — keeps the closure `Send` without cloning ImageEntry.
+    let resolved: Vec<(ImageId, &ImageEntry, &ImageEntry)> = sorted_gt
+        .into_iter()
+        .map(|(image_id, gt_entry)| {
+            let dt_entry =
+                dt.images
+                    .get(image_id)
+                    .ok_or(PanopticError::MissingPredictionsForImage {
+                        image_id: *image_id,
+                    })?;
+            Ok((*image_id, gt_entry, dt_entry))
+        })
+        .collect::<Result<_, PanopticError>>()?;
+
+    let mut out: Vec<(ImageId, HashMap<CategoryId, PqStat>)> = resolved
+        .into_par_iter()
+        .map_init(
+            || (BoundaryScratch::new(), BoundaryScratch::new()),
+            |(gt_scratch, dt_scratch), (image_id, gt_entry, dt_entry)| {
+                let report = match boundary {
+                    None => pq_image_at_threshold(image_id, gt_entry, dt_entry, threshold)?,
+                    Some(cfg) => pq_image_at_threshold_with_boundary(
+                        image_id,
+                        gt_entry,
+                        dt_entry,
+                        threshold,
+                        cfg,
+                        max_category_id,
+                        gt_scratch,
+                        dt_scratch,
+                    )?,
+                };
+                let per_image = attribute_image(gt_entry, dt_entry, &report, mode);
+                Ok::<_, PanopticError>((image_id, per_image))
+            },
+        )
+        .collect::<Result<_, _>>()?;
+
+    // Restore canonical image-id-ascending order before the f64 fold
+    // sees the deltas — par_iter completion order is non-deterministic.
+    out.sort_by_key(|(id, _)| *id);
     Ok(out)
 }
 

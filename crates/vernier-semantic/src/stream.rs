@@ -23,6 +23,7 @@
 
 use std::collections::HashSet;
 
+use rayon::prelude::*;
 use vernier_partial::RankId;
 
 use crate::distributed::{encode, semantic_expectation, EncodeInput, SemanticMergeAccumulator};
@@ -151,6 +152,73 @@ impl StreamingSemanticEvaluator {
         accumulate_confusion(gt, dt, self.ignore_label, &mut self.confusion);
         self.n_images += 1;
         self.seen_images.insert(image_id);
+        Ok(())
+    }
+
+    /// Parallel sibling of [`Self::update`] over a slice of per-image
+    /// `(image_id, gt, dt)` triples (ADR-0047). Each rayon worker
+    /// accumulates a thread-local confusion matrix; the u64-additive
+    /// reduction is order-independent, so the result is bit-equal to
+    /// the sequential path across every thread count.
+    ///
+    /// Caller `install`s a `rayon::ThreadPool` around the call; no
+    /// pool is built here. Empty slice is a no-op.
+    ///
+    /// # Errors
+    /// [`SemanticError::ShapeMismatch`] from the first length-mismatched
+    /// `(gt, dt)` pair (par_iter short-circuits).
+    pub fn update_parsed_parallel<T: kernel::ClassId + Send + Sync>(
+        &mut self,
+        items: &[(ImageId, &[T], &[T])],
+    ) -> Result<(), SemanticError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        // Validate lengths up-front in parallel; the per-thread fold
+        // assumes `gt.len() == dt.len()` and otherwise we'd debug-assert
+        // in the kernel. par_iter short-circuits on the first error.
+        items
+            .par_iter()
+            .try_for_each(|(image_id, gt, dt)| -> Result<(), SemanticError> {
+                if gt.len() != dt.len() {
+                    return Err(SemanticError::ShapeMismatch {
+                        image_id: *image_id,
+                        gt_shape: (1, gt.len() as u32),
+                        dt_shape: (1, dt.len() as u32),
+                    });
+                }
+                Ok(())
+            })?;
+
+        let n_classes = self.confusion.n_classes();
+        let ignore_label = self.ignore_label;
+
+        // Tree-reduction: each task starts from a per-thread zero
+        // matrix, folds in its image, and reduces pairwise. The fold
+        // is u64-additive, so the reduction order is irrelevant —
+        // strict-mode bit-equality holds for every thread count.
+        let summed = items
+            .par_iter()
+            .fold(
+                || ConfusionMatrix::zeros(n_classes),
+                |mut acc, (_, gt, dt)| {
+                    accumulate_confusion(gt, dt, ignore_label, &mut acc);
+                    acc
+                },
+            )
+            .reduce(
+                || ConfusionMatrix::zeros(n_classes),
+                |mut a, b| {
+                    a.add_assign_unchecked(&b);
+                    a
+                },
+            );
+
+        self.confusion.add_assign_unchecked(&summed);
+        self.n_images += items.len();
+        for (image_id, _, _) in items {
+            self.seen_images.insert(*image_id);
+        }
         Ok(())
     }
 
@@ -316,5 +384,67 @@ mod tests {
         let ev = StreamingSemanticEvaluator::new(19, Some(255), ParityMode::Strict);
         assert_eq!(ev.n_classes(), 19);
         assert_eq!(ev.n_images(), 0);
+    }
+
+    #[test]
+    fn parallel_update_bit_equals_sequential() -> Result<(), SemanticError> {
+        // u64-additive: parallel and sequential folds over the same
+        // batch must produce identical confusion matrices.
+        let pairs: Vec<(ImageId, Vec<u32>, Vec<u32>)> = vec![
+            (1, vec![0u32, 1, 2, 0], vec![0u32, 1, 2, 1]),
+            (2, vec![1u32, 1, 0, 2, 2], vec![1u32, 0, 0, 2, 1]),
+            (3, vec![0u32, 0, 0, 0], vec![0u32, 1, 0, 0]),
+            (4, vec![2u32, 2, 2, 2], vec![2u32, 2, 2, 0]),
+        ];
+
+        let mut seq = StreamingSemanticEvaluator::new(3, None, ParityMode::Strict);
+        for (iid, g, d) in &pairs {
+            seq.update(*iid, g, d)?;
+        }
+
+        let mut par = StreamingSemanticEvaluator::new(3, None, ParityMode::Strict);
+        let items: Vec<(ImageId, &[u32], &[u32])> = pairs
+            .iter()
+            .map(|(iid, g, d)| (*iid, g.as_slice(), d.as_slice()))
+            .collect();
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("pool");
+        pool.install(|| par.update_parsed_parallel(&items))?;
+
+        assert_eq!(seq.confusion().counts(), par.confusion().counts());
+        assert_eq!(seq.n_images(), par.n_images());
+        Ok(())
+    }
+
+    #[test]
+    fn parallel_update_propagates_shape_mismatch() {
+        let mut par = StreamingSemanticEvaluator::new(3, None, ParityMode::Strict);
+        let g = vec![0u32, 1];
+        let d = vec![0u32];
+        let items: Vec<(ImageId, &[u32], &[u32])> = vec![(7, g.as_slice(), d.as_slice())];
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .expect("pool");
+        let err = pool
+            .install(|| par.update_parsed_parallel(&items))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            SemanticError::ShapeMismatch { image_id: 7, .. }
+        ));
+        // Failed validation does not mutate state.
+        assert_eq!(par.n_images(), 0);
+    }
+
+    #[test]
+    fn parallel_update_empty_is_noop() -> Result<(), SemanticError> {
+        let mut par = StreamingSemanticEvaluator::new(3, None, ParityMode::Strict);
+        let items: Vec<(ImageId, &[u32], &[u32])> = Vec::new();
+        par.update_parsed_parallel(&items)?;
+        assert_eq!(par.n_images(), 0);
+        Ok(())
     }
 }
