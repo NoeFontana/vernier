@@ -1751,6 +1751,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -1978,6 +2006,7 @@
 
 
 <h1 id="your-first-evaluation">Your first evaluation</h1>
+<p><a href="https://colab.research.google.com/github/NoeFontana/vernier/blob/main/docs/tutorials/notebooks/colab_smoke.ipynb"><img alt="Open In Colab" src="https://colab.research.google.com/assets/colab-badge.svg" /></a></p>
 <p>This tutorial runs vernier end-to-end on COCO val2017 in the two
 shapes most users start with:</p>
 <ul>
@@ -2039,19 +2068,26 @@ the worker thread, and accepts a <code>CocoDataset</code> so the GT-side
 derivation cache (ADR-0020) is reused across every epoch's
 <code>submit()</code> rounds.</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">import</span><span class="w"> </span><span class="nn">json</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">CocoDataset</span><span class="p">,</span> <span class="n">Evaluator</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">gt</span> <span class="o">=</span> <span class="n">CocoDataset</span><span class="o">.</span><span class="n">from_json</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">&quot;instances_val2017.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">())</span>
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="n">evaluator</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">())</span>
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>
-</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="k">for</span> <span class="n">epoch</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_epochs</span><span class="p">):</span>
-</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>    <span class="k">with</span> <span class="n">evaluator</span><span class="o">.</span><span class="n">background</span><span class="p">(</span><span class="n">gt</span><span class="p">)</span> <span class="k">as</span> <span class="n">bg</span><span class="p">:</span>
-</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>        <span class="k">for</span> <span class="n">images</span><span class="p">,</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">val_loader</span><span class="p">:</span>
-</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>            <span class="n">detections</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">images</span><span class="p">)</span>  <span class="c1"># list[{image_id, category_id, bbox, score}]</span>
-</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>            <span class="n">bg</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">detections</span><span class="p">)</span><span class="o">.</span><span class="n">encode</span><span class="p">())</span>
-</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>        <span class="n">summary</span> <span class="o">=</span> <span class="n">bg</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
-</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;epoch </span><span class="si">{</span><span class="n">epoch</span><span class="si">}</span><span class="s2">: AP =&quot;</span><span class="p">,</span> <span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="s2">&quot;AP50 =&quot;</span><span class="p">,</span> <span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">CocoDataset</span><span class="p">,</span> <span class="n">Evaluator</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="n">gt</span> <span class="o">=</span> <span class="n">CocoDataset</span><span class="o">.</span><span class="n">from_json</span><span class="p">(</span><span class="n">Path</span><span class="p">(</span><span class="s2">&quot;instances_val2017.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">())</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">evaluator</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">())</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="k">for</span> <span class="n">epoch</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">num_epochs</span><span class="p">):</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>    <span class="k">with</span> <span class="n">evaluator</span><span class="o">.</span><span class="n">background</span><span class="p">(</span><span class="n">gt</span><span class="p">)</span> <span class="k">as</span> <span class="n">bg</span><span class="p">:</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>        <span class="k">for</span> <span class="n">images</span><span class="p">,</span> <span class="n">targets</span> <span class="ow">in</span> <span class="n">val_loader</span><span class="p">:</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a>            <span class="c1"># torchvision detection API: model(images) -&gt; list[dict] of</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>            <span class="c1"># length batch_size, each carrying &quot;boxes&quot; (N,4 xywh),</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a>            <span class="c1"># &quot;scores&quot; (N,), &quot;labels&quot; (N,) as torch.Tensor. vernier</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a>            <span class="c1"># ingests any DLPack-producing array library (torch, jax,</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a>            <span class="c1"># cupy, numpy) zero-copy via ADR-0030.</span>
+</span><span id="__span-2-15"><a id="__codelineno-2-15" name="__codelineno-2-15" href="#__codelineno-2-15"></a>            <span class="n">predictions</span> <span class="o">=</span> <span class="n">model</span><span class="p">(</span><span class="n">images</span><span class="p">)</span>
+</span><span id="__span-2-16"><a id="__codelineno-2-16" name="__codelineno-2-16" href="#__codelineno-2-16"></a>            <span class="n">bg</span><span class="o">.</span><span class="n">submit</span><span class="p">([</span>
+</span><span id="__span-2-17"><a id="__codelineno-2-17" name="__codelineno-2-17" href="#__codelineno-2-17"></a>                <span class="p">{</span><span class="s2">&quot;image_id&quot;</span><span class="p">:</span> <span class="nb">int</span><span class="p">(</span><span class="n">t</span><span class="p">[</span><span class="s2">&quot;image_id&quot;</span><span class="p">]),</span> <span class="o">**</span><span class="n">p</span><span class="p">}</span>
+</span><span id="__span-2-18"><a id="__codelineno-2-18" name="__codelineno-2-18" href="#__codelineno-2-18"></a>                <span class="k">for</span> <span class="n">t</span><span class="p">,</span> <span class="n">p</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="n">targets</span><span class="p">,</span> <span class="n">predictions</span><span class="p">)</span>
+</span><span id="__span-2-19"><a id="__codelineno-2-19" name="__codelineno-2-19" href="#__codelineno-2-19"></a>            <span class="p">])</span>
+</span><span id="__span-2-20"><a id="__codelineno-2-20" name="__codelineno-2-20" href="#__codelineno-2-20"></a>        <span class="n">summary</span> <span class="o">=</span> <span class="n">bg</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</span><span id="__span-2-21"><a id="__codelineno-2-21" name="__codelineno-2-21" href="#__codelineno-2-21"></a>    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;epoch </span><span class="si">{</span><span class="n">epoch</span><span class="si">}</span><span class="s2">: AP =&quot;</span><span class="p">,</span> <span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="s2">&quot;AP50 =&quot;</span><span class="p">,</span> <span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">1</span><span class="p">])</span>
 </span></code></pre></div>
 <p>For boundary IoU (<code>Evaluator(iou=Boundary())</code>) the <code>CocoDataset</code> path
 collapses the per-epoch GT-band derivation cost (~36k Chebyshev
@@ -2060,11 +2096,11 @@ benefit is just the one-shot JSON parse. If you don't reuse the GT
 across epochs, pass the bytes directly to
 <code>BackgroundEvaluator(gt_bytes, iou_type="bbox")</code> and the constructor
 takes the same one-shot path it always has.</p>
-<p><code>submit(detections)</code> accepts the same loadRes-shaped JSON bytes that
-<code>evaluate(...)</code> accepts and blocks if the bounded worker queue is
-full; pass <code>timeout=</code> to surface back-pressure as a typed
-<code>QueueFullError</code> instead. The full API surface — queue sizing,
-memory budget, array-form ingest, multi-rank — lives in
+<p><code>submit(detections)</code> accepts either the array shape above or the
+loadRes-shaped JSON bytes <code>evaluate(...)</code> accepts. It blocks if the
+bounded worker queue is full; pass <code>timeout=</code> to surface back-pressure
+as a typed <code>QueueFullError</code> instead. The full API surface — queue
+sizing, memory budget, multi-rank — lives in
 <a href="../../how-to/background-evaluator/"><code>how-to/background-evaluator.md</code></a>.</p>
 <h2 id="what-the-output-means">What the output means</h2>
 <p><code>pretty_lines()</code> returns the 12-line block pycocotools'
