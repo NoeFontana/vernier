@@ -27,12 +27,12 @@ serde_json = { workspace = true }
 # result-tables interface (ADR-0019). This is the first dep-edge
 # asymmetry vs vernier-panoptic ⊥ vernier-core; the ADR justifies it
 # as concrete reuse rather than philosophical isolation.
-vernier-core = { path = "../vernier-core", version = "0.0.3" }
+vernier-core = { path = "../vernier-core", version = "0.0.4" }
 # Shared partial wire envelope and merge policy (ADR-0032). Carries
 # magic + version + framing + the five typed errors used by every
 # paradigm. vernier-semantic plugs its `WireSemanticBody` into the
 # same envelope without leaning on additional `vernier-core` surface.
-vernier-partial = { path = "../vernier-partial", version = "0.0.3" }
+vernier-partial = { path = "../vernier-partial", version = "0.0.4" }
 # rkyv archives the `WireSemanticBody` for the partial wire format
 # (ADR-0032). Direct dep even though `vernier-partial` transitively
 # pulls it — semantic's own body archive is its concern.
