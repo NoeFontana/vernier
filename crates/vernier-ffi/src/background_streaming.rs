@@ -25,7 +25,7 @@
 //! once (`Duration::ZERO`) or waits up to `timeout`.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, RecvError, SyncSender, TrySendError};
+use std::sync::mpsc::{sync_channel, Receiver, RecvError, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -58,6 +58,24 @@ pub(crate) trait BackgroundCapable: Send + 'static {
     /// alive so a fresh submit can land after the FFI surfaces the
     /// error.
     fn apply_update(&mut self, update: Self::Update) -> Result<(), Self::Error>;
+
+    /// Apply a batch of updates inside an ambient rayon pool (the
+    /// worker `install`s the pool around this call when one is
+    /// configured). Paradigms whose streaming evaluator has a parallel
+    /// sibling override this to dispatch to it; the default impl falls
+    /// back to a sequential per-update loop so impls without a
+    /// parallel kernel cost nothing to opt in.
+    ///
+    /// The worker only calls this on the pool-built path
+    /// (`BackgroundConfig.num_threads = Some(_)`). Single-threaded
+    /// users hit [`Self::apply_update`] directly with no batching
+    /// overhead.
+    fn apply_update_parallel(&mut self, batch: Vec<Self::Update>) -> Result<(), Self::Error> {
+        for update in batch {
+            self.apply_update(update)?;
+        }
+        Ok(())
+    }
 
     /// Drain and finalize. Consumes the evaluator.
     fn finalize(self) -> Result<Self::Summary, Self::Error>;
@@ -577,22 +595,88 @@ fn worker_loop<E: BackgroundCapable>(
         *guard = Some(outcome);
     }
 
+    // ADR-0047: when `num_threads = Some(n)`, build a per-worker
+    // `rayon::ThreadPool` once and route batched updates through it
+    // via `pool.install(|| evaluator.apply_update_parallel(batch))`.
+    // `None` keeps the pre-Stage-A no-pool path: no Vec allocation,
+    // no `try_recv` drain, no rayon symbol entered. Streaming callers
+    // who never set `num_threads` see byte-for-byte the original loop
+    // body inside the `None` arm below.
+    //
+    // Pool-build failure stashes a typed `Err` into
+    // `scheduling_outcome` and falls back to sequential per-update
+    // application; the worker stays alive for any subsequent submits.
+    let pool: Option<rayon::ThreadPool> = match config.num_threads {
+        None => None,
+        Some(n) => match crate::threads::build_worker_pool(n, config.worker_nice) {
+            Ok(p) => Some(p),
+            Err(detail) => {
+                crate::threads::stash_pool_build_failure(&state.scheduling_outcome, detail);
+                None
+            }
+        },
+    };
+
     loop {
         match rx.recv() {
-            Ok(WorkerMessage::Update(update)) => {
-                state.queue_depth.fetch_sub(1, Ordering::AcqRel);
-                match evaluator.apply_update(update) {
-                    Ok(()) => {
-                        state
-                            .images_seen
-                            .store(evaluator.images_seen(), Ordering::Release);
-                        state
-                            .memory_used_bytes
-                            .store(evaluator.memory_used_bytes(), Ordering::Release);
+            Ok(WorkerMessage::Update(first)) => {
+                match pool.as_ref() {
+                    None => {
+                        // Pre-Stage-A path — byte-for-byte unchanged.
+                        state.queue_depth.fetch_sub(1, Ordering::AcqRel);
+                        apply_one(&mut evaluator, first, state.as_ref());
                     }
-                    Err(e) => {
-                        if let Ok(mut guard) = state.last_error.lock() {
-                            *guard = Some(e);
+                    Some(p) => {
+                        // Drain everything currently in the channel
+                        // into a single batch and apply it under the
+                        // per-worker pool. Batch size self-tunes to
+                        // producer/consumer rates: a fast producer
+                        // fills the queue and the worker sees near-
+                        // full batches; a slow streaming producer
+                        // sees batches of 1–2 with little parallel
+                        // benefit but only a `try_recv` of overhead.
+                        let mut batch: Vec<E::Update> = Vec::with_capacity(8);
+                        batch.push(first);
+                        let mut pending_control: Option<WorkerMessage<E>> = None;
+                        loop {
+                            match rx.try_recv() {
+                                Ok(WorkerMessage::Update(u)) => batch.push(u),
+                                Ok(other) => {
+                                    // Defer the control message until
+                                    // after we apply the in-flight
+                                    // batch — submission order stays
+                                    // preserved relative to any
+                                    // finalize / shutdown.
+                                    pending_control = Some(other);
+                                    break;
+                                }
+                                Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
+                            }
+                        }
+                        state.queue_depth.fetch_sub(batch.len(), Ordering::AcqRel);
+                        apply_batch(&mut evaluator, p, batch, state.as_ref());
+                        if let Some(ctrl) = pending_control {
+                            match ctrl {
+                                WorkerMessage::Finalize { reply } => {
+                                    let s = evaluator.finalize();
+                                    let _ = reply.send(s);
+                                    return;
+                                }
+                                WorkerMessage::FinalizeToPartial { reply } => {
+                                    let p = evaluator.finalize_to_partial();
+                                    let _ = reply.send(p);
+                                    return;
+                                }
+                                WorkerMessage::Shutdown => return,
+                                #[cfg(feature = "test-poison")]
+                                WorkerMessage::Poison => {
+                                    #[allow(clippy::panic)]
+                                    {
+                                        panic!("test-only worker panic");
+                                    }
+                                }
+                                WorkerMessage::Update(_) => unreachable!(),
+                            }
                         }
                     }
                 }
@@ -614,6 +698,56 @@ fn worker_loop<E: BackgroundCapable>(
                 {
                     panic!("test-only worker panic");
                 }
+            }
+        }
+    }
+}
+
+/// Single-update apply + state update — extracted so the no-pool fast
+/// path and the (currently unused) re-entry from the drain loop share
+/// one implementation.
+fn apply_one<E: BackgroundCapable>(
+    evaluator: &mut E,
+    update: E::Update,
+    state: &BackgroundState<E>,
+) {
+    match evaluator.apply_update(update) {
+        Ok(()) => {
+            state
+                .images_seen
+                .store(evaluator.images_seen(), Ordering::Release);
+            state
+                .memory_used_bytes
+                .store(evaluator.memory_used_bytes(), Ordering::Release);
+        }
+        Err(e) => {
+            if let Ok(mut guard) = state.last_error.lock() {
+                *guard = Some(e);
+            }
+        }
+    }
+}
+
+/// Batch apply under the per-worker rayon pool.
+fn apply_batch<E: BackgroundCapable>(
+    evaluator: &mut E,
+    pool: &rayon::ThreadPool,
+    batch: Vec<E::Update>,
+    state: &BackgroundState<E>,
+) {
+    let result = pool.install(|| evaluator.apply_update_parallel(batch));
+    match result {
+        Ok(()) => {
+            state
+                .images_seen
+                .store(evaluator.images_seen(), Ordering::Release);
+            state
+                .memory_used_bytes
+                .store(evaluator.memory_used_bytes(), Ordering::Release);
+        }
+        Err(e) => {
+            if let Ok(mut guard) = state.last_error.lock() {
+                *guard = Some(e);
             }
         }
     }

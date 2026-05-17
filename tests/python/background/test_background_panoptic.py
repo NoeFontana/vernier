@@ -146,3 +146,39 @@ def test_finalize_then_use_raises() -> None:
     bg.finalize()
     with pytest.raises(Exception, match="already been finalized"):
         bg.finalize()
+
+
+@pytest.mark.parity_threads
+@pytest.mark.parametrize("num_threads", [None, 1, 2, 4])
+def test_background_num_threads_bit_equal_to_sequential(num_threads: int | None) -> None:
+    """ADR-0047 Stage B: per-worker rayon pool with drain-batched
+    `update_parsed_parallel` must produce a finalize summary
+    bit-equal to the single-threaded path for the same submission
+    sequence. The strict-mode worker sorts per-image deltas by
+    image_id before folding, so cross-batch order doesn't perturb
+    the f64 PqStat fold.
+    """
+    seeds = list(range(16))
+
+    reference_bg = pq.BackgroundEvaluator(_CATS, "strict", retain_per_image_deltas=True)
+    for s in seeds:
+        gt_lm, gt_si, dt_lm, dt_si = _image(s)
+        reference_bg.submit(s, gt_lm, gt_si, dt_lm, dt_si)
+    reference = reference_bg.finalize()
+
+    threaded_bg = pq.BackgroundEvaluator(
+        _CATS,
+        "strict",
+        retain_per_image_deltas=True,
+        num_threads=num_threads,
+    )
+    for s in seeds:
+        gt_lm, gt_si, dt_lm, dt_si = _image(s)
+        threaded_bg.submit(s, gt_lm, gt_si, dt_lm, dt_si)
+    threaded = threaded_bg.finalize()
+
+    assert threaded.pq == reference.pq
+    assert threaded.sq == reference.sq
+    assert threaded.rq == reference.rq
+    assert threaded.pq_things == reference.pq_things
+    assert threaded.pq_stuff == reference.pq_stuff

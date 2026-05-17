@@ -110,6 +110,45 @@ pub(crate) fn build_scoped_pool(n: NonZeroUsize) -> Result<rayon::ThreadPool, St
         .map_err(|e| format!("failed to build rayon pool of {} threads: {e}", n.get()))
 }
 
+/// Stash a pool-build failure onto a `BackgroundState::scheduling_outcome`
+/// slot (the shape both [`crate::background`] and
+/// [`crate::background_streaming`] expose to the FFI). Best-effort:
+/// poisoned mutex ⇒ drop silently; the worker stays alive on the
+/// sequential fallback regardless. Only overwrites an existing
+/// `Ok(())` outcome — a prior `Err` is kept (it is more informative
+/// than "pool failed to build at startup").
+pub(crate) fn stash_pool_build_failure(
+    slot: &std::sync::Mutex<Option<Result<(), String>>>,
+    detail: String,
+) {
+    let Ok(mut guard) = slot.lock() else { return };
+    let prior_ok = matches!(*guard, Some(Ok(())));
+    if guard.is_none() || prior_ok {
+        *guard = Some(Err(detail));
+    }
+}
+
+/// Build a per-worker `rayon::ThreadPool` for a `BackgroundEvaluator`
+/// (ADR-0047 §"BackgroundEvaluator shape"). Differs from
+/// [`build_scoped_pool`] in two ways:
+///
+/// - Thread name is `vernier-bg-rayon-{i}` so kernel-level traces can
+///   distinguish background-pool threads from batch-pool threads.
+/// - Each pool thread re-applies `worker_nice` in its
+///   `start_handler`. On Linux `setpriority(PRIO_PROCESS, …)` applies
+///   process-wide so the inherit is automatic; on non-Linux the nice
+///   value is per-thread and must be re-applied explicitly.
+pub(crate) fn build_worker_pool(n: NonZeroUsize, nice: i32) -> Result<rayon::ThreadPool, String> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(n.get())
+        .thread_name(|i| format!("vernier-bg-rayon-{i}"))
+        .start_handler(move |_idx| {
+            let _ = crate::thread_sched::set_thread_nice(nice);
+        })
+        .build()
+        .map_err(|e| format!("failed to build rayon pool of {} threads: {e}", n.get()))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
