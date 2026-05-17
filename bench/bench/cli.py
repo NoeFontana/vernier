@@ -138,6 +138,19 @@ def main() -> None:
     default=False,
     help="Skip the cross-impl parity check after the fan-out.",
 )
+@click.option(
+    "--num-threads",
+    "num_threads_spec",
+    type=str,
+    default=None,
+    help=(
+        "ADR-0047 thread-axis override. Comma-separated list of thread "
+        "counts (e.g. '1,2,4,8') overriding the workload's pinned "
+        "``num_threads`` tuple. ``0`` or empty values are rejected; "
+        "use ``--num-threads default`` (or omit the flag) to keep the "
+        "workload's pin."
+    ),
+)
 def run_cmd(
     impl: str,
     workload: str,
@@ -146,6 +159,7 @@ def run_cmd(
     mode: str,
     run_seed: int,
     no_parity: bool,
+    num_threads_spec: str | None,
 ) -> None:
     try:
         workload_obj = resolve(workload, REPO_ROOT)
@@ -155,6 +169,19 @@ def run_cmd(
         raise click.ClickException(str(e)) from e
     iou = cast(IouType, iou_type)
     mode_typed = cast(Mode, mode)
+
+    if num_threads_spec is not None and num_threads_spec != "default":
+        try:
+            override = tuple(int(s) for s in num_threads_spec.split(",") if s.strip())
+        except ValueError as e:
+            raise click.ClickException(
+                f"--num-threads expects a comma-separated list of ints; got {num_threads_spec!r}"
+            ) from e
+        if not override or any(n < 1 for n in override):
+            raise click.ClickException(
+                f"--num-threads entries must be positive ints; got {num_threads_spec!r}"
+            )
+        workload_obj = workload_obj.model_copy(update={"num_threads": override})
 
     # Resolve --paradigm against the workload's discriminator. ``all``
     # is reserved for the Phase-C cross-paradigm dry-run; today only

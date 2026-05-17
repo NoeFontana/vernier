@@ -607,6 +607,7 @@ def run_cocoeval_pipeline(
     impl_version: str,
     coco_cls: type[Any],
     cocoeval_cls: type[Any],
+    cocoeval_kwargs: dict[str, Any] | None = None,
 ) -> None:
     """Run the standard COCO/COCOeval load → evaluate → accumulate →
     summarize chain inside a stdout redirect, then persist outputs.
@@ -616,13 +617,20 @@ def run_cocoeval_pipeline(
     its drop-ins all print progress from inside ``COCO`` /
     ``loadRes`` / ``summarize``; one outer redirect is cleaner than
     sprinkling them.
+
+    ``cocoeval_kwargs`` is forwarded to the ``cocoeval_cls`` constructor
+    alongside ``iouType``. Used today by the faster-coco-eval runner to
+    pass ``boundary_cpu_count`` when the cell pins ``num_threads`` on a
+    boundary-IoU cell — the only surface in any pycocotools-shaped
+    drop-in that exposes a thread knob (ADR-0047).
     """
     stages = StageTable()
+    extra: dict[str, Any] = dict(cocoeval_kwargs or {})
     with contextlib.redirect_stdout(io.StringIO()):
         with stages.stage("load"):
             gt = coco_cls(str(args.gt))
             dt = gt.loadRes(str(args.dt))
-            cocoeval = cocoeval_cls(gt, dt, iouType=args.iou_type)
+            cocoeval = cocoeval_cls(gt, dt, iouType=args.iou_type, **extra)
         with stages.stage("evaluate"):
             cocoeval.evaluate()
         with stages.stage("accumulate"):
