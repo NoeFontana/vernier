@@ -154,8 +154,11 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     #[cfg(feature = "bench-timings")]
     let t_post = std::time::Instant::now();
 
-    transpose_image_major_to_canonical(&mut eval_imgs, n_k, n_a, n_i);
-    transpose_image_major_to_canonical(&mut eval_imgs_meta, n_k, n_a, n_i);
+    transpose_pair_image_major_to_canonical(
+        &mut eval_imgs,
+        &mut eval_imgs_meta,
+        CellLayout { n_k, n_a, n_i },
+    );
 
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
     for (i, per_image) in retained_per_image.into_iter().enumerate() {
@@ -361,19 +364,28 @@ fn process_one_cell_into<K: EvalKernel>(
     Ok(())
 }
 
-/// In-place tensor transpose from image-major `(i, k, a)` layout to
-/// the canonical `(k, a, i)` layout `EvalGrid` expects. Cycle-following
-/// permutation: each position is touched exactly once for read + write.
-/// Safe Rust; no extra allocation beyond a `Vec<bool>` visited bitset
-/// (~`n_k * n_a * n_i` bytes — 1.6 MB on val2017).
-fn transpose_image_major_to_canonical<T>(
-    buf: &mut [Option<T>],
+/// Shape of the cell-output tensor. Bundled into one struct so
+/// callers can't silently swap the three `usize` axis lengths.
+#[derive(Clone, Copy)]
+struct CellLayout {
     n_k: usize,
     n_a: usize,
     n_i: usize,
+}
+
+/// In-place tensor transpose of two parallel buffers from image-major
+/// `(i, k, a)` to the canonical `(k, a, i)` layout `EvalGrid` expects.
+/// Cycle-following permutation: one shared visited bitset, one walk
+/// of the cycle structure swaps both buffers per step. Fused over
+/// `eval_imgs` + `eval_imgs_meta` because they share the permutation.
+fn transpose_pair_image_major_to_canonical<A, B>(
+    buf_a: &mut [Option<A>],
+    buf_b: &mut [Option<B>],
+    layout: CellLayout,
 ) {
-    let total = n_k * n_a * n_i;
-    debug_assert_eq!(buf.len(), total);
+    let total = layout.n_k * layout.n_a * layout.n_i;
+    debug_assert_eq!(buf_a.len(), total);
+    debug_assert_eq!(buf_b.len(), total);
     if total <= 1 {
         return;
     }
@@ -383,33 +395,33 @@ fn transpose_image_major_to_canonical<T>(
             continue;
         }
         visited[start] = true;
-        let mut cur = start;
-        let mut next = image_major_to_canonical_index(cur, n_k, n_a, n_i);
+        let mut next = image_major_to_canonical(start, layout);
         if next == start {
-            // Fixed point — nothing to move.
             continue;
         }
-        let mut held = buf[start].take();
+        let mut held_a = buf_a[start].take();
+        let mut held_b = buf_b[start].take();
         while next != start {
             visited[next] = true;
-            std::mem::swap(&mut held, &mut buf[next]);
-            cur = next;
-            next = image_major_to_canonical_index(cur, n_k, n_a, n_i);
+            std::mem::swap(&mut held_a, &mut buf_a[next]);
+            std::mem::swap(&mut held_b, &mut buf_b[next]);
+            next = image_major_to_canonical(next, layout);
         }
-        buf[start] = held;
+        buf_a[start] = held_a;
+        buf_b[start] = held_b;
     }
 }
 
 /// Decompose `pos` as `(i, k, a)` in image-major layout and recompose
 /// into the canonical `(k, a, i)` linear index.
 #[inline]
-fn image_major_to_canonical_index(pos: usize, n_k: usize, n_a: usize, n_i: usize) -> usize {
-    let chunk = n_k * n_a;
+fn image_major_to_canonical(pos: usize, layout: CellLayout) -> usize {
+    let chunk = layout.n_k * layout.n_a;
     let i = pos / chunk;
     let r = pos % chunk;
-    let k = r / n_a;
-    let a = r % n_a;
-    k * n_a * n_i + a * n_i + i
+    let k = r / layout.n_a;
+    let a = r % layout.n_a;
+    k * layout.n_a * layout.n_i + a * layout.n_i + i
 }
 
 // ----- Per-paradigm parallel sibling wrappers -------------------------
@@ -572,33 +584,56 @@ mod tests {
         out
     }
 
+    /// Build a paired (`u32` indices, `i64` indices) image-major
+    /// fixture so the fused transpose exercises both buffers. Using
+    /// distinct types catches any swap-the-buffers bug.
+    fn paired_fixture(
+        n_k: usize,
+        n_a: usize,
+        n_i: usize,
+        keep: impl Fn(usize) -> bool,
+    ) -> (Vec<Option<u32>>, Vec<Option<i64>>) {
+        let n = n_k * n_a * n_i;
+        let a: Vec<Option<u32>> = (0..n)
+            .map(|p| if keep(p) { Some(p as u32) } else { None })
+            .collect();
+        let b: Vec<Option<i64>> = (0..n)
+            .map(|p| if keep(p) { Some(-(p as i64)) } else { None })
+            .collect();
+        (a, b)
+    }
+
     #[test]
     fn inplace_transpose_matches_reference_dense() {
         // n_k=3, n_a=2, n_i=4: 24 slots, mostly non-trivial cycles.
-        let n_k = 3;
-        let n_a = 2;
-        let n_i = 4;
-        let image_major: Vec<Option<u32>> = (0..n_k * n_a * n_i).map(|p| Some(p as u32)).collect();
-        let expected = transpose_reference(&image_major, n_k, n_a, n_i);
-        let mut actual = image_major;
-        transpose_image_major_to_canonical(&mut actual, n_k, n_a, n_i);
-        assert_eq!(actual, expected);
+        let layout = CellLayout {
+            n_k: 3,
+            n_a: 2,
+            n_i: 4,
+        };
+        let (mut a, mut b) = paired_fixture(layout.n_k, layout.n_a, layout.n_i, |_| true);
+        let expected_a = transpose_reference(&a, layout.n_k, layout.n_a, layout.n_i);
+        let expected_b = transpose_reference(&b, layout.n_k, layout.n_a, layout.n_i);
+        transpose_pair_image_major_to_canonical(&mut a, &mut b, layout);
+        assert_eq!(a, expected_a);
+        assert_eq!(b, expected_b);
     }
 
     #[test]
     fn inplace_transpose_matches_reference_sparse() {
         // Mix of Some and None — covers the val2017-shape case where
         // most cells are empty.
-        let n_k = 4;
-        let n_a = 4;
-        let n_i = 5;
-        let image_major: Vec<Option<u32>> = (0..n_k * n_a * n_i)
-            .map(|p| if p % 3 == 0 { Some(p as u32) } else { None })
-            .collect();
-        let expected = transpose_reference(&image_major, n_k, n_a, n_i);
-        let mut actual = image_major;
-        transpose_image_major_to_canonical(&mut actual, n_k, n_a, n_i);
-        assert_eq!(actual, expected);
+        let layout = CellLayout {
+            n_k: 4,
+            n_a: 4,
+            n_i: 5,
+        };
+        let (mut a, mut b) = paired_fixture(layout.n_k, layout.n_a, layout.n_i, |p| p % 3 == 0);
+        let expected_a = transpose_reference(&a, layout.n_k, layout.n_a, layout.n_i);
+        let expected_b = transpose_reference(&b, layout.n_k, layout.n_a, layout.n_i);
+        transpose_pair_image_major_to_canonical(&mut a, &mut b, layout);
+        assert_eq!(a, expected_a);
+        assert_eq!(b, expected_b);
     }
 
     #[test]
@@ -606,12 +641,13 @@ mod tests {
         // n_k=1: every position is a fixed point (image-major and
         // canonical layouts coincide). n_i=1 likewise.
         for (n_k, n_a, n_i) in [(1, 4, 5), (3, 4, 1), (1, 1, 1)] {
-            let image_major: Vec<Option<u32>> =
-                (0..n_k * n_a * n_i).map(|p| Some(p as u32)).collect();
-            let expected = transpose_reference(&image_major, n_k, n_a, n_i);
-            let mut actual = image_major;
-            transpose_image_major_to_canonical(&mut actual, n_k, n_a, n_i);
-            assert_eq!(actual, expected, "shape ({n_k}, {n_a}, {n_i})");
+            let layout = CellLayout { n_k, n_a, n_i };
+            let (mut a, mut b) = paired_fixture(n_k, n_a, n_i, |_| true);
+            let expected_a = transpose_reference(&a, n_k, n_a, n_i);
+            let expected_b = transpose_reference(&b, n_k, n_a, n_i);
+            transpose_pair_image_major_to_canonical(&mut a, &mut b, layout);
+            assert_eq!(a, expected_a, "shape ({n_k}, {n_a}, {n_i})");
+            assert_eq!(b, expected_b, "shape ({n_k}, {n_a}, {n_i})");
         }
     }
 
