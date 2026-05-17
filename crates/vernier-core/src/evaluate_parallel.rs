@@ -32,16 +32,16 @@ use crate::parity::ParityMode;
 /// Wall-time split for [`evaluate_with_parallel`], gated on `bench-timings`.
 #[cfg(feature = "bench-timings")]
 pub(crate) mod timings {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::bench_counters::BenchCounterSet;
 
-    pub(super) static PAR_ITER_NS: AtomicU64 = AtomicU64::new(0);
-    pub(super) static SERIAL_POST_NS: AtomicU64 = AtomicU64::new(0);
-    pub(super) static N_CALLS: AtomicU64 = AtomicU64::new(0);
+    pub(super) const PAR_ITER_NS: usize = 0;
+    pub(super) const SERIAL_POST_NS: usize = 1;
+    pub(super) const N_CALLS: usize = 2;
+
+    pub(super) static COUNTERS: BenchCounterSet<3> = BenchCounterSet::new();
 
     pub(crate) fn read_and_reset() -> (u64, u64, u64) {
-        let p = PAR_ITER_NS.swap(0, Ordering::Relaxed);
-        let s = SERIAL_POST_NS.swap(0, Ordering::Relaxed);
-        let n = N_CALLS.swap(0, Ordering::Relaxed);
+        let [p, s, n] = COUNTERS.read_and_reset();
         (p, s, n)
     }
 }
@@ -92,20 +92,23 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
 
-    // Image-major working buffer: per-image rayon tasks own a
-    // contiguous `n_k * n_a`-slot chunk via `par_chunks_mut`; transpose
-    // to the canonical `(k, a, i)` layout once after the parallel region.
+    // Per-image rayon tasks write into a single output pair in
+    // image-major `(i, k, a)` layout via `par_chunks_mut`, then we
+    // transpose in place to the canonical `(k, a, i)` contract that
+    // downstream consumers (`accumulate`, `tables`, rkyv archive)
+    // expect. Single allocation per output Vec — saves the working +
+    // canonical double-buffer (~26 MB peak on val2017).
     #[cfg(feature = "bench-timings")]
     let t_par = std::time::Instant::now();
 
     let total_slots = n_k * n_a * n_i;
     let chunk_len = n_k * n_a;
-    let mut working_eval: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
-    let mut working_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
+    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
 
-    let retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = working_eval
+    let retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = eval_imgs
         .par_chunks_mut(chunk_len)
-        .zip(working_meta.par_chunks_mut(chunk_len))
+        .zip(eval_imgs_meta.par_chunks_mut(chunk_len))
         .enumerate()
         .map_init(
             || {
@@ -151,22 +154,8 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     #[cfg(feature = "bench-timings")]
     let t_post = std::time::Instant::now();
 
-    // Transpose image-major `(i, k, a)` → canonical `(k, a, i)`.
-    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
-    for i in 0..n_i {
-        let base = i * chunk_len;
-        for k in 0..n_k {
-            for a in 0..n_a {
-                let src = base + k * n_a + a;
-                let dst = k * n_a * n_i + a * n_i + i;
-                eval_imgs[dst] = working_eval[src].take();
-                eval_imgs_meta[dst] = working_meta[src].take();
-            }
-        }
-    }
-    drop(working_eval);
-    drop(working_meta);
+    transpose_image_major_to_canonical(&mut eval_imgs, n_k, n_a, n_i);
+    transpose_image_major_to_canonical(&mut eval_imgs_meta, n_k, n_a, n_i);
 
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
     for (i, per_image) in retained_per_image.into_iter().enumerate() {
@@ -195,11 +184,10 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     };
     #[cfg(feature = "bench-timings")]
     {
-        use std::sync::atomic::Ordering;
         let post_ns = u64::try_from(t_post.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        timings::PAR_ITER_NS.fetch_add(par_ns, Ordering::Relaxed);
-        timings::SERIAL_POST_NS.fetch_add(post_ns, Ordering::Relaxed);
-        timings::N_CALLS.fetch_add(1, Ordering::Relaxed);
+        timings::COUNTERS.add(timings::PAR_ITER_NS, par_ns);
+        timings::COUNTERS.add(timings::SERIAL_POST_NS, post_ns);
+        timings::COUNTERS.bump(timings::N_CALLS);
     }
     Ok(grid)
 }
@@ -373,6 +361,57 @@ fn process_one_cell_into<K: EvalKernel>(
     Ok(())
 }
 
+/// In-place tensor transpose from image-major `(i, k, a)` layout to
+/// the canonical `(k, a, i)` layout `EvalGrid` expects. Cycle-following
+/// permutation: each position is touched exactly once for read + write.
+/// Safe Rust; no extra allocation beyond a `Vec<bool>` visited bitset
+/// (~`n_k * n_a * n_i` bytes — 1.6 MB on val2017).
+fn transpose_image_major_to_canonical<T>(
+    buf: &mut [Option<T>],
+    n_k: usize,
+    n_a: usize,
+    n_i: usize,
+) {
+    let total = n_k * n_a * n_i;
+    debug_assert_eq!(buf.len(), total);
+    if total <= 1 {
+        return;
+    }
+    let mut visited = vec![false; total];
+    for start in 0..total {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut cur = start;
+        let mut next = image_major_to_canonical_index(cur, n_k, n_a, n_i);
+        if next == start {
+            // Fixed point — nothing to move.
+            continue;
+        }
+        let mut held = buf[start].take();
+        while next != start {
+            visited[next] = true;
+            std::mem::swap(&mut held, &mut buf[next]);
+            cur = next;
+            next = image_major_to_canonical_index(cur, n_k, n_a, n_i);
+        }
+        buf[start] = held;
+    }
+}
+
+/// Decompose `pos` as `(i, k, a)` in image-major layout and recompose
+/// into the canonical `(k, a, i)` linear index.
+#[inline]
+fn image_major_to_canonical_index(pos: usize, n_k: usize, n_a: usize, n_i: usize) -> usize {
+    let chunk = n_k * n_a;
+    let i = pos / chunk;
+    let r = pos % chunk;
+    let k = r / n_a;
+    let a = r % n_a;
+    k * n_a * n_i + a * n_i + i
+}
+
 // ----- Per-paradigm parallel sibling wrappers -------------------------
 //
 // One `pub fn` per `crate::evaluate::evaluate_*` entry; the FFI routes
@@ -510,6 +549,69 @@ mod tests {
             width: w,
             height: h,
             file_name: None,
+        }
+    }
+
+    /// Reference (out-of-place) transpose to compare against.
+    fn transpose_reference<T: Clone>(
+        image_major: &[Option<T>],
+        n_k: usize,
+        n_a: usize,
+        n_i: usize,
+    ) -> Vec<Option<T>> {
+        let mut out: Vec<Option<T>> = (0..n_k * n_a * n_i).map(|_| None).collect();
+        for i in 0..n_i {
+            for k in 0..n_k {
+                for a in 0..n_a {
+                    let src = i * n_k * n_a + k * n_a + a;
+                    let dst = k * n_a * n_i + a * n_i + i;
+                    out[dst] = image_major[src].clone();
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn inplace_transpose_matches_reference_dense() {
+        // n_k=3, n_a=2, n_i=4: 24 slots, mostly non-trivial cycles.
+        let n_k = 3;
+        let n_a = 2;
+        let n_i = 4;
+        let image_major: Vec<Option<u32>> = (0..n_k * n_a * n_i).map(|p| Some(p as u32)).collect();
+        let expected = transpose_reference(&image_major, n_k, n_a, n_i);
+        let mut actual = image_major;
+        transpose_image_major_to_canonical(&mut actual, n_k, n_a, n_i);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn inplace_transpose_matches_reference_sparse() {
+        // Mix of Some and None — covers the val2017-shape case where
+        // most cells are empty.
+        let n_k = 4;
+        let n_a = 4;
+        let n_i = 5;
+        let image_major: Vec<Option<u32>> = (0..n_k * n_a * n_i)
+            .map(|p| if p % 3 == 0 { Some(p as u32) } else { None })
+            .collect();
+        let expected = transpose_reference(&image_major, n_k, n_a, n_i);
+        let mut actual = image_major;
+        transpose_image_major_to_canonical(&mut actual, n_k, n_a, n_i);
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn inplace_transpose_handles_degenerate_shapes() {
+        // n_k=1: every position is a fixed point (image-major and
+        // canonical layouts coincide). n_i=1 likewise.
+        for (n_k, n_a, n_i) in [(1, 4, 5), (3, 4, 1), (1, 1, 1)] {
+            let image_major: Vec<Option<u32>> =
+                (0..n_k * n_a * n_i).map(|p| Some(p as u32)).collect();
+            let expected = transpose_reference(&image_major, n_k, n_a, n_i);
+            let mut actual = image_major;
+            transpose_image_major_to_canonical(&mut actual, n_k, n_a, n_i);
+            assert_eq!(actual, expected, "shape ({n_k}, {n_a}, {n_i})");
         }
     }
 
