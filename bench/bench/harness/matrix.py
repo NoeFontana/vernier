@@ -20,6 +20,16 @@ ALL_IMPLS: tuple[str, ...] = (
     "pycocotools",
     "faster-coco-eval",
     "boundary-iou-api",
+    # Paradigm-specific impls — kept in this single tuple so the CLI's
+    # ``--impl`` Choice accepts every registered impl by name.
+    # ``impls_for_metric`` filters each per-paradigm dict separately, so
+    # widening the tuple never grows the matrix.
+    "vernier_panoptic",
+    "panopticapi",
+    "vernier_semantic",
+    "mmsegmentation",
+    "vernier_lvis",
+    "lvis-api",
 )
 
 # Per-paradigm impl/metric matrix (ADR-0033). One source of truth for

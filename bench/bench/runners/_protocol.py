@@ -91,6 +91,26 @@ def lvis_stat_names(max_dets: int) -> tuple[str, ...]:
     return tuple(k.format(max_dets=max_dets) for k in LVIS_STAT_NAMES_TEMPLATE)
 
 
+def _add_num_threads_arg(p: argparse.ArgumentParser) -> None:
+    """Append the ADR-0047 ``--num-threads`` flag. Shared across every
+    paradigm argspec — the orchestrator forwards `--num-threads N`
+    unconditionally on threaded cells, so every runner family must
+    accept the flag (even runners that don't honour it).
+    """
+    p.add_argument(
+        "--num-threads",
+        type=int,
+        default=None,
+        help=(
+            "ADR-0047 threading axis. None (default) preserves the single-"
+            "threaded library default; an explicit int is forwarded to "
+            "the corresponding ``num_threads`` kwarg on the evaluator. "
+            "Non-vernier runners accept the flag for argspec uniformity "
+            "and ignore the value."
+        ),
+    )
+
+
 def parse_runner_args() -> argparse.Namespace:
     """Detection-runner argspec. Untouched by ADR-0033 so the legacy
     detection runners ship unchanged. Panoptic / semantic / streaming
@@ -119,18 +139,7 @@ def parse_runner_args() -> argparse.Namespace:
             "paradigm-specific argspec (parse_panoptic_runner_args, etc.)."
         ),
     )
-    p.add_argument(
-        "--num-threads",
-        type=int,
-        default=None,
-        help=(
-            "ADR-0047 threading axis. None (default) preserves the single-"
-            "threaded library default; an explicit int is forwarded to "
-            "``vernier.instance.Evaluator.evaluate``'s ``num_threads`` "
-            "kwarg. Non-vernier runners accept the flag for argspec "
-            "uniformity and ignore the value."
-        ),
-    )
+    _add_num_threads_arg(p)
     return p.parse_args()
 
 
@@ -180,6 +189,7 @@ def parse_panoptic_runner_args() -> argparse.Namespace:
             "by panoptic runners; the metric for the cell is 'pq'."
         ),
     )
+    _add_num_threads_arg(p)
     return p.parse_args()
 
 
@@ -300,6 +310,7 @@ def parse_semantic_runner_args() -> argparse.Namespace:
             "by semantic runners; the metric for the cell is 'miou'."
         ),
     )
+    _add_num_threads_arg(p)
     return p.parse_args()
 
 
@@ -516,6 +527,7 @@ def parse_lvis_runner_args() -> argparse.Namespace:
         choices=["lvis"],
         help="Evaluation paradigm. Pinned to 'lvis' for this runner family.",
     )
+    _add_num_threads_arg(p)
     return p.parse_args()
 
 
