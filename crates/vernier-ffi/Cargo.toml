@@ -37,6 +37,19 @@ bench-histogram = ["vernier-core/bench-histogram"]
 # runs exactly once regardless of slice count. Off by default; never
 # compiled into shipped wheels.
 _test-counter = []
+# Stage-0 instrumentation for the bbox-scaling investigation: surfaces
+# `read_and_reset_evaluate_parallel_timings()` and
+# `read_and_reset_build_anns_count()` to Python so the bench harness
+# can split `evaluate_with_parallel` wall time and count per-cell
+# `Vec<K::Annotation>` allocations. Off by default; never compiled
+# into shipped wheels.
+bench-timings = ["vernier-core/bench-timings"]
+# Stage-0 allocator A/B for the bbox-scaling investigation: swaps the
+# process-global allocator to `mimalloc` to bound the contribution of
+# glibc-arena contention to the parallel-region scaling shortfall. Off
+# by default; the wheel ships with the system allocator unless this
+# flag is explicitly set at build time.
+mimalloc-global = ["dep:mimalloc"]
 
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.0.4" }
@@ -77,6 +90,10 @@ serde_json = { workspace = true }
 # `[workspace.dependencies]` (only one consumer).
 thread-priority = "1"
 core_affinity = "0.8"
+# Allocator A/B for the bbox-scaling investigation (`mimalloc-global`
+# feature). Optional and crate-local; do NOT promote to
+# `[workspace.dependencies]` (only one consumer, opt-in only).
+mimalloc = { version = "0.1", default-features = false, optional = true }
 # Opt-in `num_threads` parallelism (ADR-0047). Used at the FFI
 # boundary to build scoped per-call pools (batch path) and at
 # `BackgroundEvaluator` construction to build the per-worker pool.

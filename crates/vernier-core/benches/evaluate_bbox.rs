@@ -45,7 +45,8 @@ use vernier_core::dataset::{
 };
 use vernier_core::parity::iou_thresholds;
 use vernier_core::{
-    evaluate_bbox, AreaRange, CocoDataset, CocoDetections, EvaluateParams, ParityMode,
+    evaluate_bbox, evaluate_bbox_parallel, AreaRange, CocoDataset, CocoDetections, EvaluateParams,
+    ParityMode,
 };
 
 fn main() {
@@ -200,4 +201,46 @@ fn framework_dense_mle_5cat(bencher: Bencher) {
 #[divan::bench]
 fn framework_dense_mle_1cat(bencher: Bencher) {
     run(bencher, DENSE_MLE_1CAT);
+}
+
+// Parallel sweep arms — pool built once outside the timing window
+// (ADR-0047 ~50-200 µs construction cost stays out of the per-iter number).
+const THREAD_COUNTS: [usize; 4] = [1, 2, 4, 8];
+
+fn run_parallel(bencher: Bencher, s: Scenario, num_threads: usize) {
+    let (gt, dt) = build_dataset(s);
+    let area_ranges = AreaRange::coco_default();
+    let iou_thr = iou_thresholds();
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap();
+    bencher.bench_local(|| {
+        let params = EvaluateParams {
+            iou_thresholds: iou_thr,
+            area_ranges: &area_ranges,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+        };
+        pool.install(|| {
+            evaluate_bbox_parallel(black_box(&gt), black_box(&dt), params, ParityMode::Strict)
+                .unwrap()
+        })
+    });
+}
+
+#[divan::bench(args = THREAD_COUNTS)]
+fn framework_coco_like_parallel(bencher: Bencher, &num_threads: &usize) {
+    run_parallel(bencher, COCO_LIKE, num_threads);
+}
+
+#[divan::bench(args = THREAD_COUNTS)]
+fn framework_dense_mle_5cat_parallel(bencher: Bencher, &num_threads: &usize) {
+    run_parallel(bencher, DENSE_MLE_5CAT, num_threads);
+}
+
+#[divan::bench(args = THREAD_COUNTS)]
+fn framework_dense_mle_1cat_parallel(bencher: Bencher, &num_threads: &usize) {
+    run_parallel(bencher, DENSE_MLE_1CAT, num_threads);
 }
