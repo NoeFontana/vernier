@@ -1,29 +1,11 @@
 //! Process-global atomic-counter sets for bench / test instrumentation.
-//!
-//! Six sites across `vernier-core` and `vernier-ffi` previously hand-
-//! rolled `static AtomicU64::new(0)` + `fetch_add(_, Relaxed)` +
-//! `swap(0, Relaxed)` boilerplate behind their own feature gate
-//! (`bench-timings` for perf-investigation counters, `_test-counter`
-//! for ADR-0046 call counters). This module collapses the shared
-//! shape into one parameterized type so adding a counter is a single
-//! line per call site instead of a static + an inc fn + a no-op stub.
-//!
-//! The shipped wheel never compiles any of the bench / test features,
-//! so the unification cost is zero at runtime: every counter site
-//! stays inside its existing `#[cfg]` gate; this module just gives
-//! them a shared inner type.
+//! Callers stay inside their own `#[cfg]` gate (`bench-timings` /
+//! `_test-counter`); this module is the shared inner type.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// `N` `AtomicU64` counters with consistent reset semantics. Use
-/// `BenchCounterSet::new()` as a `static` initializer; access via
-/// `bump(idx)` / `add(idx, value)` / `load(idx)` / `read_and_reset()`.
-///
-/// The fixed-`N` array layout means each counter sits in a separate
-/// `AtomicU64` (no false sharing risk under contention only if N is
-/// small — the counters share a cache line at N ≤ 8, which is the
-/// case at every existing site). Per-call `Relaxed` ordering matches
-/// every site we replaced.
+/// `N` `AtomicU64` counters with `Relaxed` ordering. Suitable as a
+/// `static` initializer via [`Self::new`].
 pub struct BenchCounterSet<const N: usize> {
     counters: [AtomicU64; N],
 }
