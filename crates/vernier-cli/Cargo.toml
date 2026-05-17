@@ -45,6 +45,10 @@ thiserror = { workspace = true }
 # Shell glob expansion for `vernier aggregate --results 'runs/*.json'`
 # (ADR-0046 §B2). Pure-Rust, single-purpose, no transitive surprises.
 glob = { workspace = true }
+# Opt-in `--threads` parallelism (ADR-0047). Builds a scoped pool
+# around the matching pass when the flag is `>= 2`; the default `1`
+# never enters a rayon symbol.
+rayon = { workspace = true }
 
 [dev-dependencies]
 assert_cmd = { workspace = true }

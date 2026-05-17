@@ -48,6 +48,7 @@ def evaluate_partitioned(
     dilation_ratio: float,
     manifest: object,
     cross_axes: Sequence[Sequence[str]] | None,
+    num_threads: int | None = None,
 ) -> tuple[PanopticSummary, object, int, int]:
     """Run the panoptic partitioned eval through the C3 FFI.
 
@@ -59,6 +60,10 @@ def evaluate_partitioned(
     exactly once regardless of slice count; per-slice rows are
     produced by folding the retained per-image deltas under each
     slice's image-id filter and summarizing the result.
+
+    ``num_threads`` (ADR-0047) routes the matching pass through the
+    parallel sibling when set; the per-slice fold stays serial (it's
+    a cheap HashMap walk against the retained deltas).
     """
     cross = [list(t) for t in cross_axes] if cross_axes is not None else None
     report = evaluate_panoptic_partitioned(
@@ -70,6 +75,7 @@ def evaluate_partitioned(
         dilation_ratio,
         manifest,
         cross_axes=cross,
+        num_threads=num_threads,
     )
     return (
         report.overall,

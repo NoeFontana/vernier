@@ -77,3 +77,10 @@ serde_json = { workspace = true }
 # `[workspace.dependencies]` (only one consumer).
 thread-priority = "1"
 core_affinity = "0.8"
+# Opt-in `num_threads` parallelism (ADR-0047). Used at the FFI
+# boundary to build scoped per-call pools (batch path) and at
+# `BackgroundEvaluator` construction to build the per-worker pool.
+# Re-exported from `vernier-core` for the parallel evaluator entry
+# points; declared explicitly here so the FFI can build pools and
+# install closures without an indirect path through core.
+rayon = { workspace = true }

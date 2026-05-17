@@ -41,6 +41,12 @@ test-py:
 test-parity:
     uv run pytest -m parity
 
+# Run ADR-0047 cross-thread bit-equality parity tests. Each existing
+# fixture is replayed under `num_threads ∈ {None, 1, 2, 4, 8}` and
+# asserted bit-equal to the sequential baseline.
+test-parity-threads:
+    uv run pytest -m parity_threads
+
 # Run LVIS parity tests against the vendored lvis-api reference oracle
 # (ADR-0026). The oracle lives at tests/python/parity_lvis/oracle/lvis_api/;
 # the parity harness is added in subsequent PRs of the LVIS rollout.
@@ -135,6 +141,17 @@ bench-test:
 # Example: just bench-run --impl vernier --workload smoke --iou bbox
 bench-run *ARGS:
     uv run --directory bench python -m bench run {{ARGS}}
+
+# ADR-0047 threading-scaling smoke. Runs the `synthetic_threads_smoke`
+# workload — a tiny synthetic fixture pinned to `num_threads ∈ {1, 2, 4, 8}`
+# — and exists to validate the bench-harness threading axis end to end.
+# The full scaling sweep (val2017 / LVIS / panoptic / ADE20K) is its
+# own operation; this is plumbing-validation only. Runs vernier-only
+# (the threading axis is a no-op for the third-party impls) and skips
+# parity for the same reason.
+bench-threads-smoke:
+    uv run --directory bench python -m bench run \
+        --impl vernier --workload synthetic_threads_smoke --iou bbox --no-parity
 
 # Rebuild vernier with the `bench-histogram` feature into the bench env's
 # venv. Surfaces `vernier._core.dump_bbox_iou_histogram(path)` for

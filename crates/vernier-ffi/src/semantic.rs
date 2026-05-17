@@ -35,8 +35,10 @@ use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyDictMethods, PyList};
 
 use vernier_partial::PartialError;
-use vernier_semantic::decode::{decode_grayscale8, evaluate_from_pngs};
-use vernier_semantic::kernel::accumulate_confusion;
+use vernier_semantic::decode::{
+    decode_grayscale8, evaluate_from_pngs, evaluate_from_pngs_parallel,
+};
+use vernier_semantic::kernel::{accumulate_confusion, accumulate_confusion_parallel};
 use vernier_semantic::{
     summarize_with_options, ClassSemanticStats, ConfusionMatrix, GroupSemanticStats, SemanticError,
     SemanticSummary, StreamingSemanticEvaluator, SummarizeOptions,
@@ -460,6 +462,7 @@ fn semantic_error_to_pyerr(py: Python<'_>, e: &SemanticError) -> PyErr {
     label_remap = None,
     class_filter = None,
     class_grouping = None,
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_semantic_from_arrays<'py>(
@@ -472,6 +475,7 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
     label_remap: Option<&Bound<'py, PyDict>>,
     class_filter: Option<Vec<u32>>,
     class_grouping: Option<Vec<(String, Vec<u32>)>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PySemanticSummary> {
     if n_classes == 0 {
         return Err(PyValueError::new_err(
@@ -540,17 +544,31 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
         work.push((*image_id, gt, dt));
     }
 
-    let summary = py.detach(move || {
+    // Resolve threading policy under the GIL so the env-var / re-entry
+    // `UserWarning` can fire to Python before we detach (ADR-0047).
+    let thread_policy = crate::threads::resolve_threads(py, num_threads);
+
+    let summary = py.detach(move || -> PyResult<SemanticSummary> {
         let mut confusion = ConfusionMatrix::zeros(n_classes);
-        for (_, (_, _, gt_buf), (_, _, dt_buf)) in &work {
-            fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut confusion);
+        match thread_policy.thread_count() {
+            None => {
+                for (_, (_, _, gt_buf), (_, _, dt_buf)) in &work {
+                    fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut confusion);
+                }
+            }
+            Some(n) => {
+                let pool = crate::threads::build_scoped_pool(n).map_err(PyValueError::new_err)?;
+                pool.install(|| {
+                    fold_pairs_buf_parallel(&work, ignore_label, &mut confusion);
+                });
+            }
         }
         let options = SummarizeOptions {
             class_filter: class_filter.as_deref(),
             class_groups: class_grouping.as_deref(),
         };
-        summarize_with_options(confusion, mode, &options)
-    });
+        Ok(summarize_with_options(confusion, mode, &options))
+    })?;
 
     Ok(PySemanticSummary { inner: summary })
 }
@@ -673,6 +691,7 @@ use crate::partition_py::warn_about_manifest;
     class_grouping = None,
     cross_axes = None,
     key_kind = "image_id",
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_semantic_partitioned<'py>(
@@ -688,6 +707,7 @@ pub(crate) fn evaluate_semantic_partitioned<'py>(
     class_grouping: Option<Vec<(String, Vec<u32>)>>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSemanticReport> {
     if n_classes == 0 {
         return Err(PyValueError::new_err(
@@ -785,7 +805,11 @@ pub(crate) fn evaluate_semantic_partitioned<'py>(
     }
     type C3Out = (SemanticSummary, Vec<SemSliceMetrics>);
 
-    let (overall_summary, slice_metrics) = py.detach(move || -> C3Out {
+    // Resolve threading policy under the GIL so the env-var / re-entry
+    // `UserWarning` can fire to Python before we detach (ADR-0047).
+    let thread_policy = crate::threads::resolve_threads(py, num_threads);
+
+    let (overall_summary, slice_metrics) = py.detach(move || -> PyResult<C3Out> {
         inc_semantic_fold_count();
         // Per-image confusion matrices. Built once; folded under
         // different filters at summarize time (C3).
@@ -801,12 +825,30 @@ pub(crate) fn evaluate_semantic_partitioned<'py>(
         // slice accumulators take per-image contributions
         // incrementally instead of materialising the per-image
         // vector. Tracked as a follow-up.
-        let mut per_image: Vec<(ImageId, ConfusionMatrix)> = Vec::with_capacity(work.len());
-        for (image_id, (_, _, gt_buf), (_, _, dt_buf)) in &work {
-            let mut cm = ConfusionMatrix::zeros(n_classes);
-            fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut cm);
-            per_image.push((*image_id, cm));
-        }
+        let per_image: Vec<(ImageId, ConfusionMatrix)> = match thread_policy.thread_count() {
+            None => {
+                let mut out: Vec<(ImageId, ConfusionMatrix)> = Vec::with_capacity(work.len());
+                for (image_id, (_, _, gt_buf), (_, _, dt_buf)) in &work {
+                    let mut cm = ConfusionMatrix::zeros(n_classes);
+                    fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut cm);
+                    out.push((*image_id, cm));
+                }
+                out
+            }
+            Some(n) => {
+                let pool = crate::threads::build_scoped_pool(n).map_err(PyValueError::new_err)?;
+                pool.install(|| {
+                    use rayon::prelude::*;
+                    work.par_iter()
+                        .map(|(image_id, (_, _, gt_buf), (_, _, dt_buf))| {
+                            let mut cm = ConfusionMatrix::zeros(n_classes);
+                            fold_pair_buf(gt_buf, dt_buf, ignore_label, &mut cm);
+                            (*image_id, cm)
+                        })
+                        .collect()
+                })
+            }
+        };
 
         let options = SummarizeOptions {
             class_filter: class_filter.as_deref(),
@@ -852,8 +894,8 @@ pub(crate) fn evaluate_semantic_partitioned<'py>(
                 mean_accuracy: summary.mean_accuracy,
             });
         }
-        (overall, metrics)
-    });
+        Ok((overall, metrics))
+    })?;
 
     let slice_rows: Vec<SemanticSliceRow> = slice_metrics
         .into_iter()
@@ -897,6 +939,66 @@ fn fold_pair_buf(
             let d32 = pixels_to_u32(d);
             accumulate_confusion(&g32, &d32, ignore_label, confusion);
         }
+    }
+}
+
+/// Parallel sibling of [`fold_pair_buf`] over a `work` slice (ADR-0047
+/// Stage B). Routes pairs by their `(gt, dt)` dtype partition into
+/// per-width [`accumulate_confusion_parallel`] calls, then sums the
+/// per-partition matrices into `confusion`. Mixed-width pairs widen
+/// to `u32` up-front so the parallel kernel still walks at the
+/// kernel's monomorphized hot path.
+///
+/// Caller responsibility: `install` a `rayon::ThreadPool` around this
+/// call; the global rayon pool is never touched.
+///
+/// Strict-mode bit-equality across thread counts holds by
+/// construction: `u64`-additive matrix sums are associative and
+/// commutative, so the dtype-partitioned reduction lands on the same
+/// integer counts as the serial `fold_pair_buf` loop regardless of
+/// how rayon schedules the inner par_iter.
+fn fold_pairs_buf_parallel(
+    work: &[(ImageId, SemanticLabelMap, SemanticLabelMap)],
+    ignore_label: Option<u32>,
+    confusion: &mut ConfusionMatrix,
+) {
+    use SemanticPixelBuf::{U16, U32, U8};
+
+    // Dtype-homogeneous fast paths. Most callers ship a uniform dtype
+    // batch (uint8 PNG decode, uint32 user arrays, etc.) — sort by
+    // dtype so the par_iter sees one homogeneous slice per width and
+    // the kernel monomorphizes per its native ClassId impl.
+    let mut pairs_u8: Vec<(&[u8], &[u8])> = Vec::new();
+    let mut pairs_u16: Vec<(&[u16], &[u16])> = Vec::new();
+    let mut pairs_u32: Vec<(&[u32], &[u32])> = Vec::new();
+    // Mixed-width pairs widen to u32 once on the FFI thread. Materialised
+    // owned buffers are folded together with native-u32 pairs below.
+    let mut mixed_owned: Vec<(Vec<u32>, Vec<u32>)> = Vec::new();
+
+    for (_, (_, _, gt_buf), (_, _, dt_buf)) in work {
+        match (gt_buf, dt_buf) {
+            (U8(g), U8(d)) => pairs_u8.push((g.as_slice(), d.as_slice())),
+            (U16(g), U16(d)) => pairs_u16.push((g.as_slice(), d.as_slice())),
+            (U32(g), U32(d)) => pairs_u32.push((g.as_slice(), d.as_slice())),
+            (g, d) => mixed_owned.push((pixels_to_u32(g), pixels_to_u32(d))),
+        }
+    }
+    let mixed_pairs: Vec<(&[u32], &[u32])> = mixed_owned
+        .iter()
+        .map(|(g, d)| (g.as_slice(), d.as_slice()))
+        .collect();
+
+    if !pairs_u8.is_empty() {
+        accumulate_confusion_parallel(&pairs_u8, ignore_label, confusion);
+    }
+    if !pairs_u16.is_empty() {
+        accumulate_confusion_parallel(&pairs_u16, ignore_label, confusion);
+    }
+    if !pairs_u32.is_empty() {
+        accumulate_confusion_parallel(&pairs_u32, ignore_label, confusion);
+    }
+    if !mixed_pairs.is_empty() {
+        accumulate_confusion_parallel(&mixed_pairs, ignore_label, confusion);
     }
 }
 
@@ -953,6 +1055,7 @@ fn build_payload(image_id: ImageId, gt: SemanticPixelBuf, dt: SemanticPixelBuf) 
     parity_mode,
     *,
     ignore_label = None,
+    num_threads = None,
 ))]
 pub(crate) fn evaluate_semantic_from_pngs<'py>(
     py: Python<'py>,
@@ -961,6 +1064,7 @@ pub(crate) fn evaluate_semantic_from_pngs<'py>(
     n_classes: u32,
     parity_mode: &str,
     ignore_label: Option<u32>,
+    num_threads: Option<usize>,
 ) -> PyResult<PySemanticSummary> {
     if n_classes == 0 {
         return Err(PyValueError::new_err(
@@ -972,9 +1076,31 @@ pub(crate) fn evaluate_semantic_from_pngs<'py>(
     let gt_pairs = parse_path_dict(gt_paths, "semantic gt")?;
     let dt_map = parse_path_dict_to_hashmap(dt_paths, "semantic dt")?;
 
+    // Resolve threading policy under the GIL so the env-var / re-entry
+    // `UserWarning` can fire to Python before we detach (ADR-0047).
+    let thread_policy = crate::threads::resolve_threads(py, num_threads);
+
     let summary = py
         .detach(move || -> Result<SemanticSummary, SemanticError> {
-            evaluate_from_pngs(&gt_pairs, &dt_map, n_classes, ignore_label, mode)
+            match thread_policy.thread_count() {
+                None => evaluate_from_pngs(&gt_pairs, &dt_map, n_classes, ignore_label, mode),
+                Some(n) => {
+                    let pool = crate::threads::build_scoped_pool(n).map_err(|detail| {
+                        SemanticError::Partial(PartialError::Format {
+                            kind: vernier_partial::PartialFormatErrorKind::Internal { detail },
+                        })
+                    })?;
+                    pool.install(|| {
+                        evaluate_from_pngs_parallel(
+                            &gt_pairs,
+                            &dt_map,
+                            n_classes,
+                            ignore_label,
+                            mode,
+                        )
+                    })
+                }
+            }
         })
         .map_err(|e| semantic_error_to_pyerr(py, &e))?;
     Ok(PySemanticSummary { inner: summary })
@@ -1035,7 +1161,9 @@ fn parse_path_dict_to_hashmap(
     rank_id,
     *,
     ignore_label = None,
+    num_threads = None,
 ))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_semantic_to_partial<'py>(
     py: Python<'py>,
     gt_label_maps: &Bound<'py, PyDict>,
@@ -1044,6 +1172,7 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
     parity_mode: &str,
     rank_id: u32,
     ignore_label: Option<u32>,
+    num_threads: Option<usize>,
 ) -> PyResult<Bound<'py, PyBytes>> {
     if n_classes == 0 {
         return Err(PyValueError::new_err(
@@ -1069,37 +1198,88 @@ pub(crate) fn evaluate_semantic_to_partial<'py>(
     let mut image_ids: Vec<ImageId> = gt_maps.keys().copied().collect();
     image_ids.sort_unstable();
 
+    // Resolve threading policy under the GIL so the env-var / re-entry
+    // `UserWarning` can fire to Python before we detach (ADR-0047).
+    let thread_policy = crate::threads::resolve_threads(py, num_threads);
+
     // Construct the evaluator up front so we can stream per-image
     // updates inside the loop — only one decoded image-pair lives in
     // memory at a time on this path (vs an eager Vec over the whole
-    // corpus, ~4 GiB on ADE20K val).
+    // corpus, ~4 GiB on ADE20K val). The parallel path opts into
+    // materialising every pair up-front (the explicit num_threads kwarg
+    // signals the caller accepted the resident-memory trade for
+    // throughput).
     let mut ev = StreamingSemanticEvaluator::new(n_classes, ignore_label, mode)
         .with_rank(rank_id)
         .map_err(|e| semantic_error_to_pyerr(py, &e))?;
-    for image_id in &image_ids {
-        let (gh, gw, gt_buf) = gt_maps.remove(image_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "internal: missing gt label_map for image_id={image_id}"
-            ))
-        })?;
-        let (dh, dw, dt_buf) = dt_maps.remove(image_id).ok_or_else(|| {
-            PyValueError::new_err(format!(
-                "internal: missing dt label_map for image_id={image_id}"
-            ))
-        })?;
-        if (gh, gw) != (dh, dw) {
-            return Err(semantic_error_to_pyerr(
-                py,
-                &SemanticError::ShapeMismatch {
-                    image_id: *image_id,
-                    gt_shape: (gh, gw),
-                    dt_shape: (dh, dw),
-                },
-            ));
+
+    match thread_policy.thread_count() {
+        None => {
+            for image_id in &image_ids {
+                let (gh, gw, gt_buf) = gt_maps.remove(image_id).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "internal: missing gt label_map for image_id={image_id}"
+                    ))
+                })?;
+                let (dh, dw, dt_buf) = dt_maps.remove(image_id).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "internal: missing dt label_map for image_id={image_id}"
+                    ))
+                })?;
+                if (gh, gw) != (dh, dw) {
+                    return Err(semantic_error_to_pyerr(
+                        py,
+                        &SemanticError::ShapeMismatch {
+                            image_id: *image_id,
+                            gt_shape: (gh, gw),
+                            dt_shape: (dh, dw),
+                        },
+                    ));
+                }
+                let image_id = *image_id;
+                py.detach(|| update_streaming(&mut ev, image_id, &gt_buf, &dt_buf))
+                    .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+            }
         }
-        let image_id = *image_id;
-        py.detach(|| update_streaming(&mut ev, image_id, &gt_buf, &dt_buf))
-            .map_err(|e| semantic_error_to_pyerr(py, &e))?;
+        Some(n) => {
+            // Materialise the whole batch up front and dispatch via
+            // the parallel kernel. Shape validation runs on the FFI
+            // thread (before detach) so typed errors surface with
+            // attribution.
+            let mut work: Vec<(ImageId, SemanticLabelMap, SemanticLabelMap)> =
+                Vec::with_capacity(image_ids.len());
+            for image_id in &image_ids {
+                let gt = gt_maps.remove(image_id).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "internal: missing gt label_map for image_id={image_id}"
+                    ))
+                })?;
+                let dt = dt_maps.remove(image_id).ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "internal: missing dt label_map for image_id={image_id}"
+                    ))
+                })?;
+                if gt.0 != dt.0 || gt.1 != dt.1 {
+                    return Err(semantic_error_to_pyerr(
+                        py,
+                        &SemanticError::ShapeMismatch {
+                            image_id: *image_id,
+                            gt_shape: (gt.0, gt.1),
+                            dt_shape: (dt.0, dt.1),
+                        },
+                    ));
+                }
+                work.push((*image_id, gt, dt));
+            }
+
+            py.detach(|| -> PyResult<()> {
+                let pool = crate::threads::build_scoped_pool(n).map_err(PyValueError::new_err)?;
+                pool.install(|| -> PyResult<()> {
+                    apply_parallel_updates(&mut ev, &work)
+                        .map_err(|e| PyValueError::new_err(format!("{e}")))
+                })
+            })?;
+        }
     }
 
     let bytes = py
@@ -1130,16 +1310,69 @@ fn update_streaming(
     }
 }
 
+/// Partition a `work` slice by `(gt, dt)` dtype and apply each dtype-
+/// homogeneous batch through [`StreamingSemanticEvaluator::update_parsed_parallel`]
+/// (ADR-0047). Caller must `install` a `rayon::ThreadPool` around
+/// the call. The u64-additive confusion-matrix reduction guarantees
+/// strict-mode bit-equality vs the sequential per-image update loop.
+fn apply_parallel_updates(
+    ev: &mut StreamingSemanticEvaluator,
+    work: &[(ImageId, SemanticLabelMap, SemanticLabelMap)],
+) -> Result<(), SemanticError> {
+    use SemanticPixelBuf::{U16, U32, U8};
+
+    let mut pairs_u8: Vec<(ImageId, &[u8], &[u8])> = Vec::new();
+    let mut pairs_u16: Vec<(ImageId, &[u16], &[u16])> = Vec::new();
+    let mut pairs_u32: Vec<(ImageId, &[u32], &[u32])> = Vec::new();
+    let mut mixed_owned: Vec<(ImageId, Vec<u32>, Vec<u32>)> = Vec::new();
+
+    for (image_id, (_, _, gt_buf), (_, _, dt_buf)) in work {
+        match (gt_buf, dt_buf) {
+            (U8(g), U8(d)) => pairs_u8.push((*image_id, g.as_slice(), d.as_slice())),
+            (U16(g), U16(d)) => pairs_u16.push((*image_id, g.as_slice(), d.as_slice())),
+            (U32(g), U32(d)) => pairs_u32.push((*image_id, g.as_slice(), d.as_slice())),
+            (g, d) => mixed_owned.push((*image_id, pixels_to_u32(g), pixels_to_u32(d))),
+        }
+    }
+    let mixed_pairs: Vec<(ImageId, &[u32], &[u32])> = mixed_owned
+        .iter()
+        .map(|(iid, g, d)| (*iid, g.as_slice(), d.as_slice()))
+        .collect();
+
+    if !pairs_u8.is_empty() {
+        ev.update_parsed_parallel(&pairs_u8)?;
+    }
+    if !pairs_u16.is_empty() {
+        ev.update_parsed_parallel(&pairs_u16)?;
+    }
+    if !pairs_u32.is_empty() {
+        ev.update_parsed_parallel(&pairs_u32)?;
+    }
+    if !mixed_pairs.is_empty() {
+        ev.update_parsed_parallel(&mixed_pairs)?;
+    }
+    Ok(())
+}
+
 /// Merge per-rank partials into a final summary (ADR-0035).
 #[pyfunction]
-#[pyo3(signature = (n_classes, partials, parity_mode, *, ignore_label = None))]
+#[pyo3(signature = (n_classes, partials, parity_mode, *, ignore_label = None, num_threads = None))]
 pub(crate) fn merge_semantic_partials<'py>(
     py: Python<'py>,
     n_classes: u32,
     partials: &Bound<'py, PyList>,
     parity_mode: &str,
     ignore_label: Option<u32>,
+    num_threads: Option<usize>,
 ) -> PyResult<PySemanticSummary> {
+    // ADR-0047: the merge path has no inter-image loop to parallelise
+    // (it's a `from_partials` decode + element-wise matrix sum over a
+    // small number of rank blobs), but the kwarg is still accepted on
+    // the FFI surface so library callers can pass `num_threads` through
+    // uniformly. Resolving here also routes the env-var fallback /
+    // re-entry warning past this entry, matching the rest of the
+    // semantic surface.
+    let _ = crate::threads::resolve_threads(py, num_threads);
     if n_classes == 0 {
         return Err(PyValueError::new_err(
             "merge_semantic_partials requires n_classes >= 1",
@@ -1309,6 +1542,9 @@ impl PyBackgroundSemanticEvaluator {
             worker_affinity,
             worker_nice,
             shutdown_timeout: validate_shutdown_timeout(shutdown_timeout_seconds)?,
+            // ADR-0047 Stage B: instance paradigm only; semantic
+            // worker stays sequential (default-path discipline).
+            num_threads: None,
         };
         let core = BackgroundCore::spawn(inner, config).map_err(|e| {
             PyRuntimeError::new_err(format!("failed to spawn background worker: {e}"))

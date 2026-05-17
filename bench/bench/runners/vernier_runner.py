@@ -26,6 +26,7 @@ _DEFAULT_KP_MAX_DETS: tuple[int, ...] = (20,)
 def main() -> int:
     args = parse_runner_args()
     iou = args.iou_type
+    num_threads: int | None = args.num_threads
     stages = StageTable()
 
     with stages.stage("load"):
@@ -39,19 +40,25 @@ def main() -> int:
     with stages.stage("evaluate"):
         if iou == "bbox":
             grid = _vernier_core.evaluate_bbox_grid(
-                gt_bytes, dt_bytes, PARITY_STRICT, md_top, use_cats=True
+                gt_bytes, dt_bytes, PARITY_STRICT, md_top, use_cats=True, num_threads=num_threads
             )
         elif iou == "segm":
             grid = _vernier_core.evaluate_segm_grid(
-                gt_bytes, dt_bytes, PARITY_STRICT, md_top, use_cats=True
+                gt_bytes, dt_bytes, PARITY_STRICT, md_top, use_cats=True, num_threads=num_threads
             )
         elif iou == "boundary":
             grid = _vernier_core.evaluate_boundary_grid(
-                gt_bytes, dt_bytes, PARITY_STRICT, md_top, True, DEFAULT_DILATION_RATIO
+                gt_bytes,
+                dt_bytes,
+                PARITY_STRICT,
+                md_top,
+                True,
+                DEFAULT_DILATION_RATIO,
+                num_threads=num_threads,
             )
         elif iou == "keypoints":
             grid = _vernier_core.evaluate_keypoints_grid(
-                gt_bytes, dt_bytes, PARITY_STRICT, md_top, True, {}
+                gt_bytes, dt_bytes, PARITY_STRICT, md_top, True, {}, num_threads=num_threads
             )
         else:
             raise ValueError(f"unsupported iou_type {iou!r}")

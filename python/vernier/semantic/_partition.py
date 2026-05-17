@@ -52,6 +52,7 @@ def evaluate_partitioned(
     class_grouping: list[tuple[str, list[int]]] | None,
     manifest: object,
     cross_axes: Sequence[Sequence[str]] | None,
+    num_threads: int | None = None,
 ) -> tuple[SemanticSummary, object, int, int]:
     """Run the semantic partitioned eval through the C3 FFI.
 
@@ -78,6 +79,7 @@ def evaluate_partitioned(
         class_filter=class_filter,
         class_grouping=class_grouping,
         cross_axes=cross,
+        num_threads=num_threads,
     )
     return (
         report.overall,

@@ -25,7 +25,7 @@
 //!   here we simply ignore the field on DT side, matching [`BboxIou`].
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use ndarray::ArrayViewMut2;
 use vernier_mask::ops::{intersect_area_offsets, SegmentTable};
@@ -112,11 +112,17 @@ impl SegmComputeScratch {
 /// Keyed by GT annotation id ([`SegmAnn::ann_id`], populated from
 /// `CocoAnnotation::id` at the dataset boundary).
 ///
-/// Threadsafe via an internal [`Mutex`] (the kernel needs `Sync`).
-/// Single-threaded use is uncontended.
+/// Threadsafe via an internal [`RwLock`] (the kernel needs `Sync`).
+/// ADR-0047 §"Stage A" lock-strategy: the populate path takes a
+/// read-fast-path that succeeds once every GT in the cell has been
+/// seen — under val2017 boundary/segm with 80 categories × 5 k images
+/// this kicks in within the first few cells per category, so rayon
+/// workers spend the bulk of the parallel pass holding shared read
+/// locks rather than serialising on a writer. Single-threaded use
+/// hits the same fast path with zero blocking.
 #[derive(Default)]
 pub struct SegmGtCache {
-    inner: Mutex<HashMap<i64, SegmGtEntry>>,
+    inner: RwLock<HashMap<i64, SegmGtEntry>>,
 }
 
 #[derive(Clone)]
@@ -134,22 +140,26 @@ impl SegmGtCache {
 
     /// Number of GT annotations currently held.
     pub fn len(&self) -> usize {
-        self.lock().len()
+        self.read().len()
     }
 
     /// Returns `true` if no GT entries are currently cached.
     pub fn is_empty(&self) -> bool {
-        self.lock().is_empty()
+        self.read().is_empty()
     }
 
     /// Drops all cached entries. Useful when the GT dataset changes
     /// mid-loop so stale entries don't pollute the next call.
     pub fn clear(&self) {
-        self.lock().clear();
+        self.write().clear();
     }
 
-    fn lock(&self) -> MutexGuard<'_, HashMap<i64, SegmGtEntry>> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    fn read(&self) -> RwLockReadGuard<'_, HashMap<i64, SegmGtEntry>> {
+        self.inner.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, HashMap<i64, SegmGtEntry>> {
+        self.inner.write().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -279,7 +289,28 @@ fn populate_gt(gts: &[SegmAnn], scratch: &mut SegmComputeScratch, cache: Option<
         }
         return;
     };
-    let mut inner = cache.lock();
+    // Read-fast path: if every GT in the cell is already cached, the
+    // populate loop runs under a shared read guard — multiple rayon
+    // workers can resolve their cells concurrently. The check is cheap
+    // (a HashMap contains for each GT) and dominates after the first
+    // few cells per category populate the cache.
+    {
+        let inner = cache.read();
+        if gts.iter().all(|g| inner.contains_key(&g.ann_id)) {
+            for g in gts {
+                if let Some(entry) = inner.get(&g.ann_id) {
+                    scratch.g_bbox.push(entry.bbox);
+                    scratch.g_area.push(entry.area);
+                    scratch.g_segments.push_segments(&entry.fg_offsets);
+                }
+            }
+            return;
+        }
+    }
+    // Slow path: at least one GT in the cell is missing — take the
+    // exclusive write lock for the entire populate so the entry()
+    // misses are not racy across workers.
+    let mut inner = cache.write();
     for g in gts {
         let entry = inner.entry(g.ann_id).or_insert_with(|| {
             let mut fg_offsets = Vec::new();

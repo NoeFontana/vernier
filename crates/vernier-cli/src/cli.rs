@@ -257,6 +257,16 @@ pub(crate) struct EvalArgs {
     /// when the user does not plan to aggregate.
     #[arg(long, value_name = "NAME")]
     pub(crate) label: Option<String>,
+
+    /// Number of threads used for per-image parallelism (ADR-0047).
+    /// `0` resolves to `available_parallelism` (cgroup-aware on Linux);
+    /// `1` (default) is sequential and pays no overhead. `n ≥ 2` builds
+    /// a scoped `rayon::ThreadPool` of exactly `n` threads around the
+    /// matching pass. The CLI defaults to `1` rather than picking up
+    /// `VERNIER_NUM_THREADS`; the env-var fallback applies only when
+    /// callers reach the library API with `num_threads=None`.
+    #[arg(long = "threads", value_name = "N", default_value_t = 1)]
+    pub(crate) threads: usize,
 }
 
 /// Headline-metric selector. Per ADR-0043 LRP / oLRP is opt-in (the

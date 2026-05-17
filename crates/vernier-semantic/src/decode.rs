@@ -134,6 +134,64 @@ pub fn evaluate_from_pngs(
     Ok(summarize(confusion, mode))
 }
 
+/// Parallel sibling of [`evaluate_from_pngs`] (ADR-0047 Stage B).
+///
+/// Each rayon worker reads + decodes + folds one image into a thread-
+/// local confusion matrix; the reduction is u64-additive and
+/// commutative, so the result is bit-equal to the serial path
+/// regardless of thread count. Caller responsibility: `install` a
+/// `rayon::ThreadPool` around this call.
+///
+/// Behavior of error paths matches [`evaluate_from_pngs`] modulo
+/// ordering: rayon `try_fold` short-circuits on the first error
+/// across the work-stealing pool, so the surfaced error may belong
+/// to a different image than the leftmost-failure the sequential
+/// path would report. The variant and shape of the error are
+/// preserved.
+pub fn evaluate_from_pngs_parallel(
+    gt_paths: &[(ImageId, PathBuf)],
+    dt_paths: &HashMap<ImageId, PathBuf>,
+    n_classes: u32,
+    ignore_label: Option<u32>,
+    mode: ParityMode,
+) -> Result<SemanticSummary, SemanticError> {
+    if gt_paths.is_empty() {
+        return Err(SemanticError::EmptyDataset);
+    }
+    use rayon::prelude::*;
+
+    let summed = gt_paths
+        .par_iter()
+        .try_fold(
+            || ConfusionMatrix::zeros(n_classes),
+            |mut acc, (image_id, gt_path)| -> Result<ConfusionMatrix, SemanticError> {
+                let dt_path = dt_paths
+                    .get(image_id)
+                    .ok_or(SemanticError::MissingPrediction {
+                        image_id: *image_id,
+                    })?;
+                let gt_bytes = fs::read(gt_path).map_err(|e| SemanticError::Io {
+                    path: gt_path.display().to_string(),
+                    source: e,
+                })?;
+                let dt_bytes = fs::read(dt_path).map_err(|e| SemanticError::Io {
+                    path: dt_path.display().to_string(),
+                    source: e,
+                })?;
+                fold_pair_bytes(*image_id, &gt_bytes, &dt_bytes, ignore_label, &mut acc)?;
+                Ok(acc)
+            },
+        )
+        .try_reduce(
+            || ConfusionMatrix::zeros(n_classes),
+            |mut a, b| {
+                a.add_assign_unchecked(&b);
+                Ok(a)
+            },
+        )?;
+    Ok(summarize(summed, mode))
+}
+
 #[cfg(test)]
 mod tests {
     use png::Encoder;

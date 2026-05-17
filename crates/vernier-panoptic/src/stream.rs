@@ -22,6 +22,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use rayon::prelude::*;
 use vernier_partial::RankId;
 
 use crate::attribute::{attribute_image, PqStat};
@@ -222,6 +223,112 @@ impl StreamingPanopticEvaluator {
 
         if let Some(deltas) = self.per_image.as_mut() {
             deltas.push((image_id, per_image));
+        }
+        Ok(())
+    }
+
+    /// Parallel sibling of [`Self::update`] consuming a batch of
+    /// `(image_id, gt, dt)` triples (ADR-0047 Stage B). The caller
+    /// `install`s a `rayon::ThreadPool` around the call. Per-image
+    /// deltas are re-sorted by `image_id` before folding into
+    /// `self.acc`, so the result is bit-equal to a sequential
+    /// `update` walk over the same batch in image-id order — that
+    /// canonical-order fold is what gives strict-mode bit-equality
+    /// across thread counts on the f64-non-associative `sum_iou`
+    /// (ADR-0047 §"Panoptic").
+    ///
+    /// Pre-condition: every `image_id` is unique within the batch and
+    /// has not appeared in any prior `update*` call; the disjointness
+    /// check runs once before any matching work. The Python wrapper
+    /// enforces `retain_per_image_deltas=true` under
+    /// `parity_mode=strict && num_threads>1` (one-shot info log).
+    ///
+    /// # Errors
+    /// [`PanopticError::DuplicateImageId`] on intra-batch / cross-batch
+    /// image-id collisions; the first [`PanopticError`] from any
+    /// per-image kernel call otherwise.
+    pub fn update_parsed_parallel(
+        &mut self,
+        batch: Vec<(ImageId, ImageEntry, ImageEntry)>,
+    ) -> Result<(), PanopticError> {
+        // Pre-check duplicates so we don't burn matching work just to
+        // unwind on a collision after the fact. The disjointness
+        // check is the same shape as `update` — `seen_images.insert`
+        // returns `false` on a duplicate — lifted to "before the
+        // par_iter" so it's a one-shot scan instead of a per-image
+        // synchronization point.
+        let mut intra_batch: HashSet<ImageId> = HashSet::with_capacity(batch.len());
+        for (image_id, _, _) in &batch {
+            if !intra_batch.insert(*image_id) {
+                return Err(PanopticError::DuplicateImageId {
+                    image_id: *image_id,
+                });
+            }
+            if self.seen_images.contains(image_id) {
+                return Err(PanopticError::DuplicateImageId {
+                    image_id: *image_id,
+                });
+            }
+        }
+
+        let boundary = self.boundary;
+        let max_category_id = self.max_category_id;
+        let parity_mode = self.parity_mode;
+
+        // Per-image matching + attribution under `par_iter`. Each
+        // worker initializes its own `(gt, dt)` `BoundaryScratch` pair
+        // via `map_init`; allocations amortize across the worker's
+        // share of the batch, no cross-thread state.
+        type PerImageVec = Vec<(ImageId, HashMap<CategoryId, PqStat>)>;
+        let per_image_results: Result<PerImageVec, PanopticError> = batch
+            .into_par_iter()
+            .map_init(
+                || (BoundaryScratch::new(), BoundaryScratch::new()),
+                |(gt_scratch, dt_scratch), (image_id, gt, dt)| {
+                    let report = match boundary {
+                        None => pq_image_with_id(image_id, &gt, &dt)?,
+                        Some(cfg) => pq_image_at_threshold_with_boundary(
+                            image_id,
+                            &gt,
+                            &dt,
+                            PANOPTIC_IOU_THRESHOLD,
+                            cfg,
+                            max_category_id,
+                            gt_scratch,
+                            dt_scratch,
+                        )?,
+                    };
+                    let per_image = attribute_image(&gt, &dt, &report, parity_mode);
+                    Ok((image_id, per_image))
+                },
+            )
+            .collect();
+
+        let mut per_image_results = per_image_results?;
+
+        // Sort by image_id so the fold below matches the canonical
+        // sequential walk (image-id-ascending) — gives bit-equality
+        // for `acc` across thread counts regardless of par_iter
+        // completion order. The non-strict path still benefits: the
+        // batch-local fold is deterministic, only the cross-batch
+        // ordering relative to prior `update` calls floats.
+        per_image_results.sort_by_key(|(id, _)| *id);
+
+        // Record `seen_images` membership and fold deltas. With
+        // `retain_per_image_deltas=true`, also push onto `per_image`
+        // for cross-rank strict-mode merge — kept in image-id order
+        // to match what `update` produces serially.
+        for (image_id, per_image) in per_image_results {
+            // Belt-and-braces: the pre-check above guards against
+            // duplicates, but inserting here re-establishes the
+            // post-condition in one place.
+            self.seen_images.insert(image_id);
+            for (cat, stat) in &per_image {
+                self.acc.entry(*cat).or_default().add_assign(stat);
+            }
+            if let Some(deltas) = self.per_image.as_mut() {
+                deltas.push((image_id, per_image));
+            }
         }
         Ok(())
     }
@@ -496,5 +603,76 @@ mod tests {
         ev.update(1, &gt, &dt).unwrap();
         let err = ev.with_rank(0).unwrap_err();
         assert!(matches!(err, PanopticError::Partial(_)));
+    }
+
+    #[test]
+    fn update_parsed_parallel_bit_equals_sequential_strict() {
+        // ADR-0047 Stage B core invariant: parallel `update` produces a
+        // `PanopticSummary` bit-equal to the sequential walk, across
+        // every thread count, with `retain_per_image_deltas=true`.
+        let cats = three_class_categories();
+        let image_ids: Vec<ImageId> = (10..18).collect();
+
+        // Sequential baseline.
+        let mut seq = StreamingPanopticEvaluator::new(cats.clone(), ParityMode::Strict, true, true);
+        for &id in &image_ids {
+            let (gt, dt) = perfect_match_image(id);
+            seq.update(id, &gt, &dt).unwrap();
+        }
+        let seq_summary = seq.finalize().unwrap();
+
+        for n_threads in [2usize, 3, 4, 8] {
+            let pool = rayon::ThreadPoolBuilder::new()
+                .num_threads(n_threads)
+                .build()
+                .unwrap();
+            let mut par =
+                StreamingPanopticEvaluator::new(cats.clone(), ParityMode::Strict, true, true);
+            let batch: Vec<(ImageId, ImageEntry, ImageEntry)> = image_ids
+                .iter()
+                .map(|&id| {
+                    let (gt, dt) = perfect_match_image(id);
+                    (id, gt, dt)
+                })
+                .collect();
+            pool.install(|| par.update_parsed_parallel(batch)).unwrap();
+            let par_summary = par.finalize().unwrap();
+            assert_eq!(
+                seq_summary.pq.to_bits(),
+                par_summary.pq.to_bits(),
+                "pq bits mismatch at n_threads={n_threads}",
+            );
+            assert_eq!(seq_summary.sq.to_bits(), par_summary.sq.to_bits());
+            assert_eq!(seq_summary.rq.to_bits(), par_summary.rq.to_bits());
+            assert_eq!(seq_summary.n, par_summary.n);
+        }
+    }
+
+    #[test]
+    fn update_parsed_parallel_rejects_intra_batch_duplicates() {
+        let cats = three_class_categories();
+        let mut ev = StreamingPanopticEvaluator::new(cats, ParityMode::Corrected, false, false);
+        let (gt_a, dt_a) = perfect_match_image(5);
+        let (gt_b, dt_b) = perfect_match_image(5);
+        let batch = vec![(5, gt_a, dt_a), (5, gt_b, dt_b)];
+        let err = ev.update_parsed_parallel(batch).unwrap_err();
+        assert!(matches!(
+            err,
+            PanopticError::DuplicateImageId { image_id: 5 }
+        ));
+    }
+
+    #[test]
+    fn update_parsed_parallel_rejects_cross_batch_duplicates() {
+        let cats = three_class_categories();
+        let mut ev = StreamingPanopticEvaluator::new(cats, ParityMode::Corrected, false, false);
+        let (gt, dt) = perfect_match_image(7);
+        ev.update(7, &gt, &dt).unwrap();
+        let (gt2, dt2) = perfect_match_image(7);
+        let err = ev.update_parsed_parallel(vec![(7, gt2, dt2)]).unwrap_err();
+        assert!(matches!(
+            err,
+            PanopticError::DuplicateImageId { image_id: 7 }
+        ));
     }
 }

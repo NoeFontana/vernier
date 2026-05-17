@@ -216,6 +216,7 @@ def _vernier_snapshot(
     segments_dt: Mapping[int, Sequence[Mapping[str, Any]]],
     categories: Sequence[Mapping[str, Any]],
     parity_mode: vernier.ParityMode,
+    num_threads: int | None = None,
 ) -> PanopticSnapshot:
     gt_segs_bytes = json.dumps({str(k): list(v) for k, v in segments_gt.items()}).encode()
     dt_segs_bytes = json.dumps({str(k): list(v) for k, v in segments_dt.items()}).encode()
@@ -231,7 +232,7 @@ def _vernier_snapshot(
         dt_segs_bytes,
     )
     summary = vernier.panoptic.Evaluator(parity_mode=parity_mode, things_stuff_split=True).evaluate(
-        gt, dt
+        gt, dt, num_threads=num_threads
     )
     return summary_to_snapshot(summary)
 
@@ -245,10 +246,14 @@ def snapshot(
     categories: Sequence[Mapping[str, Any]],
     *,
     parity_mode: vernier.ParityMode = "corrected",
+    num_threads: int | None = None,
 ) -> PanopticSnapshot:
     """Run one implementation against the fixture and return the
     [`PanopticSnapshot`]. ``parity_mode`` is honored on the vernier
-    side only; the oracle is panopticapi's single canonical behavior."""
+    side only; the oracle is panopticapi's single canonical behavior.
+
+    ``num_threads`` (ADR-0047) is honored on the vernier side only;
+    the oracle has no threading axis."""
     if impl == "panopticapi":
         return _oracle_snapshot(label_maps_gt, segments_gt, label_maps_dt, segments_dt, categories)
     elif impl == "vernier":
@@ -259,6 +264,7 @@ def snapshot(
             segments_dt,
             categories,
             parity_mode,
+            num_threads=num_threads,
         )
     else:
         raise ValueError(f"unknown impl {impl!r}")

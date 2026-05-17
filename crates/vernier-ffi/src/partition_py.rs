@@ -151,6 +151,7 @@ fn evaluate_instance_partitioned_impl(
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
     is_keypoints: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
     let grid = evaluate_grid_impl(
         py,
@@ -165,6 +166,7 @@ fn evaluate_instance_partitioned_impl(
         iou_thresholds,
         recall_thresholds,
         area_ranges,
+        num_threads,
     )?;
 
     // image_id -> sorted-index map matches `evaluate_with` exactly
@@ -228,6 +230,7 @@ fn evaluate_instance_partitioned_impl(
     area_ranges = None,
     cross_axes = None,
     key_kind = "image_id",
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_bbox_partitioned<'py>(
@@ -244,6 +247,7 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
     evaluate_instance_partitioned_impl(
         py,
@@ -261,6 +265,7 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
         cross_axes,
         key_kind,
         false,
+        num_threads,
     )
 }
 
@@ -280,6 +285,7 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
     area_ranges = None,
     cross_axes = None,
     key_kind = "image_id",
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_segm_partitioned<'py>(
@@ -296,6 +302,7 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
     evaluate_instance_partitioned_impl(
         py,
@@ -313,6 +320,7 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
         cross_axes,
         key_kind,
         false,
+        num_threads,
     )
 }
 
@@ -333,6 +341,7 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
     area_ranges = None,
     cross_axes = None,
     key_kind = "image_id",
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_boundary_partitioned<'py>(
@@ -350,6 +359,7 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
     evaluate_instance_partitioned_impl(
@@ -368,6 +378,7 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
         cross_axes,
         key_kind,
         false,
+        num_threads,
     )
 }
 
@@ -389,6 +400,7 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
     area_ranges = None,
     cross_axes = None,
     key_kind = "image_id",
+    num_threads = None,
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_keypoints_partitioned<'py>(
@@ -406,6 +418,7 @@ pub(crate) fn evaluate_keypoints_partitioned<'py>(
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
+    num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
@@ -426,6 +439,7 @@ pub(crate) fn evaluate_keypoints_partitioned<'py>(
         cross_axes,
         key_kind,
         true,
+        num_threads,
     )
 }
 

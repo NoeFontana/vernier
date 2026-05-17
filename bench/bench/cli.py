@@ -64,6 +64,20 @@ _PARADIGM_CHOICES: tuple[str, ...] = get_args(Paradigm)
 _PARADIGM_FLAG_CHOICES: tuple[str, ...] = ("auto", "all", *_PARADIGM_CHOICES)
 
 
+def _workload_id_with_threads(workload_id: str, num_threads: int | None) -> str:
+    """Suffix a per-cell ``num_threads`` onto a workload identifier so
+    ADR-0047 fan-out cells land in distinct result-store subtrees.
+
+    Returns ``workload_id`` unchanged when ``num_threads is None`` (the
+    canonical "library default" path); otherwise appends ``_tN``. The
+    legacy single-cell behavior is byte-identical to pre-ADR-0047
+    because every workload defaults to ``num_threads=(None,)``.
+    """
+    if num_threads is None:
+        return workload_id
+    return f"{workload_id}_t{num_threads}"
+
+
 @click.group()
 def main() -> None:
     """vernier-bench — local benchmarking harness (ADR-0017, ADR-0033)."""
@@ -124,6 +138,19 @@ def main() -> None:
     default=False,
     help="Skip the cross-impl parity check after the fan-out.",
 )
+@click.option(
+    "--num-threads",
+    "num_threads_spec",
+    type=str,
+    default=None,
+    help=(
+        "ADR-0047 thread-axis override. Comma-separated list of thread "
+        "counts (e.g. '1,2,4,8') overriding the workload's pinned "
+        "``num_threads`` tuple. ``0`` or empty values are rejected; "
+        "use ``--num-threads default`` (or omit the flag) to keep the "
+        "workload's pin."
+    ),
+)
 def run_cmd(
     impl: str,
     workload: str,
@@ -132,6 +159,7 @@ def run_cmd(
     mode: str,
     run_seed: int,
     no_parity: bool,
+    num_threads_spec: str | None,
 ) -> None:
     try:
         workload_obj = resolve(workload, REPO_ROOT)
@@ -141,6 +169,19 @@ def run_cmd(
         raise click.ClickException(str(e)) from e
     iou = cast(IouType, iou_type)
     mode_typed = cast(Mode, mode)
+
+    if num_threads_spec is not None and num_threads_spec != "default":
+        try:
+            override = tuple(int(s) for s in num_threads_spec.split(",") if s.strip())
+        except ValueError as e:
+            raise click.ClickException(
+                f"--num-threads expects a comma-separated list of ints; got {num_threads_spec!r}"
+            ) from e
+        if not override or any(n < 1 for n in override):
+            raise click.ClickException(
+                f"--num-threads entries must be positive ints; got {num_threads_spec!r}"
+            )
+        workload_obj = workload_obj.model_copy(update={"num_threads": override})
 
     # Resolve --paradigm against the workload's discriminator. ``all``
     # is reserved for the Phase-C cross-paradigm dry-run; today only
@@ -177,30 +218,34 @@ def run_cmd(
             raise click.ClickException(
                 f"impl {impl!r} is not registered for paradigm=panoptic; choices: {choices}"
             )
-        cell = CellSpec(
-            bench_root=BENCH_ROOT,
-            repo_root=REPO_ROOT,
-            impls=impls,
-            workload_id=workload_obj.workload_id,
-            iou_type="pq",
-            mode=mode_typed,
-            run_seed=run_seed,
-            paradigm="panoptic",
-            gt_png_dir=workload_obj.gt_png_dir,
-            gt_json=workload_obj.gt_json,
-            dt_png_dir=workload_obj.dt_png_dir,
-            dt_json=workload_obj.dt_json,
-            categories_json=workload_obj.categories_json,
-        )
         do_parity = not no_parity and mode_typed != "profile"
-        result = run_cell(cell, parity=do_parity)
-        for impl_name, json_path in result.impl_jsons.items():
-            click.echo(f"{impl_name}: {json_path}")
-        if result.parity is not None:
-            if result.parity.passed:
-                click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
-            else:
-                click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
+        for nt in workload_obj.num_threads:
+            if nt is not None:
+                click.echo(f"# num_threads={nt}")
+            cell = CellSpec(
+                bench_root=BENCH_ROOT,
+                repo_root=REPO_ROOT,
+                impls=impls,
+                workload_id=_workload_id_with_threads(workload_obj.workload_id, nt),
+                iou_type="pq",
+                mode=mode_typed,
+                run_seed=run_seed,
+                paradigm="panoptic",
+                gt_png_dir=workload_obj.gt_png_dir,
+                gt_json=workload_obj.gt_json,
+                dt_png_dir=workload_obj.dt_png_dir,
+                dt_json=workload_obj.dt_json,
+                categories_json=workload_obj.categories_json,
+                num_threads=nt,
+            )
+            result = run_cell(cell, parity=do_parity)
+            for impl_name, json_path in result.impl_jsons.items():
+                click.echo(f"{impl_name}: {json_path}")
+            if result.parity is not None:
+                if result.parity.passed:
+                    click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+                else:
+                    click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
         return
 
     if paradigm_typed == "semantic":
@@ -216,34 +261,38 @@ def run_cmd(
             raise click.ClickException(
                 f"impl {impl!r} is not registered for paradigm=semantic; choices: {choices}"
             )
-        cell = CellSpec(
-            bench_root=BENCH_ROOT,
-            repo_root=REPO_ROOT,
-            impls=impls,
-            workload_id=workload_obj.workload_id,
-            iou_type="miou",
-            mode=mode_typed,
-            run_seed=run_seed,
-            paradigm="semantic",
-            gt_label_map_dir=workload_obj.gt_label_maps,
-            dt_label_map_dir=workload_obj.dt_label_maps,
-            n_classes=workload_obj.n_classes,
-            ignore_label=workload_obj.ignore_label,
-        )
         # No oracle for semantic yet (S3-B mmseg env pending) — skip
         # parity even if --no-parity wasn't passed. Profile mode also
         # skips, matching the instance/panoptic convention.
         do_parity = (
             not no_parity and mode_typed != "profile" and len(IMPL_PARADIGM_SUPPORT["semantic"]) > 1
         )
-        result = run_cell(cell, parity=do_parity)
-        for impl_name, json_path in result.impl_jsons.items():
-            click.echo(f"{impl_name}: {json_path}")
-        if result.parity is not None:
-            if result.parity.passed:
-                click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
-            else:
-                click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
+        for nt in workload_obj.num_threads:
+            if nt is not None:
+                click.echo(f"# num_threads={nt}")
+            cell = CellSpec(
+                bench_root=BENCH_ROOT,
+                repo_root=REPO_ROOT,
+                impls=impls,
+                workload_id=_workload_id_with_threads(workload_obj.workload_id, nt),
+                iou_type="miou",
+                mode=mode_typed,
+                run_seed=run_seed,
+                paradigm="semantic",
+                gt_label_map_dir=workload_obj.gt_label_maps,
+                dt_label_map_dir=workload_obj.dt_label_maps,
+                n_classes=workload_obj.n_classes,
+                ignore_label=workload_obj.ignore_label,
+                num_threads=nt,
+            )
+            result = run_cell(cell, parity=do_parity)
+            for impl_name, json_path in result.impl_jsons.items():
+                click.echo(f"{impl_name}: {json_path}")
+            if result.parity is not None:
+                if result.parity.passed:
+                    click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+                else:
+                    click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
         return
 
     if paradigm_typed == "lvis":
@@ -265,34 +314,38 @@ def run_cmd(
                 f"impl {impl!r} is not registered for paradigm=lvis with --iou {iou_type}; "
                 f"choices: {choices}"
             )
-        cell = CellSpec(
-            bench_root=BENCH_ROOT,
-            repo_root=REPO_ROOT,
-            impls=impls,
-            workload_id=workload_obj.workload_id,
-            iou_type=iou,
-            gt_path=workload_obj.gt_path,
-            dt_path=workload_obj.dt_path,
-            mode=mode_typed,
-            run_seed=run_seed,
-            paradigm="lvis",
-        )
         do_parity = not no_parity and mode_typed != "profile"
-        result = run_cell(cell, parity=do_parity)
-        for impl_name, json_path in result.impl_jsons.items():
-            click.echo(f"{impl_name}: {json_path}")
-        for impl_name, outcome in result.iqr_outcomes.items():
-            status = "OK" if outcome.passed else "FAILED"
-            click.echo(
-                f"iqr_gate[{impl_name}]: {status} "
-                f"(rel={outcome.relative:.3%}, threshold={outcome.threshold:.1%})",
-                err=not outcome.passed,
+        for nt in workload_obj.num_threads:
+            if nt is not None:
+                click.echo(f"# num_threads={nt}")
+            cell = CellSpec(
+                bench_root=BENCH_ROOT,
+                repo_root=REPO_ROOT,
+                impls=impls,
+                workload_id=_workload_id_with_threads(workload_obj.workload_id, nt),
+                iou_type=iou,
+                gt_path=workload_obj.gt_path,
+                dt_path=workload_obj.dt_path,
+                mode=mode_typed,
+                run_seed=run_seed,
+                paradigm="lvis",
+                num_threads=nt,
             )
-        if result.parity is not None:
-            if result.parity.passed:
-                click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
-            else:
-                click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
+            result = run_cell(cell, parity=do_parity)
+            for impl_name, json_path in result.impl_jsons.items():
+                click.echo(f"{impl_name}: {json_path}")
+            for impl_name, outcome in result.iqr_outcomes.items():
+                status = "OK" if outcome.passed else "FAILED"
+                click.echo(
+                    f"iqr_gate[{impl_name}]: {status} "
+                    f"(rel={outcome.relative:.3%}, threshold={outcome.threshold:.1%})",
+                    err=not outcome.passed,
+                )
+            if result.parity is not None:
+                if result.parity.passed:
+                    click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+                else:
+                    click.echo(f"parity: FAILED — see {result.divergence_report_path}", err=True)
         return
 
     if paradigm_typed != "instance":
@@ -326,42 +379,49 @@ def run_cmd(
             )
         impls = [impl]
 
-    cell = CellSpec(
-        bench_root=BENCH_ROOT,
-        repo_root=REPO_ROOT,
-        impls=impls,
-        workload_id=workload_obj.workload_id,
-        iou_type=iou,
-        gt_path=workload_obj.gt_path,
-        dt_path=workload_obj.dt_path,
-        mode=mode_typed,
-        run_seed=run_seed,
-        paradigm=paradigm_typed,
-    )
     # Profile mode skips parity by default per ADR-0017 §"Run modes":
     # instrumentation perturbs which code paths warm up.
     do_parity = not no_parity and mode_typed != "profile"
-    result = run_cell(cell, parity=do_parity)
-
-    for impl_name, json_path in result.impl_jsons.items():
-        click.echo(f"{impl_name}: {json_path}")
-
-    for impl_name, outcome in result.iqr_outcomes.items():
-        status = "OK" if outcome.passed else "FAILED"
-        click.echo(
-            f"iqr_gate[{impl_name}]: {status} "
-            f"(rel={outcome.relative:.3%}, threshold={outcome.threshold:.1%})",
-            err=not outcome.passed,
+    # ADR-0047 fan-out — the workload pins the thread-count axis; the
+    # default ``(None,)`` preserves the pre-ADR-0047 one-cell-per-call
+    # behavior.
+    for nt in workload_obj.num_threads:
+        if nt is not None:
+            click.echo(f"# num_threads={nt}")
+        cell = CellSpec(
+            bench_root=BENCH_ROOT,
+            repo_root=REPO_ROOT,
+            impls=impls,
+            workload_id=_workload_id_with_threads(workload_obj.workload_id, nt),
+            iou_type=iou,
+            gt_path=workload_obj.gt_path,
+            dt_path=workload_obj.dt_path,
+            mode=mode_typed,
+            run_seed=run_seed,
+            paradigm=paradigm_typed,
+            num_threads=nt,
         )
+        result = run_cell(cell, parity=do_parity)
 
-    if result.parity is not None:
-        if result.parity.passed:
-            click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
-        else:
+        for impl_name, json_path in result.impl_jsons.items():
+            click.echo(f"{impl_name}: {json_path}")
+
+        for impl_name, outcome in result.iqr_outcomes.items():
+            status = "OK" if outcome.passed else "FAILED"
             click.echo(
-                f"parity: FAILED — see {result.divergence_report_path}",
-                err=True,
+                f"iqr_gate[{impl_name}]: {status} "
+                f"(rel={outcome.relative:.3%}, threshold={outcome.threshold:.1%})",
+                err=not outcome.passed,
             )
+
+        if result.parity is not None:
+            if result.parity.passed:
+                click.echo(f"parity: OK ({len(result.parity.tiers)} tier(s) checked)")
+            else:
+                click.echo(
+                    f"parity: FAILED — see {result.divergence_report_path}",
+                    err=True,
+                )
 
 
 @main.command("compare")

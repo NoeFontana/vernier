@@ -79,6 +79,7 @@ mod semantic;
 mod semantic_tables;
 mod tables;
 mod thread_sched;
+mod threads;
 mod tide;
 
 use dataset::{DatasetCaches, PyDataset};
@@ -650,6 +651,72 @@ impl EvalIouType {
         }
     }
 
+    /// Parallel sibling of [`Self::run`] (ADR-0047). Caller is
+    /// responsible for installing a `rayon::ThreadPool` of the
+    /// requested size via `pool.install(|| ...)` — this method uses
+    /// the parallel evaluator entries which read the ambient pool.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EvalError`] from the underlying kernel calls.
+    fn run_parallel(
+        &self,
+        gt: &CocoDataset,
+        dt: &CocoDetections,
+        params: EvaluateParams<'_>,
+        parity: ParityMode,
+    ) -> Result<EvalGrid, EvalError> {
+        use vernier_core::{
+            evaluate_bbox_parallel, evaluate_boundary_parallel, evaluate_keypoints_parallel,
+            evaluate_segm_parallel,
+        };
+        match self {
+            Self::Bbox => evaluate_bbox_parallel(gt, dt, params, parity),
+            Self::Segm => evaluate_segm_parallel(gt, dt, params, parity),
+            Self::Boundary { dilation_ratio } => {
+                evaluate_boundary_parallel(gt, dt, params, parity, *dilation_ratio)
+            }
+            Self::Keypoints { sigmas } => {
+                evaluate_keypoints_parallel(gt, dt, params, parity, sigmas.clone())
+            }
+        }
+    }
+
+    /// Parallel sibling of [`Self::run_cached`]. Same pool ownership
+    /// contract as [`Self::run_parallel`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`EvalError`] from the underlying kernel calls.
+    fn run_cached_parallel(
+        &self,
+        gt: &CocoDataset,
+        dt: &CocoDetections,
+        params: EvaluateParams<'_>,
+        parity: ParityMode,
+        caches: DatasetCaches<'_>,
+    ) -> Result<EvalGrid, EvalError> {
+        use vernier_core::{
+            evaluate_bbox_parallel, evaluate_boundary_cached_parallel, evaluate_keypoints_parallel,
+            evaluate_segm_cached_parallel,
+        };
+        match self {
+            Self::Bbox => evaluate_bbox_parallel(gt, dt, params, parity),
+            Self::Segm => evaluate_segm_cached_parallel(gt, dt, params, parity, caches.segm),
+            Self::Boundary { dilation_ratio } => evaluate_boundary_cached_parallel(
+                gt,
+                dt,
+                params,
+                parity,
+                *dilation_ratio,
+                caches.boundary,
+            ),
+            Self::Keypoints { sigmas } => {
+                evaluate_keypoints_parallel(gt, dt, params, parity, sigmas.clone())
+            }
+        }
+    }
+
     /// True for the Keypoints kernel — drives the kp-vs-detection grid
     /// and summarizer-plan dispatch in [`evaluate_grid_impl`] and
     /// [`run_pipeline`].
@@ -665,6 +732,12 @@ impl EvalIouType {
 /// `(image, category)` cell — pass the *largest* entry of the eventual
 /// `accumulate()` `max_dets` ladder. Smaller ladder entries are sliced
 /// downstream by `accumulate`.
+///
+/// `num_threads` (ADR-0047) routes between the sequential
+/// [`EvalIouType::run`] path (`None` / `Some(1)` / unset env var) and
+/// the parallel [`EvalIouType::run_parallel`] path. The parallel arm
+/// builds a scoped per-call `rayon::ThreadPool` of exactly the
+/// requested thread count.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_grid_impl(
     py: Python<'_>,
@@ -679,6 +752,7 @@ pub(crate) fn evaluate_grid_impl(
     iou_thresholds_arg: Option<Vec<f64>>,
     recall_thresholds_arg: Option<Vec<f64>>,
     area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
@@ -687,6 +761,9 @@ pub(crate) fn evaluate_grid_impl(
         recall_thresholds_arg,
         area_ranges_arg,
     )?;
+    // Resolve threading policy under the GIL so the env-var / re-entry
+    // `UserWarning` can fire to Python before we detach.
+    let thread_policy = threads::resolve_threads(py, num_threads);
     // Zero-copy borrow over the GT bytes — `PyBackedBytes` keeps the
     // underlying `Py<PyBytes>` alive across `py.detach` while exposing
     // `&[u8]` via `Deref`. Saves a 20 MB `to_vec()` per call on val2017
@@ -699,19 +776,14 @@ pub(crate) fn evaluate_grid_impl(
     let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
         let gt = parse_gt(&gt_bytes)?;
         let dt = realize_dt(dt_payload)?;
-        let grid = iou_type
-            .run(
-                &gt,
-                &dt,
-                EvaluateParams {
-                    iou_thresholds: &iou_for_run,
-                    area_ranges: &area,
-                    max_dets_per_image,
-                    use_cats,
-                    retain_iou,
-                },
-                parity,
-            )
+        let params = EvaluateParams {
+            iou_thresholds: &iou_for_run,
+            area_ranges: &area,
+            max_dets_per_image,
+            use_cats,
+            retain_iou,
+        };
+        let grid = run_grid_with_policy(&iou_type, &gt, &dt, params, parity, thread_policy)
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Ok((
             grid,
@@ -729,11 +801,57 @@ pub(crate) fn evaluate_grid_impl(
     })
 }
 
+/// Dispatch the right per-paradigm runner based on
+/// [`threads::ThreadPolicy`]: sequential calls today's
+/// [`EvalIouType::run`] unchanged; parallel builds a scoped pool of
+/// exactly the requested thread count and `install`s the parallel
+/// runner inside it.
+fn run_grid_with_policy(
+    iou_type: &EvalIouType,
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity: ParityMode,
+    thread_policy: threads::ThreadPolicy,
+) -> Result<EvalGrid, EvalError> {
+    match thread_policy.thread_count() {
+        None => iou_type.run(gt, dt, params, parity),
+        Some(n) => {
+            let pool = threads::build_scoped_pool(n)
+                .map_err(|detail| EvalError::InvalidConfig { detail })?;
+            pool.install(|| iou_type.run_parallel(gt, dt, params, parity))
+        }
+    }
+}
+
+/// Cached-dataset sibling of [`run_grid_with_policy`].
+fn run_grid_cached_with_policy(
+    iou_type: &EvalIouType,
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity: ParityMode,
+    caches: DatasetCaches<'_>,
+    thread_policy: threads::ThreadPolicy,
+) -> Result<EvalGrid, EvalError> {
+    match thread_policy.thread_count() {
+        None => iou_type.run_cached(gt, dt, params, parity, caches),
+        Some(n) => {
+            let pool = threads::build_scoped_pool(n)
+                .map_err(|detail| EvalError::InvalidConfig { detail })?;
+            pool.install(|| iou_type.run_cached_parallel(gt, dt, params, parity, caches))
+        }
+    }
+}
+
 /// Same as [`evaluate_grid_impl`] but accepts a parsed-once
 /// [`PyDataset`] (ADR-0020) — required when the GT carries LVIS
 /// federated metadata that the JSON-bytes path would discard
 /// (ADR-0026, the orchestrator's `gt.is_federated()` gate fires
 /// only on a dataset built via `Dataset.from_lvis_json`).
+///
+/// `num_threads` (ADR-0047) has identical semantics to the
+/// JSON-bytes path; see [`evaluate_grid_impl`].
 #[allow(clippy::too_many_arguments)]
 fn evaluate_grid_with_dataset_impl(
     py: Python<'_>,
@@ -748,6 +866,7 @@ fn evaluate_grid_with_dataset_impl(
     iou_thresholds_arg: Option<Vec<f64>>,
     recall_thresholds_arg: Option<Vec<f64>>,
     area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
@@ -756,6 +875,7 @@ fn evaluate_grid_with_dataset_impl(
         recall_thresholds_arg,
         area_ranges_arg,
     )?;
+    let thread_policy = threads::resolve_threads(py, num_threads);
     let snapshot = gt.snapshot();
     let retained_dataset = snapshot.clone();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
@@ -776,21 +896,23 @@ fn evaluate_grid_with_dataset_impl(
                 dt
             };
             let caches = snapshot.caches();
-            let grid = iou_type
-                .run_cached(
-                    &snapshot.gt,
-                    &dt,
-                    EvaluateParams {
-                        iou_thresholds: &iou_for_run,
-                        area_ranges: &area,
-                        max_dets_per_image,
-                        use_cats,
-                        retain_iou,
-                    },
-                    parity,
-                    caches,
-                )
-                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            let params = EvaluateParams {
+                iou_thresholds: &iou_for_run,
+                area_ranges: &area,
+                max_dets_per_image,
+                use_cats,
+                retain_iou,
+            };
+            let grid = run_grid_cached_with_policy(
+                &iou_type,
+                &snapshot.gt,
+                &dt,
+                params,
+                parity,
+                caches,
+                thread_policy,
+            )
+            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
             Ok((grid, retain_iou.then_some(dt)))
         })?;
     Ok(PyEvalGrid {
@@ -852,7 +974,7 @@ fn resolve_grid_axes(
 /// construction; defaults to `False` so existing callers pay no extra
 /// allocation.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_grid<'py>(
     py: Python<'py>,
@@ -866,6 +988,7 @@ fn evaluate_bbox_grid<'py>(
     iou_thresholds: Option<Vec<f64>>,
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -880,6 +1003,7 @@ fn evaluate_bbox_grid<'py>(
         iou_thresholds,
         recall_thresholds,
         area_ranges,
+        num_threads,
     )
 }
 
@@ -889,7 +1013,7 @@ fn evaluate_bbox_grid<'py>(
 /// strips ADR-0026 federated metadata at GT load, so the
 /// orchestrator's AA3/AA4 branches never fire on that path.
 #[pyfunction]
-#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
+#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_grid_with_dataset<'py>(
     py: Python<'py>,
@@ -903,6 +1027,7 @@ fn evaluate_bbox_grid_with_dataset<'py>(
     iou_thresholds: Option<Vec<f64>>,
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_with_dataset_impl(
         py,
@@ -917,6 +1042,7 @@ fn evaluate_bbox_grid_with_dataset<'py>(
         iou_thresholds,
         recall_thresholds,
         area_ranges,
+        num_threads,
     )
 }
 
@@ -924,7 +1050,7 @@ fn evaluate_bbox_grid_with_dataset<'py>(
 /// `segmentation` field on every entry; absent fields raise a typed
 /// `ValueError` instead of being silently treated as empty.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_segm_grid<'py>(
     py: Python<'py>,
@@ -938,6 +1064,7 @@ fn evaluate_segm_grid<'py>(
     iou_thresholds: Option<Vec<f64>>,
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -952,6 +1079,7 @@ fn evaluate_segm_grid<'py>(
         iou_thresholds,
         recall_thresholds,
         area_ranges,
+        num_threads,
     )
 }
 
@@ -960,7 +1088,7 @@ fn evaluate_segm_grid<'py>(
 /// `dilation_ratio` is the boundary band width as a fraction of the
 /// image diagonal (`0.02` COCO default; `0.008` LVIS variant).
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_boundary_grid<'py>(
     py: Python<'py>,
@@ -975,6 +1103,7 @@ fn evaluate_boundary_grid<'py>(
     iou_thresholds: Option<Vec<f64>>,
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
     evaluate_grid_impl(
@@ -990,6 +1119,7 @@ fn evaluate_boundary_grid<'py>(
         iou_thresholds,
         recall_thresholds,
         area_ranges,
+        num_threads,
     )
 }
 
@@ -1001,7 +1131,9 @@ fn evaluate_boundary_grid<'py>(
 /// `loadRes(...)` consume). `parity_mode` is `"strict"` or `"corrected"`
 /// per ADR-0002. `max_dets` is the maxDets ladder fed to accumulate /
 /// summarize (pycocotools default `[1, 10, 100]`). `use_cats` mirrors
-/// pycocotools' `useCats` (quirk **L4**).
+/// pycocotools' `useCats` (quirk **L4**). `num_threads` (ADR-0047)
+/// routes between the sequential and parallel paths; see
+/// [`evaluate_grid_impl`].
 #[allow(clippy::too_many_arguments)]
 fn evaluate_summary_impl(
     py: Python<'_>,
@@ -1012,9 +1144,11 @@ fn evaluate_summary_impl(
     max_dets: Vec<usize>,
     use_cats: bool,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     let parity = parse_parity_mode(parity_mode)?;
     require_nonempty_max_dets(&max_dets)?;
+    let thread_policy = threads::resolve_threads(py, num_threads);
     // Quirk A2 (strict): mirror pycocotools' `cocoeval.py:137`
     // `p.maxDets = sorted(p.maxDets)`. Sort once here so the eval
     // pipeline's `max_dets_per_image` cap (the largest entry) and the
@@ -1031,8 +1165,16 @@ fn evaluate_summary_impl(
     let summary = py.detach(move || -> PyResult<Summary> {
         let gt = parse_gt(&gt_bytes)?;
         let dt = realize_dt(dt_payload)?;
-        run_pipeline(&iou_type, &gt, &dt, parity, &max_dets, use_cats)
-            .map_err(|e| PyValueError::new_err(format!("{e}")))
+        run_pipeline(
+            &iou_type,
+            &gt,
+            &dt,
+            parity,
+            &max_dets,
+            use_cats,
+            thread_policy,
+        )
+        .map_err(|e| PyValueError::new_err(format!("{e}")))
     })?;
 
     Ok(PySummary { inner: summary })
@@ -1040,7 +1182,8 @@ fn evaluate_summary_impl(
 
 /// Bbox end-to-end pipeline — see [`evaluate_summary_impl`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_summary(
     py: Python<'_>,
     gt_json: &Bound<'_, PyBytes>,
@@ -1049,6 +1192,7 @@ fn evaluate_bbox_summary(
     max_dets: Vec<usize>,
     use_cats: bool,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     evaluate_summary_impl(
         py,
@@ -1059,13 +1203,15 @@ fn evaluate_bbox_summary(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
 /// Segm end-to-end pipeline — see [`evaluate_summary_impl`]. Both GT
 /// and DT must carry segmentation fields.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
 fn evaluate_segm_summary(
     py: Python<'_>,
     gt_json: &Bound<'_, PyBytes>,
@@ -1074,6 +1220,7 @@ fn evaluate_segm_summary(
     max_dets: Vec<usize>,
     use_cats: bool,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     evaluate_summary_impl(
         py,
@@ -1084,6 +1231,7 @@ fn evaluate_segm_summary(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
@@ -1091,7 +1239,7 @@ fn evaluate_segm_summary(
 /// [`evaluate_summary_impl`]. Both GT and DT must carry segmentation
 /// fields. `dilation_ratio` matches [`evaluate_boundary_grid`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, dilation_ratio, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, dilation_ratio, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_boundary_summary(
     py: Python<'_>,
@@ -1102,6 +1250,7 @@ fn evaluate_boundary_summary(
     use_cats: bool,
     dilation_ratio: f64,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
     evaluate_summary_impl(
@@ -1113,6 +1262,7 @@ fn evaluate_boundary_summary(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
@@ -1126,7 +1276,7 @@ fn evaluate_boundary_summary(
 /// `corrected`). Sigmas must be supplied already scaled (post-divide-
 /// by-10 per pycocotools' internal handling).
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, sigmas, cast_inputs=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, sigmas, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_keypoints_summary(
     py: Python<'_>,
@@ -1137,6 +1287,7 @@ fn evaluate_keypoints_summary(
     use_cats: bool,
     sigmas: &Bound<'_, PyDict>,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
@@ -1150,6 +1301,7 @@ fn evaluate_keypoints_summary(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
@@ -1158,7 +1310,8 @@ fn evaluate_keypoints_summary(
 /// derivation cache today, so the only saving over
 /// [`evaluate_bbox_summary`] is the GT JSON parse.
 #[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, cast_inputs=false))]
+#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_summary_with_dataset(
     py: Python<'_>,
     dataset: &PyDataset,
@@ -1167,6 +1320,7 @@ fn evaluate_bbox_summary_with_dataset(
     max_dets: Vec<usize>,
     use_cats: bool,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     evaluate_summary_with_dataset_impl(
         py,
@@ -1177,6 +1331,7 @@ fn evaluate_bbox_summary_with_dataset(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
@@ -1184,7 +1339,8 @@ fn evaluate_bbox_summary_with_dataset(
 /// (ADR-0020). Threads the dataset's [`SegmGtCache`] into the
 /// kernel so cross-call GT bbox+area derivation is reused.
 #[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, cast_inputs=false))]
+#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
 fn evaluate_segm_summary_with_dataset(
     py: Python<'_>,
     dataset: &PyDataset,
@@ -1193,6 +1349,7 @@ fn evaluate_segm_summary_with_dataset(
     max_dets: Vec<usize>,
     use_cats: bool,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     evaluate_summary_with_dataset_impl(
         py,
@@ -1203,6 +1360,7 @@ fn evaluate_segm_summary_with_dataset(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
@@ -1212,7 +1370,7 @@ fn evaluate_segm_summary_with_dataset(
 /// cost) is reused. The cache is cleared if `dilation_ratio` differs
 /// from the previous call's, per ADR-0010.
 #[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, dilation_ratio, cast_inputs=false))]
+#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, dilation_ratio, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_boundary_summary_with_dataset(
     py: Python<'_>,
@@ -1223,6 +1381,7 @@ fn evaluate_boundary_summary_with_dataset(
     use_cats: bool,
     dilation_ratio: f64,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
     evaluate_summary_with_dataset_impl(
@@ -1234,6 +1393,7 @@ fn evaluate_boundary_summary_with_dataset(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
@@ -1241,7 +1401,7 @@ fn evaluate_boundary_summary_with_dataset(
 /// [`PyDataset`] (ADR-0020). No keypoints-side cache today, so the
 /// saving over [`evaluate_keypoints_summary`] is the GT JSON parse.
 #[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, sigmas, cast_inputs=false))]
+#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, sigmas, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_keypoints_summary_with_dataset(
     py: Python<'_>,
@@ -1252,6 +1412,7 @@ fn evaluate_keypoints_summary_with_dataset(
     use_cats: bool,
     sigmas: &Bound<'_, PyDict>,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
@@ -1265,6 +1426,7 @@ fn evaluate_keypoints_summary_with_dataset(
         max_dets,
         use_cats,
         cast_inputs,
+        num_threads,
     )
 }
 
@@ -1282,9 +1444,11 @@ fn evaluate_summary_with_dataset_impl(
     max_dets: Vec<usize>,
     use_cats: bool,
     cast_inputs: bool,
+    num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     let parity = parse_parity_mode(parity_mode)?;
     require_nonempty_max_dets(&max_dets)?;
+    let thread_policy = threads::resolve_threads(py, num_threads);
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
@@ -1299,6 +1463,7 @@ fn evaluate_summary_with_dataset_impl(
             parity,
             &max_dets,
             use_cats,
+            thread_policy,
         )
         .map_err(|e| PyValueError::new_err(format!("{e}")))
     })?;
@@ -1309,7 +1474,7 @@ fn evaluate_summary_with_dataset_impl(
 /// carry `keypoints` fields. `sigmas` matches
 /// [`evaluate_keypoints_summary`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_keypoints_grid<'py>(
     py: Python<'py>,
@@ -1323,6 +1488,7 @@ fn evaluate_keypoints_grid<'py>(
     iou_thresholds: Option<Vec<f64>>,
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
@@ -1340,6 +1506,7 @@ fn evaluate_keypoints_grid<'py>(
         iou_thresholds,
         recall_thresholds,
         area_ranges,
+        num_threads,
     )
 }
 
@@ -1363,6 +1530,7 @@ fn run_pipeline(
     parity: ParityMode,
     max_dets: &[usize],
     use_cats: bool,
+    thread_policy: threads::ThreadPolicy,
 ) -> Result<Summary, EvalError> {
     let area = area_ranges_for(iou_type);
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
@@ -1373,7 +1541,7 @@ fn run_pipeline(
         use_cats,
         retain_iou: false,
     };
-    let grid = iou_type.run(gt, dt, eval_params, parity)?;
+    let grid = run_grid_with_policy(iou_type, gt, dt, eval_params, parity, thread_policy)?;
     summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
 }
 
@@ -1382,6 +1550,7 @@ fn run_pipeline(
 /// [`EvalIouType::run_cached`] so kernels with a cache slot
 /// (`evaluate_segm_cached`, `evaluate_boundary_cached`) reuse GT-side
 /// derivations across calls.
+#[allow(clippy::too_many_arguments)]
 fn run_pipeline_with_dataset(
     iou_type: &EvalIouType,
     gt: &CocoDataset,
@@ -1390,6 +1559,7 @@ fn run_pipeline_with_dataset(
     parity: ParityMode,
     max_dets: &[usize],
     use_cats: bool,
+    thread_policy: threads::ThreadPolicy,
 ) -> Result<Summary, EvalError> {
     let area = area_ranges_for(iou_type);
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
@@ -1400,7 +1570,8 @@ fn run_pipeline_with_dataset(
         use_cats,
         retain_iou: false,
     };
-    let grid = iou_type.run_cached(gt, dt, eval_params, parity, caches)?;
+    let grid =
+        run_grid_cached_with_policy(iou_type, gt, dt, eval_params, parity, caches, thread_policy)?;
     summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
 }
 
@@ -2713,6 +2884,7 @@ impl PyBackgroundEvaluator {
         cast_inputs = false,
         rank_id = None,
         record_latency_samples = false,
+        num_threads = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -2733,6 +2905,7 @@ impl PyBackgroundEvaluator {
         cast_inputs: bool,
         rank_id: Option<u32>,
         record_latency_samples: bool,
+        num_threads: Option<usize>,
     ) -> PyResult<Self> {
         let parity = parse_parity_mode(parity_mode)?;
         require_nonempty_max_dets(&max_dets)?;
@@ -2773,11 +2946,19 @@ impl PyBackgroundEvaluator {
                 "shutdown_timeout_seconds must be a non-negative finite float, got {shutdown_timeout_seconds}"
             )));
         }
+
+        // ADR-0047 Stage B: resolve `num_threads` under the GIL so the
+        // re-entry / env-var `UserWarning` can fire to Python *before*
+        // the worker thread spawns. The resolved `NonZeroUsize` is
+        // owned by `BackgroundConfig` and consumed by `worker_loop`
+        // when it builds the per-worker scoped pool.
+        let thread_policy = threads::resolve_threads(py, num_threads);
         let config = background::BackgroundConfig {
             queue_capacity,
             worker_affinity,
             worker_nice,
             shutdown_timeout: Duration::from_secs_f64(shutdown_timeout_seconds),
+            num_threads: thread_policy.thread_count(),
         };
 
         let make_params = |area: Vec<AreaRange>| OwnedEvaluateParams {

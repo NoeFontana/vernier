@@ -8,12 +8,14 @@ Per ADR-0029, the panoptic-segmentation evaluation paradigm lives under
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, overload
+from typing import TYPE_CHECKING, Final, Literal, overload
 
 import numpy as np
 from numpy.typing import NDArray
@@ -68,11 +70,71 @@ from vernier._types import (
 if TYPE_CHECKING:  # pragma: no cover — type-checker only
     import polars as pl
 
+_LOGGER = logging.getLogger("vernier.panoptic")
+
+#: One-shot sentinel for the panoptic strict-mode + ``num_threads>1``
+#: forced-flag policy (ADR-0047 §"Panoptic"). The log line fires at
+#: most once per process — every subsequent call into
+#: :meth:`Evaluator.evaluate` (or :meth:`Evaluator.background`) under
+#: the same conditions silently flips ``retain_per_image_deltas=True``
+#: without re-emitting. Module-global by design: the policy is
+#: process-wide and the log is for human attention, not telemetry.
+_FORCED_LOG_EMITTED: bool = False
+
 #: Tables ``Evaluator.evaluate(tables=...)`` accepts on the panoptic
 #: paradigm. Per-detection and per-pair tables are instance-only (no
 #: IoU-curve matching for panoptic); per-image PQ is deferred.
 TableName = Literal["per_class"]
 SUPPORTED_TABLES: frozenset[TableName] = frozenset({"per_class"})
+
+
+#: One-shot info log emitted by :func:`_force_retain_per_image_deltas_if_strict`
+#: the first time a strict-mode evaluator runs with ``num_threads > 1``
+#: and a caller-supplied ``retain_per_image_deltas=False``. Pinned as
+#: a constant so the dedicated parity test can match it verbatim.
+_FORCED_DELTAS_LOG_MSG: Final[str] = (
+    "panoptic strict + num_threads>1: forcing retain_per_image_deltas=True "
+    "for cross-thread bit-equality (ADR-0047)"
+)
+
+
+def _resolve_num_threads_for_policy(num_threads: int | None) -> int:
+    """Project ``num_threads`` onto the integer count actually used at
+    runtime, matching the FFI's resolution. ``None`` consults
+    ``VERNIER_NUM_THREADS`` (unparsable → ``1``); ``0`` → ``os.cpu_count()``
+    (Python-side approximation of Rust's cgroup-aware
+    ``available_parallelism``); ``n >= 1`` → ``n``.
+    """
+    if num_threads is None:
+        try:
+            num_threads = int(os.environ.get("VERNIER_NUM_THREADS", "1").strip())
+        except ValueError:
+            return 1
+    return (os.cpu_count() or 1) if num_threads == 0 else num_threads
+
+
+def _force_retain_per_image_deltas_if_strict(
+    parity_mode: ParityMode,
+    num_threads: int | None,
+    retain_per_image_deltas: bool,
+) -> bool:
+    """ADR-0047 §"Panoptic" forced-flag policy: under
+    ``parity_mode="strict"`` and resolved ``num_threads > 1``, override
+    any caller-supplied ``retain_per_image_deltas=False`` to ``True``
+    and emit a one-shot info log via the module-level
+    :data:`_FORCED_LOG_EMITTED` sentinel. Without the override,
+    strict-mode users would observe a corrected-tier 4-ULP envelope
+    across thread counts — the per-image ``PqStat`` fold is
+    f64-non-associative.
+    """
+    global _FORCED_LOG_EMITTED
+    if parity_mode != "strict" or _resolve_num_threads_for_policy(num_threads) <= 1:
+        return retain_per_image_deltas
+    if not retain_per_image_deltas and not _FORCED_LOG_EMITTED:
+        _LOGGER.info(_FORCED_DELTAS_LOG_MSG)
+        _FORCED_LOG_EMITTED = True  # pyright: ignore[reportConstantRedefinition]
+    return True
+
 
 __all__ = [
     "BackgroundEvaluator",
@@ -476,6 +538,8 @@ class Evaluator:
         tables: None = None,
         manifest: None = None,
         cross_axes: None = None,
+        num_threads: int | None = None,
+        retain_per_image_deltas: bool = False,
     ) -> Summary: ...
 
     @overload
@@ -487,6 +551,8 @@ class Evaluator:
         tables: Literal["all"] | tuple[TableName, ...],
         manifest: None = None,
         cross_axes: None = None,
+        num_threads: int | None = None,
+        retain_per_image_deltas: bool = False,
     ) -> EvalResult: ...
 
     @overload
@@ -498,6 +564,8 @@ class Evaluator:
         tables: None = None,
         manifest: object,
         cross_axes: Sequence[Sequence[str]] | None = None,
+        num_threads: int | None = None,
+        retain_per_image_deltas: bool = False,
     ) -> EvalResult: ...
 
     def evaluate(
@@ -508,6 +576,8 @@ class Evaluator:
         tables: Literal["all"] | tuple[TableName, ...] | None = None,
         manifest: object | None = None,
         cross_axes: Sequence[Sequence[str]] | None = None,
+        num_threads: int | None = None,
+        retain_per_image_deltas: bool = False,
     ) -> Summary | EvalResult:
         """Run the panoptic-quality evaluation.
 
@@ -542,6 +612,13 @@ class Evaluator:
         call by construction (the un-filtered fold reproduces the
         canonical aggregation step verbatim).
         """
+        # The batch parallel kernel already canonicalizes the per-image
+        # fold by image_id, so the override's return value isn't fed
+        # back into the FFI — but the side effect (one-shot info log)
+        # still fires for visibility.
+        _force_retain_per_image_deltas_if_strict(
+            self.parity_mode, num_threads, retain_per_image_deltas
+        )
         if manifest is not None:
             from vernier.panoptic._partition import (
                 evaluate_partitioned as _evaluate_partitioned,
@@ -576,6 +653,7 @@ class Evaluator:
                 dilation_ratio=self.dilation_ratio,
                 manifest=manifest,
                 cross_axes=cross_axes,
+                num_threads=num_threads,
             )
             return EvalResult(
                 summary=overall,
@@ -605,6 +683,7 @@ class Evaluator:
             stuff_thing_partition=resolved_partition,
             boundary=self.boundary,
             dilation_ratio=self.dilation_ratio,
+            num_threads=num_threads,
         )
         if tables is None:
             return summary
@@ -621,6 +700,7 @@ class Evaluator:
         categories: bytes,
         rank_id: int,
         retain_per_image_deltas: bool = False,
+        num_threads: int | None = None,
     ) -> bytes:
         """Run the panoptic evaluation as a per-rank streaming submit
         and return the serialized partial bytes (ADR-0032, ADR-0035).
@@ -663,6 +743,9 @@ class Evaluator:
                     "today; multi-rank custom params land in the next phase."
                 ),
             )
+        retain_per_image_deltas = _force_retain_per_image_deltas_if_strict(
+            self.parity_mode, num_threads, retain_per_image_deltas
+        )
         return _evaluate_panoptic_to_partial(
             list(images),
             categories,
@@ -672,6 +755,7 @@ class Evaluator:
             retain_per_image_deltas=retain_per_image_deltas,
             boundary=self.boundary,
             dilation_ratio=self.dilation_ratio,
+            num_threads=num_threads,
         )
 
     @classmethod
@@ -718,6 +802,7 @@ class Evaluator:
         worker_affinity: int | None = None,
         worker_nice: int = 5,
         shutdown_timeout_seconds: float = 5.0,
+        num_threads: int | None = None,
     ) -> BackgroundEvaluator:
         """Build a :class:`BackgroundEvaluator` (ADR-0014 + ADR-0032)
         that shares this evaluator's ``parity_mode`` and
@@ -737,7 +822,16 @@ class Evaluator:
         §"Determinism") at ~2x streaming memory cost. The five
         queueing / scheduling knobs mirror
         :class:`vernier.instance.Evaluator.background`.
+
+        ``num_threads`` (ADR-0047) is accepted for API parity with
+        :meth:`evaluate` / :meth:`evaluate_to_partial`. The wire-up
+        into the single background worker's per-submit matching pass
+        is a follow-up; in 0.0.4 the kwarg is consumed by the forced-
+        flag policy and otherwise ignored.
         """
+        retain_per_image_deltas = _force_retain_per_image_deltas_if_strict(
+            self.parity_mode, num_threads, retain_per_image_deltas
+        )
         return BackgroundEvaluator(
             categories,
             self.parity_mode,

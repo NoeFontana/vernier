@@ -242,6 +242,55 @@ pub fn accumulate_confusion<T: ClassId>(
     }
 }
 
+/// Parallel sibling of [`accumulate_confusion`] (ADR-0047 Stage B).
+///
+/// Folds a slice of per-image `(gt, dt)` label-map pairs into
+/// `confusion` via a rayon tree-reduction: each thread accumulates a
+/// thread-local `(n_classes, n_classes)` matrix; the reduction is
+/// `u64`-additive and commutative, so the result is bit-equal to a
+/// serial sequence of [`accumulate_confusion`] calls over the same
+/// pairs in any order — strict-mode parity across thread counts holds
+/// by construction.
+///
+/// Caller responsibility: `install` a `rayon::ThreadPool` around this
+/// call. The function uses `par_iter` against the ambient pool; the
+/// global rayon pool is not built or used by vernier itself (the FFI
+/// builds a scoped per-call pool, ADR-0047 §"Scoped thread pool").
+///
+/// All inputs must satisfy the same per-pixel contract as
+/// [`accumulate_confusion`]: equal lengths, GT in
+/// `[0, n_classes) ∪ {ignore_label}`, DT in `[0, n_classes)`
+/// (out-of-range DT silently skipped under quirk **AI4**). Length
+/// validation lives upstream.
+pub fn accumulate_confusion_parallel<T: ClassId + Send + Sync>(
+    pairs: &[(&[T], &[T])],
+    ignore_label: Option<u32>,
+    confusion: &mut ConfusionMatrix,
+) {
+    if pairs.is_empty() {
+        return;
+    }
+    let n_classes = confusion.n_classes();
+    use rayon::prelude::*;
+    let summed = pairs
+        .par_iter()
+        .fold(
+            || ConfusionMatrix::zeros(n_classes),
+            |mut acc, (gt, dt)| {
+                accumulate_confusion(gt, dt, ignore_label, &mut acc);
+                acc
+            },
+        )
+        .reduce(
+            || ConfusionMatrix::zeros(n_classes),
+            |mut a, b| {
+                a.add_assign_unchecked(&b);
+                a
+            },
+        );
+    confusion.add_assign_unchecked(&summed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

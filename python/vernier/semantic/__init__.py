@@ -611,6 +611,7 @@ class Evaluator:
         tables: None = None,
         manifest: None = None,
         cross_axes: None = None,
+        num_threads: int | None = None,
     ) -> Summary: ...
 
     @overload
@@ -622,6 +623,7 @@ class Evaluator:
         tables: Literal["all"] | tuple[TableName, ...],
         manifest: None = None,
         cross_axes: None = None,
+        num_threads: int | None = None,
     ) -> EvalResult: ...
 
     @overload
@@ -633,6 +635,7 @@ class Evaluator:
         tables: None = None,
         manifest: object,
         cross_axes: Sequence[Sequence[str]] | None = None,
+        num_threads: int | None = None,
     ) -> EvalResult: ...
 
     def evaluate(
@@ -643,6 +646,7 @@ class Evaluator:
         tables: Literal["all"] | tuple[TableName, ...] | None = None,
         manifest: object | None = None,
         cross_axes: Sequence[Sequence[str]] | None = None,
+        num_threads: int | None = None,
     ) -> Summary | EvalResult:
         """Run the semantic-segmentation evaluation.
 
@@ -717,6 +721,7 @@ class Evaluator:
                 class_grouping=resolved_groups,
                 manifest=manifest,
                 cross_axes=cross_axes,
+                num_threads=num_threads,
             )
             return EvalResult(
                 summary=overall,
@@ -744,6 +749,7 @@ class Evaluator:
             label_remap=dict(self.label_remap) if self.label_remap is not None else None,
             class_filter=resolved_filter,
             class_grouping=resolved_groups,
+            num_threads=num_threads,
         )
         if tables is None:
             return summary
@@ -760,6 +766,7 @@ class Evaluator:
         *,
         n_classes: int,
         ignore_label: int | None = None,
+        num_threads: int | None = None,
     ) -> Summary:
         """Run the evaluation directly against 8-bit grayscale PNG label
         maps on disk (ADR-0037).
@@ -792,6 +799,7 @@ class Evaluator:
             n_classes=n_classes,
             parity_mode=self.parity_mode,
             ignore_label=ignore_label,
+            num_threads=num_threads,
         )
 
     def evaluate_to_partial(
@@ -800,6 +808,7 @@ class Evaluator:
         dt: Predictions,
         *,
         rank_id: int,
+        num_threads: int | None = None,
     ) -> bytes:
         """Run the evaluation as a per-rank streaming submit and return
         the serialized partial bytes (ADR-0032, ADR-0035).
@@ -827,6 +836,7 @@ class Evaluator:
             parity_mode=self.parity_mode,
             rank_id=rank_id,
             ignore_label=gt.ignore_label,
+            num_threads=num_threads,
         )
 
     @classmethod
@@ -838,6 +848,7 @@ class Evaluator:
         *,
         parity_mode: ParityMode = "corrected",
         ignore_label: int | None = None,
+        num_threads: int | None = None,
     ) -> Summary:
         """Merge ``partials`` (one per rank) into a global :class:`Summary`
         (ADR-0032, ADR-0035).
@@ -847,7 +858,11 @@ class Evaluator:
         the structured ``Partial*`` errors re-exported on this module.
         """
         return _merge_semantic_partials(
-            n_classes, list(partials), parity_mode, ignore_label=ignore_label
+            n_classes,
+            list(partials),
+            parity_mode,
+            ignore_label=ignore_label,
+            num_threads=num_threads,
         )
 
     def background(

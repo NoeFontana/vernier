@@ -57,6 +57,13 @@ pub(crate) struct BackgroundConfig {
     /// Maximum time `shutdown()` waits for the worker to exit cleanly
     /// before giving up.
     pub(crate) shutdown_timeout: Duration,
+    /// ADR-0047 Stage B: inner parallelism inside the worker. `None`
+    /// is exactly today's behavior — one worker, sequential
+    /// `update_parsed`, no rayon pool built. `Some(n)` builds a scoped
+    /// `rayon::ThreadPool` of `n` threads at worker spawn, owned by
+    /// the worker thread, and routes each `update_parsed` through
+    /// `pool.install(...)`. The pool drops when the worker exits.
+    pub(crate) num_threads: Option<std::num::NonZeroUsize>,
 }
 
 impl Default for BackgroundConfig {
@@ -66,6 +73,7 @@ impl Default for BackgroundConfig {
             worker_affinity: None,
             worker_nice: 5,
             shutdown_timeout: Duration::from_secs(5),
+            num_threads: None,
         }
     }
 }
@@ -596,7 +604,7 @@ impl<K: EvalKernel + Send + 'static> BackgroundEvaluator<K> {
 // the entry point of a spawned thread, so the values must be owned here
 // (the spawning thread cannot keep them alive on this thread's behalf).
 #[allow(clippy::needless_pass_by_value)]
-fn worker_loop<K: EvalKernel + Send + 'static>(
+fn worker_loop<K: EvalKernel + Send + Sync + 'static>(
     mut evaluator: StreamingEvaluator<K>,
     rx: Receiver<WorkerMessage<K>>,
     state: Arc<BackgroundState>,
@@ -607,11 +615,63 @@ fn worker_loop<K: EvalKernel + Send + 'static>(
         *guard = Some(outcome);
     }
 
+    // ADR-0047 Stage B: build the per-worker `rayon::ThreadPool` once,
+    // here, owned by this thread. The pool drops naturally when this
+    // function returns. On non-Linux platforms the pool threads do not
+    // inherit `worker_nice` (Linux process-attribute semantics do not
+    // apply); the `start_handler` re-applies it explicitly. Affinity is
+    // intentionally **not** propagated — pinning all N pool threads to
+    // one CPU defeats the purpose (ADR-0047 §"`BackgroundEvaluator`
+    // shape").
+    let pool: Option<rayon::ThreadPool> = match config.num_threads {
+        None => None,
+        Some(n) => {
+            let nice = config.worker_nice;
+            let result = rayon::ThreadPoolBuilder::new()
+                .num_threads(n.get())
+                .thread_name(|i| format!("vernier-bg-rayon-{i}"))
+                .start_handler(move |_idx| {
+                    // Best-effort; failures here are unobservable but
+                    // not load-bearing — they only matter on platforms
+                    // where Linux's `setpriority` process-wide nice
+                    // doesn't carry across to spawned threads.
+                    let _ = crate::thread_sched::set_thread_nice(nice);
+                })
+                .build();
+            match result {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    // Best-effort: stash and continue sequentially.
+                    // Mirrors how `apply_scheduling` failures are
+                    // surfaced — the worker stays alive and the FFI
+                    // emits a single `UserWarning` next time it reads
+                    // the scheduling outcome.
+                    if let Ok(mut guard) = state.scheduling_outcome.lock() {
+                        // Overwrite only if the prior outcome was Ok;
+                        // a previous Err is more informative.
+                        let prior_ok = matches!(*guard, Some(Ok(())));
+                        if guard.is_none() || prior_ok {
+                            *guard = Some(Err(format!(
+                                "failed to build rayon pool of {} threads: {e}",
+                                n.get()
+                            )));
+                        }
+                    }
+                    None
+                }
+            }
+        }
+    };
+
     loop {
         match rx.recv() {
             Ok(WorkerMessage::Update(parsed)) => {
                 state.queue_depth.fetch_sub(1, Ordering::AcqRel);
-                match evaluator.update_parsed(parsed) {
+                let result = match pool.as_ref() {
+                    Some(p) => p.install(|| evaluator.update_parsed_parallel(parsed)),
+                    None => evaluator.update_parsed(parsed),
+                };
+                match result {
                     Ok(_report) => {
                         state
                             .images_seen
