@@ -2489,11 +2489,23 @@ per cell; expect ±10–20% noise on small workloads.</p>
 </tr>
 </tbody>
 </table>
-<p>Bbox is parse-bound (the GT JSON parse takes ~110 ms of the 280 ms
-total before any per-cell work runs); the parallel region itself is
-too small to amortise per-call rayon overhead. Segm and boundary
-scale near-linearly on 4 physical cores after the
-<code>ThreadLocal&lt;RefCell&lt;Scratch&gt;&gt;</code> + image-major dispatch fixes.</p>
+<p>Bbox is parse-bound: the bytes-path GT JSON parse dominates the
+evaluate stage (the <code>bench-timings</code> split records ~85 ms parse +
+~30 ms DT parse on val2017 — together ~45% of the nt=4 total). The
+rayon <code>par_iter</code> region itself scales 3.2× at nt=8; the apparent
+flatness is the single-threaded JSON parse and FFI overhead, not a
+scheduling problem. Segm and boundary scale near-linearly on 4
+physical cores after the <code>ThreadLocal&lt;RefCell&lt;Scratch&gt;&gt;</code> +
+image-major dispatch fixes.</p>
+<p><strong>Repeated-eval speedup (out of band).</strong> Callers running multiple
+evaluations against the same GT can pre-parse once via
+<code>CocoDataset.from_json(gt_bytes)</code> and dispatch through the
+<code>Evaluator.evaluate(dataset, dt)</code> path (which routes to
+<code>evaluate_*_grid_with_dataset</code> internally). On val2017 bbox nt=4
+this drops a follow-up call from ~250 ms to ~140 ms — a 1.8×
+speedup, amortizing the ~95 ms one-time parse. The table above
+deliberately re-parses every call so the comparison against
+faster-coco-eval below stays apples-to-apples.</p>
 <h3 id="semantic-val2017-perfect-dt-5000-images">Semantic (val2017 perfect-DT, ~5000 images)</h3>
 <table>
 <thead>
