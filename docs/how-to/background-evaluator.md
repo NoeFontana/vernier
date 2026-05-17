@@ -88,6 +88,52 @@ batch cadence.
 Exceeding the budget surfaces as an `OutOfBudgetError` from the
 calling thread on the next `submit`, not silently from the worker.
 
+## Inner parallelism with `num_threads`
+
+The default `BackgroundEvaluator` runs a single dedicated worker
+thread — ADR-0014's resource discipline, picked to keep eval from
+preempting the trainer. That default is the right choice when the
+training loop is competing for the same N cores.
+
+For the *dedicated-validation-pass* persona — `val_loader` driving
+inference (typically GPU-bound) with no trainer in the same loop —
+the single-core bound is the bottleneck. Opt in with
+`num_threads=N` (ADR-0047):
+
+```python
+# Training-loop validation: keep the trainer's cores free.
+ev.background(gt)                       # default: one worker, no rayon pool
+
+# Dedicated val-loader: spend the idle CPUs.
+ev.background(gt, num_threads=8)        # per-worker rayon pool, drain-batched
+```
+
+Under the hood the worker builds a scoped `rayon::ThreadPool` of
+`N` threads, drains pending submissions from the channel into a
+batch, and dispatches them through the paradigm's parallel kernel
+(`update_parsed_parallel` for instance / semantic / panoptic) under
+`pool.install`. The pool is owned by the worker and drops when
+the worker exits — no global state leaks between
+`BackgroundEvaluator` instances.
+
+`num_threads=None` or `1` keeps the pre-0.0.5 single-image worker
+path byte-for-byte. The submit-blocking semantics, queue capacity,
+back-pressure, and memory-budget contract are all preserved.
+`VERNIER_NUM_THREADS` is honored as the env-var equivalent.
+
+Strict-mode bit-equality across thread counts is guaranteed by
+construction — see [ADR-0047](../adr/0047-threading-model.md) §"Strict
+mode" for the per-paradigm reasoning (instance / panoptic re-sort by
+`image_id` before the f64 fold; semantic accumulation is u64-additive).
+
+The panoptic background path is special-cased for end-to-end
+performance: when `num_threads > 1`, `submit_png` ships raw PNG
+bytes through the channel as zero-copy
+`pyo3::pybacked::PyBackedBytes` so libpng decode runs in parallel
+inside the worker pool. Single-threaded `submit_png` keeps inline
+decode (producer/consumer overlap against the worker), matching
+today's wall time exactly.
+
 ## See also
 
 - [ADR-0014](../adr/0014-background-evaluator.md) — the worker-thread
@@ -97,4 +143,7 @@ calling thread on the next `submit`, not silently from the worker.
   with no snapshot path.
 - [`tutorials/first-evaluation.md`](../tutorials/first-evaluation.md) —
   the in-loop walkthrough (Path B), end-to-end on COCO val2017.
+- [ADR-0047](../adr/0047-threading-model.md) — opt-in
+  `num_threads` parallelism, the trainer-vs-val-loader persona
+  split, and the strict-mode bit-equality contract.
 - [`distributed-eval.md`](distributed-eval.md) — multi-rank pattern.

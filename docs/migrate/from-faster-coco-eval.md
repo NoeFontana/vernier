@@ -48,6 +48,18 @@ reproducibility against a pinned pycocotools commit (CI quality
 gate, paper reproduction, regulated environment), strict mode is
 the auditable path.
 
+A secondary lever: vernier exposes opt-in parallelism on every
+public evaluate surface via `num_threads=N` (ADR-0047), with
+strict-mode bit-equality preserved across thread counts. On val2017
+boundary IoU at `num_threads=4`, vernier wall-time is ~17× lower
+than faster-coco-eval (969 ms vs 17 200 ms — faster-coco-eval's
+`boundary_cpu_count` does scale boundary, but the per-core wall
+time is much higher). For non-boundary IoU types
+(`bbox`, `segm`, `keypoints`), faster-coco-eval is single-threaded
+regardless of how many cores you have; vernier scales those too.
+See [`benchmarks.md`](../benchmarks.md) §"Threading scaling" for
+the full table.
+
 ## Drop-in via `patch_pycocotools`
 
 ```python

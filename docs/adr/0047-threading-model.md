@@ -786,7 +786,11 @@ dependency.
 - Semantic-paradigm `StreamingSemanticEvaluator::update_parsed_parallel`
   + `evaluate_from_pngs_parallel` + `accumulate_confusion_parallel`.
   Per-thread confusion matrices; u64-additive reduce — trivially bit-
-  equal across thread counts.
+  equal across thread counts. `BackgroundSemanticEvaluator` exposes
+  the `num_threads` kwarg via the same trait-default-overriding
+  `apply_update_parallel` shape used by instance and panoptic; mixed-
+  dtype batches partition by class-id variant and dispatch each
+  partition through the parallel kernel.
 - Panoptic-paradigm `StreamingPanopticEvaluator::update_parsed_parallel`
   + `evaluate_per_image_parallel`. Per-image deltas re-sorted by
   `image_id` before the canonical f64 fold to preserve bit-equality
@@ -794,11 +798,49 @@ dependency.
   enforces the forced `retain_per_image_deltas = True` policy under
   `parity_mode="strict" && num_threads > 1` per §"Panoptic", with a
   one-shot info-level log.
+  `BackgroundPanopticEvaluator.submit_png` defers libpng decode to
+  the worker pool when `num_threads > 1` (raw PNG bytes ship through
+  the channel as zero-copy `PyBackedBytes`); the single-threaded
+  `submit_png` keeps inline decode so producer/consumer overlap
+  against the worker matches the pre-ADR wall time exactly.
 - Bench harness `num_threads` axis on workload classes and CellSpec;
   `synthetic_threads_smoke` workload + `just bench-threads-smoke`
-  recipe validate the plumbing end-to-end. The full scaling sweep
-  across val2017 / LVIS / panoptic-val2017 / ADE20K is its own
-  separate operation.
+  recipe validate the plumbing end-to-end. `bench run --num-threads
+  "1,2,4,8"` overrides the workload's pinned tuple; the orchestrator
+  forwards the flag on every paradigm spawn helper.
+
+**Post-Stage-B follow-ups (landed).** The scaling work the initial
+Stage A shipped capped at ~1.1× at `nt=4` on val2017 boundary; the
+follow-up commits removed the bottlenecks. Three Amdahl issues fixed:
+
+- Per-kernel scratch held behind a `Mutex` (segm + boundary cached
+  kernels) serialised every per-cell `compute()` under rayon. Moved
+  to per-thread `ThreadLocal<RefCell<Scratch>>` (workspace dep on
+  `thread_local`). Boundary at `nt=4` went 1.10× → 2.12×.
+- GT derivation caches used `Mutex<HashMap>`; switched to
+  `RwLock<HashMap>` with a read-fast path (all-hit cells avoid the
+  write lock).
+- `evaluate_with_parallel` dispatched a flat `(0..n_k*n_i)` range —
+  on val2017 bbox that's 400k tasks at ~5 µs each, dominated by
+  per-task overhead. Reshaped to image-major (`n_i` tasks, inner
+  serial loop over categories). Boundary `nt=4` reached 3.25×.
+
+Measured scaling on AMD EPYC Milan (4 physical cores, SMT-2),
+val2017 evaluate stage:
+
+| paradigm | nt=1 | nt=4 | scaling |
+| --- | ---: | ---: | ---: |
+| boundary | 3146 ms | 969 ms | 3.25× |
+| segm | 890 ms | 389 ms | 2.29× |
+| panoptic (bg) | 12850 ms | 5280 ms | 2.43× |
+| semantic | 5024 ms | 1372 ms | 3.66× |
+
+Bbox stays at ~1.0× scaling on val2017 — its `evaluate` stage is
+dominated by GT JSON parse (~110 ms of ~280 ms total) which is not
+parallelisable through this axis. The cached-dataset API
+(`evaluate_*_summary_with_dataset` against a pre-parsed
+`CocoDataset`) amortises parse for the training-loop persona where
+threading actually pays off.
 
 **Deferred — multi-worker `BackgroundEvaluator` (axis D2).** The
 §"`num_workers` deferred but the shape is documented" extension
