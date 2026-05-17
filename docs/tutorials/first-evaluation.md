@@ -112,6 +112,14 @@ as a typed `QueueFullError` instead. The full API surface — queue
 sizing, memory budget, multi-rank — lives in
 [`how-to/background-evaluator.md`](../how-to/background-evaluator.md).
 
+On a dedicated validation pass (no trainer competing for cores),
+pass `num_threads=N` to parallelise the matching kernel inside the
+worker: `Evaluator.background(gt, num_threads=8)` (ADR-0047). The
+default `None` keeps the single-core behaviour ADR-0014 picked for
+the training-loop persona — see
+[`how-to/configure-evaluator.md`](../how-to/configure-evaluator.md#num_threads-parallelise-inside-a-single-eval-call)
+for the trade-off.
+
 ## What the output means
 
 `pretty_lines()` returns the 12-line block pycocotools'

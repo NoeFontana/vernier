@@ -146,6 +146,61 @@ The worker-thread knobs (`queue_capacity`, `worker_affinity`,
 configure deployment, not the matching kernel. Recipe:
 [background-evaluator.md](background-evaluator.md).
 
+## `num_threads` — parallelise inside a single eval call
+
+`num_threads` (ADR-0047) opts a single `evaluate(...)` call into
+inter-image parallelism. The default `None` is byte-for-byte the
+pre-0.0.5 sequential path — no rayon symbol is entered, the
+trainer's cores remain undisturbed. The argument exists on every
+public entry point:
+
+```python
+# Batch evaluate (instance / semantic / panoptic — same kwarg on each).
+ev.evaluate(gt, dt, num_threads=8)
+
+# Streaming / PNG-input paths (semantic).
+ev.evaluate_from_pngs(gt_paths, dt_paths, n_classes=150, num_threads=8)
+
+# In-loop streaming with parallel folding inside the worker.
+with ev.background(gt, num_threads=8) as bg:
+    for images, _ in val_loader:
+        bg.submit(json.dumps(model(images)).encode())
+    summary = bg.finalize()
+```
+
+`num_threads=None` keeps the single-core default ADR-0014 picked
+for the training-loop persona. `num_threads=N` builds a per-call
+(or per-worker) scoped `rayon::ThreadPool` of `N` threads; the
+pool is dropped on return, so no global thread state leaks between
+calls — important when vernier shares a process with torch's
+DataLoader workers (which run their own pool). `num_threads=0`
+auto-detects via `available_parallelism()` (cgroup-aware on Linux).
+
+Strict-mode bit-equality is preserved across every thread count by
+construction. Per-image deltas are sorted by `image_id` before the
+f64 fold for instance and panoptic; semantic accumulation is
+u64-additive so reduction order is irrelevant. `parity_threads`
+covers `num_threads ∈ {None, 1, 2, 4, 8}` for every paradigm.
+
+Two equivalent ways to set it:
+
+| Source | Example |
+|---|---|
+| Kwarg on the call | `ev.evaluate(gt, dt, num_threads=4)` |
+| Environment variable | `VERNIER_NUM_THREADS=4 python ...` |
+
+The kwarg wins when both are set; an out-of-range or non-numeric
+env value falls back to sequential rather than raising (threading
+is a perf knob, not a correctness switch). `RAYON_NUM_THREADS` is
+intentionally **not** consulted — inheriting an unrelated library's
+deployment knob would silently change vernier's behaviour.
+
+Measured scaling on COCO val2017 (AMD EPYC Milan, 4 physical cores)
+lives in [`benchmarks.md`](../benchmarks.md). Headline: boundary
+3.25× at `num_threads=4`, segm 2.29×, panoptic 2.43×, semantic
+3.66×. The full design rationale is
+[ADR-0047](../adr/0047-threading-model.md).
+
 ## Across ranks
 
 `Evaluator.evaluate_to_partial(gt, dt, *, rank_id)` per rank, then
@@ -179,3 +234,6 @@ non-canonical grid — so they get their own page:
   handle and the per-kernel GT cache.
 - [ADR-0030](../adr/0030-buffer-protocol.md) — `cast_inputs` and
   array-form ingest.
+- [ADR-0047](../adr/0047-threading-model.md) — opt-in
+  `num_threads` parallelism design and the zero-overhead-default
+  discipline.

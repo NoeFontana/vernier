@@ -75,6 +75,35 @@ The `sigmas.json` file is a JSON object keyed by category id (as a string), with
 
 Categories absent from `sigmas.json` fall back to the COCO-person 17-keypoint defaults pinned at [`crates/vernier-core/src/similarity/oks.rs`](https://github.com/NoeFontana/vernier/blob/main/crates/vernier-core/src/similarity/oks.rs) as `COCO_PERSON_SIGMAS`. The list length per category must equal one third of the `keypoints` annotation length for that category; mismatches surface as a typed error with exit code 1. `--sigmas` is kind-coupled to `--iou-type keypoints` — passing it with any other IoU type is rejected at parse time with exit code 2. ADR-0012 §"Decision outcome" pins the per-category sigma map as the F1-corrected disposition.
 
+## Parallelise across cores with `--threads`
+
+```sh
+vernier eval --gt gt.json --dt dt.json --iou-type boundary --threads 8
+```
+
+`--threads N` (ADR-0047) opts the evaluation call into inter-image
+parallelism — the CLI builds a per-call `rayon::ThreadPool` of `N`
+threads, runs the matching kernel across them, and drops the pool
+on exit. The default behaviour (flag omitted) is byte-for-byte the
+single-threaded path: no rayon symbol entered, identical wall-time
+to pre-0.0.5. `--threads 0` auto-detects via
+`available_parallelism()` (cgroup-aware on Linux).
+
+`VERNIER_NUM_THREADS=N` is the env-var equivalent — useful when
+wrapping `vernier eval` in a job runner that already encodes the
+parallelism budget. Explicit `--threads` wins over the env var; an
+out-of-range or non-numeric env value falls back to sequential
+rather than aborting (threading is a perf knob, not a correctness
+switch). `RAYON_NUM_THREADS` is intentionally **not** consulted.
+
+Strict-mode bit-equality (`--parity strict`) is preserved across
+every thread count by construction — boundary's per-image deltas
+are sorted by `image_id` before the f64 fold, semantic
+accumulation is u64-additive. See
+[ADR-0047](../adr/0047-threading-model.md) for the design and
+[`benchmarks.md`](../benchmarks.md) for measured scaling on
+val2017 (~3.25× at `--threads 4` for boundary on 4 physical cores).
+
 ## Suppress stderr progress messages
 
 ```sh

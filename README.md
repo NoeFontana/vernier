@@ -27,7 +27,7 @@ for line in summary.pretty_lines():
     print(line)
 ```
 
-In a training loop — overlap eval with the data loading and inference. The matching kernel runs on a worker thread, so `submit(...)` returns immediately and the main thread keeps moving. Passing a `CocoDataset` reuses the parsed-once GT and its per-kernel derivation cache across every epoch (ADR-0020):
+In a training loop — overlap eval with the data loading and inference. The matching kernel runs on a worker thread, so `submit(...)` returns immediately and the main thread keeps moving. Passing a `CocoDataset` reuses the parsed-once GT and its per-kernel derivation cache across every epoch (ADR-0020). On a dedicated validation pass (no trainer competing for cores), pass `num_threads=N` to parallelise the matching kernel inside the worker (ADR-0047):
 
 ```python
 from pathlib import Path
@@ -35,7 +35,7 @@ from vernier.instance import Bbox, CocoDataset, Evaluator
 
 gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
 evaluator = Evaluator(iou=Bbox())
-with evaluator.background(gt) as bg:
+with evaluator.background(gt, num_threads=8) as bg:  # default: single core
     for images, targets in val_loader:
         # torchvision detection API shape: list[dict] of length batch_size,
         # each with "boxes" (N,4 xywh), "scores" (N,), "labels" (N,) as
