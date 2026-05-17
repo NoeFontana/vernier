@@ -1080,6 +1080,7 @@ class BackgroundPanopticEvaluator:
         shutdown_timeout_seconds: float = ...,
         boundary: bool = ...,
         dilation_ratio: float = ...,
+        num_threads: int | None = ...,
     ) -> None: ...
     @property
     def n_categories(self) -> int: ...

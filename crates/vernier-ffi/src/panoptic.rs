@@ -1207,13 +1207,15 @@ fn build_image_entry<'py>(
 /// `submit`/`update` side; both produce equivalent `ImageEntry`s,
 /// this one bypasses the Pillow → numpy → uint32 round-trip the
 /// Python wrapper would otherwise drive on the main thread.
-fn build_image_entry_from_png(
+/// Parse the `segments_info` JSON only — used by `submit_png` to
+/// surface schema errors synchronously on the FFI thread while
+/// deferring the PNG decode itself to the worker pool inside
+/// `apply_update_parallel`.
+fn parse_segments_info(
     py: Python<'_>,
     image_id: ImageId,
-    png_bytes: &[u8],
     segments_info_bytes: &[u8],
-    side: &'static str,
-) -> PyResult<ImageEntry> {
+) -> PyResult<Vec<SegmentInfo>> {
     let segs: Vec<SegmentInfoJson> = serde_json::from_slice(segments_info_bytes).map_err(|e| {
         panoptic_error_to_pyerr(
             py,
@@ -1222,7 +1224,7 @@ fn build_image_entry_from_png(
             },
         )
     })?;
-    let segments: Vec<SegmentInfo> = segs
+    Ok(segs
         .into_iter()
         .map(|s| SegmentInfo {
             id: s.id,
@@ -1230,9 +1232,7 @@ fn build_image_entry_from_png(
             iscrowd: parse_bool_or_int(&s.iscrowd),
             area: s.area,
         })
-        .collect();
-    decode_panoptic_png(image_id, png_bytes, segments, side)
-        .map_err(|e| panoptic_error_to_pyerr(py, e))
+        .collect())
 }
 
 /// Unpack one 5-tuple `(image_id, gt_label_map, gt_segments_info,
@@ -1411,13 +1411,38 @@ pub(crate) fn merge_panoptic_partials<'py>(
 // Background panoptic evaluator (ADR-0014 + ADR-0032).
 // ---------------------------------------------------------------------------
 
-/// Per-image payload sent over the worker channel. The FFI thread
-/// builds the two `ImageEntry`s (which validates segment ids and
-/// flatten the label-map arrays) before the GIL is dropped.
-pub(crate) struct PanopticUpdate {
-    image_id: ImageId,
-    gt: ImageEntry,
-    dt: ImageEntry,
+/// Per-image payload sent over the worker channel. Two variants
+/// trade off main-thread cost vs decoded-payload size:
+///
+/// - [`PanopticUpdate::Decoded`] — used by [`submit`]. The FFI thread
+///   has already decoded the user-supplied label-map arrays into
+///   [`ImageEntry`]s; the worker just folds them into the kernel.
+///   ~5–10 MB per item on COCO val2017 (decoded `u32` label map +
+///   side tables).
+/// - [`PanopticUpdate::RawPng`] — used by [`submit_png`]. The FFI
+///   thread parses the small `segments_info` JSON synchronously (so
+///   schema errors surface on the submit call) and ships the raw PNG
+///   bytes through the channel without decoding. The worker decodes
+///   PNGs inside its rayon pool (when `num_threads > 1`) so decode
+///   cost itself parallelises. ~5 KB per item on COCO val2017.
+///
+/// The variant choice has no observable effect on the kernel — it is
+/// purely an internal placement of where decode runs. Single-threaded
+/// workers decode `RawPng` items in the same worker thread that would
+/// have run them under [`submit`].
+pub(crate) enum PanopticUpdate {
+    Decoded {
+        image_id: ImageId,
+        gt: ImageEntry,
+        dt: ImageEntry,
+    },
+    RawPng {
+        image_id: ImageId,
+        gt_bytes: Vec<u8>,
+        gt_segments: Vec<SegmentInfo>,
+        dt_bytes: Vec<u8>,
+        dt_segments: Vec<SegmentInfo>,
+    },
 }
 
 impl BackgroundCapable for StreamingPanopticEvaluator {
@@ -1426,7 +1451,49 @@ impl BackgroundCapable for StreamingPanopticEvaluator {
     type Error = PanopticError;
 
     fn apply_update(&mut self, u: PanopticUpdate) -> Result<(), PanopticError> {
-        self.update(u.image_id, &u.gt, &u.dt)
+        match u {
+            PanopticUpdate::Decoded { image_id, gt, dt } => self.update(image_id, &gt, &dt),
+            PanopticUpdate::RawPng {
+                image_id,
+                gt_bytes,
+                gt_segments,
+                dt_bytes,
+                dt_segments,
+            } => {
+                let gt = decode_panoptic_png(image_id, &gt_bytes, gt_segments, "gt")?;
+                let dt = decode_panoptic_png(image_id, &dt_bytes, dt_segments, "dt")?;
+                self.update(image_id, &gt, &dt)
+            }
+        }
+    }
+
+    fn apply_update_parallel(&mut self, batch: Vec<PanopticUpdate>) -> Result<(), PanopticError> {
+        use rayon::prelude::*;
+        // Decode any `RawPng` payloads in parallel inside the ambient
+        // pool, then hand the unified `(ImageId, ImageEntry,
+        // ImageEntry)` batch to the existing strict-mode parallel
+        // streaming kernel. The two passes share the same pool — the
+        // outer `par_iter` here completes before
+        // `update_parsed_parallel` starts its own `par_iter`, so
+        // pool-thread oversubscription doesn't occur.
+        let parsed: Vec<(ImageId, ImageEntry, ImageEntry)> = batch
+            .into_par_iter()
+            .map(|u| match u {
+                PanopticUpdate::Decoded { image_id, gt, dt } => Ok((image_id, gt, dt)),
+                PanopticUpdate::RawPng {
+                    image_id,
+                    gt_bytes,
+                    gt_segments,
+                    dt_bytes,
+                    dt_segments,
+                } => {
+                    let gt = decode_panoptic_png(image_id, &gt_bytes, gt_segments, "gt")?;
+                    let dt = decode_panoptic_png(image_id, &dt_bytes, dt_segments, "dt")?;
+                    Ok((image_id, gt, dt))
+                }
+            })
+            .collect::<Result<_, PanopticError>>()?;
+        StreamingPanopticEvaluator::update_parsed_parallel(self, parsed)
     }
 
     fn finalize(self) -> Result<PanopticSummary, PanopticError> {
@@ -1474,6 +1541,13 @@ impl BackgroundCapable for StreamingPanopticEvaluator {
 pub(crate) struct PyBackgroundPanopticEvaluator {
     lifecycle: Mutex<BackgroundLifecycle<StreamingPanopticEvaluator>>,
     n_categories: usize,
+    /// `true` when the worker has a multi-thread rayon pool; `false`
+    /// otherwise. Toggles `submit_png` between decode-now (single-
+    /// threaded, pre-Stage-A behaviour: producer/consumer overlap
+    /// against the worker) and decode-deferred (threaded, decode
+    /// runs in parallel on the worker pool). The single-threaded
+    /// shape is byte-for-byte equivalent to the pre-Stage-A worker.
+    defer_png_decode: bool,
 }
 
 impl PyBackgroundPanopticEvaluator {
@@ -1502,6 +1576,7 @@ impl PyBackgroundPanopticEvaluator {
         shutdown_timeout_seconds = 5.0,
         boundary = false,
         dilation_ratio = BOUNDARY_PANOPTIC_DILATION_RATIO_DEFAULT,
+        num_threads = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1517,6 +1592,7 @@ impl PyBackgroundPanopticEvaluator {
         shutdown_timeout_seconds: f64,
         boundary: bool,
         dilation_ratio: f64,
+        num_threads: Option<usize>,
     ) -> PyResult<Self> {
         let mode = parse_panoptic_parity_mode(parity_mode)?;
         let cats = parse_categories(categories).map_err(|e| panoptic_error_to_pyerr(py, e))?;
@@ -1538,14 +1614,21 @@ impl PyBackgroundPanopticEvaluator {
                 .with_boundary(cfg)
                 .map_err(|e| panoptic_error_to_pyerr(py, e))?;
         }
+        let num_threads_nz = match num_threads {
+            None | Some(0) | Some(1) => None,
+            Some(n) => std::num::NonZeroUsize::new(n),
+        };
         let config = BackgroundConfig {
             queue_capacity,
             worker_affinity,
             worker_nice,
             shutdown_timeout: validate_shutdown_timeout(shutdown_timeout_seconds)?,
-            // ADR-0047 Stage B: instance paradigm only; panoptic
-            // worker stays sequential (default-path discipline).
-            num_threads: None,
+            // ADR-0047 Stage B: forwarded into the per-worker rayon
+            // pool. `None`/`Some(1)` keeps the pre-Stage-A
+            // single-image worker path byte-for-byte; `Some(n>=2)`
+            // builds a pool and the worker drain-batches into
+            // `apply_update_parallel`.
+            num_threads: num_threads_nz,
         };
         let core = BackgroundCore::spawn(inner, config).map_err(|e| {
             PyRuntimeError::new_err(format!("failed to spawn background worker: {e}"))
@@ -1554,6 +1637,7 @@ impl PyBackgroundPanopticEvaluator {
         let this = Self {
             lifecycle: Mutex::new(BackgroundLifecycle::new(core)),
             n_categories,
+            defer_png_decode: num_threads_nz.is_some(),
         };
         poll_scheduling_warning(py, "BackgroundPanopticEvaluator", || {
             Ok(this.lock_lifecycle()?.take_scheduling_outcome())
@@ -1596,7 +1680,9 @@ impl PyBackgroundPanopticEvaluator {
     ) -> PyResult<()> {
         // Build the two ImageEntry on the FFI thread (still under
         // GIL) so JSON parsing + segment-id validation are surfaced
-        // synchronously instead of as stashed worker errors.
+        // synchronously instead of as stashed worker errors. The
+        // user-supplied label-map ndarrays are already decoded, so
+        // there's no work to defer — wrap in the `Decoded` variant.
         let gt = build_image_entry(py, image_id, &gt_label_map, gt_segments_info, "gt")?;
         let dt = build_image_entry(py, image_id, &dt_label_map, dt_segments_info, "dt")?;
         let timeout_dur = match timeout {
@@ -1611,7 +1697,7 @@ impl PyBackgroundPanopticEvaluator {
             }
         };
 
-        let payload = PanopticUpdate { image_id, gt, dt };
+        let payload = PanopticUpdate::Decoded { image_id, gt, dt };
         let lifecycle = &self.lifecycle;
         let result = py.detach(move || -> Result<(), SubmitError<PanopticError>> {
             let guard = lifecycle.lock().map_err(|_| {
@@ -1660,8 +1746,6 @@ impl PyBackgroundPanopticEvaluator {
         dt_segments_info: &[u8],
         timeout: Option<f64>,
     ) -> PyResult<()> {
-        let gt = build_image_entry_from_png(py, image_id, gt_png_bytes, gt_segments_info, "gt")?;
-        let dt = build_image_entry_from_png(py, image_id, dt_png_bytes, dt_segments_info, "dt")?;
         let timeout_dur = match timeout {
             None => None,
             Some(t) => {
@@ -1674,7 +1758,32 @@ impl PyBackgroundPanopticEvaluator {
             }
         };
 
-        let payload = PanopticUpdate { image_id, gt, dt };
+        // Single-threaded worker: keep the pre-Stage-A inline-decode
+        // shape. The producer/consumer overlap between the main
+        // thread's libpng decode and the worker's PQ kernel matches
+        // today's wall time exactly. Threaded worker: defer decode to
+        // the pool so libpng runs in parallel — schema errors still
+        // surface synchronously because we parse `segments_info` JSON
+        // on the FFI thread either way.
+        let payload = if self.defer_png_decode {
+            let gt_segments = parse_segments_info(py, image_id, gt_segments_info)?;
+            let dt_segments = parse_segments_info(py, image_id, dt_segments_info)?;
+            PanopticUpdate::RawPng {
+                image_id,
+                gt_bytes: gt_png_bytes.to_vec(),
+                gt_segments,
+                dt_bytes: dt_png_bytes.to_vec(),
+                dt_segments,
+            }
+        } else {
+            let gt_segments = parse_segments_info(py, image_id, gt_segments_info)?;
+            let dt_segments = parse_segments_info(py, image_id, dt_segments_info)?;
+            let gt = decode_panoptic_png(image_id, gt_png_bytes, gt_segments, "gt")
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+            let dt = decode_panoptic_png(image_id, dt_png_bytes, dt_segments, "dt")
+                .map_err(|e| panoptic_error_to_pyerr(py, e))?;
+            PanopticUpdate::Decoded { image_id, gt, dt }
+        };
         let lifecycle = &self.lifecycle;
         let result = py.detach(move || -> Result<(), SubmitError<PanopticError>> {
             let guard = lifecycle.lock().map_err(|_| {

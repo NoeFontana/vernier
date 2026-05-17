@@ -823,11 +823,11 @@ class Evaluator:
         queueing / scheduling knobs mirror
         :class:`vernier.instance.Evaluator.background`.
 
-        ``num_threads`` (ADR-0047) is accepted for API parity with
-        :meth:`evaluate` / :meth:`evaluate_to_partial`. The wire-up
-        into the single background worker's per-submit matching pass
-        is a follow-up; in 0.0.4 the kwarg is consumed by the forced-
-        flag policy and otherwise ignored.
+        ``num_threads`` (ADR-0047) is forwarded into the per-worker
+        rayon pool. The worker drain-batches pending submissions and
+        applies them via the parallel kernel; single-threaded callers
+        (``num_threads=None`` or ``1``) hit the unchanged single-image
+        path with no batching overhead.
         """
         retain_per_image_deltas = _force_retain_per_image_deltas_if_strict(
             self.parity_mode, num_threads, retain_per_image_deltas
@@ -844,4 +844,5 @@ class Evaluator:
             shutdown_timeout_seconds=shutdown_timeout_seconds,
             boundary=self.boundary,
             dilation_ratio=self.dilation_ratio,
+            num_threads=num_threads,
         )
