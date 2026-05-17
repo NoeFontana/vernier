@@ -732,12 +732,12 @@ fn run_panoptic_with_policy(
 /// `#[cfg(any(test, feature = "_test-counter"))]`. The Python side
 /// gates its assertion the same way.
 #[cfg(any(test, feature = "_test-counter"))]
-static PANOPTIC_MATCHING_PASS_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static PANOPTIC_MATCHING_PASS_COUNT: vernier_core::bench_counters::BenchCounterSet<1> =
+    vernier_core::bench_counters::BenchCounterSet::new();
 
 #[cfg(any(test, feature = "_test-counter"))]
 fn inc_panoptic_matching_count() {
-    PANOPTIC_MATCHING_PASS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    PANOPTIC_MATCHING_PASS_COUNT.bump(0);
 }
 
 #[cfg(not(any(test, feature = "_test-counter")))]
@@ -748,7 +748,7 @@ fn inc_panoptic_matching_count() {}
 #[cfg(any(test, feature = "_test-counter"))]
 #[pyfunction]
 pub(crate) fn _test_reset_panoptic_matching_count() -> u64 {
-    PANOPTIC_MATCHING_PASS_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed)
+    PANOPTIC_MATCHING_PASS_COUNT.read_and_reset()[0]
 }
 
 /// Read the current panoptic matching-pass counter without resetting.
@@ -756,7 +756,7 @@ pub(crate) fn _test_reset_panoptic_matching_count() -> u64 {
 #[cfg(any(test, feature = "_test-counter"))]
 #[pyfunction]
 pub(crate) fn _test_read_panoptic_matching_count() -> u64 {
-    PANOPTIC_MATCHING_PASS_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+    PANOPTIC_MATCHING_PASS_COUNT.load(0)
 }
 
 /// Slice metric row carried over the FFI boundary from the C3

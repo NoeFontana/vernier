@@ -16,6 +16,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod accumulate;
+pub mod bench_counters;
 pub mod boundary_parity;
 pub mod breakdown;
 pub mod calibration;

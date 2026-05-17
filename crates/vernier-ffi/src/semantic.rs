@@ -588,12 +588,12 @@ pub(crate) fn evaluate_semantic_from_arrays<'py>(
 /// Symmetric to the panoptic counter; the Python perf test asserts
 /// the per-image fold runs **exactly once** regardless of slice count.
 #[cfg(any(test, feature = "_test-counter"))]
-static SEMANTIC_FOLD_PASS_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+static SEMANTIC_FOLD_PASS_COUNT: vernier_core::bench_counters::BenchCounterSet<1> =
+    vernier_core::bench_counters::BenchCounterSet::new();
 
 #[cfg(any(test, feature = "_test-counter"))]
 fn inc_semantic_fold_count() {
-    SEMANTIC_FOLD_PASS_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    SEMANTIC_FOLD_PASS_COUNT.bump(0);
 }
 
 #[cfg(not(any(test, feature = "_test-counter")))]
@@ -602,13 +602,13 @@ fn inc_semantic_fold_count() {}
 #[cfg(any(test, feature = "_test-counter"))]
 #[pyfunction]
 pub(crate) fn _test_reset_semantic_fold_count() -> u64 {
-    SEMANTIC_FOLD_PASS_COUNT.swap(0, std::sync::atomic::Ordering::Relaxed)
+    SEMANTIC_FOLD_PASS_COUNT.read_and_reset()[0]
 }
 
 #[cfg(any(test, feature = "_test-counter"))]
 #[pyfunction]
 pub(crate) fn _test_read_semantic_fold_count() -> u64 {
-    SEMANTIC_FOLD_PASS_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+    SEMANTIC_FOLD_PASS_COUNT.load(0)
 }
 
 /// Result of an ADR-0046 C3 partitioned semantic eval.

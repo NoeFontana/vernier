@@ -357,17 +357,17 @@ impl KernelKind {
 /// `build_gt_anns` / `build_dt_anns` call counter, gated on `bench-timings`.
 #[cfg(feature = "bench-timings")]
 pub(crate) mod build_anns_count {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::bench_counters::BenchCounterSet;
 
-    static N_CALLS: AtomicU64 = AtomicU64::new(0);
+    static COUNTERS: BenchCounterSet<1> = BenchCounterSet::new();
 
     #[inline]
     pub(crate) fn bump() {
-        N_CALLS.fetch_add(1, Ordering::Relaxed);
+        COUNTERS.bump(0);
     }
 
     pub(crate) fn read_and_reset() -> u64 {
-        N_CALLS.swap(0, Ordering::Relaxed)
+        COUNTERS.read_and_reset()[0]
     }
 }
 

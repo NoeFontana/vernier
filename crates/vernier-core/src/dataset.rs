@@ -52,18 +52,17 @@ use crate::segmentation::{Segmentation, SegmentationRleCounts};
 /// Parse vs `from_parts` split for COCO GT / DT loaders, gated on `bench-timings`.
 #[cfg(feature = "bench-timings")]
 pub(crate) mod dataset_timings {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use crate::bench_counters::BenchCounterSet;
 
-    pub(super) static GT_PARSE_NS: AtomicU64 = AtomicU64::new(0);
-    pub(super) static GT_FROM_PARTS_NS: AtomicU64 = AtomicU64::new(0);
-    pub(super) static DT_PARSE_NS: AtomicU64 = AtomicU64::new(0);
-    pub(super) static DT_FROM_INPUTS_NS: AtomicU64 = AtomicU64::new(0);
+    pub(super) const GT_PARSE_NS: usize = 0;
+    pub(super) const GT_FROM_PARTS_NS: usize = 1;
+    pub(super) const DT_PARSE_NS: usize = 2;
+    pub(super) const DT_FROM_INPUTS_NS: usize = 3;
+
+    pub(super) static COUNTERS: BenchCounterSet<4> = BenchCounterSet::new();
 
     pub(crate) fn read_and_reset() -> (u64, u64, u64, u64) {
-        let a = GT_PARSE_NS.swap(0, Ordering::Relaxed);
-        let b = GT_FROM_PARTS_NS.swap(0, Ordering::Relaxed);
-        let c = DT_PARSE_NS.swap(0, Ordering::Relaxed);
-        let d = DT_FROM_INPUTS_NS.swap(0, Ordering::Relaxed);
+        let [a, b, c, d] = COUNTERS.read_and_reset();
         (a, b, c, d)
     }
 }
@@ -511,10 +510,9 @@ impl CocoDataset {
         let result = Self::from_parts(raw.images, raw.annotations, raw.categories);
         #[cfg(feature = "bench-timings")]
         {
-            use std::sync::atomic::Ordering;
             let from_parts_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            dataset_timings::GT_PARSE_NS.fetch_add(parse_ns, Ordering::Relaxed);
-            dataset_timings::GT_FROM_PARTS_NS.fetch_add(from_parts_ns, Ordering::Relaxed);
+            dataset_timings::COUNTERS.add(dataset_timings::GT_PARSE_NS, parse_ns);
+            dataset_timings::COUNTERS.add(dataset_timings::GT_FROM_PARTS_NS, from_parts_ns);
         }
         result
     }
@@ -1253,10 +1251,9 @@ impl CocoDetections {
         let result = Self::from_inputs(raw);
         #[cfg(feature = "bench-timings")]
         {
-            use std::sync::atomic::Ordering;
             let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            dataset_timings::DT_PARSE_NS.fetch_add(parse_ns, Ordering::Relaxed);
-            dataset_timings::DT_FROM_INPUTS_NS.fetch_add(from_inputs_ns, Ordering::Relaxed);
+            dataset_timings::COUNTERS.add(dataset_timings::DT_PARSE_NS, parse_ns);
+            dataset_timings::COUNTERS.add(dataset_timings::DT_FROM_INPUTS_NS, from_inputs_ns);
         }
         result
     }
