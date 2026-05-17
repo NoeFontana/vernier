@@ -207,6 +207,13 @@ fn read_and_reset_build_anns_count() -> u64 {
     vernier_core::read_and_reset_build_anns_count()
 }
 
+/// Bench-timings hook: `(gt_parse_ns, gt_from_parts_ns, dt_parse_ns, dt_from_inputs_ns)` since last read.
+#[cfg(feature = "bench-timings")]
+#[pyfunction]
+fn read_and_reset_dataset_timings() -> (u64, u64, u64, u64) {
+    vernier_core::read_and_reset_dataset_timings()
+}
+
 /// Pythonic view over a [`vernier_core::Summary`]. Frozen — the underlying
 /// value is constructed once by [`evaluate_bbox_summary`] and never
 /// mutated (per ADR-0006).
@@ -3395,6 +3402,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     #[cfg(feature = "bench-timings")]
     m.add_function(wrap_pyfunction!(read_and_reset_build_anns_count, m)?)?;
+    #[cfg(feature = "bench-timings")]
+    m.add_function(wrap_pyfunction!(read_and_reset_dataset_timings, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid_with_dataset, m)?)?;
