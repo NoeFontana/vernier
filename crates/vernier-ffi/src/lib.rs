@@ -28,6 +28,11 @@
 //!   any scheduling syscall failure surfaces as a one-shot `UserWarning`
 //!   on the constructing thread.
 
+// Allocator A/B knob (`mimalloc-global` feature); see Cargo.toml.
+#[cfg(feature = "mimalloc-global")]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -186,6 +191,20 @@ fn version() -> &'static str {
 fn dump_bbox_iou_histogram(path: &str) -> PyResult<usize> {
     vernier_core::dump_bbox_iou_histogram_csv(std::path::Path::new(path))
         .map_err(|e| pyo3::exceptions::PyOSError::new_err(e.to_string()))
+}
+
+/// Bench-timings hook: `(par_iter_ns, serial_post_ns, n_calls)` since last read.
+#[cfg(feature = "bench-timings")]
+#[pyfunction]
+fn read_and_reset_evaluate_parallel_timings() -> (u64, u64, u64) {
+    vernier_core::read_and_reset_evaluate_parallel_timings()
+}
+
+/// Bench-timings hook: `build_*_anns` call count since last read.
+#[cfg(feature = "bench-timings")]
+#[pyfunction]
+fn read_and_reset_build_anns_count() -> u64 {
+    vernier_core::read_and_reset_build_anns_count()
 }
 
 /// Pythonic view over a [`vernier_core::Summary`]. Frozen — the underlying
@@ -3369,6 +3388,13 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(version, m)?)?;
     #[cfg(feature = "bench-histogram")]
     m.add_function(wrap_pyfunction!(dump_bbox_iou_histogram, m)?)?;
+    #[cfg(feature = "bench-timings")]
+    m.add_function(wrap_pyfunction!(
+        read_and_reset_evaluate_parallel_timings,
+        m
+    )?)?;
+    #[cfg(feature = "bench-timings")]
+    m.add_function(wrap_pyfunction!(read_and_reset_build_anns_count, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid_with_dataset, m)?)?;

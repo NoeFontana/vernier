@@ -354,6 +354,23 @@ impl KernelKind {
     }
 }
 
+/// `build_gt_anns` / `build_dt_anns` call counter, gated on `bench-timings`.
+#[cfg(feature = "bench-timings")]
+pub(crate) mod build_anns_count {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static N_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    #[inline]
+    pub(crate) fn bump() {
+        N_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn read_and_reset() -> u64 {
+        N_CALLS.swap(0, Ordering::Relaxed)
+    }
+}
+
 /// Bridges a [`CocoDataset`] / [`CocoDetections`] cell to a kernel's
 /// annotation type.
 ///
@@ -394,6 +411,45 @@ pub trait EvalKernel: Similarity {
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<Self::Annotation>, EvalError>;
+
+    /// Pooled-buffer sibling of [`Self::build_gt_anns`]. The default
+    /// body forwards to [`Self::build_gt_anns`] and assigns the result
+    /// into `buf`, which preserves the existing per-call allocation
+    /// behavior for kernels that don't override. Kernels whose per-cell
+    /// compute is dominated by the `Vec<Self::Annotation>` allocation —
+    /// today that's [`crate::similarity::BboxIou`] only — override to
+    /// `clear()` + `extend()` against the caller's pooled buffer,
+    /// eliminating the per-cell malloc/free pair on the GT side.
+    ///
+    /// # Errors
+    /// Propagates whatever [`Self::build_gt_anns`] returns.
+    fn build_gt_anns_into(
+        &self,
+        buf: &mut Vec<Self::Annotation>,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        image: &ImageMeta,
+    ) -> Result<(), EvalError> {
+        *buf = self.build_gt_anns(gt_anns, indices, image)?;
+        Ok(())
+    }
+
+    /// Pooled-buffer sibling of [`Self::build_dt_anns`]. See
+    /// [`Self::build_gt_anns_into`] for the override contract.
+    ///
+    /// # Errors
+    /// Propagates whatever [`Self::build_dt_anns`] returns.
+    fn build_dt_anns_into(
+        &self,
+        buf: &mut Vec<Self::Annotation>,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        image: &ImageMeta,
+        parity_mode: ParityMode,
+    ) -> Result<(), EvalError> {
+        *buf = self.build_dt_anns(dt_anns, indices, image, parity_mode)?;
+        Ok(())
+    }
 
     /// Optional kernel-specific GT ignore override. Default `false` (no
     /// kernel reason to ignore).
@@ -457,6 +513,38 @@ impl EvalKernel for BboxIou {
                 is_crowd: false,
             })
             .collect())
+    }
+
+    fn build_gt_anns_into(
+        &self,
+        buf: &mut Vec<BboxAnn>,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        _image: &ImageMeta,
+    ) -> Result<(), EvalError> {
+        buf.clear();
+        buf.extend(indices.iter().map(|&j| BboxAnn {
+            bbox: gt_anns[j].bbox,
+            is_crowd: gt_anns[j].is_crowd,
+        }));
+        Ok(())
+    }
+
+    fn build_dt_anns_into(
+        &self,
+        buf: &mut Vec<BboxAnn>,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        _image: &ImageMeta,
+        _parity_mode: ParityMode,
+    ) -> Result<(), EvalError> {
+        // E2/J4: DT never carries crowd.
+        buf.clear();
+        buf.extend(indices.iter().map(|&j| BboxAnn {
+            bbox: dt_anns[j].bbox,
+            is_crowd: false,
+        }));
+        Ok(())
     }
 }
 
@@ -882,6 +970,10 @@ pub fn evaluate_with<K: EvalKernel>(
     // + `extend()` per cell amortizes the ~14k allocator round-trips
     // val2017 would otherwise pay for these gathers.
     let mut scratch = CellScratch::new();
+    // Pooled `Vec<K::Annotation>` for `build_*_anns_into` overrides
+    // (today: bbox only). Grown once to worst-case cell shape, reused
+    // for every cell after — see [`KernelScratch`].
+    let mut kernel_scratch = KernelScratch::<K::Annotation>::default();
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
 
@@ -985,15 +1077,25 @@ pub fn evaluate_with<K: EvalKernel>(
                 .dt_ids
                 .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].id.0));
 
-            let gt_kernel = kernel.build_gt_anns(gt_anns, gt_indices, image)?;
-            let dt_kernel =
-                kernel.build_dt_anns(dt_anns, &scratch.dt_indices, image, parity_mode)?;
+            #[cfg(feature = "bench-timings")]
+            {
+                build_anns_count::bump();
+                build_anns_count::bump();
+            }
+            kernel.build_gt_anns_into(&mut kernel_scratch.gt, gt_anns, gt_indices, image)?;
+            kernel.build_dt_anns_into(
+                &mut kernel_scratch.dt,
+                dt_anns,
+                &scratch.dt_indices,
+                image,
+                parity_mode,
+            )?;
 
             // IoU scratch backing — `Vec<f64>` reused across cells, sized
             // to `g * d` per cell. Zero-fill keeps the empty-side fallback
             // (`g == 0` or `d == 0`) bit-identical to `Array2::zeros`.
-            let g = gt_kernel.len();
-            let d = dt_kernel.len();
+            let g = kernel_scratch.gt.len();
+            let d = kernel_scratch.dt.len();
             scratch.iou_buf.clear();
             scratch.iou_buf.resize(g * d, 0.0);
             if g > 0 && d > 0 {
@@ -1001,7 +1103,7 @@ pub fn evaluate_with<K: EvalKernel>(
                     .map_err(|e| EvalError::DimensionMismatch {
                         detail: format!("iou scratch view: {e}"),
                     })?;
-                kernel.compute(&gt_kernel, &dt_kernel, &mut iou_view)?;
+                kernel.compute(&kernel_scratch.gt, &kernel_scratch.dt, &mut iou_view)?;
             }
 
             let iou_view = ArrayView2::from_shape((g, d), &scratch.iou_buf[..]).map_err(|e| {
@@ -1591,6 +1693,25 @@ pub(crate) struct CellScratch {
 impl CellScratch {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+}
+
+/// Per-worker pool for the kernel-side annotation slices, reused
+/// across cells. Pays off only when [`EvalKernel::build_gt_anns_into`]
+/// / [`EvalKernel::build_dt_anns_into`] are overridden — today,
+/// [`crate::similarity::BboxIou`] only (other kernels' per-cell
+/// compute swamps the alloc).
+pub(crate) struct KernelScratch<A> {
+    pub(crate) gt: Vec<A>,
+    pub(crate) dt: Vec<A>,
+}
+
+impl<A> Default for KernelScratch<A> {
+    fn default() -> Self {
+        Self {
+            gt: Vec::new(),
+            dt: Vec::new(),
+        }
     }
 }
 

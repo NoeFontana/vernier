@@ -25,6 +25,14 @@ default = []
 # as CSV via `similarity::bbox::histogram::dump_csv`. Off by default so
 # the shipped wheel never pays the recording cost.
 bench-histogram = []
+# Bbox-scaling instrumentation: process-global `AtomicU64` accumulators
+# that split `evaluate_with_parallel` wall time into `par_iter_region`
+# (the rayon dispatch) and `serial_post` (output fold + retained-iou
+# sort), plus a counter of `build_gt_anns` / `build_dt_anns` calls.
+# Surfaced via `read_and_reset_evaluate_parallel_timings()` /
+# `read_and_reset_build_anns_count()`. Off by default so the shipped
+# wheel never pays the per-call `Instant::now()` cost.
+bench-timings = []
 
 [dependencies]
 ndarray.workspace = true

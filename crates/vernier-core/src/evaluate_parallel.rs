@@ -24,21 +24,26 @@ use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, Image
 use crate::error::EvalError;
 use crate::evaluate::{
     dt_top_indices_for_cell_into, evaluate_cell, gt_indices_for_cell, raw_dt_indices_for_cell,
-    CellBuffers, CellScratch, EvalGrid, EvalImageMeta, EvalKernel, EvaluateParams,
+    CellBuffers, CellScratch, EvalGrid, EvalImageMeta, EvalKernel, EvaluateParams, KernelScratch,
     COLLAPSED_CATEGORY_SENTINEL,
 };
 use crate::parity::ParityMode;
 
-/// One worker's per-`(k, i)` output. Folded serially into
-/// `eval_imgs` / `eval_imgs_meta` after `par_iter` returns.
-struct CellOutput {
-    k: usize,
-    i: usize,
-    /// `(a, cell, meta)` triples — one per area range. Empty on the
-    /// AA4 cell-skip / empty-gt-and-dt branches.
-    cells: Vec<(usize, PerImageEval, EvalImageMeta)>,
-    /// Only `Some` when `params.retain_iou` is on.
-    retained_iou: Option<Array2<f64>>,
+/// Wall-time split for [`evaluate_with_parallel`], gated on `bench-timings`.
+#[cfg(feature = "bench-timings")]
+pub(crate) mod timings {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(super) static PAR_ITER_NS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static SERIAL_POST_NS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static N_CALLS: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn read_and_reset() -> (u64, u64, u64) {
+        let p = PAR_ITER_NS.swap(0, Ordering::Relaxed);
+        let s = SERIAL_POST_NS.swap(0, Ordering::Relaxed);
+        let n = N_CALLS.swap(0, Ordering::Relaxed);
+        (p, s, n)
+    }
 }
 
 /// Parallel sibling of [`crate::evaluate::evaluate_with`]. Caller
@@ -87,53 +92,86 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
 
-    // Image-major dispatch: each rayon task owns one image and walks
-    // all categories inside. Cuts the task count by `n_k` versus a flat
-    // `(0..n_k*n_i)` range, gives each worker contiguous image-local
-    // working sets, and keeps work imbalance bounded by image size
-    // (well within rayon's work-stealing budget on val2017-shaped
-    // workloads). The per-image `Vec<CellOutput>` is consumed by the
-    // serial fold below — no intermediate flatten.
-    let outputs: Vec<Vec<CellOutput>> = (0..n_i)
-        .into_par_iter()
-        .map_init(CellScratch::new, |scratch, i| {
-            let mut per_image: Vec<CellOutput> = Vec::with_capacity(n_k);
-            for k in 0..n_k {
-                per_image.push(process_one_cell(
-                    scratch,
-                    k,
-                    i,
-                    &images,
-                    &category_buckets,
-                    gt,
-                    gt_anns,
-                    dt,
-                    dt_anns,
-                    params,
-                    parity_mode,
-                    kernel,
-                    &federated_per_image,
-                    strict_lvis_zero_area_filter,
-                )?);
-            }
-            Ok::<Vec<CellOutput>, EvalError>(per_image)
-        })
-        .collect::<Result<Vec<Vec<CellOutput>>, _>>()?;
+    // Image-major working buffer: per-image rayon tasks own a
+    // contiguous `n_k * n_a`-slot chunk via `par_chunks_mut`; transpose
+    // to the canonical `(k, a, i)` layout once after the parallel region.
+    #[cfg(feature = "bench-timings")]
+    let t_par = std::time::Instant::now();
 
-    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; n_k * n_a * n_i];
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; n_k * n_a * n_i];
+    let total_slots = n_k * n_a * n_i;
+    let chunk_len = n_k * n_a;
+    let mut working_eval: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
+    let mut working_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
+
+    let retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = working_eval
+        .par_chunks_mut(chunk_len)
+        .zip(working_meta.par_chunks_mut(chunk_len))
+        .enumerate()
+        .map_init(
+            || {
+                (
+                    CellScratch::new(),
+                    KernelScratch::<K::Annotation>::default(),
+                )
+            },
+            |(scratch, kernel_scratch), (i, (eval_chunk, meta_chunk))| {
+                let mut per_image_retained: Vec<(usize, Array2<f64>)> = Vec::new();
+                for k in 0..n_k {
+                    let eval_slice = &mut eval_chunk[k * n_a..(k + 1) * n_a];
+                    let meta_slice = &mut meta_chunk[k * n_a..(k + 1) * n_a];
+                    process_one_cell_into(
+                        scratch,
+                        kernel_scratch,
+                        k,
+                        i,
+                        &images,
+                        &category_buckets,
+                        gt,
+                        gt_anns,
+                        dt,
+                        dt_anns,
+                        params,
+                        parity_mode,
+                        kernel,
+                        &federated_per_image,
+                        strict_lvis_zero_area_filter,
+                        eval_slice,
+                        meta_slice,
+                        &mut per_image_retained,
+                    )?;
+                }
+                Ok::<Vec<(usize, Array2<f64>)>, EvalError>(per_image_retained)
+            },
+        )
+        .collect::<Result<Vec<_>, _>>()?;
+
+    #[cfg(feature = "bench-timings")]
+    let par_ns = u64::try_from(t_par.elapsed().as_nanos()).unwrap_or(u64::MAX);
+
+    #[cfg(feature = "bench-timings")]
+    let t_post = std::time::Instant::now();
+
+    // Transpose image-major `(i, k, a)` → canonical `(k, a, i)`.
+    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
+    for i in 0..n_i {
+        let base = i * chunk_len;
+        for k in 0..n_k {
+            for a in 0..n_a {
+                let src = base + k * n_a + a;
+                let dst = k * n_a * n_i + a * n_i + i;
+                eval_imgs[dst] = working_eval[src].take();
+                eval_imgs_meta[dst] = working_meta[src].take();
+            }
+        }
+    }
+    drop(working_eval);
+    drop(working_meta);
+
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
-
-    for image_outputs in outputs {
-        for out in image_outputs {
-            for (a, cell, meta) in out.cells {
-                let flat = out.k * n_a * n_i + a * n_i + out.i;
-                eval_imgs[flat] = Some(Box::new(cell));
-                eval_imgs_meta[flat] = Some(Box::new(meta));
-            }
-            if let Some(iou) = out.retained_iou {
-                retained_pairs.push(((out.k, out.i), iou));
-            }
+    for (i, per_image) in retained_per_image.into_iter().enumerate() {
+        for (k, iou) in per_image {
+            retained_pairs.push(((k, i), iou));
         }
     }
 
@@ -147,21 +185,32 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
         None
     };
 
-    Ok(EvalGrid {
+    let grid = EvalGrid {
         eval_imgs,
         eval_imgs_meta,
         n_categories: n_k,
         n_area_ranges: n_a,
         n_images: n_i,
         retained_ious: retained_ious_map.map(crate::tables::RetainedIous::from_map),
-    })
+    };
+    #[cfg(feature = "bench-timings")]
+    {
+        use std::sync::atomic::Ordering;
+        let post_ns = u64::try_from(t_post.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        timings::PAR_ITER_NS.fetch_add(par_ns, Ordering::Relaxed);
+        timings::SERIAL_POST_NS.fetch_add(post_ns, Ordering::Relaxed);
+        timings::N_CALLS.fetch_add(1, Ordering::Relaxed);
+    }
+    Ok(grid)
 }
 
-/// Per-cell body lifted out of [`crate::evaluate::evaluate_with`]'s
-/// inner loop. `scratch` is owned by the calling thread.
+/// Per-cell body. Writes per-area-range outputs directly into
+/// `eval_slice` / `meta_slice` (length = `params.area_ranges.len()`);
+/// pushes retained IoU into `retained_out` when enabled.
 #[allow(clippy::too_many_arguments)]
-fn process_one_cell<K: EvalKernel>(
+fn process_one_cell_into<K: EvalKernel>(
     scratch: &mut CellScratch,
+    kernel_scratch: &mut KernelScratch<K::Annotation>,
     k: usize,
     i: usize,
     images: &[&ImageMeta],
@@ -175,7 +224,10 @@ fn process_one_cell<K: EvalKernel>(
     kernel: &K,
     federated_per_image: &[Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>],
     strict_lvis_zero_area_filter: bool,
-) -> Result<CellOutput, EvalError> {
+    eval_slice: &mut [Option<Box<PerImageEval>>],
+    meta_slice: &mut [Option<Box<EvalImageMeta>>],
+    retained_out: &mut Vec<(usize, Array2<f64>)>,
+) -> Result<(), EvalError> {
     let cat = category_buckets[k];
     let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
     let image = images[i];
@@ -196,12 +248,7 @@ fn process_one_cell<K: EvalKernel>(
         };
     let raw_dt_indices = raw_dt_indices_for_cell(dt, image_id, cat);
     if gt_indices.is_empty() && raw_dt_indices.is_empty() {
-        return Ok(CellOutput {
-            k,
-            i,
-            cells: Vec::new(),
-            retained_iou: None,
-        });
+        return Ok(());
     }
 
     // AA4 cell-skip + AA3 `not_exhaustive` flag; `federated_per_image`
@@ -209,12 +256,7 @@ fn process_one_cell<K: EvalKernel>(
     let mut not_exhaustive_for_cell = false;
     if let (Some(c), Some(Some((neg_set, nel_set)))) = (cat, federated_per_image.get(i)) {
         if gt_indices.is_empty() && !neg_set.contains(&c) {
-            return Ok(CellOutput {
-                k,
-                i,
-                cells: Vec::new(),
-                retained_iou: None,
-            });
+            return Ok(());
         }
         not_exhaustive_for_cell = nel_set.contains(&c);
     }
@@ -259,11 +301,22 @@ fn process_one_cell<K: EvalKernel>(
         .dt_ids
         .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].id.0));
 
-    let gt_kernel = kernel.build_gt_anns(gt_anns, gt_indices, image)?;
-    let dt_kernel = kernel.build_dt_anns(dt_anns, &scratch.dt_indices, image, parity_mode)?;
+    #[cfg(feature = "bench-timings")]
+    {
+        crate::evaluate::build_anns_count::bump();
+        crate::evaluate::build_anns_count::bump();
+    }
+    kernel.build_gt_anns_into(&mut kernel_scratch.gt, gt_anns, gt_indices, image)?;
+    kernel.build_dt_anns_into(
+        &mut kernel_scratch.dt,
+        dt_anns,
+        &scratch.dt_indices,
+        image,
+        parity_mode,
+    )?;
 
-    let g = gt_kernel.len();
-    let d = dt_kernel.len();
+    let g = kernel_scratch.gt.len();
+    let d = kernel_scratch.dt.len();
     scratch.iou_buf.clear();
     scratch.iou_buf.resize(g * d, 0.0);
     if g > 0 && d > 0 {
@@ -273,7 +326,7 @@ fn process_one_cell<K: EvalKernel>(
                     detail: format!("iou scratch view: {e}"),
                 }
             })?;
-        kernel.compute(&gt_kernel, &dt_kernel, &mut iou_view)?;
+        kernel.compute(&kernel_scratch.gt, &kernel_scratch.dt, &mut iou_view)?;
     }
 
     let iou_view = ArrayView2::from_shape((g, d), &scratch.iou_buf[..]).map_err(|e| {
@@ -296,7 +349,6 @@ fn process_one_cell<K: EvalKernel>(
         not_exhaustive: not_exhaustive_for_cell,
     };
 
-    let mut emitted = Vec::with_capacity(params.area_ranges.len());
     for (a, area) in params.area_ranges.iter().enumerate() {
         let (cell, meta) = evaluate_cell(
             &mut scratch.gt_ignore_buf,
@@ -305,26 +357,20 @@ fn process_one_cell<K: EvalKernel>(
             params.iou_thresholds,
             parity_mode,
         )?;
-        emitted.push((a, cell, meta));
+        eval_slice[a] = Some(Box::new(cell));
+        meta_slice[a] = Some(Box::new(meta));
     }
 
-    let retained_iou: Option<Array2<f64>> = if params.retain_iou {
+    if params.retain_iou {
         let cloned = Array2::from_shape_vec((g, d), scratch.iou_buf.clone()).map_err(|e| {
             EvalError::DimensionMismatch {
                 detail: format!("retained iou clone: {e}"),
             }
         })?;
-        Some(cloned)
-    } else {
-        None
-    };
+        retained_out.push((k, cloned));
+    }
 
-    Ok(CellOutput {
-        k,
-        i,
-        cells: emitted,
-        retained_iou,
-    })
+    Ok(())
 }
 
 // ----- Per-paradigm parallel sibling wrappers -------------------------

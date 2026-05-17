@@ -77,6 +77,20 @@ pub fn dump_bbox_iou_histogram_csv(path: &std::path::Path) -> std::io::Result<us
     similarity::bbox::histogram::dump_csv(path)
 }
 
+/// `(par_iter_ns, serial_post_ns, n_calls)` for [`evaluate_with_parallel`]
+/// since last read, then resets. Gated on `bench-timings`.
+#[cfg(feature = "bench-timings")]
+pub fn read_and_reset_evaluate_parallel_timings() -> (u64, u64, u64) {
+    evaluate_parallel::timings::read_and_reset()
+}
+
+/// `build_gt_anns` + `build_dt_anns` call count since last read,
+/// then resets. Gated on `bench-timings`.
+#[cfg(feature = "bench-timings")]
+pub fn read_and_reset_build_anns_count() -> u64 {
+    evaluate::build_anns_count::read_and_reset()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
