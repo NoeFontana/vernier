@@ -49,6 +49,25 @@ use crate::error::EvalError;
 use crate::parity::ParityMode;
 use crate::segmentation::{Segmentation, SegmentationRleCounts};
 
+/// Parse vs `from_parts` split for COCO GT / DT loaders, gated on `bench-timings`.
+#[cfg(feature = "bench-timings")]
+pub(crate) mod dataset_timings {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    pub(super) static GT_PARSE_NS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static GT_FROM_PARTS_NS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static DT_PARSE_NS: AtomicU64 = AtomicU64::new(0);
+    pub(super) static DT_FROM_INPUTS_NS: AtomicU64 = AtomicU64::new(0);
+
+    pub(crate) fn read_and_reset() -> (u64, u64, u64, u64) {
+        let a = GT_PARSE_NS.swap(0, Ordering::Relaxed);
+        let b = GT_FROM_PARTS_NS.swap(0, Ordering::Relaxed);
+        let c = DT_PARSE_NS.swap(0, Ordering::Relaxed);
+        let d = DT_FROM_INPUTS_NS.swap(0, Ordering::Relaxed);
+        (a, b, c, d)
+    }
+}
+
 /// Newtype for image ids. Sourced from the JSON `id` field; preserved
 /// verbatim. Crowd_region's image with `id = 1` becomes
 /// `ImageId(1)`.
@@ -482,8 +501,22 @@ impl CocoDataset {
     /// known category; missing references raise [`EvalError::InvalidAnnotation`]
     /// rather than producing a silently-empty dataset.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, EvalError> {
+        #[cfg(feature = "bench-timings")]
+        let t0 = std::time::Instant::now();
         let raw: CocoJson = serde_json::from_slice(bytes)?;
-        Self::from_parts(raw.images, raw.annotations, raw.categories)
+        #[cfg(feature = "bench-timings")]
+        let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        #[cfg(feature = "bench-timings")]
+        let t1 = std::time::Instant::now();
+        let result = Self::from_parts(raw.images, raw.annotations, raw.categories);
+        #[cfg(feature = "bench-timings")]
+        {
+            use std::sync::atomic::Ordering;
+            let from_parts_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            dataset_timings::GT_PARSE_NS.fetch_add(parse_ns, Ordering::Relaxed);
+            dataset_timings::GT_FROM_PARTS_NS.fetch_add(from_parts_ns, Ordering::Relaxed);
+        }
+        result
     }
 
     /// Loads a dataset from already-typed parts.
@@ -1210,8 +1243,22 @@ impl CocoDetections {
     /// quirks **E2/J4** force `is_crowd=0` and quirk **J3** derives
     /// `area` from `bbox`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, EvalError> {
+        #[cfg(feature = "bench-timings")]
+        let t0 = std::time::Instant::now();
         let raw: Vec<DetectionInput> = serde_json::from_slice(bytes)?;
-        Self::from_inputs(raw)
+        #[cfg(feature = "bench-timings")]
+        let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        #[cfg(feature = "bench-timings")]
+        let t1 = std::time::Instant::now();
+        let result = Self::from_inputs(raw);
+        #[cfg(feature = "bench-timings")]
+        {
+            use std::sync::atomic::Ordering;
+            let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            dataset_timings::DT_PARSE_NS.fetch_add(parse_ns, Ordering::Relaxed);
+            dataset_timings::DT_FROM_INPUTS_NS.fetch_add(from_inputs_ns, Ordering::Relaxed);
+        }
+        result
     }
 
     /// Builds a [`CocoDetections`] from typed inputs. Auto-assigns ids

@@ -91,6 +91,13 @@ pub fn read_and_reset_build_anns_count() -> u64 {
     evaluate::build_anns_count::read_and_reset()
 }
 
+/// `(gt_parse_ns, gt_from_parts_ns, dt_parse_ns, dt_from_inputs_ns)`
+/// for the COCO loaders since last read, then resets. Gated on `bench-timings`.
+#[cfg(feature = "bench-timings")]
+pub fn read_and_reset_dataset_timings() -> (u64, u64, u64, u64) {
+    dataset::dataset_timings::read_and_reset()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
