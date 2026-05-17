@@ -99,8 +99,10 @@ use crate::similarity::{
     BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmComputeScratch, SegmGtCache,
     SegmIou, Similarity,
 };
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use thread_local::ThreadLocal;
 use vernier_mask::Rle;
 
 /// Either a borrowed or `Arc`-owned reference to a per-kernel GT cache.
@@ -1167,13 +1169,13 @@ pub fn evaluate_segm_cached(
 
 pub(crate) fn segm_kernel(gt_cache: Option<&SegmGtCache>) -> SegmIouCached<'_> {
     SegmIouCached {
-        scratch: Mutex::new(SegmComputeScratch::new()),
+        scratch: ThreadLocal::new(),
         gt_cache: gt_cache.map(GtCacheRef::Borrowed),
     }
 }
 
 /// Kernel used by [`evaluate_segm`] and [`evaluate_segm_cached`] — same
-/// semantics as [`SegmIou`] but threads a single `SegmComputeScratch`
+/// semantics as [`SegmIou`] but threads a `SegmComputeScratch`
 /// across every `compute` call (so the dataset-wide pass amortizes
 /// per-cell `Vec` allocations across the ~36 k anns of a val2017 pass)
 /// and optionally consults a [`SegmGtCache`] for cross-call GT
@@ -1183,10 +1185,15 @@ pub(crate) fn segm_kernel(gt_cache: Option<&SegmGtCache>) -> SegmIouCached<'_> {
 /// kernel feeds both the borrowed batch path (`evaluate_segm_cached`)
 /// and the `Arc`-owned streaming path
 /// ([`Self::with_arc_cache`] + [`crate::stream::StreamingEvaluator`]).
-/// Held by [`Mutex`] to satisfy `Similarity: Send + Sync`; the lock is
-/// uncontended in single-threaded use.
+///
+/// Scratch is held in a [`ThreadLocal`] so rayon workers under the
+/// ADR-0047 parallel path each get their own buffer — the pre-ADR-0047
+/// `Mutex<Scratch>` shape serialised every per-cell `compute()` call
+/// across workers, capping speedup well below the physical core count.
+/// Single-threaded use lazily initialises one slot and pays no
+/// per-call synchronisation.
 pub struct SegmIouCached<'a> {
-    scratch: Mutex<SegmComputeScratch>,
+    scratch: ThreadLocal<RefCell<SegmComputeScratch>>,
     gt_cache: Option<GtCacheRef<'a, SegmGtCache>>,
 }
 
@@ -1199,7 +1206,7 @@ impl SegmIouCached<'static> {
     /// visible to the other.
     pub fn with_arc_cache(cache: Arc<SegmGtCache>) -> Self {
         Self {
-            scratch: Mutex::new(SegmComputeScratch::new()),
+            scratch: ThreadLocal::new(),
             gt_cache: Some(GtCacheRef::Owned(cache)),
         }
     }
@@ -1214,10 +1221,8 @@ impl Similarity for SegmIouCached<'_> {
         dts: &[SegmAnn],
         out: &mut ArrayViewMut2<'_, f64>,
     ) -> Result<(), EvalError> {
-        let mut scratch = self
-            .scratch
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cell = self.scratch.get_or_default();
+        let mut scratch = cell.borrow_mut();
         segm_iou_compute(
             gts,
             dts,
@@ -1324,13 +1329,13 @@ pub(crate) fn boundary_kernel(
 ) -> BoundaryIouCached<'_> {
     BoundaryIouCached {
         dilation_ratio,
-        scratch: Mutex::new(BoundaryComputeScratch::new()),
+        scratch: ThreadLocal::new(),
         gt_cache: gt_cache.map(GtCacheRef::Borrowed),
     }
 }
 
 /// Kernel used by [`evaluate_boundary`] and [`evaluate_boundary_cached`]
-/// — same semantics as [`BoundaryIou`] but threads a single
+/// — same semantics as [`BoundaryIou`] but threads a
 /// `BoundaryComputeScratch` across every `compute` call (so the
 /// dataset-wide pass amortizes per-mask + per-cell allocations) and
 /// optionally consults a [`BoundaryGtCache`] for cross-call GT band
@@ -1340,11 +1345,16 @@ pub(crate) fn boundary_kernel(
 /// kernel feeds both the borrowed batch path
 /// (`evaluate_boundary_cached`) and the `Arc`-owned streaming path
 /// ([`Self::with_arc_cache`] + [`crate::stream::StreamingEvaluator`]).
-/// Held by [`Mutex`] to satisfy `Similarity: Send + Sync`; the lock is
-/// uncontended in single-threaded use.
+///
+/// Scratch is held in a [`ThreadLocal`] so rayon workers under the
+/// ADR-0047 parallel path each get their own buffer — the pre-ADR-0047
+/// `Mutex<Scratch>` shape serialised every per-cell `compute()` call
+/// across workers, which on val2017 boundary collapsed t=4 scaling to
+/// ~1.1x. Single-threaded use lazily initialises one slot and pays no
+/// per-call synchronisation.
 pub struct BoundaryIouCached<'a> {
     dilation_ratio: f64,
-    scratch: Mutex<BoundaryComputeScratch>,
+    scratch: ThreadLocal<RefCell<BoundaryComputeScratch>>,
     gt_cache: Option<GtCacheRef<'a, BoundaryGtCache>>,
 }
 
@@ -1363,7 +1373,7 @@ impl BoundaryIouCached<'static> {
         cache.align_ratio(dilation_ratio);
         Self {
             dilation_ratio,
-            scratch: Mutex::new(BoundaryComputeScratch::new()),
+            scratch: ThreadLocal::new(),
             gt_cache: Some(GtCacheRef::Owned(cache)),
         }
     }
@@ -1378,10 +1388,8 @@ impl Similarity for BoundaryIouCached<'_> {
         dts: &[SegmAnn],
         out: &mut ArrayViewMut2<'_, f64>,
     ) -> Result<(), EvalError> {
-        let mut scratch = self
-            .scratch
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cell = self.scratch.get_or_default();
+        let mut scratch = cell.borrow_mut();
         boundary_iou_compute(
             self.dilation_ratio,
             gts,

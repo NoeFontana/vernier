@@ -55,6 +55,10 @@ csv = { workspace = true }
 # `evaluate_with` path never enters a rayon symbol; the sibling
 # `evaluate_with_parallel` is the only consumer.
 rayon = { workspace = true }
+# Per-thread lazily-initialised storage for the cached segm / boundary
+# kernels' compute scratches (ADR-0047). Removes the per-cell
+# `Mutex<Scratch>` lock that previously serialised every rayon worker.
+thread_local = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

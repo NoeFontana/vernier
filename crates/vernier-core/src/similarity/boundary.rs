@@ -42,7 +42,7 @@
 //!   crowd-side semantics are undefined.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use ndarray::ArrayViewMut2;
 use vernier_mask::ops::{
@@ -107,11 +107,15 @@ impl BoundaryComputeScratch {
 /// ratio is a static configuration knob in practice, so per-call
 /// invalidation is the simplest invariant.
 ///
-/// Threadsafe via an internal [`Mutex`] (the kernel needs `Sync`).
-/// Single-threaded use is uncontended.
+/// Threadsafe via an internal [`RwLock`] (the kernel needs `Sync`).
+/// ADR-0047 §"Stage A" lock-strategy: per-GT lookups take a shared
+/// read guard on the populate fast path so rayon workers reading
+/// already-populated bands don't contend; misses upgrade to a write
+/// guard for the insert. After warm-up (within the first 5% of cells
+/// on val2017 boundary) every lookup is a read.
 #[derive(Default)]
 pub struct BoundaryGtCache {
-    inner: Mutex<CacheInner>,
+    inner: RwLock<CacheInner>,
 }
 
 #[derive(Default)]
@@ -138,19 +142,19 @@ impl BoundaryGtCache {
 
     /// Number of GT annotation bands currently held.
     pub fn len(&self) -> usize {
-        self.lock().bands.len()
+        self.read().bands.len()
     }
 
     /// Returns `true` if no GT bands are currently cached.
     pub fn is_empty(&self) -> bool {
-        self.lock().bands.is_empty()
+        self.read().bands.is_empty()
     }
 
     /// Drops all cached bands. Useful when the GT dataset changes
     /// mid-loop so stale `(ann_id, band)` pairs don't pollute the
     /// next call.
     pub fn clear(&self) {
-        let mut inner = self.lock();
+        let mut inner = self.write();
         inner.bands.clear();
         inner.ratio = None;
     }
@@ -160,15 +164,19 @@ impl BoundaryGtCache {
     /// previously, drop those entries — they would yield wrong
     /// boundary bands at the new ratio.
     pub(crate) fn align_ratio(&self, ratio: f64) {
-        let mut inner = self.lock();
+        let mut inner = self.write();
         if inner.ratio != Some(ratio) {
             inner.bands.clear();
             inner.ratio = Some(ratio);
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, CacheInner> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+    fn read(&self) -> RwLockReadGuard<'_, CacheInner> {
+        self.inner.read().unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn write(&self) -> RwLockWriteGuard<'_, CacheInner> {
+        self.inner.write().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -404,13 +412,20 @@ fn populate_gt_entry(
     cache: Option<&BoundaryGtCache>,
 ) -> Result<(), EvalError> {
     if let Some(cache) = cache {
-        let mut inner = cache.lock();
-        if let Some(entry) = inner.bands.get(&ann.ann_id) {
-            scratch.g_band_area.push(entry.band_area);
-            scratch.g_mask_segments.push_segments(&entry.mask_offsets);
-            scratch.g_band_segments.push_segments(&entry.band_offsets);
-            return Ok(());
+        // Read-fast path: shared lock, multiple rayon workers concurrent.
+        {
+            let inner = cache.read();
+            if let Some(entry) = inner.bands.get(&ann.ann_id) {
+                scratch.g_band_area.push(entry.band_area);
+                scratch.g_mask_segments.push_segments(&entry.mask_offsets);
+                scratch.g_band_segments.push_segments(&entry.band_offsets);
+                return Ok(());
+            }
         }
+        // Miss: derive the band, then upgrade to the write lock for
+        // the insert. A double-check after acquiring the write lock
+        // covers the case where another worker populated the same
+        // ann_id between our read-miss and write-acquire.
         scratch.g_mask_segments.push_from_rle(&ann.rle);
         let band_area = boundary_band_segments_into(
             &ann.rle,
@@ -421,14 +436,15 @@ fn populate_gt_entry(
         scratch.g_band_area.push(band_area);
         let mask_offsets = scratch.g_mask_segments.last_row().to_vec();
         let band_offsets = scratch.g_band_segments.last_row().to_vec();
-        inner.bands.insert(
-            ann.ann_id,
-            BoundaryGtEntry {
+        let mut inner = cache.write();
+        inner
+            .bands
+            .entry(ann.ann_id)
+            .or_insert(BoundaryGtEntry {
                 band_area,
                 mask_offsets,
                 band_offsets,
-            },
-        );
+            });
         return Ok(());
     }
     scratch.g_mask_segments.push_from_rle(&ann.rle);

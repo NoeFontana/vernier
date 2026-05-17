@@ -118,6 +118,14 @@ glob = "0.3"
 # touched. Used as a scoped per-call pool for batch eval and a per-
 # worker-lifetime pool for `BackgroundEvaluator`; never the global pool.
 rayon = "1.10"
+# Per-thread lazily-initialised storage for the segm / boundary
+# kernels' compute scratches (ADR-0047). The kernels are shared by
+# reference across rayon workers, so the pre-ADR-0047
+# `Mutex<Scratch>` shape serialised every per-cell `compute()` call —
+# fatal for scaling. `ThreadLocal<RefCell<Scratch>>` gives each worker
+# its own scratch on first call, keeping the trait surface unchanged
+# and the single-threaded path bit-identical.
+thread_local = "1.1"
 
 # ---------------------------------------------------------------------------
 # Release profile tuned for FFI workloads: thin LTO + single codegen unit

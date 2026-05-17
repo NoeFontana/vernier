@@ -87,47 +87,53 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
 
-    // Work units are flat `(k, i)` indices. `into_par_iter` over the
-    // numeric range avoids materializing an `O(n_k * n_i)` pair list —
-    // on LVIS that would be ~24M tuples (~384 MB) before the parallel
-    // pass even starts.
-    let total = n_k * n_i;
-    let outputs: Vec<CellOutput> = (0..total)
+    // Image-major dispatch: each rayon task owns one image and walks
+    // all categories inside. Cuts the task count by `n_k` versus a flat
+    // `(0..n_k*n_i)` range, gives each worker contiguous image-local
+    // working sets, and keeps work imbalance bounded by image size
+    // (well within rayon's work-stealing budget on val2017-shaped
+    // workloads). The per-image `Vec<CellOutput>` is consumed by the
+    // serial fold below — no intermediate flatten.
+    let outputs: Vec<Vec<CellOutput>> = (0..n_i)
         .into_par_iter()
-        .map_init(CellScratch::new, |scratch, flat| {
-            let k = flat / n_i;
-            let i = flat % n_i;
-            process_one_cell(
-                scratch,
-                k,
-                i,
-                &images,
-                &category_buckets,
-                gt,
-                gt_anns,
-                dt,
-                dt_anns,
-                params,
-                parity_mode,
-                kernel,
-                &federated_per_image,
-                strict_lvis_zero_area_filter,
-            )
+        .map_init(CellScratch::new, |scratch, i| {
+            let mut per_image: Vec<CellOutput> = Vec::with_capacity(n_k);
+            for k in 0..n_k {
+                per_image.push(process_one_cell(
+                    scratch,
+                    k,
+                    i,
+                    &images,
+                    &category_buckets,
+                    gt,
+                    gt_anns,
+                    dt,
+                    dt_anns,
+                    params,
+                    parity_mode,
+                    kernel,
+                    &federated_per_image,
+                    strict_lvis_zero_area_filter,
+                )?);
+            }
+            Ok::<Vec<CellOutput>, EvalError>(per_image)
         })
-        .collect::<Result<_, _>>()?;
+        .collect::<Result<Vec<Vec<CellOutput>>, _>>()?;
 
     let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; n_k * n_a * n_i];
     let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; n_k * n_a * n_i];
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
 
-    for out in outputs {
-        for (a, cell, meta) in out.cells {
-            let flat = out.k * n_a * n_i + a * n_i + out.i;
-            eval_imgs[flat] = Some(Box::new(cell));
-            eval_imgs_meta[flat] = Some(Box::new(meta));
-        }
-        if let Some(iou) = out.retained_iou {
-            retained_pairs.push(((out.k, out.i), iou));
+    for image_outputs in outputs {
+        for out in image_outputs {
+            for (a, cell, meta) in out.cells {
+                let flat = out.k * n_a * n_i + a * n_i + out.i;
+                eval_imgs[flat] = Some(Box::new(cell));
+                eval_imgs_meta[flat] = Some(Box::new(meta));
+            }
+            if let Some(iou) = out.retained_iou {
+                retained_pairs.push(((out.k, out.i), iou));
+            }
         }
     }
 
@@ -373,6 +379,12 @@ pub fn evaluate_segm_cached_parallel(
 }
 
 /// Parallel sibling of [`crate::evaluate::evaluate_boundary`].
+///
+/// Uncached path: the cell loop derives GT bands inline. Callers that
+/// run repeated evaluations against the same GT should construct a
+/// [`BoundaryGtCache`] and use [`evaluate_boundary_cached_parallel`]
+/// instead (per ADR-0020); the first call populates the cache, every
+/// subsequent call reuses the bands.
 ///
 /// # Errors
 /// Propagates [`EvalError`] from the underlying kernel and matching
