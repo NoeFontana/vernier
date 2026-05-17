@@ -12,7 +12,7 @@ Fast, parity-preserving evaluation for object detection, instance / panoptic / s
 
 ## 60-second example
 
-One-shot — predictions already serialized to JSON (end-of-epoch checkpoint, CI gate, post-training inspection):
+Post training, if your predictions are already serialized to JSON (CI gate, post-training inspection):
 
 ```python
 from pathlib import Path
@@ -27,7 +27,7 @@ for line in summary.pretty_lines():
     print(line)
 ```
 
-In a training loop — overlap eval with the data loading and inference. The matching kernel runs on a worker thread, so `submit(...)` returns immediately and the main thread keeps moving. Passing a `CocoDataset` reuses the parsed-once GT and its per-kernel derivation cache across every epoch (ADR-0020). On a dedicated validation pass (no trainer competing for cores), pass `num_threads=N` to parallelise the matching kernel inside the worker (ADR-0047):
+In a training loop, vernier supports overlapping eval with the data loading and inference. The matching kernel runs on a worker thread, so `submit(...)` returns immediately and the main thread keeps moving. Passing a `CocoDataset` reuses the parsed-once GT and its per-kernel derivation cache across every epoch (ADR-0020). On a dedicated validation pass (no trainer competing for cores), pass `num_threads=N` to parallelise the matching kernel inside the worker (ADR-0047):
 
 ```python
 from pathlib import Path
