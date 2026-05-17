@@ -273,6 +273,7 @@ def _spawn_one_rep_panoptic(
     rep_index: int,
     intermediate_dir: Path,
     warmup: bool,
+    num_threads: int | None = None,
 ) -> _SpawnResult:
     """Panoptic spawn path. Different argspec from
     :func:`_spawn_one_rep` (the four-path GT/DT family + categories
@@ -308,6 +309,8 @@ def _spawn_one_rep_panoptic(
         "--per-class-output",
         str(rep_per_class),
     )
+    if num_threads is not None:
+        cmd.extend(["--num-threads", str(num_threads)])
     status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
@@ -345,6 +348,7 @@ def _spawn_one_rep_semantic(
     rep_index: int,
     intermediate_dir: Path,
     warmup: bool,
+    num_threads: int | None = None,
 ) -> _SpawnResult:
     """Semantic spawn path. Different argspec from
     :func:`_spawn_one_rep` (label-map dirs + n_classes + ignore_label
@@ -383,6 +387,8 @@ def _spawn_one_rep_semantic(
         "--confusion-output",
         str(rep_confusion),
     )
+    if num_threads is not None:
+        cmd.extend(["--num-threads", str(num_threads)])
     status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
@@ -905,6 +911,7 @@ def run_cell(
                 rep_index=rep_idx,
                 intermediate_dir=intermediate_dir,
                 warmup=warmup,
+                num_threads=cell.num_threads,
             )
         elif cell.paradigm == "semantic":
             if (
@@ -926,6 +933,7 @@ def run_cell(
                 rep_index=rep_idx,
                 intermediate_dir=intermediate_dir,
                 warmup=warmup,
+                num_threads=cell.num_threads,
             )
         else:
             if cell.gt_path is None or cell.dt_path is None:
