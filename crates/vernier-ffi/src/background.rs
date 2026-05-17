@@ -625,42 +625,13 @@ fn worker_loop<K: EvalKernel + Send + Sync + 'static>(
     // shape").
     let pool: Option<rayon::ThreadPool> = match config.num_threads {
         None => None,
-        Some(n) => {
-            let nice = config.worker_nice;
-            let result = rayon::ThreadPoolBuilder::new()
-                .num_threads(n.get())
-                .thread_name(|i| format!("vernier-bg-rayon-{i}"))
-                .start_handler(move |_idx| {
-                    // Best-effort; failures here are unobservable but
-                    // not load-bearing — they only matter on platforms
-                    // where Linux's `setpriority` process-wide nice
-                    // doesn't carry across to spawned threads.
-                    let _ = crate::thread_sched::set_thread_nice(nice);
-                })
-                .build();
-            match result {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    // Best-effort: stash and continue sequentially.
-                    // Mirrors how `apply_scheduling` failures are
-                    // surfaced — the worker stays alive and the FFI
-                    // emits a single `UserWarning` next time it reads
-                    // the scheduling outcome.
-                    if let Ok(mut guard) = state.scheduling_outcome.lock() {
-                        // Overwrite only if the prior outcome was Ok;
-                        // a previous Err is more informative.
-                        let prior_ok = matches!(*guard, Some(Ok(())));
-                        if guard.is_none() || prior_ok {
-                            *guard = Some(Err(format!(
-                                "failed to build rayon pool of {} threads: {e}",
-                                n.get()
-                            )));
-                        }
-                    }
-                    None
-                }
+        Some(n) => match crate::threads::build_worker_pool(n, config.worker_nice) {
+            Ok(p) => Some(p),
+            Err(detail) => {
+                crate::threads::stash_pool_build_failure(&state.scheduling_outcome, detail);
+                None
             }
-        }
+        },
     };
 
     loop {

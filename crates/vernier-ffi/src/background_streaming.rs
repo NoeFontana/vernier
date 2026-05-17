@@ -608,31 +608,13 @@ fn worker_loop<E: BackgroundCapable>(
     // application; the worker stays alive for any subsequent submits.
     let pool: Option<rayon::ThreadPool> = match config.num_threads {
         None => None,
-        Some(n) => {
-            let nice = config.worker_nice;
-            let build = rayon::ThreadPoolBuilder::new()
-                .num_threads(n.get())
-                .thread_name(|i| format!("vernier-bg-rayon-{i}"))
-                .start_handler(move |_idx| {
-                    let _ = crate::thread_sched::set_thread_nice(nice);
-                })
-                .build();
-            match build {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    if let Ok(mut guard) = state.scheduling_outcome.lock() {
-                        let prior_ok = matches!(*guard, Some(Ok(())));
-                        if guard.is_none() || prior_ok {
-                            *guard = Some(Err(format!(
-                                "failed to build rayon pool of {} threads: {e}",
-                                n.get()
-                            )));
-                        }
-                    }
-                    None
-                }
+        Some(n) => match crate::threads::build_worker_pool(n, config.worker_nice) {
+            Ok(p) => Some(p),
+            Err(detail) => {
+                crate::threads::stash_pool_build_failure(&state.scheduling_outcome, detail);
+                None
             }
-        }
+        },
     };
 
     loop {

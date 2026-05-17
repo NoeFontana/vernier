@@ -1541,13 +1541,13 @@ impl BackgroundCapable for StreamingPanopticEvaluator {
 pub(crate) struct PyBackgroundPanopticEvaluator {
     lifecycle: Mutex<BackgroundLifecycle<StreamingPanopticEvaluator>>,
     n_categories: usize,
-    /// `true` when the worker has a multi-thread rayon pool; `false`
-    /// otherwise. Toggles `submit_png` between decode-now (single-
-    /// threaded, pre-Stage-A behaviour: producer/consumer overlap
-    /// against the worker) and decode-deferred (threaded, decode
-    /// runs in parallel on the worker pool). The single-threaded
-    /// shape is byte-for-byte equivalent to the pre-Stage-A worker.
-    defer_png_decode: bool,
+    /// Threading policy resolved at construction time, mirroring the
+    /// pool the worker thread builds from `BackgroundConfig.num_threads`.
+    /// `Some(_)` ⇒ `submit_png` defers libpng decode to the worker
+    /// pool (it parallelises there); `None` ⇒ `submit_png` decodes
+    /// inline, preserving the pre-Stage-A producer/consumer overlap
+    /// shape byte-for-byte for single-threaded callers.
+    num_threads: Option<std::num::NonZeroUsize>,
 }
 
 impl PyBackgroundPanopticEvaluator {
@@ -1614,20 +1614,18 @@ impl PyBackgroundPanopticEvaluator {
                 .with_boundary(cfg)
                 .map_err(|e| panoptic_error_to_pyerr(py, e))?;
         }
-        let num_threads_nz = match num_threads {
-            None | Some(0) | Some(1) => None,
-            Some(n) => std::num::NonZeroUsize::new(n),
-        };
+        // Resolve `num_threads` through the shared FFI policy (env-var
+        // override + re-entry warning + `0` → auto), mirroring the
+        // instance batch entries; the resulting `ThreadPolicy`'s
+        // thread count drives both the worker's pool build and the
+        // `submit_png` decode-deferral choice.
+        let thread_policy = crate::threads::resolve_threads(py, num_threads);
+        let num_threads_nz = thread_policy.thread_count();
         let config = BackgroundConfig {
             queue_capacity,
             worker_affinity,
             worker_nice,
             shutdown_timeout: validate_shutdown_timeout(shutdown_timeout_seconds)?,
-            // ADR-0047 Stage B: forwarded into the per-worker rayon
-            // pool. `None`/`Some(1)` keeps the pre-Stage-A
-            // single-image worker path byte-for-byte; `Some(n>=2)`
-            // builds a pool and the worker drain-batches into
-            // `apply_update_parallel`.
             num_threads: num_threads_nz,
         };
         let core = BackgroundCore::spawn(inner, config).map_err(|e| {
@@ -1637,7 +1635,7 @@ impl PyBackgroundPanopticEvaluator {
         let this = Self {
             lifecycle: Mutex::new(BackgroundLifecycle::new(core)),
             n_categories,
-            defer_png_decode: num_threads_nz.is_some(),
+            num_threads: num_threads_nz,
         };
         poll_scheduling_warning(py, "BackgroundPanopticEvaluator", || {
             Ok(this.lock_lifecycle()?.take_scheduling_outcome())
@@ -1758,16 +1756,15 @@ impl PyBackgroundPanopticEvaluator {
             }
         };
 
-        // Single-threaded worker: keep the pre-Stage-A inline-decode
-        // shape. The producer/consumer overlap between the main
-        // thread's libpng decode and the worker's PQ kernel matches
-        // today's wall time exactly. Threaded worker: defer decode to
-        // the pool so libpng runs in parallel — schema errors still
-        // surface synchronously because we parse `segments_info` JSON
-        // on the FFI thread either way.
-        let payload = if self.defer_png_decode {
-            let gt_segments = parse_segments_info(py, image_id, gt_segments_info)?;
-            let dt_segments = parse_segments_info(py, image_id, dt_segments_info)?;
+        // Parse `segments_info` synchronously on both code paths so
+        // schema errors surface on the submit call. The only
+        // threaded/sequential split is whether libpng decode runs
+        // now (sequential: producer/consumer overlap against the
+        // worker stays exactly today's behaviour) or inside the
+        // worker pool (threaded: libpng parallelises across workers).
+        let gt_segments = parse_segments_info(py, image_id, gt_segments_info)?;
+        let dt_segments = parse_segments_info(py, image_id, dt_segments_info)?;
+        let payload = if self.num_threads.is_some() {
             PanopticUpdate::RawPng {
                 image_id,
                 gt_bytes: gt_png_bytes.to_vec(),
@@ -1776,8 +1773,6 @@ impl PyBackgroundPanopticEvaluator {
                 dt_segments,
             }
         } else {
-            let gt_segments = parse_segments_info(py, image_id, gt_segments_info)?;
-            let dt_segments = parse_segments_info(py, image_id, dt_segments_info)?;
             let gt = decode_panoptic_png(image_id, gt_png_bytes, gt_segments, "gt")
                 .map_err(|e| panoptic_error_to_pyerr(py, e))?;
             let dt = decode_panoptic_png(image_id, dt_png_bytes, dt_segments, "dt")
