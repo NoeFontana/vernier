@@ -1421,10 +1421,19 @@ pub(crate) fn merge_panoptic_partials<'py>(
 ///   side tables).
 /// - [`PanopticUpdate::RawPng`] — used by [`submit_png`]. The FFI
 ///   thread parses the small `segments_info` JSON synchronously (so
-///   schema errors surface on the submit call) and ships the raw PNG
+///   schema errors surface on the submit call) and ships the PNG
 ///   bytes through the channel without decoding. The worker decodes
 ///   PNGs inside its rayon pool (when `num_threads > 1`) so decode
-///   cost itself parallelises. ~5 KB per item on COCO val2017.
+///   cost itself parallelises.
+///
+///   The PNG bytes are held as [`PyBackedBytes`] to avoid the
+///   `to_vec()` allocation: the underlying `Py<PyBytes>` refcount is
+///   bumped at submit time, the worker dereferences without GIL, and
+///   the refcount drops when the payload is consumed. For very small
+///   per-image PNGs (val2017: ~5 KB) the per-drop GIL acquire roughly
+///   cancels the memcpy save; for larger images (high-resolution
+///   detector outputs, LVIS panoptic) the zero-copy path pulls ahead
+///   linearly with PNG size.
 ///
 /// The variant choice has no observable effect on the kernel — it is
 /// purely an internal placement of where decode runs. Single-threaded
@@ -1438,9 +1447,9 @@ pub(crate) enum PanopticUpdate {
     },
     RawPng {
         image_id: ImageId,
-        gt_bytes: Vec<u8>,
+        gt_bytes: pyo3::pybacked::PyBackedBytes,
         gt_segments: Vec<SegmentInfo>,
-        dt_bytes: Vec<u8>,
+        dt_bytes: pyo3::pybacked::PyBackedBytes,
         dt_segments: Vec<SegmentInfo>,
     },
 }
@@ -1460,8 +1469,8 @@ impl BackgroundCapable for StreamingPanopticEvaluator {
                 dt_bytes,
                 dt_segments,
             } => {
-                let gt = decode_panoptic_png(image_id, &gt_bytes, gt_segments, "gt")?;
-                let dt = decode_panoptic_png(image_id, &dt_bytes, dt_segments, "dt")?;
+                let gt = decode_panoptic_png(image_id, &gt_bytes[..], gt_segments, "gt")?;
+                let dt = decode_panoptic_png(image_id, &dt_bytes[..], dt_segments, "dt")?;
                 self.update(image_id, &gt, &dt)
             }
         }
@@ -1487,8 +1496,8 @@ impl BackgroundCapable for StreamingPanopticEvaluator {
                     dt_bytes,
                     dt_segments,
                 } => {
-                    let gt = decode_panoptic_png(image_id, &gt_bytes, gt_segments, "gt")?;
-                    let dt = decode_panoptic_png(image_id, &dt_bytes, dt_segments, "dt")?;
+                    let gt = decode_panoptic_png(image_id, &gt_bytes[..], gt_segments, "gt")?;
+                    let dt = decode_panoptic_png(image_id, &dt_bytes[..], dt_segments, "dt")?;
                     Ok((image_id, gt, dt))
                 }
             })
@@ -1738,9 +1747,9 @@ impl PyBackgroundPanopticEvaluator {
         &self,
         py: Python<'_>,
         image_id: i64,
-        gt_png_bytes: &[u8],
+        gt_png_bytes: &Bound<'_, PyBytes>,
         gt_segments_info: &[u8],
-        dt_png_bytes: &[u8],
+        dt_png_bytes: &Bound<'_, PyBytes>,
         dt_segments_info: &[u8],
         timeout: Option<f64>,
     ) -> PyResult<()> {
@@ -1765,17 +1774,27 @@ impl PyBackgroundPanopticEvaluator {
         let gt_segments = parse_segments_info(py, image_id, gt_segments_info)?;
         let dt_segments = parse_segments_info(py, image_id, dt_segments_info)?;
         let payload = if self.num_threads.is_some() {
+            // Zero-copy borrow over the PNG bytes (mirroring the
+            // batch eval path in `evaluate_grid_impl`): `PyBackedBytes`
+            // keeps the underlying `Py<PyBytes>` alive across the
+            // worker hop while exposing `&[u8]` via `Deref`. The
+            // payload's drop runs on the worker thread and briefly
+            // acquires the GIL to decrement the refcount; the
+            // trade-off vs `Vec::to_vec()` favours zero-copy as
+            // per-image PNG size grows past the few-KB regime.
+            let gt_bytes = pyo3::pybacked::PyBackedBytes::from(gt_png_bytes.clone());
+            let dt_bytes = pyo3::pybacked::PyBackedBytes::from(dt_png_bytes.clone());
             PanopticUpdate::RawPng {
                 image_id,
-                gt_bytes: gt_png_bytes.to_vec(),
+                gt_bytes,
                 gt_segments,
-                dt_bytes: dt_png_bytes.to_vec(),
+                dt_bytes,
                 dt_segments,
             }
         } else {
-            let gt = decode_panoptic_png(image_id, gt_png_bytes, gt_segments, "gt")
+            let gt = decode_panoptic_png(image_id, gt_png_bytes.as_bytes(), gt_segments, "gt")
                 .map_err(|e| panoptic_error_to_pyerr(py, e))?;
-            let dt = decode_panoptic_png(image_id, dt_png_bytes, dt_segments, "dt")
+            let dt = decode_panoptic_png(image_id, dt_png_bytes.as_bytes(), dt_segments, "dt")
                 .map_err(|e| panoptic_error_to_pyerr(py, e))?;
             PanopticUpdate::Decoded { image_id, gt, dt }
         };
