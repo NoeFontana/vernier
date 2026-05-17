@@ -1238,6 +1238,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#inner-parallelism-with-num_threads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inner parallelism with num_threads
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#see-also" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2085,6 +2096,43 @@ batch cadence.</p>
 <p><code>BackgroundEvaluator</code> honors the <code>memory_budget_bytes=</code> knob.
 Exceeding the budget surfaces as an <code>OutOfBudgetError</code> from the
 calling thread on the next <code>submit</code>, not silently from the worker.</p>
+<h2 id="inner-parallelism-with-num_threads">Inner parallelism with <code>num_threads</code></h2>
+<p>The default <code>BackgroundEvaluator</code> runs a single dedicated worker
+thread — ADR-0014's resource discipline, picked to keep eval from
+preempting the trainer. That default is the right choice when the
+training loop is competing for the same N cores.</p>
+<p>For the <em>dedicated-validation-pass</em> persona — <code>val_loader</code> driving
+inference (typically GPU-bound) with no trainer in the same loop —
+the single-core bound is the bottleneck. Opt in with
+<code>num_threads=N</code> (ADR-0047):</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Training-loop validation: keep the trainer&#39;s cores free.</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="n">ev</span><span class="o">.</span><span class="n">background</span><span class="p">(</span><span class="n">gt</span><span class="p">)</span>                       <span class="c1"># default: one worker, no rayon pool</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># Dedicated val-loader: spend the idle CPUs.</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="n">ev</span><span class="o">.</span><span class="n">background</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">num_threads</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span>        <span class="c1"># per-worker rayon pool, drain-batched</span>
+</span></code></pre></div>
+<p>Under the hood the worker builds a scoped <code>rayon::ThreadPool</code> of
+<code>N</code> threads, drains pending submissions from the channel into a
+batch, and dispatches them through the paradigm's parallel kernel
+(<code>update_parsed_parallel</code> for instance / semantic / panoptic) under
+<code>pool.install</code>. The pool is owned by the worker and drops when
+the worker exits — no global state leaks between
+<code>BackgroundEvaluator</code> instances.</p>
+<p><code>num_threads=None</code> or <code>1</code> keeps the pre-0.0.5 single-image worker
+path byte-for-byte. The submit-blocking semantics, queue capacity,
+back-pressure, and memory-budget contract are all preserved.
+<code>VERNIER_NUM_THREADS</code> is honored as the env-var equivalent.</p>
+<p>Strict-mode bit-equality across thread counts is guaranteed by
+construction — see <a href="../../adr/0047-threading-model/">ADR-0047</a> §"Strict
+mode" for the per-paradigm reasoning (instance / panoptic re-sort by
+<code>image_id</code> before the f64 fold; semantic accumulation is u64-additive).</p>
+<p>The panoptic background path is special-cased for end-to-end
+performance: when <code>num_threads &gt; 1</code>, <code>submit_png</code> ships raw PNG
+bytes through the channel as zero-copy
+<code>pyo3::pybacked::PyBackedBytes</code> so libpng decode runs in parallel
+inside the worker pool. Single-threaded <code>submit_png</code> keeps inline
+decode (producer/consumer overlap against the worker), matching
+today's wall time exactly.</p>
 <h2 id="see-also">See also</h2>
 <ul>
 <li><a href="../../adr/0014-background-evaluator/">ADR-0014</a> — the worker-thread
@@ -2094,6 +2142,9 @@ calling thread on the next <code>submit</code>, not silently from the worker.</p
   with no snapshot path.</li>
 <li><a href="../../tutorials/first-evaluation/"><code>tutorials/first-evaluation.md</code></a> —
   the in-loop walkthrough (Path B), end-to-end on COCO val2017.</li>
+<li><a href="../../adr/0047-threading-model/">ADR-0047</a> — opt-in
+  <code>num_threads</code> parallelism, the trainer-vs-val-loader persona
+  split, and the strict-mode bit-equality contract.</li>
 <li><a href="../distributed-eval/"><code>distributed-eval.md</code></a> — multi-rank pattern.</li>
 </ul>
 

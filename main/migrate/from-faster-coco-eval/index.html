@@ -2083,6 +2083,17 @@ and the disposition is auditable per row. The trade-off:</p>
 reproducibility against a pinned pycocotools commit (CI quality
 gate, paper reproduction, regulated environment), strict mode is
 the auditable path.</p>
+<p>A secondary lever: vernier exposes opt-in parallelism on every
+public evaluate surface via <code>num_threads=N</code> (ADR-0047), with
+strict-mode bit-equality preserved across thread counts. On val2017
+boundary IoU at <code>num_threads=4</code>, vernier wall-time is ~17× lower
+than faster-coco-eval (969 ms vs 17 200 ms — faster-coco-eval's
+<code>boundary_cpu_count</code> does scale boundary, but the per-core wall
+time is much higher). For non-boundary IoU types
+(<code>bbox</code>, <code>segm</code>, <code>keypoints</code>), faster-coco-eval is single-threaded
+regardless of how many cores you have; vernier scales those too.
+See <a href="../../benchmarks/"><code>benchmarks.md</code></a> §"Threading scaling" for
+the full table.</p>
 <h2 id="drop-in-via-patch_pycocotools">Drop-in via <code>patch_pycocotools</code></h2>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier</span><span class="w"> </span><span class="kn">import</span> <span class="n">patch_pycocotools</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>

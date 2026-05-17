@@ -1103,6 +1103,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#num_threads-parallelise-inside-a-single-eval-call" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        num_threads — parallelise inside a single eval call
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#across-ranks" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2198,6 +2209,65 @@ worker thread so <code>submit(...)</code> does not block the trainer:</p>
 <code>background(...)</code> rather than on <code>Evaluator</code> itself — they
 configure deployment, not the matching kernel. Recipe:
 <a href="../background-evaluator/">background-evaluator.md</a>.</p>
+<h2 id="num_threads-parallelise-inside-a-single-eval-call"><code>num_threads</code> — parallelise inside a single eval call</h2>
+<p><code>num_threads</code> (ADR-0047) opts a single <code>evaluate(...)</code> call into
+inter-image parallelism. The default <code>None</code> is byte-for-byte the
+pre-0.0.5 sequential path — no rayon symbol is entered, the
+trainer's cores remain undisturbed. The argument exists on every
+public entry point:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Batch evaluate (instance / semantic / panoptic — same kwarg on each).</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="n">ev</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">dt</span><span class="p">,</span> <span class="n">num_threads</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="c1"># Streaming / PNG-input paths (semantic).</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="n">ev</span><span class="o">.</span><span class="n">evaluate_from_pngs</span><span class="p">(</span><span class="n">gt_paths</span><span class="p">,</span> <span class="n">dt_paths</span><span class="p">,</span> <span class="n">n_classes</span><span class="o">=</span><span class="mi">150</span><span class="p">,</span> <span class="n">num_threads</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># In-loop streaming with parallel folding inside the worker.</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="k">with</span> <span class="n">ev</span><span class="o">.</span><span class="n">background</span><span class="p">(</span><span class="n">gt</span><span class="p">,</span> <span class="n">num_threads</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span> <span class="k">as</span> <span class="n">bg</span><span class="p">:</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a>    <span class="k">for</span> <span class="n">images</span><span class="p">,</span> <span class="n">_</span> <span class="ow">in</span> <span class="n">val_loader</span><span class="p">:</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a>        <span class="n">bg</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">json</span><span class="o">.</span><span class="n">dumps</span><span class="p">(</span><span class="n">model</span><span class="p">(</span><span class="n">images</span><span class="p">))</span><span class="o">.</span><span class="n">encode</span><span class="p">())</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a>    <span class="n">summary</span> <span class="o">=</span> <span class="n">bg</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</span></code></pre></div>
+<p><code>num_threads=None</code> keeps the single-core default ADR-0014 picked
+for the training-loop persona. <code>num_threads=N</code> builds a per-call
+(or per-worker) scoped <code>rayon::ThreadPool</code> of <code>N</code> threads; the
+pool is dropped on return, so no global thread state leaks between
+calls — important when vernier shares a process with torch's
+DataLoader workers (which run their own pool). <code>num_threads=0</code>
+auto-detects via <code>available_parallelism()</code> (cgroup-aware on Linux).</p>
+<p>Strict-mode bit-equality is preserved across every thread count by
+construction. Per-image deltas are sorted by <code>image_id</code> before the
+f64 fold for instance and panoptic; semantic accumulation is
+u64-additive so reduction order is irrelevant. <code>parity_threads</code>
+covers <code>num_threads ∈ {None, 1, 2, 4, 8}</code> for every paradigm.</p>
+<p>Two equivalent ways to set it:</p>
+<table>
+<thead>
+<tr>
+<th>Source</th>
+<th>Example</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Kwarg on the call</td>
+<td><code>ev.evaluate(gt, dt, num_threads=4)</code></td>
+</tr>
+<tr>
+<td>Environment variable</td>
+<td><code>VERNIER_NUM_THREADS=4 python ...</code></td>
+</tr>
+</tbody>
+</table>
+<p>The kwarg wins when both are set; an out-of-range or non-numeric
+env value falls back to sequential rather than raising (threading
+is a perf knob, not a correctness switch). <code>RAYON_NUM_THREADS</code> is
+intentionally <strong>not</strong> consulted — inheriting an unrelated library's
+deployment knob would silently change vernier's behaviour.</p>
+<p>Measured scaling on COCO val2017 (AMD EPYC Milan, 4 physical cores)
+lives in <a href="../../benchmarks/"><code>benchmarks.md</code></a>. Headline: boundary
+3.25× at <code>num_threads=4</code>, segm 2.29×, panoptic 2.43×, semantic
+3.66×. The full design rationale is
+<a href="../../adr/0047-threading-model/">ADR-0047</a>.</p>
 <h2 id="across-ranks">Across ranks</h2>
 <p><code>Evaluator.evaluate_to_partial(gt, dt, *, rank_id)</code> per rank, then
 <code>Evaluator.from_partials(gt, partials, **config)</code> on the head
@@ -2227,6 +2297,9 @@ non-canonical grid — so they get their own page:
   handle and the per-kernel GT cache.</li>
 <li><a href="../../adr/0030-buffer-protocol/">ADR-0030</a> — <code>cast_inputs</code> and
   array-form ingest.</li>
+<li><a href="../../adr/0047-threading-model/">ADR-0047</a> — opt-in
+  <code>num_threads</code> parallelism design and the zero-overhead-default
+  discipline.</li>
 </ul>
 
 

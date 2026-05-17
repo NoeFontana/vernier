@@ -2931,7 +2931,8 @@ Python wrapper.</p>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">worker_affinity</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">worker_nice</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">shutdown_timeout_seconds</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">num_threads</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -5447,7 +5448,8 @@ the structured <code>Partial*</code> errors re-exported on this module.</p>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">worker_affinity</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">worker_nice</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">5</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">shutdown_timeout_seconds</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">5.0</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            BackgroundEvaluator (vernier._core.BackgroundSemanticEvaluator)" href="#vernier.semantic.BackgroundEvaluator">BackgroundSemanticEvaluator</a></span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">num_threads</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            BackgroundEvaluator (vernier._core.BackgroundSemanticEvaluator)" href="#vernier.semantic.BackgroundEvaluator">BackgroundSemanticEvaluator</a></span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -5466,6 +5468,11 @@ starts to matter).</p>
 multi-process eval (ADR-0032). The five queueing /
 scheduling knobs mirror :class:<code>vernier.instance.Evaluator
 .background</code>.</p>
+<p><code>num_threads</code> (ADR-0047) is forwarded into the per-worker
+rayon pool. The worker drain-batches pending submissions and
+applies them via the parallel confusion-matrix kernel;
+single-threaded callers (<code>num_threads=None</code> or <code>1</code>) hit
+the unchanged single-image path with no batching overhead.</p>
 <p><code>label_remap</code> does not propagate to the background path —
 callers needing remap on a streaming path apply it on the DT
 arrays themselves before each <code>submit</code> call.</p>

@@ -2030,6 +2030,14 @@ empirically. vernier takes a third path:</p>
   <a href="https://github.com/sarah-quinones/pulp"><code>pulp</code></a>; the FFI layer is data
   conversion only. The CLI ships as a static binary, so CI pipelines can call
   vernier without provisioning a Python interpreter.</li>
+<li><strong>Opt-in parallelism with zero-overhead default.</strong> Every public
+  evaluate surface accepts <code>num_threads=N</code> (or <code>vernier eval --threads
+  N</code>) to parallelise inside a single eval call across <code>N</code> rayon
+  workers. The default <code>None</code> is byte-for-byte the sequential path —
+  no rayon symbol entered — so users not opting in see no behaviour
+  change. Measured ~3.25× scaling at <code>num_threads=4</code> on val2017
+  boundary IoU; strict-mode results stay bit-equal across thread
+  counts (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0047-threading-model.md">ADR-0047</a>).</li>
 </ul>
 <h2 id="install">Install</h2>
 <div class="language-sh highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>pip<span class="w"> </span>install<span class="w"> </span>vernier

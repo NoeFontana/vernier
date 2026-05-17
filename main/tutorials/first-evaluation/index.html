@@ -2102,6 +2102,13 @@ bounded worker queue is full; pass <code>timeout=</code> to surface back-pressur
 as a typed <code>QueueFullError</code> instead. The full API surface — queue
 sizing, memory budget, multi-rank — lives in
 <a href="../../how-to/background-evaluator/"><code>how-to/background-evaluator.md</code></a>.</p>
+<p>On a dedicated validation pass (no trainer competing for cores),
+pass <code>num_threads=N</code> to parallelise the matching kernel inside the
+worker: <code>Evaluator.background(gt, num_threads=8)</code> (ADR-0047). The
+default <code>None</code> keeps the single-core behaviour ADR-0014 picked for
+the training-loop persona — see
+<a href="../../how-to/configure-evaluator/#num_threads-parallelise-inside-a-single-eval-call"><code>how-to/configure-evaluator.md</code></a>
+for the trade-off.</p>
 <h2 id="what-the-output-means">What the output means</h2>
 <p><code>pretty_lines()</code> returns the 12-line block pycocotools'
 <code>COCOeval.summarize()</code> prints to stdout. Each line maps to one cell
