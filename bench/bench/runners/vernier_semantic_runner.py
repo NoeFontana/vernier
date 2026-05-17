@@ -99,6 +99,7 @@ def main() -> int:
             dt_for_ids,
             n_classes=args.n_classes,
             ignore_label=ignore_label,
+            num_threads=args.num_threads,
         )
 
     with stages.stage("aggregate"):

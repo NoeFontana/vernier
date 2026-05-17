@@ -96,7 +96,7 @@ def main() -> int:
     with (
         stages.stage("stream_pq"),
         vernier.panoptic.Evaluator(parity_mode="strict", things_stuff_split=True).background(
-            cats_bytes
+            cats_bytes, num_threads=args.num_threads
         ) as ev,
     ):
         for gt_ann, dt_ann in pairs:
