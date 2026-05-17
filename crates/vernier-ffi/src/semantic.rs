@@ -1443,6 +1443,41 @@ impl BackgroundCapable for StreamingSemanticEvaluator {
         }
     }
 
+    fn apply_update_parallel(&mut self, batch: Vec<SemanticUpdate>) -> Result<(), SemanticError> {
+        // Partition by class-id dtype variant so each call to
+        // `update_parsed_parallel` sees a uniformly-typed slice (the
+        // kernel is generic over `T: ClassId`). Homogeneous workloads
+        // — by far the common case — hit one non-empty partition;
+        // mixed-dtype batches dispatch each variant in submission-
+        // order-preserving order.
+        let mut u32_items: Vec<(ImageId, &[u32], &[u32])> = Vec::new();
+        let mut u16_items: Vec<(ImageId, &[u16], &[u16])> = Vec::new();
+        let mut u8_items: Vec<(ImageId, &[u8], &[u8])> = Vec::new();
+        for u in &batch {
+            match u {
+                SemanticUpdate::U32 { image_id, gt, dt } => {
+                    u32_items.push((*image_id, gt, dt));
+                }
+                SemanticUpdate::U16 { image_id, gt, dt } => {
+                    u16_items.push((*image_id, gt, dt));
+                }
+                SemanticUpdate::U8 { image_id, gt, dt } => {
+                    u8_items.push((*image_id, gt, dt));
+                }
+            }
+        }
+        if !u32_items.is_empty() {
+            self.update_parsed_parallel(&u32_items)?;
+        }
+        if !u16_items.is_empty() {
+            self.update_parsed_parallel(&u16_items)?;
+        }
+        if !u8_items.is_empty() {
+            self.update_parsed_parallel(&u8_items)?;
+        }
+        Ok(())
+    }
+
     fn finalize(self) -> Result<SemanticSummary, SemanticError> {
         Ok(StreamingSemanticEvaluator::finalize(self))
     }
@@ -1512,6 +1547,7 @@ impl PyBackgroundSemanticEvaluator {
         worker_affinity = None,
         worker_nice = 5,
         shutdown_timeout_seconds = 5.0,
+        num_threads = None,
     ))]
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -1524,6 +1560,7 @@ impl PyBackgroundSemanticEvaluator {
         worker_affinity: Option<usize>,
         worker_nice: i32,
         shutdown_timeout_seconds: f64,
+        num_threads: Option<usize>,
     ) -> PyResult<Self> {
         if n_classes == 0 {
             return Err(PyValueError::new_err(
@@ -1537,14 +1574,13 @@ impl PyBackgroundSemanticEvaluator {
                 .with_rank(rid)
                 .map_err(|e| semantic_error_to_pyerr(py, &e))?;
         }
+        let thread_policy = crate::threads::resolve_threads(py, num_threads);
         let config = BackgroundConfig {
             queue_capacity,
             worker_affinity,
             worker_nice,
             shutdown_timeout: validate_shutdown_timeout(shutdown_timeout_seconds)?,
-            // ADR-0047 Stage B: instance paradigm only; semantic
-            // worker stays sequential (default-path discipline).
-            num_threads: None,
+            num_threads: thread_policy.thread_count(),
         };
         let core = BackgroundCore::spawn(inner, config).map_err(|e| {
             PyRuntimeError::new_err(format!("failed to spawn background worker: {e}"))

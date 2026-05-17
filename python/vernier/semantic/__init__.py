@@ -875,6 +875,7 @@ class Evaluator:
         worker_affinity: int | None = None,
         worker_nice: int = 5,
         shutdown_timeout_seconds: float = 5.0,
+        num_threads: int | None = None,
     ) -> BackgroundEvaluator:
         """Build a :class:`BackgroundEvaluator` (ADR-0014 + ADR-0032)
         that shares this evaluator's ``parity_mode``.
@@ -892,6 +893,12 @@ class Evaluator:
         multi-process eval (ADR-0032). The five queueing /
         scheduling knobs mirror :class:`vernier.instance.Evaluator
         .background`.
+
+        ``num_threads`` (ADR-0047) is forwarded into the per-worker
+        rayon pool. The worker drain-batches pending submissions and
+        applies them via the parallel confusion-matrix kernel;
+        single-threaded callers (``num_threads=None`` or ``1``) hit
+        the unchanged single-image path with no batching overhead.
 
         ``label_remap`` does not propagate to the background path —
         callers needing remap on a streaming path apply it on the DT
@@ -911,4 +918,5 @@ class Evaluator:
             worker_affinity=worker_affinity,
             worker_nice=worker_nice,
             shutdown_timeout_seconds=shutdown_timeout_seconds,
+            num_threads=num_threads,
         )
