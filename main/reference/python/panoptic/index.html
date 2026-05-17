@@ -2910,7 +2910,8 @@ payload (segment id maps + segment-info JSON).</p>
 </span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">shutdown_timeout_seconds</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
 </span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">boundary</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">dilation_ratio</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
-</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="p">)</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="n">num_threads</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="o">...</span><span class="p">,</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="p">)</span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -5441,11 +5442,11 @@ equality across distributed-eval ranks (ADR-0032
 §"Determinism") at ~2x streaming memory cost. The five
 queueing / scheduling knobs mirror
 :class:<code>vernier.instance.Evaluator.background</code>.</p>
-<p><code>num_threads</code> (ADR-0047) is accepted for API parity with
-:meth:<code>evaluate</code> / :meth:<code>evaluate_to_partial</code>. The wire-up
-into the single background worker's per-submit matching pass
-is a follow-up; in 0.0.4 the kwarg is consumed by the forced-
-flag policy and otherwise ignored.</p>
+<p><code>num_threads</code> (ADR-0047) is forwarded into the per-worker
+rayon pool. The worker drain-batches pending submissions and
+applies them via the parallel kernel; single-threaded callers
+(<code>num_threads=None</code> or <code>1</code>) hit the unchanged single-image
+path with no batching overhead.</p>
 
 
     </div>
