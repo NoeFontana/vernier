@@ -1032,6 +1032,7 @@ class BackgroundSemanticEvaluator:
         worker_affinity: int | None = ...,
         worker_nice: int = ...,
         shutdown_timeout_seconds: float = ...,
+        num_threads: int | None = ...,
     ) -> None: ...
     @property
     def n_classes(self) -> int: ...

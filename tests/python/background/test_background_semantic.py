@@ -124,3 +124,32 @@ def test_finalize_then_use_raises() -> None:
     bg.finalize()
     with pytest.raises(Exception, match="already been finalized"):
         bg.finalize()
+
+
+@pytest.mark.parity_threads
+@pytest.mark.parametrize("num_threads", [None, 1, 2, 4])
+def test_background_num_threads_bit_equal_to_sequential(num_threads: int | None) -> None:
+    """ADR-0047 Stage B: per-worker rayon pool with drain-batched
+    confusion-matrix folding must produce a finalize summary
+    bit-equal to the single-threaded path for the same submission
+    sequence. Semantic accumulation is u64-additive so the reduction
+    order is irrelevant — bit-equality is unconditional regardless of
+    thread count.
+    """
+    gt_maps, dt_maps = _label_maps(seed=7, n_images=12)
+    n_classes = 3
+
+    reference_bg = sem.BackgroundEvaluator(n_classes, "strict")
+    for image_id, gt in gt_maps.items():
+        reference_bg.submit(image_id, gt, dt_maps[image_id])
+    reference = reference_bg.finalize()
+
+    threaded_bg = sem.BackgroundEvaluator(n_classes, "strict", num_threads=num_threads)
+    for image_id, gt in gt_maps.items():
+        threaded_bg.submit(image_id, gt, dt_maps[image_id])
+    threaded = threaded_bg.finalize()
+
+    assert threaded.miou == reference.miou
+    assert threaded.fwiou == reference.fwiou
+    assert threaded.pixel_accuracy == reference.pixel_accuracy
+    assert threaded.mean_accuracy == reference.mean_accuracy
