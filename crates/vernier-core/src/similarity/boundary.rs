@@ -437,14 +437,11 @@ fn populate_gt_entry(
         let mask_offsets = scratch.g_mask_segments.last_row().to_vec();
         let band_offsets = scratch.g_band_segments.last_row().to_vec();
         let mut inner = cache.write();
-        inner
-            .bands
-            .entry(ann.ann_id)
-            .or_insert(BoundaryGtEntry {
-                band_area,
-                mask_offsets,
-                band_offsets,
-            });
+        inner.bands.entry(ann.ann_id).or_insert(BoundaryGtEntry {
+            band_area,
+            mask_offsets,
+            band_offsets,
+        });
         return Ok(());
     }
     scratch.g_mask_segments.push_from_rle(&ann.rle);
