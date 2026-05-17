@@ -1469,8 +1469,8 @@ impl BackgroundCapable for StreamingPanopticEvaluator {
                 dt_bytes,
                 dt_segments,
             } => {
-                let gt = decode_panoptic_png(image_id, &gt_bytes[..], gt_segments, "gt")?;
-                let dt = decode_panoptic_png(image_id, &dt_bytes[..], dt_segments, "dt")?;
+                let gt = decode_panoptic_png(image_id, &gt_bytes, gt_segments, "gt")?;
+                let dt = decode_panoptic_png(image_id, &dt_bytes, dt_segments, "dt")?;
                 self.update(image_id, &gt, &dt)
             }
         }
@@ -1774,14 +1774,11 @@ impl PyBackgroundPanopticEvaluator {
         let gt_segments = parse_segments_info(py, image_id, gt_segments_info)?;
         let dt_segments = parse_segments_info(py, image_id, dt_segments_info)?;
         let payload = if self.num_threads.is_some() {
-            // Zero-copy borrow over the PNG bytes (mirroring the
-            // batch eval path in `evaluate_grid_impl`): `PyBackedBytes`
-            // keeps the underlying `Py<PyBytes>` alive across the
-            // worker hop while exposing `&[u8]` via `Deref`. The
-            // payload's drop runs on the worker thread and briefly
-            // acquires the GIL to decrement the refcount; the
-            // trade-off vs `Vec::to_vec()` favours zero-copy as
-            // per-image PNG size grows past the few-KB regime.
+            // Threaded worker: cross the channel with a `PyBackedBytes`
+            // refcount bump (mirroring `evaluate_grid_impl` at
+            // `lib.rs:767-772`). The payload's drop runs on the
+            // worker thread and briefly acquires the GIL — trade-off
+            // vs `to_vec()` favours zero-copy past ~10 KB per PNG.
             let gt_bytes = pyo3::pybacked::PyBackedBytes::from(gt_png_bytes.clone());
             let dt_bytes = pyo3::pybacked::PyBackedBytes::from(dt_png_bytes.clone());
             PanopticUpdate::RawPng {
@@ -1792,6 +1789,10 @@ impl PyBackgroundPanopticEvaluator {
                 dt_segments,
             }
         } else {
+            // Sequential worker: decode runs synchronously while we
+            // still hold the GIL, so `as_bytes()` borrows the Python
+            // buffer directly — no refcount bump needed, the slice
+            // lives only until decode returns.
             let gt = decode_panoptic_png(image_id, gt_png_bytes.as_bytes(), gt_segments, "gt")
                 .map_err(|e| panoptic_error_to_pyerr(py, e))?;
             let dt = decode_panoptic_png(image_id, dt_png_bytes.as_bytes(), dt_segments, "dt")
