@@ -1746,6 +1746,7 @@ name = "vernier-semantic"
 version = "0.0.4"
 dependencies = [
  "blake3",
+ "divan",
  "png",
  "proptest",
  "rayon",
