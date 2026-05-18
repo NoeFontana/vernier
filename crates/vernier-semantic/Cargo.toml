@@ -64,3 +64,7 @@ divan = "0.1"
 [[bench]]
 name = "kernel"
 harness = false
+
+[[bench]]
+name = "decode"
+harness = false
