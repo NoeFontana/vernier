@@ -53,6 +53,23 @@ const COCO_JITTERED: Scenario = Scenario {
     jitter_bp: 2000,
 };
 
+/// COCO panoptic ids are RGB-packed as `R + 256*G + 256^2*B` and
+/// routinely exceed [`DENSE_LOOKUP_MAX_ID`] (1_000_000), so the
+/// production hot path takes [`SegmentRemap::Sparse`]
+/// (`FxHashMap<u32, u32>`), not the dense `Vec` lookup. The
+/// `coco_like` / `coco_jittered` arms above use ids 1..=50 — well
+/// under the dense cap — so they measure the dense path only. This
+/// arm forces the sparse path by stamping ids `id * 0x12345 + 1` so
+/// every id exceeds the cap, giving an apples-to-apples measurement
+/// against the val2017 production cell whose 10 ms/image dominates
+/// the cited 51 s `stream_pq` cost.
+const COCO_LIKE_RGB: Scenario = Scenario {
+    height: 480,
+    width: 640,
+    n_segments: 50,
+    jitter_bp: 0,
+};
+
 fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
     *state ^= *state >> 7;
@@ -110,6 +127,43 @@ fn jitter_label_map(label_map: &mut [u32], n_segments: u32, jitter_bp: u32, seed
     }
 }
 
+/// Stamp every small id to a value above [`DENSE_LOOKUP_MAX_ID`] so
+/// the kernel takes the sparse FxHashMap remap path. Multiplier is
+/// chosen so distinct small ids stay distinct (no modulo collisions
+/// under u32) and the resulting space is well-spread (mimicking
+/// COCO's R + 256·G + 256²·B layout).
+fn rgb_pack_id(small_id: u32) -> u32 {
+    // `0x12_3456 = 1_193_046` — already above the 1M dense cap for
+    // any nonzero `small_id`. Keep 0 → 0 so VOID stays VOID per
+    // panoptic convention.
+    if small_id == 0 {
+        0
+    } else {
+        small_id.wrapping_mul(0x12_3456) + 1
+    }
+}
+
+fn rgb_pack_label_map(lm: &mut [u32]) {
+    for px in lm.iter_mut() {
+        *px = rgb_pack_id(*px);
+    }
+}
+
+fn rgb_pack_segments(segs: FxHashMap<u32, SegmentInfo>) -> FxHashMap<u32, SegmentInfo> {
+    segs.into_values()
+        .map(|info| {
+            let packed = rgb_pack_id(info.id);
+            (
+                packed,
+                SegmentInfo {
+                    id: packed,
+                    ..info
+                },
+            )
+        })
+        .collect()
+}
+
 fn build_pair(s: Scenario) -> (ImageEntry, ImageEntry) {
     let (gt_lm, gt_segs) = build_image(s, 0xdead_beef_cafe_babe);
     let mut dt_lm = gt_lm.clone();
@@ -143,6 +197,19 @@ fn coco_like(bencher: Bencher) {
 #[divan::bench]
 fn coco_jittered(bencher: Bencher) {
     run(bencher, COCO_JITTERED);
+}
+
+/// Sparse-remap variant of `coco_like`: forces the FxHashMap fallback
+/// by RGB-packing every segment id above the dense-lookup cap. The
+/// production COCO panoptic val cell always lands here.
+#[divan::bench]
+fn coco_like_rgb(bencher: Bencher) {
+    let (mut gt, mut dt) = build_pair(COCO_LIKE_RGB);
+    rgb_pack_label_map(&mut gt.label_map);
+    rgb_pack_label_map(&mut dt.label_map);
+    gt.segments = rgb_pack_segments(gt.segments);
+    dt.segments = rgb_pack_segments(dt.segments);
+    bencher.bench_local(|| pq_image_with_id(black_box(0), black_box(&gt), black_box(&dt)).unwrap());
 }
 
 /// `ImageEntry::from_components` walks every DT pixel for the
