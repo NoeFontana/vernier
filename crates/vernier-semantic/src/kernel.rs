@@ -148,12 +148,27 @@ pub trait ClassId: Copy {
     /// Widen the class id to `u32` for ignore-label comparison and
     /// confusion-matrix indexing.
     fn as_u32(self) -> u32;
+
+    /// Reinterpret a slice of `Self` as a byte slice when `Self == u8`.
+    /// Returns `None` for the wider `u16` / `u32` impls so the kernel
+    /// falls back to the per-element path. LLVM constant-folds the
+    /// dispatch per monomorphization — the `Option` branch is
+    /// resolved at codegen time, not at runtime.
+    #[inline(always)]
+    fn as_u8_slice(slice: &[Self]) -> Option<&[u8]> {
+        let _ = slice;
+        None
+    }
 }
 
 impl ClassId for u8 {
     #[inline(always)]
     fn as_u32(self) -> u32 {
         u32::from(self)
+    }
+    #[inline(always)]
+    fn as_u8_slice(slice: &[Self]) -> Option<&[u8]> {
+        Some(slice)
     }
 }
 
@@ -212,6 +227,31 @@ pub fn accumulate_confusion<T: ClassId>(
     );
     let n = confusion.n_classes as usize;
     let counts = confusion.counts_mut();
+    // u8 fast path: check 8 pixels at a time via a single `u64`
+    // compare to detect the "all 8 pixels diagonal" common case
+    // (semantic segmentation has high spatial coherence within
+    // segments — adjacent pixels in a row almost always share both
+    // GT and DT class). When the 8-byte window matches, skip the
+    // d-side load + dt-bounds branch and index `counts[g*n + g]`
+    // directly. For non-u8 input types `T::as_u8_slice` returns
+    // `None` and we drop to the per-element generic loop.
+    if let (Some(gt_u8), Some(dt_u8)) = (T::as_u8_slice(gt), T::as_u8_slice(dt)) {
+        accumulate_u8(gt_u8, dt_u8, ignore_label, n, counts);
+        return;
+    }
+    accumulate_generic::<T>(gt, dt, ignore_label, n, counts);
+}
+
+/// Generic per-pixel fold used for `T = u16 | u32`. Bit-identical to
+/// the pre-fast-path scalar loop.
+#[inline(always)]
+fn accumulate_generic<T: ClassId>(
+    gt: &[T],
+    dt: &[T],
+    ignore_label: Option<u32>,
+    n: usize,
+    counts: &mut [u64],
+) {
     for (&g, &d) in gt.iter().zip(dt.iter()) {
         let g = g.as_u32();
         let d = d.as_u32();
@@ -220,9 +260,6 @@ pub fn accumulate_confusion<T: ClassId>(
         }
         let g = g as usize;
         let d = d as usize;
-        // Branch #1: gt out of range. Dataset validator should have
-        // caught this; silent-skip in release per the doc-comment
-        // contract.
         if g >= n {
             debug_assert!(
                 false,
@@ -231,14 +268,111 @@ pub fn accumulate_confusion<T: ClassId>(
             );
             continue;
         }
-        // Branch #2: dt out of range. Quirk AI4 silent-skip path
-        // matching mmsegmentation's truncation behavior. The
-        // corrected-default rejects upstream so this branch only
-        // fires under ParityMode::Strict.
         if d >= n {
             continue;
         }
         counts[g * n + d] += 1;
+    }
+}
+
+/// u8-specialized fold with the 8-byte chunked diagonal fast path.
+///
+/// Reads 8 GT bytes and 8 DT bytes as `u64`s, compares them with one
+/// scalar instruction. On a hit (all 8 pixels have `g == d`), runs a
+/// stripped inner loop that skips the d-load + dt-bounds check and
+/// indexes `counts[g * n + g]` directly. On a miss, falls back to a
+/// per-pixel loop over the same window.
+///
+/// Bit-equal to [`accumulate_generic`]: both paths produce the same
+/// confusion-matrix increments for the same input pixels. The fast
+/// path's diagonal-only writes match exactly what the generic loop
+/// computes when `g == d` for every pixel in the window.
+#[inline(always)]
+fn accumulate_u8(
+    gt: &[u8],
+    dt: &[u8],
+    ignore_label: Option<u32>,
+    n: usize,
+    counts: &mut [u64],
+) {
+    // `ignore_label` is `Option<u32>` but the byte loop only ever sees
+    // u8 values. When `ignore_label > 255`, no GT byte can match and
+    // the compare is dead — `u8::try_from` collapses both that case
+    // and `None` into `None`, keeping the inner predicate a single
+    // `Option<u8>` compare per pixel.
+    let ign = ignore_label.and_then(|v| u8::try_from(v).ok());
+
+    let gt_chunks = gt.chunks_exact(8);
+    let dt_chunks = dt.chunks_exact(8);
+    let gt_tail = gt_chunks.remainder();
+    let dt_tail = dt_chunks.remainder();
+
+    for (g_chunk, d_chunk) in gt_chunks.zip(dt_chunks) {
+        // `try_into().unwrap()` on a known-len-8 slice; the compiler
+        // sees the `ChunksExact` invariant and elides the check.
+        let gw = u64::from_ne_bytes(g_chunk.try_into().unwrap_or([0; 8]));
+        let dw = u64::from_ne_bytes(d_chunk.try_into().unwrap_or([0; 8]));
+
+        if gw == dw {
+            // All 8 pixels lie on the diagonal. Walk gt only; the
+            // matrix index is `g * n + g`.
+            for &g in g_chunk {
+                if Some(g) == ign {
+                    continue;
+                }
+                let gs = g as usize;
+                if gs >= n {
+                    debug_assert!(
+                        false,
+                        "kernel contract: gt class out of range: {gs} >= n_classes={n}",
+                    );
+                    continue;
+                }
+                counts[gs * n + gs] += 1;
+            }
+        } else {
+            // Mixed: scalar per-pixel over this 8-window.
+            for i in 0..8 {
+                let g = g_chunk[i];
+                if Some(g) == ign {
+                    continue;
+                }
+                let gs = g as usize;
+                if gs >= n {
+                    debug_assert!(
+                        false,
+                        "kernel contract: gt class out of range: {gs} >= n_classes={n}",
+                    );
+                    continue;
+                }
+                let ds = d_chunk[i] as usize;
+                if ds >= n {
+                    continue;
+                }
+                counts[gs * n + ds] += 1;
+            }
+        }
+    }
+
+    // Tail (last `len % 8` pixels). Per-element path; never enters
+    // the chunked fast path.
+    for (&g, &d) in gt_tail.iter().zip(dt_tail.iter()) {
+        if Some(g) == ign {
+            continue;
+        }
+        let gs = g as usize;
+        if gs >= n {
+            debug_assert!(
+                false,
+                "kernel contract: gt class out of range: {gs} >= n_classes={n}",
+            );
+            continue;
+        }
+        let ds = d as usize;
+        if ds >= n {
+            continue;
+        }
+        counts[gs * n + ds] += 1;
     }
 }
 
