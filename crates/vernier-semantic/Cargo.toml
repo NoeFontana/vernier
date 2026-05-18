@@ -56,3 +56,11 @@ rayon = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Microbenches via divan. Dev-only: never linked into the production
+# wheel or any non-bench target. `harness = false` on the [[bench]]
+# entry keeps libtest out as well. Same dep `vernier-panoptic` uses.
+divan = "0.1"
+
+[[bench]]
+name = "kernel"
+harness = false
