@@ -19,8 +19,8 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Cursor;
-use std::path::PathBuf;
+use std::io::{Cursor, Read};
+use std::path::{Path, PathBuf};
 
 use crate::error::{ImageId, SemanticError};
 use crate::kernel::{accumulate_confusion, ConfusionMatrix};
@@ -31,10 +31,40 @@ use crate::summarize::{summarize, SemanticSummary};
 /// `u8` label map. Errors carry `image_id` so the FFI layer can
 /// surface the offending file's id even though this primitive doesn't
 /// know its filesystem path.
+///
+/// Allocates a fresh `Vec<u8>` per call. For batch workloads that
+/// decode thousands of images sequentially, [`decode_grayscale8_into`]
+/// reuses caller-supplied scratch and skips the per-image allocator +
+/// memset overhead — that's what [`evaluate_from_pngs`] uses
+/// internally.
 pub fn decode_grayscale8(
     image_id: ImageId,
     bytes: &[u8],
 ) -> Result<(Vec<u8>, (u32, u32)), SemanticError> {
+    let mut buf = Vec::new();
+    let dims = decode_grayscale8_into(image_id, bytes, &mut buf)?;
+    Ok((buf, dims))
+}
+
+/// In-place sibling of [`decode_grayscale8`]: decode the PNG into the
+/// caller-supplied `buf`, growing it only when the current capacity is
+/// insufficient.
+///
+/// `buf.resize(n_pixels, 0)` zero-fills only the *extension* when the
+/// buffer grows; in steady state (val2017's ~640×480 dominant
+/// geometry repeats per image) this is a no-op after the first call.
+/// libpng's `next_frame` overwrites the full slice regardless of its
+/// prior contents, so the existing bytes never need clearing.
+///
+/// This is the buffer-reuse path that [`evaluate_from_pngs`] hoists
+/// out of its per-image loop to drop ~10 000 allocator calls plus the
+/// implicit 300 KB-per-decode memset on val2017's 5 000-image
+/// baseline.
+pub fn decode_grayscale8_into(
+    image_id: ImageId,
+    bytes: &[u8],
+    buf: &mut Vec<u8>,
+) -> Result<(u32, u32), SemanticError> {
     let decoder = png::Decoder::new(Cursor::new(bytes));
     let mut reader = decoder.read_info().map_err(|e| SemanticError::PngDecode {
         path: format!("image_id={image_id}"),
@@ -50,15 +80,33 @@ pub fn decode_grayscale8(
     let height = info.height;
     let width = info.width;
     let n_pixels = (height as usize) * (width as usize);
-    let mut buf = vec![0u8; n_pixels];
+    buf.resize(n_pixels, 0);
     let frame = reader
-        .next_frame(&mut buf)
+        .next_frame(buf)
         .map_err(|e| SemanticError::PngDecode {
             path: format!("image_id={image_id}"),
             source: e,
         })?;
     debug_assert_eq!(frame.buffer_size(), n_pixels);
-    Ok((buf, (height, width)))
+    Ok((height, width))
+}
+
+/// Read a file's full contents into the caller-supplied `buf`,
+/// reusing its existing capacity. Equivalent to `fs::read` modulo the
+/// fresh-allocation shape — `buf.clear()` is O(1) (keeps capacity);
+/// `read_to_end` extends in place, only growing the underlying
+/// allocation when the file is larger than the current capacity.
+fn read_file_into(path: &Path, buf: &mut Vec<u8>) -> Result<(), SemanticError> {
+    let mut f = fs::File::open(path).map_err(|e| SemanticError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    buf.clear();
+    f.read_to_end(buf).map_err(|e| SemanticError::Io {
+        path: path.display().to_string(),
+        source: e,
+    })?;
+    Ok(())
 }
 
 /// Fold one `(gt_bytes, dt_bytes)` PNG pair into a running confusion
@@ -109,27 +157,35 @@ pub fn evaluate_from_pngs(
         return Err(SemanticError::EmptyDataset);
     }
     let mut confusion = ConfusionMatrix::zeros(n_classes);
+    // Four scratch buffers reused across every image — two for the
+    // raw PNG file bytes (`fs::read` would otherwise allocate per
+    // call), two for the decoded `(H, W)` `u8` label maps
+    // (`decode_grayscale8` would otherwise allocate + memset 300 KB
+    // per image, which libpng then immediately overwrites). On
+    // val2017 (5 000 images, ~640×480 dominant geometry) this drops
+    // ~20 000 allocator calls and ~10 000 wasted memsets.
+    let mut gt_bytes: Vec<u8> = Vec::new();
+    let mut dt_bytes: Vec<u8> = Vec::new();
+    let mut gt_buf: Vec<u8> = Vec::new();
+    let mut dt_buf: Vec<u8> = Vec::new();
     for (image_id, gt_path) in gt_paths {
         let dt_path = dt_paths
             .get(image_id)
             .ok_or(SemanticError::MissingPrediction {
                 image_id: *image_id,
             })?;
-        let gt_bytes = fs::read(gt_path).map_err(|e| SemanticError::Io {
-            path: gt_path.display().to_string(),
-            source: e,
-        })?;
-        let dt_bytes = fs::read(dt_path).map_err(|e| SemanticError::Io {
-            path: dt_path.display().to_string(),
-            source: e,
-        })?;
-        fold_pair_bytes(
-            *image_id,
-            &gt_bytes,
-            &dt_bytes,
-            ignore_label,
-            &mut confusion,
-        )?;
+        read_file_into(gt_path, &mut gt_bytes)?;
+        read_file_into(dt_path, &mut dt_bytes)?;
+        let gt_dims = decode_grayscale8_into(*image_id, &gt_bytes, &mut gt_buf)?;
+        let dt_dims = decode_grayscale8_into(*image_id, &dt_bytes, &mut dt_buf)?;
+        if gt_dims != dt_dims {
+            return Err(SemanticError::ShapeMismatch {
+                image_id: *image_id,
+                gt_shape: gt_dims,
+                dt_shape: dt_dims,
+            });
+        }
+        accumulate_confusion(&gt_buf, &dt_buf, ignore_label, &mut confusion);
     }
     Ok(summarize(confusion, mode))
 }
@@ -160,36 +216,57 @@ pub fn evaluate_from_pngs_parallel(
     }
     use rayon::prelude::*;
 
+    // Per-worker accumulator carrying both the confusion matrix and
+    // the four reusable scratch buffers — the parallel analog of the
+    // hoisted-buffer fast path in [`evaluate_from_pngs`]. Each rayon
+    // worker amortizes its scratch allocations across every image it
+    // folds; the buffers drop on reduce (only `confusion` is merged
+    // across workers).
+    struct WorkerScratch {
+        confusion: ConfusionMatrix,
+        gt_bytes: Vec<u8>,
+        dt_bytes: Vec<u8>,
+        gt_buf: Vec<u8>,
+        dt_buf: Vec<u8>,
+    }
+    let new_scratch = || WorkerScratch {
+        confusion: ConfusionMatrix::zeros(n_classes),
+        gt_bytes: Vec::new(),
+        dt_bytes: Vec::new(),
+        gt_buf: Vec::new(),
+        dt_buf: Vec::new(),
+    };
+
     let summed = gt_paths
         .par_iter()
         .try_fold(
-            || ConfusionMatrix::zeros(n_classes),
-            |mut acc, (image_id, gt_path)| -> Result<ConfusionMatrix, SemanticError> {
+            new_scratch,
+            |mut s, (image_id, gt_path)| -> Result<WorkerScratch, SemanticError> {
                 let dt_path = dt_paths
                     .get(image_id)
                     .ok_or(SemanticError::MissingPrediction {
                         image_id: *image_id,
                     })?;
-                let gt_bytes = fs::read(gt_path).map_err(|e| SemanticError::Io {
-                    path: gt_path.display().to_string(),
-                    source: e,
-                })?;
-                let dt_bytes = fs::read(dt_path).map_err(|e| SemanticError::Io {
-                    path: dt_path.display().to_string(),
-                    source: e,
-                })?;
-                fold_pair_bytes(*image_id, &gt_bytes, &dt_bytes, ignore_label, &mut acc)?;
-                Ok(acc)
+                read_file_into(gt_path, &mut s.gt_bytes)?;
+                read_file_into(dt_path, &mut s.dt_bytes)?;
+                let gt_dims = decode_grayscale8_into(*image_id, &s.gt_bytes, &mut s.gt_buf)?;
+                let dt_dims = decode_grayscale8_into(*image_id, &s.dt_bytes, &mut s.dt_buf)?;
+                if gt_dims != dt_dims {
+                    return Err(SemanticError::ShapeMismatch {
+                        image_id: *image_id,
+                        gt_shape: gt_dims,
+                        dt_shape: dt_dims,
+                    });
+                }
+                accumulate_confusion(&s.gt_buf, &s.dt_buf, ignore_label, &mut s.confusion);
+                Ok(s)
             },
         )
-        .try_reduce(
-            || ConfusionMatrix::zeros(n_classes),
-            |mut a, b| {
-                a.add_assign_unchecked(&b);
-                Ok(a)
-            },
-        )?;
-    Ok(summarize(summed, mode))
+        .try_reduce(new_scratch, |mut a, b| {
+            a.confusion.add_assign_unchecked(&b.confusion);
+            Ok(a)
+        })?;
+    Ok(summarize(summed.confusion, mode))
 }
 
 #[cfg(test)]

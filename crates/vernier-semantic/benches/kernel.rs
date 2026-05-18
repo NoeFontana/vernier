@@ -89,7 +89,7 @@ fn jitter(buf: &mut [u8], n_classes: u32) {
     for (i, slot) in buf.iter_mut().enumerate() {
         if i % 20 == 0 {
             state = state.wrapping_mul(1103515245).wrapping_add(12345);
-            let delta = ((state >> 16) % (n_classes - 1) as u32) as u8 + 1;
+            let delta = ((state >> 16) % (n_classes - 1)) as u8 + 1;
             *slot = (*slot).wrapping_add(delta) % n;
         }
     }
@@ -99,12 +99,11 @@ fn jitter(buf: &mut [u8], n_classes: u32) {
 /// a deterministic LCG. Seed varies with `seed` so the GT and DT maps
 /// are independent.
 fn build_uniform(n_classes: u32, seed: u32) -> Vec<u8> {
-    let n = n_classes as u32;
     let mut state = seed;
     (0..N_PIXELS)
         .map(|_| {
             state = state.wrapping_mul(1103515245).wrapping_add(12345);
-            ((state >> 16) % n) as u8
+            ((state >> 16) % n_classes) as u8
         })
         .collect()
 }
