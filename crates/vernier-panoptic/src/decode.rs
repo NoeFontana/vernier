@@ -143,10 +143,7 @@ fn decode_gt(
         .next_row()
         .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
     {
-        for chunk in row.data().chunks_exact(3) {
-            let id = (chunk[0] as u32) | ((chunk[1] as u32) << 8) | ((chunk[2] as u32) << 16);
-            label_map.push(id);
-        }
+        pack_rgb_row(row.data(), &mut label_map);
     }
 
     let mut segments: FxHashMap<u32, SegmentInfo> =
@@ -167,6 +164,17 @@ fn decode_gt(
         label_map,
         segments,
     })
+}
+
+/// Pack `row_bytes` (length `3*w`, RGB triples) into `w` `u32` ids and
+/// append to `out`. Each id is `R | G<<8 | B<<16` per the panoptic
+/// PNG convention. Delegates to [`vernier_pixel_pack::pack_rgb_row`]
+/// for the SIMD-dispatched body.
+#[inline]
+fn pack_rgb_row(row_bytes: &[u8], out: &mut Vec<u32>) {
+    let start = out.len();
+    out.resize(start + row_bytes.len() / 3, 0);
+    vernier_pixel_pack::pack_rgb_row(row_bytes, &mut out[start..]);
 }
 
 /// DT-side decode: the full validation + S3 area marginal pass, also
