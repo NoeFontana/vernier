@@ -109,33 +109,6 @@ fn read_file_into(path: &Path, buf: &mut Vec<u8>) -> Result<(), SemanticError> {
     Ok(())
 }
 
-/// Fold one `(gt_bytes, dt_bytes)` PNG pair into a running confusion
-/// matrix. The kernel walks both buffers at native `u8` width per
-/// ADR-0037; shape mismatch surfaces as
-/// [`SemanticError::ShapeMismatch`] with `image_id` attribution.
-///
-/// This is the streaming primitive shared by [`evaluate_from_pngs`]
-/// (batch path) and the upcoming `submit_png` FFI entry point.
-pub fn fold_pair_bytes(
-    image_id: ImageId,
-    gt_bytes: &[u8],
-    dt_bytes: &[u8],
-    ignore_label: Option<u32>,
-    confusion: &mut ConfusionMatrix,
-) -> Result<(), SemanticError> {
-    let (gt_buf, gt_dims) = decode_grayscale8(image_id, gt_bytes)?;
-    let (dt_buf, dt_dims) = decode_grayscale8(image_id, dt_bytes)?;
-    if gt_dims != dt_dims {
-        return Err(SemanticError::ShapeMismatch {
-            image_id,
-            gt_shape: gt_dims,
-            dt_shape: dt_dims,
-        });
-    }
-    accumulate_confusion(&gt_buf, &dt_buf, ignore_label, confusion);
-    Ok(())
-}
-
 /// Run the semantic-segmentation evaluation directly against PNG files.
 ///
 /// Iteration order is sorted by `image_id` (mirrors
@@ -274,6 +247,33 @@ mod tests {
     use png::Encoder;
 
     use super::*;
+
+    /// Test-only fused decode-and-fold helper: pins the contract that
+    /// `decode_grayscale8 + accumulate_confusion` produces the same
+    /// matrix as the array-input path on identical pixel data, and
+    /// surfaces the right typed errors on RGB / shape-mismatch inputs.
+    /// Inlined into tests since production callers
+    /// (`evaluate_from_pngs` + parallel sibling) drive the pool via
+    /// `decode_grayscale8_into` directly.
+    fn fold_pair_bytes(
+        image_id: ImageId,
+        gt_bytes: &[u8],
+        dt_bytes: &[u8],
+        ignore_label: Option<u32>,
+        confusion: &mut ConfusionMatrix,
+    ) -> Result<(), SemanticError> {
+        let (gt_buf, gt_dims) = decode_grayscale8(image_id, gt_bytes)?;
+        let (dt_buf, dt_dims) = decode_grayscale8(image_id, dt_bytes)?;
+        if gt_dims != dt_dims {
+            return Err(SemanticError::ShapeMismatch {
+                image_id,
+                gt_shape: gt_dims,
+                dt_shape: dt_dims,
+            });
+        }
+        accumulate_confusion(&gt_buf, &dt_buf, ignore_label, confusion);
+        Ok(())
+    }
 
     fn encode_grayscale8(data: &[u8], height: u32, width: u32) -> Vec<u8> {
         let mut buf = Vec::new();

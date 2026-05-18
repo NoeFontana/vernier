@@ -143,34 +143,43 @@ fn build_random(ignore: Option<u32>, n_classes: u32) -> (Vec<u8>, Vec<u8>) {
 fn realistic_perfect(bencher: Bencher, case: &(Option<u32>, u32)) {
     let (ignore, n_classes) = *case;
     let (gt, dt) = build_perfect(ignore, n_classes);
-    bencher
-        .with_inputs(|| ConfusionMatrix::zeros(n_classes))
-        .bench_local_values(|mut cm| {
-            accumulate_confusion(black_box(&gt), black_box(&dt), ignore, &mut cm);
-            cm
-        });
+    // Single ConfusionMatrix shared across iterations: the per-iter
+    // accumulation grows the cell counts but the per-call timing is
+    // independent of the cell values, while skipping the 141 KB
+    // alloc + zero-fill that `with_inputs` would otherwise pay every
+    // iteration.
+    let mut cm = ConfusionMatrix::zeros(n_classes);
+    bencher.bench_local(|| {
+        accumulate_confusion(black_box(&gt), black_box(&dt), ignore, &mut cm);
+    });
 }
 
 #[divan::bench(args = CASES)]
 fn realistic_jittered(bencher: Bencher, case: &(Option<u32>, u32)) {
     let (ignore, n_classes) = *case;
     let (gt, dt) = build_jittered(ignore, n_classes);
-    bencher
-        .with_inputs(|| ConfusionMatrix::zeros(n_classes))
-        .bench_local_values(|mut cm| {
-            accumulate_confusion(black_box(&gt), black_box(&dt), ignore, &mut cm);
-            cm
-        });
+    // Single ConfusionMatrix shared across iterations: the per-iter
+    // accumulation grows the cell counts but the per-call timing is
+    // independent of the cell values, while skipping the 141 KB
+    // alloc + zero-fill that `with_inputs` would otherwise pay every
+    // iteration.
+    let mut cm = ConfusionMatrix::zeros(n_classes);
+    bencher.bench_local(|| {
+        accumulate_confusion(black_box(&gt), black_box(&dt), ignore, &mut cm);
+    });
 }
 
 #[divan::bench(args = CASES)]
 fn uniform_random(bencher: Bencher, case: &(Option<u32>, u32)) {
     let (ignore, n_classes) = *case;
     let (gt, dt) = build_random(ignore, n_classes);
-    bencher
-        .with_inputs(|| ConfusionMatrix::zeros(n_classes))
-        .bench_local_values(|mut cm| {
-            accumulate_confusion(black_box(&gt), black_box(&dt), ignore, &mut cm);
-            cm
-        });
+    // Single ConfusionMatrix shared across iterations: the per-iter
+    // accumulation grows the cell counts but the per-call timing is
+    // independent of the cell values, while skipping the 141 KB
+    // alloc + zero-fill that `with_inputs` would otherwise pay every
+    // iteration.
+    let mut cm = ConfusionMatrix::zeros(n_classes);
+    bencher.bench_local(|| {
+        accumulate_confusion(black_box(&gt), black_box(&dt), ignore, &mut cm);
+    });
 }

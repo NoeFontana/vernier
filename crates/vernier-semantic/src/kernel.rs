@@ -242,6 +242,23 @@ pub fn accumulate_confusion<T: ClassId>(
     accumulate_generic::<T>(gt, dt, ignore_label, n, counts);
 }
 
+/// Predicate `gs < n` with a `debug_assert!` that fires in test
+/// builds when the kernel-contract invariant (GT in
+/// `[0, n_classes) ∪ {ignore_label}`) is violated upstream. In
+/// release, returns `false` for silent-skip per the doc-comment
+/// contract. `#[inline(always)]` so every call site folds into the
+/// hot loop with no extra branch beyond the bounds compare itself.
+#[inline(always)]
+fn gt_class_in_range(gs: usize, n: usize) -> bool {
+    let in_range = gs < n;
+    debug_assert!(
+        in_range,
+        "kernel contract: gt class out of range: {gs} >= n_classes={n} \
+         (validate at SemanticDataset::from_arrays / from_files)",
+    );
+    in_range
+}
+
 /// Generic per-pixel fold used for `T = u16 | u32`. Bit-identical to
 /// the pre-fast-path scalar loop.
 #[inline(always)]
@@ -260,12 +277,7 @@ fn accumulate_generic<T: ClassId>(
         }
         let g = g as usize;
         let d = d as usize;
-        if g >= n {
-            debug_assert!(
-                false,
-                "kernel contract: gt class out of range: {g} >= n_classes={n} \
-                 (validate at SemanticDataset::from_arrays / from_files)",
-            );
+        if !gt_class_in_range(g, n) {
             continue;
         }
         if d >= n {
@@ -324,12 +336,7 @@ fn accumulate_u8(
                 let g = g_chunk[0];
                 if Some(g) != ign {
                     let gs = g as usize;
-                    if gs >= n {
-                        debug_assert!(
-                            false,
-                            "kernel contract: gt class out of range: {gs} >= n_classes={n}",
-                        );
-                    } else {
+                    if gt_class_in_range(gs, n) {
                         counts[gs * n + gs] += 8;
                     }
                 }
@@ -341,11 +348,7 @@ fn accumulate_u8(
                         continue;
                     }
                     let gs = g as usize;
-                    if gs >= n {
-                        debug_assert!(
-                            false,
-                            "kernel contract: gt class out of range: {gs} >= n_classes={n}",
-                        );
+                    if !gt_class_in_range(gs, n) {
                         continue;
                     }
                     counts[gs * n + gs] += 1;
@@ -359,11 +362,7 @@ fn accumulate_u8(
                     continue;
                 }
                 let gs = g as usize;
-                if gs >= n {
-                    debug_assert!(
-                        false,
-                        "kernel contract: gt class out of range: {gs} >= n_classes={n}",
-                    );
+                if !gt_class_in_range(gs, n) {
                     continue;
                 }
                 let ds = d_chunk[i] as usize;
@@ -382,11 +381,7 @@ fn accumulate_u8(
             continue;
         }
         let gs = g as usize;
-        if gs >= n {
-            debug_assert!(
-                false,
-                "kernel contract: gt class out of range: {gs} >= n_classes={n}",
-            );
+        if !gt_class_in_range(gs, n) {
             continue;
         }
         let ds = d as usize;
