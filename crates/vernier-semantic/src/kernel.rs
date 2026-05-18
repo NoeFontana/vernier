@@ -314,21 +314,42 @@ fn accumulate_u8(
         let dw = u64::from_ne_bytes(d_chunk.try_into().unwrap_or([0; 8]));
 
         if gw == dw {
-            // All 8 pixels lie on the diagonal. Walk gt only; the
-            // matrix index is `g * n + g`.
-            for &g in g_chunk {
-                if Some(g) == ign {
-                    continue;
+            // All 8 pixels lie on the diagonal. Second-tier check:
+            // if additionally all 8 bytes are the same class (segment
+            // interior — the dominant case in semantic data), collapse
+            // 8 cell updates into one `+= 8`. `gw.rotate_right(8)`
+            // shifts byte b_i into the slot of b_{i-1}; XOR against
+            // `gw` is zero iff every byte equals every other byte.
+            if gw ^ gw.rotate_right(8) == 0 {
+                let g = g_chunk[0];
+                if Some(g) != ign {
+                    let gs = g as usize;
+                    if gs >= n {
+                        debug_assert!(
+                            false,
+                            "kernel contract: gt class out of range: {gs} >= n_classes={n}",
+                        );
+                    } else {
+                        counts[gs * n + gs] += 8;
+                    }
                 }
-                let gs = g as usize;
-                if gs >= n {
-                    debug_assert!(
-                        false,
-                        "kernel contract: gt class out of range: {gs} >= n_classes={n}",
-                    );
-                    continue;
+            } else {
+                // 8 diagonal pixels but mixed classes — per-pixel
+                // walk of gt only (no d-side work).
+                for &g in g_chunk {
+                    if Some(g) == ign {
+                        continue;
+                    }
+                    let gs = g as usize;
+                    if gs >= n {
+                        debug_assert!(
+                            false,
+                            "kernel contract: gt class out of range: {gs} >= n_classes={n}",
+                        );
+                        continue;
+                    }
+                    counts[gs * n + gs] += 1;
                 }
-                counts[gs * n + gs] += 1;
             }
         } else {
             // Mixed: scalar per-pixel over this 8-window.
