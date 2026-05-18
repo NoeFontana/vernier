@@ -153,13 +153,7 @@ fn rgb_pack_segments(segs: FxHashMap<u32, SegmentInfo>) -> FxHashMap<u32, Segmen
     segs.into_values()
         .map(|info| {
             let packed = rgb_pack_id(info.id);
-            (
-                packed,
-                SegmentInfo {
-                    id: packed,
-                    ..info
-                },
-            )
+            (packed, SegmentInfo { id: packed, ..info })
         })
         .collect()
 }

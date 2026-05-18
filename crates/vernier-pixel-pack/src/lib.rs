@@ -87,9 +87,7 @@ fn pack_rgb_row_ssse3_dispatch(row_bytes: &[u8], dst: &mut [u32]) {
         .iter_mut()
         .zip(row_bytes[simd_pixels * 3..].chunks_exact(3))
     {
-        *slot = u32::from(chunk[0])
-            | (u32::from(chunk[1]) << 8)
-            | (u32::from(chunk[2]) << 16);
+        *slot = u32::from(chunk[0]) | (u32::from(chunk[1]) << 8) | (u32::from(chunk[2]) << 16);
     }
 }
 
