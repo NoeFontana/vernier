@@ -33,8 +33,8 @@
 #![allow(clippy::unwrap_used)]
 
 use divan::{black_box, Bencher};
-use vernier_semantic::ConfusionMatrix;
 use vernier_semantic::kernel::accumulate_confusion;
+use vernier_semantic::ConfusionMatrix;
 
 fn main() {
     divan::main();
@@ -52,12 +52,7 @@ const N_SEGMENTS: u32 = 50;
 /// L1). `ignore_label = Some(255)` matches the val2017 panoptic-to-
 /// semantic mapping (unlabeled segment_id → 255). `None` exercises
 /// the simpler dispatch.
-const CASES: &[(Option<u32>, u32)] = &[
-    (None, 19),
-    (None, 133),
-    (Some(255), 19),
-    (Some(255), 133),
-];
+const CASES: &[(Option<u32>, u32)] = &[(None, 19), (None, 133), (Some(255), 19), (Some(255), 133)];
 
 /// Synthetic `(H, W)` label map with `N_SEGMENTS` horizontal stripes
 /// in `[0, n_classes)`. Stripe height stays uniform so the segment

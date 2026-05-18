@@ -300,13 +300,7 @@ fn accumulate_generic<T: ClassId>(
 /// path's diagonal-only writes match exactly what the generic loop
 /// computes when `g == d` for every pixel in the window.
 #[inline(always)]
-fn accumulate_u8(
-    gt: &[u8],
-    dt: &[u8],
-    ignore_label: Option<u32>,
-    n: usize,
-    counts: &mut [u64],
-) {
+fn accumulate_u8(gt: &[u8], dt: &[u8], ignore_label: Option<u32>, n: usize, counts: &mut [u64]) {
     // `ignore_label` is `Option<u32>` but the byte loop only ever sees
     // u8 values. When `ignore_label > 255`, no GT byte can match and
     // the compare is dead — `u8::try_from` collapses both that case
