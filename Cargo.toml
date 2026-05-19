@@ -7,7 +7,6 @@ members = [
     "crates/vernier-mask",
     "crates/vernier-panoptic",
     "crates/vernier-partial",
-    "crates/vernier-pixel-pack",
     "crates/vernier-semantic",
 ]
 

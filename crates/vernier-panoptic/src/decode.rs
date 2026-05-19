@@ -168,13 +168,13 @@ fn decode_gt(
 
 /// Pack `row_bytes` (length `3*w`, RGB triples) into `w` `u32` ids and
 /// append to `out`. Each id is `R | G<<8 | B<<16` per the panoptic
-/// PNG convention. Delegates to [`vernier_pixel_pack::pack_rgb_row`]
+/// PNG convention. Delegates to [`crate::pixel_pack::pack_rgb_row`]
 /// for the SIMD-dispatched body.
 #[inline]
 fn pack_rgb_row(row_bytes: &[u8], out: &mut Vec<u32>) {
     let start = out.len();
     out.resize(start + row_bytes.len() / 3, 0);
-    vernier_pixel_pack::pack_rgb_row(row_bytes, &mut out[start..]);
+    crate::pixel_pack::pack_rgb_row(row_bytes, &mut out[start..]);
 }
 
 /// DT-side decode: the full validation + S3 area marginal pass, also
