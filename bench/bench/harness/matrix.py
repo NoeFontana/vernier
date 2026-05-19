@@ -119,8 +119,12 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
 
 
 def impls_for_iou(iou: IouType, impl_filter: tuple[str, ...] | None = None) -> list[str]:
+    # ``ALL_IMPLS`` carries paradigm-specific impls (vernier_panoptic,
+    # mmsegmentation, …) that don't appear in the instance-only
+    # ``IMPL_IOU_SUPPORT`` table; ``.get`` filters them out instead of
+    # raising ``KeyError`` mid-``--impl all`` fan-out.
     candidates = impl_filter if impl_filter is not None else ALL_IMPLS
-    return [i for i in candidates if iou in IMPL_IOU_SUPPORT[i]]
+    return [i for i in candidates if iou in IMPL_IOU_SUPPORT.get(i, frozenset())]
 
 
 def impls_for_metric(

@@ -10,7 +10,7 @@ The IQR column reports the spread (Q3 - Q1) across the 10 measurement
 reps and the same value as a percentage of the median; release mode
 gates each cell at 5% relative IQR.
 
-**Provenance** — git SHA `885d385d63e1` · machine fingerprint `37652a58e939` · CPU AMD EPYC-Milan Processor (x86_64) · harness
+**Provenance** — git SHA `3a509df6c525` · machine fingerprint `37652a58e939` · CPU AMD EPYC-Milan Processor (x86_64) · harness
 mode `release` · build profile = cargo release defaults
 (`opt-level=3`, `lto=thin`, `codegen-units=1`, no `target-cpu`). The
 release wheel on PyPI is built with the same profile — no
@@ -35,25 +35,25 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 370.6 ms | 4.1 ms (1.10%) | 261 MiB | **1.00×** |
-| faster-coco-eval | 2.060 s | 29.2 ms (1.42%) | 661 MiB | 5.56× |
-| pycocotools | 5.753 s | 195.1 ms (3.39%) | 576 MiB | 15.52× |
+| **vernier** | 369.6 ms | 13.1 ms (3.54%) | 262 MiB | **1.00×** |
+| faster-coco-eval | 2.132 s | 75.3 ms (3.53%) | 661 MiB | 5.77× |
+| pycocotools | 5.930 s | 72.5 ms (1.22%) | 576 MiB | 16.04× |
 
 **`segm`**
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 970.6 ms | 3.9 ms (0.40%) | 262 MiB | **1.00×** |
-| faster-coco-eval | 3.498 s | 13.0 ms (0.37%) | 721 MiB | 3.60× |
-| pycocotools | 6.635 s | 76.7 ms (1.16%) | 569 MiB | 6.84× |
+| **vernier** | 987.4 ms | 18.0 ms (1.83%) | 263 MiB | **1.00×** |
+| faster-coco-eval | 3.631 s | 64.2 ms (1.77%) | 721 MiB | 3.68× |
+| pycocotools | 6.870 s | 54.7 ms (0.80%) | 569 MiB | 6.96× |
 
 **`boundary`**
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 3.143 s | 17.0 ms (0.54%) | 264 MiB | **1.00×** |
-| faster-coco-eval | 17.616 s | 41.2 ms (0.23%) | 794 MiB | 5.61× |
-| boundary-iou-api | 61.544 s | 225.2 ms (0.37%) | 666 MiB | 19.58× |
+| **vernier** | 3.208 s | 34.3 ms (1.07%) | 265 MiB | **1.00×** |
+| faster-coco-eval | 17.747 s | 268.9 ms (1.52%) | 794 MiB | 5.53× |
+| boundary-iou-api | 61.749 s | 1.098 s (1.78%) | 666 MiB | 19.25× |
 
 ### Workload: `coco_val2017_keypoints_jittered_seed0`
 
@@ -61,9 +61,9 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 137.1 ms | 2.3 ms (1.69%) | 127 MiB | **1.00×** |
-| faster-coco-eval | 1.661 s | 25.9 ms (1.56%) | 154 MiB | 12.11× |
-| pycocotools | 2.261 s | 20.2 ms (0.89%) | 163 MiB | 16.49× |
+| **vernier** | 136.0 ms | 1.8 ms (1.31%) | 128 MiB | **1.00×** |
+| faster-coco-eval | 1.671 s | 14.8 ms (0.89%) | 154 MiB | 12.28× |
+| pycocotools | 2.276 s | 4.9 ms (0.22%) | 163 MiB | 16.74× |
 
 
 ## Panoptic — PQ
@@ -74,8 +74,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 12.592 s | 2.673 s (21.22%) * | 143 MiB | **1.00×** |
-| panopticapi | 34.440 s | 258.9 ms (0.75%) | 146 MiB | 2.73× |
+| **vernier** | 10.528 s | 1.029 s (9.78%) * | 144 MiB | **1.00×** |
+| panopticapi | 34.711 s | 136.6 ms (0.39%) | 146 MiB | 3.30× |
 
 
 ## Semantic — mIoU
@@ -86,8 +86,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 5.004 s | 39.0 ms (0.78%) | 99 MiB | **1.00×** |
-| mmsegmentation | 20.605 s | 172.5 ms (0.84%) | 647 MiB | 4.12× |
+| **vernier** | 2.822 s | 11.0 ms (0.39%) | 97 MiB | **1.00×** |
+| mmsegmentation | 20.894 s | 199.4 ms (0.95%) | 647 MiB | 7.40× |
 
 ### Workload: `synthetic_semantic_n200_c19_s0`
 
@@ -95,8 +95,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 63.2 ms | 678.2 μs (1.07%) | 88 MiB | **1.00×** |
-| mmsegmentation | 430.7 ms | 53.0 ms (12.32%) * | 631 MiB | 6.82× |
+| **vernier** | 63.8 ms | 674.1 μs (1.06%) | 88 MiB | **1.00×** |
+| mmsegmentation | 442.8 ms | 50.1 ms (11.33%) * | 631 MiB | 6.94× |
 
 
 ## Instance — LVIS federated AP
@@ -107,8 +107,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | RSS (max) | vs vernier |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 3.727 s | 67.5 ms (1.81%) | 1.48 GiB | **1.00×** |
-| lvis-api | 210.688 s | 6.600 s (3.13%) | 15.01 GiB | 56.53× |
+| **vernier** | 3.625 s | 23.4 ms (0.65%) | 1.48 GiB | **1.00×** |
+| lvis-api | 207.370 s | 2.867 s (1.38%) | 15.01 GiB | 57.21× |
 
 
 *Cells marked ` *` next to their IQR exceeded the release-mode 5% relative-IQR gate. Median still reported; treat the gap to the next impl as the load-bearing signal rather than the precise ratio.*
@@ -120,14 +120,22 @@ adds an opt-in `num_threads` kwarg on every public evaluate surface
 (batch, streaming, background) for all four paradigms — instance
 (bbox / segm / boundary / keypoints), semantic, panoptic, and lvis.
 The default `num_threads=None` is byte-for-byte the sequential
-pre-0.0.5 path; no rayon symbol is entered.
+post-0.0.4 path; no rayon symbol is entered.
 
 Wall-clock numbers below are the `evaluate`-stage stage timer on COCO
 val2017 perfect-DT (the jittered-seed-0 workload for the instance
 paradigm; `coco_panoptic_val2017_perfect` for panoptic;
 `coco_val2017_semantic_perfect` for semantic). Hardware: AMD EPYC
 Milan, 4 physical cores + SMT-2 (8 vCPUs total). Dev-mode single rep
-per cell; expect ±10–20% noise on small workloads.
+per cell; expect ±10–20% noise on small workloads. **Note**: these
+numbers were recorded at 0.0.4 ship time, *before* the kernel-level
+perf wins in #260 (panoptic sparse-remap cache) and #261 (semantic
+chunked-u8 kernel). Scaling factors (ratio nt=N / nt=1) stay
+representative because both the kernel and its parallel dispatch
+moved by the same multiplier on the cold-cache path; absolute
+medians for panoptic and semantic-val2017 are ~17% and ~44% lower
+respectively at `num_threads=None` on the current HEAD — see the
+cross-paradigm tables above for the post-perf-round headline numbers.
 
 ### Instance (val2017 jittered-seed-0)
 
@@ -176,7 +184,7 @@ bit-equality is unconditional regardless of reduction order.
 per-worker rayon pool (zero-copy via `PyBackedBytes`), so libpng
 parallelises across submissions; the single-threaded path keeps
 producer/consumer overlap against the worker thread and is
-byte-for-byte unchanged from pre-0.0.5.
+byte-for-byte unchanged from 0.0.4.
 
 ### vs faster-coco-eval (boundary at `nt={1,4,8}`)
 

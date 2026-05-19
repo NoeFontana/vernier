@@ -10,12 +10,12 @@ provide. For mechanical "rewrite my imports" instructions, see the
 
 | Library | Paradigms | Parity contract | Performance vs vernier | When you'd still pick it |
 |---|---|---|---|---|
-| `pycocotools` | instance (bbox / segm / keypoints) | The reference | ~7–18× slower | You need the literal pycocotools printed table for an external system that scrapes it |
-| `faster-coco-eval` | instance (bbox / segm / keypoints / boundary) | "Faster, mostly compatible" — quirks chosen silently | ~4–13× slower | You're already running it in production and don't need vernier's auditable parity surface |
-| `panopticapi` | panoptic | The reference | ~1.07× slower | You explicitly need the `pq_compute_*` script outputs unchanged |
-| `lvis-api` | LVIS federated | The reference | Vernier reuses orchestration only | Your tooling depends on the `LVISEval` instance attributes |
-| `boundary-iou-api` | boundary IoU only | The reference | ~20× slower on val2017 perfect-DT | You're running an external evaluation script that loads `boundary_iou.coco_instance_api.COCOeval` by name |
-| `mmsegmentation` | semantic | One of three references vernier targets | Vernier-only baseline today; cross-impl bench externally blocked | You need the full `mmseg.evaluation` registry surface (it's a training framework, not just an evaluator) |
+| `pycocotools` | instance (bbox / segm / keypoints) | The reference | ~7–17× slower | You need the literal pycocotools printed table for an external system that scrapes it |
+| `faster-coco-eval` | instance (bbox / segm / keypoints / boundary) | "Faster, mostly compatible" — quirks chosen silently | ~3.7–12× slower | You're already running it in production and don't need vernier's auditable parity surface |
+| `panopticapi` | panoptic | The reference | ~3.3× slower on val2017 perfect-DT | You explicitly need the `pq_compute_*` script outputs unchanged |
+| `lvis-api` | LVIS federated | The reference | ~57× slower on full v1 val · 10× lower peak RSS on vernier (1.5 GiB vs 15 GiB) | Your tooling depends on the `LVISEval` instance attributes |
+| `boundary-iou-api` | boundary IoU only | The reference | ~19× slower on val2017 perfect-DT | You're running an external evaluation script that loads `boundary_iou.coco_instance_api.COCOeval` by name |
+| `mmsegmentation` | semantic | One of three references vernier targets | ~7× slower on val2017 perfect-DT (`mmseg.IoUMetric` only — vernier-semantic vs vendored oracle, ADR-0036) | You need the full `mmseg.evaluation` registry surface (it's a training framework, not just an evaluator) |
 
 Numbers above reference the [benchmarks page](benchmarks.md) and the
 [engineering benchmarking notes](https://github.com/NoeFontana/vernier/tree/main/docs/engineering/benchmarking).
@@ -37,7 +37,7 @@ as either `strict` (bit-equal output) or `corrected` (opt-in opinionated
 fix). The full table lives in
 [`docs/engineering/pycocotools-quirks.md`](https://github.com/NoeFontana/vernier/blob/main/docs/engineering/pycocotools-quirks.md).
 
-vernier is ~7–18× faster on val2017 across bbox / segm / keypoints (see the
+vernier is ~7–17× faster on val2017 across bbox / segm / keypoints (see the
 [benchmarks](benchmarks.md)). The drop-in shim
 ([ADR-0007](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0007-patch-pycocotools-policy.md))
 keeps `from pycocotools.cocoeval import COCOeval` working in existing
@@ -66,7 +66,7 @@ why and where.
 vernier targets the same drop-in pattern but with auditable parity. Every
 quirk has a row in the disposition table; strict mode reproduces
 pycocotools bit-for-bit; corrected fixes are listed and opt-in. The
-performance gap is real on val2017 — vernier is ~4–13× faster on
+performance gap is real on val2017 — vernier is ~3.7–12× faster on
 bbox / segm / keypoints / boundary — but the headline benefit is "you can prove what
 your numbers mean".
 
@@ -89,12 +89,13 @@ toward each other (see
 [ADR-0025](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0025-panoptic-api.md)).
 Strict-mode parity is bit-equal at per-class TP/FP/FN counts.
 
-vernier-panoptic is ~1.1× faster than panopticapi on val2017 perfect-DT
-(after the round-2 streaming refactor + FxHash optimization, PR #188). The
-gap is not the headline — panopticapi is already efficient. The headline
-is the unified surface: `vernier.panoptic.Evaluator` lives next to
-`vernier.instance.Evaluator` and `vernier.semantic.Evaluator`, and the CLI
-covers all three.
+vernier-panoptic is ~3.3× faster than panopticapi on val2017 perfect-DT
+(post-#260 sparse-remap cache + SSSE3 RGB→u32 pack — see the
+[panoptic cell of the benchmarks](benchmarks.md)). The gap is still
+not the headline — panopticapi is already efficient and PNG decode
+dominates both sides — the headline is the unified surface:
+`vernier.panoptic.Evaluator` lives next to `vernier.instance.Evaluator`
+and `vernier.semantic.Evaluator`, and the CLI covers all three.
 
 **Pick `panopticapi` instead** when an external system parses the
 `pq_compute_*` script's stdout output and you need that exact text. (As
