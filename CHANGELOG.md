@@ -7,6 +7,109 @@ feature set is complete; moving to 0.1.0+ is a deliberate later decision.
 
 ## [Unreleased]
 
+Performance follow-up to 0.0.4. No new evaluation paradigms — every
+shipped kernel keeps strict bit-equal parity with its oracle. The
+cross-paradigm benchmark page is refreshed against the post-0.0.4
+SHA on the same machine fingerprint as the 0.0.4 snapshot
+(`37652a58e939`).
+
+### Added
+
+- **`num_threads` parallelism** ([ADR-0047](docs/adr/0047-threading-model.md))
+  (#251, #253, #254, #256) — opt-in `num_threads: int | None = None`
+  on every public evaluate surface across all four paradigms: instance
+  (bbox / segm / boundary / keypoints), semantic, panoptic, and LVIS,
+  on batch + streaming + background entry points (`Evaluator.evaluate`,
+  `Evaluator.background`, `submit` / `submit_png`). The sequential
+  path (`num_threads=None` or `1`) is byte-for-byte unchanged from
+  0.0.4; no rayon symbol is entered. `parity_threads` parity tests
+  assert bit-equal results across `num_threads ∈ {None, 1, 2, 4, 8}`
+  on every paradigm. CLI gains `vernier eval --threads N`.
+- **`bench-timings` Cargo feature** (#256) — atomic `(par_iter,
+  serial_post)` split + `build_*_anns` call counter on
+  `evaluate_with_parallel`, attributed via the new `BenchCounterSet`
+  shared helper (#258). Off by default and stripped from the shipped
+  wheel; powers the bbox-scaling attribution at
+  `docs/engineering/benchmarking/2026-05-bbox-cdf.md`.
+- **`mimalloc-global` Cargo feature** on `vernier-ffi` (#256) —
+  allocator A/B knob, off by default; lets users opt into mimalloc
+  for hot-allocation workloads without it being a default cost.
+- **Semantic divan microbench** (#261) —
+  `crates/vernier-semantic/benches/accumulate_confusion.rs`
+  exercises three input distributions (`realistic_perfect`,
+  `realistic_jittered`, `uniform_random`) at the val2017
+  panoptic-semantic geometry; prereq for the chunked-u8 kernel work.
+
+### Changed
+
+- **bbox AP perf** (#256, #258, #259) — KernelScratch per-worker
+  annotation pool + direct-write parallel runner (replaces the
+  per-image `Vec<CellOutput>` intermediate with `par_chunks_mut`);
+  in-place image-major → canonical transpose via cycle-following
+  (eliminates a 26 MB intermediate buffer pair on val2017); the
+  `eval_imgs` + `eval_imgs_meta` transposes fuse into a single
+  cycle walk (halves index arithmetic, drops one of two 1.6 MB
+  visited-bitset allocations). Net val2017 nt=4: par_iter region
+  42 → 32 ms, serial_post 45 → 19 ms, peak working-set
+  −24 MB. The remaining Amdahl floor on `--num-threads` for bbox is
+  the ~200 ms single-threaded `dataset_build` (HashMap validation in
+  `CocoDataset::from_parts`), attributed via `bench-timings`.
+- **Panoptic PQ perf** (#260) — sparse-remap adjacent-pixel cache on
+  `build_dense_intersections` and `build_dense_boundary_intersections`.
+  COCO panoptic always hits the sparse branch (RGB-packed ids exceed
+  the 1 M dense cap) and panoptic segments are spatially contiguous,
+  so consecutive `(g, d)` pairs are usually identical; a 4-state
+  `(last_g, last_d, last_gi, last_di)` cache skips the `FxHashMap`
+  lookup on adjacent-pixel matches. Dense branch is deliberately
+  uncached (`Vec::get` is cheap enough that the miss overhead
+  regresses synthetic by ~70%). SSSE3 RGB→u32 pack on the panoptic
+  PNG decode path. New `coco_like_rgb` microbench arm exercises the
+  sparse-RGB path that the existing `coco_like` arms missed
+  (their ids 1..=50 took the dense path).
+- **Semantic mIoU perf** (#261) — decode buffer pool + chunked u8
+  kernel on `accumulate_confusion` for the `T = u8` PNG fused-decode
+  path that drives `Semantic — mIoU (val2017)`. The pool reuses the
+  per-image decode `Vec<u8>` across submissions; the chunked kernel
+  keeps the strict-mode u64-additive fold but processes pixels in
+  cache-line-sized batches.
+- **Background-evaluator threading wired** (#253, #254) —
+  `BackgroundConfig.num_threads` is no longer hardcoded `None` on the
+  panoptic and semantic FFI ctors; `BackgroundCapable` gains a
+  default-method `apply_update_parallel` that the panoptic and
+  semantic streaming impls override. Panoptic `submit_png` defers
+  PNG decode into the worker pool (`PyBackedBytes` zero-copy) so
+  libpng decode parallelises across submissions; the single-threaded
+  path keeps inline decode and is byte-for-byte unchanged.
+- **Bench harness `--num-threads`** (#251, #252) — `bench run
+  --num-threads "1,2,4,8"` override overrides the workload's pinned
+  `num_threads` tuple; panoptic + semantic spawn helpers now forward
+  the flag (previously dropped, so every panoptic / semantic cell
+  ran with `args.num_threads = None` regardless of what the CLI
+  swept).
+- **Bench page** refreshed against `3a509df6c525` on the same
+  `37652a58e939` fingerprint as the 0.0.4 snapshot, so the speedup
+  deltas are not confounded by host change. Per-cell movements
+  (vernier median, 0.0.4 → HEAD):
+  - **panoptic** PQ: 12.59 s → **10.53 s** (−16.4%; speedup
+    2.73× → **3.30×** vs panopticapi). IQR also narrows from 21.22%
+    to 9.78% (still over the 5% gate — PNG decode is chronically
+    noisy on this host).
+  - **semantic** mIoU val2017: 5.00 s → **2.82 s** (−43.6%;
+    speedup 4.12× → **7.40×** vs mmsegmentation).
+  - **instance** bbox / segm / boundary / keypoints / synth-semantic /
+    LVIS move within VPS noise of their 0.0.4 numbers; speedups
+    widen by 0.1×–0.5× as baselines drift slightly slower on this
+    run.
+
+### Fixed
+
+- **`bench run --impl all` on non-instance paradigms** — `impls_for_iou`
+  raised `KeyError` for the paradigm-specific impls
+  (`vernier_panoptic`, `panopticapi`, `mmsegmentation`,
+  `vernier_lvis`, `lvis-api`) that #252 widened `ALL_IMPLS` to
+  include. Falls back to an empty IoU set for impls that aren't
+  registered for the instance paradigm.
+
 ## [0.0.4] — 2026-05-16
 
 Robustness follow-up to 0.0.3. No new evaluation paradigms or kernel
@@ -562,7 +665,8 @@ crate set that ship the evaluator.
 - **Parity fixtures** — minimal per-quirk fixtures plus full COCO
   val2017 perfect-DT smoke for bbox, segm, boundary, and keypoints.
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.0.3...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.0.4...HEAD
+[0.0.4]: https://github.com/NoeFontana/vernier/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/NoeFontana/vernier/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/NoeFontana/vernier/compare/v0.0.1...v0.0.2
 [0.0.1]: https://github.com/NoeFontana/vernier/releases/tag/v0.0.1

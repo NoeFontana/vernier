@@ -372,8 +372,11 @@ def run_cmd(
         if not impls:
             raise click.ClickException(f"no impl in the matrix supports --iou {iou_type}")
     else:
-        if iou not in IMPL_IOU_SUPPORT[impl]:
-            supported = ", ".join(sorted(IMPL_IOU_SUPPORT[impl]))
+        # Same ``ALL_IMPLS``-wider-than-``IMPL_IOU_SUPPORT`` guard as in
+        # ``impls_for_iou`` — see that helper for the rationale.
+        impl_ious = IMPL_IOU_SUPPORT.get(impl, frozenset())
+        if iou not in impl_ious:
+            supported = ", ".join(sorted(impl_ious))
             raise click.ClickException(
                 f"impl {impl!r} does not support --iou {iou_type}; supported: {supported}"
             )
