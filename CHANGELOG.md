@@ -2,16 +2,25 @@
 
 All notable changes to this project will be documented in this file. The
 format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Versioning stays on the 0.0.x release line until the core and extended
-feature set is complete; moving to 0.1.0+ is a deliberate later decision.
+The project graduated out of the 0.0.x line with 0.1.0 — the four
+evaluation paradigms (instance, panoptic, semantic, LVIS federated)
+plus the LRP / oLRP and detection-calibration diagnostic surfaces are
+all wired with strict bit-equal parity against their oracles, the
+local bench harness is stable, and the public API surface has held its
+shape across the last three patches. Pre-1.0 still means the API can
+break between minor versions; the bar moves from "every patch is
+exploratory" to "minor bumps signal breakage, patch bumps are
+additive / perf / docs".
 
 ## [Unreleased]
 
-Performance follow-up to 0.0.4. No new evaluation paradigms — every
-shipped kernel keeps strict bit-equal parity with its oracle. The
-cross-paradigm benchmark page is refreshed against the post-0.0.4
-SHA on the same machine fingerprint as the 0.0.4 snapshot
-(`37652a58e939`).
+## [0.1.0] — 2026-05-19
+
+First release out of the 0.0.x line. Mostly a performance + parallelism
+follow-up to 0.0.4 — no new evaluation paradigms, every shipped kernel
+keeps strict bit-equal parity with its oracle. The cross-paradigm
+benchmark page is refreshed against the post-0.0.4 SHA on the same
+machine fingerprint as the 0.0.4 snapshot (`37652a58e939`).
 
 ### Added
 
@@ -675,7 +684,8 @@ crate set that ship the evaluator.
 - **Parity fixtures** — minimal per-quirk fixtures plus full COCO
   val2017 perfect-DT smoke for bbox, segm, boundary, and keypoints.
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.0.4...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/NoeFontana/vernier/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/NoeFontana/vernier/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/NoeFontana/vernier/compare/v0.0.2...v0.0.3
 [0.0.2]: https://github.com/NoeFontana/vernier/compare/v0.0.1...v0.0.2
