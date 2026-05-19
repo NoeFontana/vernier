@@ -1720,7 +1720,6 @@ dependencies = [
  "thiserror",
  "vernier-mask",
  "vernier-partial",
- "vernier-pixel-pack",
 ]
 
 [[package]]
@@ -1732,13 +1731,6 @@ dependencies = [
  "proptest",
  "rkyv",
  "thiserror",
-]
-
-[[package]]
-name = "vernier-pixel-pack"
-version = "0.0.4"
-dependencies = [
- "proptest",
 ]
 
 [[package]]

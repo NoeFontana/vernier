@@ -80,6 +80,16 @@ SHA on the same machine fingerprint as the 0.0.4 snapshot
   PNG decode into the worker pool (`PyBackedBytes` zero-copy) so
   libpng decode parallelises across submissions; the single-threaded
   path keeps inline decode and is byte-for-byte unchanged.
+- **`vernier-pixel-pack` folded into `vernier-panoptic`** — the
+  SSSE3 RGB→u32 pack primitive added in #260 lived briefly as a
+  standalone workspace crate. With a single consumer
+  (`vernier-panoptic::decode`) and 172 LOC, it sat below the
+  leaf-crate threshold and the audited-unsafe carveout fits cleanly
+  inside the host crate (`#![deny(unsafe_code)]` at root, module-local
+  `#[allow(unsafe_code)]` on the SSSE3 `pshufb` fn). Folding it
+  back keeps the published crate set at the six 0.0.4 crates and
+  avoids the registry-reservations + Trusted-Publisher loop in the
+  release runbook for a non-reusable internal SIMD primitive.
 - **Bench harness `--num-threads`** (#251, #252) — `bench run
   --num-threads "1,2,4,8"` override overrides the workload's pinned
   `num_threads` tuple; panoptic + semantic spawn helpers now forward

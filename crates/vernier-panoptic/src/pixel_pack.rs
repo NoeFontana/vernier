@@ -1,28 +1,21 @@
-//! Leaf SIMD-primitive crate for the RGB → `u32` pack used by the
-//! panoptic PNG decoder.
+//! SIMD-accelerated RGB → `u32` pack used by the panoptic PNG decoder.
 //!
 //! Each output `u32` is `R | G<<8 | B<<16` per the panoptic PNG
-//! convention (the same `R + 256·G + 256²·B` formula panopticapi
-//! uses in its `evaluation.py` decode). Sits at the workspace's
-//! leaf level — no dependency on any other vernier crate — so the
-//! audited-unsafe carveout for the SSSE3 `pshufb` fast path stays
-//! tightly contained.
+//! convention (the same `R + 256·G + 256²·B` formula panopticapi uses
+//! in its `evaluation.py` decode).
 //!
 //! ## Unsafe policy
 //!
-//! The crate is `#![deny(unsafe_code)]` at root. The single unsafe
-//! site — the SSSE3 `pshufb`-based `pack_rgb_row_ssse3` — is
-//! marked with `#[allow(unsafe_code)]`. The unsafe is necessary
-//! because `std::arch` intrinsics under `#[target_feature]` are
-//! `unsafe fn` (caller must guarantee feature availability;
+//! The host crate is `#![deny(unsafe_code)]` at root and every other
+//! module is unsafe-free. The single unsafe site — the SSSE3
+//! `pshufb`-based [`pack_rgb_row_ssse3`] — is marked with
+//! `#[allow(unsafe_code)]`. The unsafe is necessary because
+//! `std::arch` intrinsics under `#[target_feature]` are `unsafe fn`
+//! (caller must guarantee feature availability;
 //! `is_x86_feature_detected!` is the runtime guard). The body uses
 //! `_mm_loadu_si128` / `_mm_shuffle_epi8` / `_mm_storeu_si128` over
-//! pointer arithmetic the caller bounds-checks (`simd_pixels`).
-//!
-//! No other public API is unsafe.
-
-#![deny(unsafe_code)]
-#![warn(missing_docs)]
+//! pointer arithmetic bounds-checked at the dispatch site via
+//! `simd_pixels`.
 
 /// Pack `row_bytes` (length `3 * dst.len()`, RGB triples) into `dst`
 /// as `u32` ids. Each output id is `R | G<<8 | B<<16` per the
@@ -36,7 +29,7 @@
 /// # Panics
 /// Debug-only: panics when `row_bytes.len() != 3 * dst.len()`.
 #[inline]
-pub fn pack_rgb_row(row_bytes: &[u8], dst: &mut [u32]) {
+pub(crate) fn pack_rgb_row(row_bytes: &[u8], dst: &mut [u32]) {
     debug_assert_eq!(row_bytes.len(), dst.len() * 3);
     #[cfg(target_arch = "x86_64")]
     {
@@ -53,7 +46,7 @@ pub fn pack_rgb_row(row_bytes: &[u8], dst: &mut [u32]) {
 /// Scalar reference implementation. Exposed so tests + downstream
 /// fuzz harnesses can pin SIMD/scalar bit-equality.
 #[inline]
-pub fn pack_rgb_row_scalar(row_bytes: &[u8], dst: &mut [u32]) {
+pub(crate) fn pack_rgb_row_scalar(row_bytes: &[u8], dst: &mut [u32]) {
     debug_assert_eq!(row_bytes.len(), dst.len() * 3);
     for (i, slot) in dst.iter_mut().enumerate() {
         let off = i * 3;

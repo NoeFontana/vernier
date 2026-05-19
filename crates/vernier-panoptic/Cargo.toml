@@ -21,10 +21,6 @@ rustdoc-args = ["--cfg", "docsrs"]
 thiserror.workspace = true
 serde = { workspace = true }
 serde_json = { workspace = true }
-# Leaf SIMD primitives crate (RGB→u32 pack). vernier-panoptic itself
-# stays `#![forbid(unsafe_code)]` — the audited unsafe lives in
-# vernier-pixel-pack with a tight test surface.
-vernier-pixel-pack = { path = "../vernier-pixel-pack", version = "0.0.4" }
 # vernier-mask is a future-load-bearing path dep: instance PQ (this crate)
 # does not consume any mask primitive, but boundary PQ (Q3 / Z2 follow-up
 # ADR) needs the Chebyshev erosion + boundary-band ops in vernier-mask.

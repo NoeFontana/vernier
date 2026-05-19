@@ -18,7 +18,10 @@
 //!
 //! [`cocodataset/panopticapi`]: https://github.com/cocodataset/panopticapi
 
-#![forbid(unsafe_code)]
+// Switched from `forbid` → `deny` so the SSSE3 carveout in
+// `pixel_pack` can opt out at the call site via `#[allow(unsafe_code)]`.
+// Every other module in this crate stays unsafe-free.
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -33,6 +36,10 @@ pub mod parity;
 pub mod stream;
 pub mod summarize;
 pub mod tables;
+
+// Audited-unsafe SIMD primitive for RGB → u32 packing on the panoptic
+// PNG decode path. Crate-private; the only consumer is `decode.rs`.
+mod pixel_pack;
 
 // Each item lives at exactly one path — its home module. Adding a
 // re-export here widens the headline; treat it as a deliberate
