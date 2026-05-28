@@ -8,8 +8,8 @@
 # forward to the Python CLI.
 #
 # Mask R-CNN predictions are fetched from a pinned Hugging Face URL
-# (with SHA256 verification). rf-detr predictions are inferred locally
-# via the `real-models` extra and TIDE harness — see the package
-# README.
+# (with SHA256 verification). rf-detr and DETR-R50 predictions are
+# inferred locally via the `real-models` extra (TIDE and SOTA
+# harnesses, respectively) — see the package README.
 set -euo pipefail
 exec uv run python -m real_predictions_cache "$@"

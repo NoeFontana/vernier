@@ -2741,6 +2741,22 @@ wheels = [
 ]
 
 [[package]]
+name = "timm"
+version = "1.0.27"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "pyyaml" },
+    { name = "safetensors" },
+    { name = "torch" },
+    { name = "torchvision" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/08/54/ece85b0eef3700c90db8271a43669b05a0ebbe2edb1962329c34374a297e/timm-1.0.27.tar.gz", hash = "sha256:315dfe63186ca9fb7ff941268941231fd5be259f2b4bb4afa28560ae1015cb9a", size = 2439861, upload-time = "2026-05-08T19:38:36.844Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/1f/2e/26bab7686ff4aed48f8f5f6c23e2aa37b7a37ddd9effe3aa61e908fd518f/timm-1.0.27-py3-none-any.whl", hash = "sha256:5ff07c9ddf53cbada88eab1c93ff175c64cab683b5a2fddf863bcee985926f89", size = 2589280, upload-time = "2026-05-08T19:38:35.034Z" },
+]
+
+[[package]]
 name = "tokenizers"
 version = "0.22.2"
 source = { registry = "https://pypi.org/simple" }
@@ -3028,8 +3044,13 @@ dependencies = [
 
 [package.optional-dependencies]
 real-models = [
+    { name = "huggingface-hub" },
+    { name = "pillow" },
     { name = "platformdirs" },
     { name = "rfdetr" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "transformers" },
 ]
 tables = [
     { name = "polars" },
@@ -3068,13 +3089,18 @@ docs = [
 
 [package.metadata]
 requires-dist = [
+    { name = "huggingface-hub", marker = "extra == 'real-models'", specifier = ">=0.27" },
     { name = "numpy", specifier = ">=2.0" },
+    { name = "pillow", marker = "extra == 'real-models'", specifier = ">=10" },
     { name = "platformdirs", marker = "extra == 'real-models'", specifier = ">=4" },
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=6.0" },
     { name = "polars", marker = "extra == 'tables'", specifier = ">=1.0" },
     { name = "pyarrow", specifier = ">=15" },
     { name = "rfdetr", marker = "extra == 'real-models'", specifier = "==1.6.5.post0" },
+    { name = "timm", marker = "extra == 'real-models'", specifier = ">=1.0" },
+    { name = "torch", marker = "extra == 'real-models'", specifier = ">=2.4" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4" },
+    { name = "transformers", marker = "extra == 'real-models'", specifier = ">=4.45" },
 ]
 provides-extras = ["torch", "viz", "tables", "real-models"]
 

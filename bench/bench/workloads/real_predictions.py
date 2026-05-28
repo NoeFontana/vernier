@@ -1,6 +1,6 @@
 """Disk-only adapter for real-model predictions cells.
 
-Predictions come from two sources, both populating the same cache:
+Predictions come from three sources, all populating the same cache:
 
 - **Mask R-CNN R50-FPN (Detectron2 model zoo)** — downloaded from a
   pinned Hugging Face URL via ``tools/fetch-real-predictions.sh
@@ -11,6 +11,10 @@ Predictions come from two sources, both populating the same cache:
   torch, rfdetr, supervision). The bench harness reads the same JSON
   the TIDE conftest writes; running ``pytest -m real_models`` is
   enough to populate the cache.
+- **Hugging Face SOTA (DETR-R50)** — inferred locally by the SOTA
+  validation harness (``tests/python/integration/real_models/sota/``,
+  same ``real-models`` extra: torch, transformers, huggingface_hub).
+  Same cache contract: bench reads the JSON the SOTA conftest writes.
 
 The harness env stays light: this module imports nothing more than
 ``real_predictions_cache`` for path resolution.
@@ -21,8 +25,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from real_predictions_cache import (
+    DETR_RESNET50_REVISION,
     RFDETR_VERSION,
     RfdetrModelName,
+    detr_resnet50_cache_path,
     maskrcnn_cache_path,
     rfdetr_cache_path,
 )
@@ -32,6 +38,7 @@ from real_predictions_cache import (
 MASKRCNN_R50FPN_WORKLOAD_ID = "coco_val2017_maskrcnn_r50fpn_d2_v1"
 RFDETR_NANO_WORKLOAD_ID = f"coco_val2017_rfdetr_nano_v{RFDETR_VERSION}"
 RFDETR_SEGNANO_WORKLOAD_ID = f"coco_val2017_rfdetr_segnano_v{RFDETR_VERSION}"
+DETR_R50_WORKLOAD_ID = f"coco_val2017_detr_r50_v{DETR_RESNET50_REVISION[:7]}"
 
 
 def maskrcnn_dt_path() -> Path:
@@ -66,5 +73,31 @@ def rfdetr_dt_path(model_name: RfdetrModelName) -> Path:
             f"with the `real-models` extra installed (rfdetr, torch, "
             f"supervision; ~5 GB on first install). Once populated, the "
             f"bench harness reads the JSON without any inference dep."
+        )
+    return path
+
+
+def detr_r50_dt_path() -> Path:
+    """Return the DETR-R50 cached prediction JSON.
+
+    Same read-only adapter shape as :func:`maskrcnn_dt_path` /
+    :func:`rfdetr_dt_path`: if the cache is missing, point the user at
+    the populator (either the pytest fixture or the
+    ``tools/fetch-real-predictions.sh --detr`` shim that shells into
+    the same ``real-models`` extra). Keeping the bench env free of
+    transformers / torch / huggingface_hub deps means an unpopulated
+    cache surfaces as a hard error instead of a silent zero-detection
+    benchmark.
+    """
+    path = detr_resnet50_cache_path()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"DETR-R50 prediction cache missing at {path}. "
+            f"Populate it by running `pytest -m real_models "
+            f"tests/python/integration/real_models/sota/test_detr_real_models.py` "
+            f"with the `real-models` extra installed (torch, transformers, "
+            f"huggingface_hub, timm; ~12-15h on an 8-core CPU for the "
+            f"first run, seconds on cache hit). Alternatively, run "
+            f"`./tools/fetch-real-predictions.sh --detr` for the same flow."
         )
     return path
