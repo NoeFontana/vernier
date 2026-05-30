@@ -42,6 +42,19 @@ def test_rfdetr_dt_path_missing_points_at_real_models_extra(fake_cache: Path) ->
         real_predictions.rfdetr_dt_path("nano")
 
 
+def test_detr_r50_dt_path_returns_cached_file(fake_cache: Path) -> None:
+    from real_predictions_cache import DETR_RESNET50_REVISION
+
+    blob = fake_cache / f"detr-r50-{DETR_RESNET50_REVISION}-coco-val2017.json"
+    blob.write_bytes(b"[]")
+    assert real_predictions.detr_r50_dt_path() == blob
+
+
+def test_detr_r50_dt_path_missing_points_at_real_models_extra(fake_cache: Path) -> None:
+    with pytest.raises(FileNotFoundError, match=r"pytest -m real_models"):
+        real_predictions.detr_r50_dt_path()
+
+
 @pytest.mark.parametrize(
     ("workload_id", "blob_filename", "expected_iou_types"),
     [
@@ -58,6 +71,11 @@ def test_rfdetr_dt_path_missing_points_at_real_models_extra(fake_cache: Path) ->
         (
             real_predictions.RFDETR_NANO_WORKLOAD_ID,
             f"rfdetr-nano-{real_predictions.RFDETR_VERSION}-coco-val2017.json",
+            frozenset({"bbox"}),
+        ),
+        (
+            real_predictions.DETR_R50_WORKLOAD_ID,
+            f"detr-r50-{real_predictions.DETR_RESNET50_REVISION}-coco-val2017.json",
             frozenset({"bbox"}),
         ),
     ],
@@ -136,3 +154,33 @@ def test_populate_rfdetr_rejects_unknown_model() -> None:
 
     with pytest.raises(ValueError, match="unknown rf-detr model"):
         real_predictions_cache.populate_rfdetr(cast(RfdetrModelName, "nope"))
+
+
+def test_populate_detr_resnet50_shells_into_real_models_extra(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same shape gate as the rfdetr test: a wrong invocation (missing
+    --extra, wrong module path, wrong cwd) would silently fall back to
+    the harness env and ImportError on transformers."""
+    import real_predictions_cache
+
+    captured: dict[str, object] = {}
+
+    def fake_run(cmd: list[str], **kwargs: object) -> object:
+        captured["cmd"] = cmd
+        captured["cwd"] = kwargs.get("cwd")
+        captured["check"] = kwargs.get("check")
+        return None
+
+    monkeypatch.setattr("real_predictions_cache.subprocess.run", fake_run)
+    real_predictions_cache.populate_detr_resnet50()
+
+    cmd = captured["cmd"]
+    assert isinstance(cmd, list)
+    assert cmd[:5] == ["uv", "run", "--extra", "real-models", "python"]
+    assert "-m" in cmd
+    module_idx = cmd.index("-m") + 1
+    assert cmd[module_idx] == "tests.python.integration.real_models.sota._populate_cache"
+    assert "--detr" in cmd
+    assert captured["check"] is True
+    assert captured["cwd"] == real_predictions_cache.REPO_ROOT

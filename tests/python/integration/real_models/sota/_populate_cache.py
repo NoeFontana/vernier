@@ -7,10 +7,11 @@ script is the populator: it depends on the heavy ``[real-models]``
 extra and is shelled into by ``tools/fetch-real-predictions.sh --detr``
 (via ``real_predictions_cache.populate_detr_resnet50``).
 
-Inference is the cost driver (~5h on CPU for COCO val2017); a cache
-hit is seconds. Same cache as the pytest-driven SOTA harness — running
-``pytest -m real_models tests/python/integration/real_models/sota`` is
-the test-time equivalent.
+Inference is the cost driver (~12-15h on an 8-core CPU for COCO
+val2017 — 5000 images x ~9s/image); a cache hit is seconds. Same
+cache as the pytest-driven SOTA harness — running ``pytest -m
+real_models tests/python/integration/real_models/sota`` is the
+test-time equivalent.
 
 Usage::
 
@@ -82,9 +83,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not args.detr:
         parser.error("at least one model flag is required (--detr)")
 
-    if args.detr:
-        path = _populate_detr()
-        print(f"DETR-R50 predictions cached: {path}")
+    path = _populate_detr()
+    print(f"DETR-R50 predictions cached: {path}")
 
     return 0
 

@@ -737,7 +737,7 @@ wheels = [
 
 [[package]]
 name = "vernier"
-version = "0.0.4"
+version = "0.1.0"
 source = { directory = "../../../" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -747,13 +747,18 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "huggingface-hub", marker = "extra == 'real-models'", specifier = ">=0.27" },
     { name = "numpy", specifier = ">=2.0" },
+    { name = "pillow", marker = "extra == 'real-models'", specifier = ">=10" },
     { name = "platformdirs", marker = "extra == 'real-models'", specifier = ">=4" },
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=6.0" },
     { name = "polars", marker = "extra == 'tables'", specifier = ">=1.0" },
     { name = "pyarrow", specifier = ">=15" },
     { name = "rfdetr", marker = "extra == 'real-models'", specifier = "==1.6.5.post0" },
+    { name = "timm", marker = "extra == 'real-models'", specifier = ">=1.0" },
+    { name = "torch", marker = "extra == 'real-models'", specifier = ">=2.4" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4" },
+    { name = "transformers", marker = "extra == 'real-models'", specifier = ">=5.1" },
 ]
 provides-extras = ["torch", "viz", "tables", "real-models"]
 

@@ -68,7 +68,12 @@ real-models = [
     "rfdetr==1.6.5.post0",
     "platformdirs>=4",
     "torch>=2.4",
-    "transformers>=4.45",
+    # rfdetr 1.6.5.post0's own metadata pins `transformers<6.0.0,>=5.1.0`;
+    # matching the floor here keeps the spec internally consistent so a
+    # future SOTA-only split (rfdetr dropped from the extra) doesn't
+    # silently resolve a 4.x transformers that lacks the current shape
+    # of AutoModelForObjectDetection / post_process_object_detection.
+    "transformers>=5.1",
     "huggingface_hub>=0.27",
     "Pillow>=10",
     # facebook/detr-resnet-50 wraps its ResNet-50 backbone via timm's

@@ -13,6 +13,11 @@ together.
   boundary / keypoints), panoptic, and the vernier-only synthetic
   semantic baseline. Carries the perf-round timeline so a reader can
   see how each cell got to its current numbers.
+* [2026-05-detr-r50-real-predictions.md](./2026-05-detr-r50-real-predictions.md)
+  — release-mode snapshot of the bbox cell against real
+  `facebook/detr-resnet-50` predictions on COCO val2017 (150,680
+  detections). Companion to the jittered-DT cells; documents the
+  real-distribution gap that synthetic workloads don't exercise.
 * [2026-05-bbox-cdf.md](./2026-05-bbox-cdf.md) — Stage 0 measurement
   for the bbox-IoU optimization plan. **Two regimes**: multi-category
   sparse (val2017: median `G·D = 1`, drop 1b/1c/2c, lever is per-call

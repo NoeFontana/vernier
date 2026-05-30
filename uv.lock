@@ -3100,7 +3100,7 @@ requires-dist = [
     { name = "timm", marker = "extra == 'real-models'", specifier = ">=1.0" },
     { name = "torch", marker = "extra == 'real-models'", specifier = ">=2.4" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4" },
-    { name = "transformers", marker = "extra == 'real-models'", specifier = ">=4.45" },
+    { name = "transformers", marker = "extra == 'real-models'", specifier = ">=5.1" },
 ]
 provides-extras = ["torch", "viz", "tables", "real-models"]
 

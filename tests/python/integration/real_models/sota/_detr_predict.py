@@ -23,7 +23,7 @@ the same forward graph regardless).
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -37,6 +37,26 @@ _DATASET_LABEL = "coco-val2017"
 #: just throw away signal the AP / TIDE machinery is designed to absorb.
 _SCORE_THRESHOLD = 0.05
 
+#: The 11 COCO-2014 categories DETR's id2label publishes that COCO
+#: val2017 GT (80-category subset) drops. Skipping these silently is
+#: correct; any OTHER unmapped name should fail loud (subset / aliased /
+#: corrupted GT) — same loud-fail invariant the rfdetr adapter enforces.
+_COCO91_DROPPED_NAMES = frozenset(
+    {
+        "street sign",
+        "hat",
+        "shoe",
+        "eye glasses",
+        "plate",
+        "mirror",
+        "window",
+        "desk",
+        "door",
+        "blender",
+        "hair brush",
+    }
+)
+
 
 def _coco_class_mapping(gt: dict[str, Any], id2label: dict[int, str]) -> dict[int, int]:
     """Map DETR's hub-config label id (0..91, with COCO sparse-id gaps
@@ -49,15 +69,12 @@ def _coco_class_mapping(gt: dict[str, Any], id2label: dict[int, str]) -> dict[in
     established (``tide/_rfdetr_predict.py::_coco_class_mapping``).
 
     DETR is COCO-2014-classes-aware (91 categories) while COCO val2017
-    GT uses the 80-category subset (11 categories were dropped: "street
-    sign", "hat", "shoe", "eye glasses", "plate", "mirror", "window",
-    "desk", "door", "blender", "hair brush"). DETR can emit those
-    labels above threshold; they simply don't exist in the GT. We
-    silent-skip them from the mapping so :func:`_records_for_image`
-    drops the records — pycocotools would filter them server-side
-    anyway when computing AP against the 80-class GT, and the parity
-    contract is "produce the same eval state pycocotools would on the
-    same DT JSON," not "include classes that AP can't score."
+    GT uses the 80-category subset; the 11 dropped names are listed in
+    :data:`_COCO91_DROPPED_NAMES` and silent-skipped here. Any OTHER
+    missing name raises loud — that's the failure mode rfdetr's adapter
+    explicitly defends against (a subset / aliased / corrupted GT JSON
+    that would otherwise produce a partially-empty cache under a pinned
+    revision SHA).
     """
     name_to_cat_id = {cat["name"]: int(cat["id"]) for cat in gt["categories"]}
     mapping: dict[int, int] = {}
@@ -66,9 +83,16 @@ def _coco_class_mapping(gt: dict[str, Any], id2label: dict[int, str]) -> dict[in
             continue
         cat_id = name_to_cat_id.get(name)
         if cat_id is None:
-            # Not in this GT's category set — DETR-91 outside COCO-80,
-            # or a remapped/subset GT. The caller filters via mapping.get().
-            continue
+            if name in _COCO91_DROPPED_NAMES:
+                continue
+            raise RuntimeError(
+                f"DETR label {label_id} ('{name}') has no matching category "
+                f"in the GT JSON, and it isn't one of the 11 documented "
+                f"COCO-91→COCO-80 drops ({sorted(_COCO91_DROPPED_NAMES)}). "
+                f"Likely a subset / aliased / corrupted GT — refusing to "
+                f"silently produce a partial cache. GT category names: "
+                f"{sorted(name_to_cat_id)}"
+            )
         mapping[label_id] = cat_id
     return mapping
 
@@ -85,8 +109,18 @@ def _instantiate_model(revision: str) -> tuple[Any, Any]:
     the same SHA the weights resolve to. ``low_cpu_mem_usage=True``
     streams shards into memory rather than materializing the full
     state dict twice; harmless on CPU but cuts peak RSS during load.
+
+    Pins ``torch.set_num_threads(1)`` before the first forward pass so
+    intra-op summation order is the same regardless of the host's
+    physical core count — the cache key is ``(model, revision, dataset)``
+    only, so without this pin two machines on the same revision would
+    populate the cache with bit-different bytes via summation-order
+    drift in matmul reductions.
     """
+    import torch
     from transformers import AutoImageProcessor, AutoModelForObjectDetection
+
+    torch.set_num_threads(1)
 
     processor = AutoImageProcessor.from_pretrained(_MODEL_ID, revision=revision)
     model = AutoModelForObjectDetection.from_pretrained(
@@ -120,7 +154,12 @@ def _records_for_image(
     with torch.inference_mode():
         outputs = model(**inputs)
 
-    target_sizes = torch.tensor([image_size_hw], dtype=torch.float64)
+    # int64 (not float64) target_sizes: transformers' post-process builds
+    # scale_fct from this tensor and multiplies the float32 boxes against
+    # it. fp64 here silently upcasts the box arithmetic to fp64, making
+    # cached bytes sensitive to a transformers internal that could shift
+    # between minor versions. int → boxes stay at their native dtype.
+    target_sizes = torch.tensor([image_size_hw], dtype=torch.int64)
     results = processor.post_process_object_detection(
         outputs,
         target_sizes=target_sizes,
@@ -177,11 +216,16 @@ def predict_coco_val(
     id2label: dict[int, str] = {int(k): v for k, v in model.config.id2label.items()}
     class_mapping = _coco_class_mapping(gt, id2label)
 
-    images: Iterable[dict[str, Any]] = gt["images"]
+    # `Sequence` (not `Iterable`) so `len()` below is type-honest. The
+    # GT JSON loader always returns a list; pinning the annotation here
+    # prevents a future generator-shaped caller from silently slipping
+    # past type-checking and crashing on `len()` mid-run.
+    image_list: Sequence[dict[str, Any]] = gt["images"]
+    images: Iterable[dict[str, Any]] = image_list
     if progress:
         from tqdm import tqdm
 
-        images = tqdm(images, total=len(gt["images"]), desc=f"detr-r50 {_DATASET_LABEL}")
+        images = tqdm(image_list, total=len(image_list), desc=f"detr-r50 {_DATASET_LABEL}")
 
     records: list[dict[str, Any]] = []
     for img in images:

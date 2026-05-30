@@ -142,12 +142,14 @@ def detr_resnet50_cache_filename(*, revision: str = DETR_RESNET50_REVISION) -> s
     """Stable filename for ``facebook/detr-resnet-50`` predictions on
     COCO val2017.
 
-    Uses the first 7 chars of the commit SHA — same convention as ``git
-    rev-parse --short`` — to keep the path readable while remaining
-    unambiguous. The full SHA is the source of truth; the filename
-    embeds the abbreviation for human inspection only.
+    Embeds the FULL commit SHA so the filename IS the cache key — two
+    future revisions sharing the first 7 hex chars can't collide on
+    disk and silently serve stale predictions under a bumped pin. The
+    user-facing workload ID (``coco_val2017_detr_r50_v<short>``) keeps
+    the abbreviation for readability; that string is a label, not a
+    data-integrity surface.
     """
-    return f"detr-r50-{revision[:7]}-{_DATASET_ID}.json"
+    return f"detr-r50-{revision}-{_DATASET_ID}.json"
 
 
 def detr_resnet50_cache_path(
