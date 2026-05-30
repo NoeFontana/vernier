@@ -22,6 +22,11 @@ dependencies = [
     # COCO panoptic val2017 dev cache (ADR-0025); same fetch+verify
     # shape, gated on the same VERNIER_BENCH_DOWNLOAD_TESTS env var.
     "vernier-panoptic-val-cache",
+    # ADE20K val cache for the Mask2Former semantic real-prediction
+    # cell. Same fetch+verify shape as the COCO/panoptic caches; the
+    # bench adapter resolves the GT label-map dir + n_classes through
+    # ade20k_val_cache.ensure_gt().
+    "vernier-ade20k-val-cache",
     # Cache-path resolver for real-model predictions (Mask R-CNN
     # downloaded; rf-detr inferred via the TIDE harness). Path source
     # below; transitively pulls platformdirs.
@@ -51,6 +56,7 @@ dependencies = [
 vernier-coco-val-cache = { path = "../tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "../tools/lvis_val_cache", editable = true }
 vernier-panoptic-val-cache = { path = "../tools/panoptic_val_cache", editable = true }
+vernier-ade20k-val-cache = { path = "../tools/ade20k_val_cache", editable = true }
 vernier-real-predictions-cache = { path = "../tools/real_predictions_cache", editable = true }
 
 [project.scripts]

@@ -846,6 +846,11 @@ wheels = [
 ]
 
 [[package]]
+name = "vernier-ade20k-val-cache"
+version = "0.0.0"
+source = { editable = "../tools/ade20k_val_cache" }
+
+[[package]]
 name = "vernier-bench"
 version = "0.0.0"
 source = { editable = "." }
@@ -860,6 +865,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "vernier-ade20k-val-cache" },
     { name = "vernier-coco-val-cache" },
     { name = "vernier-lvis-val-cache" },
     { name = "vernier-panoptic-val-cache" },
@@ -883,6 +889,7 @@ requires-dist = [
     { name = "pycocotools", specifier = "==2.0.11" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "scipy", specifier = ">=1.11" },
+    { name = "vernier-ade20k-val-cache", editable = "../tools/ade20k_val_cache" },
     { name = "vernier-coco-val-cache", editable = "../tools/coco_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "../tools/lvis_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "../tools/panoptic_val_cache" },

@@ -20,8 +20,11 @@ Also writes a sibling ``categories.json`` (extracted from the GT JSON's
 can pass ``--categories-json`` as a separate path. The categories
 file is idempotent (rewritten only if missing).
 
-The real-prediction follow-up (Mask2Former dump) is deferred to
-Stage 3 — see the docstring TODO at module footer.
+The real-prediction Mask2Former cell
+(``coco_panoptic_val2017_mask2former_swin_t_v<sha>``) is registered
+by :mod:`bench.workloads.real_predictions` against the SOTA harness's
+prediction cache. This module owns only the perfect-DT smoke and the
+GT-side cache contract.
 """
 
 from __future__ import annotations
@@ -87,7 +90,3 @@ def perfect_workload_paths() -> tuple[Path, Path, Path, Path, Path]:
     dt_json, dt_png_dir = ensure_perfect_dt()
     cats_json = _ensure_categories_json(gt_json)
     return gt_png_dir, gt_json, dt_png_dir, dt_json, cats_json
-
-
-# TODO(stage-3 / S3-A): coco_panoptic_val2017_mask2former_<version> via
-# tools/real_predictions_cache/panoptic.py:ensure_mask2former().

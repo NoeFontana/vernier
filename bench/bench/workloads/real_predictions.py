@@ -1,6 +1,6 @@
 """Disk-only adapter for real-model predictions cells.
 
-Predictions come from three sources, all populating the same cache:
+Predictions come from four sources, all populating the same cache:
 
 - **Mask R-CNN R50-FPN (Detectron2 model zoo)** — downloaded from a
   pinned Hugging Face URL via ``tools/fetch-real-predictions.sh
@@ -15,6 +15,10 @@ Predictions come from three sources, all populating the same cache:
   validation harness (``tests/python/integration/real_models/sota/``,
   same ``real-models`` extra: torch, transformers, huggingface_hub).
   Same cache contract: bench reads the JSON the SOTA conftest writes.
+- **Hugging Face SOTA (Mask2Former Swin-T)** — two cells from one
+  architecture family: a panoptic cell on COCO val2017 (PNG dir +
+  panoptic_dt.json sidecar) and a semantic cell on ADE20K val (PNG
+  dir of train-id label maps). Same SOTA harness + cache contract.
 
 The harness env stays light: this module imports nothing more than
 ``real_predictions_cache`` for path resolution.
@@ -26,9 +30,14 @@ from pathlib import Path
 
 from real_predictions_cache import (
     DETR_RESNET50_REVISION,
+    MASK2FORMER_ADE_REVISION,
+    MASK2FORMER_PANOPTIC_REVISION,
     RFDETR_VERSION,
     RfdetrModelName,
     detr_resnet50_cache_path,
+    mask2former_ade_cache_dir,
+    mask2former_panoptic_cache_dir,
+    mask2former_panoptic_dt_json_path,
     maskrcnn_cache_path,
     rfdetr_cache_path,
 )
@@ -39,6 +48,10 @@ MASKRCNN_R50FPN_WORKLOAD_ID = "coco_val2017_maskrcnn_r50fpn_d2_v1"
 RFDETR_NANO_WORKLOAD_ID = f"coco_val2017_rfdetr_nano_v{RFDETR_VERSION}"
 RFDETR_SEGNANO_WORKLOAD_ID = f"coco_val2017_rfdetr_segnano_v{RFDETR_VERSION}"
 DETR_R50_WORKLOAD_ID = f"coco_val2017_detr_r50_v{DETR_RESNET50_REVISION[:7]}"
+MASK2FORMER_PANOPTIC_WORKLOAD_ID = (
+    f"coco_panoptic_val2017_mask2former_swin_t_v{MASK2FORMER_PANOPTIC_REVISION[:7]}"
+)
+MASK2FORMER_ADE_WORKLOAD_ID = f"ade20k_val_mask2former_swin_t_v{MASK2FORMER_ADE_REVISION[:7]}"
 
 
 def maskrcnn_dt_path() -> Path:
@@ -75,6 +88,59 @@ def rfdetr_dt_path(model_name: RfdetrModelName) -> Path:
             f"bench harness reads the JSON without any inference dep."
         )
     return path
+
+
+def mask2former_panoptic_dt_paths() -> tuple[Path, Path]:
+    """Return ``(dt_png_dir, dt_json_path)`` for the Mask2Former panoptic
+    predictions cache.
+
+    Two-piece return because panoptic results are not a single file:
+    the PNG dir holds rgb2id-encoded segment maps (one per image),
+    and the JSON sidecar holds the matching ``segments_info``. Both
+    pieces share the same revision-pinned cache directory.
+
+    Read-only adapter pattern (same as :func:`maskrcnn_dt_path`): a
+    missing cache surfaces the populator hint rather than silently
+    producing a degenerate benchmark. Mask2Former predictions are
+    inferred locally by the SOTA harness; the bench env doesn't carry
+    transformers / torch / huggingface_hub.
+    """
+    cache_dir = mask2former_panoptic_cache_dir()
+    dt_json = mask2former_panoptic_dt_json_path()
+    if not (cache_dir.is_dir() and dt_json.is_file()):
+        raise FileNotFoundError(
+            f"Mask2Former panoptic prediction cache missing at {cache_dir} "
+            f"(expected dir + {dt_json.name}). Populate via "
+            f"`./tools/fetch-real-predictions.sh --mask2former-panoptic` or "
+            f"`pytest -m real_models tests/python/integration/real_models/sota/"
+            f"test_mask2former_panoptic_real_models.py` with the `real-models` "
+            f"extra installed (~20-25h on 8-core CPU first run). "
+            f"MASK2FORMER_PANOPTIC_REVISION must also be pinned in source — see "
+            f"tools/real_predictions_cache/real_predictions_cache/__init__.py."
+        )
+    return cache_dir, dt_json
+
+
+def mask2former_ade_dt_path() -> Path:
+    """Return the Mask2Former ADE-semantic predictions cache directory.
+
+    Single-path return (unlike :func:`mask2former_panoptic_dt_paths`):
+    semantic predictions are just per-image label-map PNGs, no JSON
+    sidecar. Same read-only adapter pattern; same actionable error
+    on a missing cache.
+    """
+    cache_dir = mask2former_ade_cache_dir()
+    if not cache_dir.is_dir() or not any(cache_dir.iterdir()):
+        raise FileNotFoundError(
+            f"Mask2Former ADE-semantic prediction cache missing or empty at "
+            f"{cache_dir}. Populate via "
+            f"`./tools/fetch-real-predictions.sh --mask2former-ade` or "
+            f"`pytest -m real_models tests/python/integration/real_models/sota/"
+            f"test_mask2former_ade_real_models.py` with the `real-models` extra "
+            f"and the ADE20K val cache provisioned (~3-4h on 8-core CPU first "
+            f"run). MASK2FORMER_ADE_REVISION must also be pinned in source."
+        )
+    return cache_dir
 
 
 def detr_r50_dt_path() -> Path:

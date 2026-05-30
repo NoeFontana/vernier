@@ -18,6 +18,13 @@ together.
   `facebook/detr-resnet-50` predictions on COCO val2017 (150,680
   detections). Companion to the jittered-DT cells; documents the
   real-distribution gap that synthetic workloads don't exercise.
+* [2026-05-mask2former-real-predictions.md](./2026-05-mask2former-real-predictions.md)
+  — release-mode panoptic + semantic cells against real
+  `facebook/mask2former-swin-tiny-coco-panoptic` (COCO val2017) and
+  `facebook/mask2former-swin-tiny-ade-semantic` (ADE20K val)
+  predictions. Companion to the perfect-DT panoptic / synthetic
+  semantic cells; closes the real-distribution gap on two more
+  paradigms.
 * [2026-05-bbox-cdf.md](./2026-05-bbox-cdf.md) — Stage 0 measurement
   for the bbox-IoU optimization plan. **Two regimes**: multi-category
   sparse (val2017: median `G·D = 1`, drop 1b/1c/2c, lever is per-call
