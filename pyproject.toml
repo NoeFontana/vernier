@@ -51,14 +51,38 @@ viz = ["plotly>=6.0"]
 # user picks themselves. (pyarrow moved to base ``dependencies`` for
 # the ADR-0046 ``vernier.aggregate`` surface.)
 tables = ["polars>=1.0"]
-# Real-model validation harness (TIDE Week 5). rfdetr is the source of
-# RFDETRNano (bbox) + RFDETRSegNano (segm) used by
-# tests/python/integration/real_models/tide/. Pinned exact: this is the
-# "non-parity sanity-check" vendoring flavor — see
-# docs/engineering/vendoring.md and THIRD_PARTY_NOTICES.md. Pulled in
-# explicitly via `uv sync --extra real-models`; the @pytest.mark.real_models
-# tests skip cleanly when rfdetr is absent.
-real-models = ["rfdetr==1.6.5.post0", "platformdirs>=4"]
+# Real-model validation harness. Two families share this extra:
+#   * rfdetr (TIDE Week 5) — RFDETRNano (bbox) + RFDETRSegNano (segm)
+#     used by tests/python/integration/real_models/tide/. Pinned exact:
+#     this is the "non-parity sanity-check" vendoring flavor — see
+#     docs/engineering/vendoring.md and THIRD_PARTY_NOTICES.md.
+#   * Hugging Face SOTA harness (tests/python/integration/real_models/sota/) —
+#     transformers + huggingface_hub drive inference for HF-hosted models
+#     (DETR for now; Mask2Former / SegFormer / ViTPose to follow). torch
+#     is shared with rfdetr; pinning the lower bound here keeps the extra
+#     self-contained so users don't need both `--extra real-models` and
+#     `--extra torch`. Pillow drives image IO on the SOTA path.
+# Pulled in explicitly via `uv sync --extra real-models`; the
+# @pytest.mark.real_models tests skip cleanly when the extra is absent.
+real-models = [
+    "rfdetr==1.6.5.post0",
+    "platformdirs>=4",
+    "torch>=2.4",
+    # rfdetr 1.6.5.post0's own metadata pins `transformers<6.0.0,>=5.1.0`;
+    # matching the floor here keeps the spec internally consistent so a
+    # future SOTA-only split (rfdetr dropped from the extra) doesn't
+    # silently resolve a 4.x transformers that lacks the current shape
+    # of AutoModelForObjectDetection / post_process_object_detection.
+    "transformers>=5.1",
+    "huggingface_hub>=0.27",
+    "Pillow>=10",
+    # facebook/detr-resnet-50 wraps its ResNet-50 backbone via timm's
+    # `TimmBackbone`; transformers raises ImportError on .from_pretrained
+    # without it. Same backbone choice is shared by other DETR-family
+    # checkpoints we'll add next (DETA, RT-DETR), so pinning here keeps
+    # the dep set monotonic across paradigms.
+    "timm>=1.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/NoeFontana/vernier"

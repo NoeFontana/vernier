@@ -70,6 +70,18 @@ RFDETR_VERSION = "1.6.5.post0"
 RfdetrModelName = Literal["nano", "segnano"]
 
 # ---------------------------------------------------------------------------
+# Hugging Face SOTA harness — DETR-R50 (object detection)
+# ---------------------------------------------------------------------------
+
+#: Pinned ``facebook/detr-resnet-50`` commit on the Hugging Face hub.
+#: The inference module loads weights with ``revision=DETR_RESNET50_REVISION``
+#: so a weights bump on the hub can't silently shift cached predictions.
+#: Bumping is an ADR-level decision (matches the rfdetr / Mask R-CNN
+#: pin policy): perf snapshots and the bench's parity-on-real-data
+#: claims are keyed on it.
+DETR_RESNET50_REVISION = "1d5f47bd3bdd2c4bbfa585418ffe6da5028b4c0b"
+
+# ---------------------------------------------------------------------------
 # Shared cache plumbing
 # ---------------------------------------------------------------------------
 
@@ -126,6 +138,36 @@ def rfdetr_cache_path(
     return cache_root(cache) / rfdetr_cache_filename(model_name, version=version)
 
 
+def detr_resnet50_cache_filename(*, revision: str = DETR_RESNET50_REVISION) -> str:
+    """Stable filename for ``facebook/detr-resnet-50`` predictions on
+    COCO val2017.
+
+    Embeds the FULL commit SHA so the filename IS the cache key — two
+    future revisions sharing the first 7 hex chars can't collide on
+    disk and silently serve stale predictions under a bumped pin. The
+    user-facing workload ID (``coco_val2017_detr_r50_v<short>``) keeps
+    the abbreviation for readability; that string is a label, not a
+    data-integrity surface.
+    """
+    return f"detr-r50-{revision}-{_DATASET_ID}.json"
+
+
+def detr_resnet50_cache_path(
+    *,
+    revision: str = DETR_RESNET50_REVISION,
+    cache: Path | None = None,
+) -> Path:
+    """Return the canonical cache location for DETR-R50 predictions.
+
+    Symmetric with :func:`rfdetr_cache_path`: the resolver doesn't
+    populate the cache. :func:`populate_detr_resnet50` shells into the
+    ``real-models`` extra to do the inference; the bench-side adapter
+    (``bench/bench/workloads/real_predictions.py``) reads the resulting
+    JSON without any inference dep of its own.
+    """
+    return cache_root(cache) / detr_resnet50_cache_filename(revision=revision)
+
+
 def ensure_maskrcnn(
     *,
     cache: Path | None = None,
@@ -177,6 +219,7 @@ def ensure_maskrcnn(
 
 
 _RFDETR_POPULATOR_MODULE = "tests.python.integration.real_models.tide._populate_cache"
+_DETR_R50_POPULATOR_MODULE = "tests.python.integration.real_models.sota._populate_cache"
 
 
 def populate_rfdetr(model_name: RfdetrModelName) -> None:
@@ -208,6 +251,38 @@ def populate_rfdetr(model_name: RfdetrModelName) -> None:
     ]
     print(
         f"Shelling into [real-models] extra for rf-detr {model_name} inference: {' '.join(cmd)}",
+        file=sys.stderr,
+    )
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+
+
+def populate_detr_resnet50() -> None:
+    """Run DETR-R50 inference on COCO val2017 to populate the cache.
+
+    Shells into ``uv run --extra real-models python -m
+    tests.python.integration.real_models.sota._populate_cache --detr``
+    so the heavy ``[real-models]`` extra (torch, transformers,
+    huggingface_hub) lives outside this package's dep set — same shape
+    as :func:`populate_rfdetr`. The SOTA module owns the inference
+    path; this function is just the orchestrator.
+
+    First run on a clean machine takes ~12-15 hours on CPU (DETR-R50
+    is ~9s per 640x480 image on an 8-core AMD EPYC-Milan; val2017 is
+    5000 images). A cache hit is seconds. Cached output lands at
+    :func:`detr_resnet50_cache_path`, which the bench adapter reads.
+    """
+    cmd = [
+        "uv",
+        "run",
+        "--extra",
+        "real-models",
+        "python",
+        "-m",
+        _DETR_R50_POPULATOR_MODULE,
+        "--detr",
+    ]
+    print(
+        f"Shelling into [real-models] extra for DETR-R50 inference: {' '.join(cmd)}",
         file=sys.stderr,
     )
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
@@ -247,10 +322,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         "`real-models` extra (torch, rfdetr, supervision). Note: this "
         "shells into the heavy extra; the bench env stays light.",
     )
+    parser.add_argument(
+        "--detr",
+        action="store_true",
+        help="Run facebook/detr-resnet-50 inference (Hugging Face SOTA "
+        "harness) to populate the cache. Requires the `real-models` "
+        "extra (torch, transformers, huggingface_hub, timm). ~12-15h "
+        "on an 8-core CPU for COCO val2017. Same shell-into-the-extra "
+        "shape as --rfdetr.",
+    )
     args = parser.parse_args(argv)
 
-    if not (args.maskrcnn or args.rfdetr):
-        parser.error("at least one of --maskrcnn / --rfdetr is required")
+    if not (args.maskrcnn or args.rfdetr or args.detr):
+        parser.error("at least one of --maskrcnn / --rfdetr / --detr is required")
 
     if args.maskrcnn:
         path = ensure_maskrcnn(url=args.url, sha256=args.sha256)
@@ -260,5 +344,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         populate_rfdetr(args.rfdetr)
         path = rfdetr_cache_path(args.rfdetr)
         print(f"rf-detr {args.rfdetr} predictions ready: {path}")
+
+    if args.detr:
+        populate_detr_resnet50()
+        path = detr_resnet50_cache_path()
+        print(f"DETR-R50 predictions ready: {path}")
 
     return 0

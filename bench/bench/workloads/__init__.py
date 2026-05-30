@@ -34,6 +34,13 @@ Workload identifiers (instance — registered today):
 - ``coco_val2017_rfdetr_segnano_v<rfdetr-pin>`` — instance-seg rf-detr
   SegNano predictions on val2017. Same provenance as Nano. Serves bbox
   + segm + boundary.
+- ``coco_val2017_detr_r50_v<short-sha>`` — bbox-only ``facebook/detr-resnet-50``
+  predictions on val2017, inferred by the Hugging Face SOTA harness
+  (``tests/python/integration/real_models/sota/``). Same ``real-models``
+  extra as rf-detr (torch + transformers + huggingface_hub). The pin
+  is the first 7 chars of the model's hub commit SHA. Serves bbox only;
+  Mask2Former (instance / panoptic) and ViTPose (keypoints) will follow
+  in subsequent SOTA-harness PRs.
 
 Panoptic / semantic / streaming workload IDs are reserved by their
 respective B-streams (B1 panoptic, B2 semantic, B3 streaming) and
@@ -412,6 +419,14 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
         )
 
+    if workload_name == real_predictions.DETR_R50_WORKLOAD_ID:
+        return InstanceWorkload(
+            workload_id=workload_name,
+            gt_path=coco_val2017.gt_path(),
+            dt_path=real_predictions.detr_r50_dt_path(),
+            supported_iou_types=frozenset({"bbox"}),
+        )
+
     # B1 (ADR-0033 + ADR-0025): panoptic-quality cells.
     if workload_name == coco_panoptic_val2017.PERFECT_WORKLOAD_ID:
         gt_png_dir, gt_json, dt_png_dir, dt_json, cats_json = (
@@ -507,5 +522,6 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
         f"'{real_predictions.MASKRCNN_R50FPN_WORKLOAD_ID}', "
         f"'{real_predictions.RFDETR_NANO_WORKLOAD_ID}', "
         f"'{real_predictions.RFDETR_SEGNANO_WORKLOAD_ID}', "
+        f"'{real_predictions.DETR_R50_WORKLOAD_ID}', "
         f"'{lvis_v1.PERFECT_WORKLOAD_ID}', 'lvis_v1_val_jittered_seed<N>'"
     )

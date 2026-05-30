@@ -1,7 +1,7 @@
 # vernier-real-predictions-cache
 
 Single source of truth for the real-model predictions cache contract.
-Predictions come from two sources, both landing under the same cache
+Predictions come from three sources, all landing under the same cache
 root (`platformdirs.user_cache_dir("vernier") / "real-models"`):
 
 - **Mask R-CNN R50-FPN (Detectron2 model zoo).** Pre-computed on
@@ -12,6 +12,13 @@ root (`platformdirs.user_cache_dir("vernier") / "real-models"`):
   which depends on the `real-models` extra (rfdetr, torch, supervision).
   This package only owns the cache *path*; the inference is owned by
   TIDE.
+- **DETR-R50 (`facebook/detr-resnet-50`).** Generated on-demand by the
+  Hugging Face SOTA validation harness
+  (`tests/python/integration/real_models/sota/`), which depends on the
+  same `real-models` extra (torch, transformers, huggingface_hub). The
+  hub commit SHA is pinned in `DETR_RESNET50_REVISION` and embedded
+  in the cache filename, so a weights bump invalidates the cache by
+  construction.
 
 Consumers:
 
