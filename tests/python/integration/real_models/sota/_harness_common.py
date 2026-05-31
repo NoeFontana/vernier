@@ -4,17 +4,25 @@ The three predictors (``_detr_predict``, ``_mask2former_panoptic_predict``,
 ``_mask2former_ade_predict``) share the same set of disciplines, paid
 for once in PR #265's follow-up:
 
-1. ``torch.set_num_threads(1)`` before the first forward — summation
-   order must be host-independent because the cache key is
-   ``(model, revision, dataset)`` only.
+1. **Single-threaded inference** — both ``OMP_NUM_THREADS`` and
+   ``MKL_NUM_THREADS`` are forced to ``"1"`` at import time AND
+   ``torch.set_num_threads(1)`` is called before the first forward.
+   The env-var path is the only one that reliably takes effect when
+   torch's intra-op pool has already been initialised by an earlier
+   test in the same pytest process; the in-process call is
+   defence-in-depth. Cache keys are ``(model, revision, dataset)`` only,
+   so without this pin two hosts on the same revision would populate
+   bit-different bytes via summation-order drift in matmul reductions.
 2. ``revision=`` pinned to the cache filename's SHA on both processor
-   AND model load, with ``low_cpu_mem_usage=True`` so the state dict
+   and model load; ``low_cpu_mem_usage=True`` on the model load alone
+   (``AutoImageProcessor`` does not accept the kwarg) so the state dict
    isn't materialised twice during shard streaming.
-3. Progress bars are opt-in (``progress=True``) and use ``tqdm`` lazily
-   so the heavy import lives behind the gate.
+3. Progress bars are opt-out (predictors default ``progress=True``);
+   pass ``progress=False`` from parity smoke tests so the ``tqdm``
+   import (lazy) and the bar wall don't show up under pytest capture.
 4. Caches land via an atomic ``.part``→ rename so a SIGINT mid-write
-   doesn't leave a half-truncated JSON the next session mistakes for
-   complete.
+   doesn't leave a half-truncated artefact (JSON sidecar OR per-image
+   PNG) the next session mistakes for complete.
 5. Class-name → GT-category-id joins are name-based with a loud-fail
    on any miss not listed in a per-cell documented drop set; the
    cache filename embeds the pinned SHA so a partial cache surfaces
@@ -29,19 +37,34 @@ modules without paying that bill.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Iterator, Sequence
+import os
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 from typing import Any, TypeVar
+
+# Pin BLAS / OpenMP thread counts at import time. ``torch.set_num_threads``
+# is documented to be a no-op once the intra-op pool has been initialised
+# by an earlier ``import torch`` + parallel op in the same process (a
+# common pattern when the rfdetr ``tide/`` cells run before the SOTA
+# cells in the same pytest session). Setting the env vars before torch
+# is imported is the only reliable way to keep the cache contract host-
+# independent. ``setdefault`` so a deliberate user override (e.g. for a
+# perf-sweep run that's NOT touching the cache) still wins.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 
 def pin_inference_threads() -> None:
     """Pin PyTorch intra-op threads to 1.
 
-    Called by every predictor before the first forward pass. The cache
-    key is ``(model, revision, dataset)`` only — without this pin two
-    hosts on the same revision would populate the cache with bit-different
-    bytes via summation-order drift in matmul reductions. Idempotent;
-    repeated calls within the same process are no-ops.
+    Defence-in-depth — the load-bearing pin is the import-time
+    ``OMP_NUM_THREADS=1`` setting at the top of this module, which
+    takes effect before torch's intra-op pool is initialised. This
+    in-process call covers the case where ``OMP_NUM_THREADS`` was
+    already exported in the parent env at something other than 1 (a
+    deliberate override the env-time ``setdefault`` respects). Called
+    by every predictor before the first forward pass.
     """
     import torch
 
@@ -64,6 +87,9 @@ def load_processor_and_model(
 
     Pins ``torch.set_num_threads(1)`` before the model load so the
     cache contract holds; see :func:`pin_inference_threads`.
+    ``low_cpu_mem_usage=True`` is only valid on
+    ``AutoModelFor*.from_pretrained`` (``AutoImageProcessor`` does not
+    accept the kwarg).
 
     Returns ``(processor, model)`` with ``model.eval()`` already
     applied.
@@ -91,18 +117,28 @@ def tqdm_or_passthrough(
     *,
     desc: str,
     progress: bool,
-) -> Iterable[_T]:
-    """Wrap ``items`` in a ``tqdm`` bar when ``progress`` is true.
+) -> Iterator[_T]:
+    """Yield from ``items`` with an optional ``tqdm`` bar.
 
     Lazy import: ``tqdm`` is in the ``real-models`` extra and we don't
     want to pay its import cost when running with ``progress=False``
     (e.g. inside parity smoke tests).
+
+    Implemented as a generator that wraps ``tqdm`` in a context manager
+    so an exception or SIGINT mid-iteration closes the bar deterministi-
+    cally — without relying on tqdm's atexit hook, which doesn't fire
+    on SIGKILL and leaves a half-rendered line on certain TTYs in
+    subprocess-spawned populators.
     """
     if not progress:
-        return items
+        yield from items
+        return
     from tqdm import tqdm
 
-    return tqdm(items, total=len(items), desc=desc)
+    with tqdm(total=len(items), desc=desc) as bar:
+        for item in items:
+            yield item
+            bar.update(1)
 
 
 def atomic_write_bytes(path: Path, payload: bytes) -> None:
@@ -155,10 +191,22 @@ def name_based_class_mapping(
         if cat_id is None:
             if name in dropped_names:
                 continue
+            if dropped_names:
+                drop_clause = (
+                    f"isn't listed in the documented drop set "
+                    f"({sorted(dropped_names)})"
+                )
+            else:
+                # Cells that pass no drop set treat every model label as
+                # must-resolve. Spell that out so a reader doesn't think
+                # the remediation is to widen ``dropped_names``.
+                drop_clause = (
+                    "and this cell has no documented drop set — every "
+                    "model label must resolve against the GT categories"
+                )
             raise RuntimeError(
                 f"{context}: label {label_id} ('{name}') has no matching "
-                f"category in the GT JSON, and isn't listed in the "
-                f"documented drop set ({sorted(dropped_names)}). Refusing "
+                f"category in the GT JSON, and {drop_clause}. Refusing "
                 f"to silently populate a partial cache under a pinned "
                 f"revision SHA. GT category names: {sorted(name_to_cat_id)}"
             )

@@ -83,19 +83,27 @@ behaviour vs the synthetic counterpart.)
 
 ### Panoptic (vs panopticapi)
 
-- **Integer surface (strict-tier)**: bit-equality on the per-class
-  `intersect_sum` / `union_sum` / `TP` / `FP` / `FN` counts that
-  feed every reported metric. Drift here would mean a real divergence
-  in the per-image PqStat fold; reaching the float averages confirms
-  it doesn't.
-- **Float averages (aligned-tier, 8 ULP relative)**: per-class PQ/SQ/RQ
-  rows + the Things/Stuff bucket means. The `sum(iou)` over TPs per
-  category and the `avg(metric)` over categories per bucket reduce
-  in different orders between panopticapi (Python dict iteration over
+- **Coverage gate**: the parity test asserts every GT image is
+  present in the populator's aggregated DT. The populator only writes
+  the aggregate JSON at the end of a full run, so the gate doubles
+  as a partial-cache trap.
+- **Integer surface (strict-tier)**: bit-equality on per-category
+  `tp` / `fp` / `fn` between panopticapi's `PQStatCat` and vernier's
+  `EvalResult.per_class` (`n_tp / n_fp / n_fn`). Drift here is a
+  real accumulator divergence — float reduction order cannot shift
+  integers.
+- **Float averages (aligned-tier, 8 ULP `rtol` AND `atol`)**:
+  per-category `iou_sum` + per-class PQ/SQ/RQ rows + the
+  Things/Stuff bucket means. The `sum(iou)` over TPs per category
+  and the `avg(metric)` over categories per bucket reduce in
+  different orders between panopticapi (Python dict iteration over
   `pq_per_cat`) and vernier (its own per-category accumulator); the
   drift on the live cache is at most 2.5 ULP relative (per-class
   PQ for cat 3 = `5.55e-16` absolute, the worst entry in 5000 images
-  × 133 classes). Bucket-level drift is ≤ 0.5 ULP.
+  × 133 classes). Bucket-level drift is ≤ 0.5 ULP. Both `rtol` and
+  `atol` are set so a category whose oracle metric collapses to
+  exact `0.0` while vernier yields a sub-ULP non-zero still passes
+  (an `rtol`-only gate would fail at `rtol * 0 = 0`).
 - Reported on `tests/python/integration/real_models/sota/test_mask2former_panoptic_real_models.py`.
 - **Headline numbers** (COCO panoptic val2017, 5000 images, 133
   categories):

@@ -20,9 +20,21 @@ Subsequent runs read from disk and skip the model entirely.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
+
+# Pin BLAS / OpenMP thread counts BEFORE any test imports torch (either
+# transitively via transformers in this tree or directly via rfdetr in the
+# sibling ``tide/`` tree). ``torch.set_num_threads(1)`` is documented as a
+# no-op once the intra-op pool is initialised, so the env-time pin is the
+# only reliable way to keep the cache key ``(model, revision, dataset)``
+# host-independent across test orderings. ``setdefault`` so a deliberate
+# parent-env override still wins.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import pytest
 from real_predictions_cache import (
@@ -40,33 +52,77 @@ _REAL_MODELS_REASON = "SOTA harness needs the `real-models` extra: `uv sync --ex
 for _mod in ("transformers", "torch", "huggingface_hub", "timm", "PIL"):
     pytest.importorskip(_mod, reason=_REAL_MODELS_REASON)
 
-# The Mask2Former-ADE parity test pulls in
-# ``tests.python.parity_semantic.harness``, which top-level-imports
-# ``mmseg.evaluation.metrics.iou_metric.IoUMetric``. Pytest only fires
-# the parity_semantic/conftest.py stub loader when collecting tests
-# under that tree, so we replicate the install here — sibling-tree
-# import requires the same stubs in sys.modules. Idempotent.
-_PARITY_SEMANTIC_ORACLE = (
-    Path(__file__).resolve().parents[3] / "parity_semantic" / "oracle" / "mmsegmentation"
-)
-if str(_PARITY_SEMANTIC_ORACLE) not in sys.path:
-    sys.path.insert(0, str(_PARITY_SEMANTIC_ORACLE))
-from _loader import (  # noqa: E402  # pyright: ignore[reportMissingImports]
-    install_stubs as _install_mmseg_stubs,
-)
+# Sibling-tree oracle installation, guarded so a vendored-oracle path
+# rename can never break collection for SOTA tests that don't depend on
+# the renamed oracle (e.g. a broken parity_semantic path should not take
+# the DETR cell down). Failures fall through to a fixture-time
+# ``pytest.skip`` in the relevant per-cell fixtures rather than an
+# import-time collection error; each install records its outcome so the
+# right cell gets the right skip reason.
+_SOTA_CONFTEST_DIR = Path(__file__).parent
+# sota/ → real_models/ → integration/ → python/  (3 parents).
+# `.resolve()` deliberately omitted: under git-worktree / symlinked
+# checkouts, canonicalising the path would walk into a different
+# repo tree than the developer is editing.
+_TESTS_PYTHON_DIR = _SOTA_CONFTEST_DIR.parent.parent.parent
 
-_install_mmseg_stubs()
+#: Set by the mmseg stub install path; ``None`` on success, an error
+#: string on failure. Read by per-cell fixtures that need the oracle.
+_MMSEG_STUB_INSTALL_ERROR: str | None = None
 
-# Same sibling-tree issue for the panoptic side: the parity_panoptic
-# conftest adds the vendored ``panopticapi`` checkout to ``sys.path``,
-# but only fires when collecting tests under that tree. Replicate
-# here so the SOTA panoptic parity test can ``from panopticapi.evaluation
-# import pq_compute_single_core`` directly.
-_PARITY_PANOPTIC_ORACLE = (
-    Path(__file__).resolve().parents[3] / "parity_panoptic" / "oracle" / "panopticapi"
-)
-if str(_PARITY_PANOPTIC_ORACLE) not in sys.path:
-    sys.path.insert(0, str(_PARITY_PANOPTIC_ORACLE))
+#: Set by the panopticapi sys.path insertion path; same shape.
+_PANOPTICAPI_PATH_INSTALL_ERROR: str | None = None
+
+
+def _install_mmseg_stubs_guarded() -> None:
+    """Replicate the parity_semantic conftest's stub install.
+
+    Pytest only fires the parity_semantic/conftest.py stub loader when
+    collecting tests under that tree, so we replicate the install here
+    — the Mask2Former-ADE parity test pulls in
+    ``tests.python.parity_semantic.harness``, which top-level-imports
+    ``mmseg.evaluation.metrics.iou_metric.IoUMetric`` and needs the
+    stubs already in ``sys.modules``. Idempotent at the
+    ``install_stubs`` call.
+    """
+    global _MMSEG_STUB_INSTALL_ERROR
+    oracle = _TESTS_PYTHON_DIR / "parity_semantic" / "oracle" / "mmsegmentation"
+    if not oracle.is_dir():
+        _MMSEG_STUB_INSTALL_ERROR = f"vendored mmseg oracle missing at {oracle}"
+        return
+    if str(oracle) not in sys.path:
+        sys.path.insert(0, str(oracle))
+    try:
+        from _loader import (  # pyright: ignore[reportMissingImports]
+            install_stubs as _install,
+        )
+
+        _install()
+    except ImportError as e:
+        _MMSEG_STUB_INSTALL_ERROR = f"mmseg stub loader unavailable: {e}"
+
+
+def _install_panopticapi_path_guarded() -> None:
+    """Replicate the parity_panoptic conftest's sys.path insertion.
+
+    The parity_panoptic conftest adds the vendored ``panopticapi``
+    checkout to ``sys.path`` but only fires when collecting under that
+    tree. Replicate here so the SOTA panoptic parity test can
+    ``from panopticapi.evaluation import pq_compute_single_core``
+    directly. Unlike the mmseg side this is a real vendored package,
+    not a stub install.
+    """
+    global _PANOPTICAPI_PATH_INSTALL_ERROR
+    oracle = _TESTS_PYTHON_DIR / "parity_panoptic" / "oracle" / "panopticapi"
+    if not oracle.is_dir():
+        _PANOPTICAPI_PATH_INSTALL_ERROR = f"vendored panopticapi missing at {oracle}"
+        return
+    if str(oracle) not in sys.path:
+        sys.path.insert(0, str(oracle))
+
+
+_install_mmseg_stubs_guarded()
+_install_panopticapi_path_guarded()
 
 
 @pytest.fixture(scope="session")
@@ -142,6 +198,8 @@ def mask2former_panoptic_cache_paths(
     the fixture-time skip avoids the model-load cost on a
     not-yet-configured machine.
     """
+    if _PANOPTICAPI_PATH_INSTALL_ERROR is not None:
+        pytest.skip(_PANOPTICAPI_PATH_INSTALL_ERROR)
     from real_predictions_cache import (
         MASK2FORMER_PANOPTIC_MODEL_ID,
         MASK2FORMER_PANOPTIC_REVISION,
@@ -195,6 +253,8 @@ def mask2former_ade_cache_paths(ade20k_val_gt_dir: Path) -> Path:
     so the populator and the parity test see the same materialized
     GT.
     """
+    if _MMSEG_STUB_INSTALL_ERROR is not None:
+        pytest.skip(_MMSEG_STUB_INSTALL_ERROR)
     from ade20k_val_cache import scan_image_jpgs
     from real_predictions_cache import (
         MASK2FORMER_ADE_MODEL_ID,

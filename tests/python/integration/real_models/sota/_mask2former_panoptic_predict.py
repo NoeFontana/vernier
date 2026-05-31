@@ -93,7 +93,12 @@ def _segments_for_image(
     for i in range(3):
         rgb[..., i] = (work % 256).astype(np.uint8)
         work //= 256
-    PILImage.fromarray(rgb, mode="RGB").save(png_out_path)
+    # Atomic ``.part`` → rename so a SIGINT mid-write doesn't leave a
+    # half-encoded PNG that the per-image skip below (or a downstream
+    # panopticapi consumer) would silently treat as complete.
+    png_part = png_out_path.with_suffix(png_out_path.suffix + ".part")
+    PILImage.fromarray(rgb, mode="RGB").save(png_part)
+    png_part.replace(png_out_path)
 
     # Build the per-image segments_info in COCO panoptic results shape:
     # ``id`` is the segment id (matches the PNG); ``category_id`` is
@@ -149,17 +154,40 @@ def predict_coco_panoptic_val(
 ) -> bytes:
     """Run Mask2Former panoptic inference on every image in ``gt['images']``.
 
-    Writes per-image PNGs into ``cache_dir`` and a single
-    ``panoptic_dt.json`` at ``dt_json_path`` in the COCO panoptic
-    results shape. Returns the JSON bytes.
+    Writes per-image PNGs and per-image JSON sidecars into ``cache_dir``
+    and a single aggregated ``panoptic_dt.json`` at ``dt_json_path`` in
+    the COCO panoptic results shape. Returns the aggregated JSON bytes.
 
-    Owns the cache contract end-to-end: a hit on ``dt_json_path``
-    short-circuits without instantiating the model. On a miss,
-    instantiates lazily, runs inference, atomic-writes the JSON (PNGs
-    are written in-place as we go).
+    Resume contract: a hit on ``dt_json_path`` short-circuits without
+    instantiating the model. On a miss, every per-image ``{id}.png`` +
+    ``{id}.json`` pair already on disk is loaded verbatim and skipped
+    by the inference loop — so a SIGINT mid-run resumes cheaply on
+    next invocation. Both per-image writes are atomic
+    (``.part`` → rename), so a SIGINT in the middle of either write
+    cannot leave a half-encoded artefact the skip-on-hit branch would
+    silently consume. If every expected pair is already present, the
+    model load itself is skipped and the aggregated JSON is built
+    directly from the sidecars.
     """
     if dt_json_path.is_file():
         return dt_json_path.read_bytes()
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    sorted_images = sorted(gt["images"], key=lambda i: int(i["id"]))
+    sidecar_paths = {int(img["id"]): cache_dir / f"{int(img['id'])}.json" for img in sorted_images}
+    png_paths = {int(img["id"]): cache_dir / f"{int(img['id'])}.png" for img in sorted_images}
+
+    # Full-coverage short-circuit: every (png, sidecar) already on disk
+    # means a prior run completed inference but died before writing the
+    # aggregate JSON. Avoid the multi-hundred-MB model load and assemble
+    # the aggregate from the sidecars directly.
+    if all(
+        png_paths[iid].is_file() and sidecar_paths[iid].is_file() for iid in sidecar_paths
+    ):
+        annotations = [json.loads(sidecar_paths[iid].read_bytes()) for iid in sidecar_paths]
+        payload = json.dumps({"annotations": annotations}).encode("utf-8")
+        atomic_write_bytes(dt_json_path, payload)
+        return payload
 
     from PIL import Image
 
@@ -179,16 +207,19 @@ def predict_coco_panoptic_val(
         context=f"mask2former-pan ({_DATASET_LABEL})",
     )
 
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    annotations: list[dict[str, Any]] = []
+    annotations = []
     for img, image_path in iter_image_records(
-        gt["images"],
+        sorted_images,
         image_dir,
         desc=f"mask2former-pan {_DATASET_LABEL}",
         progress=progress,
     ):
         image_id = int(img["id"])
-        png_out = cache_dir / f"{image_id}.png"
+        png_out = png_paths[image_id]
+        sidecar_out = sidecar_paths[image_id]
+        if png_out.is_file() and sidecar_out.is_file():
+            annotations.append(json.loads(sidecar_out.read_bytes()))
+            continue
         with Image.open(image_path) as pil:
             pil_rgb = pil.convert("RGB")
             ann = _segments_for_image(
@@ -200,6 +231,7 @@ def predict_coco_panoptic_val(
                 class_mapping=class_mapping,
                 png_out_path=png_out,
             )
+        atomic_write_bytes(sidecar_out, json.dumps(ann).encode("utf-8"))
         annotations.append(ann)
 
     payload = json.dumps({"annotations": annotations}).encode("utf-8")
