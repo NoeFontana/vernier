@@ -20,6 +20,7 @@ Subsequent runs read from disk and skip the model entirely.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,34 @@ from real_predictions_cache import (
 _REAL_MODELS_REASON = "SOTA harness needs the `real-models` extra: `uv sync --extra real-models`"
 for _mod in ("transformers", "torch", "huggingface_hub", "timm", "PIL"):
     pytest.importorskip(_mod, reason=_REAL_MODELS_REASON)
+
+# The Mask2Former-ADE parity test pulls in
+# ``tests.python.parity_semantic.harness``, which top-level-imports
+# ``mmseg.evaluation.metrics.iou_metric.IoUMetric``. Pytest only fires
+# the parity_semantic/conftest.py stub loader when collecting tests
+# under that tree, so we replicate the install here — sibling-tree
+# import requires the same stubs in sys.modules. Idempotent.
+_PARITY_SEMANTIC_ORACLE = (
+    Path(__file__).resolve().parents[3] / "parity_semantic" / "oracle" / "mmsegmentation"
+)
+if str(_PARITY_SEMANTIC_ORACLE) not in sys.path:
+    sys.path.insert(0, str(_PARITY_SEMANTIC_ORACLE))
+from _loader import (  # noqa: E402  # pyright: ignore[reportMissingImports]
+    install_stubs as _install_mmseg_stubs,
+)
+
+_install_mmseg_stubs()
+
+# Same sibling-tree issue for the panoptic side: the parity_panoptic
+# conftest adds the vendored ``panopticapi`` checkout to ``sys.path``,
+# but only fires when collecting tests under that tree. Replicate
+# here so the SOTA panoptic parity test can ``from panopticapi.evaluation
+# import pq_compute_single_core`` directly.
+_PARITY_PANOPTIC_ORACLE = (
+    Path(__file__).resolve().parents[3] / "parity_panoptic" / "oracle" / "panopticapi"
+)
+if str(_PARITY_PANOPTIC_ORACLE) not in sys.path:
+    sys.path.insert(0, str(_PARITY_PANOPTIC_ORACLE))
 
 
 @pytest.fixture(scope="session")

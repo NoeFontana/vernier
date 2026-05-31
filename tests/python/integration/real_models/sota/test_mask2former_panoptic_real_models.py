@@ -36,6 +36,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 
 from ....parity_panoptic.harness import (
@@ -46,6 +47,26 @@ from ....parity_panoptic.harness import (
 )
 
 pytestmark = pytest.mark.real_models
+
+#: 8 ULP of float64 expressed as a RELATIVE tolerance — absorbs the
+#: float reduction-order drift on per-category PQ/SQ and the
+#: (Things|Stuff) bucket averages. The integer accumulators
+#: (intersect / union / TP counts) are bit-equal across vernier and
+#: panopticapi; the float ``sum(iou)`` per category and the
+#: per-category ``avg(metric)`` per bucket reduce in different
+#: orders, accumulating up to a few ULP on a 5000-image / 133-class
+#: corpus.
+#:
+#: Observed on the live cache (2026-05-31):
+#: - bucket level (Things SQ): max abs diff ``1.11e-16`` (= 0.5 ULP)
+#: - per-class level (cat 3 PQ): max abs diff ``5.55e-16`` (= 2.5 ULP)
+#: All other 5 buckets and 132/133 per-class rows are bit-equal.
+#:
+#: 8 ULP keeps any genuine kernel divergence (e.g. a wrong IoU
+#: numerator for one image) above the gate; a single bit-flip in the
+#: numerator would shift the per-class PQ by orders of magnitude more
+#: than this floor.
+_PANOPTIC_PARITY_RTOL = 8.0 * float(np.finfo(np.float64).eps)
 
 
 def _build_label_maps(
@@ -170,4 +191,10 @@ def test_mask2former_panoptic_parity_vs_panopticapi(
     oracle, gt_anns, cats_dict = _oracle_snapshot(gt_dict, gt_png_dir, dt_annotations, dt_png_dir)
     candidate = _vernier_snapshot(gt_anns, gt_png_dir, dt_annotations, dt_png_dir, cats_dict)
 
-    assert_snapshots_equal(oracle, candidate)
+    # Aligned-tier: 2-ULP relative absorbs the per-class reduction-order
+    # drift on (Things|Stuff) SQ buckets — see ``_PANOPTIC_PARITY_RTOL``
+    # for the discussion. Integer surface (intersect / union / TP counts)
+    # is the real parity claim; the float averages can shift by 0.5 ULP
+    # under a different iteration order without anything material being
+    # wrong.
+    assert_snapshots_equal(oracle, candidate, rtol=_PANOPTIC_PARITY_RTOL)

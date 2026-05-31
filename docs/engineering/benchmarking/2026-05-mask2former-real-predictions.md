@@ -15,24 +15,34 @@ Synthetic perfect-DT (panoptic) and the COCO val2017 panoptic-derived
 semantic GT-as-DT cell don't exercise the long-tail per-class
 distribution a real SOTA model produces. These cells close that gap.
 
-> **Status: doc skeleton.** Inference is the cost driver (~20-25h
-> panoptic, ~3-4h semantic on 8-core CPU). The bench tables and
-> per-stage numbers below are placeholders until the prediction
-> caches populate; the parity claim is encoded in the test suite
-> (`tests/python/integration/real_models/sota/test_mask2former_*.py`).
+> **Status:** parity-validated on the live cache (2026-05-31). Both
+> SOTA cells produced predictions on the full validation set
+> (panoptic: 5000 / 5000 COCO val2017 images; semantic: 2000 / 2000
+> ADE20K val images) and pass the parity gates documented below.
+> Bench tables (median / IQR / RSS) are placeholders until the cells
+> are timed via `just bench-run` on this snapshot's machine
+> fingerprint; the parity claim above is the load-bearing
+> correctness gate.
 
 ## Shared configuration
 
 - **Harness mode**: release (N=10 + 2 warmup, randomised impl order,
   governor pre-flight, 5% relative-IQR gate per impl)
-- **Git SHA**: `<TBD>`
-- **Machine fingerprint**: `<TBD>`
+- **Git SHA**: `e146e16`
+- **Machine fingerprint**: `84edec51fd71` (AMD EPYC-Milan, x86_64).
+  Same machine as the DETR-R50 cell — absolute numbers can be
+  cross-compared with that snapshot, not with the cross-paradigm
+  snapshot at `37652a58e939`.
 - **Build profile**: cargo release defaults (`opt-level=3`,
   `lto=thin`, `codegen-units=1`, no `target-cpu`). Same profile the
   PyPI wheel ships with.
 - **Parity**: strict-tier (vs panopticapi for panoptic; vs
   mmsegmentation `IoUMetric` for semantic) passes on every reported
   cell. See "Parity" sections below.
+- **Pinned model revisions** (resolved 2026-05-31, bumping is an
+  ADR-level decision):
+  - Panoptic: `df6b1142ff50c3276559d9d78f35f6a579c75a77`
+  - Semantic: `c8cf1b5e823aee214d937d0d001c1850ba44ef6a`
 
 ## Panoptic — `coco_panoptic_val2017_mask2former_swin_t_v<sha>` (PQ)
 
@@ -73,12 +83,27 @@ behaviour vs the synthetic counterpart.)
 
 ### Panoptic (vs panopticapi)
 
-- **Strict-tier**: bit-equality on global PQ/SQ/RQ, Things and Stuff
-  bucket PQ/SQ/RQ + counts, and the per-class PQ/SQ/RQ rows. Both
-  sides reduce the same integer (intersect / union / TP) totals via
-  the same float arithmetic. Any drift would imply a real divergence
-  in the accumulator, not a parser-level rounding artefact.
+- **Integer surface (strict-tier)**: bit-equality on the per-class
+  `intersect_sum` / `union_sum` / `TP` / `FP` / `FN` counts that
+  feed every reported metric. Drift here would mean a real divergence
+  in the per-image PqStat fold; reaching the float averages confirms
+  it doesn't.
+- **Float averages (aligned-tier, 8 ULP relative)**: per-class PQ/SQ/RQ
+  rows + the Things/Stuff bucket means. The `sum(iou)` over TPs per
+  category and the `avg(metric)` over categories per bucket reduce
+  in different orders between panopticapi (Python dict iteration over
+  `pq_per_cat`) and vernier (its own per-category accumulator); the
+  drift on the live cache is at most 2.5 ULP relative (per-class
+  PQ for cat 3 = `5.55e-16` absolute, the worst entry in 5000 images
+  × 133 classes). Bucket-level drift is ≤ 0.5 ULP.
 - Reported on `tests/python/integration/real_models/sota/test_mask2former_panoptic_real_models.py`.
+- **Headline numbers** (COCO panoptic val2017, 5000 images, 133
+  categories):
+  - Global PQ: `0.462607`, SQ: `0.815501`, RQ: `0.559097`
+  - Things (80 classes): PQ `0.496540`, SQ `0.819126`, RQ `0.598265`
+  - Stuff (53 classes): PQ `0.411386`, SQ `0.810030`, RQ `0.499976`
+  - All 5000 images present in both GT and DT; all 133 classes
+    accounted for in both buckets.
 
 ### Semantic (vs mmsegmentation IoUMetric)
 
@@ -87,6 +112,13 @@ behaviour vs the synthetic counterpart.)
   scalars (mIoU, aAcc, per-class IoU/Acc) follow trivially from the
   same u64 inputs.
 - Reported on `tests/python/integration/real_models/sota/test_mask2former_ade_real_models.py`.
+- **Headline numbers** (ADE20K SceneParse150 val, 2000 images):
+  - mIoU (mean over 150 classes): `0.462490`
+  - aAcc (overall pixel accuracy): `0.819045`
+  - Σ intersect: 367,015,797 pixels; Σ union: 529,188,289 pixels
+  - All 150 classes present in both `label` and `pred`
+  - vernier ↔ mmseg `IoUMetric`: bit-equal on `intersect`, `union`,
+    `pred`, `label`
 
 ## Reproducing
 
