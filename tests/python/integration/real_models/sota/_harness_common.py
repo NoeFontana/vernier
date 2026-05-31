@@ -192,10 +192,7 @@ def name_based_class_mapping(
             if name in dropped_names:
                 continue
             if dropped_names:
-                drop_clause = (
-                    f"isn't listed in the documented drop set "
-                    f"({sorted(dropped_names)})"
-                )
+                drop_clause = f"isn't listed in the documented drop set ({sorted(dropped_names)})"
             else:
                 # Cells that pass no drop set treat every model label as
                 # must-resolve. Spell that out so a reader doesn't think

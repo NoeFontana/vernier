@@ -223,19 +223,13 @@ def _assert_integer_surface_strict(
     Category id sets must match exactly. ``iou_sum`` is a float
     reduction, so it falls through to the aligned-tier 8-ULP gate.
     """
-    vernier_rows = {
-        int(r["category_id"]): r for r in vernier_per_class.iter_rows(named=True)
-    }
+    vernier_rows = {int(r["category_id"]): r for r in vernier_per_class.iter_rows(named=True)}
     oracle_cats = set(pq_stat.pq_per_cat.keys())
     vernier_cats = set(vernier_rows.keys())
     only_oracle = oracle_cats - vernier_cats
-    assert not only_oracle, (
-        f"oracle has categories vernier dropped: {sorted(only_oracle)[:10]}"
-    )
+    assert not only_oracle, f"oracle has categories vernier dropped: {sorted(only_oracle)[:10]}"
     only_vernier = vernier_cats - oracle_cats
-    assert not only_vernier, (
-        f"vernier has categories oracle dropped: {sorted(only_vernier)[:10]}"
-    )
+    assert not only_vernier, f"vernier has categories oracle dropped: {sorted(only_vernier)[:10]}"
     for cat_id in sorted(oracle_cats):
         oracle = pq_stat.pq_per_cat[cat_id]
         vernier_row = vernier_rows[cat_id]

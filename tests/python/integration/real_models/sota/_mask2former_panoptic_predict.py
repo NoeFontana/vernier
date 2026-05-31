@@ -181,9 +181,7 @@ def predict_coco_panoptic_val(
     # means a prior run completed inference but died before writing the
     # aggregate JSON. Avoid the multi-hundred-MB model load and assemble
     # the aggregate from the sidecars directly.
-    if all(
-        png_paths[iid].is_file() and sidecar_paths[iid].is_file() for iid in sidecar_paths
-    ):
+    if all(png_paths[iid].is_file() and sidecar_paths[iid].is_file() for iid in sidecar_paths):
         annotations = [json.loads(sidecar_paths[iid].read_bytes()) for iid in sidecar_paths]
         payload = json.dumps({"annotations": annotations}).encode("utf-8")
         atomic_write_bytes(dt_json_path, payload)
