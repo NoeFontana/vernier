@@ -20,7 +20,7 @@ EPYC-Milan; ADE20K val is 2000 images, so end-to-end is ~3-4h.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -29,30 +29,13 @@ from real_predictions_cache import (
     MASK2FORMER_ADE_REVISION,
 )
 
+from ._harness_common import (
+    load_processor_and_model,
+    tqdm_or_passthrough,
+)
+
 _DATASET_LABEL = "ade20k-val"
-
-
-def _instantiate_model(revision: str) -> tuple[Any, Any]:
-    """Lazy transformers import + processor / model instantiation.
-
-    Same pinning + threading discipline as the panoptic adapter:
-    ``revision=`` ties weights to the cache filename's SHA;
-    ``torch.set_num_threads(1)`` makes summation order
-    host-independent so the cache key fully identifies the bytes.
-    """
-    import torch
-    from transformers import AutoImageProcessor, AutoModelForUniversalSegmentation
-
-    torch.set_num_threads(1)
-
-    processor = AutoImageProcessor.from_pretrained(MASK2FORMER_ADE_MODEL_ID, revision=revision)
-    model = AutoModelForUniversalSegmentation.from_pretrained(
-        MASK2FORMER_ADE_MODEL_ID,
-        revision=revision,
-        low_cpu_mem_usage=True,
-    )
-    model.eval()
-    return processor, model
+_ADE_NUM_CLASSES = 150
 
 
 def _assert_ade_train_id_space(model: Any) -> None:
@@ -66,19 +49,21 @@ def _assert_ade_train_id_space(model: Any) -> None:
     """
     id2label = model.config.id2label
     n_labels = len(id2label)
-    if n_labels != 150:
+    if n_labels != _ADE_NUM_CLASSES:
         raise RuntimeError(
-            f"Mask2Former ADE checkpoint has {n_labels} labels; expected 150. "
-            f"The cache contract assumes the mmseg `reduce_zero_label=True` "
-            f"convention (0..149 train-id space). A different count means "
-            f"the cache + GT class space need re-derivation."
+            f"Mask2Former ADE checkpoint has {n_labels} labels; expected "
+            f"{_ADE_NUM_CLASSES}. The cache contract assumes the mmseg "
+            f"`reduce_zero_label=True` convention (0..149 train-id space). "
+            f"A different count means the cache + GT class space need "
+            f"re-derivation."
         )
     keys = sorted(int(k) for k in id2label)
-    if keys != list(range(150)):
+    if keys != list(range(_ADE_NUM_CLASSES)):
         raise RuntimeError(
-            f"Mask2Former ADE checkpoint's id2label keys are {keys[:3]}..{keys[-3:]}; "
-            f"expected contiguous 0..149. mmseg `reduce_zero_label=True` is the "
-            f"assumed training convention."
+            f"Mask2Former ADE checkpoint's id2label keys are "
+            f"{keys[:3]}..{keys[-3:]}; expected contiguous "
+            f"0..{_ADE_NUM_CLASSES - 1}. mmseg `reduce_zero_label=True` "
+            f"is the assumed training convention."
         )
 
 
@@ -113,18 +98,23 @@ def _label_map_for_image(
     with torch.inference_mode():
         outputs = model(**inputs)
 
-    target_sizes = torch.tensor([image_size_hw], dtype=torch.int64)
+    # ``target_sizes`` is a Python list-of-tuples (not an int64 tensor):
+    # the semantic post-process passes ``target_sizes[idx]`` straight to
+    # ``torch.nn.functional.interpolate(size=...)``, which rejects a
+    # tensor argument in current PyTorch. The int64-tensor discipline
+    # exists for the detection path's box-scale multiplication, not here.
     seg_map = processor.post_process_semantic_segmentation(
         outputs,
-        target_sizes=target_sizes,
+        target_sizes=[image_size_hw],
     )[0]
     arr = seg_map.to(torch.int64).cpu().numpy()
-    if arr.min() < 0 or arr.max() >= 150:
+    if arr.min() < 0 or arr.max() >= _ADE_NUM_CLASSES:
         raise RuntimeError(
-            f"semantic prediction at {png_out_path.name} has class ids outside "
-            f"[0, 149]: min={int(arr.min())}, max={int(arr.max())}. The cache "
-            f"contract assumes train-id space; a shift would silently mis-score "
-            f"against the converted GT."
+            f"semantic prediction at {png_out_path.name} has class ids "
+            f"outside [0, {_ADE_NUM_CLASSES - 1}]: min={int(arr.min())}, "
+            f"max={int(arr.max())}. The cache contract assumes train-id "
+            f"space; a shift would silently mis-score against the "
+            f"converted GT."
         )
     PILImage.fromarray(arr.astype(np.uint8, copy=False), mode="L").save(png_out_path)
 
@@ -159,15 +149,16 @@ def predict_ade20k_val(
 
     from PIL import Image
 
-    processor, model = _instantiate_model(revision)
+    processor, model = load_processor_and_model(
+        MASK2FORMER_ADE_MODEL_ID,
+        revision,
+        model_cls_name="AutoModelForUniversalSegmentation",
+    )
     _assert_ade_train_id_space(model)
 
-    iterator: Iterable[int] = sorted_ids
-    if progress:
-        from tqdm import tqdm
-
-        iterator = tqdm(sorted_ids, total=len(sorted_ids), desc=f"mask2former-ade {_DATASET_LABEL}")
-
+    iterator = tqdm_or_passthrough(
+        sorted_ids, desc=f"mask2former-ade {_DATASET_LABEL}", progress=progress
+    )
     for image_id in iterator:
         png_out = cache_dir / f"{image_id}.png"
         if png_out.is_file():

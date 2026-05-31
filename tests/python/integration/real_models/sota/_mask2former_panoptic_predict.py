@@ -10,10 +10,11 @@ in the COCO panoptic results shape, so panopticapi's
 both ingest the same files.
 
 Cache discipline mirrors the DETR-R50 adapter (lessons from PR #265):
-full-SHA cache key, ``torch.set_num_threads(1)`` pin so summation
-order is host-independent, and loud-fail on unmapped class names so a
-subset / aliased / corrupted GT can't silently populate a partial
-cache.
+full-SHA cache key, thread pin so summation order is host-independent,
+and loud-fail on unmapped class names so a subset / aliased /
+corrupted GT can't silently populate a partial cache. The cross-cell
+scaffolding (thread pin, model load, atomic write, name-based class
+join) lives in :mod:`._harness_common`.
 
 Inference is the cost driver — Mask2Former Swin-T is ~14-18s per
 640x480 image on an 8-core AMD EPYC-Milan (vs DETR-R50's ~9s — the
@@ -25,7 +26,6 @@ COCO val2017 (5000 images): ~20-25h.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -34,78 +34,14 @@ from real_predictions_cache import (
     MASK2FORMER_PANOPTIC_REVISION,
 )
 
+from ._harness_common import (
+    atomic_write_bytes,
+    iter_image_records,
+    load_processor_and_model,
+    name_based_class_mapping,
+)
+
 _DATASET_LABEL = "coco-panoptic-val2017"
-
-
-def _coco_panoptic_class_mapping(
-    gt_categories: list[dict[str, Any]], id2label: dict[int, str]
-) -> dict[int, int]:
-    """Map Mask2Former's 0..132 contiguous train-id to the GT JSON's
-    sparse panoptic ``category_id`` (1..200 with gaps).
-
-    Same name-based join as the DETR-R50 adapter's
-    :func:`_coco_class_mapping`: model labels match GT category names,
-    not GT ids — the model happens to be trained on the COCO panoptic
-    133-class subset whose category_id values are NOT contiguous on
-    the COCO upstream side, but the names are stable across both.
-
-    Loud-fail on unmapped names (no silent skip): the COCO panoptic
-    133-class space is a strict subset of the GT's published
-    categories, so every model label MUST resolve. A missing name
-    means the GT JSON is something other than canonical COCO
-    panoptic — refusing to cache against it is the only safe move
-    when the cache filename embeds the pinned revision SHA.
-    """
-    name_to_cat_id = {cat["name"]: int(cat["id"]) for cat in gt_categories}
-    mapping: dict[int, int] = {}
-    for label_id, name in id2label.items():
-        cat_id = name_to_cat_id.get(name)
-        if cat_id is None:
-            raise RuntimeError(
-                f"Mask2Former panoptic label {label_id} ('{name}') has no "
-                f"matching category in the GT JSON. The COCO panoptic "
-                f"133-class space (80 thing + 53 stuff) is a strict subset "
-                f"of canonical COCO panoptic val2017 categories — a missing "
-                f"name means the GT is something other than canonical "
-                f"panoptic_val2017.json. Refusing to silently populate a "
-                f"partial cache under the pinned revision SHA. "
-                f"GT category names: {sorted(name_to_cat_id)}"
-            )
-        mapping[label_id] = cat_id
-    return mapping
-
-
-def _instantiate_model(revision: str) -> tuple[Any, Any]:
-    """Lazy transformers import + processor / model instantiation.
-
-    Loaded with ``revision=`` so the cache filename's commit-SHA pin
-    is the same SHA the weights resolve to. ``low_cpu_mem_usage=True``
-    streams shards into memory rather than materializing the full
-    state dict twice (Mask2Former Swin-T is ~50M params; the full
-    state dict is ~200MB on disk so the peak-RSS difference matters
-    on smaller CPU boxes).
-
-    Pins ``torch.set_num_threads(1)`` before the first forward pass
-    so intra-op summation order is the same regardless of the host's
-    physical core count — the cache key is ``(model, revision,
-    dataset)`` only, so without this pin two hosts on the same
-    revision would populate the cache with bit-different bytes via
-    summation-order drift in matmul reductions. Same invariant as
-    the DETR-R50 adapter (PR #265 follow-up).
-    """
-    import torch
-    from transformers import AutoImageProcessor, AutoModelForUniversalSegmentation
-
-    torch.set_num_threads(1)
-
-    processor = AutoImageProcessor.from_pretrained(MASK2FORMER_PANOPTIC_MODEL_ID, revision=revision)
-    model = AutoModelForUniversalSegmentation.from_pretrained(
-        MASK2FORMER_PANOPTIC_MODEL_ID,
-        revision=revision,
-        low_cpu_mem_usage=True,
-    )
-    model.eval()
-    return processor, model
 
 
 def _segments_for_image(
@@ -126,11 +62,6 @@ def _segments_for_image(
     Each segment carries ``id``, ``category_id`` (mapped to GT
     space), and ``area`` (computed from the seg map, since the
     upstream post-process doesn't emit it).
-
-    ``target_sizes`` is ``int64`` (not ``float64``) for the same
-    reason as DETR-R50: transformers' post-process upcasts
-    arithmetic against an fp64 size tensor, tying cached bytes to a
-    transformers internal that can shift between minor versions.
     """
     import numpy as np
     import torch
@@ -140,13 +71,17 @@ def _segments_for_image(
     with torch.inference_mode():
         outputs = model(**inputs)
 
-    target_sizes = torch.tensor([image_size_hw], dtype=torch.int64)
+    # ``target_sizes`` is a Python list-of-tuples (not an int64 tensor):
+    # the panoptic post-process passes ``target_sizes[idx]`` straight to
+    # ``torch.nn.functional.interpolate(size=...)``, which rejects a
+    # tensor argument in current PyTorch. The int64-tensor discipline
+    # exists for the detection path's box-scale multiplication, not here.
     result = processor.post_process_panoptic_segmentation(
         outputs,
-        target_sizes=target_sizes,
+        target_sizes=[image_size_hw],
     )[0]
-    # `segmentation` is an HxW int64 tensor of segment ids; `segments_info`
-    # is a list of {id, label_id, was_fused, score}.
+    # ``segmentation`` is an HxW int64 tensor of segment ids;
+    # ``segments_info`` is a list of ``{id, label_id, was_fused, score}``.
     seg_map = result["segmentation"].to(torch.int64).cpu().numpy()
     raw_segments = result["segments_info"]
 
@@ -161,27 +96,26 @@ def _segments_for_image(
     PILImage.fromarray(rgb, mode="RGB").save(png_out_path)
 
     # Build the per-image segments_info in COCO panoptic results shape:
-    # `id` is the segment id (matches the PNG); `category_id` is the
-    # GT-space sparse COCO id; `area` is the pixel count.
+    # ``id`` is the segment id (matches the PNG); ``category_id`` is
+    # the GT-space sparse COCO id; ``area`` is the pixel count.
     seg_infos: list[dict[str, Any]] = []
     for seg in raw_segments:
         seg_id = int(seg["id"])
         if seg_id == 0:
-            # `0` is the panoptic "void" sentinel; not a real segment.
+            # ``0`` is the panoptic "void" sentinel; not a real segment.
             continue
         label_id = int(seg["label_id"])
         cat_id = class_mapping.get(label_id)
         if cat_id is None:
-            # See the _coco_panoptic_class_mapping discussion: every
-            # label SHOULD resolve under canonical COCO panoptic GT.
-            # If we get here, the mapping was built against a
-            # different GT than the predictions are being scored
-            # against — drop loudly rather than emit a bogus cat_id.
+            # name_based_class_mapping would already have raised if any
+            # model label is missing from the GT; reaching this branch
+            # means the model emitted a label_id outside its own
+            # id2label space — a load-time guard would have caught it.
             raise RuntimeError(
                 f"image {image_id}: segment id {seg_id} has label_id "
-                f"{label_id} which has no entry in the class mapping. "
-                f"This indicates the GT JSON used to build the mapping "
-                f"is not consistent with the model's training set."
+                f"{label_id} which is outside the model's id2label space. "
+                f"Indicates a transformers version drift; refusing to "
+                f"emit a bogus cat_id under the pinned revision SHA."
             )
         area = int((seg_u32 == seg_id).sum())
         if area == 0:
@@ -220,42 +154,39 @@ def predict_coco_panoptic_val(
     results shape. Returns the JSON bytes.
 
     Owns the cache contract end-to-end: a hit on ``dt_json_path``
-    AND the matching set of PNGs short-circuits without instantiating
-    the model. On a miss, instantiates lazily, runs inference,
-    atomic-writes the JSON (PNGs are written in-place as we go;
-    partial PNG sets are tolerated on a re-run via the same per-image
-    skip mechanism the cache_dir holds).
-
-    Atomic JSON write protects against SIGINT mid-run leaving a
-    half-written sidecar that the next session would mistake for
-    complete.
+    short-circuits without instantiating the model. On a miss,
+    instantiates lazily, runs inference, atomic-writes the JSON (PNGs
+    are written in-place as we go).
     """
     if dt_json_path.is_file():
         return dt_json_path.read_bytes()
 
     from PIL import Image
 
-    processor, model = _instantiate_model(revision)
+    processor, model = load_processor_and_model(
+        MASK2FORMER_PANOPTIC_MODEL_ID,
+        revision,
+        model_cls_name="AutoModelForUniversalSegmentation",
+    )
     id2label: dict[int, str] = {int(k): v for k, v in model.config.id2label.items()}
-    class_mapping = _coco_panoptic_class_mapping(gt["categories"], id2label)
-
-    image_list: Sequence[dict[str, Any]] = gt["images"]
-    images: Iterable[dict[str, Any]] = image_list
-    if progress:
-        from tqdm import tqdm
-
-        images = tqdm(image_list, total=len(image_list), desc=f"mask2former-pan {_DATASET_LABEL}")
+    # Loud-fail with no documented drop set: the COCO panoptic 133-class
+    # space is a strict subset of canonical COCO panoptic val2017
+    # categories. A missing name means the GT is something other than
+    # canonical panoptic_val2017.json.
+    class_mapping = name_based_class_mapping(
+        id2label,
+        gt["categories"],
+        context=f"mask2former-pan ({_DATASET_LABEL})",
+    )
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     annotations: list[dict[str, Any]] = []
-    for img in images:
-        image_path = image_dir / img["file_name"]
-        if not image_path.is_file():
-            raise FileNotFoundError(
-                f"image referenced by GT JSON missing on disk: {image_path}. "
-                f"Re-run the COCO val2017 fetcher; the cache root must contain "
-                f"the full val2017/ directory next to instances_val2017.json."
-            )
+    for img, image_path in iter_image_records(
+        gt["images"],
+        image_dir,
+        desc=f"mask2former-pan {_DATASET_LABEL}",
+        progress=progress,
+    ):
         image_id = int(img["id"])
         png_out = cache_dir / f"{image_id}.png"
         with Image.open(image_path) as pil:
@@ -272,8 +203,5 @@ def predict_coco_panoptic_val(
         annotations.append(ann)
 
     payload = json.dumps({"annotations": annotations}).encode("utf-8")
-    dt_json_path.parent.mkdir(parents=True, exist_ok=True)
-    part = dt_json_path.with_suffix(dt_json_path.suffix + ".part")
-    part.write_bytes(payload)
-    part.replace(dt_json_path)
+    atomic_write_bytes(dt_json_path, payload)
     return payload

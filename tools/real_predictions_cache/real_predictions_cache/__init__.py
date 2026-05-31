@@ -121,20 +121,21 @@ def _ensure_pinned_revision(revision: str, model_id: str) -> None:
 
 
 MASK2FORMER_PANOPTIC_MODEL_ID = "facebook/mask2former-swin-tiny-coco-panoptic"
-#: Pinned commit on the Hugging Face hub. ``_UNPINNED_REVISION`` is a
-#: sentinel that triggers a loud error at populate time — pin to a
-#: 40-hex SHA via the one-liner in :func:`_ensure_pinned_revision`'s
-#: docstring before the first run.
-MASK2FORMER_PANOPTIC_REVISION: str = _UNPINNED_REVISION
+#: Pinned commit on the Hugging Face hub (resolved 2026-05-31). Same
+#: bump-is-ADR-level policy as :data:`DETR_RESNET50_REVISION`. The
+#: :data:`_UNPINNED_REVISION` sentinel is reserved for the moment
+#: between cache-contract scaffolding and SHA pinning; once pinned it
+#: never goes back to the sentinel without invalidating cached blobs.
+MASK2FORMER_PANOPTIC_REVISION: str = "df6b1142ff50c3276559d9d78f35f6a579c75a77"
 
 # ---------------------------------------------------------------------------
 # Hugging Face SOTA harness — Mask2Former Swin-Tiny ADE20K semantic
 # ---------------------------------------------------------------------------
 
 MASK2FORMER_ADE_MODEL_ID = "facebook/mask2former-swin-tiny-ade-semantic"
-#: Pinned commit on the Hugging Face hub. Same sentinel + pin flow as
-#: :data:`MASK2FORMER_PANOPTIC_REVISION`.
-MASK2FORMER_ADE_REVISION: str = _UNPINNED_REVISION
+#: Pinned commit on the Hugging Face hub (resolved 2026-05-31). Same
+#: bump-is-ADR-level policy as :data:`MASK2FORMER_PANOPTIC_REVISION`.
+MASK2FORMER_ADE_REVISION: str = "c8cf1b5e823aee214d937d0d001c1850ba44ef6a"
 
 # ---------------------------------------------------------------------------
 # Shared cache plumbing

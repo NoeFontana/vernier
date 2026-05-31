@@ -307,13 +307,24 @@ def test_populate_mask2former_ade_shells_into_real_models_extra(
 def test_populate_mask2former_panoptic_rejects_unpinned_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The default ``MASK2FORMER_PANOPTIC_REVISION`` sentinel must
+    """Reverting ``MASK2FORMER_PANOPTIC_REVISION`` to the sentinel must
     raise — the cache filename embeds the revision, so populating
     against an unpinned sentinel would produce a cache file with
-    "TODO_PIN..." in the name."""
+    "TODO_PIN..." in the name.
+
+    Source-of-truth defaults to the pinned SHA; we monkeypatch back to
+    the sentinel here so the regression catches a future "drop the pin
+    guard" change. The bench-side adapter never invokes inference, so
+    a working pin guard is the only thing standing between an unpinned
+    constant and a stale-prediction cache.
+    """
     import real_predictions_cache
 
-    # No monkeypatch: the sentinel is what's in source.
+    monkeypatch.setattr(
+        real_predictions_cache,
+        "MASK2FORMER_PANOPTIC_REVISION",
+        real_predictions_cache._UNPINNED_REVISION,
+    )
     with pytest.raises(RuntimeError, match="unpinned"):
         real_predictions_cache.populate_mask2former_panoptic()
 
@@ -321,8 +332,14 @@ def test_populate_mask2former_panoptic_rejects_unpinned_revision(
 def test_populate_mask2former_ade_rejects_unpinned_revision(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Sibling of the panoptic-side rejection test."""
     import real_predictions_cache
 
+    monkeypatch.setattr(
+        real_predictions_cache,
+        "MASK2FORMER_ADE_REVISION",
+        real_predictions_cache._UNPINNED_REVISION,
+    )
     with pytest.raises(RuntimeError, match="unpinned"):
         real_predictions_cache.populate_mask2former_ade()
 
