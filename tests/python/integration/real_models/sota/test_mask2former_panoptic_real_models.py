@@ -60,7 +60,7 @@ from ....parity_panoptic.harness import (
     summary_to_snapshot,
 )
 
-pytestmark = pytest.mark.real_models
+pytestmark = [pytest.mark.real_models, pytest.mark.slow]
 
 #: 8 ULP of float64 — used as BOTH ``rtol`` and ``atol`` on the
 #: float-surface assertions. Absorbs the reduction-order drift on

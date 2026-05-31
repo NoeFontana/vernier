@@ -45,7 +45,7 @@ import vernier.semantic as vsem
 
 from ....parity_semantic.harness import run_streaming_pair
 
-pytestmark = pytest.mark.real_models
+pytestmark = [pytest.mark.real_models, pytest.mark.slow]
 
 
 def _stream_pairs(
