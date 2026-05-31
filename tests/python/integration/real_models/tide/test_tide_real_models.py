@@ -42,7 +42,7 @@ from vernier.instance import Bbox, Boundary, Segm
 
 from ._rfdetr_predict import ModelName
 
-pytestmark = pytest.mark.real_models
+pytestmark = [pytest.mark.real_models, pytest.mark.slow]
 
 
 _KERNELS: dict[KernelName, object] = {

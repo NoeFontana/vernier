@@ -82,11 +82,68 @@ RfdetrModelName = Literal["nano", "segnano"]
 DETR_RESNET50_REVISION = "1d5f47bd3bdd2c4bbfa585418ffe6da5028b4c0b"
 
 # ---------------------------------------------------------------------------
+# Hugging Face SOTA harness — Mask2Former Swin-Tiny COCO panoptic
+# ---------------------------------------------------------------------------
+
+#: Sentinel for an unpinned upstream revision. Callers MUST reject this
+#: value at populate time — proceeding against ``"main"`` or any
+#: mutable ref would defeat the cache-key invariant established by the
+#: DETR-R50 follow-up (PR #265): the filename IS the integrity surface,
+#: so any non-40-hex string means "do not populate, ask the user to pin".
+_UNPINNED_REVISION = "TODO_PIN_VIA_HF_MODEL_INFO_SHA"
+
+
+def _ensure_pinned_revision(revision: str, model_id: str) -> None:
+    """Raise unless ``revision`` is a full 40-hex SHA.
+
+    Discipline derived from PR #265: the cache filename embeds the
+    revision and IS the data-integrity surface, so any non-SHA value
+    (``"main"``, ``"latest"``, the :data:`_UNPINNED_REVISION` sentinel)
+    must fail loudly rather than silently produce a cache file that
+    re-resolves to a different upstream commit on a later populate.
+
+    The error points at the one-liner the user runs to obtain the
+    current SHA:
+
+        python -c "from huggingface_hub import HfApi; print(HfApi().model_info('<model>').sha)"
+    """
+    if len(revision) == 40 and all(c in "0123456789abcdef" for c in revision):
+        return
+    one_liner = (
+        f'python -c "from huggingface_hub import HfApi; '
+        f"print(HfApi().model_info('{model_id}').sha)\""
+    )
+    raise RuntimeError(
+        f"Hugging Face revision for {model_id!r} is unpinned (got {revision!r}). "
+        f"Pin the constant in tools/real_predictions_cache/real_predictions_cache/__init__.py "
+        f"to the current 40-hex commit SHA. Obtain it with: {one_liner}"
+    )
+
+
+MASK2FORMER_PANOPTIC_MODEL_ID = "facebook/mask2former-swin-tiny-coco-panoptic"
+#: Pinned commit on the Hugging Face hub (resolved 2026-05-31). Same
+#: bump-is-ADR-level policy as :data:`DETR_RESNET50_REVISION`. The
+#: :data:`_UNPINNED_REVISION` sentinel is reserved for the moment
+#: between cache-contract scaffolding and SHA pinning; once pinned it
+#: never goes back to the sentinel without invalidating cached blobs.
+MASK2FORMER_PANOPTIC_REVISION: str = "df6b1142ff50c3276559d9d78f35f6a579c75a77"
+
+# ---------------------------------------------------------------------------
+# Hugging Face SOTA harness — Mask2Former Swin-Tiny ADE20K semantic
+# ---------------------------------------------------------------------------
+
+MASK2FORMER_ADE_MODEL_ID = "facebook/mask2former-swin-tiny-ade-semantic"
+#: Pinned commit on the Hugging Face hub (resolved 2026-05-31). Same
+#: bump-is-ADR-level policy as :data:`MASK2FORMER_PANOPTIC_REVISION`.
+MASK2FORMER_ADE_REVISION: str = "c8cf1b5e823aee214d937d0d001c1850ba44ef6a"
+
+# ---------------------------------------------------------------------------
 # Shared cache plumbing
 # ---------------------------------------------------------------------------
 
 CACHE_ENV = "VERNIER_REAL_PREDICTIONS_CACHE"
 _DATASET_ID = "coco-val2017"
+_DATASET_ID_ADE = "ade20k-val"
 
 
 def cache_root(override: str | os.PathLike[str] | None = None) -> Path:
@@ -166,6 +223,74 @@ def detr_resnet50_cache_path(
     JSON without any inference dep of its own.
     """
     return cache_root(cache) / detr_resnet50_cache_filename(revision=revision)
+
+
+def mask2former_panoptic_cache_dirname(*, revision: str = MASK2FORMER_PANOPTIC_REVISION) -> str:
+    """Stable directory name for Mask2Former panoptic predictions on
+    COCO val2017.
+
+    A panoptic cache is a directory (one RGB-encoded PNG per image +
+    a single ``segments_info.json`` sidecar), not a single file —
+    unlike DETR / rf-detr which fit in one COCO-detection-format JSON.
+    The DETR-R50 lesson applies: embed the FULL 40-hex SHA so future
+    revisions sharing the first 7 chars can't silently collide on
+    disk under a bumped pin.
+    """
+    return f"mask2former-pan-swin-t-{revision}-{_DATASET_ID}"
+
+
+def mask2former_panoptic_cache_dir(
+    *,
+    revision: str = MASK2FORMER_PANOPTIC_REVISION,
+    cache: Path | None = None,
+) -> Path:
+    """Return the canonical cache *directory* for Mask2Former panoptic
+    predictions. The directory contains per-image RGB PNGs (rgb2id
+    encoded segment ids) and a top-level ``segments_info.json``."""
+    return cache_root(cache) / mask2former_panoptic_cache_dirname(revision=revision)
+
+
+def mask2former_panoptic_dt_json_path(
+    *,
+    revision: str = MASK2FORMER_PANOPTIC_REVISION,
+    cache: Path | None = None,
+) -> Path:
+    """Path to the panoptic-DT JSON sidecar inside the cache dir.
+
+    Shape: ``{"annotations": [{"image_id": int, "file_name": str,
+    "segments_info": [{"id": int, "category_id": int, "area": int,
+    ...}]}, ...]}``. Mirrors the COCO panoptic results format so
+    ``panopticapi.evaluation.pq_compute_single_core`` and
+    ``vernier.panoptic.Predictions.from_arrays`` can both consume the
+    DT side without a second projection. ``category_id`` is the GT
+    JSON's sparse COCO id (1..200 with gaps), not the model's
+    contiguous 0..132 train-id space — see the inference module's
+    class-mapping discussion.
+    """
+    return mask2former_panoptic_cache_dir(revision=revision, cache=cache) / "panoptic_dt.json"
+
+
+def mask2former_ade_cache_dirname(*, revision: str = MASK2FORMER_ADE_REVISION) -> str:
+    """Stable directory name for Mask2Former ADE-semantic predictions
+    on ADE20K val (SceneParse150).
+
+    A semantic cache is a directory of single-channel label-map PNGs
+    (one per validation image, named ``<image_id>.png``). Same
+    full-SHA convention as the panoptic variant — the filename IS the
+    cache key.
+    """
+    return f"mask2former-ade-swin-t-{revision}-{_DATASET_ID_ADE}"
+
+
+def mask2former_ade_cache_dir(
+    *,
+    revision: str = MASK2FORMER_ADE_REVISION,
+    cache: Path | None = None,
+) -> Path:
+    """Return the canonical cache *directory* for Mask2Former ADE
+    semantic predictions. The directory contains per-image label-map
+    PNGs (uint8, train-id 0..149 + 255-ignore, mmseg convention)."""
+    return cache_root(cache) / mask2former_ade_cache_dirname(revision=revision)
 
 
 def ensure_maskrcnn(
@@ -256,6 +381,72 @@ def populate_rfdetr(model_name: RfdetrModelName) -> None:
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
 
 
+_MASK2FORMER_PANOPTIC_POPULATOR_FLAG = "--mask2former-panoptic"
+_MASK2FORMER_ADE_POPULATOR_FLAG = "--mask2former-ade"
+
+
+def populate_mask2former_panoptic() -> None:
+    """Run Mask2Former Swin-Tiny inference on COCO val2017 to populate
+    the panoptic prediction cache.
+
+    Shells into ``uv run --extra real-models python -m
+    tests.python.integration.real_models.sota._populate_cache
+    --mask2former-panoptic`` — same shape as :func:`populate_detr_resnet50`.
+    Validates the upstream revision is pinned before spawning the
+    subprocess; an unpinned :data:`MASK2FORMER_PANOPTIC_REVISION`
+    fails loudly here rather than later inside the inference process.
+
+    First run on a clean machine takes ~20-25 hours on an 8-core CPU
+    (Mask2Former Swin-T is heavier per image than DETR-R50). A cache
+    hit is seconds. Cached output lands at
+    :func:`mask2former_panoptic_cache_dir`.
+    """
+    _ensure_pinned_revision(MASK2FORMER_PANOPTIC_REVISION, MASK2FORMER_PANOPTIC_MODEL_ID)
+    cmd = [
+        "uv",
+        "run",
+        "--extra",
+        "real-models",
+        "python",
+        "-m",
+        _DETR_R50_POPULATOR_MODULE,
+        _MASK2FORMER_PANOPTIC_POPULATOR_FLAG,
+    ]
+    print(
+        f"Shelling into [real-models] extra for Mask2Former panoptic inference: {' '.join(cmd)}",
+        file=sys.stderr,
+    )
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+
+
+def populate_mask2former_ade() -> None:
+    """Run Mask2Former Swin-Tiny ADE-semantic inference on ADE20K val
+    to populate the semantic prediction cache.
+
+    Same shape as :func:`populate_mask2former_panoptic`. First run
+    takes ~3-4 hours on an 8-core CPU (ADE20K val is 2000 images vs
+    COCO's 5000, and the ADE checkpoint is the same Swin-T backbone).
+    A cache hit is seconds. Cached output lands at
+    :func:`mask2former_ade_cache_dir`.
+    """
+    _ensure_pinned_revision(MASK2FORMER_ADE_REVISION, MASK2FORMER_ADE_MODEL_ID)
+    cmd = [
+        "uv",
+        "run",
+        "--extra",
+        "real-models",
+        "python",
+        "-m",
+        _DETR_R50_POPULATOR_MODULE,
+        _MASK2FORMER_ADE_POPULATOR_FLAG,
+    ]
+    print(
+        f"Shelling into [real-models] extra for Mask2Former ADE inference: {' '.join(cmd)}",
+        file=sys.stderr,
+    )
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+
+
 def populate_detr_resnet50() -> None:
     """Run DETR-R50 inference on COCO val2017 to populate the cache.
 
@@ -331,10 +522,36 @@ def main(argv: Sequence[str] | None = None) -> int:
         "on an 8-core CPU for COCO val2017. Same shell-into-the-extra "
         "shape as --rfdetr.",
     )
+    parser.add_argument(
+        "--mask2former-panoptic",
+        action="store_true",
+        help="Run facebook/mask2former-swin-tiny-coco-panoptic inference "
+        "on COCO val2017 (panoptic segmentation). Requires the "
+        "`real-models` extra. ~20-25h on 8-core CPU first run. "
+        "MASK2FORMER_PANOPTIC_REVISION must be pinned in source.",
+    )
+    parser.add_argument(
+        "--mask2former-ade",
+        action="store_true",
+        help="Run facebook/mask2former-swin-tiny-ade-semantic inference "
+        "on ADE20K val (semantic segmentation). Requires the "
+        "`real-models` extra + ADE20K val cache "
+        "(`python -m ade20k_val_cache`). ~3-4h on 8-core CPU first "
+        "run. MASK2FORMER_ADE_REVISION must be pinned in source.",
+    )
     args = parser.parse_args(argv)
 
-    if not (args.maskrcnn or args.rfdetr or args.detr):
-        parser.error("at least one of --maskrcnn / --rfdetr / --detr is required")
+    if not (
+        args.maskrcnn
+        or args.rfdetr
+        or args.detr
+        or args.mask2former_panoptic
+        or args.mask2former_ade
+    ):
+        parser.error(
+            "at least one of --maskrcnn / --rfdetr / --detr / "
+            "--mask2former-panoptic / --mask2former-ade is required"
+        )
 
     if args.maskrcnn:
         path = ensure_maskrcnn(url=args.url, sha256=args.sha256)
@@ -349,5 +566,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         populate_detr_resnet50()
         path = detr_resnet50_cache_path()
         print(f"DETR-R50 predictions ready: {path}")
+
+    if args.mask2former_panoptic:
+        populate_mask2former_panoptic()
+        dir_path = mask2former_panoptic_cache_dir()
+        print(f"Mask2Former panoptic predictions ready: {dir_path}")
+
+    if args.mask2former_ade:
+        populate_mask2former_ade()
+        dir_path = mask2former_ade_cache_dir()
+        print(f"Mask2Former ADE semantic predictions ready: {dir_path}")
 
     return 0

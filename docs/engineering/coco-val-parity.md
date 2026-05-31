@@ -167,6 +167,15 @@ ADR-0008 supersedes the bbox clause of ADR-0004 and pins IoU at
 `f64` end-to-end; runs that diverge on real data are real regressions
 to file.
 
+## Sibling gate: real-prediction parity
+
+The cells here cover synthetic perfect-DT, GT-jittered, or
+user-provided detector JSONs. The complementary gate on outputs
+from pinned Hugging Face SOTA models (DETR-R50 bbox,
+Mask2Former-panoptic, Mask2Former-ADE-semantic) lives in
+[real-predictions-parity.md](./real-predictions-parity.md) — same
+oracles, same disposition tiers, real-distribution inputs.
+
 ## What this test cannot catch
 
 - **Pycocotools internal divergences from itself.** The reference is

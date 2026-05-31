@@ -55,7 +55,7 @@ import pytest
 
 from ....parity.harness import EvalSnapshot, assert_snapshots_equal, snapshot
 
-pytestmark = pytest.mark.real_models
+pytestmark = [pytest.mark.real_models, pytest.mark.slow]
 
 #: 2 ULP of float64 expressed as a RELATIVE tolerance — absorbs the
 #: documented ``serde_json`` vs ``strtod`` rounding drift on near-tie

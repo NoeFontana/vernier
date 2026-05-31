@@ -163,6 +163,12 @@ dev = [
     # `tests/python/parity_panoptic/test_panoptic_val.py` and the
     # `python -m panoptic_val_cache` CLI.
     "vernier-panoptic-val-cache",
+    # ADE20K SceneParse150 val cache. Single source of truth for the URL
+    # + SHA256 of the SceneParse150 challenge bundle; consumed by the
+    # Mask2Former ADE-semantic real-prediction harness and the
+    # `python -m ade20k_val_cache` CLI. SHA pinning is bootstrapped via
+    # `--compute-sha`; see `tools/ade20k_val_cache/README.md`.
+    "vernier-ade20k-val-cache",
     # Real-model predictions cache (Mask R-CNN downloaded; rf-detr
     # inferred via the TIDE harness). Single source of truth for the
     # cache-path contract shared between bench's real-prediction adapter
@@ -181,6 +187,7 @@ docs = [
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "tools/lvis_val_cache", editable = true }
 vernier-panoptic-val-cache = { path = "tools/panoptic_val_cache", editable = true }
+vernier-ade20k-val-cache = { path = "tools/ade20k_val_cache", editable = true }
 vernier-real-predictions-cache = { path = "tools/real_predictions_cache", editable = true }
 
 # ---------------------------------------------------------------------------
@@ -293,6 +300,6 @@ markers = [
     "parity_semantic_val: COCO val2017 panoptic-derived semantic whole-dataset parity smoke (skipped unless the panoptic cache is provisioned via `python -m panoptic_val_cache`)",
     "parity_threads: ADR-0047 cross-thread strict-mode bit-equality (vernier `num_threads=N` vs vernier `num_threads=None`)",
     "coco_val: whole-dataset parity smoke (skipped unless VERNIER_COCO_*_PATH env vars point at real files)",
-    "real_models: real-model validation harness (rfdetr) — heavy, opt-in only, skipped unless the real-models extra is installed and VERNIER_COCO_CACHE points at val2017 GT + images",
+    "real_models: real-model validation harness (rfdetr + Hugging Face SOTA cells: DETR-R50, Mask2Former panoptic + ADE-semantic). Heavy, opt-in only. Co-marked `slow` so CI's PR-time `-m 'not slow'` filter excludes them by NAME — env-state gating (cache provisioning, pin SHAs) is defence-in-depth, not the load-bearing skip. Skipped on default CI; runs under `slow.yml` (no marker filter) and locally when the cache + pinned revisions are present.",
     "tripwire: sanity gates against vendored first-party references (e.g., kemaloksuz/LRP-Error). Not a parity contract — when a tripwire fires, investigate manually; do not auto-resolve.",
 ]

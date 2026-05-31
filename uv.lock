@@ -3074,6 +3074,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-benchmark" },
     { name = "ruff" },
+    { name = "vernier-ade20k-val-cache" },
     { name = "vernier-coco-val-cache" },
     { name = "vernier-lvis-val-cache" },
     { name = "vernier-panoptic-val-cache" },
@@ -3116,6 +3117,7 @@ dev = [
     { name = "pytest", specifier = ">=9" },
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "ruff", specifier = ">=0.15" },
+    { name = "vernier-ade20k-val-cache", editable = "tools/ade20k_val_cache" },
     { name = "vernier-coco-val-cache", editable = "tools/coco_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "tools/lvis_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "tools/panoptic_val_cache" },
@@ -3128,6 +3130,11 @@ docs = [
     { name = "mkdocs-redirects", specifier = ">=1.2" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.25" },
 ]
+
+[[package]]
+name = "vernier-ade20k-val-cache"
+version = "0.0.0"
+source = { editable = "tools/ade20k_val_cache" }
 
 [[package]]
 name = "vernier-coco-val-cache"

@@ -38,13 +38,18 @@ Workload identifiers (instance — registered today):
   predictions on val2017, inferred by the Hugging Face SOTA harness
   (``tests/python/integration/real_models/sota/``). Same ``real-models``
   extra as rf-detr (torch + transformers + huggingface_hub). The pin
-  is the first 7 chars of the model's hub commit SHA. Serves bbox only;
-  Mask2Former (instance / panoptic) and ViTPose (keypoints) will follow
-  in subsequent SOTA-harness PRs.
+  is the first 7 chars of the model's hub commit SHA. Serves bbox only.
+- ``coco_panoptic_val2017_mask2former_swin_t_v<short-sha>`` — panoptic
+  PQ cell, ``facebook/mask2former-swin-tiny-coco-panoptic`` predictions
+  on COCO panoptic val2017. Same SOTA-harness extra; bench reads the
+  rgb2id PNG dir + panoptic_dt.json sidecar without an inference dep.
+- ``ade20k_val_mask2former_swin_t_v<short-sha>`` — semantic mIoU cell,
+  ``facebook/mask2former-swin-tiny-ade-semantic`` predictions on
+  ADE20K val. Reuses the SOTA-harness extra; ADE20K GT lives in its
+  own ``ade20k_val_cache`` module parallel to ``panoptic_val_cache``.
 
-Panoptic / semantic / streaming workload IDs are reserved by their
-respective B-streams (B1 panoptic, B2 semantic, B3 streaming) and
-registered through ``resolve()`` when they land. ``resolve()`` raises
+Streaming workload IDs are reserved by B3 and registered through
+``resolve()`` when they land. ``resolve()`` raises
 ``NotImplementedError("registered by Bx stream")`` for IDs in their
 namespace until the cells exist.
 """
@@ -441,6 +446,43 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             categories_json=cats_json,
         )
 
+    if workload_name == real_predictions.MASK2FORMER_PANOPTIC_WORKLOAD_ID:
+        # Reuses the panoptic_val_cache GT side (already provisioned by
+        # coco_panoptic_val2017_perfect for the smoke cell) and the
+        # Mask2Former DT side from the SOTA harness's prediction cache.
+        gt_png_dir, gt_json, _, _, cats_json = coco_panoptic_val2017.perfect_workload_paths()
+        dt_png_dir, dt_json = real_predictions.mask2former_panoptic_dt_paths()
+        return PanopticWorkload(
+            workload_id=workload_name,
+            gt_png_dir=gt_png_dir,
+            gt_json=gt_json,
+            dt_png_dir=dt_png_dir,
+            dt_json=dt_json,
+            categories_json=cats_json,
+        )
+
+    if workload_name == real_predictions.MASK2FORMER_ADE_WORKLOAD_ID:
+        # ADE20K val GT lives in its own cache module (parallel to
+        # panoptic_val_cache). The semantic cell consumes (gt_dir,
+        # dt_dir, n_classes, ignore_label) — no label_remap because
+        # both sides already use the mmseg reduce_zero_label
+        # train-id space.
+        from ade20k_val_cache import (
+            ADE20K_IGNORE_LABEL,
+            ADE20K_NUM_CLASSES,
+            ensure_gt,
+        )
+
+        gt_dir, _, _ = ensure_gt()
+        dt_dir = real_predictions.mask2former_ade_dt_path()
+        return SemanticWorkload(
+            workload_id=workload_name,
+            gt_label_maps=gt_dir,
+            dt_label_maps=dt_dir,
+            n_classes=ADE20K_NUM_CLASSES,
+            ignore_label=ADE20K_IGNORE_LABEL,
+        )
+
     # Reserved B-stream namespaces — the prefix tells the user which
     # follow-up PR registers the concrete workload.
     if any(workload_name.startswith(p) for p in _PANOPTIC_PREFIXES):
@@ -481,9 +523,9 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
     if any(workload_name.startswith(p) for p in _SEMANTIC_PREFIXES):
         raise NotImplementedError(
             f"workload {workload_name!r} is in the semantic namespace; "
-            f"the ADE20K cell waits on the S3-B oracle vendoring "
-            f"(mmsegmentation env + license-cleared val cache). For a "
-            f"vernier-only baseline today, use "
+            f"known cells: '{coco_val2017_semantic.PERFECT_WORKLOAD_ID}', "
+            f"'{real_predictions.MASK2FORMER_ADE_WORKLOAD_ID}'. For a "
+            f"vernier-only baseline, use "
             f"'synthetic_semantic:n_images=...,n_classes=...,seed=...'."
         )
     # B3 streaming workloads — three concrete cells share the
@@ -523,5 +565,7 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
         f"'{real_predictions.RFDETR_NANO_WORKLOAD_ID}', "
         f"'{real_predictions.RFDETR_SEGNANO_WORKLOAD_ID}', "
         f"'{real_predictions.DETR_R50_WORKLOAD_ID}', "
+        f"'{real_predictions.MASK2FORMER_PANOPTIC_WORKLOAD_ID}', "
+        f"'{real_predictions.MASK2FORMER_ADE_WORKLOAD_ID}', "
         f"'{lvis_v1.PERFECT_WORKLOAD_ID}', 'lvis_v1_val_jittered_seed<N>'"
     )
