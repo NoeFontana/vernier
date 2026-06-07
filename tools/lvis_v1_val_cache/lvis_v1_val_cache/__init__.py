@@ -57,7 +57,7 @@ GT_FILENAME = "lvis_v1_val.json"
 #: upstream artifact changed. Bumping is an ADR-level decision
 #: (per ADR-0026 §"Parity strategy") on the same change that bumps
 #: :mod:`lvis_val_cache`.
-GT_ZIP_SHA256 = "2bf946b92c3037f53c172d80017f5b74ea035f00a21b20e0766b3b638b2363f9"
+GT_ZIP_SHA256 = "5cae9a3c79aadb667550c2b5dcf7f4d86e059a41ec91ef690225b667e28e9ba5"
 
 #: LVIS v1 val totals — captured here so the test side can assert
 #: provisioning produced the expected surface without re-parsing the

@@ -17,7 +17,7 @@ synthetic-DT parity smoke); only the image side is added here.
 | Field          | Value                                                                                              |
 | -------------- | -------------------------------------------------------------------------------------------------- |
 | GT URL         | `https://s3-us-west-2.amazonaws.com/dl.fbaipublicfiles.com/LVIS/lvis_v1_val.json.zip` (~190 MB zip) |
-| GT SHA256      | `2bf946b92c3037f53c172d80017f5b74ea035f00a21b20e0766b3b638b2363f9` (FAIR public-files mirror)      |
+| GT SHA256      | `5cae9a3c79aadb667550c2b5dcf7f4d86e059a41ec91ef690225b667e28e9ba5` (FAIR public-files mirror)      |
 | Inner JSON     | `lvis_v1_val.json` (~890 MB uncompressed)                                                          |
 | Images URL     | `http://images.cocodataset.org/zips/val2017.zip` (~778 MB; via `coco_val_cache`)                   |
 | Images dir     | `val2017/` (5000 JPEGs)                                                                            |
