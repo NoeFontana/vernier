@@ -149,8 +149,21 @@ def ensure_gt(*, cache: Path | None = None) -> Path:
                 f"artefact changed or the download was corrupted; "
                 f"re-run, and if the mismatch persists open an issue."
             )
-        with zipfile.ZipFile(zip_path) as z, z.open(GT_INNER_PATH) as src, gt.open("wb") as dst:
+        # Stage the extracted JSON to a `.part` sibling and atomically
+        # rename on completion — mirrors `_atomic_download` above so a
+        # SIGINT or disk-full mid-extract can't leave a truncated
+        # `gt.json` that the next run's `gt.is_file()` guard at the
+        # top of this function would accept as valid (the zip is
+        # unlink'd in the `finally` below, so a partial extract is
+        # otherwise unrecoverable without manual intervention).
+        gt_part = gt.with_suffix(gt.suffix + ".part")
+        with (
+            zipfile.ZipFile(zip_path) as z,
+            z.open(GT_INNER_PATH) as src,
+            gt_part.open("wb") as dst,
+        ):
             shutil.copyfileobj(src, dst, length=_COPY_BUF_SIZE)
+        gt_part.replace(gt)
     finally:
         zip_path.unlink(missing_ok=True)
 
@@ -178,7 +191,16 @@ def ensure_images(*, cache: Path | None = None) -> Path:
 
     coco_images_dir = _ensure_coco_images()
     link = cache_dir / VAL_IMG_DIRNAME
-    if link.is_symlink() or link.exists():
+    # A dangling symlink answers ``True`` to ``is_symlink()`` but
+    # ``False`` to ``exists()``; the original ``is_symlink() or
+    # exists()`` short-circuited as "already provisioned" on the
+    # symlink branch and handed back a broken pointer. Replace a
+    # dangling symlink before falling through to the create branch
+    # so an upstream cache-relocation (coco_val_cache root moved) is
+    # self-healing.
+    if link.is_symlink() and not link.exists():
+        link.unlink()
+    elif link.is_symlink() or link.exists():
         # Already provisioned; trust the existing pointer rather than
         # re-resolving (a manual override pointing at an external
         # mirror is a legitimate setup).

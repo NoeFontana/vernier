@@ -68,7 +68,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from ....parity_lvis.harness import assert_snapshots_equal, snapshot
+from ....parity_lvis.harness import assert_snapshots_equal, snapshot, subsample_bytes
 
 pytestmark = [pytest.mark.real_models, pytest.mark.slow]
 
@@ -105,58 +105,40 @@ def _sample_image_count() -> int:
     return n
 
 
-def _subsample(gt_bytes: bytes, dt_bytes: bytes, n_images: int) -> tuple[bytes, bytes]:
-    """Trim the GT + DT to the first ``n_images`` image ids (id-ascending input order).
-
-    Mirrors ``tests/python/parity_lvis/test_lvis_val._subsample``: the
-    upstream ``lvis_v1_val.json`` is shuffled by frequency at
-    publication time, so taking the first N is a frequency-balanced
-    slice that exercises every federated path (~85% of the 1203
-    categories appear at least once in the first 1000 images).
-    """
-    if n_images < 0:
-        return gt_bytes, dt_bytes
-    gt = json.loads(gt_bytes)
-    dt = json.loads(dt_bytes)
-    keep_imgs = gt["images"][:n_images]
-    keep_ids = {im["id"] for im in keep_imgs}
-    gt_sub = {
-        **gt,
-        "images": keep_imgs,
-        "annotations": [a for a in gt["annotations"] if a["image_id"] in keep_ids],
-    }
-    dt_sub = [d for d in dt if d["image_id"] in keep_ids]
-    return json.dumps(gt_sub).encode("utf-8"), json.dumps(dt_sub).encode("utf-8")
-
-
 def _assert_coverage(gt_bytes: bytes, dt_bytes: bytes) -> None:
-    """Every GT image is represented in the DT (vacuous empty fine).
+    """Every GT image has at least one DT record emitted for it.
 
     The populator runs forward on every image in ``gt['images']``
-    and emits at least the threshold-filtered detection set per
-    image. A SIGINT mid-write that left only a partial JSON would
-    fail the JSON parse upstream; this gate covers the case where
-    the populator's per-image loop silently skipped an image (a
-    contract regression we want to surface, not absorb).
+    and writes a per-image record at least once (the LVIS results
+    JSON is a flat list, but the populator writes one entry per
+    above-threshold detection — so a fully empty image, when its
+    forward pass produced zero above-threshold scores, would still
+    show up via a sentinel ``image_id``-only row from the populator's
+    contract). This gate covers the case where the populator's
+    per-image loop silently skipped an image entirely — e.g. an
+    unhandled exception caught and continued — leaving the GT image
+    with NO corresponding DT entry at all. Mirrors the Mask2Former
+    panoptic coverage gate in
+    ``test_mask2former_panoptic_real_models.py``.
 
-    "Vacuous empty list" — an image with zero above-threshold
-    detections is FINE; the LVIS results format doesn't require a
-    sentinel record per image. The gate is on image_id PRESENCE in
-    the GT side; the DT may legitimately have fewer (= images with
-    no above-threshold detections).
+    Run BEFORE sub-sampling: the sub-sample filter keeps only DT
+    records whose ``image_id`` is in the prefix, so running this gate
+    on post-subsample bytes is tautological (a populator that dropped
+    half the GT would still pass). On the full bytes, a populator
+    that skipped an image leaves a real ``missing = gt - dt`` gap we
+    surface as a contract regression.
     """
     gt = json.loads(gt_bytes)
     dt = json.loads(dt_bytes)
     gt_image_ids = {int(im["id"]) for im in gt["images"]}
     dt_image_ids = {int(d["image_id"]) for d in dt}
-    # DT image_ids must be a subset of GT image_ids — a DT record
-    # for an image not in the GT prefix would be a sub-sampling
-    # contract violation.
-    extraneous = dt_image_ids - gt_image_ids
-    assert not extraneous, (
-        f"DT contains detections for {len(extraneous)} image ids not in the "
-        f"sub-sampled GT (first 5: {sorted(extraneous)[:5]}); the "
-        f"populator and the test disagree on which images are in scope."
+    missing = gt_image_ids - dt_image_ids
+    assert not missing, (
+        f"populator produced predictions for {len(dt_image_ids)} images but "
+        f"GT has {len(gt_image_ids)} — {len(missing)} GT images missing from "
+        f"DT (first 5: {sorted(missing)[:5]}). Either the populator's "
+        f"per-image loop silently skipped images, or the GT/DT caches were "
+        f"pinned to different revisions."
     )
 
 
@@ -185,8 +167,11 @@ def test_lvis_detector_parity_vs_lvis_api(
     gt_bytes = gt_path.read_bytes()
     dt_bytes = lvis_detector_predictions_path.read_bytes()
 
-    gt_sub, dt_sub = _subsample(gt_bytes, dt_bytes, _sample_image_count())
-    _assert_coverage(gt_sub, dt_sub)
+    # Coverage check runs on the FULL bytes — sub-sampling drops DT
+    # records whose image_id isn't in the prefix, which would mask a
+    # populator skip on any image outside the prefix.
+    _assert_coverage(gt_bytes, dt_bytes)
+    gt_sub, dt_sub = subsample_bytes(gt_bytes, dt_bytes, _sample_image_count())
 
     # Sequence the two snapshots — holding both peaks of the
     # cell-list materialisation simultaneously is the OOM path on

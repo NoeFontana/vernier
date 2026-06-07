@@ -330,6 +330,42 @@ def assert_snapshots_equal(
         )
 
 
+def subsample_bytes(gt_bytes: bytes, dt_bytes: bytes, n_images: int) -> tuple[bytes, bytes]:
+    """Trim the GT + DT to the first ``n_images`` image ids (id-ascending input order).
+
+    When ``n_images < 0`` returns the inputs verbatim — the convention
+    both call sites use to mean "run on the full corpus".
+
+    Uses the input image order rather than a sort because the upstream
+    ``lvis_v1_val.json`` has been shuffled by frequency at publication
+    time; taking the first N gives a frequency-balanced slice that
+    exercises every federated path (~85% of the 1203 categories appear
+    at least once in the first 1000 images) without having to bucket.
+
+    Shared between the synthetic-DT parity smoke
+    (``tests/python/parity_lvis/test_lvis_val.py``) and the
+    real-prediction parity smoke
+    (``tests/python/integration/real_models/sota/test_lvis_real_models.py``);
+    each call site keeps its own env-var lookup for the n-images knob
+    (``VERNIER_LVIS_VAL_SAMPLE_IMAGES`` vs
+    ``VERNIER_LVIS_REAL_VAL_SAMPLE_IMAGES``) so the test-side defaults
+    can drift independently.
+    """
+    if n_images < 0:
+        return gt_bytes, dt_bytes
+    gt = json.loads(gt_bytes)
+    dt = json.loads(dt_bytes)
+    keep_imgs = gt["images"][:n_images]
+    keep_ids = {im["id"] for im in keep_imgs}
+    gt_sub = {
+        **gt,
+        "images": keep_imgs,
+        "annotations": [a for a in gt["annotations"] if a["image_id"] in keep_ids],
+    }
+    dt_sub = [d for d in dt if d["image_id"] in keep_ids]
+    return json.dumps(gt_sub).encode("utf-8"), json.dumps(dt_sub).encode("utf-8")
+
+
 def fixture_bytes(fixture_name: str) -> tuple[bytes, bytes]:
     """Read a fixture's `gt.json` + `dt.json` as the bytes the harness
     feeds to both impls.
