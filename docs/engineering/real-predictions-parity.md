@@ -26,11 +26,12 @@ detection, panoptic, and semantic paradigms.
 
 ## Cells covered
 
-| Paradigm  | Model                                           | Dataset                       | Oracle              | Test                                                                                                            |
-| --------- | ----------------------------------------------- | ----------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------- |
-| Instance  | `facebook/detr-resnet-50`                       | COCO val2017 (bbox)           | `pycocotools 2.0.11`| `tests/python/integration/real_models/sota/test_detr_real_models.py::test_detr_r50_bbox_parity_vs_pycocotools` |
-| Panoptic  | `facebook/mask2former-swin-tiny-coco-panoptic`  | COCO panoptic val2017         | `panopticapi`       | `tests/python/integration/real_models/sota/test_mask2former_panoptic_real_models.py::test_mask2former_panoptic_parity_vs_panopticapi` |
-| Semantic  | `facebook/mask2former-swin-tiny-ade-semantic`   | ADE20K SceneParse150 val      | `mmsegmentation` `IoUMetric` | `tests/python/integration/real_models/sota/test_mask2former_ade_real_models.py::test_mask2former_ade_parity_vs_mmsegmentation` |
+| Paradigm    | Model                                           | Dataset                       | Oracle              | Test                                                                                                            |
+| ----------- | ----------------------------------------------- | ----------------------------- | ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Instance    | `facebook/detr-resnet-50`                       | COCO val2017 (bbox)           | `pycocotools 2.0.11`| `tests/python/integration/real_models/sota/test_detr_real_models.py::test_detr_r50_bbox_parity_vs_pycocotools` |
+| Panoptic    | `facebook/mask2former-swin-tiny-coco-panoptic`  | COCO panoptic val2017         | `panopticapi`       | `tests/python/integration/real_models/sota/test_mask2former_panoptic_real_models.py::test_mask2former_panoptic_parity_vs_panopticapi` |
+| Semantic    | `facebook/mask2former-swin-tiny-ade-semantic`   | ADE20K SceneParse150 val      | `mmsegmentation` `IoUMetric` | `tests/python/integration/real_models/sota/test_mask2former_ade_real_models.py::test_mask2former_ade_parity_vs_mmsegmentation` |
+| Calibration | `facebook/detr-resnet-50` (cache reused)        | COCO val2017 (bbox)           | numpy reference (ADR-0018) | `tests/python/integration/real_models/sota/test_detr_calibration_real_models.py::test_detr_r50_calibration_parity_vs_numpy_oracle` |
 
 All three pinned to revisions captured in
 `tools/real_predictions_cache/real_predictions_cache/__init__.py`:
@@ -136,6 +137,58 @@ shipping the real-prediction gate.
   - Σ intersect: `367,015,797` pixels
   - Σ union: `529,188,289` pixels
   - All 150 classes present in both `label` and `pred`.
+
+## Calibration — DETR-R50 vs numpy reference (ECE/MCE)
+
+- **Workload**: same `coco_val2017_detr_r50_v1d5f47b` cache as the
+  Instance cell — no new model, no new oracle, no new prediction
+  cache. Cells lifted from `evaluate_bbox_grid(...).eval_imgs()` at
+  the `a=0` (`all` area) bucket, the only bucket the ADR-0018
+  calibration kernel consults. Both implementations receive the
+  **identical** `dict[k -> list[PerImageCell]]` so the test isolates
+  calibration-kernel parity from matching-kernel parity (the latter
+  is the Instance cell's claim).
+- **Oracle**: vernier's clean-room numpy implementation at
+  `tests/python/parity_calibration/numpy_oracle.py`. Calibration
+  metrics (ECE/MCE/Wilson) are vernier-specific per ADR-0018; no
+  third-party calibration library is vendored as oracle.
+- **Bin config**: ADR-0018 "DETR-aware defaults" — 15 quantile bins,
+  `min_score=0.05`, Wilson 95% CIs. Same config the user-facing
+  `result.calibration()` exposes.
+- **Strict tier** — per-bin u64 `count` from the reliability table is
+  bit-equal at every IoU threshold tested. Integer reductions cannot
+  drift under reduction-order changes; a diff here would be an
+  outright accumulator bug.
+- **Aligned tier, 8 ULP rtol + atol** — `ece` / `mce` scalars and
+  every float column of the reliability table (`mean_score`,
+  `accuracy`, `gap`, `ci_lo`, `ci_hi`). Both bounds are passed so a
+  bin whose oracle gap rounds to exact `0.0` while vernier yields a
+  sub-ULP non-zero still passes (same symmetric-band rationale as the
+  panoptic cell above). Synthetic fixtures pin at `4 * eps`; the
+  real-prediction reduction over ~150k detections justifies widening
+  to 8 ULP — same band the panoptic SOTA gate uses.
+- **IoU coverage** — the test parametrises over `iou ∈ {0.5, 0.75,
+  0.95}` against the canonical COCO 10-point ladder. ADR-0018's
+  `calibrate(...)` surface picks one T-slot at a time, so the
+  "0.5:0.95" mean-over-thresholds shape familiar from AP does not
+  apply at the calibration kernel; the two endpoints + 0.75 give
+  coverage of both the permissive and the strict-IoU regimes
+  (`dt_matched` density differs by an order of magnitude across the
+  span).
+- **Headline numbers** (captured on the live cache at SHA
+  `<populated by first real run>`):
+  - **ECE @ iou=0.5**: `<populated by first real run>`
+  - **MCE @ iou=0.5**: `<populated by first real run>`
+  - **ECE @ iou=0.75**: `<populated by first real run>`
+  - **MCE @ iou=0.75**: `<populated by first real run>`
+  - **ECE @ iou=0.95**: `<populated by first real run>`
+  - **MCE @ iou=0.95**: `<populated by first real run>`
+  - n_detections / effective_n_bins per IoU:
+    `<populated by first real run>`
+
+This cell shares the inference cost with the Instance cell: both pull
+the same `detr_predictions_path` session fixture, so adding the
+calibration smoke is free on a populated cache.
 
 ## Shared harness configuration
 
