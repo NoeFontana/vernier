@@ -138,6 +138,19 @@ MASK2FORMER_ADE_MODEL_ID = "facebook/mask2former-swin-tiny-ade-semantic"
 MASK2FORMER_ADE_REVISION: str = "c8cf1b5e823aee214d937d0d001c1850ba44ef6a"
 
 # ---------------------------------------------------------------------------
+# Hugging Face SOTA harness — ViTPose-base-simple (keypoints, top-down)
+# ---------------------------------------------------------------------------
+
+VITPOSE_MODEL_ID = "usyd-community/vitpose-base-simple"
+#: Pinned commit on the Hugging Face hub (resolved 2026-06-07). ViTPose
+#: is a top-down pose estimator: it consumes person boxes (GT person
+#: crops on this cell) and produces per-instance 17-keypoint vectors.
+#: Same bump-is-ADR-level policy as the DETR / Mask2Former pins; the
+#: cache filename embeds the full SHA so a weights bump on the hub
+#: invalidates by construction.
+VITPOSE_REVISION: str = "a93ac0c67e0b7e2c55287d21d4c460c8f3c54d45"
+
+# ---------------------------------------------------------------------------
 # Shared cache plumbing
 # ---------------------------------------------------------------------------
 
@@ -293,6 +306,35 @@ def mask2former_ade_cache_dir(
     return cache_root(cache) / mask2former_ade_cache_dirname(revision=revision)
 
 
+def vitpose_cache_filename(*, revision: str = VITPOSE_REVISION) -> str:
+    """Stable filename for ViTPose-base-simple keypoint predictions on
+    COCO val2017.
+
+    Same full-40-hex-SHA convention as :func:`detr_resnet50_cache_filename`:
+    the filename IS the cache key, so two future revisions sharing the
+    first 7 hex chars can't collide on disk and silently serve stale
+    keypoint vectors under a bumped pin. The cell is top-down (uses GT
+    person bboxes as input crops), so the cache content depends on the
+    GT JSON's person-box layout as well as the weights — both are
+    pinned (GT via :data:`KP_GT_SHA256`, weights via this SHA).
+    """
+    return f"vitpose-base-simple-{revision}-{_DATASET_ID}.json"
+
+
+def vitpose_cache_path(
+    *,
+    revision: str = VITPOSE_REVISION,
+    cache: Path | None = None,
+) -> Path:
+    """Return the canonical cache location for ViTPose-base-simple
+    keypoint predictions. The bench-side adapter
+    (``bench/bench/workloads/real_predictions.py``) reads the JSON
+    without any inference dep; the populator lives behind the
+    ``[real-models]`` extra.
+    """
+    return cache_root(cache) / vitpose_cache_filename(revision=revision)
+
+
 def ensure_maskrcnn(
     *,
     cache: Path | None = None,
@@ -383,6 +425,7 @@ def populate_rfdetr(model_name: RfdetrModelName) -> None:
 
 _MASK2FORMER_PANOPTIC_POPULATOR_FLAG = "--mask2former-panoptic"
 _MASK2FORMER_ADE_POPULATOR_FLAG = "--mask2former-ade"
+_VITPOSE_POPULATOR_FLAG = "--vitpose"
 
 
 def populate_mask2former_panoptic() -> None:
@@ -442,6 +485,42 @@ def populate_mask2former_ade() -> None:
     ]
     print(
         f"Shelling into [real-models] extra for Mask2Former ADE inference: {' '.join(cmd)}",
+        file=sys.stderr,
+    )
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+
+
+def populate_vitpose() -> None:
+    """Run ViTPose-base-simple inference on COCO val2017 to populate
+    the keypoint prediction cache.
+
+    Shells into ``uv run --extra real-models python -m
+    tests.python.integration.real_models.sota._populate_cache --vitpose``
+    so the heavy ``[real-models]`` extra lives outside this package's
+    dep set — same shape as :func:`populate_detr_resnet50`. Validates
+    the upstream revision is pinned before spawning the subprocess; an
+    unpinned :data:`VITPOSE_REVISION` fails loudly here rather than
+    later inside the inference process.
+
+    ViTPose is top-down: input is one person-box crop at a time, so the
+    iteration count is the number of GT person annotations in
+    val2017 (~11k boxes), not the 5000 images. First run on a clean
+    machine takes ~2-3 hours on an 8-core CPU; a cache hit is seconds.
+    Cached output lands at :func:`vitpose_cache_path`.
+    """
+    _ensure_pinned_revision(VITPOSE_REVISION, VITPOSE_MODEL_ID)
+    cmd = [
+        "uv",
+        "run",
+        "--extra",
+        "real-models",
+        "python",
+        "-m",
+        _DETR_R50_POPULATOR_MODULE,
+        _VITPOSE_POPULATOR_FLAG,
+    ]
+    print(
+        f"Shelling into [real-models] extra for ViTPose inference: {' '.join(cmd)}",
         file=sys.stderr,
     )
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
@@ -539,6 +618,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "(`python -m ade20k_val_cache`). ~3-4h on 8-core CPU first "
         "run. MASK2FORMER_ADE_REVISION must be pinned in source.",
     )
+    parser.add_argument(
+        "--vitpose",
+        action="store_true",
+        help="Run usyd-community/vitpose-base-simple inference on COCO "
+        "val2017 (keypoints, top-down: GT person boxes as input). "
+        "Requires the `real-models` extra + COCO val2017 cache + "
+        "keypoints GT (`./tools/fetch-coco-val.sh --with-images`). "
+        "~2-3h on 8-core CPU first run. VITPOSE_REVISION must be "
+        "pinned in source.",
+    )
     args = parser.parse_args(argv)
 
     if not (
@@ -547,10 +636,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.detr
         or args.mask2former_panoptic
         or args.mask2former_ade
+        or args.vitpose
     ):
         parser.error(
             "at least one of --maskrcnn / --rfdetr / --detr / "
-            "--mask2former-panoptic / --mask2former-ade is required"
+            "--mask2former-panoptic / --mask2former-ade / --vitpose "
+            "is required"
         )
 
     if args.maskrcnn:
@@ -576,5 +667,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         populate_mask2former_ade()
         dir_path = mask2former_ade_cache_dir()
         print(f"Mask2Former ADE semantic predictions ready: {dir_path}")
+
+    if args.vitpose:
+        populate_vitpose()
+        path = vitpose_cache_path()
+        print(f"ViTPose-base-simple keypoint predictions ready: {path}")
 
     return 0

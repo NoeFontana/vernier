@@ -9,7 +9,7 @@ dep. This script is the populator; it carries the heavy
 ``tools/fetch-real-predictions.sh`` (via the matching
 ``real_predictions_cache.populate_*`` helpers).
 
-Three model flags, three cache layouts:
+Four model flags, four cache layouts:
 
 - ``--detr`` → one ``detr-r50-<sha>-coco-val2017.json`` (COCO
   detection results shape). ~12-15h on 8-core CPU.
@@ -20,6 +20,9 @@ Three model flags, three cache layouts:
   <sha>-ade20k-val/`` with one single-channel label-map PNG per
   image (no JSON sidecar — semantic is just label maps). ~3-4h on
   8-core CPU.
+- ``--vitpose`` → one ``vitpose-base-simple-<sha>-coco-val2017.json``
+  (COCO keypoints results shape; top-down on GT person boxes).
+  ~2-3h on 8-core CPU.
 
 Usage::
 
@@ -29,6 +32,8 @@ Usage::
         tests.python.integration.real_models.sota._populate_cache --mask2former-panoptic
     uv run --extra real-models python -m \\
         tests.python.integration.real_models.sota._populate_cache --mask2former-ade
+    uv run --extra real-models python -m \\
+        tests.python.integration.real_models.sota._populate_cache --vitpose
 """
 
 from __future__ import annotations
@@ -38,13 +43,14 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
-from coco_val_cache import GT_FILENAME, IMAGES_DIRNAME
+from coco_val_cache import GT_FILENAME, IMAGES_DIRNAME, KP_GT_FILENAME, ensure_kp_gt
 from coco_val_cache import cache_root as _coco_cache_root
 from real_predictions_cache import (
     detr_resnet50_cache_path,
     mask2former_ade_cache_dir,
     mask2former_panoptic_cache_dir,
     mask2former_panoptic_dt_json_path,
+    vitpose_cache_path,
 )
 
 from ._detr_predict import predict_coco_val as _detr_predict_coco_val
@@ -120,6 +126,32 @@ def _populate_mask2former_panoptic() -> Path:
     return cache_dir
 
 
+def _populate_vitpose() -> Path:
+    """Run ViTPose-base-simple inference on COCO val2017 (keypoints).
+
+    Top-down predictor: iterates over GT person annotations rather
+    than over images, so the inner loop count is ~11k boxes (not
+    5000 images). Ensures the keypoints GT is materialised under the
+    val2017 cache root (same upstream zip as the instances GT) before
+    handing off to the predictor.
+    """
+    root = _coco_val_root()
+    # `ensure_kp_gt` is idempotent under the pinned SHA — cheap to
+    # call even on a populated cache.
+    ensure_kp_gt(cache=root)
+    gt_dict = json.loads((root / KP_GT_FILENAME).read_bytes())
+
+    from ._vitpose_predict import predict_coco_val as _vitpose_predict_coco_val
+
+    cache_path = vitpose_cache_path()
+    _vitpose_predict_coco_val(
+        gt=gt_dict,
+        image_dir=root / IMAGES_DIRNAME,
+        cache_path=cache_path,
+    )
+    return cache_path
+
+
 def _populate_mask2former_ade() -> Path:
     """Run Mask2Former ADE semantic inference on ADE20K val.
 
@@ -171,12 +203,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Run facebook/mask2former-swin-tiny-ade-semantic on ADE20K "
         "val and write a per-image label-map PNG cache (train-id 0..149).",
     )
+    parser.add_argument(
+        "--vitpose",
+        action="store_true",
+        help="Run usyd-community/vitpose-base-simple on COCO val2017 "
+        "(keypoints, top-down on GT person boxes) and write a COCO "
+        "keypoints results JSON to the cache.",
+    )
     args = parser.parse_args(argv)
 
-    if not (args.detr or args.mask2former_panoptic or args.mask2former_ade):
+    if not (args.detr or args.mask2former_panoptic or args.mask2former_ade or args.vitpose):
         parser.error(
             "at least one model flag is required: "
-            "--detr / --mask2former-panoptic / --mask2former-ade"
+            "--detr / --mask2former-panoptic / --mask2former-ade / --vitpose"
         )
 
     if args.detr:
@@ -190,6 +229,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.mask2former_ade:
         path = _populate_mask2former_ade()
         print(f"Mask2Former ADE-semantic predictions cached: {path}")
+
+    if args.vitpose:
+        path = _populate_vitpose()
+        print(f"ViTPose-base-simple keypoint predictions cached: {path}")
 
     return 0
 
