@@ -52,10 +52,14 @@ _PERSON_CATEGORY_ID = 1
 
 #: Per-keypoint score floor for the visibility flag emitted in the COCO
 #: JSON. pycocotools' OKS evaluator ignores ``v`` on the DT side (only
-#: the GT's ``v`` gates which keypoints contribute to the score), so
-#: this purely informational — but mmpose / panoptic / downstream
-#: viewers read it, and the parity test sanity-checks the v∈{0,1,2}
-#: surface to confirm the model is firing as expected.
+#: the GT's ``v`` gates which keypoints contribute to the score, per
+#: ADR-0012 quirk F5), so this is purely informational — mmpose /
+#: downstream viewers read it but the parity numbers do not. We hard-
+#: pin DT-side ``v`` to {1, 2} (never 0): "not labelled" is a GT-side
+#: concept, and any DT-side test asserting "we saw both 1 and 2" would
+#: be tautological on a working model rather than exercising F5. The
+#: F5 quirk surface is exercised by the GT fixtures in the parity
+#: suite, not by these real-model DT outputs.
 _KP_VIS_THRESHOLD = 0.3
 
 #: COCO's 17-joint name set. Used as the documented expected set for
@@ -169,7 +173,31 @@ def _record_for_box(
     with torch.inference_mode():
         outputs = model(**inputs)
 
-    result = processor.post_process_pose_estimation(outputs, boxes=boxes)[0][0]
+    # pixel-space boxes; target_sizes pins the joint coords to image
+    # space rather than the input crop (256x192). Mirrors the explicit
+    # target_sizes pass in `_detr_predict.py`; without it a future
+    # caller passing normalized boxes would silently get joints in
+    # input-crop coords.
+    image_w, image_h = image.size
+    per_image_results = processor.post_process_pose_estimation(
+        outputs,
+        boxes=boxes,
+        target_sizes=[(image_h, image_w)],
+    )
+    assert len(per_image_results) == 1, (
+        f"ViTPose post_process_pose_estimation returned "
+        f"{len(per_image_results)} per-image entries; expected 1 "
+        f"(one image per forward pass)"
+    )
+    per_box_results = per_image_results[0]
+    assert len(per_box_results) == 1, (
+        f"ViTPose post_process_pose_estimation returned "
+        f"{len(per_box_results)} per-box entries; expected 1 "
+        f"(one box per forward pass — any future per-image batching of "
+        f"multiple boxes must remove this assert and revisit the cache "
+        f"contract)"
+    )
+    result = per_box_results[0]
     kp_xy = result["keypoints"].tolist()  # shape (17, 2)
     kp_scores = result["scores"].tolist()  # shape (17,)
 

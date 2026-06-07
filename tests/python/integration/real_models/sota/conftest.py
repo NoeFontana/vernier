@@ -351,9 +351,21 @@ def vitpose_predictions_path(
     if not cache.is_file():
         from ._vitpose_predict import predict_coco_val
 
-        predict_coco_val(
-            gt=coco_kp_gt_dict,
-            image_dir=coco_val_image_dir,
-            cache_path=cache,
-        )
+        # Mirror the panoptic / ADE fixtures' skip shape: when the
+        # COCO val2017 images dir hasn't been provisioned the
+        # populator raises FileNotFoundError on the first missing
+        # JPEG; convert that to a clean pytest.skip pointing at
+        # VERNIER_COCO_CACHE so the suite skips rather than
+        # ERRORing on under-provisioned hosts.
+        try:
+            predict_coco_val(
+                gt=coco_kp_gt_dict,
+                image_dir=coco_val_image_dir,
+                cache_path=cache,
+            )
+        except FileNotFoundError as e:
+            pytest.skip(
+                f"COCO val2017 images dir not provisioned under "
+                f"VERNIER_COCO_CACHE (looked under {coco_val_image_dir}): {e}"
+            )
     return cache

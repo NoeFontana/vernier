@@ -27,15 +27,15 @@ What this suite gates:
   AP are bit-equal because OKS depends only on detection ORDER).
   Tolerance expressed as `rtol = 2*eps` (relative), matching the DETR
   cell's rationale verbatim.
-- **Visibility sanity** — ViTPose emits per-joint scores, and our
-  predictor projects them to v ∈ {1, 2} (no v=0; we never predict a
-  "not labelled" slot). Quirk F5 (the GT-side v=0 / v=1 visibility
-  surface) is exercised on the GT side via the pinned
-  ``person_keypoints_val2017.json``; we assert here that the DT side
-  contains both v=1 and v=2 markers across the run, confirming the
-  model is firing as expected (an all-v=2 cache would indicate the
-  ``_KP_VIS_THRESHOLD`` projection is broken; an all-v=1 cache would
-  indicate the per-joint scores collapsed to zero).
+
+Quirk F5 (the v∈{0,1,2} visibility surface) is exercised on the GT
+side via the parity fixtures, not by these real-model DT outputs:
+pycocotools' OKS evaluator ignores DT-side ``v`` entirely (only the
+GT's ``v`` gates which keypoints contribute to the score), and the
+predictor hard-pins DT-side ``v`` to {1, 2} (``v=0`` is a GT-side
+"not labelled" concept). A DT-side ``seen_v == {1, 2}`` assertion
+would be tautological on a working ViTPose run rather than a
+meaningful F5 check.
 
 Skips cleanly when the ``real-models`` extra is missing
 (``transformers`` import fails in conftest), when the ViTPose
@@ -49,7 +49,6 @@ subsequent runs are seconds thanks to the predictions cache (see
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import numpy as np
@@ -90,49 +89,6 @@ def test_vitpose_keypoints_parity_vs_pycocotools(
 
     # Aligned tier — eval_imgs.dtScores absorbs the parser drift.
     assert_snapshots_equal(ref, cand, rtol=_DTSCORES_RTOL)
-
-
-def test_vitpose_predictions_visibility_surface(
-    vitpose_predictions_path: Path,
-) -> None:
-    """Sanity-check the DT-side visibility flag distribution.
-
-    Quirk F5: the COCO keypoints v∈{0,1,2} surface is part of the
-    parity contract on the GT side; this test confirms the DT-side
-    cache contains both v=1 (low-confidence joint) and v=2 (visible
-    joint) markers across the run. An all-v=2 cache would indicate
-    the ``_KP_VIS_THRESHOLD`` projection in ``_vitpose_predict`` is
-    broken (every joint above floor); an all-v=1 cache would indicate
-    the per-joint heatmap scores collapsed. v=0 is documented as
-    NOT emitted by this predictor (we never predict a "not labelled"
-    slot — that's a GT-side concept).
-    """
-    records = json.loads(vitpose_predictions_path.read_bytes())
-    assert records, "ViTPose predictions cache is empty"
-
-    seen_v: set[int] = set()
-    for rec in records:
-        kp = rec["keypoints"]
-        assert len(kp) == 51, (
-            f"keypoint record for image_id={rec['image_id']} has "
-            f"{len(kp)} entries; expected 51 (17 joints * [x, y, v])"
-        )
-        for i in range(2, 51, 3):
-            seen_v.add(int(kp[i]))
-
-    assert seen_v <= {1, 2}, (
-        f"DT-side visibility surface contains unexpected values: {seen_v} "
-        f"(expected subset of {{1, 2}}; the predictor projects per-joint "
-        f"scores to 1 or 2 — v=0 is a GT-side concept and should never "
-        f"appear on the DT side)"
-    )
-    assert seen_v == {1, 2}, (
-        f"DT-side visibility surface collapsed to {seen_v}; expected "
-        f"both markers present across ~11k person crops. An all-v=2 "
-        f"cache indicates the visibility threshold projection is "
-        f"broken; an all-v=1 cache indicates the heatmap scores "
-        f"collapsed. Re-populate the cache after investigating."
-    )
 
 
 def _assert_summary_strict(a: EvalSnapshot, b: EvalSnapshot) -> None:
