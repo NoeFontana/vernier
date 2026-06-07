@@ -11,10 +11,13 @@ SOTA cell:
   COCO panoptic val2017 (PNG dir + DT JSON sidecar).
 - :func:`mask2former_ade_cache_paths` — Mask2Former Swin-T ADE20K
   val (semantic).
+- :func:`vitpose_predictions_path` — ViTPose-base-simple COCO val2017
+  (keypoints, top-down on GT person boxes).
 
 Inference is the cost driver — DETR-R50 ~12-15h, Mask2Former
-panoptic ~20-25h, Mask2Former ADE ~3-4h on an 8-core CPU first time.
-Subsequent runs read from disk and skip the model entirely.
+panoptic ~20-25h, Mask2Former ADE ~3-4h, ViTPose-base ~2-3h on an
+8-core CPU first time. Subsequent runs read from disk and skip the
+model entirely.
 """
 
 from __future__ import annotations
@@ -42,6 +45,7 @@ from real_predictions_cache import (
     mask2former_ade_cache_dir,
     mask2former_panoptic_cache_dir,
     mask2former_panoptic_dt_json_path,
+    vitpose_cache_path,
 )
 
 # Probe every dep the SOTA harness actually loads at fixture-create time,
@@ -281,3 +285,75 @@ def mask2former_ade_cache_paths(ade20k_val_gt_dir: Path) -> Path:
 
         predict_ade20k_val(image_paths=image_paths, cache_dir=cache_dir)
     return cache_dir
+
+
+@pytest.fixture(scope="session")
+def coco_kp_gt_path(coco_val_root: Path) -> Path:
+    """Path to the COCO val2017 keypoints GT JSON.
+
+    Lives alongside the instances GT in the same val2017 cache root —
+    the ``coco_val_cache`` module fetches both from the same upstream
+    ``annotations_trainval2017.zip``. Eagerly materialises via
+    :func:`coco_val_cache.ensure_kp_gt` so a user that already has the
+    instances GT + images cache provisioned doesn't need to learn a
+    new fetch flag for this one extra file; skips cleanly on any
+    download / SHA-pin error.
+    """
+    from coco_val_cache import KP_GT_FILENAME, ensure_kp_gt
+
+    path = coco_val_root / KP_GT_FILENAME
+    if not path.is_file():
+        try:
+            ensure_kp_gt(cache=coco_val_root)
+        except (RuntimeError, OSError) as e:
+            pytest.skip(f"COCO val2017 keypoints GT unavailable at {path}: {e}")
+    return path
+
+
+@pytest.fixture(scope="session")
+def coco_kp_gt_dict(coco_kp_gt_path: Path) -> dict[str, Any]:
+    return json.loads(coco_kp_gt_path.read_bytes())
+
+
+@pytest.fixture(scope="session")
+def vitpose_predictions_path(
+    coco_kp_gt_dict: dict[str, Any],
+    coco_val_image_dir: Path,
+) -> Path:
+    """Run-or-load ViTPose-base-simple predictions on COCO val2017.
+
+    Top-down predictor: iterates over GT person annotations (not
+    images) because ViTPose needs a person-box crop. Skips cleanly
+    when ``VITPOSE_REVISION`` is the ``_UNPINNED_REVISION`` sentinel
+    — same shape gate as the Mask2Former fixtures, surfaced at
+    fixture time so we don't pay the model-load cost on a
+    not-yet-configured machine.
+
+    Returns the cache path (a JSON file in COCO keypoints
+    ``loadRes`` format), not the bytes — tests pass this path
+    straight into the parity harness, which reads it back through
+    pycocotools' loader (``iouType="keypoints"``) and vernier's JSON
+    ingest. Re-using the path keeps the two oracles' loaders
+    independent.
+    """
+    from real_predictions_cache import (
+        VITPOSE_MODEL_ID,
+        VITPOSE_REVISION,
+        _ensure_pinned_revision,
+    )
+
+    try:
+        _ensure_pinned_revision(VITPOSE_REVISION, VITPOSE_MODEL_ID)
+    except RuntimeError as e:
+        pytest.skip(str(e))
+
+    cache = vitpose_cache_path()
+    if not cache.is_file():
+        from ._vitpose_predict import predict_coco_val
+
+        predict_coco_val(
+            gt=coco_kp_gt_dict,
+            image_dir=coco_val_image_dir,
+            cache_path=cache,
+        )
+    return cache

@@ -19,6 +19,9 @@ Predictions come from four sources, all populating the same cache:
   architecture family: a panoptic cell on COCO val2017 (PNG dir +
   panoptic_dt.json sidecar) and a semantic cell on ADE20K val (PNG
   dir of train-id label maps). Same SOTA harness + cache contract.
+- **Hugging Face SOTA (ViTPose-base-simple)** — top-down keypoints
+  on COCO val2017 (GT person boxes as input). Same SOTA harness +
+  cache contract; emits a COCO keypoints results JSON.
 
 The harness env stays light: this module imports nothing more than
 ``real_predictions_cache`` for path resolution.
@@ -33,6 +36,7 @@ from real_predictions_cache import (
     MASK2FORMER_ADE_REVISION,
     MASK2FORMER_PANOPTIC_REVISION,
     RFDETR_VERSION,
+    VITPOSE_REVISION,
     RfdetrModelName,
     detr_resnet50_cache_path,
     mask2former_ade_cache_dir,
@@ -40,6 +44,7 @@ from real_predictions_cache import (
     mask2former_panoptic_dt_json_path,
     maskrcnn_cache_path,
     rfdetr_cache_path,
+    vitpose_cache_path,
 )
 
 # Workload identifiers — kept as constants so the registry, tests, and
@@ -52,6 +57,7 @@ MASK2FORMER_PANOPTIC_WORKLOAD_ID = (
     f"coco_panoptic_val2017_mask2former_swin_t_v{MASK2FORMER_PANOPTIC_REVISION[:7]}"
 )
 MASK2FORMER_ADE_WORKLOAD_ID = f"ade20k_val_mask2former_swin_t_v{MASK2FORMER_ADE_REVISION[:7]}"
+VITPOSE_WORKLOAD_ID = f"coco_val2017_vitpose_base_simple_v{VITPOSE_REVISION[:7]}"
 
 
 def maskrcnn_dt_path() -> Path:
@@ -141,6 +147,31 @@ def mask2former_ade_dt_path() -> Path:
             f"run). MASK2FORMER_ADE_REVISION must also be pinned in source."
         )
     return cache_dir
+
+
+def vitpose_dt_path() -> Path:
+    """Return the ViTPose-base-simple cached keypoint prediction JSON.
+
+    Same read-only adapter shape as :func:`detr_r50_dt_path`: if the
+    cache is missing, point the user at the populator (either the
+    pytest fixture or the ``tools/fetch-real-predictions.sh
+    --vitpose`` shim that shells into the same ``real-models``
+    extra). Keeping the bench env free of transformers / torch /
+    huggingface_hub deps means an unpopulated cache surfaces as a
+    hard error instead of a silent zero-keypoint benchmark.
+    """
+    path = vitpose_cache_path()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"ViTPose-base-simple prediction cache missing at {path}. "
+            f"Populate it by running `pytest -m real_models "
+            f"tests/python/integration/real_models/sota/test_vitpose_real_models.py` "
+            f"with the `real-models` extra installed (torch, transformers, "
+            f"huggingface_hub, timm; ~2-3h on an 8-core CPU for the first "
+            f"run, seconds on cache hit). Alternatively, run "
+            f"`./tools/fetch-real-predictions.sh --vitpose` for the same flow."
+        )
+    return path
 
 
 def detr_r50_dt_path() -> Path:

@@ -3,18 +3,20 @@
 Sibling to [coco-val-parity.md](./coco-val-parity.md). The COCO val
 parity smokes assert bit-equality on synthetic perfect-DT,
 GT-jittered, or user-provided detector JSONs; this page is the
-analogous gate on outputs from real Hugging Face SOTA models. Three
-cells in one harness — one detector and two segmentation
-architectures — each pinned to a hub commit SHA so the cache key
-embeds the model bytes by construction.
+analogous gate on outputs from real Hugging Face SOTA models. Four
+cells in one harness — one detector, two segmentation architectures,
+and one top-down keypoint estimator — each pinned to a hub commit
+SHA so the cache key embeds the model bytes by construction.
 
 Synthetic / GT-derived fixtures don't exercise the long-tail score
 distribution, low-confidence false-positive density, real class
-imbalance, or per-class mass concentration that a trained SOTA model
-produces in the wild. These three cells close that gap on the
-detection, panoptic, and semantic paradigms.
+imbalance, per-class mass concentration, or per-joint heatmap
+confidence surface that a trained SOTA model produces in the wild.
+These four cells close that gap on the detection, panoptic,
+semantic, and keypoints paradigms.
 
-> **Status:** all three SOTA parity tests pass on the live cache
+> **Status:** the three original SOTA parity tests (DETR,
+> Mask2Former panoptic, Mask2Former ADE) pass on the live cache
 > (machine `84edec51fd71`, 2026-05-31, harness SHA `b9dc053`).
 > Bit-equality holds on the integer surfaces actually asserted by
 > each test; aligned-tier float tolerances are documented per cell
@@ -22,7 +24,9 @@ detection, panoptic, and semantic paradigms.
 > sections below are SNAPSHOTS captured against the pinned model
 > revisions listed under "Cells covered"; the tests gate
 > vernier ↔ oracle parity, not absolute headline stability across
-> dependency upgrades.
+> dependency upgrades. The ViTPose keypoints cell is newly added
+> and its headline numbers will be populated on the first real run
+> against pycocotools.
 
 ## Cells covered
 
@@ -32,13 +36,15 @@ detection, panoptic, and semantic paradigms.
 | Panoptic    | `facebook/mask2former-swin-tiny-coco-panoptic`  | COCO panoptic val2017         | `panopticapi`       | `tests/python/integration/real_models/sota/test_mask2former_panoptic_real_models.py::test_mask2former_panoptic_parity_vs_panopticapi` |
 | Semantic    | `facebook/mask2former-swin-tiny-ade-semantic`   | ADE20K SceneParse150 val      | `mmsegmentation` `IoUMetric` | `tests/python/integration/real_models/sota/test_mask2former_ade_real_models.py::test_mask2former_ade_parity_vs_mmsegmentation` |
 | Calibration | `facebook/detr-resnet-50` (cache reused)        | COCO val2017 (bbox)           | numpy reference (ADR-0018) | `tests/python/integration/real_models/sota/test_detr_calibration_real_models.py::test_detr_r50_calibration_parity_vs_numpy_oracle` |
+| Keypoints   | `usyd-community/vitpose-base-simple`            | COCO val2017 (keypoints)      | `pycocotools 2.0.11`| `tests/python/integration/real_models/sota/test_vitpose_real_models.py::test_vitpose_keypoints_parity_vs_pycocotools` |
 
-All three pinned to revisions captured in
+All four pinned to revisions captured in
 `tools/real_predictions_cache/real_predictions_cache/__init__.py`:
 
 - DETR-R50: `1d5f47bd3bdd2c4bbfa585418ffe6da5028b4c0b`
 - Mask2Former panoptic: `df6b1142ff50c3276559d9d78f35f6a579c75a77`
 - Mask2Former ADE: `c8cf1b5e823aee214d937d0d001c1850ba44ef6a`
+- ViTPose-base-simple: `a93ac0c67e0b7e2c55287d21d4c460c8f3c54d45`
 
 Bumping any of these is an ADR-level decision; the cache filename
 embeds the full SHA so a pin bump invalidates by construction.
@@ -138,6 +144,7 @@ shipping the real-prediction gate.
   - Σ union: `529,188,289` pixels
   - All 150 classes present in both `label` and `pred`.
 
+<<<<<<< HEAD
 ## Calibration — DETR-R50 vs numpy reference (ECE/MCE)
 
 - **Workload**: same `coco_val2017_detr_r50_v1d5f47b` cache as the
@@ -190,6 +197,44 @@ This cell shares the inference cost with the Instance cell: both pull
 the same `detr_predictions_path` session fixture, so adding the
 calibration smoke is free on a populated cache.
 
+## Keypoints — ViTPose-base vs pycocotools (OKS)
+
+- **Workload**: `coco_val2017_vitpose_base_simple_va93ac0c` — one
+  COCO keypoints result per GT person annotation in val2017
+  (~11k crops across the 5,000-image val set), single category
+  (`person`, COCO category_id=1), 17-joint COCO topology.
+- **Inference shape** — ViTPose is *top-down*: one forward pass
+  per person box. We feed GT person boxes from
+  `person_keypoints_val2017.json` (not detector output) — this
+  isolates the keypoint head's numerics from any detector quirks
+  and mirrors the canonical mmpose / MMCV ViTPose eval
+  configuration the published numbers use. The cache content is
+  fully determined by the weights pin + the (SHA-pinned) GT JSON.
+- **Strict tier** — bit-equality on the 10-stat OKS summary
+  (re-indexed A-axis, no `_S` row per ADR-0012 quirk D5) +
+  dense `precision` / `recall` / `counts` aggregates. These are
+  the numbers a user reads from `Evaluator.summarize()`; they must
+  match pycocotools' `iouType="keypoints"` exactly. The 10 stats
+  are `AP / AP50 / AP75 / APm / APl / AR / AR50 / AR75 / ARm / ARl`.
+- **Aligned tier** — `eval_imgs.dtScores` and the COCOeval `scores`
+  tensor at `rtol = 2 * eps`. Same root cause as the DETR cell:
+  `serde_json` vs Python's `strtod`-based parser round near-tie
+  decimal scores to different adjacent doubles. The divergence is
+  parser-level and does NOT propagate past the score-threshold
+  projection — precision / recall / AP are bit-equal because
+  ranking-based OKS depends only on detection order.
+- **Visibility surface sanity** — a separate test asserts the DT
+  side contains both `v=1` and `v=2` markers across the run
+  (quirk F5). The predictor projects per-joint heatmap scores to
+  `v=2` above `0.3` and `v=1` below; an all-`v=2` or all-`v=1`
+  cache would indicate the projection / heatmap scoring is
+  degenerate. pycocotools' OKS eval ignores DT-side `v`, so this
+  is a sanity surface, not a parity surface.
+- **Headline numbers** — `<populated by first real run>` (the
+  cache is provisioned via the SOTA populator; the parity test
+  records 10-stat OKS metrics here once the cell has been
+  exercised against pycocotools).
+
 ## Shared harness configuration
 
 - **Streaming evaluation** — semantic streams (gt, dt) pairs through
@@ -221,8 +266,8 @@ calibration smoke is free on a populated cache.
 - **Skip semantics** — each cell skips cleanly when:
   - the `real-models` extra is absent (`uv sync --extra real-models`),
   - the model revision is the `_UNPINNED_REVISION` sentinel,
-  - the dataset cache (panoptic / ADE20K / COCO val2017 images) is
-    not provisioned.
+  - the dataset cache (panoptic / ADE20K / COCO val2017 images +
+    keypoints GT) is not provisioned.
 
 ## Reproducing
 
@@ -234,6 +279,7 @@ itself is the cost driver (one-time per host per pinned SHA):
 | DETR-R50              | ~12-15 h (8-core CPU)    | seconds        |
 | Mask2Former panoptic  | ~20-25 h (8-core CPU)    | seconds        |
 | Mask2Former ADE       | ~3-4 h (8-core CPU)      | seconds        |
+| ViTPose-base-simple   | ~2-3 h (8-core CPU)      | seconds        |
 
 ```bash
 # One-time: populate prediction caches (see the per-cell bench docs
@@ -241,8 +287,9 @@ itself is the cost driver (one-time per host per pinned SHA):
 ./tools/fetch-real-predictions.sh --detr
 ./tools/fetch-real-predictions.sh --mask2former-panoptic
 ./tools/fetch-real-predictions.sh --mask2former-ade
+./tools/fetch-real-predictions.sh --vitpose
 
-# Run the three SOTA parity tests.
+# Run the SOTA parity tests.
 VERNIER_COCO_CACHE=/path/to/coco-val2017 \
   uv run pytest tests/python/integration/real_models/sota/ -v
 ```
@@ -268,9 +315,9 @@ breakdowns) lives alongside the parity numbers in:
   for vernier's side because the oracles' bugs are documented under
   panoptic quirks; the strict-tier integer surface still matches by
   construction.
-- **Other paradigms.** Boundary and keypoints don't yet have SOTA
-  cells; the COCO val parity smoke is the headline gate for those.
-  See [coco-val-parity.md](./coco-val-parity.md).
+- **Other paradigms.** Boundary doesn't yet have a SOTA cell; the
+  COCO val parity smoke is the headline gate for that paradigm. See
+  [coco-val-parity.md](./coco-val-parity.md).
 - **Oracle internal drift.** Each oracle is pinned to its current
   vendored snapshot (`pycocotools==2.0.11` in `pyproject.toml`;
   `panopticapi` / `mmsegmentation` checked out under the
