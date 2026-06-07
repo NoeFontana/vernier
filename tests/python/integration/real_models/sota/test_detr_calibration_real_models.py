@@ -152,6 +152,13 @@ def _extract_cells_by_category(
     # via a single slice — index explicitly to keep the indexing
     # convention visible at the call site.
     n_categories = len(eval_imgs) // stride
+    # Guard against silent truncation: integer division would mask a
+    # trailing partial class block if the grid's flat layout ever
+    # diverges from the documented (K, A, I) shape. Loud-fail rather
+    # than silently dropping the last category's cells.
+    assert len(eval_imgs) == n_categories * stride, (
+        f"eval_imgs shape mismatch: {len(eval_imgs)} not divisible by stride={stride}"
+    )
     for k in range(n_categories):
         base = k * stride  # start of class k's A*I block.
         category_id: int | None = None
@@ -163,13 +170,19 @@ def _extract_cells_by_category(
             scores = np.asarray(cell["dtScores"], dtype=np.float64)
             if scores.size == 0:
                 continue
-            dt_matches_arr = np.asarray(cell["dtMatches"], dtype=np.float64)
+            # Keep ``dtMatches`` as int64: the entries are GT IDs (or 0
+            # for unmatched), and casting through float64 would lose
+            # precision on IDs above 2**53. COCO val2017 stays well
+            # under that bound but the same builder is reused for LVIS,
+            # where IDs can collide with the f64 mantissa. ``> 0`` on
+            # int64 is also one less cast than ``> 0.0`` on float64.
+            dt_matches_arr = np.asarray(cell["dtMatches"], dtype=np.int64)
             dt_ignore_arr = np.asarray(cell["dtIgnore"], dtype=np.uint8)
             # pycocotools-shaped (T, D). The matching kernel emits one
             # row per IoU threshold; the calibration oracle reads a
             # single iou_index but the full (T, D) shape must travel
             # so the kernel's per-cell shape check passes.
-            dt_matched = dt_matches_arr > 0.0
+            dt_matched = dt_matches_arr > 0
             dt_ignore = dt_ignore_arr.astype(bool, copy=False)
             per_class.append(
                 PerImageCell(
@@ -239,10 +252,31 @@ def _build_grid_and_cells(
     return cells_by_k, len(_COCO_IOU_LADDER)
 
 
-@pytest.mark.parametrize("iou", [0.5, 0.75, 0.95])
-def test_detr_r50_calibration_parity_vs_numpy_oracle(
+@pytest.fixture(scope="module")
+def detr_calibration_cells(
     coco_gt_path: Path,
     detr_predictions_path: Path,
+) -> tuple[dict[int, list[PerImageCell]], int]:
+    """Module-scoped grid + per-class cells for the calibration tests.
+
+    Reading the GT (~22 MiB) and DT (~9 MiB) JSON blobs and re-running
+    ``evaluate_bbox_grid`` (the dominant cost — bbox matching across
+    80 classes x ~5000 images x 10 IoU thresholds) is IoU-independent:
+    the calibration kernel re-folds the same ``(T, D)`` cell shape
+    against a chosen ``iou_index``. Hoisting to module scope amortises
+    those three costs across all parametrisations of
+    :func:`test_detr_r50_calibration_parity_vs_numpy_oracle`; without
+    this the fixture would run 3x and the test would dominate the
+    real-models suite wall clock.
+    """
+    gt_bytes = coco_gt_path.read_bytes()
+    dt_bytes = detr_predictions_path.read_bytes()
+    return _build_grid_and_cells(gt_bytes, dt_bytes)
+
+
+@pytest.mark.parametrize("iou", [0.5, 0.75, 0.95])
+def test_detr_r50_calibration_parity_vs_numpy_oracle(
+    detr_calibration_cells: tuple[dict[int, list[PerImageCell]], int],
     iou: float,
 ) -> None:
     """Two-tier calibration parity on real DETR-R50 predictions.
@@ -256,9 +290,7 @@ def test_detr_r50_calibration_parity_vs_numpy_oracle(
     midpoint without a meta-aggregate concept the calibration kernel
     doesn't expose.
     """
-    gt_bytes = coco_gt_path.read_bytes()
-    dt_bytes = detr_predictions_path.read_bytes()
-    cells_by_k, n_iou_thresholds = _build_grid_and_cells(gt_bytes, dt_bytes)
+    cells_by_k, n_iou_thresholds = detr_calibration_cells
 
     params = CalibrationParams(
         iou_index=_iou_index(iou),
@@ -340,8 +372,28 @@ def _assert_calibration_aligned(
         err_msg=f"mce at iou={iou}",
     )
 
-    # Float columns of the reliability table.
-    float_cols = ("score_lo", "score_hi", "mean_score", "accuracy", "gap", "ci_lo", "ci_hi")
+    # Bin edges are STRICT-tier per ADR-0018 §P1: quantile bin edges
+    # are computed by a pure ``np.quantile`` reduction over the same
+    # score stream on both sides, with no per-bin float accumulator in
+    # the way. Any drift here is a real divergence in the edge
+    # construction (sort order, interpolation choice, or quantile
+    # weighting), not a reduction-order artefact, so the 8-ULP aligned
+    # band is the wrong gate. Bit-equal check FIRST so a strict-tier
+    # regression surfaces as the strict-tier failure it is, not as a
+    # loosened-tolerance pass.
+    for edge_col in ("score_lo", "score_hi"):
+        oc_edge = np.asarray(oracle.reliability[edge_col], dtype=np.float64)
+        cc_edge = np.asarray(candidate.reliability[edge_col], dtype=np.float64)
+        np.testing.assert_array_equal(
+            oc_edge,
+            cc_edge,
+            err_msg=f"reliability.{edge_col} (strict per ADR-0018 §P1) at iou={iou}",
+        )
+
+    # Float columns of the reliability table (aligned tier — per-bin
+    # float reductions over ~150k detections, where reduction-order
+    # drift is expected at the few-ULP level).
+    float_cols = ("mean_score", "accuracy", "gap", "ci_lo", "ci_hi")
     for col in float_cols:
         oc = np.asarray(oracle.reliability[col], dtype=np.float64)
         cc = np.asarray(candidate.reliability[col], dtype=np.float64)
