@@ -867,6 +867,7 @@ dependencies = [
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "vernier-ade20k-val-cache" },
     { name = "vernier-coco-val-cache" },
+    { name = "vernier-lvis-v1-val-cache" },
     { name = "vernier-lvis-val-cache" },
     { name = "vernier-panoptic-val-cache" },
     { name = "vernier-real-predictions-cache" },
@@ -891,6 +892,7 @@ requires-dist = [
     { name = "scipy", specifier = ">=1.11" },
     { name = "vernier-ade20k-val-cache", editable = "../tools/ade20k_val_cache" },
     { name = "vernier-coco-val-cache", editable = "../tools/coco_val_cache" },
+    { name = "vernier-lvis-v1-val-cache", editable = "../tools/lvis_v1_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "../tools/lvis_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "../tools/panoptic_val_cache" },
     { name = "vernier-real-predictions-cache", editable = "../tools/real_predictions_cache" },
@@ -907,6 +909,11 @@ dev = [
 name = "vernier-coco-val-cache"
 version = "0.0.0"
 source = { editable = "../tools/coco_val_cache" }
+
+[[package]]
+name = "vernier-lvis-v1-val-cache"
+version = "0.0.0"
+source = { editable = "../tools/lvis_v1_val_cache" }
 
 [[package]]
 name = "vernier-lvis-val-cache"

@@ -152,6 +152,12 @@ dev = [
     # `tests/python/parity_lvis/lvis_val_paths.py` and the
     # `python -m lvis_val_cache` CLI.
     "vernier-lvis-val-cache",
+    # LVIS v1 val real-prediction cache. Pairs the LVIS GT JSON with
+    # the val2017 image set (delegated to `coco_val_cache`) so the
+    # SOTA harness's `_lvis_detector_predict` has one entry point to
+    # provision both sides. Consumed by the LVIS SOTA parity test and
+    # the `python -m lvis_v1_val_cache` CLI.
+    "vernier-lvis-v1-val-cache",
     # Panoptic oracle dependency (ADR-0025): `panopticapi/evaluation.py`
     # imports `PIL.Image` at module scope and decodes panoptic PNGs via
     # `np.array(Image.open(path), dtype=np.uint32)`. Pin mirrored by
@@ -186,6 +192,7 @@ docs = [
 [tool.uv.sources]
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "tools/lvis_val_cache", editable = true }
+vernier-lvis-v1-val-cache = { path = "tools/lvis_v1_val_cache", editable = true }
 vernier-panoptic-val-cache = { path = "tools/panoptic_val_cache", editable = true }
 vernier-ade20k-val-cache = { path = "tools/ade20k_val_cache", editable = true }
 vernier-real-predictions-cache = { path = "tools/real_predictions_cache", editable = true }
