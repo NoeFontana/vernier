@@ -173,16 +173,22 @@ def _record_for_box(
     with torch.inference_mode():
         outputs = model(**inputs)
 
-    # pixel-space boxes; target_sizes pins the joint coords to image
-    # space rather than the input crop (256x192). Mirrors the explicit
-    # target_sizes pass in `_detr_predict.py`; without it a future
-    # caller passing normalized boxes would silently get joints in
-    # input-crop coords.
-    image_w, image_h = image.size
+    # Do NOT pass `target_sizes` here. Despite its docstring claiming
+    # `(height, width)` semantics, transformers' VitPoseImageProcessor
+    # at v4.x actually treats `target_sizes[i]` as a `(W, H)` scale
+    # factor and multiplies the box by `[W, H, W, H]`, ASSUMING the box
+    # is normalized to [0,1]. Our boxes are already in original-image
+    # pixel space (COCO xywh, sourced directly from GT person
+    # annotations), so passing `target_sizes` scales them by the image
+    # dimensions into nonsense (~480x the intended values on COCO
+    # val2017) and the resulting keypoints land outside any sane
+    # coordinate space — pycocotools then reports 0 mAP.
+    # The default (None) path skips the scale step and the inverse
+    # box-to-center-and-scale transform on the heatmap side already
+    # returns keypoints in original-image pixel space.
     per_image_results = processor.post_process_pose_estimation(
         outputs,
         boxes=boxes,
-        target_sizes=[(image_h, image_w)],
     )
     assert len(per_image_results) == 1, (
         f"ViTPose post_process_pose_estimation returned "
@@ -216,6 +222,12 @@ def _record_for_box(
     return {
         "image_id": int(image_id),
         "category_id": _PERSON_CATEGORY_ID,
+        # Echoed verbatim from the GT person box. pycocotools accepts
+        # bbox-less keypoint DT entries (falls back to GT area); the
+        # vernier-side JSON parser declares the field non-optional.
+        # Top-down ViTPose already has the box on hand, so emit it
+        # rather than make the parser path looser.
+        "bbox": list(bbox_xywh),
         "keypoints": flat,
         "score": instance_score,
     }
