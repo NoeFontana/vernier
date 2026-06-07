@@ -24,9 +24,7 @@ semantic, and keypoints paradigms.
 > sections below are SNAPSHOTS captured against the pinned model
 > revisions listed under "Cells covered"; the tests gate
 > vernier ↔ oracle parity, not absolute headline stability across
-> dependency upgrades. The ViTPose keypoints cell is newly added
-> and its headline numbers will be populated on the first real run
-> against pycocotools.
+> dependency upgrades.
 
 ## Cells covered
 
@@ -223,17 +221,29 @@ calibration smoke is free on a populated cache.
   parser-level and does NOT propagate past the score-threshold
   projection — precision / recall / AP are bit-equal because
   ranking-based OKS depends only on detection order.
-- **Visibility surface sanity** — a separate test asserts the DT
-  side contains both `v=1` and `v=2` markers across the run
-  (quirk F5). The predictor projects per-joint heatmap scores to
-  `v=2` above `0.3` and `v=1` below; an all-`v=2` or all-`v=1`
-  cache would indicate the projection / heatmap scoring is
-  degenerate. pycocotools' OKS eval ignores DT-side `v`, so this
-  is a sanity surface, not a parity surface.
-- **Headline numbers** — `<populated by first real run>` (the
-  cache is provisioned via the SOTA populator; the parity test
-  records 10-stat OKS metrics here once the cell has been
-  exercised against pycocotools).
+- **DT-side visibility** — the predictor projects per-joint heatmap
+  scores to `v=2` above `0.3` and `v=1` below; pycocotools' OKS eval
+  ignores DT-side `v` entirely (it uses only GT-side `v` for the
+  labeled-joint mask), so the projection has no parity implication.
+  Quirk F5 (per ADR-0012) lives on the GT side and is exercised by
+  the synthetic keypoints parity fixtures, not by this real-prediction
+  cell.
+- **Headline snapshot** (captured on the live cache at SHA
+  `0ba2b3c`, machine `84edec51fd71`, 2026-06-07):
+  - 10-stat OKS summary:
+    - **AP @ [.50:.95]**: `0.7626` — reproduces ViTPose-base's
+      published `AP = 76.0` on COCO val2017 (top-down on GT person
+      boxes, the canonical mmpose eval shape).
+    - AP @ .50: `0.9314` &nbsp;&nbsp; AP @ .75: `0.8390`
+    - AP @ medium: `0.7413` &nbsp;&nbsp; AP @ large: `0.7970`
+    - AR @ [.50:.95]: `0.7995`
+    - AR @ .50: `0.9449` &nbsp;&nbsp; AR @ .75: `0.8640`
+    - AR @ medium: `0.7683` &nbsp;&nbsp; AR @ large: `0.8478`
+  - Coverage: 10,777 DT records (one per GT person annotation with
+    a usable box) across 2,693 images. The metric values are
+    recorded here for cross-reference only; the parity test gates
+    vernier ↔ pycocotools equivalence, not absolute-metric
+    stability under transformers / torch upgrades.
 
 ## Shared harness configuration
 
