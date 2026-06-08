@@ -106,40 +106,62 @@ def _sample_image_count() -> int:
 
 
 def _assert_coverage(gt_bytes: bytes, dt_bytes: bytes) -> None:
-    """Every GT image has at least one DT record emitted for it.
+    """Every populated image has at least one DT record emitted for it.
 
-    The populator runs forward on every image in ``gt['images']``
-    and writes a per-image record at least once (the LVIS results
-    JSON is a flat list, but the populator writes one entry per
-    above-threshold detection — so a fully empty image, when its
-    forward pass produced zero above-threshold scores, would still
-    show up via a sentinel ``image_id``-only row from the populator's
-    contract). This gate covers the case where the populator's
-    per-image loop silently skipped an image entirely — e.g. an
-    unhandled exception caught and continued — leaving the GT image
-    with NO corresponding DT entry at all. Mirrors the Mask2Former
-    panoptic coverage gate in
-    ``test_mask2former_panoptic_real_models.py``.
+    Two modes — selected by comparing DT image-set size against GT:
 
-    Run BEFORE sub-sampling: the sub-sample filter keeps only DT
-    records whose ``image_id`` is in the prefix, so running this gate
-    on post-subsample bytes is tautological (a populator that dropped
-    half the GT would still pass). On the full bytes, a populator
-    that skipped an image leaves a real ``missing = gt - dt`` gap we
-    surface as a contract regression.
+    * **Full cache** (``len(dt_images) == len(gt_images)``): the
+      populator ran the entire 19,809-image corpus. Assert
+      ``missing = gt - dt == ∅`` — a populator that silently skipped
+      images leaves a real gap that the strict-tier test downstream
+      would never see (sub-sampling masks it). This is the published-
+      numbers shape.
+
+    * **Partial cache** (``len(dt_images) < len(gt_images)``): the
+      populator was run with ``VERNIER_LVIS_REAL_VAL_SAMPLE_IMAGES``
+      capping the per-image loop to a prefix. Assert only
+      ``dt_image_ids ⊆ gt_image_ids`` — the populator didn't fabricate
+      image IDs outside the GT — plus that the DT prefix matches the
+      GT's first-N (input-order) slice, which is what
+      ``subsample_bytes`` keys on. A populator that skipped images
+      within the prefix still surfaces as a gap.
+
+    Mirrors the Mask2Former panoptic coverage gate in shape; the
+    partial-cache branch is LVIS-specific (the full 19,809-image
+    populate is the only SOTA cell whose first-run cost exceeds an
+    interactive session).
     """
     gt = json.loads(gt_bytes)
     dt = json.loads(dt_bytes)
-    gt_image_ids = {int(im["id"]) for im in gt["images"]}
+    gt_image_ids_ordered = [int(im["id"]) for im in gt["images"]]
+    gt_image_ids = set(gt_image_ids_ordered)
     dt_image_ids = {int(d["image_id"]) for d in dt}
-    missing = gt_image_ids - dt_image_ids
-    assert not missing, (
-        f"populator produced predictions for {len(dt_image_ids)} images but "
-        f"GT has {len(gt_image_ids)} — {len(missing)} GT images missing from "
-        f"DT (first 5: {sorted(missing)[:5]}). Either the populator's "
-        f"per-image loop silently skipped images, or the GT/DT caches were "
-        f"pinned to different revisions."
+    extraneous = dt_image_ids - gt_image_ids
+    assert not extraneous, (
+        f"populator emitted DT records for {len(extraneous)} images not in "
+        f"GT (first 5: {sorted(extraneous)[:5]}). The GT/DT caches are "
+        f"pinned to different revisions or the populator fabricated IDs."
     )
+    if len(dt_image_ids) == len(gt_image_ids):
+        missing = gt_image_ids - dt_image_ids
+        assert not missing, (
+            f"full-cache populator skipped {len(missing)} GT images "
+            f"(first 5: {sorted(missing)[:5]}). Either the populator's "
+            f"per-image loop silently swallowed an exception or the "
+            f"GT/DT caches were pinned to different revisions."
+        )
+    else:
+        prefix_ids = set(gt_image_ids_ordered[: len(dt_image_ids)])
+        missing_in_prefix = prefix_ids - dt_image_ids
+        assert not missing_in_prefix, (
+            f"partial-cache populator (run with "
+            f"VERNIER_LVIS_REAL_VAL_SAMPLE_IMAGES={len(dt_image_ids)}) "
+            f"skipped {len(missing_in_prefix)} images inside its prefix "
+            f"(first 5: {sorted(missing_in_prefix)[:5]}). The first-N "
+            f"GT-image prefix is what subsample_bytes keys on, so a "
+            f"populator skip here desynchronises GT and DT under "
+            f"sub-sample."
+        )
 
 
 def test_lvis_detector_parity_vs_lvis_api(

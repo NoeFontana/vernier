@@ -169,12 +169,34 @@ def _populate_lvis_detector() -> Path:
     hint rather than half-running inference and writing a partial
     cache.
     """
+    import os as _os
+
     from lvis_v1_val_cache import ensure_gt as _ensure_lvis_gt
     from lvis_v1_val_cache import ensure_images as _ensure_lvis_images
 
     gt_path = _ensure_lvis_gt()
     images_dir = _ensure_lvis_images()
     gt_dict = json.loads(gt_path.read_bytes())
+
+    # Honour the same sub-sample knob the test side reads. Cuts the
+    # 19,809-image full-corpus populate (~48-72 h CPU) down to a
+    # representative prefix the harness can validate end-to-end in a
+    # single session. The full populate (env unset, default sentinel
+    # ``-1`` = no cap) remains supported and is what the published
+    # headline numbers will be captured against.
+    sample_env = _os.environ.get("VERNIER_LVIS_REAL_VAL_SAMPLE_IMAGES", "")
+    try:
+        sample_n = int(sample_env) if sample_env else -1
+    except ValueError:
+        sample_n = -1
+    if sample_n > 0 and sample_n < len(gt_dict["images"]):
+        kept = gt_dict["images"][:sample_n]
+        kept_ids = {im["id"] for im in kept}
+        gt_dict = {
+            **gt_dict,
+            "images": kept,
+            "annotations": [a for a in gt_dict["annotations"] if a["image_id"] in kept_ids],
+        }
 
     from ._lvis_detector_predict import predict_lvis_val
 

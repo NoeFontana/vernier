@@ -39,9 +39,9 @@ from real_predictions_cache import LVIS_DETECTOR_REVISION
 from ._harness_common import (
     atomic_write_bytes,
     iter_image_records,
-    load_processor_and_model,
     make_detection_target_sizes,
     name_based_class_mapping,
+    pin_inference_threads,
 )
 
 _MODEL_ID = "facebook/deformable-detr-box-supervised"
@@ -164,9 +164,38 @@ def predict_lvis_val(
 
     from PIL import Image
 
-    processor, model = load_processor_and_model(
-        _MODEL_ID, revision, model_cls_name="AutoModelForObjectDetection"
+    # The pinned facebook/deformable-detr-box-supervised checkpoint was
+    # uploaded with ``dilation: None`` in its config. Newer
+    # huggingface_hub strict-validates this field as ``bool`` during
+    # ``Config.__init__`` (raising
+    # ``StrictDataclassFieldValidationError`` before we can post-hoc
+    # patch the attribute). Mutate the raw config-dict downloaded from
+    # the hub BEFORE calling the constructor: read the config JSON,
+    # coerce ``dilation`` from ``None`` → ``False`` (the canonical
+    # Deformable-DETR default — no backbone dilation), then construct
+    # via ``DeformableDetrConfig.from_dict``. Architectural no-op since
+    # ``False`` is the default on every clean checkpoint.
+    import json as _json
+
+    import transformers as _tf
+    from huggingface_hub import hf_hub_download
+
+    pin_inference_threads()
+    processor = _tf.AutoImageProcessor.from_pretrained(_MODEL_ID, revision=revision)
+    config_path = hf_hub_download(
+        repo_id=_MODEL_ID, filename="config.json", revision=revision
     )
+    config_dict = _json.loads(Path(config_path).read_bytes())
+    if config_dict.get("dilation") is None:
+        config_dict["dilation"] = False
+    config = _tf.DeformableDetrConfig.from_dict(config_dict)
+    model = _tf.AutoModelForObjectDetection.from_pretrained(
+        _MODEL_ID,
+        revision=revision,
+        config=config,
+        low_cpu_mem_usage=True,
+    )
+    model.eval()
     id2label: dict[int, str] = {int(k): v for k, v in model.config.id2label.items()}
     class_mapping = name_based_class_mapping(
         id2label,
