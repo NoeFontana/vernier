@@ -26,9 +26,14 @@
 //! - **C4** (`strict`): "AR" stored in `recall` is terminal cumulative
 //!   recall (the last value of `rc`), not an integral of the
 //!   precision/recall curve.
-//! - **C5** (`strict`): `(K, A, M)` cells with no detections or no
-//!   non-ignore GTs leave `precision`/`recall`/`scores` at the `-1`
-//!   sentinel; the summarizer filters those before averaging.
+//! - **C5** (`strict`): `(K, A, M)` cells with no eval-img entries OR
+//!   `npig == 0` (no non-ignore GTs) leave `precision`/`recall`/`scores`
+//!   at the `-1` sentinel; the summarizer filters those before
+//!   averaging. Cells that have GTs but no detections (npig > 0,
+//!   n_d == 0) reach pycocotools' `q = np.zeros((R,))` write-site and
+//!   land at `0.0`, not `-1` — pycocotools writes the zero-initialised
+//!   `q` even when the inner `try/except` over an empty `pr` bails on
+//!   the first index.
 //! - **C7** (`strict`): TP and FP cumsums skip DTs whose `dt_ignore`
 //!   flag is set — both B6 (matched-to-ignore) and B7 (out-of-area
 //!   unmatched) are folded into `dt_ignore` upstream.
@@ -289,10 +294,24 @@ fn accumulate_cell(
 
     let n_d = all_scores.len();
     if n_d == 0 {
-        // No detections, but npig > 0 — recall collapses to 0; precision
-        // and scores keep the -1 sentinel.
+        // No detections, but npig > 0. Pycocotools (cocoeval.py:442-465)
+        // initializes `q = np.zeros((R,))` and `ss = np.zeros((R,))`
+        // per (t, k, a, m) cell, then overwrites with `pr[pi]` /
+        // `dtScoresSorted[pi]` inside a `try/except` — when those
+        // arrays are empty (the n_d == 0 case here) the `try` raises
+        // on the first index and `q` / `ss` get written verbatim into
+        // `precision[t,:,k,a,m]` / `scores[t,:,k,a,m]`, leaving each
+        // cell at `0.0`, not at the `-1` sentinel. The `-1` sentinel
+        // is reserved for cells that never reach the assignment site
+        // at all (`len(E) == 0` or `npig == 0` — the two `continue`s
+        // above this block). Mirror that here so the surviving cells
+        // get 0.0, not -1.
         for t in 0..n_t {
             recall[(t, k, a, m)] = 0.0;
+            for ri in 0..recall_thresholds.len() {
+                precision[(t, ri, k, a, m)] = 0.0;
+                scores[(t, ri, k, a, m)] = 0.0;
+            }
         }
         return;
     }
@@ -416,8 +435,15 @@ mod tests {
     }
 
     #[test]
-    fn no_dt_with_real_gt_yields_zero_recall_and_sentinel_precision() {
-        // C5: precision stays at -1 sentinel; recall is 0 for every t.
+    fn no_dt_with_real_gt_yields_zero_recall_and_zero_precision() {
+        // Pycocotools' `cocoeval.py:442-465` writes `q = np.zeros((R,))`
+        // into `precision[t,:,k,a,m]` for every (k, a, m) cell that
+        // passes the `len(E) > 0` and `npig > 0` gates — including the
+        // n_d == 0 sub-case, where the try/except over an empty `pr`
+        // leaves `q` untouched (all zeros) and still writes it. The
+        // `-1` sentinel is reserved for cells skipped before that
+        // assignment (`len(E) == 0` or `npig == 0`); a cell with real
+        // GT but no detections reaches the assignment and lands at 0.
         let cell = PerImageEval {
             dt_scores: vec![],
             dt_matched: Array2::<bool>::default((2, 0)),
@@ -428,10 +454,9 @@ mod tests {
         let out = accumulate(&[Some(Box::new(cell))], p, ParityMode::Strict).unwrap();
         assert_eq!(out.recall[(0, 0, 0, 0)], 0.0);
         assert_eq!(out.recall[(1, 0, 0, 0)], 0.0);
-        // No precision write happened — every cell still -1.
         for ri in 0..3 {
-            assert_eq!(out.precision[(0, ri, 0, 0, 0)], -1.0);
-            assert_eq!(out.precision[(1, ri, 0, 0, 0)], -1.0);
+            assert_eq!(out.precision[(0, ri, 0, 0, 0)], 0.0);
+            assert_eq!(out.precision[(1, ri, 0, 0, 0)], 0.0);
         }
     }
 
