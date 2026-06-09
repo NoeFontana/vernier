@@ -63,6 +63,17 @@ MASKRCNN_SHA256: str | None = None
 
 RFDETR_VERSION = "1.6.5.post0"
 
+#: Content tag for the on-disk rf-detr cache shape. Bumped from
+#: implicit ``v1`` to ``v2`` when the SOTA boundary cell added
+#: ``pin_inference_threads`` to the rfdetr predictor — multi-core
+#: hosts produce non-deterministic byte sequences without the pin, so
+#: ``v1`` and ``v2`` blobs can disagree on the same
+#: ``(model, version, dataset)`` tuple. Embedding the blob version
+#: in the filename invalidates by construction: a host with a
+#: pre-thread-pin ``v1`` cache is forced to re-populate as ``v2``.
+#: Mirrors :data:`MASKRCNN_BLOB_VERSION` exactly.
+_RFDETR_CACHE_BLOB_VERSION = "v2"
+
 #: rf-detr model variants the cache contract recognises. Mirrors the
 #: TIDE harness's ``_rfdetr_predict.ModelName``; bench's
 #: ``real_predictions.rfdetr_dt_path`` and :func:`populate_rfdetr` accept
@@ -229,9 +240,12 @@ def rfdetr_cache_filename(model_name: RfdetrModelName, *, version: str = RFDETR_
     """Stable filename for cached rf-detr predictions.
 
     Mirrors the TIDE harness convention exactly (see
-    ``tide/_rfdetr_predict.py::cache_filename``).
+    ``tide/_rfdetr_predict.py::cache_filename``). Embeds
+    :data:`_RFDETR_CACHE_BLOB_VERSION` so a thread-pin or other
+    harness-side change that affects on-disk bytes forces a re-
+    populate instead of silently serving stale bytes.
     """
-    return f"rfdetr-{model_name}-{version}-{_DATASET_ID}.json"
+    return f"rfdetr-{model_name}-{version}-{_RFDETR_CACHE_BLOB_VERSION}-{_DATASET_ID}.json"
 
 
 def rfdetr_cache_path(
