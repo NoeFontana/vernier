@@ -22,6 +22,7 @@ model entirely.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -46,6 +47,7 @@ from real_predictions_cache import (
     mask2former_ade_cache_dir,
     mask2former_panoptic_cache_dir,
     mask2former_panoptic_dt_json_path,
+    rfdetr_cache_path,
     vitpose_cache_path,
 )
 
@@ -80,6 +82,12 @@ _PANOPTICAPI_PATH_INSTALL_ERROR: str | None = None
 
 #: Set by the lvis-api sys.path insertion path; same shape.
 _LVIS_API_PATH_INSTALL_ERROR: str | None = None
+
+#: Set by the boundary_iou_api sys.path insertion path; same shape.
+#: Read by the rfdetr-segnano boundary cell's predictions fixture so a
+#: vendored-oracle path rename surfaces as a per-cell skip instead of
+#: breaking SOTA collection wholesale.
+_BOUNDARY_IOU_API_PATH_INSTALL_ERROR: str | None = None
 
 
 def _install_mmseg_stubs_guarded() -> None:
@@ -156,9 +164,157 @@ def _install_lvis_api_path_guarded() -> None:
         _np.float = float  # type: ignore[attr-defined]
 
 
-_install_mmseg_stubs_guarded()
-_install_panopticapi_path_guarded()
+#: Sentinel used to remember "no prior ``np.float`` attribute" so the
+#: bail-out path can distinguish "we set it" from "it was already
+#: there". A bare module-level object beats ``None`` because numpy
+#: ships symbols that legitimately resolve to ``None`` (unlikely for
+#: ``np.float``, but the contract is "any value we didn't pick").
+_SENTINEL: object = object()
+
+
+def _install_boundary_iou_api_path_guarded() -> None:
+    """Replicate the parity_boundary conftest's sys.path insertion + shims.
+
+    The parity_boundary conftest adds the vendored ``boundary_iou_api``
+    checkout to ``sys.path`` AND installs three runtime shims:
+
+    1. ``matplotlib`` stubs — ``coco.py`` does a top-level ``import
+       matplotlib`` for visualization helpers we never call; pulling
+       matplotlib into our test deps just for that is heavyweight.
+    2. Single-process override for the multi-core boundary augmenter —
+       the multiprocessing pool surfaces ``ConnectionResetError`` under
+       our test harness on Python 3.14+; the single-core helper is
+       functionally identical.
+    3. ``np.float`` alias restore — the vendored ``cocoeval.py`` does
+       ``.astype(dtype=np.float)``, removed in NumPy 1.20+.
+
+    All three only fire when the parity_boundary conftest collects.
+    When pytest is invoked against only the SOTA tree (e.g.
+    ``pytest tests/python/integration/real_models/sota/``), the
+    parity_boundary conftest never runs, so we replicate the shim
+    install here. Each shim is idempotent — if the parity_boundary
+    conftest DOES fire later (mixed pytest invocation), the second
+    install no-ops cleanly.
+
+    Failures (missing vendored tree, ImportError on the boundary
+    package, any other error materialising the stub classes) record
+    an error string; the per-cell fixture skips on it rather than
+    breaking SOTA collection. On a bail, the matplotlib stubs and
+    ``np.float`` shim are uninstalled — leaving them in
+    ``sys.modules`` / on the ``numpy`` module would pollute the rest
+    of the pytest process and silently change semantics for unrelated
+    tests that import matplotlib or read ``np.float``.
+    """
+    global _BOUNDARY_IOU_API_PATH_INSTALL_ERROR
+    oracle = _TESTS_PYTHON_DIR / "parity_boundary" / "oracle" / "boundary_iou_api"
+    if not oracle.is_dir():
+        _BOUNDARY_IOU_API_PATH_INSTALL_ERROR = f"vendored boundary_iou_api missing at {oracle}"
+        return
+    if str(oracle) not in sys.path:
+        sys.path.insert(0, str(oracle))
+
+    import types
+
+    import numpy as _np
+
+    # Capture the pre-install state so a bail can put it back exactly.
+    # ``_installed_mpl_modules`` is the list of matplotlib-prefixed
+    # ``sys.modules`` keys we created (so we only pop the ones we own;
+    # an in-process matplotlib install we left alone stays alone).
+    # ``_original_np_float`` is the previous ``np.float`` value (or
+    # :data:`_SENTINEL` for "attribute was absent"), captured before
+    # the shim install.
+    _installed_mpl_modules: list[str] = []
+    _original_np_float: object = getattr(_np, "float", _SENTINEL)
+
+    def _undo_partial_install() -> None:
+        """Pop the matplotlib stubs we installed and restore ``np.float``.
+
+        Idempotent — called on the error paths after each
+        :data:`_BOUNDARY_IOU_API_PATH_INSTALL_ERROR` set. Walk the
+        list of keys WE inserted (not a blanket ``"matplotlib*"``
+        prefix sweep) so a parallel install path that legitimately
+        loaded matplotlib for some other reason isn't kneecapped.
+        """
+        for _key in _installed_mpl_modules:
+            sys.modules.pop(_key, None)
+        _installed_mpl_modules.clear()
+        if _original_np_float is _SENTINEL:
+            # We added ``np.float`` ourselves (or it didn't exist
+            # pre-install); strip it. Numpy may bind some attributes
+            # through a descriptor that refuses ``delattr``; suppress
+            # rather than propagate — the calling code already wrote
+            # the error string and the next collection cycle will
+            # re-attempt the install cleanly.
+            if hasattr(_np, "float"):
+                with contextlib.suppress(AttributeError):
+                    delattr(_np, "float")
+        else:
+            _np.float = _original_np_float  # type: ignore[attr-defined]
+
+    # 1. matplotlib stubs (idempotent on ``"matplotlib" in sys.modules``).
+    #    Catch ``(ImportError, AttributeError, TypeError)`` rather than
+    #    just ``ImportError``: the ``type(_member, (), {})``-fabricated
+    #    stub classes can raise non-Import errors at instantiation /
+    #    attribute time, and any escape past this block leaks the
+    #    half-installed stubs into the rest of the pytest process.
+    try:
+        if "matplotlib" not in sys.modules:
+            for _name in ("matplotlib", "matplotlib.pyplot"):
+                sys.modules[_name] = types.ModuleType(_name)
+                _installed_mpl_modules.append(_name)
+            for _sub, _member in (("collections", "PatchCollection"), ("patches", "Polygon")):
+                _mod = types.ModuleType(f"matplotlib.{_sub}")
+                setattr(_mod, _member, type(_member, (), {}))
+                sys.modules[f"matplotlib.{_sub}"] = _mod
+                _installed_mpl_modules.append(f"matplotlib.{_sub}")
+    except (ImportError, AttributeError, TypeError) as e:
+        _BOUNDARY_IOU_API_PATH_INSTALL_ERROR = (
+            f"matplotlib stub install failed: {type(e).__name__}: {e}"
+        )
+        _undo_partial_install()
+        return
+
+    # 3 (installed BEFORE the boundary import below — ``cocoeval.py``
+    #    is reached transitively from ``boundary_iou.utils.boundary_utils``
+    #    on some import orderings and references ``np.float`` at
+    #    module body parse time; installing it after the import is
+    #    racy on a fresh interpreter).
+    if not hasattr(_np, "float"):
+        _np.float = float  # type: ignore[attr-defined]
+
+    # 2. Single-process override on the multi-core augmenter. Touch the
+    #    public symbol first so ``boundary_iou.utils.boundary_utils`` is
+    #    in ``sys.modules``; then rebind the multi-core entry point to
+    #    the single-core helper. If the import itself fails (vendored
+    #    tree present but broken), record, undo the stub installs, and
+    #    bail — the per-cell fixture will skip on the error.
+    try:
+        __import__("boundary_iou.utils.boundary_utils")
+    except (ImportError, AttributeError, TypeError) as e:
+        _BOUNDARY_IOU_API_PATH_INSTALL_ERROR = (
+            f"boundary_iou import failed: {type(e).__name__}: {e}"
+        )
+        _undo_partial_install()
+        return
+    _utils_pkg = sys.modules["boundary_iou.utils"]
+    _boundary_utils = sys.modules["boundary_iou.utils.boundary_utils"]
+
+    def _single(
+        annotations: list[Any],
+        ann_to_mask: Any,
+        dilation_ratio: float = 0.02,
+    ) -> list[Any]:
+        return _boundary_utils.augment_annotations_with_boundary_single_core(
+            0, annotations, ann_to_mask, dilation_ratio
+        )
+
+    setattr(_boundary_utils, "augment_annotations_with_boundary_multi_core", _single)
+    setattr(_utils_pkg, "augment_annotations_with_boundary_multi_core", _single)
+
+
 _install_lvis_api_path_guarded()
+_install_boundary_iou_api_path_guarded()
 
 
 @pytest.fixture(scope="session")
@@ -199,6 +355,41 @@ def detr_predictions_path(
             cache_path=cache,
         )
     return cache
+
+
+@pytest.fixture(scope="session")
+def rfdetr_segnano_predictions_path() -> Path:
+    """Path to the rfdetr-segnano COCO val2017 predictions cache.
+
+    READ-ONLY adapter (unlike :func:`detr_predictions_path`): this cell
+    reuses the cache the TIDE harness populates — rfdetr ships as a
+    pip package pinned by ``RFDETR_VERSION`` in source rather than a
+    Hugging Face hub revision, and the existing TIDE inference run
+    already produces RLE masks that the boundary kernel consumes
+    directly. Re-running inference here would be a duplication of the
+    same bytes-on-disk; the cache contract guarantees the same
+    ``(model, version, dataset)`` tuple yields the same JSON.
+
+    Skips cleanly when the rfdetr-segnano cache is not populated. The
+    user provisions it by running the TIDE cell once
+    (``pytest -m real_models tests/python/integration/real_models/tide/``)
+    or by shelling into the bench-side populator
+    (``./tools/fetch-real-predictions.sh --rfdetr segnano``).
+
+    Also skips when the boundary_iou_api vendored oracle install
+    failed — the boundary parity claim has no oracle without it.
+    """
+    if _BOUNDARY_IOU_API_PATH_INSTALL_ERROR is not None:
+        pytest.skip(_BOUNDARY_IOU_API_PATH_INSTALL_ERROR)
+    path = rfdetr_cache_path("segnano")
+    if not path.is_file():
+        pytest.skip(
+            f"rfdetr-segnano predictions cache missing at {path}. Populate "
+            f"by running the TIDE cell once: `pytest -m real_models "
+            f"tests/python/integration/real_models/tide/` with the "
+            f"`real-models` extra installed."
+        )
+    return path
 
 
 @pytest.fixture(scope="session")

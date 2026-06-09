@@ -12,6 +12,24 @@ model_version, dataset_id)``. Re-running the harness with the same pin
 hits the cache and skips inference; bumping the rfdetr pin (an
 ADR-level operation per the vendoring policy) invalidates the cache by
 construction.
+
+Version pinning is the SHA-pinning analog for vendored pip packages:
+unlike the SOTA harness's Hugging Face cells (DETR-R50, Mask2Former
+panoptic/ADE) which embed a 40-hex hub commit in the cache filename,
+rfdetr ships as a pip package and ``RFDETR_VERSION`` (the package
+pin) plays the same role. The cache filename embeds the version
+string so any pip-side bump invalidates the cache by construction.
+
+Thread-pin caveat: this module calls
+:func:`_harness_common.pin_inference_threads` before the first
+forward pass to keep newly-populated cache bytes host-independent
+(matmul reduction order with intra-op threads is not deterministic
+across NUMA topologies). The pin is cache-stable for NEW populates
+only — any existing cache files predating this commit were produced
+without the pin, and the bit-equality contract on the SOTA boundary
+cell holds against whichever ordering those bytes capture (deleting
++ re-populating is the only way to re-tighten the seam for a host
+that swapped CPU topology since the original populate).
 """
 
 from __future__ import annotations
@@ -21,6 +39,18 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+# Side-effect import: ``_harness_common`` sets ``OMP_NUM_THREADS=1`` /
+# ``MKL_NUM_THREADS=1`` / ``OPENBLAS_NUM_THREADS=1`` at import time
+# (via ``os.environ.setdefault``). Reaching for this at module top
+# rather than inside the predictor body so the env-var pin lands
+# before ``rfdetr`` (and its transitive ``torch`` import) materialises
+# the intra-op thread pool; once initialised, ``torch.set_num_threads``
+# is documented as a no-op. The in-process pin in
+# :func:`_instantiate_model` is defence-in-depth for the case where
+# the parent process exported a non-1 value the env-time
+# ``setdefault`` deliberately respects.
+from ..sota import _harness_common
+
 if TYPE_CHECKING:
     import numpy as np
     from supervision import Detections
@@ -28,6 +58,17 @@ if TYPE_CHECKING:
 
 _RFDETR_VERSION = "1.6.5.post0"
 _DATASET_ID = "coco-val2017"
+
+#: Cache-blob content tag. Mirrors
+#: :data:`real_predictions_cache._RFDETR_CACHE_BLOB_VERSION` exactly —
+#: see that constant's docstring for the v1 → v2 rationale (the
+#: thread-pin landing in :func:`_instantiate_model` makes ``v1`` bytes
+#: host-dependent, ``v2`` bytes deterministic). Both filename builders
+#: must agree byte-for-byte or the TIDE populator and the bench
+#: adapter would point at different files; that's why this constant
+#: is duplicated here rather than imported (this module pre-dates the
+#: shared cache package and avoids the dep to stay light).
+_RFDETR_CACHE_BLOB_VERSION = "v2"
 
 #: rf-detr model variants the harness exercises. ``nano`` is the
 #: bbox-only RFDETRNano; ``segnano`` is the instance-seg RFDETRSegNano
@@ -39,9 +80,14 @@ def cache_filename(model_name: ModelName) -> str:
     """Stable filename for cached predictions.
 
     Versioned + dataset-tagged so a pin bump or dataset swap can't
-    silently reuse stale predictions.
+    silently reuse stale predictions. Also embeds
+    :data:`_RFDETR_CACHE_BLOB_VERSION` (the cache-blob content tag) so
+    a harness-side change that affects on-disk bytes (e.g. the
+    thread-pin that bumped v1 → v2) forces a re-populate instead of
+    silently serving stale bytes on hosts that already have a v1
+    file.
     """
-    return f"rfdetr-{model_name}-{_RFDETR_VERSION}-{_DATASET_ID}.json"
+    return f"rfdetr-{model_name}-{_RFDETR_VERSION}-{_RFDETR_CACHE_BLOB_VERSION}-{_DATASET_ID}.json"
 
 
 def predictions_cache_root() -> Path:
@@ -144,12 +190,34 @@ def _detections_to_records(
 
 
 def _instantiate_model(model_name: ModelName) -> tuple[Any, bool]:
-    """Lazy rfdetr import + model instantiation. Returns ``(model, include_masks)``."""
-    import rfdetr
+    """Lazy rfdetr import + model instantiation. Returns ``(model, include_masks)``.
 
+    Pins ``torch.set_num_threads(1)`` before instantiating the model
+    so the cache contract holds against host topology changes — same
+    discipline the SOTA harness's predictors enforce; see
+    :func:`_harness_common.pin_inference_threads`. The pin is
+    defence-in-depth on top of the import-time env-var pin in
+    :mod:`_harness_common`; the env-var path is the only one that
+    reliably wins once torch's intra-op pool is live.
+
+    Device selection: rfdetr's ``config._detect_device()`` uses
+    ``torch.accelerator.current_accelerator()`` which mis-reports
+    ``cuda`` on CUDA-built PyTorch wheels even when no NVIDIA driver
+    is present (driver check is deferred to first CUDA call, which
+    then crashes inside ``predict()``). We explicitly probe
+    ``torch.cuda.is_available()`` (which *does* try to load the
+    driver) and pass ``device="cpu"`` when no GPU is reachable. On
+    real CUDA hosts this is a no-op — the model still lands on GPU.
+    """
+    _harness_common.pin_inference_threads()
+
+    import rfdetr
+    import torch
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     if model_name == "nano":
-        return rfdetr.RFDETRNano(), False
-    return rfdetr.RFDETRSegNano(), True
+        return rfdetr.RFDETRNano(device=device), False
+    return rfdetr.RFDETRSegNano(device=device), True
 
 
 def predict_coco_val(
@@ -180,13 +248,15 @@ def predict_coco_val(
     from rfdetr.assets.coco_classes import COCO_CLASSES
 
     model, include_masks = _instantiate_model(model_name)
-    class_mapping = _coco_class_mapping(gt, list(COCO_CLASSES))
+    class_mapping = _coco_class_mapping(gt, list(COCO_CLASSES.values()))
     images: Iterable[dict[str, Any]] = gt["images"]
 
     if progress:
         from tqdm import tqdm
 
         images = tqdm(list(images), desc=f"rfdetr-{model_name} val2017")
+
+    from PIL import Image
 
     records: list[dict[str, Any]] = []
     for img in images:
@@ -197,7 +267,21 @@ def predict_coco_val(
                 f"Re-run the COCO val2017 fetcher; the cache root must contain "
                 f"the full val2017/ directory next to instances_val2017.json."
             )
-        detections = model.predict(str(image_path), threshold=threshold)
+        # Force RGB before handing the image to ``model.predict``.
+        # COCO val2017 contains a small number of grayscale (``"L"``)
+        # and RGBA / CMYK images; rfdetr's ``predict()`` accepts a path
+        # by ``Image.open()``-ing it directly, which preserves the
+        # source mode and trips the model's 3-channel guard (see
+        # ``rfdetr.detr.RFDETR.predict`` — ``if img.shape[0] != 3``).
+        # Converting at the harness boundary keeps every val2017 image
+        # going through the same canonicalisation and matches what the
+        # other COCO-val SOTA cells do (HuggingFace image processors
+        # ingest via ``Image.convert`` under the hood). ``convert("RGB")``
+        # is a no-op on already-RGB images, so cache bytes stay
+        # deterministic for the dominant case.
+        with Image.open(image_path) as pil_img:
+            rgb_img = pil_img.convert("RGB")
+            detections = model.predict(rgb_img, threshold=threshold)
         records.extend(
             _detections_to_records(
                 detections,

@@ -60,3 +60,4 @@ perf.data*
 /bench/.venv/
 /bench/envs/*/.venv/
 /bench/uv.lock.bak
+rf-detr-seg-nano.pt
