@@ -184,9 +184,7 @@ def predict_lvis_val(
 
     pin_inference_threads()
     processor = _tf.AutoImageProcessor.from_pretrained(_MODEL_ID, revision=revision)
-    config_path = hf_hub_download(
-        repo_id=_MODEL_ID, filename="config.json", revision=revision
-    )
+    config_path = hf_hub_download(repo_id=_MODEL_ID, filename="config.json", revision=revision)
     config_dict = _json.loads(Path(config_path).read_bytes())
     if config_dict.get("dilation") is None:
         config_dict["dilation"] = False
