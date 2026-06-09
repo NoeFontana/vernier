@@ -26,10 +26,30 @@
 //!   segmentation; both must move together for the fix to register as
 //!   a TP under each.
 //! - **Both / Dupe / Bkg** — drop the DT.
-//! - **Missed** — set `ignore=true` on the missed GTs (oracle uses
-//!   `ignore`; vernier's GT type carries `ignore_flag: Option<bool>`,
-//!   and `effective_ignore` resolves to `iscrowd || ignore` under
-//!   either parity mode, so flipping `ignore_flag` is sufficient).
+//! - **Missed** — drop the missed GTs from the dataset. Oracle marks
+//!   them `ignore=True` (the dataset still carries the row, AP just
+//!   ignores it), but vernier's `effective_ignore` under
+//!   `ParityMode::Strict` matches pycocotools' cocoeval verbatim
+//!   (`is_crowd` only — the explicit `ignore` field is overwritten,
+//!   see `dataset.rs::CocoAnnotation::effective_ignore` and
+//!   `ParityMode` docs). That makes the "set `ignore_flag = Some(true)`
+//!   on missed GTs" approach a no-op under strict mode, leaving
+//!   `delta_missed = 0` on every caller that opts into strict —
+//!   quirk **D1**'s `corrected`-disposition opt-in to honoring the
+//!   field is the OTHER side of the same coin. Deletion is parity-
+//!   mode-independent and AP-equivalent to ignoring for the following
+//!   reason. Let GT_M be a missed GT; greedy matching at `t_f` picked
+//!   some GT_O (or nothing) over GT_M for every DT D, meaning
+//!   `IoU(D, GT_O) >= IoU(D, GT_M)` whenever GT_M was a candidate at
+//!   `t_f`. AP averages over the 10-IoU ladder; at any stricter
+//!   `t_iou > t_f`, the inequality still holds, so GT_M drops out of
+//!   D's candidate set at or before GT_O does — there is no `t_iou`
+//!   at which GT_M is the unique candidate keeping D as a TP. The net
+//!   effect of deletion is therefore the same `n_pos_gt` decrement
+//!   that `ignore=True` produces, with no DT routed to a different
+//!   TP/FP. (If a future ADR introduces a non-greedy matcher under a
+//!   new `ParityMode`, revisit this argument — Hungarian assignment
+//!   could violate the IoU monotonicity invariant.)
 //! - **all_fp** (sanity) — drop every FP-binned DT (any of cls / loc /
 //!   both / dupe / bkg) at `t_f` simultaneously.
 
@@ -54,7 +74,8 @@ pub enum FixKind {
     Dupe,
     /// Bkg — drop the DT.
     Bkg,
-    /// Missed — flip `ignore=true` on every Missed GT.
+    /// Missed — delete every Missed GT from the dataset (see module
+    /// docs for the parity-mode-independent rationale).
     Missed,
     /// All-FP-removed sanity pass — drop every DT whose bin is one of
     /// the five FP bins.
@@ -82,19 +103,53 @@ pub fn apply_fix(
     fix: FixKind,
 ) -> Result<(CocoDataset, CocoDetections), EvalError> {
     // ---- GT side ----
-    let mut gts: Vec<CocoAnnotation> = gt.annotations().to_vec();
-    if matches!(fix, FixKind::Missed) {
+    let gts: Vec<CocoAnnotation> = if matches!(fix, FixKind::Missed) {
+        // Drop the missed GTs entirely. See module docs for the
+        // parity-mode-independent rationale; tl;dr: under strict
+        // `effective_ignore` semantics (pycocotools-faithful) the
+        // post-load `ignore_flag` write is overwritten to `is_crowd`,
+        // so the "set ignore=True" approach is a no-op. Deletion
+        // achieves the same AP semantics as the oracle's ignore-mark
+        // and is parity-mode-independent.
         let missed_set: std::collections::HashSet<(i64, usize)> =
             assignment.missed_gts.iter().copied().collect();
-        for (gt_input_idx, ann) in gts.iter_mut().enumerate() {
-            if missed_set.contains(&(ann.image_id.0, gt_input_idx)) {
-                ann.ignore_flag = Some(true);
-            }
-        }
-    }
+        gt.annotations()
+            .iter()
+            .enumerate()
+            .filter_map(|(gt_input_idx, ann)| {
+                if missed_set.contains(&(ann.image_id.0, gt_input_idx)) {
+                    None
+                } else {
+                    Some(ann.clone())
+                }
+            })
+            .collect()
+    } else {
+        gt.annotations().to_vec()
+    };
     let new_gt = CocoDataset::from_parts(gt.images().to_vec(), gts, gt.categories().to_vec())?;
 
     // ---- DT side ----
+    //
+    // Indexing invariant — load-bearing for `resolve_target` inside
+    // the loop below:
+    //
+    // - On the Cls / Loc branches, `new_gt` was built from
+    //   `gt.annotations().to_vec()` unchanged, so
+    //   `new_gt.ann_indices_for_image(...)` returns positions in the
+    //   ORIGINAL annotation Vec that `original_anns` aliases. The
+    //   `&original_anns[j]` dereference is safe.
+    // - On the Missed branch, `new_gt` was built from a FILTERED Vec,
+    //   so its per-image index list contains positions in the filtered
+    //   vector — which DO NOT match positions in `original_anns`. But
+    //   the Missed branch never invokes `resolve_target` (the DT side
+    //   falls through to the `_ => passthrough_input(det)` arm), so
+    //   the mismatch is currently unreachable.
+    //
+    // The `debug_assert!` inside `resolve_target` documents and
+    // enforces this contract: any future fix-kind that mutates GTs
+    // AND calls `resolve_target` would trip the assert under
+    // `cargo test`.
     let mut new_dts: Vec<DetectionInput> = Vec::with_capacity(dt.detections().len());
     let original_anns = gt.annotations();
     for (dt_input_idx, det) in dt.detections().iter().enumerate() {
@@ -106,6 +161,12 @@ pub fn apply_fix(
         // the per-image GT list in dataset insertion order — the same
         // axis CrossClassIous uses).
         let resolve_target = |target: i32| -> Result<&CocoAnnotation, EvalError> {
+            debug_assert!(
+                !matches!(fix, FixKind::Missed),
+                "resolve_target invoked on Missed branch: new_gt indices no longer align with \
+                 original_anns positions. Snapshot per-image targets BEFORE filtering, or stop \
+                 dereferencing original_anns through new_gt's local index space."
+            );
             let local_indices = new_gt.ann_indices_for_image(det.image_id);
             let target_usize =
                 usize::try_from(target).map_err(|_| EvalError::InvalidAnnotation {

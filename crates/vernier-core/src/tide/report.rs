@@ -82,9 +82,14 @@ pub struct TideConfig {
 /// the rewrite layer; absent bins (e.g. structurally-zero Cls/Both
 /// bins on a single-class workload) are simply missing from the map
 /// rather than recorded as `0.0`. The all-FPs-removed sanity total
-/// (the paper's "perfect rejection" upper bound — what mAP would be
-/// if every FP were correctly rejected) is recorded separately so the
-/// caller can sanity-check `sum(delta_per_bin) <= delta_all_fp`.
+/// (the paper's "perfect rejection" benchmark — what mAP would be if
+/// every FP were correctly rejected) is recorded separately as a
+/// reference number. Note: `sum(delta_per_bin) <= delta_all_fp` does
+/// NOT hold in general — `cls`, `loc`, and `both` reclassify FPs into
+/// TPs (lifting both precision AND recall, while `delta_all_fp` only
+/// drops FPs), so they can individually or in sum exceed `delta_all_fp`
+/// on real data. The only universal upper bound is
+/// `baseline_map + delta_per_bin[k] <= 1.0` (AP is in [0, 1]).
 ///
 /// No `Default` impl: a default-constructed `TideReport` would have
 /// no meaningful semantics — every field is a call output, not
@@ -101,9 +106,16 @@ pub struct TideReport {
     /// single-class workload, where they are structurally zero) are
     /// absent from the map.
     pub delta_per_bin: HashMap<TideErrorBin, f64>,
-    /// Sanity total: ΔmAP from the all-FPs-removed pass. Useful as
-    /// the paper's "perfect rejection" upper bound; the per-bin
-    /// deltas should sum to at most this value.
+    /// Reference total: ΔmAP from the all-FPs-removed pass.
+    ///
+    /// Useful as the paper's "perfect rejection" benchmark. Note: this
+    /// is NOT a tight upper bound on the per-bin deltas. `cls` / `loc`
+    /// / `both` reclassify FPs into TPs (lifting both precision AND
+    /// recall), while `all_fp` only drops FPs (precision only) — so
+    /// the reclassifying bins can individually exceed `delta_all_fp`
+    /// on real data. Empirically observed on DETR-R50:
+    /// `delta[loc] ≈ 0.076` vs `delta_all_fp ≈ 0.053`. The only
+    /// universal upper bound is `baseline_map + delta <= 1.0`.
     pub delta_all_fp: f64,
     /// Resolved configuration this report was produced under (per
     /// ADR-0022).

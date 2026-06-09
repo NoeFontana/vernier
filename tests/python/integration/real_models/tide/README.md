@@ -1,15 +1,17 @@
-# TIDE validation harness — rf-detr × COCO val2017
+# TIDE validation harness — COCO val2017 (rf-detr + DETR-R50)
 
 Real-model validation for `vernier.error_decomposition` (the TIDE
 machinery). Two complementary entry points share this directory:
 
 - **pytest harness** (`test_tide_real_models.py`) gates structural
-  invariants (coherence + determinism). Marked
-  `@pytest.mark.real_models`; skipped by default. Run via
-  `uv run --extra real-models pytest -m real_models`.
+  invariants (coherence + determinism) on rf-detr Nano / SegNano
+  and DETR-R50, plus numpy-oracle parity on DETR-R50 (closing the
+  ADR-0022 follow-up on `t_b = 0.1` for set-prediction transformer
+  detectors). Marked `@pytest.mark.real_models`; skipped by default.
+  Run via `uv run --extra real-models pytest -m real_models`.
 - **`run.py` CLI** produces a human-readable JSON report (per-bin
   ΔmAP, baseline mAP, wall-clock, peak RSS) for ad-hoc validation
-  after a TIDE-related change. Not a regression gate.
+  after a TIDE-related change. rf-detr-only; not a regression gate.
 
 Why rf-detr: small enough to run on a laptop CPU, ships two
 flavors (`RFDETRNano` for bbox, `RFDETRSegNano` for instance
@@ -17,6 +19,16 @@ segmentation) so the same package covers all three vernier kernels
 (boundary IoU is computed from segm masks). Pinned at
 `rfdetr==1.6.5.post0`; bumping is an ADR-level operation per
 [`docs/engineering/vendoring.md`](../../../../docs/engineering/vendoring.md).
+
+Why DETR-R50: a set-prediction transformer detector with a
+fundamentally different score distribution from rf-detr's
+anchor-based output — exercises the bbox `t_b = 0.1` default
+(ADR-0022) on the prediction shape the empirical-ratification
+follow-up was waiting for. The DETR-R50 prediction cache is owned
+by the sibling SOTA harness (`tests/python/integration/real_models/sota/`,
+PR #265); this TIDE tree reads the cache by reference and skips
+cleanly when it's absent — we deliberately do not invoke the SOTA
+populator from a TIDE fixture (~12 h on an 8-core CPU).
 
 ## Prerequisites
 
@@ -54,14 +66,24 @@ segmentation) so the same package covers all three vernier kernels
 uv run --extra real-models pytest -m real_models -v
 ```
 
-Three coherence cells (parametrized) plus one determinism check.
-Skips cleanly on a clean machine if either prerequisite is missing
-(no `rfdetr` import, no COCO val cache, no `val2017/` images).
+Four coherence cells (parametrized: rf-detr Nano / SegNano +
+DETR-R50 bbox), one determinism check, and one numpy-oracle parity
+cell on DETR-R50 (closes the ADR-0022 follow-up). Per-cell skip
+semantics:
+
+- The rf-detr cells skip when `rfdetr` is not importable.
+- The DETR-R50 cells skip when the SOTA harness's prediction cache
+  is absent (`real_predictions_cache.detr_resnet50_cache_path`).
+  Populate via `./tools/fetch-real-predictions.sh --detr` or the
+  sibling SOTA harness (`pytest -m real_models tests/python/integration/real_models/sota/`).
+- All cells skip when `VERNIER_COCO_CACHE` doesn't point at a
+  populated val2017 layout (GT JSON + `val2017/` images).
 
 First run does inference; subsequent runs read from the on-disk
 predictions cache (under `platformdirs.user_cache_dir("vernier") /
-"real-models"`). Bumping the `rfdetr` pin invalidates the cache by
-construction (the version is in the cache filename).
+"real-models"`). Bumping the `rfdetr` pin invalidates the rf-detr
+cache by construction (the version is in the cache filename); the
+DETR-R50 cache key embeds the full Hugging Face commit SHA (PR #265).
 
 ## Running the report CLI
 
