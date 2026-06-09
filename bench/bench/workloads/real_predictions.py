@@ -33,12 +33,14 @@ from pathlib import Path
 
 from real_predictions_cache import (
     DETR_RESNET50_REVISION,
+    LVIS_DETECTOR_REVISION,
     MASK2FORMER_ADE_REVISION,
     MASK2FORMER_PANOPTIC_REVISION,
     RFDETR_VERSION,
     VITPOSE_REVISION,
     RfdetrModelName,
     detr_resnet50_cache_path,
+    lvis_detector_cache_path,
     mask2former_ade_cache_dir,
     mask2former_panoptic_cache_dir,
     mask2former_panoptic_dt_json_path,
@@ -58,6 +60,7 @@ MASK2FORMER_PANOPTIC_WORKLOAD_ID = (
 )
 MASK2FORMER_ADE_WORKLOAD_ID = f"ade20k_val_mask2former_swin_t_v{MASK2FORMER_ADE_REVISION[:7]}"
 VITPOSE_WORKLOAD_ID = f"coco_val2017_vitpose_base_simple_v{VITPOSE_REVISION[:7]}"
+LVIS_DETECTOR_WORKLOAD_ID = f"lvis_v1_val_deformable_detr_v{LVIS_DETECTOR_REVISION[:7]}"
 
 
 def maskrcnn_dt_path() -> Path:
@@ -170,6 +173,36 @@ def vitpose_dt_path() -> Path:
             f"huggingface_hub, timm; ~2-3h on an 8-core CPU for the first "
             f"run, seconds on cache hit). Alternatively, run "
             f"`./tools/fetch-real-predictions.sh --vitpose` for the same flow."
+        )
+    return path
+
+
+def lvis_detector_dt_path() -> Path:
+    """Return the LVIS detector cached prediction JSON.
+
+    Same read-only adapter shape as :func:`detr_r50_dt_path`. The
+    model is ``facebook/deformable-detr-box-supervised``; predictions
+    are written by the SOTA harness's ``_lvis_detector_predict``
+    module against LVIS v1 val. If the cache is missing, point the
+    user at the populator (either the pytest fixture or the
+    ``./tools/fetch-real-predictions.sh --lvis`` shim that shells
+    into the same ``real-models`` extra). Keeping the bench env free
+    of transformers / torch / huggingface_hub deps means an
+    unpopulated cache surfaces as a hard error instead of a silent
+    zero-detection benchmark.
+    """
+    path = lvis_detector_cache_path()
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"LVIS detector prediction cache missing at {path}. "
+            f"Populate it by running `pytest -m real_models "
+            f"tests/python/integration/real_models/sota/test_lvis_real_models.py` "
+            f"with the `real-models` extra installed (torch, transformers, "
+            f"huggingface_hub, timm; ~48-72h on an 8-core CPU for the "
+            f"first run, seconds on cache hit). Alternatively, run "
+            f"`./tools/fetch-real-predictions.sh --lvis` for the same flow. "
+            f"The LVIS v1 val cache must also be provisioned "
+            f"(`python -m lvis_v1_val_cache fetch`)."
         )
     return path
 

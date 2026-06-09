@@ -2,12 +2,12 @@
 
 The bench harness's ``coco_val2017_detr_r50_*`` /
 ``coco_val2017_mask2former_panoptic_*`` / ``ade20k_val_mask2former_*``
-workloads (under ``bench/bench/workloads/real_predictions.py``) read
-predictions from disk only — no torch / transformers / huggingface_hub
-dep. This script is the populator; it carries the heavy
-``[real-models]`` extra and is shelled into by
-``tools/fetch-real-predictions.sh`` (via the matching
-``real_predictions_cache.populate_*`` helpers).
+/ ``lvis_v1_val_deformable_detr_*`` workloads (under
+``bench/bench/workloads/real_predictions.py``) read predictions from
+disk only — no torch / transformers / huggingface_hub dep. This
+script is the populator; it carries the heavy ``[real-models]``
+extra and is shelled into by ``tools/fetch-real-predictions.sh``
+(via the matching ``real_predictions_cache.populate_*`` helpers).
 
 Four model flags, four cache layouts:
 
@@ -23,6 +23,10 @@ Four model flags, four cache layouts:
 - ``--vitpose`` → one ``vitpose-base-simple-<sha>-coco-val2017.json``
   (COCO keypoints results shape; top-down on GT person boxes).
   ~2-3h on 8-core CPU.
+- ``--lvis`` → one ``deformable-detr-lvis-<sha>-lvis-v1-val.json``
+  (LVIS results shape, same flat list as COCO detection). ~48-72h on
+  8-core CPU (19,809 LVIS val images at ~10s/image for Deformable-
+  DETR's 300-query / 6-decoder-layer forward).
 
 Usage::
 
@@ -34,6 +38,8 @@ Usage::
         tests.python.integration.real_models.sota._populate_cache --mask2former-ade
     uv run --extra real-models python -m \\
         tests.python.integration.real_models.sota._populate_cache --vitpose
+    uv run --extra real-models python -m \\
+        tests.python.integration.real_models.sota._populate_cache --lvis
 """
 
 from __future__ import annotations
@@ -47,6 +53,7 @@ from coco_val_cache import GT_FILENAME, IMAGES_DIRNAME, KP_GT_FILENAME, ensure_k
 from coco_val_cache import cache_root as _coco_cache_root
 from real_predictions_cache import (
     detr_resnet50_cache_path,
+    lvis_detector_cache_path,
     mask2former_ade_cache_dir,
     mask2former_panoptic_cache_dir,
     mask2former_panoptic_dt_json_path,
@@ -152,6 +159,56 @@ def _populate_vitpose() -> Path:
     return cache_path
 
 
+def _populate_lvis_detector() -> Path:
+    """Run Deformable-DETR (LVIS box-supervised) inference on LVIS v1 val.
+
+    Pulls the LVIS GT JSON + val2017 image directory from the
+    :mod:`lvis_v1_val_cache` provisioner (which delegates the image
+    side to :mod:`coco_val_cache` — LVIS v1 reuses COCO 2017 images).
+    A missing cache surfaces the ``python -m lvis_v1_val_cache fetch``
+    hint rather than half-running inference and writing a partial
+    cache.
+    """
+    import os as _os
+
+    from lvis_v1_val_cache import ensure_gt as _ensure_lvis_gt
+    from lvis_v1_val_cache import ensure_images as _ensure_lvis_images
+
+    gt_path = _ensure_lvis_gt()
+    images_dir = _ensure_lvis_images()
+    gt_dict = json.loads(gt_path.read_bytes())
+
+    # Honour the same sub-sample knob the test side reads. Cuts the
+    # 19,809-image full-corpus populate (~48-72 h CPU) down to a
+    # representative prefix the harness can validate end-to-end in a
+    # single session. The full populate (env unset, default sentinel
+    # ``-1`` = no cap) remains supported and is what the published
+    # headline numbers will be captured against.
+    sample_env = _os.environ.get("VERNIER_LVIS_REAL_VAL_SAMPLE_IMAGES", "")
+    try:
+        sample_n = int(sample_env) if sample_env else -1
+    except ValueError:
+        sample_n = -1
+    if sample_n > 0 and sample_n < len(gt_dict["images"]):
+        kept = gt_dict["images"][:sample_n]
+        kept_ids = {im["id"] for im in kept}
+        gt_dict = {
+            **gt_dict,
+            "images": kept,
+            "annotations": [a for a in gt_dict["annotations"] if a["image_id"] in kept_ids],
+        }
+
+    from ._lvis_detector_predict import predict_lvis_val
+
+    cache_path = lvis_detector_cache_path()
+    predict_lvis_val(
+        gt=gt_dict,
+        image_dir=images_dir,
+        cache_path=cache_path,
+    )
+    return cache_path
+
+
 def _populate_mask2former_ade() -> Path:
     """Run Mask2Former ADE semantic inference on ADE20K val.
 
@@ -210,12 +267,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         "(keypoints, top-down on GT person boxes) and write a COCO "
         "keypoints results JSON to the cache.",
     )
+    parser.add_argument(
+        "--lvis",
+        action="store_true",
+        dest="lvis_detector",
+        help="Run facebook/deformable-detr-box-supervised on LVIS v1 val "
+        "(revision pinned by LVIS_DETECTOR_REVISION) and write LVIS "
+        "results JSON to the cache.",
+    )
     args = parser.parse_args(argv)
 
-    if not (args.detr or args.mask2former_panoptic or args.mask2former_ade or args.vitpose):
+    if not (
+        args.detr
+        or args.mask2former_panoptic
+        or args.mask2former_ade
+        or args.vitpose
+        or args.lvis_detector
+    ):
         parser.error(
             "at least one model flag is required: "
-            "--detr / --mask2former-panoptic / --mask2former-ade / --vitpose"
+            "--detr / --mask2former-panoptic / --mask2former-ade / "
+            "--vitpose / --lvis"
         )
 
     if args.detr:
@@ -233,6 +305,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.vitpose:
         path = _populate_vitpose()
         print(f"ViTPose-base-simple keypoint predictions cached: {path}")
+
+    if args.lvis_detector:
+        path = _populate_lvis_detector()
+        print(f"LVIS detector predictions cached: {path}")
 
     return 0
 

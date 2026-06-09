@@ -151,6 +151,41 @@ VITPOSE_MODEL_ID = "usyd-community/vitpose-base-simple"
 VITPOSE_REVISION: str = "a93ac0c67e0b7e2c55287d21d4c460c8f3c54d45"
 
 # ---------------------------------------------------------------------------
+# Hugging Face SOTA harness — Deformable DETR R50 4x LVIS (box-supervised)
+# ---------------------------------------------------------------------------
+
+#: ``facebook/deformable-detr-box-supervised`` is the Apache-2.0,
+#: transformers-compatible LVIS v1 detector closing the real-prediction
+#: parity loop on the federated-evaluation paradigm (ADR-0026). The
+#: checkpoint is "Box-Supervised_DeformDETR_R50_4x" from the original
+#: Detic release, re-hosted on the Hugging Face hub with a transformers
+#: ``DeformableDetrForObjectDetection`` config (300 queries, 1203
+#: id2label entries covering the full LVIS v1 category set). Reports
+#: 31.7 box mAP / 21.4 AP_r on LVIS v1 val.
+#:
+#: Discovery process (documented in ``docs/engineering/real-predictions-parity.md``):
+#: queried for `lvis detr`, `deformable-detr lvis`, `co-detr lvis`,
+#: `mm-grounding-dino lvis`, `glip lvis`, `owl-vit lvis`,
+#: `lvis mask r-cnn huggingface`. Only ``facebook/deformable-detr-box-supervised``
+#: returned an HF hub-hosted, transformers-loadable, LVIS v1-trained
+#: detector whose id2label covers all 1203 categories. Downloads are
+#: ~16/month (low — research checkpoint, not production), but the
+#: alternative is the Detectron2 Mask R-CNN R50-FPN-LVIS fallback,
+#: which would drag in a separate inference stack (Detectron2) just
+#: for parity validation.
+LVIS_DETECTOR_MODEL_ID = "facebook/deformable-detr-box-supervised"
+
+#: Pinned commit on the Hugging Face hub (resolved 2026-06-07). Same
+#: bump-is-ADR-level policy as :data:`DETR_RESNET50_REVISION`: the
+#: cache filename embeds this SHA so a weights bump invalidates by
+#: construction. Bumping is paired with re-running the SOTA parity
+#: smoke and refreshing the headline numbers in
+#: ``docs/engineering/real-predictions-parity.md``.
+LVIS_DETECTOR_REVISION: str = "d7710a91d4e58c2fccd29f53e0ca350093b934f3"
+
+_DATASET_ID_LVIS = "lvis-v1-val"
+
+# ---------------------------------------------------------------------------
 # Shared cache plumbing
 # ---------------------------------------------------------------------------
 
@@ -236,6 +271,39 @@ def detr_resnet50_cache_path(
     JSON without any inference dep of its own.
     """
     return cache_root(cache) / detr_resnet50_cache_filename(revision=revision)
+
+
+def lvis_detector_cache_filename(*, revision: str = LVIS_DETECTOR_REVISION) -> str:
+    """Stable filename for the LVIS detector's predictions on LVIS v1 val.
+
+    The output shape is the COCO-detection results JSON shape (a list
+    of ``{image_id, category_id, bbox: [x, y, w, h], score}`` records)
+    so ``lvis-api``'s ``LVISResults`` constructor + vernier's federated
+    bbox grid both ingest the same file. The dataset suffix
+    (``lvis-v1-val``) disambiguates from the DETR-R50 cell, which
+    shares the COCO results format but covers a different dataset
+    (COCO val2017, 80 categories) and a different model.
+
+    Embeds the FULL 40-hex SHA so future revisions sharing the first 7
+    chars can't silently collide on disk under a bumped pin — same
+    discipline as :func:`detr_resnet50_cache_filename`.
+    """
+    return f"deformable-detr-lvis-{revision}-{_DATASET_ID_LVIS}.json"
+
+
+def lvis_detector_cache_path(
+    *,
+    revision: str = LVIS_DETECTOR_REVISION,
+    cache: Path | None = None,
+) -> Path:
+    """Return the canonical cache location for LVIS detector predictions.
+
+    Symmetric with :func:`detr_resnet50_cache_path`: read-only
+    resolver; the bench-side adapter reads the JSON without any
+    inference dep of its own. :func:`populate_lvis_detector` shells
+    into the ``real-models`` extra to do the inference.
+    """
+    return cache_root(cache) / lvis_detector_cache_filename(revision=revision)
 
 
 def mask2former_panoptic_cache_dirname(*, revision: str = MASK2FORMER_PANOPTIC_REVISION) -> str:
@@ -526,6 +594,45 @@ def populate_vitpose() -> None:
     subprocess.run(cmd, check=True, cwd=REPO_ROOT)
 
 
+_LVIS_DETECTOR_POPULATOR_FLAG = "--lvis"
+
+
+def populate_lvis_detector() -> None:
+    """Run the LVIS detector on LVIS v1 val to populate the cache.
+
+    Shells into ``uv run --extra real-models python -m
+    tests.python.integration.real_models.sota._populate_cache
+    --lvis-detector`` — same shape as :func:`populate_detr_resnet50`.
+    Validates :data:`LVIS_DETECTOR_REVISION` is pinned before
+    spawning the subprocess; an unpinned value fails loudly here
+    rather than later inside the inference process.
+
+    First run on a clean machine is the cost driver: LVIS v1 val has
+    19,809 images at ~640x480 vs COCO's 5,000, and the Deformable-DETR
+    forward is heavier per image than DETR-R50 (300-query head + 6
+    decoder layers with deformable attention vs DETR's 100 / 6 with
+    standard attention). Budget ~48-72 h on an 8-core CPU. A cache
+    hit is seconds. Cached output lands at
+    :func:`lvis_detector_cache_path`.
+    """
+    _ensure_pinned_revision(LVIS_DETECTOR_REVISION, LVIS_DETECTOR_MODEL_ID)
+    cmd = [
+        "uv",
+        "run",
+        "--extra",
+        "real-models",
+        "python",
+        "-m",
+        _DETR_R50_POPULATOR_MODULE,
+        _LVIS_DETECTOR_POPULATOR_FLAG,
+    ]
+    print(
+        f"Shelling into [real-models] extra for LVIS detector inference: {' '.join(cmd)}",
+        file=sys.stderr,
+    )
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT)
+
+
 def populate_detr_resnet50() -> None:
     """Run DETR-R50 inference on COCO val2017 to populate the cache.
 
@@ -628,6 +735,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "~2-3h on 8-core CPU first run. VITPOSE_REVISION must be "
         "pinned in source.",
     )
+    parser.add_argument(
+        "--lvis",
+        action="store_true",
+        dest="lvis_detector",
+        help="Run facebook/deformable-detr-box-supervised on LVIS v1 val "
+        "(bbox detection, 1203 categories, federated evaluation). "
+        "Requires the `real-models` extra + LVIS v1 val cache "
+        "(`python -m lvis_v1_val_cache fetch`). ~48-72h on 8-core CPU "
+        "first run. LVIS_DETECTOR_REVISION must be pinned in source.",
+    )
     args = parser.parse_args(argv)
 
     if not (
@@ -637,11 +754,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         or args.mask2former_panoptic
         or args.mask2former_ade
         or args.vitpose
+        or args.lvis_detector
     ):
         parser.error(
             "at least one of --maskrcnn / --rfdetr / --detr / "
-            "--mask2former-panoptic / --mask2former-ade / --vitpose "
-            "is required"
+            "--mask2former-panoptic / --mask2former-ade / "
+            "--vitpose / --lvis is required"
         )
 
     if args.maskrcnn:
@@ -672,5 +790,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         populate_vitpose()
         path = vitpose_cache_path()
         print(f"ViTPose-base-simple keypoint predictions ready: {path}")
+
+    if args.lvis_detector:
+        populate_lvis_detector()
+        path = lvis_detector_cache_path()
+        print(f"LVIS detector predictions ready: {path}")
 
     return 0

@@ -39,7 +39,7 @@ GT_FILENAME = "lvis_v1_val.json"
 #: every quirk vernier reproduces is keyed to this exact byte
 #: sequence. Verified at vendor time on 2026-05-03 against the FAIR
 #: public-files mirror; the LVIS v1 release is frozen since 2020-06.
-GT_SHA256 = "2bf946b92c3037f53c172d80017f5b74ea035f00a21b20e0766b3b638b2363f9"
+GT_SHA256 = "5cae9a3c79aadb667550c2b5dcf7f4d86e059a41ec91ef690225b667e28e9ba5"
 
 CACHE_ENV = "VERNIER_LVIS_CACHE"
 

@@ -42,6 +42,7 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 import pytest
 from real_predictions_cache import (
     detr_resnet50_cache_path,
+    lvis_detector_cache_path,
     mask2former_ade_cache_dir,
     mask2former_panoptic_cache_dir,
     mask2former_panoptic_dt_json_path,
@@ -76,6 +77,9 @@ _MMSEG_STUB_INSTALL_ERROR: str | None = None
 
 #: Set by the panopticapi sys.path insertion path; same shape.
 _PANOPTICAPI_PATH_INSTALL_ERROR: str | None = None
+
+#: Set by the lvis-api sys.path insertion path; same shape.
+_LVIS_API_PATH_INSTALL_ERROR: str | None = None
 
 
 def _install_mmseg_stubs_guarded() -> None:
@@ -125,8 +129,36 @@ def _install_panopticapi_path_guarded() -> None:
         sys.path.insert(0, str(oracle))
 
 
+def _install_lvis_api_path_guarded() -> None:
+    """Replicate the parity_lvis conftest's sys.path insertion.
+
+    The parity_lvis conftest adds the vendored ``lvis-api`` checkout
+    to ``sys.path`` but only fires when collecting under that tree.
+    Replicate here so the SOTA LVIS parity test can
+    ``from lvis import LVIS, LVISEval, LVISResults`` directly. Same
+    shape as :func:`_install_panopticapi_path_guarded`.
+
+    Also re-binds ``np.float`` if missing — the vendored ``lvis-api``
+    0.5.3 release predates NumPy 1.20's removal of the alias. The
+    parity_lvis conftest does the same; replicated here for symmetry
+    so the SOTA test isn't a sibling collection-order accident.
+    """
+    global _LVIS_API_PATH_INSTALL_ERROR
+    oracle = _TESTS_PYTHON_DIR / "parity_lvis" / "oracle" / "lvis_api"
+    if not oracle.is_dir():
+        _LVIS_API_PATH_INSTALL_ERROR = f"vendored lvis-api missing at {oracle}"
+        return
+    if str(oracle) not in sys.path:
+        sys.path.insert(0, str(oracle))
+    import numpy as _np
+
+    if not hasattr(_np, "float"):
+        _np.float = float  # type: ignore[attr-defined]
+
+
 _install_mmseg_stubs_guarded()
 _install_panopticapi_path_guarded()
+_install_lvis_api_path_guarded()
 
 
 @pytest.fixture(scope="session")
@@ -164,6 +196,75 @@ def detr_predictions_path(
         predict_coco_val(
             gt=coco_gt_dict,
             image_dir=coco_val_image_dir,
+            cache_path=cache,
+        )
+    return cache
+
+
+@pytest.fixture(scope="session")
+def lvis_v1_val_paths() -> tuple[Path, Path]:
+    """``(gt_json_path, images_dir)`` for the LVIS v1 val cache.
+
+    Pulls from the :mod:`lvis_v1_val_cache` provisioner. Skips
+    cleanly when the cache isn't populated — ``python -m
+    lvis_v1_val_cache fetch`` is a one-time setup the user runs
+    independently of the SOTA harness (the download is ~190 MB GT
+    zip + 778 MB images).
+    """
+    from lvis_v1_val_cache import GT_FILENAME, VAL_IMG_DIRNAME
+    from lvis_v1_val_cache import cache_root as _lvis_cache_root
+
+    root = _lvis_cache_root()
+    gt = root / GT_FILENAME
+    images = root / VAL_IMG_DIRNAME
+    if not gt.is_file() or not images.exists():
+        pytest.skip(
+            f"LVIS v1 val cache not provisioned at {root}: "
+            f"need {GT_FILENAME} and {VAL_IMG_DIRNAME}/. Run "
+            f"`python -m lvis_v1_val_cache fetch` to populate."
+        )
+    return gt, images
+
+
+@pytest.fixture(scope="session")
+def lvis_detector_predictions_path(
+    lvis_v1_val_paths: tuple[Path, Path],
+) -> Path:
+    """Run-or-load LVIS detector predictions on LVIS v1 val.
+
+    Returns the cache path (an LVIS results JSON), not the bytes —
+    same convention as :func:`detr_predictions_path`. The two
+    oracles (``lvis-api``'s ``LVISResults`` constructor and
+    vernier's federated grid) each read it back through their own
+    loader.
+
+    Skips cleanly when the LVIS detector revision is the
+    :data:`_UNPINNED_REVISION` sentinel (a guard for the moment
+    between scaffolding and SHA pinning) — same shape as the
+    Mask2Former fixtures.
+    """
+    if _LVIS_API_PATH_INSTALL_ERROR is not None:
+        pytest.skip(_LVIS_API_PATH_INSTALL_ERROR)
+    from real_predictions_cache import (
+        LVIS_DETECTOR_MODEL_ID,
+        LVIS_DETECTOR_REVISION,
+        _ensure_pinned_revision,
+    )
+
+    try:
+        _ensure_pinned_revision(LVIS_DETECTOR_REVISION, LVIS_DETECTOR_MODEL_ID)
+    except RuntimeError as e:
+        pytest.skip(str(e))
+
+    gt_path, images_dir = lvis_v1_val_paths
+    cache = lvis_detector_cache_path()
+    if not cache.is_file():
+        from ._lvis_detector_predict import predict_lvis_val
+
+        gt_dict = json.loads(gt_path.read_bytes())
+        predict_lvis_val(
+            gt=gt_dict,
+            image_dir=images_dir,
             cache_path=cache,
         )
     return cache

@@ -38,43 +38,18 @@ on a machine with ≥ 32 GB RAM.
 from __future__ import annotations
 
 import gc
-import json
 
 import pytest
 
-from .harness import assert_snapshots_equal, snapshot
+from .harness import assert_snapshots_equal, snapshot, subsample_bytes
 from .lvis_val_paths import require_perfect_dt_artifacts, sample_image_count
-
-
-def _subsample(gt_bytes: bytes, dt_bytes: bytes, n_images: int) -> tuple[bytes, bytes]:
-    """Trim the GT + DT to the first ``n_images`` image ids
-    (id-ascending). When ``n_images < 0`` returns the inputs verbatim.
-
-    Uses the input image order rather than a sort because the upstream
-    `lvis_v1_val.json` has been shuffled by frequency at publication
-    time; taking the first N gives a frequency-balanced slice without
-    having to bucket.
-    """
-    if n_images < 0:
-        return gt_bytes, dt_bytes
-    gt = json.loads(gt_bytes)
-    dt = json.loads(dt_bytes)
-    keep_imgs = gt["images"][:n_images]
-    keep_ids = {im["id"] for im in keep_imgs}
-    gt_sub = {
-        **gt,
-        "images": keep_imgs,
-        "annotations": [a for a in gt["annotations"] if a["image_id"] in keep_ids],
-    }
-    dt_sub = [d for d in dt if d["image_id"] in keep_ids]
-    return json.dumps(gt_sub).encode("utf-8"), json.dumps(dt_sub).encode("utf-8")
 
 
 @pytest.mark.parity_lvis_val
 @pytest.mark.slow
 def test_lvis_v1_val_bbox_strict_parity_perfect_dt() -> None:
     gt_path, dt_path = require_perfect_dt_artifacts("perfect_dt.json")
-    gt_bytes, dt_bytes = _subsample(
+    gt_bytes, dt_bytes = subsample_bytes(
         gt_path.read_bytes(), dt_path.read_bytes(), sample_image_count()
     )
     # `include_eval_imgs=False` skips the per-cell payload list at

@@ -3,17 +3,37 @@
 Sibling to [coco-val-parity.md](./coco-val-parity.md). The COCO val
 parity smokes assert bit-equality on synthetic perfect-DT,
 GT-jittered, or user-provided detector JSONs; this page is the
-analogous gate on outputs from real Hugging Face SOTA models. Four
+analogous gate on outputs from real Hugging Face SOTA models. Five
 cells in one harness — one detector, two segmentation architectures,
-and one top-down keypoint estimator — each pinned to a hub commit
-SHA so the cache key embeds the model bytes by construction.
+one top-down keypoint estimator, and one LVIS-trained long-tail
+detector — each pinned to a hub commit SHA so the cache key embeds
+the model bytes by construction.
 
 Synthetic / GT-derived fixtures don't exercise the long-tail score
 distribution, low-confidence false-positive density, real class
-imbalance, per-class mass concentration, or per-joint heatmap
-confidence surface that a trained SOTA model produces in the wild.
-These four cells close that gap on the detection, panoptic,
-semantic, and keypoints paradigms.
+imbalance, per-class mass concentration, per-joint heatmap confidence
+surface, or 1203-category federated-evaluation semantics that a
+trained SOTA model produces in the wild. These five cells close that
+gap on the detection, panoptic, semantic, keypoints, and federated
+LVIS paradigms.
+
+> **What "parity" means on this page.** Every cell here gates
+> `vernier ↔ <oracle>` agreement on the same `(GT JSON, DT JSON)`
+> bytes: pycocotools, panopticapi, mmsegmentation `IoUMetric`,
+> `lvis-api`, or vernier's own clean-room numpy oracle (calibration).
+> The strict tier asserts bit-equality on the integer / boolean
+> surfaces the orchestrator emits (`tp / fp / fn`, `dt_matches`,
+> `dt_ignore`, `gt_ignore`, `counts`); the aligned tier asserts
+> tolerated drift on the float surfaces (`precision`, summary
+> `stats`, per-cell `dt_scores`) at the per-cell `rtol / atol` band
+> documented under each section. **A cell that PASSES means: on the
+> exact prediction bytes the populator wrote, the orchestrator and
+> oracle agree to the documented tier**. A cell that PASSES does NOT
+> mean: vernier's headline numbers reproduce the model card's
+> published mAP. The "Headline snapshot" rows are cross-reference
+> only; under-sampled prefixes (currently: LVIS at 1000/19,809) skew
+> absolute mAP without affecting the parity claim, which holds at
+> any N.
 
 > **Status:** the three original SOTA parity tests (DETR,
 > Mask2Former panoptic, Mask2Former ADE) pass on the live cache
@@ -35,14 +55,16 @@ semantic, and keypoints paradigms.
 | Semantic    | `facebook/mask2former-swin-tiny-ade-semantic`   | ADE20K SceneParse150 val      | `mmsegmentation` `IoUMetric` | `tests/python/integration/real_models/sota/test_mask2former_ade_real_models.py::test_mask2former_ade_parity_vs_mmsegmentation` |
 | Calibration | `facebook/detr-resnet-50` (cache reused)        | COCO val2017 (bbox)           | numpy reference (ADR-0018) | `tests/python/integration/real_models/sota/test_detr_calibration_real_models.py::test_detr_r50_calibration_parity_vs_numpy_oracle` |
 | Keypoints   | `usyd-community/vitpose-base-simple`            | COCO val2017 (keypoints)      | `pycocotools 2.0.11`| `tests/python/integration/real_models/sota/test_vitpose_real_models.py::test_vitpose_keypoints_parity_vs_pycocotools` |
+| Federated   | `facebook/deformable-detr-box-supervised`       | LVIS v1 val (bbox)            | vendored `lvis-api` | `tests/python/integration/real_models/sota/test_lvis_real_models.py::test_lvis_detector_parity_vs_lvis_api` |
 
-All four pinned to revisions captured in
+All five pinned to revisions captured in
 `tools/real_predictions_cache/real_predictions_cache/__init__.py`:
 
 - DETR-R50: `1d5f47bd3bdd2c4bbfa585418ffe6da5028b4c0b`
 - Mask2Former panoptic: `df6b1142ff50c3276559d9d78f35f6a579c75a77`
 - Mask2Former ADE: `c8cf1b5e823aee214d937d0d001c1850ba44ef6a`
 - ViTPose-base-simple: `a93ac0c67e0b7e2c55287d21d4c460c8f3c54d45`
+- Deformable-DETR LVIS: `d7710a91d4e58c2fccd29f53e0ca350093b934f3`
 
 Bumping any of these is an ADR-level decision; the cache filename
 embeds the full SHA so a pin bump invalidates by construction.
@@ -244,6 +266,55 @@ calibration smoke is free on a populated cache.
     recorded here for cross-reference only; the parity test gates
     vernier ↔ pycocotools equivalence, not absolute-metric
     stability under transformers / torch upgrades.
+
+## Federated — Deformable-DETR LVIS vs `lvis-api` (long-tail AP)
+
+- **Workload**: `lvis_v1_val_deformable_detr_vd7710a9` — Deformable-
+  DETR's 300-query head emits per-image detections over the LVIS v1
+  category set (1,203 classes, 19,809 val images, reusing COCO 2017
+  image bytes). The cache is sub-sampled at test time (default 1,000
+  images, env-var override) so the test runs on a single 8–16 GB box
+  in seconds while still exercising the federated-evaluation
+  semantics on real-model outputs.
+- **Strict tier** — per-category integer surface: `tp / fp / fn`
+  bit-equal across all sampled categories vs the vendored
+  `lvis-api` oracle. Federated cell-skip (AA4 — `eval_imgs[c, a, i]
+  = None` when category `c` is not in image `i`'s federated set)
+  and not-exhaustive `dt_ignore` propagation (AA3 — DT in
+  `not_exhaustive` images flagged ignored not FP) are both
+  exercised on real model outputs for the first time; the synthetic
+  `federated_min` fixture covers only the topology.
+- **Aligned tier** — `AP / AP50 / AP75 / APr / APc / APf`
+  frequency-bucketed values at `rtol = atol = 8 * eps`. Bucket
+  means over 1,203 categories have ~36× more reduction-order
+  opportunities than the 133-class panoptic cell, so this band is
+  expected to be wider than panoptic's observed 2.5 ULP; the
+  rtol+atol gate is documented here and tightened post-first-run.
+- **Coverage gate** — the test asserts every GT image is present
+  in the populator's aggregated DT (asserted on pre-subsample
+  bytes; the subsample step is deterministic on the env-var seed
+  so the gate fires only on a genuinely incomplete populator run).
+- **Headline snapshot** (captured on the live cache at SHA `4dfd374`
+  rebased onto `9644f4e`, machine `84edec51fd71`, 2026-06-09,
+  `VERNIER_LVIS_REAL_VAL_SAMPLE_IMAGES=1000` — the in-session
+  default-prefix shape):
+  - **AP @ [.50:.95]**: `0.3926` (full 19,809-image val publishes
+    `box mAP = 31.7` per the model card; the 1000-image prefix is
+    not a frequency-balanced sample of the full val, so this number
+    is not directly comparable to the published headline — the
+    parity gate is vernier ↔ `lvis-api`, not absolute mAP).
+  - AP @ .50: `0.5212` &nbsp;&nbsp; AP @ .75: `0.4250`
+  - AP_r (rare, ≤10 imgs): `0.2806`
+    &nbsp;&nbsp; AP_c (common): `0.4000`
+    &nbsp;&nbsp; AP_f (frequent): `0.3956`
+  - AP_s / AP_m / AP_l: `0.2731` / `0.4822` / `0.5570`
+  - AR @ 300: `0.4449`
+    &nbsp;&nbsp; AR_s / AR_m / AR_l @ 300: `0.3061` / `0.5374` / `0.6372`
+  - Coverage: 1000 / 19809 GT-image prefix (the populator was run
+    with the same sub-sample knob; coverage-gate's partial-cache
+    branch validated `dt ⊆ gt-prefix` with zero in-prefix skips).
+    Full-corpus populate (~48–72 h on 8-core CPU) is the path to
+    published-comparable numbers.
 
 ## Shared harness configuration
 

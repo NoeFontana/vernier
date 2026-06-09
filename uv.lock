@@ -3076,6 +3076,7 @@ dev = [
     { name = "ruff" },
     { name = "vernier-ade20k-val-cache" },
     { name = "vernier-coco-val-cache" },
+    { name = "vernier-lvis-v1-val-cache" },
     { name = "vernier-lvis-val-cache" },
     { name = "vernier-panoptic-val-cache" },
     { name = "vernier-real-predictions-cache" },
@@ -3119,6 +3120,7 @@ dev = [
     { name = "ruff", specifier = ">=0.15" },
     { name = "vernier-ade20k-val-cache", editable = "tools/ade20k_val_cache" },
     { name = "vernier-coco-val-cache", editable = "tools/coco_val_cache" },
+    { name = "vernier-lvis-v1-val-cache", editable = "tools/lvis_v1_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "tools/lvis_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "tools/panoptic_val_cache" },
     { name = "vernier-real-predictions-cache", editable = "tools/real_predictions_cache" },
@@ -3140,6 +3142,11 @@ source = { editable = "tools/ade20k_val_cache" }
 name = "vernier-coco-val-cache"
 version = "0.0.0"
 source = { editable = "tools/coco_val_cache" }
+
+[[package]]
+name = "vernier-lvis-v1-val-cache"
+version = "0.0.0"
+source = { editable = "tools/lvis_v1_val_cache" }
 
 [[package]]
 name = "vernier-lvis-val-cache"
