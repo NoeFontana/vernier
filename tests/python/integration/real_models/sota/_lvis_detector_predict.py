@@ -162,23 +162,25 @@ def predict_lvis_val(
     if cache_path.is_file():
         return cache_path.read_bytes()
 
-    from PIL import Image
-
+    # Inline imports — defer the [real-models] extra (torch / transformers /
+    # PIL / huggingface_hub) until populate-time so the read-only adapter
+    # path (cache-hit branch above) stays import-free.
+    #
     # The pinned facebook/deformable-detr-box-supervised checkpoint was
-    # uploaded with ``dilation: None`` in its config. Newer
-    # huggingface_hub strict-validates this field as ``bool`` during
-    # ``Config.__init__`` (raising
-    # ``StrictDataclassFieldValidationError`` before we can post-hoc
-    # patch the attribute). Mutate the raw config-dict downloaded from
-    # the hub BEFORE calling the constructor: read the config JSON,
-    # coerce ``dilation`` from ``None`` → ``False`` (the canonical
-    # Deformable-DETR default — no backbone dilation), then construct
-    # via ``DeformableDetrConfig.from_dict``. Architectural no-op since
+    # uploaded with ``dilation: None`` in its config. Newer huggingface_hub
+    # strict-validates this field as ``bool`` during ``Config.__init__``
+    # (raising ``StrictDataclassFieldValidationError`` before we can post-
+    # hoc patch the attribute). Mutate the raw config-dict downloaded from
+    # the hub BEFORE calling the constructor: read the config JSON, coerce
+    # ``dilation`` from ``None`` → ``False`` (the canonical Deformable-
+    # DETR default — no backbone dilation), then construct via
+    # ``DeformableDetrConfig.from_dict``. Architectural no-op since
     # ``False`` is the default on every clean checkpoint.
     import json as _json
 
     import transformers as _tf
     from huggingface_hub import hf_hub_download
+    from PIL import Image
 
     pin_inference_threads()
     processor = _tf.AutoImageProcessor.from_pretrained(_MODEL_ID, revision=revision)
