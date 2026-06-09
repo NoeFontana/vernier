@@ -313,6 +313,8 @@ def _install_boundary_iou_api_path_guarded() -> None:
     setattr(_utils_pkg, "augment_annotations_with_boundary_multi_core", _single)
 
 
+_install_mmseg_stubs_guarded()
+_install_panopticapi_path_guarded()
 _install_lvis_api_path_guarded()
 _install_boundary_iou_api_path_guarded()
 
