@@ -288,11 +288,20 @@ def assert_snapshots_equal(
     *,
     rtol: float = 0.0,
     atol: float = 0.0,
+    dt_scores_rtol: float = 0.0,
 ) -> None:
     """Strict-mode bit-equality on `eval_imgs` (cell-by-cell `None`
     discrimination + per-array equality) and tolerated drift on
     `precision` (rtol/atol — defaults to bit-equal but parametric so
     the LVIS_PARITY_EPS tolerance can be threaded through).
+
+    ``dt_scores_rtol`` separately loosens the per-cell ``dt_scores``
+    array — defaults to bit-equal (synthetic-fixture contract) but
+    real-prediction callers loosen to ``2 * eps`` to absorb the
+    documented serde_json vs Python strtod 1-ULP parser drift on
+    near-tie JSON-encoded scores (root cause documented in
+    ``test_detr_real_models.py``'s module docstring; ranking
+    semantics — hence precision / recall / AP — are unaffected).
     """
     if a.eval_imgs or b.eval_imgs:
         # Empty lists on both sides means both snapshots opted out of
@@ -309,9 +318,23 @@ def assert_snapshots_equal(
                 raise AssertionError(
                     f"eval_imgs[{idx}] None mismatch: vernier={ca is None}, lvis_api={cb is None}"
                 )
-            for key in ("dt_scores", "dt_matches", "dt_ignore", "gt_ignore"):
+            for key in ("dt_matches", "dt_ignore", "gt_ignore"):
                 np.testing.assert_array_equal(
                     ca[key], cb[key], err_msg=f"eval_imgs[{idx}].{key} differs"
+                )
+            if dt_scores_rtol > 0.0:
+                np.testing.assert_allclose(
+                    ca["dt_scores"],
+                    cb["dt_scores"],
+                    rtol=dt_scores_rtol,
+                    atol=0.0,
+                    err_msg=f"eval_imgs[{idx}].dt_scores differs",
+                )
+            else:
+                np.testing.assert_array_equal(
+                    ca["dt_scores"],
+                    cb["dt_scores"],
+                    err_msg=f"eval_imgs[{idx}].dt_scores differs",
                 )
     np.testing.assert_allclose(
         a.precision, b.precision, rtol=rtol, atol=atol, err_msg="precision tensor differs"

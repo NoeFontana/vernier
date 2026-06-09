@@ -276,11 +276,27 @@ calibration smoke is free on a populated cache.
   in the populator's aggregated DT (asserted on pre-subsample
   bytes; the subsample step is deterministic on the env-var seed
   so the gate fires only on a genuinely incomplete populator run).
-- **Headline numbers** — `<populated by first real run>`. First
-  end-to-end populate is the cost driver (Deformable-DETR's
-  300-query / 6-decoder-layer forward on 19,809 LVIS val images is
-  ~48–72 h on 8-core CPU, vs ~12–15 h for DETR-R50 on COCO val2017).
-  Subsequent runs read the cache and skip inference.
+- **Headline snapshot** (captured on the live cache at SHA `4dfd374`
+  rebased onto `9644f4e`, machine `84edec51fd71`, 2026-06-09,
+  `VERNIER_LVIS_REAL_VAL_SAMPLE_IMAGES=1000` — the in-session
+  default-prefix shape):
+  - **AP @ [.50:.95]**: `0.3926` (full 19,809-image val publishes
+    `box mAP = 31.7` per the model card; the 1000-image prefix is
+    not a frequency-balanced sample of the full val, so this number
+    is not directly comparable to the published headline — the
+    parity gate is vernier ↔ `lvis-api`, not absolute mAP).
+  - AP @ .50: `0.5212` &nbsp;&nbsp; AP @ .75: `0.4250`
+  - AP_r (rare, ≤10 imgs): `0.2806`
+    &nbsp;&nbsp; AP_c (common): `0.4000`
+    &nbsp;&nbsp; AP_f (frequent): `0.3956`
+  - AP_s / AP_m / AP_l: `0.2731` / `0.4822` / `0.5570`
+  - AR @ 300: `0.4449`
+    &nbsp;&nbsp; AR_s / AR_m / AR_l @ 300: `0.3061` / `0.5374` / `0.6372`
+  - Coverage: 1000 / 19809 GT-image prefix (the populator was run
+    with the same sub-sample knob; coverage-gate's partial-cache
+    branch validated `dt ⊆ gt-prefix` with zero in-prefix skips).
+    Full-corpus populate (~48–72 h on 8-core CPU) is the path to
+    published-comparable numbers.
 
 ## Shared harness configuration
 

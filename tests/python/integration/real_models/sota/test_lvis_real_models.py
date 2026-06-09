@@ -82,6 +82,12 @@ pytestmark = [pytest.mark.real_models, pytest.mark.slow]
 #: image) well above the gate.
 _LVIS_PARITY_RTOL = 8.0 * float(np.finfo(np.float64).eps)
 _LVIS_PARITY_ATOL = _LVIS_PARITY_RTOL
+# Same parser-drift band the DETR-R50 cell ships: `serde_json` vs
+# Python's `strtod`-based parser round near-tie JSON-encoded scores
+# to different adjacent doubles. Only the per-cell `dt_scores` array
+# is affected; ranking-based aggregates (precision, recall, AP) stay
+# bit-equal because AP depends on detection order, not score value.
+_LVIS_DTSCORES_RTOL = 2.0 * float(np.finfo(np.float64).eps)
 
 #: Env-var contract for the sub-sample knob. Distinct from
 #: ``VERNIER_LVIS_VAL_SAMPLE_IMAGES`` (which gates the
@@ -210,4 +216,5 @@ def test_lvis_detector_parity_vs_lvis_api(
         cand,
         rtol=_LVIS_PARITY_RTOL,
         atol=_LVIS_PARITY_ATOL,
+        dt_scores_rtol=_LVIS_DTSCORES_RTOL,
     )
