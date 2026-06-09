@@ -26,10 +26,18 @@
 //!   segmentation; both must move together for the fix to register as
 //!   a TP under each.
 //! - **Both / Dupe / Bkg** — drop the DT.
-//! - **Missed** — set `ignore=true` on the missed GTs (oracle uses
-//!   `ignore`; vernier's GT type carries `ignore_flag: Option<bool>`,
-//!   and `effective_ignore` resolves to `iscrowd || ignore` under
-//!   either parity mode, so flipping `ignore_flag` is sufficient).
+//! - **Missed** — drop the missed GTs from the dataset. Oracle marks
+//!   them `ignore=True` (the dataset still carries the row, AP just
+//!   ignores it), but vernier's `effective_ignore` resolution depends
+//!   on [`crate::ParityMode`] via quirk **D1** — strict-mode discards
+//!   the post-load `ignore_flag` write, leaving `delta_missed = 0` on
+//!   any caller that opts into strict. Deletion is parity-mode-
+//!   independent and AP-equivalent to ignoring: a missed GT by
+//!   definition has no DT matching it at `t_f`, so removing it cannot
+//!   reassign any DT to another GT (best-IoU greedy match outcomes
+//!   are unchanged) — the only effect is the same `n_pos_gt`
+//!   decrement that ignoring would produce, which is exactly what
+//!   AP needs to credit the corrected mAP.
 //! - **all_fp** (sanity) — drop every FP-binned DT (any of cls / loc /
 //!   both / dupe / bkg) at `t_f` simultaneously.
 
@@ -54,7 +62,8 @@ pub enum FixKind {
     Dupe,
     /// Bkg — drop the DT.
     Bkg,
-    /// Missed — flip `ignore=true` on every Missed GT.
+    /// Missed — delete every Missed GT from the dataset (see module
+    /// docs for the parity-mode-independent rationale).
     Missed,
     /// All-FP-removed sanity pass — drop every DT whose bin is one of
     /// the five FP bins.
@@ -82,16 +91,28 @@ pub fn apply_fix(
     fix: FixKind,
 ) -> Result<(CocoDataset, CocoDetections), EvalError> {
     // ---- GT side ----
-    let mut gts: Vec<CocoAnnotation> = gt.annotations().to_vec();
-    if matches!(fix, FixKind::Missed) {
+    let gts: Vec<CocoAnnotation> = if matches!(fix, FixKind::Missed) {
+        // Drop the missed GTs entirely (see module docs for the
+        // parity-mode-independent rationale; tl;dr: a missed GT has
+        // no DT matching it at `t_f` by definition, so deletion is
+        // AP-equivalent to oracle's `ignore=True` mark without the
+        // strict-mode `effective_ignore` opt-out from quirk D1).
         let missed_set: std::collections::HashSet<(i64, usize)> =
             assignment.missed_gts.iter().copied().collect();
-        for (gt_input_idx, ann) in gts.iter_mut().enumerate() {
-            if missed_set.contains(&(ann.image_id.0, gt_input_idx)) {
-                ann.ignore_flag = Some(true);
-            }
-        }
-    }
+        gt.annotations()
+            .iter()
+            .enumerate()
+            .filter_map(|(gt_input_idx, ann)| {
+                if missed_set.contains(&(ann.image_id.0, gt_input_idx)) {
+                    None
+                } else {
+                    Some(ann.clone())
+                }
+            })
+            .collect()
+    } else {
+        gt.annotations().to_vec()
+    };
     let new_gt = CocoDataset::from_parts(gt.images().to_vec(), gts, gt.categories().to_vec())?;
 
     // ---- DT side ----
