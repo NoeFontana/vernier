@@ -17,6 +17,24 @@ trained SOTA model produces in the wild. These five cells close that
 gap on the detection, panoptic, semantic, keypoints, and federated
 LVIS paradigms.
 
+> **What "parity" means on this page.** Every cell here gates
+> `vernier ↔ <oracle>` agreement on the same `(GT JSON, DT JSON)`
+> bytes: pycocotools, panopticapi, mmsegmentation `IoUMetric`,
+> `lvis-api`, or vernier's own clean-room numpy oracle (calibration).
+> The strict tier asserts bit-equality on the integer / boolean
+> surfaces the orchestrator emits (`tp / fp / fn`, `dt_matches`,
+> `dt_ignore`, `gt_ignore`, `counts`); the aligned tier asserts
+> tolerated drift on the float surfaces (`precision`, summary
+> `stats`, per-cell `dt_scores`) at the per-cell `rtol / atol` band
+> documented under each section. **A cell that PASSES means: on the
+> exact prediction bytes the populator wrote, the orchestrator and
+> oracle agree to the documented tier**. A cell that PASSES does NOT
+> mean: vernier's headline numbers reproduce the model card's
+> published mAP. The "Headline snapshot" rows are cross-reference
+> only; under-sampled prefixes (currently: LVIS at 1000/19,809) skew
+> absolute mAP without affecting the parity claim, which holds at
+> any N.
+
 > **Status:** the three original SOTA parity tests (DETR,
 > Mask2Former panoptic, Mask2Former ADE) pass on the live cache
 > (machine `84edec51fd71`, 2026-05-31, harness SHA `b9dc053`).
