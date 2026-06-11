@@ -1,0 +1,2677 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://noefontana.github.io/vernier/stable/benchmarks/">
+      
+      
+        <link rel="prev" href="..">
+      
+      
+        <link rel="next" href="../comparison/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Benchmarks - vernier</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/_mkdocstrings.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#benchmarks" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="vernier" class="md-header__button md-logo" aria-label="vernier" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            vernier
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Benchmarks
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/NoeFontana/vernier" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NoeFontana/vernier
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    <li class="md-tabs__item md-tabs__item--active">
+      <a href="./" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../comparison/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Comparison
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../tutorials/" class="md-tabs__link">
+          
+  
+  
+  Tutorials
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../migrate/" class="md-tabs__link">
+          
+  
+  
+  Migrate
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../how-to/" class="md-tabs__link">
+          
+  
+  
+  How-to
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../reference/" class="md-tabs__link">
+          
+  
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../explanation/" class="md-tabs__link">
+          
+  
+  
+  Explanation
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+  
+
+<nav class="md-nav md-nav--primary md-nav--lifted md-nav--integrated" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="vernier" class="md-nav__button md-logo" aria-label="vernier" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    vernier
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/NoeFontana/vernier" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    NoeFontana/vernier
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Benchmarks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#instance-bbox-segm-boundary-keypoints-ap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Instance — bbox / segm / boundary / keypoints (AP)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Instance — bbox / segm / boundary / keypoints (AP)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#workload-coco_val2017_jittered_seed0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workload: coco_val2017_jittered_seed0
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workload-coco_val2017_keypoints_jittered_seed0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workload: coco_val2017_keypoints_jittered_seed0
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#panoptic-pq" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Panoptic — PQ
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Panoptic — PQ">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#workload-coco_panoptic_val2017_perfect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workload: coco_panoptic_val2017_perfect
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#semantic-miou" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantic — mIoU
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Semantic — mIoU">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#workload-coco_val2017_semantic_perfect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workload: coco_val2017_semantic_perfect
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#workload-synthetic_semantic_n200_c19_s0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workload: synthetic_semantic_n200_c19_s0
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#instance-lvis-federated-ap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Instance — LVIS federated AP
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Instance — LVIS federated AP">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#workload-lvis_v1_val_perfect" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Workload: lvis_v1_val_perfect
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#threading-scaling" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Threading scaling
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Threading scaling">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#instance-val2017-jittered-seed-0" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Instance (val2017 jittered-seed-0)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#semantic-val2017-perfect-dt-5000-images" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Semantic (val2017 perfect-DT, ~5000 images)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#panoptic-val2017-perfect-dt-backgroundpanopticevaluator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Panoptic (val2017 perfect-DT, BackgroundPanopticEvaluator)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vs-faster-coco-eval-boundary-at-nt148" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        vs faster-coco-eval (boundary at nt={1,4,8})
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#reproduce" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reproduce
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#methodology-in-one-paragraph" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Methodology in one paragraph
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Tutorials
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tutorials
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/first-evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your first evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tutorials/debugging-with-tide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Debugging with TIDE
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrate
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Migrate
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrate/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Migrate
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrate/from-pycocotools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From pycocotools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrate/from-faster-coco-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From faster-coco-eval
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrate/from-lvis-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From lvis-api
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrate/from-mmsegmentation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From mmsegmentation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrate/from-panopticapi/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    From panopticapi
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How-to
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    How-to
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    How-to guides
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/configure-evaluator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configure the evaluator
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/custom-evaluation-grids/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom evaluation grids
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/cli-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate with the CLI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/result-tables/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inspect result tables
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/boundary-iou/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate with boundary IoU
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/keypoints-oks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate keypoints with OKS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/background-evaluator/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluate on a background thread
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/array-ingest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ingest detection arrays
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/distributed-eval/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../how-to/per-class-by-slice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-class metrics by manifest slice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_7_2" id="__nav_7_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Python API
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_7_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Python API
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/python/vernier/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vernier
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/python/instance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vernier.instance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/python/panoptic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vernier.panoptic
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/python/semantic/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vernier.semantic
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/python/adapters/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    vernier.adapters
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/cli-output-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/manifest-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Manifest schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/aggregate-schema/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aggregate output schema
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/coco-summary-stats/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    COCO summary stats
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reference/errors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Errors
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Explanation
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Explanation
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Explanation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/three-paradigms/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Three paradigms (instance/panoptic/semantic)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/tide-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    TIDE and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/lrp-and-its-limits/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LRP and its limits
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../explanation/why-no-per-image-ap/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Why no per-image AP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="benchmarks">Benchmarks</h1>
+<p>Comparison of vernier against the third-party libraries it targets parity
+against, on a single machine and a single git revision. The numbers below
+are the median total-stage wall time over the non-warmup reps recorded by
+the local bench harness (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0017-local-bench-harness.md">ADR-0017</a>,
+extended cross-paradigm in
+<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0033-multi-paradigm-bench.md">ADR-0033</a>).
+The IQR column reports the spread (Q3 - Q1) across the 10 measurement
+reps and the same value as a percentage of the median; release mode
+gates each cell at 5% relative IQR.</p>
+<p><strong>Provenance</strong> — git SHA <code>3a509df6c525</code> · machine fingerprint <code>37652a58e939</code> · CPU AMD EPYC-Milan Processor (x86_64) · harness
+mode <code>release</code> · build profile = cargo release defaults
+(<code>opt-level=3</code>, <code>lto=thin</code>, <code>codegen-units=1</code>, no <code>target-cpu</code>). The
+release wheel on PyPI is built with the same profile — no
+benchmarking-only flags.</p>
+<p><strong>Baselines pinned for these numbers</strong> — <a href="https://pypi.org/project/faster-coco-eval/1.7.2/"><code>faster-coco-eval==1.7.2</code></a> · <a href="https://pypi.org/project/pycocotools/2.0.11/"><code>pycocotools==2.0.11</code></a> · <a href="https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677"><code>boundary-iou-api</code> @ <code>37d2558</code></a> · <a href="https://github.com/cocodataset/panopticapi/commit/7bb4655548f9"><code>panopticapi</code> @ <code>7bb4655</code></a> · <a href="https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8"><code>mmsegmentation</code> @ <code>c685fe6</code></a> · <a href="https://github.com/lvis-dataset/lvis-api/commit/031ac21f939bcb5f1ca8de2ab8704082e101ff9b"><code>lvis-api</code> @ <code>031ac21</code></a>. Each baseline is locked in its own uv-managed venv per ADR-0017.</p>
+<p>For the full per-cell deep-dive (per-stage breakdown, RSS evolution,
+parity gating, narrative on what moved each round), see
+<a href="https://github.com/NoeFontana/vernier/tree/main/docs/engineering/benchmarking"><code>docs/engineering/benchmarking/</code></a>.</p>
+<p>This page is regenerated from the harness result tree by
+<code>tools/render_benchmarks.py</code>. To refresh after a new bench run, see the
+<a href="https://github.com/NoeFontana/vernier/blob/main/docs/engineering/release-runbook.md">release runbook</a>
+§0.</p>
+<h2 id="instance-bbox-segm-boundary-keypoints-ap">Instance — bbox / segm / boundary / keypoints (AP)</h2>
+<h3 id="workload-coco_val2017_jittered_seed0">Workload: <code>coco_val2017_jittered_seed0</code></h3>
+<p><strong><code>bbox</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">369.6 ms</td>
+<td style="text-align: right;">13.1 ms (3.54%)</td>
+<td style="text-align: right;">262 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>faster-coco-eval</td>
+<td style="text-align: right;">2.132 s</td>
+<td style="text-align: right;">75.3 ms (3.53%)</td>
+<td style="text-align: right;">661 MiB</td>
+<td style="text-align: right;">5.77×</td>
+</tr>
+<tr>
+<td>pycocotools</td>
+<td style="text-align: right;">5.930 s</td>
+<td style="text-align: right;">72.5 ms (1.22%)</td>
+<td style="text-align: right;">576 MiB</td>
+<td style="text-align: right;">16.04×</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>segm</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">987.4 ms</td>
+<td style="text-align: right;">18.0 ms (1.83%)</td>
+<td style="text-align: right;">263 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>faster-coco-eval</td>
+<td style="text-align: right;">3.631 s</td>
+<td style="text-align: right;">64.2 ms (1.77%)</td>
+<td style="text-align: right;">721 MiB</td>
+<td style="text-align: right;">3.68×</td>
+</tr>
+<tr>
+<td>pycocotools</td>
+<td style="text-align: right;">6.870 s</td>
+<td style="text-align: right;">54.7 ms (0.80%)</td>
+<td style="text-align: right;">569 MiB</td>
+<td style="text-align: right;">6.96×</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>boundary</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">3.208 s</td>
+<td style="text-align: right;">34.3 ms (1.07%)</td>
+<td style="text-align: right;">265 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>faster-coco-eval</td>
+<td style="text-align: right;">17.747 s</td>
+<td style="text-align: right;">268.9 ms (1.52%)</td>
+<td style="text-align: right;">794 MiB</td>
+<td style="text-align: right;">5.53×</td>
+</tr>
+<tr>
+<td>boundary-iou-api</td>
+<td style="text-align: right;">61.749 s</td>
+<td style="text-align: right;">1.098 s (1.78%)</td>
+<td style="text-align: right;">666 MiB</td>
+<td style="text-align: right;">19.25×</td>
+</tr>
+</tbody>
+</table>
+<h3 id="workload-coco_val2017_keypoints_jittered_seed0">Workload: <code>coco_val2017_keypoints_jittered_seed0</code></h3>
+<p><strong><code>keypoints</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">136.0 ms</td>
+<td style="text-align: right;">1.8 ms (1.31%)</td>
+<td style="text-align: right;">128 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>faster-coco-eval</td>
+<td style="text-align: right;">1.671 s</td>
+<td style="text-align: right;">14.8 ms (0.89%)</td>
+<td style="text-align: right;">154 MiB</td>
+<td style="text-align: right;">12.28×</td>
+</tr>
+<tr>
+<td>pycocotools</td>
+<td style="text-align: right;">2.276 s</td>
+<td style="text-align: right;">4.9 ms (0.22%)</td>
+<td style="text-align: right;">163 MiB</td>
+<td style="text-align: right;">16.74×</td>
+</tr>
+</tbody>
+</table>
+<h2 id="panoptic-pq">Panoptic — PQ</h2>
+<h3 id="workload-coco_panoptic_val2017_perfect">Workload: <code>coco_panoptic_val2017_perfect</code></h3>
+<p><strong><code>pq</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">10.528 s</td>
+<td style="text-align: right;">1.029 s (9.78%) *</td>
+<td style="text-align: right;">144 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>panopticapi</td>
+<td style="text-align: right;">34.711 s</td>
+<td style="text-align: right;">136.6 ms (0.39%)</td>
+<td style="text-align: right;">146 MiB</td>
+<td style="text-align: right;">3.30×</td>
+</tr>
+</tbody>
+</table>
+<h2 id="semantic-miou">Semantic — mIoU</h2>
+<h3 id="workload-coco_val2017_semantic_perfect">Workload: <code>coco_val2017_semantic_perfect</code></h3>
+<p><strong><code>miou</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">2.822 s</td>
+<td style="text-align: right;">11.0 ms (0.39%)</td>
+<td style="text-align: right;">97 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>mmsegmentation</td>
+<td style="text-align: right;">20.894 s</td>
+<td style="text-align: right;">199.4 ms (0.95%)</td>
+<td style="text-align: right;">647 MiB</td>
+<td style="text-align: right;">7.40×</td>
+</tr>
+</tbody>
+</table>
+<h3 id="workload-synthetic_semantic_n200_c19_s0">Workload: <code>synthetic_semantic_n200_c19_s0</code></h3>
+<p><strong><code>miou</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">63.8 ms</td>
+<td style="text-align: right;">674.1 μs (1.06%)</td>
+<td style="text-align: right;">88 MiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>mmsegmentation</td>
+<td style="text-align: right;">442.8 ms</td>
+<td style="text-align: right;">50.1 ms (11.33%) *</td>
+<td style="text-align: right;">631 MiB</td>
+<td style="text-align: right;">6.94×</td>
+</tr>
+</tbody>
+</table>
+<h2 id="instance-lvis-federated-ap">Instance — LVIS federated AP</h2>
+<h3 id="workload-lvis_v1_val_perfect">Workload: <code>lvis_v1_val_perfect</code></h3>
+<p><strong><code>bbox</code></strong></p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;">median</th>
+<th style="text-align: right;">IQR</th>
+<th style="text-align: right;">RSS (max)</th>
+<th style="text-align: right;">vs vernier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">3.625 s</td>
+<td style="text-align: right;">23.4 ms (0.65%)</td>
+<td style="text-align: right;">1.48 GiB</td>
+<td style="text-align: right;"><strong>1.00×</strong></td>
+</tr>
+<tr>
+<td>lvis-api</td>
+<td style="text-align: right;">207.370 s</td>
+<td style="text-align: right;">2.867 s (1.38%)</td>
+<td style="text-align: right;">15.01 GiB</td>
+<td style="text-align: right;">57.21×</td>
+</tr>
+</tbody>
+</table>
+<p><em>Cells marked <code>*</code> next to their IQR exceeded the release-mode 5% relative-IQR gate. Median still reported; treat the gap to the next impl as the load-bearing signal rather than the precise ratio.</em></p>
+<h2 id="threading-scaling">Threading scaling</h2>
+<p><a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0047-threading-model.md">ADR-0047</a>
+adds an opt-in <code>num_threads</code> kwarg on every public evaluate surface
+(batch, streaming, background) for all four paradigms — instance
+(bbox / segm / boundary / keypoints), semantic, panoptic, and lvis.
+The default <code>num_threads=None</code> is byte-for-byte the sequential
+post-0.0.4 path; no rayon symbol is entered.</p>
+<p>Wall-clock numbers below are the <code>evaluate</code>-stage stage timer on COCO
+val2017 perfect-DT (the jittered-seed-0 workload for the instance
+paradigm; <code>coco_panoptic_val2017_perfect</code> for panoptic;
+<code>coco_val2017_semantic_perfect</code> for semantic). Hardware: AMD EPYC
+Milan, 4 physical cores + SMT-2 (8 vCPUs total). Dev-mode single rep
+per cell; expect ±10–20% noise on small workloads. <strong>Note</strong>: these
+numbers were recorded at 0.0.4 ship time, <em>before</em> the kernel-level
+perf wins in #260 (panoptic sparse-remap cache) and #261 (semantic
+chunked-u8 kernel). Scaling factors (ratio nt=N / nt=1) stay
+representative because both the kernel and its parallel dispatch
+moved by the same multiplier on the cold-cache path; absolute
+medians for panoptic and semantic-val2017 are ~17% and ~44% lower
+respectively at <code>num_threads=None</code> on the current HEAD — see the
+cross-paradigm tables above for the post-perf-round headline numbers.</p>
+<h3 id="instance-val2017-jittered-seed-0">Instance (val2017 jittered-seed-0)</h3>
+<table>
+<thead>
+<tr>
+<th>iou_type</th>
+<th style="text-align: right;"><code>nt=1</code></th>
+<th style="text-align: right;"><code>nt=2</code></th>
+<th style="text-align: right;"><code>nt=4</code></th>
+<th style="text-align: right;"><code>nt=8</code></th>
+<th style="text-align: right;">scaling at <code>nt=4</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>bbox</td>
+<td style="text-align: right;">280 ms</td>
+<td style="text-align: right;">296 ms</td>
+<td style="text-align: right;">285 ms</td>
+<td style="text-align: right;">291 ms</td>
+<td style="text-align: right;">~flat (parse-bound)</td>
+</tr>
+<tr>
+<td>segm</td>
+<td style="text-align: right;">890 ms</td>
+<td style="text-align: right;">570 ms</td>
+<td style="text-align: right;">389 ms</td>
+<td style="text-align: right;">346 ms</td>
+<td style="text-align: right;"><strong>2.29×</strong></td>
+</tr>
+<tr>
+<td>boundary</td>
+<td style="text-align: right;">3146 ms</td>
+<td style="text-align: right;">1700 ms</td>
+<td style="text-align: right;">969 ms</td>
+<td style="text-align: right;">864 ms</td>
+<td style="text-align: right;"><strong>3.25×</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Bbox is parse-bound: the bytes-path GT JSON parse dominates the
+evaluate stage (the <code>bench-timings</code> split records ~85 ms parse +
+~30 ms DT parse on val2017 — together ~45% of the nt=4 total). The
+rayon <code>par_iter</code> region itself scales 3.2× at nt=8; the apparent
+flatness is the single-threaded JSON parse and FFI overhead, not a
+scheduling problem. Segm and boundary scale near-linearly on 4
+physical cores after the <code>ThreadLocal&lt;RefCell&lt;Scratch&gt;&gt;</code> +
+image-major dispatch fixes.</p>
+<p><strong>Repeated-eval speedup (out of band).</strong> Callers running multiple
+evaluations against the same GT can pre-parse once via
+<code>CocoDataset.from_json(gt_bytes)</code> and dispatch through the
+<code>Evaluator.evaluate(dataset, dt)</code> path (which routes to
+<code>evaluate_*_grid_with_dataset</code> internally). On val2017 bbox nt=4
+this drops a follow-up call from ~250 ms to ~140 ms — a 1.8×
+speedup, amortizing the ~95 ms one-time parse. The table above
+deliberately re-parses every call so the comparison against
+faster-coco-eval below stays apples-to-apples.</p>
+<h3 id="semantic-val2017-perfect-dt-5000-images">Semantic (val2017 perfect-DT, ~5000 images)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;"><code>nt=1</code></th>
+<th style="text-align: right;"><code>nt=2</code></th>
+<th style="text-align: right;"><code>nt=4</code></th>
+<th style="text-align: right;"><code>nt=8</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">5024 ms</td>
+<td style="text-align: right;">2699 ms</td>
+<td style="text-align: right;"><strong>1372 ms</strong></td>
+<td style="text-align: right;">936 ms</td>
+</tr>
+</tbody>
+</table>
+<p>3.66× at <code>nt=4</code> on 4 physical cores, 5.37× at <code>nt=8</code> with SMT. The
+per-image confusion-matrix fold is u64-additive so strict-mode
+bit-equality is unconditional regardless of reduction order.</p>
+<h3 id="panoptic-val2017-perfect-dt-backgroundpanopticevaluator">Panoptic (val2017 perfect-DT, <code>BackgroundPanopticEvaluator</code>)</h3>
+<table>
+<thead>
+<tr>
+<th style="text-align: right;"><code>nt=1</code></th>
+<th style="text-align: right;"><code>nt=2</code></th>
+<th style="text-align: right;"><code>nt=4</code></th>
+<th style="text-align: right;"><code>nt=8</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align: right;">12850 ms</td>
+<td style="text-align: right;">8156 ms</td>
+<td style="text-align: right;"><strong>5280 ms</strong></td>
+<td style="text-align: right;">4479 ms</td>
+</tr>
+</tbody>
+</table>
+<p>2.43× at <code>nt=4</code>. The threaded path runs PNG decode inside the
+per-worker rayon pool (zero-copy via <code>PyBackedBytes</code>), so libpng
+parallelises across submissions; the single-threaded path keeps
+producer/consumer overlap against the worker thread and is
+byte-for-byte unchanged from 0.0.4.</p>
+<h3 id="vs-faster-coco-eval-boundary-at-nt148">vs faster-coco-eval (boundary at <code>nt={1,4,8}</code>)</h3>
+<p>faster-coco-eval exposes parallelism only on boundary IoU
+(<code>boundary_cpu_count</code>); bbox / segm / keypoints stay single-threaded.</p>
+<table>
+<thead>
+<tr>
+<th>impl</th>
+<th style="text-align: right;"><code>nt=1</code></th>
+<th style="text-align: right;"><code>nt=4</code></th>
+<th style="text-align: right;"><code>nt=8</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>vernier</strong></td>
+<td style="text-align: right;">3146 ms</td>
+<td style="text-align: right;"><strong>969 ms</strong></td>
+<td style="text-align: right;">864 ms</td>
+</tr>
+<tr>
+<td>faster-coco-eval</td>
+<td style="text-align: right;">49500 ms</td>
+<td style="text-align: right;">17206 ms</td>
+<td style="text-align: right;">15654 ms</td>
+</tr>
+<tr>
+<td>vernier advantage</td>
+<td style="text-align: right;">15.8×</td>
+<td style="text-align: right;">17.2×</td>
+<td style="text-align: right;">18.1×</td>
+</tr>
+</tbody>
+</table>
+<h3 id="reproduce">Reproduce</h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="c1"># Instance paradigm sweep across thread counts on val2017</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>just<span class="w"> </span>bench-run<span class="w"> </span>--impl<span class="w"> </span>vernier<span class="w"> </span>--workload<span class="w"> </span>coco_val2017_jittered_seed0<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span>--iou<span class="w"> </span>boundary<span class="w"> </span>--num-threads<span class="w"> </span><span class="s2">&quot;1,2,4,8&quot;</span><span class="w"> </span>--no-parity
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="c1"># Plumbing smoke (small synthetic fixture, no external data)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>just<span class="w"> </span>bench-threads-smoke
+</span></code></pre></div>
+<p>Result JSONs land under
+<code>bench/results/&lt;sha&gt;/&lt;fp&gt;/&lt;paradigm&gt;/&lt;workload&gt;_t&lt;N&gt;/&lt;metric&gt;/&lt;impl&gt;.json</code>.</p>
+<h2 id="methodology-in-one-paragraph">Methodology in one paragraph</h2>
+<p>Every cell runs in its own subprocess with its own uv-managed venv (one
+per impl), so a single Python process never has competing
+pycocotools-flavored packages on its <code>sys.path</code>. The harness records
+<code>(load, evaluate, accumulate, summarize, total)</code> wall_ns per stage,
+discards the warmup reps, and reports the median total plus the
+inter-quartile range (IQR = Q3 - Q1, with the relative spread shown as
+a percentage of the median). Release mode (N=10 + 2 warmup) gates each
+impl on relative IQR ≤ 5%; cells where the gate failed are marked with
+<code>*</code> next to their IQR value — the median is still the best estimator,
+just with a wider confidence band than the gate accepts. Parity is a
+side effect of every timing run — strict-tier (vs pycocotools) and
+aligned-tier (vs faster-coco-eval) where applicable; failed parity
+fails the cell. Memory is <code>getrusage(RUSAGE_CHILDREN).ru_maxrss</code>,
+high-water-marked across the rep set.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
