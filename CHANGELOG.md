@@ -14,6 +14,72 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-06-09
+
+Real-prediction parity follow-up to 0.1.0. The headline work is six
+new SOTA-harness cells that drive every kernel — bbox, segm, boundary,
+keypoints, panoptic PQ, semantic mIoU, LVIS, and calibration — through
+a frozen real-model prediction cache so the parity surface no longer
+relies solely on synthetic fixtures. Two strict-mode behavioural fixes
+ride along: the TIDE Missed-bin rewrite (previously a no-op under
+`parity_mode="strict"`) and the accumulator's `n_d==0` precision/scores
+write. The minor bump signals those output-value changes; the kernel
+surface is otherwise unchanged from 0.1.0.
+
+### Added
+
+- **Real-prediction SOTA harness — six new cells.** Each cell drives a
+  pinned upstream checkpoint through the existing `_harness_common`
+  scaffolding (full-SHA cache key, `_ensure_pinned_revision` preflight,
+  `torch.set_num_threads(1)`, `int64` target_sizes, loud-fail on
+  unmapped class names) and asserts vernier-vs-oracle parity on real
+  output distributions:
+  - **DETR-R50** (`#265`) — instance bbox / segm against the
+    `facebook/detr-resnet-50` checkpoint on COCO val2017. Aligned tier
+    loosens `dtScores` to `rtol = 2 * eps` to absorb the documented
+    `serde_json` vs Python `strtod` 1-ULP score-parser drift; all
+    integer-reduction surfaces (precision, recall, counts, 12-stat AP/AR
+    summary) stay bit-equal.
+  - **Mask2Former panoptic + ADE-semantic** (`#266`) — panoptic PQ
+    against `facebook/mask2former-swin-large-coco-panoptic` on COCO
+    panoptic val2017; semantic mIoU against the ADE checkpoint on
+    ADE20K val. Both bit-equal to their oracles on integer-reduction
+    surfaces.
+  - **DETR-R50 calibration** (`#267`) — reuses the `#265` prediction
+    cache to validate ADR-0018 ECE / MCE / reliability against the
+    NumPy oracle at full distribution scale.
+  - **rfdetr-segnano boundary** (`#269`) — boundary IoU against
+    bowenc0221's `boundary_iou_api` over the rfdetr-segnano TIDE cache;
+    no new inference (boundary IoU is a different metric over the same
+    RLE masks).
+  - **LVIS detector** (`#270`) — federated LVIS evaluation against the
+    LVIS API. Reuses the TIDE cache pattern; gates the K=168/817
+    full-val divergence currently tracked in `open_followups.md`.
+  - **ViTPose keypoints** (`#271`) — keypoints OKS evaluation against
+    the `usyd-community/vitpose-base-coco` checkpoint on COCO val2017.
+
+### Fixed
+
+- **TIDE Missed-bin strict-mode parity** (`#273`) — the rewrite-layer
+  Missed fix was setting `ignore_flag = Some(true)` on missed GTs and
+  relying on `effective_ignore` to resolve under both parity modes.
+  Quirk D1's strict disposition discards `ignore_flag` entirely and
+  reads only `is_crowd`, so under `parity_mode="strict"` the rewrite
+  was a no-op: the AP denominator stayed unchanged and the per-bin
+  delta collapsed to exactly 0.0 (vs the ADR-0021 NumPy oracle's
+  spec'd 0.119 on DETR-R50). Fixed by deleting missed GTs from the
+  corrected dataset entirely — parity-mode-independent and
+  AP-equivalent to ignoring on the oracle's semantics. Validated to
+  within 1 ULP against the oracle on COCO val2017 + DETR-R50
+  (~150k detections, 8 ULP gate). Closes the ADR-0022 follow-up on
+  `t_b = 0.1` for set-prediction transformer detectors.
+- **`n_d == 0` precision/scores write** (`#272`) — the accumulator path
+  for classes with zero detections now writes `0.0` (not `-1`) into
+  the precision and scores tensors. Downstream consumers comparing
+  raw tensor values across releases will see this change; the public
+  AP / AR summary statistics are unaffected (they already skipped
+  `-1` sentinel entries).
+
 ## [0.1.0] — 2026-05-19
 
 First release out of the 0.0.x line. Mostly a performance + parallelism
