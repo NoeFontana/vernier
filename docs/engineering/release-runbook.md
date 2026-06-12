@@ -204,7 +204,17 @@ git push origin vX.Y.Z
 
 # 3. The tag push triggers wheels.yml. Watch the run; verify-tag is
 #    the only checkpoint between the tag and the irreversible publish.
+#    `gh run watch --exit-status` returns 0 once the workflow stops
+#    streaming, but in practice that can fire on a run whose overall
+#    conclusion is still `failure` (e.g., docs.yml's deploy job lost a
+#    gh-pages push race even though build/codespell succeeded). Always
+#    confirm with an explicit run-view after the watch returns:
 gh run watch --exit-status
+for run in $(gh run list --commit "$(git rev-parse vX.Y.Z)" --json databaseId --jq '.[].databaseId'); do
+    gh run view "$run" --json name,conclusion --jq '.name + ": " + .conclusion'
+done
+# Every line should print `: success`. Investigate any `failure` /
+# `cancelled` row before declaring the release shipped.
 
 # 4. Smoke-verify the published artifacts.
 pip install --no-cache-dir vernier==X.Y.Z
@@ -220,6 +230,14 @@ curl -L https://github.com/NoeFontana/vernier/releases/download/vX.Y.Z/vernier-i
 #    project moves to 0.1.0+, the deploy job's conditional changes so
 #    only minor releases update `stable`. (No manual `mike deploy`
 #    needed; it fires automatically when the tag pushes.)
+#
+#    Gotcha: docs.yml ALSO fires on the squash-merge push to main, so
+#    two `mike deploy --push` runs hit `gh-pages` back-to-back. The
+#    tag-triggered run can lose the race and exit with
+#    `! [rejected] gh-pages -> gh-pages (fetch first)`. Fix is
+#    one-shot: `gh run rerun <docs-run-id> --failed` — mike re-fetches
+#    gh-pages and the second push lands cleanly. See *Rollback /
+#    failure modes → `docs.yml` deploy lost the gh-pages race* below.
 ```
 
 > **No manual approval gate.** Tag push goes straight through to
@@ -230,10 +248,22 @@ curl -L https://github.com/NoeFontana/vernier/releases/download/vX.Y.Z/vernier-i
 
 Once the three workflows have finished:
 
-- **PyPI** — the project page at <https://pypi.org/project/vernier/X.Y.Z/>
-  should show the **PEP 740 attestations** badge / link on each artifact.
-  If it doesn't, OIDC is misconfigured (most likely the Trusted Publisher
-  pointing at the wrong workflow file).
+- **PyPI** — the package page at <https://pypi.org/project/vernier/X.Y.Z/>
+  exposes per-artifact PEP 740 attestations on each file. The
+  authoritative check is the integrity endpoint, not the legacy JSON
+  API (whose `provenance` field stays `null` even when the attestation
+  exists):
+
+  ```sh
+  curl -s -o /dev/null -w "%{http_code}\n" \
+      https://pypi.org/integrity/vernier/X.Y.Z/<wheel-filename>/provenance
+  ```
+
+  A `200` response means PyPI accepted and indexed the attestation.
+  A `404` (especially against multiple wheels) means OIDC is
+  misconfigured — most likely the Trusted Publisher entry points at
+  the wrong workflow file or the `attestations: true` parameter was
+  dropped from the `pypa/gh-action-pypi-publish` step.
 - **crates.io** — each of the six crates resolves at
   `https://crates.io/crates/<name>/X.Y.Z`. docs.rs builds successfully
   (check the build status badge on each crate page).
@@ -302,6 +332,40 @@ Two cases:
 - **Upload failure** — `dist host` retries are usually safe to re-run
   via `Re-run failed jobs` in the Actions UI. The job is idempotent
   per-target.
+
+### `docs.yml` deploy lost the gh-pages race
+
+Tag pushes and the squash-merge of the release PR both fire
+`docs.yml`. Both runs invoke `mike deploy --push`, which is a
+non-atomic clone + commit + push against the same `gh-pages` branch.
+If the tag-triggered run pushes second on a stale local copy, the
+deploy step fails:
+
+```
+! [rejected]        gh-pages -> gh-pages (fetch first)
+##[error]Process completed with exit code 1.
+```
+
+`mkdocs build` and `codespell` will have succeeded; only the deploy
+job is red. PyPI, crates.io, and the GitHub Release are unaffected
+(separate workflows). Single-command fix — `mike` will re-fetch
+gh-pages on the rerun, see the main-deploy commit, and push the X.Y
+tree on top:
+
+```sh
+gh run rerun <docs-run-id> --failed
+```
+
+Watch the rerun and re-check `versions.json` on `origin/gh-pages`:
+
+```sh
+git fetch origin gh-pages
+git show origin/gh-pages:versions.json   # should list X.Y with the `stable` alias
+```
+
+GitHub Pages CDN can lag a few minutes — a 404 at
+`https://noefontana.github.io/vernier/X.Y/` immediately after the
+deploy isn't a failure if `gh-pages` already has the tree.
 
 ### Need to remove a release entirely
 
