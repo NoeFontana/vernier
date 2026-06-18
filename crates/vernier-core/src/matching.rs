@@ -215,7 +215,9 @@ pub(crate) fn match_image(
     let dt_perm = argsort_score_desc(dt_scores);
 
     // A4 (strict): stable sort GTs by `_ignore`, so non-ignore precede
-    // ignore. The B3 early-termination relies on this layout.
+    // ignore. The B3 early-termination relies on this layout. NB:
+    // `slice::sort_by_key` is stable (unstable is `sort_unstable_by_key`),
+    // so GTs sharing an `_ignore` value keep their input order.
     let mut gt_perm: Vec<usize> = (0..n_g).collect();
     gt_perm.sort_by_key(|&i| gt_ignore[i]);
 
