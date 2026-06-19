@@ -132,6 +132,9 @@ pub(crate) fn quantile_linear(sorted_values: &[f64], qs: &[f64]) -> Vec<f64> {
 /// accumulator for the merged-stream re-sort across images.
 pub fn argsort_score_desc(scores: &[f64]) -> Vec<usize> {
     let mut perm: Vec<usize> = (0..scores.len()).collect();
+    // `slice::sort_by` is a *stable* sort (the unstable variant is
+    // `sort_unstable_by`), so equal scores keep their input order —
+    // this is exactly numpy's `kind='mergesort'` tie behavior (A1).
     perm.sort_by(|&a, &b| scores[b].partial_cmp(&scores[a]).unwrap_or(Ordering::Equal));
     perm
 }
