@@ -91,7 +91,7 @@ use crate::dataset::{
     ImageId, ImageMeta,
 };
 use crate::error::EvalError;
-use crate::matching::{match_image, MatchResult};
+use crate::matching::{match_image_with_perm, MatchResult};
 use crate::parity::ParityMode;
 use crate::segmentation::Segmentation;
 use crate::similarity::{
@@ -1756,17 +1756,27 @@ pub(crate) fn evaluate_cell(
     );
     let gt_ignore: &[bool] = gt_ignore_buf.as_slice();
 
+    // `buf.dt_scores` is already score-descending: `dt_top_indices_for_cell_into`
+    // sorts each cell's DTs once per `(category, image)`. The four area
+    // ranges reuse that order, so the matcher's permutation is the identity
+    // — passing it explicitly skips re-running `argsort_score_desc` for each
+    // area range. Bit-identical to the re-sorted path (same comparator).
+    debug_assert!(
+        buf.dt_scores.windows(2).all(|w| w[0] >= w[1]),
+        "evaluate_cell expects dt_scores pre-sorted descending (dt_top_indices_for_cell_into)"
+    );
+    let dt_identity_perm: Vec<usize> = (0..buf.dt_scores.len()).collect();
     let MatchResult {
         dt_perm,
         gt_perm,
         dt_matches: dt_matches_pos,
         gt_matches: gt_matches_pos,
         mut dt_ignore,
-    } = match_image(
+    } = match_image_with_perm(
         buf.iou,
         gt_ignore,
         buf.gt_iscrowd,
-        buf.dt_scores,
+        dt_identity_perm,
         iou_thresholds,
         parity_mode,
     )?;

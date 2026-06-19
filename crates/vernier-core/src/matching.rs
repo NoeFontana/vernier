@@ -182,10 +182,46 @@ pub(crate) fn match_image(
     gt_iscrowd: &[bool],
     dt_scores: &[f64],
     iou_thresholds: &[f64],
+    parity_mode: ParityMode,
+) -> Result<MatchResult, EvalError> {
+    // Public entry: the DT order is unknown, so derive the
+    // score-descending permutation (quirk A1) here. Callers that already
+    // hold DTs in score-descending order — the `evaluate_with` hot path,
+    // via `dt_top_indices_for_cell_into` — call [`match_image_with_perm`]
+    // directly with an identity permutation to skip the redundant re-sort.
+    let dt_perm = argsort_score_desc(dt_scores);
+    match_image_with_perm(
+        iou_matrix,
+        gt_ignore,
+        gt_iscrowd,
+        dt_perm,
+        iou_thresholds,
+        parity_mode,
+    )
+}
+
+/// [`match_image`] with a caller-supplied DT permutation.
+///
+/// `dt_perm` must index the columns of `iou_matrix` in score-descending
+/// order with the stable A1 tiebreak — exactly what [`argsort_score_desc`]
+/// returns for the DT scores. The `evaluate_with` hot path passes an
+/// identity permutation: [`crate::evaluate::dt_top_indices_for_cell_into`]
+/// already score-sorts each cell's DTs once per `(category, image)`, so
+/// re-deriving the argsort for each of the four area ranges is pure
+/// redundant work. Because that filter and `argsort_score_desc` use the
+/// same comparator, the identity permutation is bit-identical to the
+/// re-sorted one — parity-safe, including the `-0.0`/`+0.0` tie case.
+#[allow(clippy::needless_pass_by_value)]
+pub(crate) fn match_image_with_perm(
+    iou_matrix: ArrayView2<'_, f64>,
+    gt_ignore: &[bool],
+    gt_iscrowd: &[bool],
+    dt_perm: Vec<usize>,
+    iou_thresholds: &[f64],
     _parity_mode: ParityMode,
 ) -> Result<MatchResult, EvalError> {
     let n_g = gt_ignore.len();
-    let n_d = dt_scores.len();
+    let n_d = dt_perm.len();
     let n_t = iou_thresholds.len();
 
     #[cfg(feature = "bench-histogram")]
@@ -211,8 +247,6 @@ pub(crate) fn match_image(
             ),
         });
     }
-
-    let dt_perm = argsort_score_desc(dt_scores);
 
     // A4 (strict): stable sort GTs by `_ignore`, so non-ignore precede
     // ignore. The B3 early-termination relies on this layout. NB:
