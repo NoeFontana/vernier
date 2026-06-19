@@ -43,6 +43,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::EvalError;
@@ -480,9 +481,9 @@ pub struct CocoDataset {
     images: Arc<Vec<ImageMeta>>,
     categories: Arc<Vec<CategoryMeta>>,
     annotations: Arc<Vec<CocoAnnotation>>,
-    by_image: HashMap<ImageId, Vec<usize>>,
-    by_category: HashMap<CategoryId, Vec<usize>>,
-    by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>>,
+    by_image: FxHashMap<ImageId, Vec<usize>>,
+    by_category: FxHashMap<CategoryId, Vec<usize>>,
+    by_image_cat: FxHashMap<(ImageId, CategoryId), Vec<usize>>,
     federated: Option<FederatedMetadata>,
     /// 32-byte BLAKE3 fingerprint of the dataset's canonical form.
     /// Cached lazily on first call to [`Self::dataset_hash`]; carried
@@ -526,10 +527,11 @@ impl CocoDataset {
         let known_images: HashSet<ImageId> = images.iter().map(|i| i.id).collect();
         let known_categories: HashSet<CategoryId> = categories.iter().map(|c| c.id).collect();
 
-        let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::with_capacity(images.len());
-        let mut by_category: HashMap<CategoryId, Vec<usize>> =
-            HashMap::with_capacity(categories.len());
-        let mut by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>> = HashMap::new();
+        let mut by_image: FxHashMap<ImageId, Vec<usize>> =
+            FxHashMap::with_capacity_and_hasher(images.len(), Default::default());
+        let mut by_category: FxHashMap<CategoryId, Vec<usize>> =
+            FxHashMap::with_capacity_and_hasher(categories.len(), Default::default());
+        let mut by_image_cat: FxHashMap<(ImageId, CategoryId), Vec<usize>> = FxHashMap::default();
 
         for (idx, ann) in annotations.iter().enumerate() {
             if !known_images.contains(&ann.image_id) {
