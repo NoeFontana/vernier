@@ -67,6 +67,13 @@ rayon = { workspace = true }
 # kernels' compute scratches (ADR-0047). Removes the per-cell
 # `Mutex<Scratch>` lock that previously serialised every rayon worker.
 thread_local = { workspace = true }
+# FxHashMap for the integer-keyed annotation index maps (by_image,
+# by_category, by_image_cat). Keys are dataset-internal `ImageId` /
+# `CategoryId` ints — never user-controlled — so SipHash's DoS
+# resistance is wasted; Fx hashing cuts the per-cell lookup cost on
+# the n_images × n_categories eval grid. Lookup-only maps; iteration
+# order never feeds output. Mirrors vernier-panoptic's existing use.
+rustc-hash = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }

@@ -1665,6 +1665,7 @@ dependencies = [
  "pulp",
  "rayon",
  "rkyv",
+ "rustc-hash",
  "serde",
  "serde_json",
  "thiserror",
