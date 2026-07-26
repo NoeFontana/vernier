@@ -159,3 +159,16 @@ jobs:
         # *_val.py whole-dataset smokes). Run the full suite via the
         # `slow.yml` workflow_dispatch before cutting a release.
         run: uv run --no-sync --python ${{ matrix.python-version }} pytest -m "not slow"
+      # Completeness of the shipped typed surface. Needs the *installed*
+      # distribution (it reads the packaged `py.typed` and does not honour
+      # pyright's `extraPaths`), so it cannot live in the
+      # `--no-install-project` lint job. Pinned to the newest interpreter:
+      # the score depends on the numpy version uv resolves, and the 3.10
+      # environment scores 96.2% on pre-existing `ndarray` / `Mapping` type
+      # arguments in _tide.py and semantic/. See
+      # docs/engineering/python-type-stubs.md.
+      - name: pyright --verifytypes
+        if: matrix.python-version == '3.14'
+        run: >
+          uv run --no-sync --python ${{ matrix.python-version }}
+          pyright --verifytypes vernier --ignoreexternal

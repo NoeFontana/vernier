@@ -34,8 +34,12 @@ test: test-rust test-py
 test-rust:
     uv run cargo nextest run --workspace
 
+# `--verifytypes` needs vernier *installed* (it reads the packaged
+# `py.typed`), so it rides the test lane rather than `lint-py`, which CI
+# runs with `--no-install-project`. See docs/engineering/python-type-stubs.md.
 test-py:
     uv run pytest
+    uv run pyright --verifytypes vernier --ignoreexternal
 
 # Run only parity tests (against pycocotools reference).
 test-parity:

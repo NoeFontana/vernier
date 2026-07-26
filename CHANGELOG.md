@@ -14,6 +14,61 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Changed (BREAKING — pre-1.0)
+
+- **`BackgroundEvaluator.finalize_with_tables(...)` is now keyword-only.**
+  Its seven parameters (`per_image`, `per_class`, `per_detection`,
+  `per_pair`, `per_pair_iou_floor`, `per_pair_max_rows`,
+  `per_detection_with_geometry`) gained a `*` in the Rust
+  `#[pyo3(signature = ...)]`, matching what `_core.pyi` has declared
+  since 2026-05-09 and matching the sibling `BackgroundEvaluator(...)`
+  constructor. Positional calls such as
+  `ev.finalize_with_tables(True)` now raise `TypeError`; pass
+  `per_image=True` instead. Type-checked callers were already
+  constrained by the stub and are unaffected.
+- **Context-manager `__exit__` parameters renamed** on
+  `BackgroundEvaluator`, `BackgroundPanopticEvaluator` and
+  `BackgroundSemanticEvaluator`: `_exc_type` / `_exc` / `_tb` →
+  `exc_type` / `exc` / `tb`. The leading underscores were a Rust
+  unused-variable artifact leaking into the public Python signature.
+  `with` statements are unaffected (CPython calls `__exit__`
+  positionally); only explicit keyword calls would break.
+
+### Added
+
+- **Stub conformance test** (`tests/python/test_core_stub_conformance.py`)
+  — asserts `python/vernier/_core.pyi` matches the compiled
+  `vernier._core` in symbol coverage, class members, property-vs-method
+  kind, and parameter names / order / defaults / keyword-only boundary.
+  Runs in the `test-py` job against the built wheel, so it validates the
+  stub as shipped. Types are deliberately not compared; they stay
+  hand-curated. Rationale and maintenance rules:
+  `docs/engineering/python-type-stubs.md`.
+- **`pyright --verifytypes vernier`** in `just lint-py` and CI, guarding
+  completeness of the public typed surface (baseline 100%).
+
+### Fixed
+
+- **`evaluate_{bbox,segm,boundary,keypoints}_summary_with_dataset`
+  first parameter is named `dataset`, not `gt`,** in `_core.pyi`. The
+  stub had advertised a keyword that did not exist, so
+  `evaluate_bbox_summary_with_dataset(gt=..., ...)` raised `TypeError`
+  despite type-checking. Positional callers were unaffected.
+- **`Breakdown` is correctly typed as unhashable.** `_core.pyi` declared
+  `def __hash__(self) -> int`, but the class is `#[pyclass(eq)]` without
+  `hash`, so PyO3 sets `__hash__ = None` and `hash(breakdown)` raises
+  `TypeError: unhashable type`. The stub now spells it
+  `__hash__: ClassVar[None]`, so putting a `Breakdown` in a `set` or
+  using one as a `dict` key is caught at type-check time instead of at
+  runtime. Runtime behaviour is unchanged.
+
+### Removed
+
+- **`pyo3-stub-gen` from `[workspace.dependencies]`** — it was declared
+  but depended on by no crate, never resolved into `Cargo.lock`, and no
+  `#[gen_stub_*]` macro was ever used. `_core.pyi` is hand-written by
+  design; see `docs/engineering/python-type-stubs.md`.
+
 ## [0.2.0] — 2026-06-09
 
 Real-prediction parity follow-up to 0.1.0. The headline work is six

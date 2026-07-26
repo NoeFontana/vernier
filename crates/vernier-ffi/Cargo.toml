@@ -16,6 +16,10 @@ crate-type = ["cdylib", "rlib"]
 workspace = true
 
 [features]
+# Symbols added by the gated features below are absent from
+# `python/vernier/_core.pyi` by design. They are allowlisted in
+# `_FEATURE_GATED_FUNCTIONS` / `_FEATURE_GATED_MEMBERS` in
+# tests/python/test_core_stub_conformance.py — update both when adding one.
 default = []
 # Enabled by maturin during wheel builds. We keep it opt-in so that
 # `cargo test -p vernier-ffi` still links (extension-module breaks
