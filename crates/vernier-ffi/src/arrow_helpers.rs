@@ -4,7 +4,6 @@
 //! consume, plus the small helpers each table builder uses to wrap a
 //! `RecordBatch` for export. No business logic, no per-paradigm types.
 
-use std::ffi::CString;
 use std::sync::Arc;
 
 use arrow_array::ffi::to_ffi;
@@ -55,8 +54,11 @@ impl ArrowRecordBatchPy {
         let (ffi_array, _ffi_schema_no_meta) = to_ffi(&self.data)
             .map_err(|e| PyValueError::new_err(format!("arrow ffi export failed: {e}")))?;
         let ffi_schema = schema_to_ffi(&self.schema)?;
-        let schema_capsule = make_capsule(py, ffi_schema, "arrow_schema")?;
-        let array_capsule = make_capsule(py, ffi_array, "arrow_array")?;
+        // Capsule names are the canonical C-Data-Interface strings; the
+        // FFI structs' `Drop` runs the interface's release callback when
+        // a capsule is collected.
+        let schema_capsule = PyCapsule::new_with_value(py, ffi_schema, c"arrow_schema")?;
+        let array_capsule = PyCapsule::new_with_value(py, ffi_array, c"arrow_array")?;
         Ok((schema_capsule, array_capsule))
     }
 
@@ -107,18 +109,6 @@ fn schema_to_ffi(schema: &Schema) -> PyResult<FFI_ArrowSchema> {
         parent
     };
     Ok(parent)
-}
-
-/// Wrap a (Drop-runs-release) Arrow FFI struct in a PyCapsule with the
-/// canonical C-Data-Interface name. Generic over the FFI type so the
-/// schema and array sites share one helper.
-fn make_capsule<'py, T>(py: Python<'py>, value: T, name: &str) -> PyResult<Bound<'py, PyCapsule>>
-where
-    T: Send + 'static,
-{
-    let cname = CString::new(name)
-        .map_err(|e| PyValueError::new_err(format!("invalid capsule name: {e}")))?;
-    PyCapsule::new(py, value, Some(cname))
 }
 
 /// Wrap an Arrow `RecordBatch` for PyCapsule export. Arrow treats

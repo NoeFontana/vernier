@@ -52,9 +52,9 @@ unused_must_use = "deny"
 [workspace.dependencies]
 ndarray = "0.17"
 thiserror = "2"
-pyo3 = { version = "0.28", default-features = false, features = ["macros", "abi3-py310"] }
-numpy = "0.28"
-pyo3-stub-gen = "0.22"
+pyo3 = { version = "0.29", default-features = false, features = ["macros", "abi3-py310"] }
+numpy = "0.29"
+pyo3-stub-gen = "0.23"
 # Stable-Rust SIMD with runtime CPU-feature dispatch (per ADR-0003).
 pulp = "0.22"
 # JSON serialization for COCO dataset round-tripping (Phase 1+).
