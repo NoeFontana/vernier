@@ -120,7 +120,7 @@ test. **Add to those lists when you add a gated FFI item**, otherwise
 ### `pyright --verifytypes vernier --ignoreexternal` — completeness
 
 Guards the completeness of the public typed surface; the baseline is
-**100%** (0 unknown, 0 ambiguous) as of July 2026.
+**100%** (0 unknown, 0 ambiguous) on Python 3.14 as of July 2026.
 
 Runs in `just test-py` / the `test-py` CI job, **not** in the lint lane.
 `--verifytypes` resolves the *installed distribution* and reads its
@@ -129,6 +129,15 @@ fails with `error: No py.typed file found` wherever `vernier` is not
 installed. The `lint (python)` job runs `uv sync --no-install-project`, so
 that is exactly where it would fail. Running it against the built wheel in
 `test-py` is also the stronger check: it verifies the surface as shipped.
+
+**The score is environment-sensitive**, so CI pins the check to the newest
+interpreter in the matrix. The same wheel scores 96.2% under Python 3.10,
+where uv resolves numpy 2.2.6: 11 symbols in `_tide.py` and
+`semantic/__init__.py` report unknown `ndarray` / `Mapping` type arguments
+that resolve cleanly on newer numpy stubs. Those are pre-existing
+annotation gaps, not stub drift — worth closing, but they are a separate
+change from the stub-conformance work. Until then, do not read the 100%
+as version-independent.
 
 ## Maintaining the stub
 
