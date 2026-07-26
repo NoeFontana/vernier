@@ -47,6 +47,7 @@ Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nex
 - `vernier-core` `#![forbid(unsafe_code)]`. `vernier-ffi` may carry audited unsafe (DLPack); each crate states policy in `lib.rs`.
 - Stable Rust only. Workspace deps pinned by minor version in the workspace table — bump there, not per-crate. PyO3 features pinned to `abi3-py310`.
 - Python `ruff` includes PYI; stub edits sometimes need stripping docstrings / pass-bodies (PYI021/PYI048).
+- `python/vernier/_core.pyi` is hand-written, never generated (no `pyo3-stub-gen`) — it encodes `Literal`/`TypedDict`/`NDArray` precision the Rust signatures don't carry. Edit it in the same commit as the FFI change; `tests/python/test_core_stub_conformance.py` enforces the shape. See `docs/engineering/python-type-stubs.md`.
 
 ## Non-trivial workflows
 

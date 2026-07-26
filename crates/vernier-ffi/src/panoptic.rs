@@ -1851,14 +1851,17 @@ impl PyBackgroundPanopticEvaluator {
     }
 
     /// Context-manager exit: best-effort shutdown.
-    #[pyo3(signature = (_exc_type=None, _exc=None, _tb=None))]
+    #[pyo3(signature = (exc_type=None, exc=None, tb=None))]
     fn __exit__(
         &self,
         py: Python<'_>,
-        _exc_type: Option<Py<PyAny>>,
-        _exc: Option<Py<PyAny>>,
-        _tb: Option<Py<PyAny>>,
+        exc_type: Option<Py<PyAny>>,
+        exc: Option<Py<PyAny>>,
+        tb: Option<Py<PyAny>>,
     ) -> PyResult<()> {
+        // See `BackgroundEvaluator::__exit__` — the names are load-bearing
+        // for the Python-visible signature, so no leading underscore.
+        drop((exc_type, exc, tb));
         let lifecycle = &self.lifecycle;
         py.detach(|| {
             if let Ok(mut guard) = lifecycle.lock() {

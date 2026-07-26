@@ -3205,6 +3205,7 @@ impl PyBackgroundEvaluator {
 
     /// Tables-aware finalize. Drains the queue and consumes the worker.
     #[pyo3(signature = (
+        *,
         per_image=false,
         per_class=false,
         per_detection=false,
@@ -3305,14 +3306,18 @@ impl PyBackgroundEvaluator {
     /// Context-manager exit: best-effort shutdown. Errors raised inside
     /// the `with` block are propagated; errors from the shutdown itself
     /// are silenced (the original exception is more important).
-    #[pyo3(signature = (_exc_type=None, _exc=None, _tb=None))]
+    #[pyo3(signature = (exc_type=None, exc=None, tb=None))]
     fn __exit__(
         &self,
         py: Python<'_>,
-        _exc_type: Option<Py<PyAny>>,
-        _exc: Option<Py<PyAny>>,
-        _tb: Option<Py<PyAny>>,
+        exc_type: Option<Py<PyAny>>,
+        exc: Option<Py<PyAny>>,
+        tb: Option<Py<PyAny>>,
     ) -> PyResult<()> {
+        // Unused, but named without a leading underscore on purpose: PyO3
+        // takes the Python-visible parameter names from these bindings, and
+        // `_exc_type` would leak into the public signature.
+        drop((exc_type, exc, tb));
         let state_mutex = &self.state;
         py.detach(|| {
             if let Ok(mut guard) = state_mutex.lock() {

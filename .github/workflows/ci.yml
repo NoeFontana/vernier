@@ -154,6 +154,16 @@ jobs:
           path: dist
       - name: install built wheel
         run: uv pip install --python ${{ matrix.python-version }} dist/vernier-*.whl
+      # `--verifytypes` resolves the *installed distribution* (it needs the
+      # packaged `py.typed`), so it belongs here rather than in the
+      # `--no-install-project` lint job. Running it against the built wheel
+      # also means it verifies the surface as shipped. Stub *accuracy* is
+      # covered by tests/python/test_core_stub_conformance.py in the pytest
+      # step below. See docs/engineering/python-type-stubs.md.
+      - name: pyright --verifytypes
+        run: >
+          uv run --no-sync --python ${{ matrix.python-version }}
+          pyright --verifytypes vernier --ignoreexternal
       - name: pytest
         # PR gate skips the slow tier (boundary parity tree, env-gated
         # *_val.py whole-dataset smokes). Run the full suite via the

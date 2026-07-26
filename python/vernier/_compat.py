@@ -239,7 +239,7 @@ class PycocotoolsCOCOeval:
         kind: IouType = iouType
         self.cocoGt = cocoGt
         self.cocoDt = cocoDt
-        self.params = _Params(kind)
+        self.params: _Params = _Params(kind)
         self._dilation_ratio = dilation_ratio
         self._parity_mode: ParityMode = parity_mode or type(self).DEFAULT_PARITY_MODE
         self.evalImgs: list[dict[str, Any] | None] = []

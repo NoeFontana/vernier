@@ -1,7 +1,10 @@
+# Hand-written on purpose — NOT generated. Edit in the same commit as the
+# FFI change; the shape is enforced by tests/python/test_core_stub_conformance.py.
+# Rationale and maintenance rules: docs/engineering/python-type-stubs.md
 import os
 from collections.abc import Mapping, Sequence
 from types import TracebackType
-from typing import Any, Literal, TypeAlias, TypedDict
+from typing import Any, ClassVar, Literal, TypeAlias, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -17,7 +20,7 @@ from vernier._array_types import UncompressedRLE as UncompressedRLE
 #: AB1). The `CocoDataset.category_frequency` accessor returns these
 #: values; the user-facing `vernier.Frequency` enum maps to and from
 #: them.
-LvisFrequencyLiteral: TypeAlias = Literal["r", "c", "f"]
+_LvisFrequencyLiteral: TypeAlias = Literal["r", "c", "f"]
 
 __version__: str
 
@@ -111,7 +114,12 @@ class BackgroundEvaluator:
     ) -> _TablesResult: ...
     def finalize_with_cells(self) -> tuple[Summary, EvalCells]: ...
     def __enter__(self) -> Self: ...
-    def __exit__(self, exc_type: object, exc: object, tb: object) -> None: ...
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None = ...,
+        exc: BaseException | None = ...,
+        tb: TracebackType | None = ...,
+    ) -> None: ...
     @property
     def images_seen(self) -> int: ...
     @property
@@ -139,7 +147,9 @@ class Breakdown:
     def class_groups(self) -> list[tuple[str, list[int]]]: ...
     def __len__(self) -> int: ...
     def __eq__(self, other: object) -> bool: ...
-    def __hash__(self) -> int: ...
+    # `#[pyclass(eq)]` without `hash` — PyO3 sets `__hash__ = None`, so
+    # `Breakdown` is unhashable at runtime. This is the typeshed spelling.
+    __hash__: ClassVar[None]  # pyright: ignore[reportIncompatibleMethodOverride]
 
 class Summary:
     @property
@@ -198,7 +208,7 @@ class CocoDataset:
     @property
     def not_exhaustive_category_ids(self) -> Mapping[int, frozenset[int]] | None: ...
     @property
-    def category_frequency(self) -> Mapping[int, LvisFrequencyLiteral] | None: ...
+    def category_frequency(self) -> Mapping[int, _LvisFrequencyLiteral] | None: ...
     @property
     def boundary_cache_len(self) -> int: ...
     @property
@@ -267,7 +277,7 @@ def merge_instance_partials(
     cast_inputs: bool = ...,
 ) -> Summary: ...
 def evaluate_bbox_summary_with_dataset(
-    gt: CocoDataset,
+    dataset: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
@@ -311,7 +321,7 @@ def evaluate_segm_summary(
     num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_segm_summary_with_dataset(
-    gt: CocoDataset,
+    dataset: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
@@ -343,7 +353,7 @@ def evaluate_boundary_summary(
     num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_boundary_summary_with_dataset(
-    gt: CocoDataset,
+    dataset: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
@@ -377,7 +387,7 @@ def evaluate_keypoints_summary(
     num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_keypoints_summary_with_dataset(
-    gt: CocoDataset,
+    dataset: CocoDataset,
     dt: DetectionsInput,
     parity_mode: str,
     max_dets: list[int],
