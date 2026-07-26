@@ -101,6 +101,10 @@ jobs:
         with:
           name: wheel-abi3
           path: dist/*.whl
+          # Job-to-job pipe for test-py, not a deliverable — release wheels
+          # come from wheels.yml. 1 day is the floor; the repo-wide default
+          # retention is only a ceiling, so this must be set per-upload.
+          retention-days: 1
 
   lint-py:
     name: lint (python)
