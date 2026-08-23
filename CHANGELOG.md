@@ -74,6 +74,21 @@ additive / perf / docs".
 
 ### Fixed
 
+- **rkyv bumped to 0.8.18 for RUSTSEC-2026-0233 / -0234 / -0235.** The
+  archive validator that ADR-0031 relies on — `bytecheck` running under
+  `rkyv::access` — accepted several classes of malformed archive:
+  insufficient archive-range validation could reach a use-after-free,
+  and incomplete hash-table and `Rc`/`Arc` pointer validation could
+  reach out-of-bounds reads. Partials are cross-process input by
+  design, so this is the threat model the crate was chosen for. The
+  workspace floor moves from `"0.8"` to `"0.8.17"` (the first fixed
+  release) so the bound binds for downstream consumers of the
+  published crates, not just for our lockfile.
+
+  **No wire-format change.** `FORMAT_VERSION` stays at `2`: a partial
+  emitted by an 0.8.16 build decodes under 0.8.18 with bit-identical
+  confusion counts, verified across two wheel builds. The advisories
+  tighten validation; they do not move bytes.
 - **`evaluate_{bbox,segm,boundary,keypoints}_summary_with_dataset`
   first parameter is named `dataset`, not `gt`,** in `_core.pyi`. The
   stub had advertised a keyword that did not exist, so

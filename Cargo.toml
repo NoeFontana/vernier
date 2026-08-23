@@ -93,7 +93,14 @@ png = "0.18"
 # default features include `bytecheck` so `rkyv::access` performs full
 # structural validation on deserialize — load-bearing for cross-process
 # input. We do not use `alloc`-only mode; std is fine here.
-rkyv = "0.8"
+#
+# Floor is patch-level, not the usual minor-level pin: 0.8.17 is the
+# first release fixing RUSTSEC-2026-0233 / -0234 / -0235, where that
+# validator accepted malformed archives and let crafted input reach a
+# use-after-free or an out-of-bounds read. Since partials are
+# cross-process input by design, the floor has to bind for downstream
+# consumers of the published crates, not just for our lockfile.
+rkyv = "0.8.17"
 # BLAKE3 hashing for the dataset and params fingerprints carried in the
 # partial header (ADR-0031). MIT/Apache, SIMD-accelerated.
 blake3 = "1"
