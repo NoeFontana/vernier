@@ -213,7 +213,7 @@ jobs:
 
   # crates.io publish via Trusted Publisher (OIDC — no
   # CARGO_REGISTRY_TOKEN secret). Requires Trusted Publishers set up at
-  # https://crates.io/me/trusted-publishers FOR EACH crate (the six
+  # https://crates.io/me/trusted-publishers FOR EACH crate (the seven
   # listed below) with `Environment` left blank — crates.io scopes
   # publishers per crate, unlike PyPI's per-project scope.
   #
@@ -228,9 +228,17 @@ jobs:
   #   vernier-panoptic  depends on mask + partial
   #   vernier-semantic  depends on core + partial
   #   vernier-cli       depends on core
+  #   vernier           the facade — depends on everything (ADR-0048)
   # Modern cargo blocks until the index reflects each new version, so
   # sequential publish is sufficient (no manual sleep). `vernier-ffi` is
   # `publish = false` and ships only inside the wheel.
+  #
+  # The facade is last by construction: its path deps pin the workspace
+  # version, so it cannot resolve until the six crates ahead of it are
+  # on the index. Its trusted-publisher entry is a `publish-update`
+  # scope (we already own the name from the retired v0.0.0
+  # placeholder) — see docs/engineering/release-runbook.md
+  # §"One-off: the first release that includes the facade".
   publish-crates-io:
     name: publish to crates.io
     needs: [linux, macos, windows, smoke, verify-tag]
@@ -272,3 +280,7 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p vernier-cli
+      - name: cargo publish vernier
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish -p vernier

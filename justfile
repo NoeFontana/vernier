@@ -1,5 +1,5 @@
 # vernier task runner. Run `just` to list all recipes.
-# Requires: just, uv, cargo, cargo-nextest, cargo-deny.
+# Requires: just, uv, cargo, cargo-nextest, cargo-deny, cargo-hack.
 
 set shell := ["bash", "-cu"]
 
@@ -92,9 +92,15 @@ test-coco-val:
 # Run all linters (CI-equivalent, read-only).
 lint: lint-rust lint-py
 
-lint-rust:
+lint-rust: check-features
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
+
+# Feature-powerset check for the `vernier` facade (ADR-0048). Its three
+# features are additive and re-export-only, so every combination must
+# compile and none may be empty. Mirrors CI's lint-rust step.
+check-features:
+    cargo hack --feature-powerset check -p vernier
 
 lint-py:
     uv run ruff check .

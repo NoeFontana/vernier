@@ -1,0 +1,58 @@
+[package]
+name = "vernier"
+description = "One-dependency facade over the vernier evaluation crates — instance AP, mask kernels, panoptic PQ, semantic mIoU"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+# ---------------------------------------------------------------------------
+# Features (ADR-0048 axis B2). Additive, re-export-only, all default-on.
+#
+# HARD INVARIANT: a feature of this crate gates a `pub use` line and
+# nothing else. No feature here may be forwarded to a paradigm crate,
+# enable a paradigm crate's feature, or otherwise reach past the
+# re-export — it changes what is *nameable*, never what is *computed*.
+# Violating that reintroduces the behavior fragmentation ADR-0047
+# rejected ("one wheel, one behavior"), through a door opened for
+# ergonomics. `tests::cfg_feature_gates_only_reexports` in src/lib.rs
+# enforces the placement; `cargo hack --feature-powerset check -p
+# vernier` in CI enforces that all eight combinations compile.
+#
+# `instance` and `mask` are deliberately NOT features: vernier-core
+# already depends on vernier-mask (ADR-0009), so gating `mask` would
+# save no compilation, and making `instance` optional would let
+# `default-features = false` yield a crate with no public items — the
+# empty crate ADR-0048 exists to eliminate, rebuilt as a build config.
+# ---------------------------------------------------------------------------
+[features]
+default = ["panoptic", "semantic", "partial"]
+panoptic = ["dep:vernier-panoptic"]
+semantic = ["dep:vernier-semantic"]
+partial = ["dep:vernier-partial"]
+
+# ---------------------------------------------------------------------------
+# Dependencies. This list *is* the crate: whole-crate aliasing means the
+# facade's public API is the union of these crates' public APIs by
+# construction. `vernier-ffi` (publish = false, ships as the
+# `vernier._core` extension module) and `vernier-cli` (a binary; a lib
+# dep on it would drag `clap` into every consumer — ADR-0015 axis 1)
+# are deliberately absent.
+# ---------------------------------------------------------------------------
+[dependencies]
+vernier-core = { path = "../vernier-core", version = "0.2.0" }
+vernier-mask = { path = "../vernier-mask", version = "0.2.0" }
+vernier-panoptic = { path = "../vernier-panoptic", version = "0.2.0", optional = true }
+vernier-semantic = { path = "../vernier-semantic", version = "0.2.0", optional = true }
+vernier-partial = { path = "../vernier-partial", version = "0.2.0", optional = true }

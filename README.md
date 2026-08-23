@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/NoeFontana/vernier/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NoeFontana/vernier/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/vernier.svg?label=pypi%20%7C%20vernier)](https://pypi.org/project/vernier/)
+[![crates.io vernier](https://img.shields.io/crates/v/vernier.svg?label=crates.io%20%7C%20vernier)](https://crates.io/crates/vernier)
 [![crates.io vernier-core](https://img.shields.io/crates/v/vernier-core.svg?label=crates.io%20%7C%20vernier-core)](https://crates.io/crates/vernier-core)
 [![crates.io vernier-mask](https://img.shields.io/crates/v/vernier-mask.svg?label=crates.io%20%7C%20vernier-mask)](https://crates.io/crates/vernier-mask)
 [![crates.io vernier-cli](https://img.shields.io/crates/v/vernier-cli.svg?label=crates.io%20%7C%20vernier-cli)](https://crates.io/crates/vernier-cli)
@@ -101,15 +102,24 @@ change). Each baseline is locked in its own uv-managed venv per
 
 ```bash
 pip install vernier                  # Python wheel
-cargo add vernier-core               # Rust library
+cargo add vernier                    # Rust library (all paradigms)
 cargo install vernier-cli            # `vernier` CLI binary
 ```
 
 Wheels ship for linux x86_64 / aarch64 (glibc + musl), macOS
-x86_64 / arm64, and windows x64. The umbrella `vernier` crate name on
-crates.io is held as a `0.0.0` placeholder; `vernier-core` is the real
-Rust entry point — see
-[`docs/engineering/registry-reservations.md`](docs/engineering/registry-reservations.md).
+x86_64 / arm64, and windows x64.
+
+On the Rust side, `vernier` is a facade
+([ADR-0048](docs/adr/0048-vernier-facade-crate.md)): it re-exports the
+paradigm crates under one dependency and one module map —
+`vernier::{instance, mask, panoptic, semantic, partial}` — mirroring the
+Python namespace. It holds no code of its own, so depending on a leaf
+crate directly (`cargo add vernier-core` for bbox / segm / boundary /
+keypoints AP alone) is equally supported; the three optional paradigms
+can also be trimmed in place with `default-features = false`. Note the
+asymmetry: `cargo add vernier` gets the library, `cargo install
+vernier-cli` gets the binary — the CLI stays out of the library's
+dependency tree so `clap` never lands in a consumer's build.
 
 ## Status & validation
 
