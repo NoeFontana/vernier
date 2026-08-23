@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/vernier",
     "crates/vernier-cli",
     "crates/vernier-core",
     "crates/vernier-ffi",

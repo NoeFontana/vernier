@@ -36,6 +36,31 @@ additive / perf / docs".
 
 ### Added
 
+- **`vernier` is now a real facade crate** (ADR-0048). `crates/vernier/`
+  is a seventh publishable workspace member whose entire content is
+  whole-crate re-exports plus rustdoc:
+  `vernier::{instance, mask, panoptic, semantic, partial}` alias
+  `vernier-core` / `vernier-mask` / `vernier-panoptic` /
+  `vernier-semantic` / `vernier-partial`. `cargo add vernier` now gets
+  the whole library under one dependency, with a module map that
+  mirrors the Python namespace from ADR-0029. Because the aliases are
+  whole-crate, the facade's public API *is* the union of the leaf APIs
+  and cannot drift from them — the flip side being that any breaking
+  change in any leaf crate is a breaking change in `vernier`.
+
+  Three additive, default-on, re-export-only features (`panoptic`,
+  `semantic`, `partial`) let a narrow consumer trim within the facade
+  rather than abandon it; `instance` and `mask` are unconditional, so
+  the crate is non-empty in every feature combination. A feature here
+  changes what is *nameable*, never what is *computed*: none is
+  forwarded to a paradigm crate, so ADR-0047's "one wheel, one
+  behavior" is untouched. `cargo hack --feature-powerset check -p
+  vernier` gates every combination in CI and in `just lint`.
+
+  `vernier-ffi` and `vernier-cli` are deliberately not re-exported —
+  the first ships only inside the wheel, and a library dep on the
+  second would drag `clap` into every consumer's tree (ADR-0015).
+
 - **Stub conformance test** (`tests/python/test_core_stub_conformance.py`)
   — asserts `python/vernier/_core.pyi` matches the compiled
   `vernier._core` in symbol coverage, class members, property-vs-method
@@ -68,6 +93,17 @@ additive / perf / docs".
   but depended on by no crate, never resolved into `Cargo.lock`, and no
   `#[gen_stub_*]` macro was ever used. `_core.pyi` is hand-written by
   design; see `docs/engineering/python-type-stubs.md`.
+- **`tools/reservations/` in full** — the four crate skeletons, the PyPI
+  skeleton, and `reserve.sh` (ADR-0048). Every name it held has been
+  redeemed by a real release. The practice it encoded produced a
+  crates.io anti-squatting report on 2026-08-10 against the empty
+  `vernier@0.0.0` placeholder, and is replaced by one rule: *a crate
+  name is claimed by its first real release, and never before* — an
+  anticipated crate is recorded in the ADR that anticipates it, and
+  nothing is published to hold it. `vernier-assign` and any future 3D
+  evaluation crate are explicitly not pre-reserved.
+  `docs/engineering/registry-reservations.md` is rewritten from a
+  reservation register into a published-artifact register.
 
 ## [0.2.0] — 2026-06-09
 

@@ -6,11 +6,11 @@ Project guidance for Claude Code. Domain memory lives at `~/.claude/projects/-ho
 
 Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 
+- `crates/vernier/` — facade crate (ADR-0048). `src/lib.rs` only: whole-crate `pub use` aliases for the five library crates, plus rustdoc. **No logic, ever** — if a module appears here, the firewall has been breached. `#[cfg(feature = ...)]` may gate a `pub use` line and nothing else.
 - `crates/vernier-core/` — pure Rust eval logic. No Python deps. `#![forbid(unsafe_code)]`. Source of truth for semantics.
 - `crates/vernier-mask/` — COCO RLE codec, polygon rasterizer, mask ops (ADR-0009). Leaf crate (no reverse dep on core). No Python deps. `#![forbid(unsafe_code)]`.
 - `crates/vernier-ffi/` — PyO3 bindings → `vernier._core`. Data conversion only; logic belongs in core. `publish = false`.
 - `python/vernier/` — user-facing Python wrapper. `pyright` strict.
-- `tools/reservations/` — placeholder packages reserving crates.io / PyPI names. Outside the Cargo workspace; don't add to members, don't `just build`. See `docs/engineering/registry-reservations.md`.
 - `docs/adr/` — MADR-format ADRs. Significant changes start as a `proposed` ADR, not a PR. Immutable once `accepted`; supersede with a new ADR.
 
 ## Commands (use `just`)
@@ -22,6 +22,7 @@ Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 - `just lint` — clippy + ruff + pyright (CI-equivalent, read-only)
 - `just fmt` — cargo fmt + ruff format + ruff check --fix
 - `just audit` — `cargo deny check`
+- `just check-features` — `cargo hack --feature-powerset check -p vernier` (ADR-0048 facade gate; runs as part of `lint-rust`)
 - `just clean` — nuke `target/`, `.venv`, built `_core*.so`
 
 Single tests:
@@ -33,7 +34,7 @@ uv run pytest -m parity                  # all parity tests
 uv run pytest -m "not slow"              # skip slow
 ```
 
-Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nextest`, `cargo-deny`. `rustc >= 1.83`, Python >= 3.10.
+Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nextest`, `cargo-deny`, `cargo-hack`. `rustc >= 1.83`, Python >= 3.10.
 
 ## Parity contract — read before changing eval logic
 
@@ -52,5 +53,5 @@ Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nex
 ## Non-trivial workflows
 
 - **Quirk-driven test:** fixture in `tests/python/parity/fixtures/<name>/{gt,dt}.json`; add name to `ALL_FIXTURES` in `tests/python/parity/test_parity.py`. Cite quirks by ID (e.g. "B1", "D6") per the disposition table.
-- **Reserving a registry name:** edit `tools/reservations/`, then `./tools/reservations/reserve.sh --publish` (crates.io). PyPI flows through the release path — see `docs/engineering/release-runbook.md`.
+- **Claiming a registry name:** don't, ahead of time. Per ADR-0048, *a crate name is claimed by its first real release, and never before* — an anticipated crate is recorded in the ADR that anticipates it, and nothing is published to hold it. What is published, and under which credentials, is in `docs/engineering/registry-reservations.md`.
 - **Committing:** conventional commits encouraged. `just lint && just test && just audit` mirrors CI.

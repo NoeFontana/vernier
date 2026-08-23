@@ -150,3 +150,4 @@ supersession.
 | #    | Title                                                       | Status   |
 | ---- | ----------------------------------------------------------- | -------- |
 | [0034](0034-aarch64-linux-gnu-release-target.md) | Add `aarch64-unknown-linux-gnu` to the `vernier-cli` Release target list | proposed |
+| [0048](0048-vernier-facade-crate.md) | Promote `vernier` to a facade crate and retire speculative name reservations | accepted (first-publish version is errata — see the ADR's §"Versioning and publish order") |

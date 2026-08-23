@@ -59,6 +59,20 @@ empirically. vernier takes a third path:
 pip install vernier
 ```
 
+For the Rust library:
+
+```sh
+cargo add vernier
+```
+
+`vernier` is a facade
+([ADR-0048](https://github.com/NoeFontana/vernier/blob/main/docs/adr/0048-vernier-facade-crate.md)):
+it re-exports the paradigm crates under one dependency and one module
+map — `vernier::{instance, mask, panoptic, semantic, partial}` —
+mirroring the Python namespace. Depending on a leaf crate directly
+(`cargo add vernier-core`) is equally supported when a narrower
+dependency tree matters.
+
 For the CLI binary on its own:
 
 ```sh

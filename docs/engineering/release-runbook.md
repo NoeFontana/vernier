@@ -26,7 +26,7 @@ linux   ─┐
 macos   ─┤
 windows ─┤  ─► smoke ─┐
 sdist   ─┤            ├─► publish-pypi      (OIDC → PyPI, with PEP 740 attestations)
-         │            └─► publish-crates-io (OIDC → crates.io, six crates)
+         │            └─► publish-crates-io (OIDC → crates.io, seven crates)
 verify-tag ──────────────► (gates both publish jobs)
 
 release.yml (cargo-dist) ──► build-local-artifacts (4 targets) ──► host (GH Release)
@@ -72,7 +72,7 @@ tier that enforces environment protection rules — set Environment to
 ### 2. crates.io Trusted Publishers (one entry per crate)
 
 crates.io scopes Trusted Publishers per crate, not per repo. Each of
-the six published crates needs its own configuration at
+the seven published crates needs its own configuration at
 <https://crates.io/me/trusted-publishers>:
 
 | Crate | Repository | Workflow | Environment |
@@ -83,22 +83,28 @@ the six published crates needs its own configuration at
 | `vernier-panoptic` | `NoeFontana/vernier` | `wheels.yml` | *(blank)* |
 | `vernier-semantic` | `NoeFontana/vernier` | `wheels.yml` | *(blank)* |
 | `vernier-cli`      | `NoeFontana/vernier` | `wheels.yml` | *(blank)* |
+| `vernier`          | `NoeFontana/vernier` | `wheels.yml` | *(blank)* |
 
 When the repo goes public, set Environment to `crates-io` for each
 entry and add `environment: crates-io` to the `publish-crates-io`
 job.
 
-`vernier-ffi` is `publish = false` (ships only inside the wheel) and
-the top-level `vernier` crate name is held by the placeholder under
-`tools/reservations/crates/vernier/` at 0.0.0 — neither needs a
-publisher entry.
+`vernier-ffi` is `publish = false` (it ships only inside the wheel)
+and needs no publisher entry.
 
-The first publish for a crate name has to be done manually with an API
-token (Trusted Publishers can only update an existing crate, not
-create a new one). `vernier-mask` / `vernier-core` / `vernier-cli`
-were bootstrapped at v0.0.1 (see "First release bootstrap" below);
-`vernier-partial`, `vernier-panoptic`, and `vernier-semantic` need the
-same one-shot-token bootstrap on their first publish.
+**`vernier` needs its entry added before the first tag that includes
+the facade** (ADR-0048). It is the one crate whose entry is a
+`publish-update` scope rather than `publish-new`: we already own the
+name from the retired v0.0.0 placeholder, so no one-shot-token
+bootstrap is required — Trusted Publishers can update an existing
+crate, and `vernier` is one.
+
+Every *other* first publish for a crate name has to be done manually
+with an API token, because Trusted Publishers cannot create a crate.
+`vernier-mask` / `vernier-core` / `vernier-cli` were bootstrapped at
+v0.0.1 (see "First release bootstrap" below); `vernier-partial`,
+`vernier-panoptic`, and `vernier-semantic` need the same one-shot-token
+bootstrap on their first publish.
 
 ### 3. GitHub repo environments
 
@@ -181,8 +187,9 @@ git switch -c chore/release-X.Y.Z
 # Bump these strings to X.Y.Z:
 #   - Cargo.toml          [workspace.package].version
 #   - pyproject.toml      [project].version
-#   - The six publishable crates inherit version from workspace, but the
-#     internal path-dep version pins must match. Search:
+#   - The seven publishable crates inherit version from workspace, but
+#     the internal path-dep version pins must match — including the five
+#     in crates/vernier/Cargo.toml. Search:
 #       grep -nR "version = \"0\." crates/*/Cargo.toml | grep -v workspace
 #     and bump every internal path-dep entry to X.Y.Z.
 cargo update --workspace
@@ -191,8 +198,12 @@ uv lock
 just lint && just test && just audit
 # docs.rs dry-run — catches feature-flag combinations CI's docs-rust
 # job won't see. Excludes vernier-ffi (publish = false; docs.rs never
-# builds it). Cheap insurance before the tag pushes.
-RUSTDOCFLAGS="--cfg docsrs" cargo doc --workspace --exclude vernier-ffi --no-deps --all-features --target-dir /tmp/docs-check
+# builds it). vernier-cli runs separately: its bin target and the
+# facade lib are both named `vernier`, so one pass collides on
+# target/doc/vernier (rust-lang/cargo#6313). Cheap insurance before the
+# tag pushes.
+RUSTDOCFLAGS="--cfg docsrs" cargo doc --workspace --exclude vernier-ffi --exclude vernier-cli --no-deps --all-features --target-dir /tmp/docs-check
+RUSTDOCFLAGS="--cfg docsrs" cargo doc -p vernier-cli --no-deps --all-features --target-dir /tmp/docs-check
 git commit -am "chore(release): bump workspace and wheel to X.Y.Z"
 git push -u origin chore/release-X.Y.Z
 gh pr create --title "chore(release): X.Y.Z"
@@ -264,9 +275,13 @@ Once the three workflows have finished:
   misconfigured — most likely the Trusted Publisher entry points at
   the wrong workflow file or the `attestations: true` parameter was
   dropped from the `pypa/gh-action-pypi-publish` step.
-- **crates.io** — each of the six crates resolves at
+- **crates.io** — each of the seven crates resolves at
   `https://crates.io/crates/<name>/X.Y.Z`. docs.rs builds successfully
-  (check the build status badge on each crate page).
+  (check the build status badge on each crate page). For `vernier`,
+  the docs.rs page must show all five modules — the crate sets
+  `all-features = true` under `[package.metadata.docs.rs]`, so a page
+  missing `panoptic` / `semantic` / `partial` means that metadata was
+  dropped.
 - **GitHub Releases** — four binary archives + four `.sha256` files +
   `vernier-installer.sh` + `vernier-installer.ps1` + `dist-manifest.json`
   are attached at
@@ -281,6 +296,65 @@ Once the three workflows have finished:
   installs to `~/.cargo/bin/vernier`.
 
 If any of the above fails post-tag, see *Rollback / failure modes* below.
+
+### One-off: publishing the facade ahead of a release
+
+**This is the path taken on 2026-08-23** and it does not recur — it
+exists only because the six 0.2.0 leaf crates were already live when
+the facade landed, so `vernier@0.2.0` resolves entirely against the
+registry. Every subsequent release publishes the facade through the
+normal tag-driven flow (see the section below).
+
+It is deliberately *not* a release: no tag is cut, no wheel ships, no
+other crate moves. Trusted Publishers only fire from a tag push, so
+this one publish uses a one-shot API token, the same mechanism as the
+"First release bootstrap" above.
+
+```sh
+# 1. Confirm the packaged crate resolves against the registry, not the
+#    workspace. This must download the leaf crates from crates.io.
+cargo publish -p vernier --dry-run
+
+# 2. Confirm the docs are true for the version being published: build
+#    and doctest the packaged crate outside the workspace, so the path
+#    dependencies cannot shadow the registry ones.
+rm -rf /tmp/facade-check && mkdir -p /tmp/facade-check
+cp -r target/package/vernier-0.2.0 /tmp/facade-check/
+(cd /tmp/facade-check/vernier-0.2.0 && cargo test --doc)
+
+# 3. Publish. From a clean tree on main, after the facade PR merges, so
+#    the published source matches a commit.
+#    Mint a token at https://crates.io/me scoped to publish-update for
+#    `vernier` only. Single-use; revoke immediately after.
+CARGO_REGISTRY_TOKEN=<one-shot token> cargo publish -p vernier
+
+# 4. Only once vernier@0.2.0 resolves on crates.io, retire the
+#    placeholder. Never before — see below.
+cargo yank --version 0.0.0 vernier
+
+# 5. Revoke the one-shot token, then add the `vernier` Trusted
+#    Publisher entry from "One-time setup §2" so the next tag publishes
+#    it automatically.
+```
+
+Yank order is load-bearing. Yanking first would leave the name held by
+a yanked empty crate while the anti-squatting ticket is open, which is
+a worse posture than the one being fixed. Yanking is not deletion: the
+v0.0.0 artifact and its stale `vernier-rs/vernier` repository URL are
+permanent; the yank only removes the version from dependency
+resolution.
+
+### One-off: the first *tagged* release that includes the facade
+
+One extra step, once only (ADR-0048): add the `vernier` Trusted
+Publisher entry from "One-time setup §2" **before the tag**. It is a
+`publish-update` scope — the name is already owned — so no one-shot
+token is needed. Without the entry, `publish-crates-io`'s final step
+fails *after* the other six crates have published, which costs a patch
+bump.
+
+If the standalone publish above already happened, this entry is
+already in place and there is nothing to do.
 
 ## Rollback / failure modes
 
@@ -317,7 +391,10 @@ other.
   re-tag. Don't try to resume from the middle of the dependency chain
   on the same version. The publish order
   (`mask → partial → core → panoptic → semantic → cli`) means an
-  early failure is cheaper to roll back than a late one.
+  early failure is cheaper to roll back than a late one. The facade
+  `vernier` publishes last, so a facade-only failure is the cheapest
+  case — but it still costs a patch bump, because the six crates ahead
+  of it already landed.
 
 ### `release.yml` (cargo-dist) fails
 
@@ -383,6 +460,6 @@ release is X.Y.(Z+1), not a re-cut of X.Y.Z.
 
 ## See also
 
-- [`docs/engineering/registry-reservations.md`](registry-reservations.md) — how the placeholder names (`vernier`, `vernier-cli`, `vernier-core`, `vernier-mask`) on crates.io and `vernier` on PyPI were claimed.
-- [`tools/reservations/crates/vernier/README.md`](../../tools/reservations/crates/vernier/README.md) — why the top-level `vernier` Rust crate stays at 0.0.0 indefinitely.
+- [`docs/engineering/registry-reservations.md`](registry-reservations.md) — what vernier publishes on each registry, under which credentials, and the "a name is claimed by its first real release" rule (ADR-0048).
+- [`docs/adr/0048-vernier-facade-crate.md`](../adr/0048-vernier-facade-crate.md) — the `vernier` facade crate and the retirement of the reservation practice.
 - [`CHANGELOG.md`](../../CHANGELOG.md) — release history.

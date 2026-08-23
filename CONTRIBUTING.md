@@ -7,6 +7,7 @@ detailed standards once they're written.
 
 ```
 crates/
+  vernier/           facade crate (ADR-0048); re-exports the five library crates, no logic
   vernier-core/      pure Rust evaluation logic; no Python dependency
   vernier-mask/      pure Rust COCO RLE codec, polygon rasterizer, mask ops (ADR-0009)
   vernier-ffi/       PyO3 bindings; data conversion only, no business logic
@@ -16,8 +17,6 @@ crates/
   vernier-partial/   distributed-eval wire envelope (ADR-0031, ADR-0032)
 python/
   vernier/           thin Python wrapper; the user-facing API lives here
-tools/
-  reservations/      placeholder packages holding registry names; outside the workspace
 docs/
   adr/               Architecture Decision Records
   ...                Diátaxis-organized documentation
@@ -35,6 +34,8 @@ Prerequisites:
 - [just](https://github.com/casey/just) for task running
 - [`cargo-nextest`](https://nexte.st/) for the Rust test runner
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for `just audit`
+- [`cargo-hack`](https://github.com/taiki-e/cargo-hack) for the facade
+  feature-powerset check in `just lint`
 
 ```bash
 # One-time setup

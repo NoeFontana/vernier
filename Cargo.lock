@@ -1637,6 +1637,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernier"
+version = "0.2.0"
+dependencies = [
+ "vernier-core",
+ "vernier-mask",
+ "vernier-panoptic",
+ "vernier-partial",
+ "vernier-semantic",
+]
+
+[[package]]
 name = "vernier-cli"
 version = "0.2.0"
 dependencies = [

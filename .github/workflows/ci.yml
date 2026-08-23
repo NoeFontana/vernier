@@ -11,7 +11,6 @@ on:
       - "**/*.md"
       - "LICENSE*"
       - ".gitignore"
-      - "tools/reservations/**"
       - ".github/workflows/wheels.yml"
 
 env:
@@ -35,10 +34,19 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
       - name: cargo fmt
         run: cargo fmt --all -- --check
       - name: cargo clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+      # ADR-0048 gate for the facade crate. Its three features are
+      # additive and re-export-only, so every combination must compile
+      # and none may be empty. Cheap (one source file, no dependency
+      # rebuild across combinations) and it is what keeps the
+      # "cfg gates a `pub use` and nothing else" invariant from
+      # decaying into a comment.
+      - name: cargo hack (facade feature powerset)
+        run: cargo hack --feature-powerset check -p vernier
       # cargo-deny piggy-backs on the Rust toolchain + checkout already
       # set up here, so it runs as a final lint step rather than as its
       # own job (saves a runner cold-start per PR).
@@ -75,8 +83,17 @@ jobs:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: cargo doc
-        run: cargo doc --workspace --exclude vernier-ffi --no-deps --all-features
+      # Two invocations, not one. `vernier-cli`'s binary target is named
+      # `vernier` (ADR-0015) and so is the facade library (ADR-0048), so
+      # documenting both in a single pass collides on
+      # `target/doc/vernier/` — a known cargo bug (rust-lang/cargo#6313).
+      # Splitting keeps rustdoc coverage over every target; the second
+      # run reuses the first's target dir, so it costs one small rustdoc
+      # invocation.
+      - name: cargo doc (libraries)
+        run: cargo doc --workspace --exclude vernier-ffi --exclude vernier-cli --no-deps --all-features
+      - name: cargo doc (vernier-cli binary)
+        run: cargo doc -p vernier-cli --no-deps --all-features
 
   # Build the abi3 wheel once. Because pyo3 is pinned to abi3-py310
   # (Cargo.toml), the resulting wheel installs into Python 3.10–3.14
