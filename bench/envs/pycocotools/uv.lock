@@ -702,6 +702,7 @@ dependencies = [
     { name = "vernier-coco-val-cache" },
     { name = "vernier-lvis-v1-val-cache" },
     { name = "vernier-lvis-val-cache" },
+    { name = "vernier-objects365-val-cache" },
     { name = "vernier-panoptic-val-cache" },
     { name = "vernier-real-predictions-cache" },
 ]
@@ -720,6 +721,7 @@ requires-dist = [
     { name = "vernier-coco-val-cache", editable = "../../../tools/coco_val_cache" },
     { name = "vernier-lvis-v1-val-cache", editable = "../../../tools/lvis_v1_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "../../../tools/lvis_val_cache" },
+    { name = "vernier-objects365-val-cache", editable = "../../../tools/objects365_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "../../../tools/panoptic_val_cache" },
     { name = "vernier-real-predictions-cache", editable = "../../../tools/real_predictions_cache" },
 ]
@@ -765,6 +767,11 @@ source = { editable = "../../../tools/lvis_v1_val_cache" }
 name = "vernier-lvis-val-cache"
 version = "0.0.0"
 source = { editable = "../../../tools/lvis_val_cache" }
+
+[[package]]
+name = "vernier-objects365-val-cache"
+version = "0.0.0"
+source = { editable = "../../../tools/objects365_val_cache" }
 
 [[package]]
 name = "vernier-panoptic-val-cache"
