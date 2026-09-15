@@ -100,7 +100,7 @@ def main() -> int:
         )
     summary_stats: dict[str, float] = dict(zip(keys, raw_stats, strict=True))
 
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     write_lvis_outputs(
         args=args,

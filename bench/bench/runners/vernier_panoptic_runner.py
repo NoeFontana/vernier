@@ -116,7 +116,7 @@ def main() -> int:
         per_class_array = per_class_uint64_table(snap.per_class, columns=("pq", "sq", "rq"))
         snap_json = snap.model_dump_json().encode()
 
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     write_panoptic_outputs(
         args=args,

@@ -589,7 +589,7 @@ resolution-markers = [
     "python_full_version < '3.11'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0f/37/6964b830433e654ec7485e45a00fc9a27cf868d622838f6b6d9c5ec0d532/scipy-1.15.3.tar.gz", hash = "sha256:eae3cf522bc7df64b42cad3925c876e1b0b6c35c1337c93e12c0f366f55b0eaf", size = 59419214, upload-time = "2025-05-08T16:13:05.955Z" }
 wheels = [
@@ -648,7 +648,7 @@ resolution-markers = [
     "python_full_version >= '3.11'",
 ]
 dependencies = [
-    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "numpy", version = "2.4.4", source = { registry = "https://pypi.org/simple" } },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7a/97/5a3609c4f8d58b039179648e62dd220f89864f56f7357f5d4f45c29eb2cc/scipy-1.17.1.tar.gz", hash = "sha256:95d8e012d8cb8816c226aef832200b1d45109ed4464303e997c5b13122b297c0", size = 30573822, upload-time = "2026-02-23T00:26:24.851Z" }
 wheels = [
@@ -737,7 +737,7 @@ wheels = [
 
 [[package]]
 name = "vernier"
-version = "0.1.0"
+version = "0.2.0"
 source = { directory = "../../../" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -774,7 +774,9 @@ dev = [
     { name = "pytest", specifier = ">=9" },
     { name = "pytest-benchmark", specifier = ">=5" },
     { name = "ruff", specifier = ">=0.15" },
+    { name = "vernier-ade20k-val-cache", editable = "../../../tools/ade20k_val_cache" },
     { name = "vernier-coco-val-cache", editable = "../../../tools/coco_val_cache" },
+    { name = "vernier-lvis-v1-val-cache", editable = "../../../tools/lvis_v1_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "../../../tools/lvis_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "../../../tools/panoptic_val_cache" },
     { name = "vernier-real-predictions-cache", editable = "../../../tools/real_predictions_cache" },
@@ -786,6 +788,11 @@ docs = [
     { name = "mkdocs-redirects", specifier = ">=1.2" },
     { name = "mkdocstrings", extras = ["python"], specifier = ">=0.25" },
 ]
+
+[[package]]
+name = "vernier-ade20k-val-cache"
+version = "0.0.0"
+source = { editable = "../../../tools/ade20k_val_cache" }
 
 [[package]]
 name = "vernier-bench"
@@ -802,7 +809,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "scipy", version = "1.17.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "vernier-ade20k-val-cache" },
     { name = "vernier-coco-val-cache" },
+    { name = "vernier-lvis-v1-val-cache" },
     { name = "vernier-lvis-val-cache" },
     { name = "vernier-panoptic-val-cache" },
     { name = "vernier-real-predictions-cache" },
@@ -818,7 +827,9 @@ requires-dist = [
     { name = "pycocotools", specifier = "==2.0.11" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "scipy", specifier = ">=1.11" },
+    { name = "vernier-ade20k-val-cache", editable = "../../../tools/ade20k_val_cache" },
     { name = "vernier-coco-val-cache", editable = "../../../tools/coco_val_cache" },
+    { name = "vernier-lvis-v1-val-cache", editable = "../../../tools/lvis_v1_val_cache" },
     { name = "vernier-lvis-val-cache", editable = "../../../tools/lvis_val_cache" },
     { name = "vernier-panoptic-val-cache", editable = "../../../tools/panoptic_val_cache" },
     { name = "vernier-real-predictions-cache", editable = "../../../tools/real_predictions_cache" },
@@ -855,6 +866,11 @@ requires-dist = [
 name = "vernier-coco-val-cache"
 version = "0.0.0"
 source = { editable = "../../../tools/coco_val_cache" }
+
+[[package]]
+name = "vernier-lvis-v1-val-cache"
+version = "0.0.0"
+source = { editable = "../../../tools/lvis_v1_val_cache" }
 
 [[package]]
 name = "vernier-lvis-val-cache"

@@ -13,6 +13,15 @@ COCOeval drop-in, with the ``boundary_dilation_ratio`` default tracking
 the boundary-iou-api 0.02 reference. Numerical agreement with
 ``boundary-iou-api`` at the parity tensor level is not asserted here;
 the cell is timing-only.
+
+Threading (≥1.8): faster-coco-eval parallelizes RLE IoU on a Python
+thread pool (``rle_iou_max_workers``), boundary preparation
+(``boundary_cpu_count``), and the C++ image-evaluation / accumulation
+loops, which size themselves from ``std::thread::hardware_concurrency()``
+with no knob. The runner forwards the cell's CPU budget to both knobs;
+the C++ pools are bounded only by the CPU affinity the orchestrator pins
+this process to (they may still spawn more threads than CPUs, which is
+the library's own behavior on a constrained host).
 """
 
 from __future__ import annotations
@@ -30,20 +39,16 @@ from typing import Any  # noqa: E402
 from pycocotools.coco import COCO  # noqa: E402
 from pycocotools.cocoeval import COCOeval  # noqa: E402
 
+from bench.harness.cpu_affinity import cpu_budget  # noqa: E402
 from bench.runners._protocol import parse_runner_args, run_cocoeval_pipeline  # noqa: E402
 
 
 def main() -> int:
     args = parse_runner_args()
-    # faster-coco-eval exposes parallelism only on boundary IoU via the
-    # ``boundary_cpu_count`` constructor kwarg — it controls the
-    # ``calculateRleForAllAnnotations`` step that boundary `_prepare()`
-    # runs. bbox / segm / keypoints have no thread knob in
-    # faster-coco-eval, so the ADR-0047 ``--num-threads`` axis is a
-    # no-op there and is intentionally not forwarded.
-    cocoeval_kwargs: dict[str, Any] = {}
-    if args.iou_type == "boundary" and args.num_threads is not None:
-        cocoeval_kwargs["boundary_cpu_count"] = args.num_threads
+    budget = cpu_budget(args.num_threads)
+    cocoeval_kwargs: dict[str, Any] = {"rle_iou_max_workers": budget}
+    if args.iou_type == "boundary":
+        cocoeval_kwargs["boundary_cpu_count"] = budget
     run_cocoeval_pipeline(
         args=args,
         impl="faster-coco-eval",

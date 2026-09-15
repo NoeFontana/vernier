@@ -39,6 +39,7 @@ from coco_val_cache import file_sha256
 
 from bench import HARNESS_VERSION
 from bench.harness import machine
+from bench.harness.cpu_affinity import cpu_budget, select_cpus
 from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.migrations.v1_to_v2 import TENSOR_KEY
 from bench.harness.parity import (
@@ -148,15 +149,21 @@ def _spawn_subprocess(
     bench_root: Path,
     impl: str,
     cmd: list[str],
+    cpus: tuple[int, ...] | None = None,
 ) -> tuple[int, object, int]:
     """Run a runner subprocess and return ``(status, rusage, parent_wall_ns)``.
 
     Lifted out of :func:`_spawn_one_rep` so the panoptic spawn path
     can share the wait4 + parent-clock pattern without duplicating
     the pickle-glue.
+
+    ``cpus`` pins the child's affinity mask before ``exec`` so ``uv``
+    and the runner it spawns (and every thread either creates) inherit
+    it. See :mod:`bench.harness.cpu_affinity`.
     """
+    preexec = (lambda: os.sched_setaffinity(0, cpus)) if cpus is not None else None
     parent_start = time.perf_counter_ns()
-    proc = subprocess.Popen(cmd, env=uv_run_env(bench_root, impl))
+    proc = subprocess.Popen(cmd, env=uv_run_env(bench_root, impl), preexec_fn=preexec)
     _pid, status, rusage = os.wait4(proc.pid, 0)
     parent_wall_ns = time.perf_counter_ns() - parent_start
     return status, rusage, parent_wall_ns
@@ -196,12 +203,20 @@ def _spawn_one_rep(
         str(rep_npy),
     )
     # ADR-0047 — append the optional threading axis when the cell pins
-    # a thread count. Non-vernier runners accept the flag (it's wired
-    # into the shared argspec) but ignore the value; vernier_runner
-    # forwards it to ``Evaluator.evaluate``.
+    # a thread count. Runners forward it to their library's own knob
+    # where one exists (vernier ``num_threads``, hotcoco
+    # ``RAYON_NUM_THREADS``, faster-coco-eval worker counts).
     if num_threads is not None:
         cmd.extend(["--num-threads", str(num_threads)])
-    status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
+    # Instance / LVIS cells host multi-threaded competitors whose pools
+    # can't all be capped by a knob, so every impl runs under the same
+    # affinity-enforced CPU budget — including the default cell (1 CPU).
+    status, rusage, parent_wall_ns = _spawn_subprocess(
+        bench_root=bench_root,
+        impl=impl,
+        cmd=cmd,
+        cpus=select_cpus(cpu_budget(num_threads)),
+    )
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
     if not rep_json.exists() or not rep_npy.exists():
@@ -814,8 +829,9 @@ class CellSpec:
     # ADR-0047 threading axis. ``None`` (the default) preserves the
     # pre-ADR-0047 single-threaded behavior at every callsite; an
     # explicit int forwards through the runner to
-    # :meth:`vernier.instance.Evaluator.evaluate`'s ``num_threads``.
-    # Non-vernier impls ignore the value (they have no rayon pool).
+    # :meth:`vernier.instance.Evaluator.evaluate`'s ``num_threads`` (and
+    # the equivalent knob on multi-threaded baselines). Instance / LVIS
+    # cells also pin every runner to ``cpu_budget(num_threads)`` CPUs.
     num_threads: int | None = None
 
 

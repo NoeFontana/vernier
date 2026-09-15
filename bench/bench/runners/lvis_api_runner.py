@@ -100,7 +100,7 @@ def main() -> int:
             )
         summary_stats[k] = float(ev.results[k])
 
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     write_lvis_outputs(
         args=args,

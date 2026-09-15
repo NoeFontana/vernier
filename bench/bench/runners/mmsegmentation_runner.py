@@ -182,7 +182,7 @@ def main() -> int:
         )
         snap_json = snap.model_dump_json().encode()
 
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     write_semantic_outputs(
         args=args,

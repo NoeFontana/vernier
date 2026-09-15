@@ -75,7 +75,7 @@ def main() -> int:
 
     # ``perf_counter`` at module top would also catch import time, which
     # is interpreter-state more than impl behavior.
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     # Stage-0 instrumentation hook (bbox-IoU optimization plan). Active
     # only when both (a) `VERNIER_BENCH_HISTOGRAM_PATH` is set and (b)

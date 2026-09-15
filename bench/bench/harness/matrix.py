@@ -19,6 +19,7 @@ ALL_IMPLS: tuple[str, ...] = (
     "vernier",
     "pycocotools",
     "faster-coco-eval",
+    "hotcoco",
     "boundary-iou-api",
     # Paradigm-specific impls — kept in this single tuple so the CLI's
     # ``--impl`` Choice accepts every registered impl by name.
@@ -41,6 +42,8 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
         "vernier": frozenset({"bbox", "segm", "keypoints", "boundary"}),
         "pycocotools": frozenset({"bbox", "segm", "keypoints"}),
         "faster-coco-eval": frozenset({"bbox", "segm", "keypoints", "boundary"}),
+        # hotcoco has no boundary-IoU surface.
+        "hotcoco": frozenset({"bbox", "segm", "keypoints"}),
         "boundary-iou-api": frozenset({"boundary"}),
     },
     "panoptic": {
@@ -94,6 +97,7 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     "vernier": "vernier",
     "pycocotools": "pycocotools",
     "faster-coco-eval": "faster-coco-eval",
+    "hotcoco": "hotcoco",
     "boundary-iou-api": "boundary-iou-api",
     "vernier_panoptic": "panopticapi",
     "panopticapi": "panopticapi",

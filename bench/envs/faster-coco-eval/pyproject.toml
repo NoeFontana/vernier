@@ -13,11 +13,14 @@ dependencies = [
     "vernier-bench",
     "numpy>=2.0",
     "pydantic>=2.0",
-    "faster-coco-eval>=1.6",
+    "faster-coco-eval==1.8.0",
 ]
 
 [tool.uv]
 package = false
+# Benchmark the PyPI wheel users get, never a local sdist compile whose
+# flags could differ from the published build.
+no-build-package = ["faster-coco-eval"]
 
 [tool.uv.sources]
 vernier-bench = { path = "../..", editable = true }

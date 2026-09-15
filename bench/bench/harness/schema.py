@@ -82,6 +82,10 @@ class StageTimings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     wall_ns: int
+    # Process CPU time across all threads over the same span. ``None``
+    # for stages recorded without a CPU clock (and for results written
+    # before the field existed).
+    cpu_ns: int | None = None
     notes: list[str] = []
 
 
