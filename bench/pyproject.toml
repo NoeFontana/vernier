@@ -23,6 +23,10 @@ dependencies = [
     # coco_val_cache). Resolves the LVIS detector workload's image-dir
     # side without dragging in a separate VERNIER_COCO_CACHE env-var.
     "vernier-lvis-v1-val-cache",
+    # Objects365 v2 val annotation cache (CC BY 4.0 annotations only —
+    # never images). Backs the ``objects365_val_jittered_seed<N>``
+    # scale workload; same fetch+verify shape as the LVIS cache.
+    "vernier-objects365-val-cache",
     # COCO panoptic val2017 dev cache (ADR-0025); same fetch+verify
     # shape, gated on the same VERNIER_BENCH_DOWNLOAD_TESTS env var.
     "vernier-panoptic-val-cache",
@@ -60,6 +64,7 @@ dependencies = [
 vernier-coco-val-cache = { path = "../tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "../tools/lvis_val_cache", editable = true }
 vernier-lvis-v1-val-cache = { path = "../tools/lvis_v1_val_cache", editable = true }
+vernier-objects365-val-cache = { path = "../tools/objects365_val_cache", editable = true }
 vernier-panoptic-val-cache = { path = "../tools/panoptic_val_cache", editable = true }
 vernier-ade20k-val-cache = { path = "../tools/ade20k_val_cache", editable = true }
 vernier-real-predictions-cache = { path = "../tools/real_predictions_cache", editable = true }

@@ -301,20 +301,31 @@ def dt_path(*, gt_path: Path, seed: int) -> Path:
     return out
 
 
-def lvis_dt_path(*, gt_path: Path, seed: int) -> Path:
-    """LVIS-keyed cache sibling of :func:`dt_path`.
+def _dataset_dt_path(*, dataset: str, gt_path: Path, seed: int) -> Path:
+    """Cache sibling of :func:`dt_path` for a non-COCO GT.
 
-    The same generator runs against the LVIS GT bytes; the only
-    difference is the cache filename, so a same-seed COCO and LVIS
-    jittered DT live in different files instead of clobbering each
-    other. Seed identity is therefore a property of (workload, seed),
-    not of (paradigm, seed).
+    The same generator runs against another dataset's GT bytes; only
+    the cache filename differs, so same-seed DTs for different datasets
+    live in different files instead of clobbering each other. Seed
+    identity is therefore a property of (workload, seed), not of
+    (paradigm, seed).
     """
     cache = bench_cache_root() / "jittered"
-    out = cache / f"lvis_v1_val_jittered_seed{seed}_v{JITTER_PARAMS_VERSION}.json"
+    out = cache / f"{dataset}_jittered_seed{seed}_v{JITTER_PARAMS_VERSION}.json"
     if not out.exists():
         _generate(gt_path=gt_path, seed=seed, out=out)
     return out
+
+
+def lvis_dt_path(*, gt_path: Path, seed: int) -> Path:
+    """LVIS v1 val jittered DT (see :func:`_dataset_dt_path`)."""
+    return _dataset_dt_path(dataset="lvis_v1_val", gt_path=gt_path, seed=seed)
+
+
+def objects365_dt_path(*, gt_path: Path, seed: int) -> Path:
+    """Objects365 val jittered DT (see :func:`_dataset_dt_path`). The O365
+    GT carries no ``segmentation``, so detections are bbox-only."""
+    return _dataset_dt_path(dataset="objects365_val", gt_path=gt_path, seed=seed)
 
 
 def _generate_keypoints(*, gt_path: Path, seed: int, out: Path) -> None:

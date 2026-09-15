@@ -19,6 +19,10 @@ Workload identifiers (instance — registered today):
   anns); under-stresses matching because every DT lines up with a GT,
   which keeps it useful as a perf smoke but not as a realistic detector
   benchmark.
+- ``objects365_val_jittered_seed<N>`` — Objects365 v2 val GT
+  (sha256-pinned, CC BY 4.0 annotations only; 80k images / 1.24M boxes /
+  365 categories) with the same jitter generator's DT. The scale
+  workload: bbox only, since Objects365 has no masks or keypoints.
 - ``synthetic:k=v,k=v[,...]`` — parametric stress-test. Required keys:
   ``n_images``, ``seed``. Optional: ``n_categories`` (default 80),
   ``dt_per_image`` (default 30), ``gt_per_image`` (default 10) — chosen
@@ -69,6 +73,7 @@ from bench.workloads import (
     coco_val2017_semantic,
     jittered_predictions,
     lvis_v1,
+    objects365_val,
     real_predictions,
     smoke,
     synthetic,
@@ -375,6 +380,15 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             gt_path=gt,
             dt_path=dt,
             supported_iou_types=frozenset({"bbox", "segm"}),
+        )
+
+    if (o365_seed := objects365_val.parse_jittered_seed(workload_name)) is not None:
+        gt = objects365_val.gt_path()
+        return InstanceWorkload(
+            workload_id=objects365_val.jittered_workload_id(o365_seed),
+            gt_path=gt,
+            dt_path=jittered_predictions.objects365_dt_path(gt_path=gt, seed=o365_seed),
+            supported_iou_types=frozenset({"bbox"}),
         )
 
     if workload_name == "coco_val2017_perfect_segm":
