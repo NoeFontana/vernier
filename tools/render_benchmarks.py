@@ -112,6 +112,9 @@ class CellStats:
     # interpreter + imports. ``None`` for results recorded before stages
     # carried RSS fields.
     eval_rss_bytes: int | None = None
+    # Harness mode the cell was recorded in. Scale workloads run in
+    # ``dev`` (one rep) next to a ``release`` headline.
+    mode: str = ""
 
 
 def format_ns(ns: int | None) -> str:
@@ -259,6 +262,7 @@ def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] 
         max_rss_bytes=max(rsses) if rsses else 0,
         cpu_util=statistics.median(cpu_ratios) if cpu_ratios else None,
         eval_rss_bytes=int(statistics.median(eval_rsses)) if eval_rsses else None,
+        mode=str(data.get("mode", "")),
     )
     cpu_model = data.get("cpu_model")
     cpu_arch = data.get("cpu_arch")
@@ -307,7 +311,9 @@ def gather_cells(
             continue
         stats, cell_mode, impl_version, cell_cpu_model, cell_cpu_arch = loaded
         out[CellKey(paradigm, workload, iou, impl)] = stats
-        if not mode:
+        # The headline mode is ``release`` whenever any cell used it;
+        # per-workload deviations are annotated in the section itself.
+        if not mode or cell_mode == "release":
             mode = cell_mode
         if cpu_model is None and cell_cpu_model is not None:
             cpu_model = cell_cpu_model
@@ -403,9 +409,23 @@ def render_iou_table(
     return "\n".join(rows)
 
 
+# Workload-id prefix → note rendered under the workload heading. Carries
+# dataset attribution required by the source license.
+_WORKLOAD_NOTES: dict[str, str] = {
+    "objects365_val": (
+        "Scale workload: Objects365 v2 val, 80,000 images · 1,240,587 GT boxes · "
+        "365 categories, with ~1.06 M jittered detections (bbox only). Annotations "
+        "© [Objects365 Consortium](https://www.objects365.org/), licensed under "
+        "[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); images are "
+        "never downloaded."
+    ),
+}
+
+
 def render_paradigm_section(
     cells: dict[CellKey, CellStats],
     paradigm: str,
+    harness_mode: str = "",
 ) -> str:
     workloads = sorted(
         {k.workload for k in cells if k.paradigm == paradigm and not _THREADED_RE.match(k.workload)}
@@ -416,6 +436,18 @@ def render_paradigm_section(
     for workload in workloads:
         out.append(f"### Workload: `{workload}`")
         out.append("")
+        for prefix, note in _WORKLOAD_NOTES.items():
+            if workload.startswith(prefix):
+                out += [f"*{note}*", ""]
+        modes = {
+            v.mode for k, v in cells.items() if k.paradigm == paradigm and k.workload == workload
+        }
+        if harness_mode and modes and modes != {harness_mode}:
+            out += [
+                f"*Recorded in harness mode `{'/'.join(sorted(modes))}` (not "
+                f"`{harness_mode}`): one measurement rep per impl, no IQR gate.*",
+                "",
+            ]
         ious_present = {k.iou for k in cells if k.paradigm == paradigm and k.workload == workload}
         order = IOU_ORDER.get(paradigm, sorted(ious_present))
         for iou in order:
@@ -614,7 +646,7 @@ This page is regenerated from the harness result tree by
 """
     sections = []
     for paradigm in PARADIGM_RENDER_ORDER:
-        section = render_paradigm_section(cells, paradigm)
+        section = render_paradigm_section(cells, paradigm, harness_mode)
         if section:
             sections.append(section)
     scaling = render_scaling_section(cells)
