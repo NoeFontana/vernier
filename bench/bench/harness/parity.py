@@ -983,6 +983,7 @@ def _compare_streaming_cross_impl(
 # fixtures use ALIGNED_ATOL without a schema change.
 _LVIS_TIER_PAIRS: tuple[tuple[Tier, str, str, float], ...] = (
     ("strict", "vernier_lvis", "lvis-api", 0.0),
+    ("aligned", "vernier_lvis", "hotcoco_lvis", ALIGNED_ATOL),
 )
 
 

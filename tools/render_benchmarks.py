@@ -42,6 +42,8 @@ IMPL_LABELS: dict[str, str] = {
     "vernier_lvis": "vernier",
     "pycocotools": "pycocotools",
     "faster-coco-eval": "faster-coco-eval",
+    "hotcoco": "hotcoco",
+    "hotcoco_lvis": "hotcoco",
     "boundary-iou-api": "boundary-iou-api",
     "panopticapi": "panopticapi",
     "mmsegmentation": "mmsegmentation",
@@ -54,6 +56,8 @@ IMPL_ORDER: list[str] = [
     "vernier_panoptic",
     "vernier_semantic",
     "vernier_lvis",
+    "hotcoco",
+    "hotcoco_lvis",
     "faster-coco-eval",
     "pycocotools",
     "boundary-iou-api",
@@ -99,6 +103,10 @@ class CellStats:
     iqr_relative: float | None
     iqr_gate_passed: bool | None
     max_rss_bytes: int
+    # Median over reps of total-stage process CPU time / wall time: the
+    # impl's effective parallelism. ``None`` for results recorded before
+    # stages carried ``cpu_ns``.
+    cpu_util: float | None = None
 
 
 def format_ns(ns: int | None) -> str:
@@ -217,6 +225,11 @@ def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] 
     if not reps:
         return None
     walls = [r["stages"]["total"]["wall_ns"] for r in reps]
+    cpu_ratios = [
+        r["stages"]["total"]["cpu_ns"] / r["stages"]["total"]["wall_ns"]
+        for r in reps
+        if r["stages"]["total"].get("cpu_ns") is not None and r["stages"]["total"]["wall_ns"] > 0
+    ]
     rsses = [r.get("ru_maxrss_bytes", 0) for r in reps]
     aggregation = data.get("aggregation") or {}
     total_agg = aggregation.get("stages", {}).get("total", {})
@@ -233,6 +246,7 @@ def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] 
         iqr_relative=iqr_relative,
         iqr_gate_passed=iqr_gate_passed,
         max_rss_bytes=max(rsses) if rsses else 0,
+        cpu_util=statistics.median(cpu_ratios) if cpu_ratios else None,
     )
     cpu_model = data.get("cpu_model")
     cpu_arch = data.get("cpu_arch")
@@ -343,13 +357,15 @@ def render_iou_table(
     impls = [i for i in IMPL_ORDER if i in matching]
     impls.extend(sorted(i for i in matching if i not in IMPL_ORDER))
     has_iqr = any(matching[i].iqr_ns is not None for i in impls)
-    rows = []
-    if has_iqr:
-        rows.append("| impl | median | IQR | RSS (max) | vs vernier |")
-        rows.append("| --- | ---: | ---: | ---: | ---: |")
-    else:
-        rows.append("| impl | median | RSS (max) | vs vernier |")
-        rows.append("| --- | ---: | ---: | ---: |")
+    has_cpu = any(matching[i].cpu_util is not None for i in impls)
+    header = ["impl", "median"]
+    header += ["IQR"] if has_iqr else []
+    header += ["CPU/wall"] if has_cpu else []
+    header += ["RSS (max)", "vs vernier"]
+    rows = [
+        "| " + " | ".join(header) + " |",
+        "| --- |" + " ---: |" * (len(header) - 1),
+    ]
     for impl in impls:
         stats = matching[impl]
         speedup = stats.median_ns / baseline.median_ns
@@ -359,17 +375,13 @@ def render_iou_table(
         ratio_cell = (
             f"**{format_speedup(speedup)}**" if is_vernier(impl) else format_speedup(speedup)
         )
+        cols = [cell_label, format_ns(stats.median_ns)]
         if has_iqr:
-            iqr_cell = format_iqr(stats.iqr_ns, stats.iqr_relative, stats.iqr_gate_passed)
-            rows.append(
-                f"| {cell_label} | {format_ns(stats.median_ns)} | {iqr_cell} "
-                f"| {format_bytes(stats.max_rss_bytes)} | {ratio_cell} |"
-            )
-        else:
-            rows.append(
-                f"| {cell_label} | {format_ns(stats.median_ns)} "
-                f"| {format_bytes(stats.max_rss_bytes)} | {ratio_cell} |"
-            )
+            cols.append(format_iqr(stats.iqr_ns, stats.iqr_relative, stats.iqr_gate_passed))
+        if has_cpu:
+            cols.append("—" if stats.cpu_util is None else f"{stats.cpu_util:.2f}")
+        cols += [format_bytes(stats.max_rss_bytes), ratio_cell]
+        rows.append("| " + " | ".join(cols) + " |")
     return "\n".join(rows)
 
 
@@ -377,7 +389,9 @@ def render_paradigm_section(
     cells: dict[CellKey, CellStats],
     paradigm: str,
 ) -> str:
-    workloads = sorted({k.workload for k in cells if k.paradigm == paradigm})
+    workloads = sorted(
+        {k.workload for k in cells if k.paradigm == paradigm and not _THREADED_RE.match(k.workload)}
+    )
     if not workloads:
         return ""
     out = [f"## {PARADIGM_TITLE.get(paradigm, paradigm.capitalize())}", ""]
@@ -399,7 +413,59 @@ def render_paradigm_section(
     return "\n".join(out)
 
 
-_PYPI_BASELINES: frozenset[str] = frozenset({"pycocotools", "faster-coco-eval"})
+# ADR-0047 thread-axis cells carry a ``_t<N>`` workload suffix; they
+# render in the scaling section, not as standalone workloads.
+_THREADED_RE = re.compile(r"^(?P<base>.+)_t(?P<nt>\d+)$")
+
+
+def render_scaling_section(cells: dict[CellKey, CellStats]) -> str:
+    """One table per ``(paradigm, base workload, iou)`` with a thread
+    axis: rows are impls, columns thread counts, each entry the median
+    total plus its ratio to vernier at the same thread count."""
+    axes: dict[tuple[str, str, str], set[int]] = {}
+    for k in cells:
+        m = _THREADED_RE.match(k.workload)
+        if m:
+            axes.setdefault((k.paradigm, m["base"], k.iou), set()).add(int(m["nt"]))
+    if not axes:
+        return ""
+    out = ["## Thread scaling", ""]
+    for (paradigm, base, iou), nts in sorted(axes.items()):
+        thread_counts = sorted(nts)
+        impls_present = {
+            k.impl
+            for k in cells
+            if k.paradigm == paradigm
+            and k.iou == iou
+            and k.workload in {f"{base}_t{nt}" for nt in thread_counts}
+        }
+        impls = [i for i in IMPL_ORDER if i in impls_present]
+        impls.extend(sorted(impls_present - set(IMPL_ORDER)))
+        out.append(f"**`{base}` · `{iou}`** (median total; ratio vs vernier at the same `nt`)")
+        out.append("")
+        out.append("| impl | " + " | ".join(f"`nt={nt}`" for nt in thread_counts) + " |")
+        out.append("| --- |" + " ---: |" * len(thread_counts))
+        for impl in impls:
+            entries = []
+            for nt in thread_counts:
+                workload = f"{base}_t{nt}"
+                stats = cells.get(CellKey(paradigm, workload, iou, impl))
+                baseline = vernier_baseline_for(cells, paradigm, workload, iou)
+                if stats is None:
+                    entries.append("—")
+                elif is_vernier(impl) or baseline is None:
+                    entries.append(format_ns(stats.median_ns))
+                else:
+                    ratio = format_speedup(stats.median_ns / baseline.median_ns)
+                    entries.append(f"{format_ns(stats.median_ns)} ({ratio})")
+            label = IMPL_LABELS.get(impl, impl)
+            label = f"**{label}**" if is_vernier(impl) else label
+            out.append(f"| {label} | " + " | ".join(entries) + " |")
+        out.append("")
+    return "\n".join(out)
+
+
+_PYPI_BASELINES: frozenset[str] = frozenset({"pycocotools", "faster-coco-eval", "hotcoco"})
 _GH_BASELINES: dict[str, str] = {
     "panopticapi": "cocodataset/panopticapi",
     "boundary-iou-api": "bowenc0221/boundary-iou-api",
@@ -433,11 +499,13 @@ def _baseline_link(impl: str, version: str) -> str:
 
 def render_baselines_block(impl_versions: dict[str, str]) -> str:
     """Render the pinned-baselines line; skips vernier-family impls."""
-    pieces = [
-        _baseline_link(impl, impl_versions[impl])
-        for impl in IMPL_ORDER
-        if not is_vernier(impl) and impl in impl_versions
-    ]
+    # Keyed by display label so one library serving two paradigms
+    # (``hotcoco`` + ``hotcoco_lvis``) pins once.
+    by_label: dict[str, str] = {}
+    for impl in IMPL_ORDER:
+        if not is_vernier(impl) and impl in impl_versions:
+            by_label.setdefault(IMPL_LABELS.get(impl, impl), impl_versions[impl])
+    pieces = [_baseline_link(label, version) for label, version in by_label.items()]
     if not pieces:
         return ""
     return (
@@ -511,6 +579,9 @@ This page is regenerated from the harness result tree by
         section = render_paradigm_section(cells, paradigm)
         if section:
             sections.append(section)
+    scaling = render_scaling_section(cells)
+    if scaling:
+        sections.append(scaling)
 
     methodology = """## Methodology in one paragraph
 
@@ -520,14 +591,28 @@ pycocotools-flavored packages on its `sys.path`. The harness records
 `(load, evaluate, accumulate, summarize, total)` wall_ns per stage,
 discards the warmup reps, and reports the median total plus the
 inter-quartile range (IQR = Q3 - Q1, with the relative spread shown as
-a percentage of the median). Release mode (N=10 + 2 warmup) gates each
-impl on relative IQR ≤ 5%; cells where the gate failed are marked with
+a percentage of the median). The timed span is the same for every impl:
+annotation files on disk → summary stats, including JSON parsing and
+index building, excluding interpreter start-up and imports. Per-stage
+splits are *not* comparable across impls (vernier parses JSON inside
+`evaluate`; the pycocotools-shaped libraries parse in `load`), so only
+the total is reported. Instance and LVIS cells run under an enforced
+CPU budget: every runner process is pinned (CPU affinity, one logical
+CPU per physical core before SMT siblings) to 1 CPU for the headline
+tables and `N` CPUs for `nt=N` cells, and the budget is also passed to
+each library's own thread knob (vernier `num_threads`, hotcoco
+`RAYON_NUM_THREADS`, faster-coco-eval `rle_iou_max_workers` /
+`boundary_cpu_count`). The CPU/wall column is process CPU time over
+wall time — ~1.00 means the impl used one core; anything well below
+the budget means it spent wall time waiting rather than computing.
+Release mode (N=10 + 2 warmup) gates each impl on relative IQR ≤ 5%;
+cells where the gate failed are marked with
 ` *` next to their IQR value — the median is still the best estimator,
 just with a wider confidence band than the gate accepts. Parity is a
 side effect of every timing run — strict-tier (vs pycocotools) and
-aligned-tier (vs faster-coco-eval) where applicable; failed parity
-fails the cell. Memory is `getrusage(RUSAGE_CHILDREN).ru_maxrss`,
-high-water-marked across the rep set.
+aligned-tier (vs faster-coco-eval and hotcoco) where applicable;
+a failed tier writes a divergence report next to the cell.
+Memory is `getrusage(RUSAGE_CHILDREN).ru_maxrss`, high-water-marked across the rep set.
 """
 
     iqr_footnote = ""

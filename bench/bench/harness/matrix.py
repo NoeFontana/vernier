@@ -31,6 +31,7 @@ ALL_IMPLS: tuple[str, ...] = (
     "mmsegmentation",
     "vernier_lvis",
     "lvis-api",
+    "hotcoco_lvis",
 )
 
 # Per-paradigm impl/metric matrix (ADR-0033). One source of truth for
@@ -80,6 +81,9 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
     "lvis": {
         "vernier_lvis": frozenset({"bbox"}),
         "lvis-api": frozenset({"bbox"}),
+        # hotcoco's ``lvis_style=True`` evaluator; mirrors the bbox-only
+        # vernier coverage so every LVIS cell compares like for like.
+        "hotcoco_lvis": frozenset({"bbox"}),
     },
 }
 
@@ -119,6 +123,7 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     # is named after the oracle's PyPI package).
     "vernier_lvis": "vernier",
     "lvis-api": "lvis-api",
+    "hotcoco_lvis": "hotcoco",
 }
 
 
