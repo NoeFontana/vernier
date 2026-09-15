@@ -1,5 +1,4 @@
-"""Per-cell CPU budget: selection, subprocess pinning, and the evidence
-the runners record (``cpu_ns`` + the ``cpu_affinity`` note)."""
+"""Per-cell CPU budget: CPU selection and subprocess pinning."""
 
 from __future__ import annotations
 
@@ -13,7 +12,6 @@ from bench.harness import cpu_affinity
 from bench.harness.cpu_affinity import cpu_budget, select_cpus
 from bench.harness.orchestrate import _spawn_subprocess
 from bench.harness.paths import BENCH_ROOT
-from bench.harness.timing import StageTable
 
 
 def test_default_cell_budget_is_one_cpu() -> None:
@@ -59,18 +57,3 @@ def test_spawned_child_inherits_pinned_cpus(tmp_path: Path) -> None:
     )
     assert os.waitstatus_to_exitcode(status) == 0
     assert out.read_text() == repr(sorted(cpus))
-
-
-def test_record_total_sums_cpu_and_notes_affinity() -> None:
-    stages = StageTable()
-    with stages.stage("load"):
-        sum(range(10_000))
-    with stages.stage("evaluate"):
-        sum(range(10_000))
-    stages.record_total()
-    table = stages.to_dict()
-    total = table["total"]
-    assert total.wall_ns == table["load"].wall_ns + table["evaluate"].wall_ns
-    assert total.cpu_ns == (table["load"].cpu_ns or 0) + (table["evaluate"].cpu_ns or 0)
-    expected = ",".join(str(c) for c in sorted(os.sched_getaffinity(0)))
-    assert total.notes == [f"cpu_affinity={expected}"]

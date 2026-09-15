@@ -107,6 +107,11 @@ class CellStats:
     # impl's effective parallelism. ``None`` for results recorded before
     # stages carried ``cpu_ns``.
     cpu_util: float | None = None
+    # Median over reps of total-stage peak RSS minus RSS at the start of
+    # the first stage: memory the evaluation added on top of the
+    # interpreter + imports. ``None`` for results recorded before stages
+    # carried RSS fields.
+    eval_rss_bytes: int | None = None
 
 
 def format_ns(ns: int | None) -> str:
@@ -230,6 +235,12 @@ def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] 
         for r in reps
         if r["stages"]["total"].get("cpu_ns") is not None and r["stages"]["total"]["wall_ns"] > 0
     ]
+    eval_rsses = [
+        r["stages"]["total"]["peak_rss_bytes"] - r["stages"]["total"]["rss_start_bytes"]
+        for r in reps
+        if r["stages"]["total"].get("peak_rss_bytes") is not None
+        and r["stages"]["total"].get("rss_start_bytes") is not None
+    ]
     rsses = [r.get("ru_maxrss_bytes", 0) for r in reps]
     aggregation = data.get("aggregation") or {}
     total_agg = aggregation.get("stages", {}).get("total", {})
@@ -247,6 +258,7 @@ def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] 
         iqr_gate_passed=iqr_gate_passed,
         max_rss_bytes=max(rsses) if rsses else 0,
         cpu_util=statistics.median(cpu_ratios) if cpu_ratios else None,
+        eval_rss_bytes=int(statistics.median(eval_rsses)) if eval_rsses else None,
     )
     cpu_model = data.get("cpu_model")
     cpu_arch = data.get("cpu_arch")
@@ -358,10 +370,13 @@ def render_iou_table(
     impls.extend(sorted(i for i in matching if i not in IMPL_ORDER))
     has_iqr = any(matching[i].iqr_ns is not None for i in impls)
     has_cpu = any(matching[i].cpu_util is not None for i in impls)
+    has_eval_rss = any(matching[i].eval_rss_bytes is not None for i in impls)
     header = ["impl", "median"]
     header += ["IQR"] if has_iqr else []
     header += ["CPU/wall"] if has_cpu else []
-    header += ["RSS (max)", "vs vernier"]
+    header += ["RSS (max)"]
+    header += ["eval Δ RSS"] if has_eval_rss else []
+    header += ["vs vernier"]
     rows = [
         "| " + " | ".join(header) + " |",
         "| --- |" + " ---: |" * (len(header) - 1),
@@ -380,7 +395,10 @@ def render_iou_table(
             cols.append(format_iqr(stats.iqr_ns, stats.iqr_relative, stats.iqr_gate_passed))
         if has_cpu:
             cols.append("—" if stats.cpu_util is None else f"{stats.cpu_util:.2f}")
-        cols += [format_bytes(stats.max_rss_bytes), ratio_cell]
+        cols.append(format_bytes(stats.max_rss_bytes))
+        if has_eval_rss:
+            cols.append(format_bytes(stats.eval_rss_bytes))
+        cols.append(ratio_cell)
         rows.append("| " + " | ".join(cols) + " |")
     return "\n".join(rows)
 
@@ -418,6 +436,12 @@ def render_paradigm_section(
 _THREADED_RE = re.compile(r"^(?P<base>.+)_t(?P<nt>\d+)$")
 
 
+def _scaling_row(impl: str, entries: list[str]) -> str:
+    label = IMPL_LABELS.get(impl, impl)
+    label = f"**{label}**" if is_vernier(impl) else label
+    return f"| {label} | " + " | ".join(entries) + " |"
+
+
 def render_scaling_section(cells: dict[CellKey, CellStats]) -> str:
     """One table per ``(paradigm, base workload, iou)`` with a thread
     axis: rows are impls, columns thread counts, each entry the median
@@ -441,14 +465,18 @@ def render_scaling_section(cells: dict[CellKey, CellStats]) -> str:
         }
         impls = [i for i in IMPL_ORDER if i in impls_present]
         impls.extend(sorted(impls_present - set(IMPL_ORDER)))
-        out.append(f"**`{base}` · `{iou}`** (median total; ratio vs vernier at the same `nt`)")
-        out.append("")
-        out.append("| impl | " + " | ".join(f"`nt={nt}`" for nt in thread_counts) + " |")
-        out.append("| --- |" + " ---: |" * len(thread_counts))
+        workloads = [f"{base}_t{nt}" for nt in thread_counts]
+        header = "| impl | " + " | ".join(f"`nt={nt}`" for nt in thread_counts) + " |"
+        align = "| --- |" + " ---: |" * len(thread_counts)
+        out += [
+            f"**`{base}` · `{iou}`** — median total; ratio vs vernier at the same `nt`",
+            "",
+            header,
+            align,
+        ]
         for impl in impls:
             entries = []
-            for nt in thread_counts:
-                workload = f"{base}_t{nt}"
+            for workload in workloads:
                 stats = cells.get(CellKey(paradigm, workload, iou, impl))
                 baseline = vernier_baseline_for(cells, paradigm, workload, iou)
                 if stats is None:
@@ -458,10 +486,20 @@ def render_scaling_section(cells: dict[CellKey, CellStats]) -> str:
                 else:
                     ratio = format_speedup(stats.median_ns / baseline.median_ns)
                     entries.append(f"{format_ns(stats.median_ns)} ({ratio})")
-            label = IMPL_LABELS.get(impl, impl)
-            label = f"**{label}**" if is_vernier(impl) else label
-            out.append(f"| {label} | " + " | ".join(entries) + " |")
+            out.append(_scaling_row(impl, entries))
         out.append("")
+
+        memory = {
+            impl: [cells.get(CellKey(paradigm, w, iou, impl)) for w in workloads] for impl in impls
+        }
+        if any(
+            st is not None and st.eval_rss_bytes is not None for v in memory.values() for st in v
+        ):
+            out += [f"**`{base}` · `{iou}`** — eval Δ RSS", "", header, align]
+            for impl, per_nt in memory.items():
+                entries = [format_bytes(st.eval_rss_bytes if st else None) for st in per_nt]
+                out.append(_scaling_row(impl, entries))
+            out.append("")
     return "\n".join(out)
 
 
@@ -605,6 +643,14 @@ each library's own thread knob (vernier `num_threads`, hotcoco
 `boundary_cpu_count`). The CPU/wall column is process CPU time over
 wall time — ~1.00 means the impl used one core; anything well below
 the budget means it spent wall time waiting rather than computing.
+Memory is reported two ways. RSS (max) is the runner process's
+lifetime peak (`getrusage(RUSAGE_CHILDREN).ru_maxrss`, high-water-marked
+across reps), so it includes the interpreter and the library's imports.
+eval Δ RSS is the median across reps of the exact RSS high-water mark
+during the timed stages (the kernel's `VmHWM`, reset through
+`/proc/self/clear_refs` at every stage start) minus RSS just before the
+first stage: the memory the evaluation itself needed, input parsing
+included.
 Release mode (N=10 + 2 warmup) gates each impl on relative IQR ≤ 5%;
 cells where the gate failed are marked with
 ` *` next to their IQR value — the median is still the best estimator,
@@ -612,7 +658,6 @@ just with a wider confidence band than the gate accepts. Parity is a
 side effect of every timing run — strict-tier (vs pycocotools) and
 aligned-tier (vs faster-coco-eval and hotcoco) where applicable;
 a failed tier writes a divergence report next to the cell.
-Memory is `getrusage(RUSAGE_CHILDREN).ru_maxrss`, high-water-marked across the rep set.
 """
 
     iqr_footnote = ""

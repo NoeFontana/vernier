@@ -86,6 +86,12 @@ class StageTimings(BaseModel):
     # for stages recorded without a CPU clock (and for results written
     # before the field existed).
     cpu_ns: int | None = None
+    # Resident set size when the stage began, and the kernel's exact RSS
+    # high-water mark while it ran (``VmHWM``, reset at stage start).
+    # ``peak_rss_bytes - rss_start_bytes`` on ``total`` is the memory the
+    # evaluation itself added on top of the interpreter + imports.
+    rss_start_bytes: int | None = None
+    peak_rss_bytes: int | None = None
     notes: list[str] = []
 
 

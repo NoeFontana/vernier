@@ -123,6 +123,7 @@ else is detail.
 | ---- | ----------------------------------------------------------- | -------- |
 | [0017](0017-local-bench-harness.md) | Local bench harness — subprocess-isolated, uv-managed, parity-coupled | accepted (streaming carve-out superseded by 0033) |
 | [0033](0033-multi-paradigm-bench.md) | Extend the bench harness across paradigms (panoptic, semantic, streaming) | accepted (supersedes 0017's streaming carve-out) |
+| [0049](0049-bench-cpu-budget.md) | Enforce a per-cell CPU budget in the bench harness (and add hotcoco as a baseline) | proposed |
 
 ### TIDE design package — proposed cluster
 
