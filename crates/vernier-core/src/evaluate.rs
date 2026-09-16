@@ -86,6 +86,7 @@
 use ndarray::{Array2, ArrayView2, ArrayViewMut2};
 
 use crate::accumulate::PerImageEval;
+use crate::cell_occupancy;
 use crate::dataset::{
     Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, EvalDataset,
     ImageId, ImageMeta,
@@ -991,10 +992,22 @@ pub fn evaluate_with<K: EvalKernel>(
     let strict_lvis_zero_area_filter =
         matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
 
+    // Visit only cells that can hold anything. The `(gt, dt)` empty
+    // check below is what decides a cell is a no-op, and it costs two
+    // index lookups to reach; at 365 categories x 80k images that is
+    // 29.2M lookups to find 626k real cells. `OccupiedCells` answers
+    // the same question once, in annotation order. See
+    // `crate::cell_occupancy`.
+    let image_ids: Vec<ImageId> = images.iter().map(|im| im.id).collect();
+    let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
+    let occupied = cell_occupancy::by_category(&image_ids, n_k, gt, dt, &bucket_index);
+
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
         let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
-        for (i, image) in images.iter().enumerate() {
+        for &i in occupied.row(k) {
+            let i = i as usize;
+            let image = images[i];
             let image_id = image.id;
             let gt_indices_raw = gt_indices_for_cell(gt, image_id, *cat);
             let gt_indices_buf: Vec<usize>;

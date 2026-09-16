@@ -20,7 +20,8 @@ use ndarray::{Array2, ArrayView2, ArrayViewMut2};
 use rayon::prelude::*;
 
 use crate::accumulate::PerImageEval;
-use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, ImageMeta};
+use crate::cell_occupancy;
+use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, ImageId, ImageMeta};
 use crate::error::EvalError;
 use crate::evaluate::{
     dt_top_indices_for_cell_into, evaluate_cell, gt_indices_for_cell, raw_dt_indices_for_cell,
@@ -92,36 +93,56 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
 
-    // Per-image rayon tasks write into a single output pair in
-    // image-major `(i, k, a)` layout via `par_chunks_mut`, then we
-    // transpose in place to the canonical `(k, a, i)` contract that
-    // downstream consumers (`accumulate`, `tables`, rkyv archive)
-    // expect. Single allocation per output Vec — saves the working +
-    // canonical double-buffer (~26 MB peak on val2017).
+    // Per-image rayon tasks emit only the cells they actually filled,
+    // then a single pass scatters them into the canonical `(k, a, i)`
+    // buffers downstream consumers (`accumulate`, `tables`, rkyv
+    // archive) expect.
+    //
+    // The previous shape wrote into an image-major `(i, k, a)` buffer
+    // and permuted it in place afterwards. That permutation is
+    // `O(K * A * I)` however few cells hold anything, plus a `visited`
+    // bitmap of the same length: on Objects365 val, 116.8M slots and a
+    // 117 MB bitmap to move 2.5M live entries, all of it serial.
+    // Scattering the live entries makes the post-pass proportional to
+    // occupancy instead. See `crate::cell_occupancy`.
     #[cfg(feature = "bench-timings")]
     let t_par = std::time::Instant::now();
 
-    let total_slots = n_k * n_a * n_i;
-    let chunk_len = n_k * n_a;
-    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
+    let image_ids: Vec<ImageId> = images.iter().map(|im| im.id).collect();
+    let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
+    let occupied = cell_occupancy::by_image(&image_ids, gt, dt, &bucket_index);
 
-    let retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = eval_imgs
-        .par_chunks_mut(chunk_len)
-        .zip(eval_imgs_meta.par_chunks_mut(chunk_len))
-        .enumerate()
+    type CellOutput = (
+        u32,
+        u32,
+        Option<Box<PerImageEval>>,
+        Option<Box<EvalImageMeta>>,
+    );
+    struct ImageOutput {
+        cells: Vec<CellOutput>,
+        retained: Vec<(usize, Array2<f64>)>,
+    }
+
+    let per_image: Vec<ImageOutput> = (0..n_i)
+        .into_par_iter()
         .map_init(
             || {
                 (
                     CellScratch::new(),
                     KernelScratch::<K::Annotation>::default(),
+                    // One `n_a`-wide staging buffer per worker: the
+                    // per-cell body writes area-range outputs into a
+                    // contiguous slice, and we drain the live ones out.
+                    vec![None; n_a],
+                    vec![None; n_a],
                 )
             },
-            |(scratch, kernel_scratch), (i, (eval_chunk, meta_chunk))| {
-                let mut per_image_retained: Vec<(usize, Array2<f64>)> = Vec::new();
-                for k in 0..n_k {
-                    let eval_slice = &mut eval_chunk[k * n_a..(k + 1) * n_a];
-                    let meta_slice = &mut meta_chunk[k * n_a..(k + 1) * n_a];
+            |(scratch, kernel_scratch, eval_staging, meta_staging), i| {
+                let candidate_ks = occupied.row(i);
+                let mut cells: Vec<CellOutput> = Vec::with_capacity(candidate_ks.len() * n_a);
+                let mut retained: Vec<(usize, Array2<f64>)> = Vec::new();
+                for &k in candidate_ks {
+                    let k = k as usize;
                     process_one_cell_into(
                         scratch,
                         kernel_scratch,
@@ -138,12 +159,22 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
                         kernel,
                         &federated_per_image,
                         strict_lvis_zero_area_filter,
-                        eval_slice,
-                        meta_slice,
-                        &mut per_image_retained,
+                        eval_staging,
+                        meta_staging,
+                        &mut retained,
                     )?;
+                    for a in 0..n_a {
+                        let eval = eval_staging[a].take();
+                        let meta = meta_staging[a].take();
+                        if eval.is_some() || meta.is_some() {
+                            let (Ok(k32), Ok(a32)) = (u32::try_from(k), u32::try_from(a)) else {
+                                continue;
+                            };
+                            cells.push((k32, a32, eval, meta));
+                        }
+                    }
                 }
-                Ok::<Vec<(usize, Array2<f64>)>, EvalError>(per_image_retained)
+                Ok::<ImageOutput, EvalError>(ImageOutput { cells, retained })
             },
         )
         .collect::<Result<Vec<_>, _>>()?;
@@ -154,11 +185,18 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     #[cfg(feature = "bench-timings")]
     let t_post = std::time::Instant::now();
 
-    transpose_pair_image_major_to_canonical(
-        &mut eval_imgs,
-        &mut eval_imgs_meta,
-        CellLayout { n_k, n_a, n_i },
-    );
+    let total_slots = n_k * n_a * n_i;
+    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
+    let mut retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = Vec::with_capacity(n_i);
+    for (i, image_output) in per_image.into_iter().enumerate() {
+        for (k, a, eval, meta) in image_output.cells {
+            let canonical = (k as usize) * n_a * n_i + (a as usize) * n_i + i;
+            eval_imgs[canonical] = eval;
+            eval_imgs_meta[canonical] = meta;
+        }
+        retained_per_image.push(image_output.retained);
+    }
 
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
     for (i, per_image) in retained_per_image.into_iter().enumerate() {
@@ -364,66 +402,6 @@ fn process_one_cell_into<K: EvalKernel>(
     Ok(())
 }
 
-/// Shape of the cell-output tensor. Bundled into one struct so
-/// callers can't silently swap the three `usize` axis lengths.
-#[derive(Clone, Copy)]
-struct CellLayout {
-    n_k: usize,
-    n_a: usize,
-    n_i: usize,
-}
-
-/// In-place tensor transpose of two parallel buffers from image-major
-/// `(i, k, a)` to the canonical `(k, a, i)` layout `EvalGrid` expects.
-/// Cycle-following permutation: one shared visited bitset, one walk
-/// of the cycle structure swaps both buffers per step. Fused over
-/// `eval_imgs` + `eval_imgs_meta` because they share the permutation.
-fn transpose_pair_image_major_to_canonical<A, B>(
-    buf_a: &mut [Option<A>],
-    buf_b: &mut [Option<B>],
-    layout: CellLayout,
-) {
-    let total = layout.n_k * layout.n_a * layout.n_i;
-    debug_assert_eq!(buf_a.len(), total);
-    debug_assert_eq!(buf_b.len(), total);
-    if total <= 1 {
-        return;
-    }
-    let mut visited = vec![false; total];
-    for start in 0..total {
-        if visited[start] {
-            continue;
-        }
-        visited[start] = true;
-        let mut next = image_major_to_canonical(start, layout);
-        if next == start {
-            continue;
-        }
-        let mut held_a = buf_a[start].take();
-        let mut held_b = buf_b[start].take();
-        while next != start {
-            visited[next] = true;
-            std::mem::swap(&mut held_a, &mut buf_a[next]);
-            std::mem::swap(&mut held_b, &mut buf_b[next]);
-            next = image_major_to_canonical(next, layout);
-        }
-        buf_a[start] = held_a;
-        buf_b[start] = held_b;
-    }
-}
-
-/// Decompose `pos` as `(i, k, a)` in image-major layout and recompose
-/// into the canonical `(k, a, i)` linear index.
-#[inline]
-fn image_major_to_canonical(pos: usize, layout: CellLayout) -> usize {
-    let chunk = layout.n_k * layout.n_a;
-    let i = pos / chunk;
-    let r = pos % chunk;
-    let k = r / layout.n_a;
-    let a = r % layout.n_a;
-    k * layout.n_a * layout.n_i + a * layout.n_i + i
-}
-
 // ----- Per-paradigm parallel sibling wrappers -------------------------
 //
 // One `pub fn` per `crate::evaluate::evaluate_*` entry; the FFI routes
@@ -561,93 +539,6 @@ mod tests {
             width: w,
             height: h,
             file_name: None,
-        }
-    }
-
-    /// Reference (out-of-place) transpose to compare against.
-    fn transpose_reference<T: Clone>(
-        image_major: &[Option<T>],
-        n_k: usize,
-        n_a: usize,
-        n_i: usize,
-    ) -> Vec<Option<T>> {
-        let mut out: Vec<Option<T>> = (0..n_k * n_a * n_i).map(|_| None).collect();
-        for i in 0..n_i {
-            for k in 0..n_k {
-                for a in 0..n_a {
-                    let src = i * n_k * n_a + k * n_a + a;
-                    let dst = k * n_a * n_i + a * n_i + i;
-                    out[dst] = image_major[src].clone();
-                }
-            }
-        }
-        out
-    }
-
-    /// Build a paired (`u32` indices, `i64` indices) image-major
-    /// fixture so the fused transpose exercises both buffers. Using
-    /// distinct types catches any swap-the-buffers bug.
-    fn paired_fixture(
-        n_k: usize,
-        n_a: usize,
-        n_i: usize,
-        keep: impl Fn(usize) -> bool,
-    ) -> (Vec<Option<u32>>, Vec<Option<i64>>) {
-        let n = n_k * n_a * n_i;
-        let a: Vec<Option<u32>> = (0..n)
-            .map(|p| if keep(p) { Some(p as u32) } else { None })
-            .collect();
-        let b: Vec<Option<i64>> = (0..n)
-            .map(|p| if keep(p) { Some(-(p as i64)) } else { None })
-            .collect();
-        (a, b)
-    }
-
-    #[test]
-    fn inplace_transpose_matches_reference_dense() {
-        // n_k=3, n_a=2, n_i=4: 24 slots, mostly non-trivial cycles.
-        let layout = CellLayout {
-            n_k: 3,
-            n_a: 2,
-            n_i: 4,
-        };
-        let (mut a, mut b) = paired_fixture(layout.n_k, layout.n_a, layout.n_i, |_| true);
-        let expected_a = transpose_reference(&a, layout.n_k, layout.n_a, layout.n_i);
-        let expected_b = transpose_reference(&b, layout.n_k, layout.n_a, layout.n_i);
-        transpose_pair_image_major_to_canonical(&mut a, &mut b, layout);
-        assert_eq!(a, expected_a);
-        assert_eq!(b, expected_b);
-    }
-
-    #[test]
-    fn inplace_transpose_matches_reference_sparse() {
-        // Mix of Some and None — covers the val2017-shape case where
-        // most cells are empty.
-        let layout = CellLayout {
-            n_k: 4,
-            n_a: 4,
-            n_i: 5,
-        };
-        let (mut a, mut b) = paired_fixture(layout.n_k, layout.n_a, layout.n_i, |p| p % 3 == 0);
-        let expected_a = transpose_reference(&a, layout.n_k, layout.n_a, layout.n_i);
-        let expected_b = transpose_reference(&b, layout.n_k, layout.n_a, layout.n_i);
-        transpose_pair_image_major_to_canonical(&mut a, &mut b, layout);
-        assert_eq!(a, expected_a);
-        assert_eq!(b, expected_b);
-    }
-
-    #[test]
-    fn inplace_transpose_handles_degenerate_shapes() {
-        // n_k=1: every position is a fixed point (image-major and
-        // canonical layouts coincide). n_i=1 likewise.
-        for (n_k, n_a, n_i) in [(1, 4, 5), (3, 4, 1), (1, 1, 1)] {
-            let layout = CellLayout { n_k, n_a, n_i };
-            let (mut a, mut b) = paired_fixture(n_k, n_a, n_i, |_| true);
-            let expected_a = transpose_reference(&a, n_k, n_a, n_i);
-            let expected_b = transpose_reference(&b, n_k, n_a, n_i);
-            transpose_pair_image_major_to_canonical(&mut a, &mut b, layout);
-            assert_eq!(a, expected_a, "shape ({n_k}, {n_a}, {n_i})");
-            assert_eq!(b, expected_b, "shape ({n_k}, {n_a}, {n_i})");
         }
     }
 
