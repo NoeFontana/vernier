@@ -10,7 +10,7 @@ The IQR column reports the spread (Q3 - Q1) across the 10 measurement
 reps and the same value as a percentage of the median; release mode
 gates each cell at 5% relative IQR.
 
-**Provenance** — git SHA `b012b46c9087` · machine fingerprint `59aab88b17f4` · CPU AMD EPYC-Milan Processor (x86_64) · harness
+**Provenance** — git SHA `e361050ef582` · machine fingerprint `59aab88b17f4` · CPU AMD EPYC-Milan Processor (x86_64) · harness
 mode `release` · build profile = cargo release defaults
 (`opt-level=3`, `lto=thin`, `codegen-units=1`, no `target-cpu`). The
 release wheel on PyPI is built with the same profile — no
@@ -35,27 +35,27 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 356.3 ms | 3.6 ms (1.02%) | 1.00 | 256 MiB | 179 MiB | **1.00×** |
-| hotcoco | 575.7 ms | 40.5 ms (7.04%) * | 1.00 | 274 MiB | 226 MiB | 1.62× |
-| faster-coco-eval | 1.631 s | 23.2 ms (1.43%) | 1.00 | 692 MiB | 642 MiB | 4.58× |
-| pycocotools | 5.541 s | 99.6 ms (1.80%) | 1.00 | 577 MiB | 529 MiB | 15.55× |
+| **vernier** | 354.3 ms | 4.3 ms (1.22%) | 1.00 | 255 MiB | 179 MiB | **1.00×** |
+| hotcoco | 559.5 ms | 9.1 ms (1.63%) | 1.00 | 274 MiB | 226 MiB | 1.58× |
+| faster-coco-eval | 1.647 s | 23.8 ms (1.45%) | 1.00 | 691 MiB | 642 MiB | 4.65× |
+| pycocotools | 5.667 s | 31.8 ms (0.56%) | 1.00 | 576 MiB | 529 MiB | 15.99× |
 
 **`segm`**
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 975.8 ms | 9.5 ms (0.97%) | 1.00 | 256 MiB | 180 MiB | **1.00×** |
-| hotcoco | 1.338 s | 19.0 ms (1.42%) | 1.00 | 361 MiB | 313 MiB | 1.37× |
-| faster-coco-eval | 3.357 s | 18.4 ms (0.55%) | 1.00 | 744 MiB | 694 MiB | 3.44× |
-| pycocotools | 6.443 s | 144.1 ms (2.24%) | 1.00 | 569 MiB | 521 MiB | 6.60× |
+| **vernier** | 967.9 ms | 3.8 ms (0.39%) | 1.00 | 255 MiB | 180 MiB | **1.00×** |
+| hotcoco | 1.351 s | 21.2 ms (1.57%) | 1.00 | 361 MiB | 313 MiB | 1.40× |
+| faster-coco-eval | 3.401 s | 21.8 ms (0.64%) | 1.00 | 744 MiB | 694 MiB | 3.51× |
+| pycocotools | 6.518 s | 101.5 ms (1.56%) | 1.00 | 569 MiB | 521 MiB | 6.73× |
 
 **`boundary`**
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 3.168 s | 21.0 ms (0.66%) | 1.00 | 258 MiB | 181 MiB | **1.00×** |
-| faster-coco-eval | 52.812 s | 98.6 ms (0.19%) | 1.00 | 813 MiB | 764 MiB | 16.67× |
-| boundary-iou-api | 61.566 s | 46.6 ms (0.08%) | 1.00 | 667 MiB | 596 MiB | 19.43× |
+| **vernier** | 3.191 s | 14.0 ms (0.44%) | 1.00 | 257 MiB | 182 MiB | **1.00×** |
+| faster-coco-eval | 53.129 s | 473.5 ms (0.89%) | 1.00 | 813 MiB | 764 MiB | 16.65× |
+| boundary-iou-api | 62.066 s | 643.3 ms (1.04%) | 1.00 | 666 MiB | 596 MiB | 19.45× |
 
 ### Workload: `coco_val2017_keypoints_jittered_seed0`
 
@@ -63,14 +63,14 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 134.5 ms | 941.2 μs (0.70%) | 1.00 | 129 MiB | 53 MiB | **1.00×** |
-| hotcoco | 210.3 ms | 2.7 ms (1.27%) | 1.00 | 123 MiB | 75 MiB | 1.56× |
-| faster-coco-eval | 771.9 ms | 8.8 ms (1.14%) | 1.00 | 165 MiB | 115 MiB | 5.74× |
-| pycocotools | 2.298 s | 36.4 ms (1.59%) | 1.00 | 163 MiB | 115 MiB | 17.09× |
+| **vernier** | 136.0 ms | 1.9 ms (1.37%) | 1.00 | 128 MiB | 53 MiB | **1.00×** |
+| hotcoco | 211.0 ms | 5.0 ms (2.37%) | 1.00 | 123 MiB | 75 MiB | 1.55× |
+| faster-coco-eval | 776.7 ms | 8.1 ms (1.05%) | 1.00 | 164 MiB | 115 MiB | 5.71× |
+| pycocotools | 2.302 s | 17.0 ms (0.74%) | 1.00 | 163 MiB | 115 MiB | 16.92× |
 
 ### Workload: `objects365_val_jittered_seed0`
 
-*Scale workload: Objects365 v2 val, 80,000 images · 1,240,587 GT boxes · 365 categories, with ~1.06 M jittered detections (bbox only). Annotations © [Objects365 Consortium](https://www.objects365.org/), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); images are never downloaded.*
+*Scale workload: Objects365 v2 val, 80,000 images · 1,240,587 GT boxes · 365 categories, with ~1.06 M jittered detections (bbox only). Annotations © [Objects365 Consortium](https://www.objects365.org/), licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); images are never downloaded. faster-coco-eval is absent because it does not finish: it is OOM-killed at ~30 GiB anon RSS on this 30 GiB host, at 1 and at 8 threads.*
 
 *Recorded in harness mode `dev` (not `release`): one measurement rep per impl, no IQR gate.*
 
@@ -78,9 +78,9 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 9.997 s | 0 ns | 1.00 | 4.78 GiB | 4.71 GiB | **1.00×** |
-| hotcoco | 14.784 s | 0 ns | 1.00 | 6.49 GiB | 6.45 GiB | 1.48× |
-| pycocotools | 357.446 s | 0 ns | 1.00 | 21.34 GiB | 21.30 GiB | 35.76× |
+| **vernier** | 8.771 s | 0 ns | 1.00 | 4.78 GiB | 4.71 GiB | **1.00×** |
+| hotcoco | 15.041 s | 0 ns | 1.00 | 6.49 GiB | 6.45 GiB | 1.71× |
+| pycocotools | 367.433 s | 0 ns | 1.00 | 21.34 GiB | 21.30 GiB | 41.89× |
 
 
 ## Panoptic — PQ
@@ -91,8 +91,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 10.520 s | 137.4 ms (1.31%) | 1.00 | 144 MiB | 68 MiB | **1.00×** |
-| panopticapi | 34.512 s | 335.1 ms (0.97%) | 1.00 | 145 MiB | 95 MiB | 3.28× |
+| **vernier** | 10.564 s | 125.1 ms (1.18%) | 1.00 | 143 MiB | 67 MiB | **1.00×** |
+| panopticapi | 34.971 s | 409.3 ms (1.17%) | 1.00 | 148 MiB | 92 MiB | 3.31× |
 
 
 ## Semantic — mIoU
@@ -103,8 +103,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 2.856 s | 4.3 ms (0.15%) | 1.00 | 97 MiB | 21 MiB | **1.00×** |
-| mmsegmentation | 39.906 s | 406.5 ms (1.02%) | 1.00 | 546 MiB | 43 MiB | 13.97× |
+| **vernier** | 2.857 s | 16.1 ms (0.56%) | 1.00 | 97 MiB | 21 MiB | **1.00×** |
+| mmsegmentation | 40.099 s | 231.0 ms (0.58%) | 1.00 | 544 MiB | 41 MiB | 14.04× |
 
 ### Workload: `synthetic_semantic_n200_c19_s0`
 
@@ -112,23 +112,11 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 65.8 ms | 1.5 ms (2.24%) | 1.00 | 78 MiB | 2 MiB | **1.00×** |
-| mmsegmentation | 534.2 ms | 11.0 ms (2.06%) | 1.00 | 509 MiB | 11 MiB | 8.12× |
+| **vernier** | 66.0 ms | 209.8 μs (0.32%) | 1.00 | 78 MiB | 2 MiB | **1.00×** |
+| mmsegmentation | 524.8 ms | 8.4 ms (1.61%) | 1.00 | 509 MiB | 11 MiB | 7.95× |
 
 
 ## Instance — LVIS federated AP
-
-### Workload: `lvis_v1_val_jittered_seed0`
-
-*Recorded in harness mode `dev` (not `release`): one measurement rep per impl, no IQR gate.*
-
-**`bbox`**
-
-| impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 3.741 s | 0 ns | 1.00 | 1.59 GiB | 1.52 GiB | **1.00×** |
-| hotcoco | 3.892 s | 0 ns | 1.00 | 1.47 GiB | 1.43 GiB | 1.04× |
-| lvis-api | 176.491 s | 0 ns | 1.00 | 15.08 GiB | 14.98 GiB | 47.18× |
 
 ### Workload: `lvis_v1_val_perfect`
 
@@ -136,9 +124,9 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 3.420 s | 68.5 ms (2.00%) | 1.00 | 1.44 GiB | 1.37 GiB | **1.00×** |
-| hotcoco | 3.508 s | 27.5 ms (0.79%) | 1.00 | 1.46 GiB | 1.41 GiB | 1.03× |
-| lvis-api | 187.584 s | 1.833 s (0.98%) | 1.00 | 15.01 GiB | 14.91 GiB | 54.85× |
+| **vernier** | 2.640 s | 32.6 ms (1.23%) | 1.00 | 1.45 GiB | 1.37 GiB | **1.00×** |
+| hotcoco | 3.573 s | 35.7 ms (1.00%) | 1.00 | 1.46 GiB | 1.41 GiB | 1.35× |
+| lvis-api | 193.001 s | 2.725 s (1.41%) | 1.00 | 15.01 GiB | 14.91 GiB | 73.12× |
 
 
 ## Thread scaling
@@ -147,15 +135,15 @@ This page is regenerated from the harness result tree by
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 358.4 ms | 350.2 ms | 316.4 ms | 313.6 ms |
-| hotcoco | 587.5 ms (1.64×) | 431.2 ms (1.23×) | 364.3 ms (1.15×) | 351.7 ms (1.12×) |
-| faster-coco-eval | 1.632 s (4.55×) | 1.503 s (4.29×) | 1.449 s (4.58×) | 1.436 s (4.58×) |
+| **vernier** | 353.7 ms | 266.7 ms | 228.9 ms | 226.3 ms |
+| hotcoco | 566.7 ms (1.60×) | 437.4 ms (1.64×) | 376.4 ms (1.64×) | 366.0 ms (1.62×) |
+| faster-coco-eval | 1.674 s (4.73×) | 1.541 s (5.78×) | 1.496 s (6.54×) | 1.467 s (6.48×) |
 
 **`coco_val2017_jittered_seed0` · `bbox`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 179 MiB | 180 MiB | 181 MiB | 181 MiB |
+| **vernier** | 179 MiB | 182 MiB | 184 MiB | 185 MiB |
 | hotcoco | 226 MiB | 227 MiB | 228 MiB | 229 MiB |
 | faster-coco-eval | 642 MiB | 642 MiB | 642 MiB | 641 MiB |
 
@@ -163,29 +151,29 @@ This page is regenerated from the harness result tree by
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 3.155 s | 1.769 s | 1.022 s | 866.8 ms |
-| faster-coco-eval | 52.731 s (16.71×) | 29.897 s (16.90×) | 18.579 s (18.18×) | 16.701 s (19.27×) |
+| **vernier** | 3.198 s | 1.700 s | 937.3 ms | 790.3 ms |
+| faster-coco-eval | 53.208 s (16.64×) | 30.093 s (17.70×) | 18.731 s (19.98×) | 16.987 s (21.49×) |
 
 **`coco_val2017_jittered_seed0` · `boundary`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 181 MiB | 184 MiB | 190 MiB | 198 MiB |
-| faster-coco-eval | 764 MiB | 771 MiB | 771 MiB | 764 MiB |
+| **vernier** | 182 MiB | 189 MiB | 193 MiB | 201 MiB |
+| faster-coco-eval | 764 MiB | 771 MiB | 771 MiB | 767 MiB |
 
 **`coco_val2017_jittered_seed0` · `segm`** — median total; ratio vs vernier at the same `nt`
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 980.2 ms | 651.8 ms | 468.1 ms | 407.7 ms |
-| hotcoco | 1.327 s (1.35×) | 834.5 ms (1.28×) | 583.1 ms (1.25×) | 529.8 ms (1.30×) |
-| faster-coco-eval | 3.368 s (3.44×) | 3.436 s (5.27×) | 3.398 s (7.26×) | 3.398 s (8.33×) |
+| **vernier** | 982.6 ms | 569.1 ms | 375.3 ms | 319.1 ms |
+| hotcoco | 1.355 s (1.38×) | 850.2 ms (1.49×) | 601.9 ms (1.60×) | 546.0 ms (1.71×) |
+| faster-coco-eval | 3.444 s (3.50×) | 3.484 s (6.12×) | 3.428 s (9.13×) | 3.500 s (10.97×) |
 
 **`coco_val2017_jittered_seed0` · `segm`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 180 MiB | 181 MiB | 182 MiB | 184 MiB |
+| **vernier** | 180 MiB | 185 MiB | 186 MiB | 188 MiB |
 | hotcoco | 313 MiB | 314 MiB | 316 MiB | 318 MiB |
 | faster-coco-eval | 694 MiB | 694 MiB | 694 MiB | 694 MiB |
 
@@ -193,15 +181,15 @@ This page is regenerated from the harness result tree by
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 133.3 ms | 117.8 ms | 105.5 ms | 99.3 ms |
-| hotcoco | 209.1 ms (1.57×) | 177.2 ms (1.50×) | 160.3 ms (1.52×) | 156.0 ms (1.57×) |
-| faster-coco-eval | 760.8 ms (5.71×) | 749.1 ms (6.36×) | 743.0 ms (7.04×) | 746.1 ms (7.51×) |
+| **vernier** | 135.8 ms | 117.6 ms | 109.2 ms | 103.6 ms |
+| hotcoco | 211.3 ms (1.56×) | 180.9 ms (1.54×) | 162.7 ms (1.49×) | 160.0 ms (1.54×) |
+| faster-coco-eval | 779.7 ms (5.74×) | 772.8 ms (6.57×) | 768.5 ms (7.04×) | 760.5 ms (7.34×) |
 
 **`coco_val2017_keypoints_jittered_seed0` · `keypoints`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 53 MiB | 53 MiB | 54 MiB | 54 MiB |
+| **vernier** | 53 MiB | 55 MiB | 55 MiB | 55 MiB |
 | hotcoco | 75 MiB | 75 MiB | 76 MiB | 77 MiB |
 | faster-coco-eval | 115 MiB | 115 MiB | 115 MiB | 115 MiB |
 
@@ -209,18 +197,16 @@ This page is regenerated from the harness result tree by
 
 | impl | `nt=8` |
 | --- | ---: |
-| **vernier** | 8.762 s |
-| hotcoco | 7.777 s (0.89×) |
+| **vernier** | 4.705 s |
+| hotcoco | 8.124 s (1.73×) |
 
 **`objects365_val_jittered_seed0` · `bbox`** — eval Δ RSS
 
 | impl | `nt=8` |
 | --- | ---: |
-| **vernier** | 4.94 GiB |
+| **vernier** | 4.84 GiB |
 | hotcoco | 6.47 GiB |
 
-
-*Cells marked ` *` next to their IQR exceeded the release-mode 5% relative-IQR gate. Median still reported; treat the gap to the next impl as the load-bearing signal rather than the precise ratio.*
 
 ## Methodology in one paragraph
 

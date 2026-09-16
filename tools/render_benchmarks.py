@@ -430,7 +430,9 @@ _WORKLOAD_NOTES: dict[str, str] = {
         "365 categories, with ~1.06 M jittered detections (bbox only). Annotations "
         "© [Objects365 Consortium](https://www.objects365.org/), licensed under "
         "[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); images are "
-        "never downloaded."
+        "never downloaded. faster-coco-eval is absent because it does not finish: "
+        "it is OOM-killed at ~30 GiB anon RSS on this 30 GiB host, at 1 and at 8 "
+        "threads."
     ),
 }
 
