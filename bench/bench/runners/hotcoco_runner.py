@@ -20,7 +20,7 @@ import os
 import sys
 from importlib.metadata import version as _pkg_version
 
-from bench.harness.cpu_affinity import cpu_budget
+from bench.harness.cpu_affinity import granted_cpu_count
 from bench.runners._protocol import parse_runner_args, run_cocoeval_pipeline
 
 
@@ -30,7 +30,7 @@ def main() -> int:
         print("hotcoco_runner: boundary IoU is not a hotcoco surface", file=sys.stderr)
         return 2
 
-    os.environ["RAYON_NUM_THREADS"] = str(cpu_budget(args.num_threads))
+    os.environ["RAYON_NUM_THREADS"] = str(granted_cpu_count())
     import hotcoco
 
     run_cocoeval_pipeline(

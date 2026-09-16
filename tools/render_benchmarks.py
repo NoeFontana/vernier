@@ -26,6 +26,7 @@ import json
 import re
 import statistics
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -157,6 +158,14 @@ def format_iqr(
     rel_str = f" ({iqr_relative * 100:.2f}%)" if iqr_relative is not None else ""
     fail_marker = "" if iqr_gate_passed in (None, True) else " *"
     return f"{format_ns(iqr_ns)}{rel_str}{fail_marker}"
+
+
+def _fmt_iqr_col(stats: CellStats) -> str:
+    return format_iqr(stats.iqr_ns, stats.iqr_relative, stats.iqr_gate_passed)
+
+
+def _fmt_cpu_col(stats: CellStats) -> str:
+    return "—" if stats.cpu_util is None else f"{stats.cpu_util:.2f}"
 
 
 def is_vernier(impl: str) -> bool:
@@ -381,37 +390,34 @@ def render_iou_table(
         return ""
     impls = [i for i in IMPL_ORDER if i in matching]
     impls.extend(sorted(i for i in matching if i not in IMPL_ORDER))
-    has_iqr = any(matching[i].iqr_ns is not None for i in impls)
-    has_cpu = any(matching[i].cpu_util is not None for i in impls)
-    has_eval_rss = any(matching[i].eval_rss_bytes is not None for i in impls)
-    header = ["impl", "median"]
-    header += ["IQR"] if has_iqr else []
-    header += ["CPU/wall"] if has_cpu else []
-    header += ["peak RSS"]
-    header += ["eval Δ RSS"] if has_eval_rss else []
-    header += ["vs vernier"]
+    # One spec drives both the header and every row, so a column can't be
+    # added to one and forgotten in the other. ``shown`` drops columns no
+    # impl in this cell recorded (older result files carry neither CPU nor
+    # RSS fields).
+    optional: list[tuple[str, bool, Callable[[CellStats], str]]] = [
+        ("IQR", any(matching[i].iqr_ns is not None for i in impls), _fmt_iqr_col),
+        ("CPU/wall", any(matching[i].cpu_util is not None for i in impls), _fmt_cpu_col),
+        ("peak RSS", True, lambda s: format_bytes(s.max_rss_bytes)),
+        (
+            "eval Δ RSS",
+            any(matching[i].eval_rss_bytes is not None for i in impls),
+            lambda s: format_bytes(s.eval_rss_bytes),
+        ),
+    ]
+    shown = [(name, fmt) for name, on, fmt in optional if on]
+    header = ["impl", "median", *(name for name, _ in shown), "vs vernier"]
     rows = [
         "| " + " | ".join(header) + " |",
         "| --- |" + " ---: |" * (len(header) - 1),
     ]
     for impl in impls:
         stats = matching[impl]
-        speedup = stats.median_ns / baseline.median_ns
+        speedup = format_speedup(stats.median_ns / baseline.median_ns)
         cell_label = IMPL_LABELS.get(impl, impl)
         if is_vernier(impl):
             cell_label = f"**{cell_label}**"
-        ratio_cell = (
-            f"**{format_speedup(speedup)}**" if is_vernier(impl) else format_speedup(speedup)
-        )
-        cols = [cell_label, format_ns(stats.median_ns)]
-        if has_iqr:
-            cols.append(format_iqr(stats.iqr_ns, stats.iqr_relative, stats.iqr_gate_passed))
-        if has_cpu:
-            cols.append("—" if stats.cpu_util is None else f"{stats.cpu_util:.2f}")
-        cols.append(format_bytes(stats.max_rss_bytes))
-        if has_eval_rss:
-            cols.append(format_bytes(stats.eval_rss_bytes))
-        cols.append(ratio_cell)
+            speedup = f"**{speedup}**"
+        cols = [cell_label, format_ns(stats.median_ns), *(fmt(stats) for _, fmt in shown), speedup]
         rows.append("| " + " | ".join(cols) + " |")
     return "\n".join(rows)
 
@@ -507,17 +513,23 @@ def render_scaling_section(cells: dict[CellKey, CellStats]) -> str:
         workloads = [f"{base}_t{nt}" for nt in thread_counts]
         header = "| impl | " + " | ".join(f"`nt={nt}`" for nt in thread_counts) + " |"
         align = "| --- |" + " ---: |" * len(thread_counts)
+        # Both tables read the same cells; look each up once. The baseline
+        # depends on the workload, not the impl, so it is hoisted too.
+        baselines = {w: vernier_baseline_for(cells, paradigm, w, iou) for w in workloads}
+        per_impl = {
+            impl: [cells.get(CellKey(paradigm, w, iou, impl)) for w in workloads] for impl in impls
+        }
+
         out += [
             f"**`{base}` · `{iou}`** — median total; ratio vs vernier at the same `nt`",
             "",
             header,
             align,
         ]
-        for impl in impls:
+        for impl, per_nt in per_impl.items():
             entries = []
-            for workload in workloads:
-                stats = cells.get(CellKey(paradigm, workload, iou, impl))
-                baseline = vernier_baseline_for(cells, paradigm, workload, iou)
+            for workload, stats in zip(workloads, per_nt, strict=True):
+                baseline = baselines[workload]
                 if stats is None:
                     entries.append("—")
                 elif is_vernier(impl) or baseline is None:
@@ -528,14 +540,11 @@ def render_scaling_section(cells: dict[CellKey, CellStats]) -> str:
             out.append(_scaling_row(impl, entries))
         out.append("")
 
-        memory = {
-            impl: [cells.get(CellKey(paradigm, w, iou, impl)) for w in workloads] for impl in impls
-        }
         if any(
-            st is not None and st.eval_rss_bytes is not None for v in memory.values() for st in v
+            st is not None and st.eval_rss_bytes is not None for v in per_impl.values() for st in v
         ):
             out += [f"**`{base}` · `{iou}`** — eval Δ RSS", "", header, align]
-            for impl, per_nt in memory.items():
+            for impl, per_nt in per_impl.items():
                 entries = [format_bytes(st.eval_rss_bytes if st else None) for st in per_nt]
                 out.append(_scaling_row(impl, entries))
             out.append("")

@@ -25,14 +25,19 @@ from importlib.metadata import version as _pkg_version
 
 import numpy as np
 
-from bench.harness.cpu_affinity import cpu_budget
+from bench.harness.cpu_affinity import granted_cpu_count
 from bench.harness.timing import StageTable
-from bench.runners._protocol import lvis_stat_names, parse_lvis_runner_args, write_lvis_outputs
+from bench.runners._protocol import (
+    lvis_stat_names,
+    parse_lvis_runner_args,
+    squeeze_lvis_m_axis,
+    write_lvis_outputs,
+)
 
 
 def main() -> int:
     args = parse_lvis_runner_args()
-    os.environ["RAYON_NUM_THREADS"] = str(cpu_budget(args.num_threads))
+    os.environ["RAYON_NUM_THREADS"] = str(granted_cpu_count())
     import hotcoco
 
     max_dets: int = int(args.max_dets)
@@ -50,13 +55,9 @@ def main() -> int:
         with stages.stage("summarize"):
             ev.summarize()
 
-    precision = np.asarray(ev.eval["precision"], dtype=np.float64)
-    if precision.ndim == 5:
-        if precision.shape[-1] != 1:
-            raise AssertionError(
-                f"hotcoco precision M-axis must be 1 at max_dets={max_dets}; got {precision.shape}"
-            )
-        precision = np.ascontiguousarray(precision[..., 0])
+    precision = squeeze_lvis_m_axis(
+        np.asarray(ev.eval["precision"], dtype=np.float64), max_dets=max_dets, impl="hotcoco"
+    )
 
     results = ev.get_results()
     keys = lvis_stat_names(max_dets)

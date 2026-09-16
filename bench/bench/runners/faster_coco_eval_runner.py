@@ -39,13 +39,13 @@ from typing import Any  # noqa: E402
 from pycocotools.coco import COCO  # noqa: E402
 from pycocotools.cocoeval import COCOeval  # noqa: E402
 
-from bench.harness.cpu_affinity import cpu_budget  # noqa: E402
+from bench.harness.cpu_affinity import granted_cpu_count  # noqa: E402
 from bench.runners._protocol import parse_runner_args, run_cocoeval_pipeline  # noqa: E402
 
 
 def main() -> int:
     args = parse_runner_args()
-    budget = cpu_budget(args.num_threads)
+    budget = granted_cpu_count()
     cocoeval_kwargs: dict[str, Any] = {"rle_iou_max_workers": budget}
     if args.iou_type == "boundary":
         cocoeval_kwargs["boundary_cpu_count"] = budget

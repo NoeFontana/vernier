@@ -108,8 +108,7 @@ def _records_to_array_detections(
     up pytest as a dep.
     """
     image_dims = {
-        int(im["id"]): (int(im["height"]), int(im["width"]))
-        for im in gt_records["images"]
+        int(im["id"]): (int(im["height"]), int(im["width"])) for im in gt_records["images"]
     }
     by_image = _group_dt_by_image(dt_records)
     out: list[Detections] = []

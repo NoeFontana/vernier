@@ -130,7 +130,7 @@ def streaming_sensitivity_warnings(
         messages.append(
             f"transparent_hugepage policy is {thp!r}; "
             f"streaming RSS curves are sensitive — consider "
-            f'`echo {_THP_PREFERRED_ACTIVE} > {thp_path}` for stable measurements.'
+            f"`echo {_THP_PREFERRED_ACTIVE} > {thp_path}` for stable measurements."
         )
 
     swappiness = _read_swappiness(swappiness_path)

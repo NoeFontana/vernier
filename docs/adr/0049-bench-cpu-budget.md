@@ -1,6 +1,6 @@
 # ADR-0049: Enforce a per-cell CPU budget and measure memory exactly
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-09-15
 - **Deciders:** @NoeFontana
 - **Consulted:** —

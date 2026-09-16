@@ -104,9 +104,7 @@ def _v2_target_dir(v1_cell_dir: Path, results_root: Path) -> Path:
     rel = v1_cell_dir.relative_to(results_root)
     parts = rel.parts
     if len(parts) != _V1_DEPTH:
-        raise ValueError(
-            f"expected v1 cell at depth {_V1_DEPTH} below {results_root}; got {rel}"
-        )
+        raise ValueError(f"expected v1 cell at depth {_V1_DEPTH} below {results_root}; got {rel}")
     sha, fp, workload, iou = parts
     return results_root / sha / fp / _V2_INSTANCE_PARADIGM / workload / iou
 

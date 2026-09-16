@@ -7,7 +7,7 @@ enforceable rather than advisory, (d) started measuring memory exactly, and
 (e) added an Objects365 workload so the matrix has a cell where COCO-scale
 conclusions stop applying.
 
-The methodology changes are ADR-0049 (proposed). Read that first if you only
+The methodology changes are ADR-0049. Read that first if you only
 want the "why"; this doc is the measurement.
 
 ## Shared configuration

@@ -36,7 +36,7 @@ additive / perf / docs".
 
 ### Added
 
-- **hotcoco joins the bench matrix** (ADR-0049, proposed) — `hotcoco==1.0.1`
+- **hotcoco joins the bench matrix** (ADR-0049) — `hotcoco==1.0.1`
   is benchmarked and parity-checked on instance bbox / segm / keypoints and on
   LVIS bbox, wheel-only so the measured artifact is what `pip install` ships.
   It is the closest competitor: 1.37–1.62x behind vernier per CPU on COCO and

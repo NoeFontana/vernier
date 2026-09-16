@@ -77,9 +77,11 @@ def main() -> None:
     work_dir = args.work_dir or Path(tempfile.mkdtemp(prefix="vernier-stress-"))
     results: list[dict[str, object]] = []
     for r in targets:
-        print(f"[stress] {r.name} (n_images={r.n_images} cats={r.n_categories} "
-              f"dt={r.dt_per_image} gt={r.gt_per_image} dims={r.image_w}x{r.image_h} "
-              f"iou={r.iou_type})")
+        print(
+            f"[stress] {r.name} (n_images={r.n_images} cats={r.n_categories} "
+            f"dt={r.dt_per_image} gt={r.gt_per_image} dims={r.image_w}x{r.image_h} "
+            f"iou={r.iou_type})"
+        )
         res = run_regime(r, work_dir)
         print(f"[stress]   wall_s={res['wall_s']:.3f} ap={res['ap']:.4f}")
         results.append(res)

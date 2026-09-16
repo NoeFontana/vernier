@@ -531,6 +531,24 @@ def parse_lvis_runner_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def squeeze_lvis_m_axis(precision: np.ndarray, *, max_dets: int, impl: str) -> np.ndarray:
+    """Drop the trailing length-1 ``M`` axis from a pycocotools-shaped
+    ``(T, R, K, A, M)`` precision tensor, yielding the ``(T, R, K, A)``
+    shape the LVIS comparator expects (AF5: LVIS has no max-dets axis).
+
+    Every LVIS runner whose upstream surface is COCO-shaped needs this,
+    so the assertion that ``M == 1`` lives here rather than in each
+    runner — it is a parity-contract check, not incidental reshaping.
+    """
+    if precision.ndim != 5:
+        return precision
+    if precision.shape[-1] != 1:
+        raise AssertionError(
+            f"{impl} precision M-axis must be 1 at max_dets={max_dets}; got {precision.shape}"
+        )
+    return np.ascontiguousarray(precision[..., 0])
+
+
 def write_lvis_outputs(
     *,
     args: argparse.Namespace,

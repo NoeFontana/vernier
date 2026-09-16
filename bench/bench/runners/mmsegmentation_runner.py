@@ -25,7 +25,7 @@ import numpy as np
 import torch  # pyright: ignore[reportMissingImports]
 from PIL import Image
 
-from bench.harness.cpu_affinity import cpu_budget
+from bench.harness.cpu_affinity import granted_cpu_count
 from bench.harness.parity import SemanticSnapshot
 from bench.harness.paths import REPO_ROOT
 from bench.harness.timing import StageTable
@@ -136,7 +136,7 @@ def main() -> int:
     # defaults to every visible CPU. The cell's CPU budget is enforced by
     # affinity either way; setting it here keeps torch from spawning
     # threads that only contend for the pinned set (ADR-0049).
-    torch.set_num_threads(cpu_budget(args.num_threads))
+    torch.set_num_threads(granted_cpu_count())
     stages = StageTable()
     iou_metric = _install_mmseg_oracle()
 

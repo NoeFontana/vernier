@@ -19,6 +19,7 @@ understate every impl's scaling.
 from __future__ import annotations
 
 import os
+from functools import cache
 from pathlib import Path
 
 _SYSFS_CPU = Path("/sys/devices/system/cpu")
@@ -30,10 +31,29 @@ def cpu_budget(num_threads: int | None) -> int:
     return 1 if num_threads is None else num_threads
 
 
+@cache
+def granted_cpu_count() -> int:
+    """How many CPUs this process may actually run on.
+
+    Runners forward this to their library's thread knob. The orchestrator
+    pins every batch runner before ``exec``, so this *is* the cell's
+    budget — reading it beats re-deriving the budget from the CLI flag,
+    which would only agree by convention. Same ground truth
+    :meth:`bench.harness.timing.StageTable.record_total` records as
+    evidence.
+    """
+    return len(os.sched_getaffinity(0))
+
+
+@cache
 def _physical_core(cpu: int) -> tuple[int, int]:
     """``(package_id, core_id)`` for a logical CPU. Falls back to a
     unique pseudo-core when sysfs topology is unavailable, which
-    degrades to "no SMT awareness" rather than failing."""
+    degrades to "no SMT awareness" rather than failing.
+
+    Cached: the host's topology cannot change under a running harness,
+    and this is read once per logical CPU per spawned rep.
+    """
     topo = _SYSFS_CPU / f"cpu{cpu}" / "topology"
     try:
         package = int((topo / "physical_package_id").read_text())
