@@ -826,10 +826,12 @@ pub(crate) fn evaluate_grid_impl(
     })
 }
 
-/// Dispatch the right per-paradigm runner based on
-/// [`threads::ThreadPolicy`]: sequential calls today's
-/// [`EvalIouType::run`] unchanged; parallel builds a scoped pool of
-/// exactly the requested thread count and `install`s the parallel
+/// GT and DT are one task each, so the overlap never needs more.
+const TWO_THREADS: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(2) {
+    Some(n) => n,
+    None => unreachable!(),
+};
+
 /// Parse GT and DT, overlapping them when the cell has a thread budget.
 ///
 /// The two payloads are independent, but parsing them in sequence made
@@ -851,10 +853,10 @@ fn parse_gt_dt_with_policy(
             let dt = realize_dt(dt_payload)?;
             Ok((gt, dt))
         }
-        Some(n) => match threads::build_scoped_pool(n) {
-            // Two tasks, so a pool of two is enough; the rest of the
-            // budget would sit idle. The grid build downstream takes
-            // the full budget.
+        // Two tasks, so two threads; the rest of the budget would sit
+        // idle here. The grid build downstream opens its own pool at
+        // the full count.
+        Some(n) => match threads::build_scoped_pool(n.min(TWO_THREADS)) {
             Ok(pool) => {
                 let (gt, dt) =
                     pool.install(|| rayon::join(|| parse_gt(gt_bytes), || realize_dt(dt_payload)));
@@ -870,6 +872,10 @@ fn parse_gt_dt_with_policy(
     }
 }
 
+/// Dispatch the right per-paradigm runner based on
+/// [`threads::ThreadPolicy`]: sequential calls today's
+/// [`EvalIouType::run`] unchanged; parallel builds a scoped pool of
+/// exactly the requested thread count and `install`s the parallel
 /// runner inside it.
 fn run_grid_with_policy(
     iou_type: &EvalIouType,
