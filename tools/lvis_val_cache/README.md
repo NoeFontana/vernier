@@ -8,13 +8,16 @@ the same idempotent fetch+verify flow.
 LVIS reuses COCO 2017 images by `coco_url` reference; only the LVIS
 GT JSON and the perfect-DT synthesized from it are cache content
 here. The pinned URL points at the canonical FAIR / Facebook public
-files mirror; the SHA256 below is the unzipped JSON.
+files mirror; the SHA256 below is the published zip — the extracted
+JSON's bytes depend on the extracting zipfile implementation, so the
+archive is the integrity surface (same convention as
+`vernier-lvis-v1-val-cache`).
 
 | Field                | Value |
 | -------------------- | ----- |
 | GT URL               | `https://s3-us-west-2.amazonaws.com/dl.fbaipublicfiles.com/LVIS/lvis_v1_val.json.zip` |
 | Inner filename       | `lvis_v1_val.json` |
-| GT SHA-256           | `5cae9a3c79aadb667550c2b5dcf7f4d86e059a41ec91ef690225b667e28e9ba5` |
+| GT zip SHA-256       | `5cae9a3c79aadb667550c2b5dcf7f4d86e059a41ec91ef690225b667e28e9ba5` |
 | Cache env var        | `VERNIER_LVIS_CACHE` (defaults to `<repo>/.cache/lvis-val`) |
 
 LVIS data is governed by the LVIS terms of use; we never commit it.

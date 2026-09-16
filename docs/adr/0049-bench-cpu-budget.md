@@ -1,4 +1,4 @@
-# ADR-0049: Enforce a per-cell CPU budget in the bench harness
+# ADR-0049: Enforce a per-cell CPU budget and measure memory exactly
 
 - **Status:** proposed
 - **Date:** 2026-09-15
@@ -43,6 +43,9 @@ more about core count than about the implementations.
   on hyperthread siblings of the same physical core.
 - Every result should carry evidence that the budget held, so a reader
   does not have to trust the harness.
+- Memory should be comparable too. `ru_maxrss` covers a whole process
+  lifetime, so it folds each library's import cost into the number and
+  cannot isolate what an evaluation actually needed.
 - Blast radius: do not change measurement semantics for paradigms whose
   baselines did not change.
 
@@ -67,11 +70,21 @@ the pinned set with threads that just wait.
   every impl. `nt=N` cells get `N` CPUs.
 - CPUs are chosen one per physical core before any SMT sibling, starting
   from the highest-numbered core so the 1-CPU cell stays off CPU 0.
-- Scope: the instance and LVIS spawn path, where the multi-threaded
-  baselines live. Panoptic, semantic, and streaming spawns are unchanged.
+- Scope: every batch spawn path — instance, LVIS, panoptic and semantic.
+  Streaming is unchanged (its cells measure a producer/consumer pipeline,
+  not a single-shot evaluation). Semantic was pulled in once the CPU/wall
+  column showed mmsegmentation running at ~4.0 CPU/wall (torch's intra-op
+  pool) against vernier's 1.0; the budget is also forwarded to
+  `torch.set_num_threads`.
 - Every stage records process CPU time (`cpu_ns`), and the `total` stage
   records the affinity the runner observed. `docs/benchmarks.md` renders
   CPU/wall per impl.
+- Every stage also records RSS at its start and the kernel's exact RSS
+  high-water mark (`VmHWM`) while it ran, resetting `VmHWM` through
+  `/proc/self/clear_refs` at each stage start. The reads sit outside the
+  timed span. Two memory columns are published: absolute peak RSS over
+  the timed stages, and that peak minus the pre-stage RSS ("eval Δ RSS"),
+  which is the memory the evaluation itself needed.
 - hotcoco joins the instance matrix (bbox / segm / keypoints) and the
   LVIS matrix (bbox). It is compared to vernier at the aligned tier, the
   same tier faster-coco-eval gets.
@@ -92,6 +105,12 @@ each library's default configuration.
   `hardware_concurrency()` threads inside the pinned set. That is the
   library's own behaviour on a constrained host, and any cost from it is
   counted against it.
+- **Negative (measurement side effect):** resetting `VmHWM` also resets
+  the kernel accounting behind `getrusage(...).ru_maxrss`, so a runner's
+  `ru_maxrss` no longer means "process lifetime peak" — it covers only
+  the final stage onward. Everything that reports memory therefore reads
+  the recorded stage peaks instead, and `ru_maxrss_bytes` survives on
+  `RepResult` only to read results captured before this ADR.
 - **Neutral:** Per-stage splits stay non-comparable across impls:
   vernier parses JSON inside `evaluate`, while pycocotools-shaped
   libraries parse in `load`. Only the total is rendered.
@@ -105,3 +124,6 @@ each library's default configuration.
   (`rle_iou_max_workers`), `csrc/faster_eval_api/coco_eval/cocoeval.cpp`
   (`hardware_concurrency()` worker pools).
 - hotcoco: <https://github.com/derekallman/hotcoco> (rayon global pool).
+- `clear_refs` semantics: `Documentation/filesystems/proc.rst`, "Clearing
+  the PG_Referenced and ACCESSED/YOUNG bits" — writing `5` resets the
+  peak-RSS watermark.

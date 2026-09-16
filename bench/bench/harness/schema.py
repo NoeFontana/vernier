@@ -134,6 +134,11 @@ class RepResult(BaseModel):
     warmup: bool
     stages: dict[str, StageTimings]
     summary_stats: dict[str, float]
+    # ``wait4``'s ``ru_maxrss`` for the runner subprocess. NOT a
+    # process-lifetime peak for runners that record per-stage RSS: those
+    # reset the kernel watermark per stage, which also resets this. Read
+    # ``stages["total"].peak_rss_bytes`` instead; this field stays for
+    # results recorded before that instrumentation.
     ru_maxrss_bytes: int
     parent_wall_ns: int
 
@@ -148,7 +153,9 @@ class StageAggregation(BaseModel):
 
 
 class MemoryAggregation(BaseModel):
-    """Across-rep ``ru_maxrss`` summary (warmup reps excluded)."""
+    """Across-rep peak-RSS summary (warmup reps excluded). Sourced from
+    the per-rep ``total`` stage peak where recorded — see
+    :func:`bench.harness.stats.aggregate_memory`."""
 
     model_config = ConfigDict(extra="forbid")
 

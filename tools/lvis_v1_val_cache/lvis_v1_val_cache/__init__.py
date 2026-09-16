@@ -52,7 +52,7 @@ GT_FILENAME = "lvis_v1_val.json"
 
 #: SHA-256 of the LVIS v1 val GT zip. Verified at vendor time on
 #: 2026-05-03 against the FAIR public-files mirror and shared with
-#: :mod:`lvis_val_cache.GT_SHA256` — the LVIS v1 release has been
+#: :mod:`lvis_val_cache.GT_ZIP_SHA256` — the LVIS v1 release has been
 #: frozen since 2020-06, so a divergence here would indicate the
 #: upstream artifact changed. Bumping is an ADR-level decision
 #: (per ADR-0026 §"Parity strategy") on the same change that bumps

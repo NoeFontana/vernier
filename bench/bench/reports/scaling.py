@@ -22,7 +22,7 @@ class ScalingPoint:
     x_value: float
     median_ns: int
     iqr_ns: int
-    ru_maxrss_bytes: int | None
+    peak_rss_bytes: int | None
 
 
 def parse_synthetic_param(workload_id: str, param: str) -> int | None:
@@ -67,12 +67,12 @@ def group_by_synthetic_param(
             continue
         if not all(parsed.get(fk) == fv for fk, fv in fix.items()):
             continue
-        rss = r["ru_maxrss_median_bytes"]
+        rss = r["peak_rss_median_bytes"]
         point = ScalingPoint(
             x_value=float(parsed[vary]),
             median_ns=int(r["total_median_ns"]),
             iqr_ns=int(r["total_iqr_ns"]) if r["total_iqr_ns"] is not None else 0,
-            ru_maxrss_bytes=int(rss) if rss is not None else None,
+            peak_rss_bytes=int(rss) if rss is not None else None,
         )
         out.setdefault(str(r["impl"]), []).append(point)
 

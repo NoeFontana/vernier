@@ -244,7 +244,14 @@ def load_cell(path: Path) -> tuple[CellStats, str, str, str | None, str | None] 
         if r["stages"]["total"].get("peak_rss_bytes") is not None
         and r["stages"]["total"].get("rss_start_bytes") is not None
     ]
-    rsses = [r.get("ru_maxrss_bytes", 0) for r in reps]
+    # Prefer the in-runner peak over the timed stages. Runners that
+    # record per-stage peaks reset the kernel's RSS high-water mark,
+    # which also resets what ``getrusage`` later reports as
+    # ``ru_maxrss``; for those results ``ru_maxrss_bytes`` only covers
+    # the final stage onward and must not be read as a process peak.
+    rsses = [
+        r["stages"]["total"].get("peak_rss_bytes") or r.get("ru_maxrss_bytes", 0) for r in reps
+    ]
     aggregation = data.get("aggregation") or {}
     total_agg = aggregation.get("stages", {}).get("total", {})
     iqr_ns_raw = total_agg.get("iqr_ns")
@@ -380,7 +387,7 @@ def render_iou_table(
     header = ["impl", "median"]
     header += ["IQR"] if has_iqr else []
     header += ["CPU/wall"] if has_cpu else []
-    header += ["RSS (max)"]
+    header += ["peak RSS"]
     header += ["eval Δ RSS"] if has_eval_rss else []
     header += ["vs vernier"]
     rows = [
@@ -675,14 +682,13 @@ each library's own thread knob (vernier `num_threads`, hotcoco
 `boundary_cpu_count`). The CPU/wall column is process CPU time over
 wall time — ~1.00 means the impl used one core; anything well below
 the budget means it spent wall time waiting rather than computing.
-Memory is reported two ways. RSS (max) is the runner process's
-lifetime peak (`getrusage(RUSAGE_CHILDREN).ru_maxrss`, high-water-marked
-across reps), so it includes the interpreter and the library's imports.
-eval Δ RSS is the median across reps of the exact RSS high-water mark
-during the timed stages (the kernel's `VmHWM`, reset through
-`/proc/self/clear_refs` at every stage start) minus RSS just before the
-first stage: the memory the evaluation itself needed, input parsing
-included.
+Memory is reported two ways. Peak RSS is the exact resident-memory
+high-water mark over the timed stages (the kernel's `VmHWM`, reset
+through `/proc/self/clear_refs` at every stage start, max across
+stages and reps); it includes the interpreter and the library's
+imports. eval Δ RSS is the median across reps of that peak minus RSS
+just before the first stage: the memory the evaluation itself needed,
+input parsing included.
 Release mode (N=10 + 2 warmup) gates each impl on relative IQR ≤ 5%;
 cells where the gate failed are marked with
 ` *` next to their IQR value — the median is still the best estimator,

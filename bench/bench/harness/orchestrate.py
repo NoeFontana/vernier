@@ -326,7 +326,12 @@ def _spawn_one_rep_panoptic(
     )
     if num_threads is not None:
         cmd.extend(["--num-threads", str(num_threads)])
-    status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
+    status, rusage, parent_wall_ns = _spawn_subprocess(
+        bench_root=bench_root,
+        impl=impl,
+        cmd=cmd,
+        cpus=select_cpus(cpu_budget(num_threads)),
+    )
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
     for required in (rep_json, rep_snapshot, rep_per_class):
@@ -404,7 +409,12 @@ def _spawn_one_rep_semantic(
     )
     if num_threads is not None:
         cmd.extend(["--num-threads", str(num_threads)])
-    status, rusage, parent_wall_ns = _spawn_subprocess(bench_root=bench_root, impl=impl, cmd=cmd)
+    status, rusage, parent_wall_ns = _spawn_subprocess(
+        bench_root=bench_root,
+        impl=impl,
+        cmd=cmd,
+        cpus=select_cpus(cpu_budget(num_threads)),
+    )
     if status != 0:
         raise RuntimeError(f"runner {impl} exited with status {status}; cmd={cmd}")
     for required in (rep_json, rep_snapshot, rep_per_class, rep_confusion):
