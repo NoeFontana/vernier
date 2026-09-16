@@ -800,8 +800,7 @@ pub(crate) fn evaluate_grid_impl(
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = realize_dt(dt_payload)?;
+        let (gt, dt) = parse_gt_dt_with_policy(&gt_bytes, dt_payload, thread_policy)?;
         let params = EvaluateParams {
             iou_thresholds: &iou_for_run,
             area_ranges: &area,
@@ -831,6 +830,46 @@ pub(crate) fn evaluate_grid_impl(
 /// [`threads::ThreadPolicy`]: sequential calls today's
 /// [`EvalIouType::run`] unchanged; parallel builds a scoped pool of
 /// exactly the requested thread count and `install`s the parallel
+/// Parse GT and DT, overlapping them when the cell has a thread budget.
+///
+/// The two payloads are independent, but parsing them in sequence made
+/// the load phase the sum of both. On Objects365 val that is 942 ms of
+/// GT plus 686 ms of DT — 1.6 s of a ~9 s evaluation spent on one core
+/// while the other seven idle. `rayon::join` overlaps them, so the
+/// phase costs the slower of the two instead of their sum.
+///
+/// `num_threads=None` keeps the sequential path and never enters rayon
+/// (ADR-0047).
+fn parse_gt_dt_with_policy(
+    gt_bytes: &[u8],
+    dt_payload: UpdatePayload,
+    thread_policy: threads::ThreadPolicy,
+) -> PyResult<(CocoDataset, CocoDetections)> {
+    match thread_policy.thread_count() {
+        None => {
+            let gt = parse_gt(gt_bytes)?;
+            let dt = realize_dt(dt_payload)?;
+            Ok((gt, dt))
+        }
+        Some(n) => match threads::build_scoped_pool(n) {
+            // Two tasks, so a pool of two is enough; the rest of the
+            // budget would sit idle. The grid build downstream takes
+            // the full budget.
+            Ok(pool) => {
+                let (gt, dt) =
+                    pool.install(|| rayon::join(|| parse_gt(gt_bytes), || realize_dt(dt_payload)));
+                Ok((gt?, dt?))
+            }
+            // Pool build failure is not a reason to fail a parse.
+            Err(_) => {
+                let gt = parse_gt(gt_bytes)?;
+                let dt = realize_dt(dt_payload)?;
+                Ok((gt, dt))
+            }
+        },
+    }
+}
+
 /// runner inside it.
 fn run_grid_with_policy(
     iou_type: &EvalIouType,
@@ -1189,8 +1228,7 @@ fn evaluate_summary_impl(
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
 
     let summary = py.detach(move || -> PyResult<Summary> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = realize_dt(dt_payload)?;
+        let (gt, dt) = parse_gt_dt_with_policy(&gt_bytes, dt_payload, thread_policy)?;
         run_pipeline(
             &iou_type,
             &gt,
