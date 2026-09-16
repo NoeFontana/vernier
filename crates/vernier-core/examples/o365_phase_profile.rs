@@ -94,7 +94,7 @@ fn main() {
     {
         let (par_ns, post_ns, calls) = vernier_core::read_and_reset_evaluate_parallel_timings();
         println!(
-            "  par_iter region {:>9.0} ms | serial transpose {:>7.0} ms | calls {calls}",
+            "  par_iter region {:>9.0} ms | post-pass (fill) {:>7.0} ms | calls {calls}",
             par_ns as f64 / 1e6,
             post_ns as f64 / 1e6
         );

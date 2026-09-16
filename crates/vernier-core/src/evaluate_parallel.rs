@@ -36,7 +36,7 @@ pub(crate) mod timings {
     use crate::bench_counters::BenchCounterSet;
 
     pub(super) const PAR_ITER_NS: usize = 0;
-    pub(super) const SERIAL_POST_NS: usize = 1;
+    pub(super) const POST_PASS_NS: usize = 1;
     pub(super) const N_CALLS: usize = 2;
 
     pub(super) static COUNTERS: BenchCounterSet<3> = BenchCounterSet::new();
@@ -185,18 +185,56 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     #[cfg(feature = "bench-timings")]
     let t_post = std::time::Instant::now();
 
-    let total_slots = n_k * n_a * n_i;
-    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
+    // Regroup the live cells by category, then let each category's
+    // chunk of the output be filled by its own worker.
+    //
+    // The output buffers are `K * A * I` slots — 1.78 GiB of pointers on
+    // Objects365 — and `vec![None; ..]` hands back lazily-zeroed pages.
+    // Writing the live cells therefore first-touches most of that range,
+    // and on one thread the page faults, not the moves, are the cost.
+    // Categories own disjoint, contiguous `A * I` ranges, so faulting
+    // them in parallel is sound and turns the post-pass into per-worker
+    // page-fault throughput.
+    let chunk_len = n_a * n_i;
+    // Pre-size each bucket from the occupancy index: a category's live
+    // cells are at most `A` per occupied `(image, category)` pair, so
+    // one counting pass over the CSR values replaces a couple of
+    // million pushes' worth of regrowth.
+    let mut per_category_cells = vec![0_usize; n_k];
+    for i in 0..n_i {
+        for &k in occupied.row(i) {
+            per_category_cells[k as usize] += n_a;
+        }
+    }
+    // Offset within the category's chunk, plus the cell's two outputs.
+    type ScatterCell = (usize, Option<Box<PerImageEval>>, Option<Box<EvalImageMeta>>);
+    let mut by_category: Vec<Vec<ScatterCell>> = per_category_cells
+        .into_iter()
+        .map(Vec::with_capacity)
+        .collect();
     let mut retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = Vec::with_capacity(n_i);
     for (i, image_output) in per_image.into_iter().enumerate() {
         for (k, a, eval, meta) in image_output.cells {
-            let canonical = (k as usize) * n_a * n_i + (a as usize) * n_i + i;
-            eval_imgs[canonical] = eval;
-            eval_imgs_meta[canonical] = meta;
+            // Offset within the category's own chunk.
+            let offset = (a as usize) * n_i + i;
+            by_category[k as usize].push((offset, eval, meta));
         }
         retained_per_image.push(image_output.retained);
     }
+
+    let total_slots = n_k * chunk_len;
+    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
+    eval_imgs
+        .par_chunks_mut(chunk_len.max(1))
+        .zip(eval_imgs_meta.par_chunks_mut(chunk_len.max(1)))
+        .zip(by_category.into_par_iter())
+        .for_each(|((eval_chunk, meta_chunk), cells)| {
+            for (offset, eval, meta) in cells {
+                eval_chunk[offset] = eval;
+                meta_chunk[offset] = meta;
+            }
+        });
 
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
     for (i, per_image) in retained_per_image.into_iter().enumerate() {
@@ -227,7 +265,7 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     {
         let post_ns = u64::try_from(t_post.elapsed().as_nanos()).unwrap_or(u64::MAX);
         timings::COUNTERS.add(timings::PAR_ITER_NS, par_ns);
-        timings::COUNTERS.add(timings::SERIAL_POST_NS, post_ns);
+        timings::COUNTERS.add(timings::POST_PASS_NS, post_ns);
         timings::COUNTERS.bump(timings::N_CALLS);
     }
     Ok(grid)
