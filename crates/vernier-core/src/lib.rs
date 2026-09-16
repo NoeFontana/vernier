@@ -20,6 +20,7 @@ pub mod bench_counters;
 pub mod boundary_parity;
 pub mod breakdown;
 pub mod calibration;
+pub(crate) mod cell_occupancy;
 pub mod dataset;
 pub mod distributed;
 pub mod error;
