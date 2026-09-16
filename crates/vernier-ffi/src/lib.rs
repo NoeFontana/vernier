@@ -46,7 +46,9 @@ use pyo3::exceptions::{
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
-use vernier_core::accumulate::{accumulate, sort_max_dets, AccumulateParams, PerImageEval};
+use vernier_core::accumulate::{
+    accumulate, accumulate_parallel, sort_max_dets, AccumulateParams, PerImageEval,
+};
 use vernier_core::dataset::{CategoryId, DetectionInput};
 use vernier_core::evaluate::{
     evaluate_boundary_cached, evaluate_segm_cached, BoundaryIouCached, EvalImageMeta, EvalKernel,
@@ -266,6 +268,12 @@ struct PyEvalGrid {
     /// wrong path raises a typed error from
     /// [`per_detection_to_arrow_pycapsule`].
     retained_dt: Option<CocoDetections>,
+    /// Thread budget this grid was evaluated under (ADR-0047). Carried
+    /// so `accumulate` fans out over the same budget instead of asking
+    /// the caller to repeat it: a grid built with `num_threads=8` that
+    /// then accumulated on one thread would spend a fifth of a
+    /// long-tail evaluation back in serial code.
+    thread_policy: threads::ThreadPolicy,
     /// Dataset snapshot the grid was built against. Three `Arc` clones
     /// of `(gt, boundary_cache, segm_cache)`; reused by [`Self::dataset`]
     /// so the result-tables Python wrapper doesn't re-parse GT JSON.
@@ -347,20 +355,28 @@ impl PyEvalGrid {
         let eval_imgs = &self.inner.eval_imgs;
         let iou_thr = self.iou_thresholds.clone();
         let recall_thr = self.recall_thresholds.clone();
+        let policy = self.thread_policy;
         let acc = py
             .detach(|| {
-                accumulate(
-                    eval_imgs,
-                    AccumulateParams {
-                        iou_thresholds: &iou_thr,
-                        recall_thresholds: &recall_thr,
-                        max_dets: &max_dets,
-                        n_categories,
-                        n_area_ranges,
-                        n_images,
+                let params = AccumulateParams {
+                    iou_thresholds: &iou_thr,
+                    recall_thresholds: &recall_thr,
+                    max_dets: &max_dets,
+                    n_categories,
+                    n_area_ranges,
+                    n_images,
+                };
+                match policy.thread_count() {
+                    // Sequential grids never enter rayon (ADR-0047).
+                    None => accumulate(eval_imgs, params, parity),
+                    Some(n) => match threads::build_scoped_pool(n) {
+                        Ok(pool) => pool.install(|| accumulate_parallel(eval_imgs, params, parity)),
+                        // A pool that won't build is not a reason to
+                        // fail an evaluation: the sequential walk
+                        // produces the same tensors, just slower.
+                        Err(_) => accumulate(eval_imgs, params, parity),
                     },
-                    parity,
-                )
+                }
             })
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Ok(PyAccumulated {
@@ -820,6 +836,7 @@ pub(crate) fn evaluate_grid_impl(
         inner: grid,
         parity,
         retained_dt,
+        thread_policy,
         retained_dataset,
         iou_thresholds: iou_thr,
         recall_thresholds: recall_thr,
@@ -990,6 +1007,7 @@ fn evaluate_grid_with_dataset_impl(
         inner: grid,
         parity,
         retained_dt,
+        thread_policy,
         retained_dataset,
         iou_thresholds: iou_thr,
         recall_thresholds: recall_thr,

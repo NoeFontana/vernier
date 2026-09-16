@@ -50,7 +50,8 @@
 //! responsibilities. The orchestrator that builds [`PerImageEval`]
 //! folds B7 in alongside the matching engine's B6.
 
-use ndarray::{Array2, Array4, Array5, Axis};
+use ndarray::{Array2, Array4, Array5, ArrayViewMut3, ArrayViewMut4, Axis};
+use rayon::prelude::*;
 
 use crate::error::EvalError;
 use crate::parity::{argsort_score_desc, ParityMode, PARITY_EPS};
@@ -175,6 +176,41 @@ pub fn accumulate(
     let n_m = p.max_dets.len();
     let n_i = p.n_images;
 
+    validate_grid(eval_imgs, n_t, n_k, n_a, n_i)?;
+
+    let mut precision = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
+    let mut recall = Array4::<f64>::from_elem((n_t, n_k, n_a, n_m), -1.0);
+    let mut scores = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
+
+    for (k, ((mut p_k, mut r_k), mut s_k)) in precision
+        .axis_iter_mut(Axis(2))
+        .zip(recall.axis_iter_mut(Axis(1)))
+        .zip(scores.axis_iter_mut(Axis(2)))
+        .enumerate()
+    {
+        accumulate_category(eval_imgs, p, k, n_t, n_a, n_i, &mut p_k, &mut r_k, &mut s_k);
+    }
+
+    Ok(Accumulated {
+        precision,
+        recall,
+        scores,
+    })
+}
+
+/// Shape checks shared by [`accumulate`] and [`accumulate_parallel`].
+///
+/// # Errors
+///
+/// [`EvalError::DimensionMismatch`] when the grid length disagrees with
+/// `K * A * I`, or when a per-image array's shape disagrees with `T`.
+fn validate_grid(
+    eval_imgs: &[Option<Box<PerImageEval>>],
+    n_t: usize,
+    n_k: usize,
+    n_a: usize,
+    n_i: usize,
+) -> Result<(), EvalError> {
     let expected = n_k * n_a * n_i;
     if eval_imgs.len() != expected {
         return Err(EvalError::DimensionMismatch {
@@ -219,51 +255,122 @@ pub fn accumulate(
         }
     }
 
+    Ok(())
+}
+
+/// Rayon sibling of [`accumulate`], fanned out over the category axis.
+///
+/// Categories own disjoint slices of all three output tensors and share
+/// no accumulator, so this is bit-identical to the sequential walk
+/// rather than merely equivalent: no float reduction crosses a thread
+/// boundary, and each cell's arithmetic is the same
+/// [`accumulate_category`] call in the same order.
+///
+/// Worth the fan-out only when the category axis is long. `accumulate`
+/// walks `K * A * M` cells and gathers `I` images for each; on COCO
+/// (80 categories) that is ~70 ms, but Objects365 val (365 categories,
+/// 80 000 images) spends ~2.1 s there — a fifth of the whole
+/// evaluation, all of it serial. Callers on the sequential path
+/// (`num_threads=None`) keep calling [`accumulate`] and never enter
+/// rayon (ADR-0047).
+///
+/// # Errors
+///
+/// Same validation as [`accumulate`]: propagates
+/// [`EvalError::DimensionMismatch`] on a grid whose length or per-image
+/// array shapes disagree with the declared axes.
+pub fn accumulate_parallel(
+    eval_imgs: &[Option<Box<PerImageEval>>],
+    p: AccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
+    let n_t = p.iou_thresholds.len();
+    let n_r = p.recall_thresholds.len();
+    let n_k = p.n_categories;
+    let n_a = p.n_area_ranges;
+    let n_m = p.max_dets.len();
+    let n_i = p.n_images;
+
+    validate_grid(eval_imgs, n_t, n_k, n_a, n_i)?;
+    let _ = parity_mode;
+
     let mut precision = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
     let mut recall = Array4::<f64>::from_elem((n_t, n_k, n_a, n_m), -1.0);
     let mut scores = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
 
-    for k in 0..n_k {
-        let nk = k * n_a * n_i;
-        for a in 0..n_a {
-            let na = a * n_i;
-            let cells: Vec<&PerImageEval> = (0..n_i)
-                .filter_map(|i| eval_imgs[nk + na + i].as_deref())
-                .collect();
-            if cells.is_empty() {
-                continue;
-            }
-            let npig: usize = cells
-                .iter()
-                .map(|e| e.gt_ignore.iter().filter(|&&ig| !ig).count())
-                .sum();
-            if npig == 0 {
-                continue;
-            }
+    // One mutable view per category, collected up front. `ArrayViewMut`
+    // is `Send`, and the views are disjoint by construction, so rayon
+    // can hold one per worker without any interior mutability.
+    let p_views: Vec<ArrayViewMut4<'_, f64>> = precision.axis_iter_mut(Axis(2)).collect();
+    let r_views: Vec<ArrayViewMut3<'_, f64>> = recall.axis_iter_mut(Axis(1)).collect();
+    let s_views: Vec<ArrayViewMut4<'_, f64>> = scores.axis_iter_mut(Axis(2)).collect();
 
-            for (m, &max_det) in p.max_dets.iter().enumerate() {
-                accumulate_cell(
-                    &cells,
-                    max_det,
-                    npig,
-                    n_t,
-                    p.recall_thresholds,
-                    k,
-                    a,
-                    m,
-                    &mut precision,
-                    &mut recall,
-                    &mut scores,
-                );
-            }
-        }
-    }
+    p_views
+        .into_par_iter()
+        .zip(r_views)
+        .zip(s_views)
+        .enumerate()
+        .for_each(|(k, ((mut p_k, mut r_k), mut s_k))| {
+            accumulate_category(eval_imgs, p, k, n_t, n_a, n_i, &mut p_k, &mut r_k, &mut s_k);
+        });
 
     Ok(Accumulated {
         precision,
         recall,
         scores,
     })
+}
+
+/// Every `(area range, max-det)` cell of one category, writing into
+/// that category's slice of the output tensors.
+///
+/// Split out of [`accumulate`] so the sequential walk and
+/// [`accumulate_parallel`] run byte-identical arithmetic — the only
+/// difference between them is which thread holds the category.
+#[allow(clippy::too_many_arguments)]
+fn accumulate_category(
+    eval_imgs: &[Option<Box<PerImageEval>>],
+    p: AccumulateParams<'_>,
+    k: usize,
+    n_t: usize,
+    n_a: usize,
+    n_i: usize,
+    precision: &mut ArrayViewMut4<'_, f64>,
+    recall: &mut ArrayViewMut3<'_, f64>,
+    scores: &mut ArrayViewMut4<'_, f64>,
+) {
+    let nk = k * n_a * n_i;
+    for a in 0..n_a {
+        let na = a * n_i;
+        let cells: Vec<&PerImageEval> = (0..n_i)
+            .filter_map(|i| eval_imgs[nk + na + i].as_deref())
+            .collect();
+        if cells.is_empty() {
+            continue;
+        }
+        let npig: usize = cells
+            .iter()
+            .map(|e| e.gt_ignore.iter().filter(|&&ig| !ig).count())
+            .sum();
+        if npig == 0 {
+            continue;
+        }
+
+        for (m, &max_det) in p.max_dets.iter().enumerate() {
+            accumulate_cell(
+                &cells,
+                max_det,
+                npig,
+                n_t,
+                p.recall_thresholds,
+                a,
+                m,
+                precision,
+                recall,
+                scores,
+            );
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -273,12 +380,11 @@ fn accumulate_cell(
     npig: usize,
     n_t: usize,
     recall_thresholds: &[f64],
-    k: usize,
     a: usize,
     m: usize,
-    precision: &mut Array5<f64>,
-    recall: &mut Array4<f64>,
-    scores: &mut Array5<f64>,
+    precision: &mut ArrayViewMut4<'_, f64>,
+    recall: &mut ArrayViewMut3<'_, f64>,
+    scores: &mut ArrayViewMut4<'_, f64>,
 ) {
     let mut takes: Vec<usize> = Vec::with_capacity(cells.len());
     let mut total = 0usize;
@@ -307,10 +413,10 @@ fn accumulate_cell(
         // above this block). Mirror that here so the surviving cells
         // get 0.0, not -1.
         for t in 0..n_t {
-            recall[(t, k, a, m)] = 0.0;
+            recall[(t, a, m)] = 0.0;
             for ri in 0..recall_thresholds.len() {
-                precision[(t, ri, k, a, m)] = 0.0;
-                scores[(t, ri, k, a, m)] = 0.0;
+                precision[(t, ri, a, m)] = 0.0;
+                scores[(t, ri, a, m)] = 0.0;
             }
         }
         return;
@@ -352,7 +458,7 @@ fn accumulate_cell(
         }
 
         // C4: terminal cumulative recall.
-        recall[(t, k, a, m)] = rc[n_d - 1];
+        recall[(t, a, m)] = rc[n_d - 1];
 
         // C2: right-to-left running max on precision (envelope).
         for j in (1..n_d).rev() {
@@ -366,12 +472,10 @@ fn accumulate_cell(
         // summarizer's `s > -1` filter keeps them.
         let mut p_lane = precision
             .index_axis_mut(Axis(0), t)
-            .index_axis_move(Axis(1), k)
             .index_axis_move(Axis(1), a)
             .index_axis_move(Axis(1), m);
         let mut s_lane = scores
             .index_axis_mut(Axis(0), t)
-            .index_axis_move(Axis(1), k)
             .index_axis_move(Axis(1), a)
             .index_axis_move(Axis(1), m);
         for (ri, &target) in recall_thresholds.iter().enumerate() {
@@ -827,5 +931,85 @@ mod tests {
         assert_eq!(canonical_acc.precision, permuted_acc.precision);
         assert_eq!(canonical_acc.recall, permuted_acc.recall);
         assert_eq!(canonical_acc.scores, permuted_acc.scores);
+    }
+
+    /// Multi-category grid with ragged per-cell shapes: some cells
+    /// empty, some all-ignore (the `npig == 0` skip), some with
+    /// detections but no matches. The parallel walk must reproduce the
+    /// sequential tensors bit-for-bit, not merely within a tolerance.
+    #[test]
+    fn parallel_accumulate_is_bit_identical_to_sequential() {
+        let n_k = 7;
+        let n_a = 4;
+        let n_i = 5;
+        let iou = [0.5, 0.75];
+        let rec: Vec<f64> = (0..101).map(|r| f64::from(r) / 100.0).collect();
+        let max_dets = [1usize, 10, 100];
+
+        let mut grid: Vec<Option<Box<PerImageEval>>> = Vec::with_capacity(n_k * n_a * n_i);
+        for slot in 0..(n_k * n_a * n_i) {
+            // Deterministic variety: empty cells, all-ignored cells,
+            // and cells whose scores tie across images.
+            let cell = match slot % 5 {
+                0 => None,
+                1 => Some(two_threshold_eval(
+                    vec![0.9, 0.9, 0.4],
+                    vec![true, false, true, false, true, false],
+                    vec![false; 6],
+                    vec![false, true],
+                )),
+                2 => Some(two_threshold_eval(
+                    vec![0.5],
+                    vec![true, false],
+                    vec![false, false],
+                    vec![true],
+                )),
+                3 => Some(two_threshold_eval(
+                    vec![0.8, 0.2],
+                    vec![false, true, true, true],
+                    vec![true, false, false, false],
+                    vec![false],
+                )),
+                _ => Some(two_threshold_eval(
+                    vec![0.99, 0.75, 0.75, 0.1],
+                    vec![true; 8],
+                    vec![false; 8],
+                    vec![false, false, true],
+                )),
+            };
+            grid.push(cell.map(Box::new));
+        }
+
+        let p = AccumulateParams {
+            iou_thresholds: &iou,
+            recall_thresholds: &rec,
+            max_dets: &max_dets,
+            n_categories: n_k,
+            n_area_ranges: n_a,
+            n_images: n_i,
+        };
+        let sequential = accumulate(&grid, p, ParityMode::Strict).expect("sequential");
+        let parallel = accumulate_parallel(&grid, p, ParityMode::Strict).expect("parallel");
+
+        assert_eq!(sequential.precision, parallel.precision);
+        assert_eq!(sequential.recall, parallel.recall);
+        assert_eq!(sequential.scores, parallel.scores);
+    }
+
+    /// `T = 2` sibling of [`one_threshold_eval`]; `matched` / `ignore`
+    /// are row-major `(2, n)`.
+    fn two_threshold_eval(
+        scores: Vec<f64>,
+        matched: Vec<bool>,
+        ignore: Vec<bool>,
+        gt_ignore: Vec<bool>,
+    ) -> PerImageEval {
+        let n = scores.len();
+        PerImageEval {
+            dt_scores: scores,
+            dt_matched: Array2::from_shape_vec((2, n), matched).expect("dt_matched shape"),
+            dt_ignore: Array2::from_shape_vec((2, n), ignore).expect("dt_ignore shape"),
+            gt_ignore,
+        }
     }
 }
