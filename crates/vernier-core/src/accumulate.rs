@@ -264,7 +264,7 @@ fn validate_grid(
 /// no accumulator, so this is bit-identical to the sequential walk
 /// rather than merely equivalent: no float reduction crosses a thread
 /// boundary, and each cell's arithmetic is the same
-/// [`accumulate_category`] call in the same order.
+/// `accumulate_category` call in the same order.
 ///
 /// Worth the fan-out only when the category axis is long. `accumulate`
 /// walks `K * A * M` cells and gathers `I` images for each; on COCO
