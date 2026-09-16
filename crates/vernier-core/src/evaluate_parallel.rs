@@ -36,7 +36,7 @@ pub(crate) mod timings {
     use crate::bench_counters::BenchCounterSet;
 
     pub(super) const PAR_ITER_NS: usize = 0;
-    pub(super) const SERIAL_POST_NS: usize = 1;
+    pub(super) const POST_PASS_NS: usize = 1;
     pub(super) const N_CALLS: usize = 2;
 
     pub(super) static COUNTERS: BenchCounterSet<3> = BenchCounterSet::new();
@@ -206,11 +206,12 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
             per_category_cells[k as usize] += n_a;
         }
     }
-    let mut by_category: Vec<Vec<(usize, Option<Box<PerImageEval>>, Option<Box<EvalImageMeta>>)>> =
-        per_category_cells
-            .into_iter()
-            .map(Vec::with_capacity)
-            .collect();
+    // Offset within the category's chunk, plus the cell's two outputs.
+    type ScatterCell = (usize, Option<Box<PerImageEval>>, Option<Box<EvalImageMeta>>);
+    let mut by_category: Vec<Vec<ScatterCell>> = per_category_cells
+        .into_iter()
+        .map(Vec::with_capacity)
+        .collect();
     let mut retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = Vec::with_capacity(n_i);
     for (i, image_output) in per_image.into_iter().enumerate() {
         for (k, a, eval, meta) in image_output.cells {
@@ -264,7 +265,7 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     {
         let post_ns = u64::try_from(t_post.elapsed().as_nanos()).unwrap_or(u64::MAX);
         timings::COUNTERS.add(timings::PAR_ITER_NS, par_ns);
-        timings::COUNTERS.add(timings::SERIAL_POST_NS, post_ns);
+        timings::COUNTERS.add(timings::POST_PASS_NS, post_ns);
         timings::COUNTERS.bump(timings::N_CALLS);
     }
     Ok(grid)
