@@ -52,18 +52,14 @@ REGIMES: tuple[StressRegime, ...] = (
 
 # Per-axis sweeps fix the baseline and vary one knob. Used by the
 # stress runner's --axis mode.
-SWEEP_BASELINE = StressRegime(
-    "sweep-baseline", 2000, 80, 100, 30, 640, 480, "bbox"
-)
+SWEEP_BASELINE = StressRegime("sweep-baseline", 2000, 80, 100, 30, 640, 480, "bbox")
 
 SWEEPS: dict[str, tuple[StressRegime, ...]] = {
     "dt": tuple(
-        StressRegime(f"sweep-dt-{n}", 2000, 80, n, 30, 640, 480, "bbox")
-        for n in (10, 100, 500)
+        StressRegime(f"sweep-dt-{n}", 2000, 80, n, 30, 640, 480, "bbox") for n in (10, 100, 500)
     ),
     "gt": tuple(
-        StressRegime(f"sweep-gt-{n}", 2000, 80, 100, n, 640, 480, "bbox")
-        for n in (10, 100, 500)
+        StressRegime(f"sweep-gt-{n}", 2000, 80, 100, n, 640, 480, "bbox") for n in (10, 100, 500)
     ),
     "cats": (
         StressRegime("sweep-cats-80", 2000, 80, 100, 30, 640, 480, "bbox"),
@@ -100,8 +96,7 @@ def materialize(regime: StressRegime, out_dir: Path) -> tuple[Path, Path]:
     w, h = regime.image_w, regime.image_h
 
     images = [
-        {"id": i, "width": w, "height": h, "file_name": f"{i}.jpg"}
-        for i in range(regime.n_images)
+        {"id": i, "width": w, "height": h, "file_name": f"{i}.jpg"} for i in range(regime.n_images)
     ]
     categories = [{"id": i + 1, "name": f"cat{i}"} for i in range(regime.n_categories)]
 

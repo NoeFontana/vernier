@@ -106,8 +106,8 @@ def render_compare_markdown(rows: Sequence[CompareRow], *, base_sha: str, head_s
                     _format_ns(r.delta_ns),
                     _format_relative(r.delta_relative),
                     _sign_arrow(r.delta_relative, r.status),
-                    _format_bytes(r.base_ru_maxrss_bytes),
-                    _format_bytes(r.head_ru_maxrss_bytes),
+                    _format_bytes(r.base_peak_rss_bytes),
+                    _format_bytes(r.head_peak_rss_bytes),
                     r.status,
                 ]
             )
@@ -135,7 +135,7 @@ def render_longitudinal_markdown(series: dict[SeriesKey, list[SeriesPoint]]) -> 
             lines.append(
                 f"| {p.timestamp.strftime('%Y-%m-%d %H:%M:%S')} | "
                 f"`{p.git_sha[:12]}` | {_format_ns(p.median_ns)} | "
-                f"{_format_ns(p.iqr_ns)} | {_format_bytes(p.ru_maxrss_bytes)} |"
+                f"{_format_ns(p.iqr_ns)} | {_format_bytes(p.peak_rss_bytes)} |"
             )
     return "\n".join(lines) + "\n"
 
@@ -266,7 +266,7 @@ def render_scaling_table(
     lines = [
         f"# Scaling — `{workload_family}` / {iou_type}",
         "",
-        f"| impl | {x_param} | median | IQR | RSS (max) | vs vernier |",
+        f"| impl | {x_param} | median | IQR | peak RSS | vs vernier |",
         "|---|---:|---:|---:|---:|---:|",
     ]
     for impl in sorted(points_by_impl):
@@ -280,7 +280,7 @@ def render_scaling_table(
                         _format_x_value(p.x_value, x_param=x_param),
                         _format_ns(p.median_ns),
                         f"{iqr_rel:.2%}",
-                        _format_bytes(p.ru_maxrss_bytes),
+                        _format_bytes(p.peak_rss_bytes),
                         _vs_vernier(p.median_ns, vernier_lookup.get(p.x_value)),
                     ]
                 )

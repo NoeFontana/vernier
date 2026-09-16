@@ -74,9 +74,7 @@ class RSSSampler:
         # context window still produces ≥1 entry.
         proc = _psutil.Process()
         self._samples.append((0.0, int(proc.memory_info().rss)))
-        self._thread = threading.Thread(
-            target=self._run, name="RSSSampler", daemon=True
-        )
+        self._thread = threading.Thread(target=self._run, name="RSSSampler", daemon=True)
         self._thread.start()
         return self
 

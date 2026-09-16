@@ -36,6 +36,33 @@ additive / perf / docs".
 
 ### Added
 
+- **hotcoco joins the bench matrix** (ADR-0049) — `hotcoco==1.0.1`
+  is benchmarked and parity-checked on instance bbox / segm / keypoints and on
+  LVIS bbox, wheel-only so the measured artifact is what `pip install` ships.
+  It is the closest competitor: 1.37–1.62x behind vernier per CPU on COCO and
+  1.03x on LVIS. Its COCO precision tensor sits 1 ULP from pycocotools (same
+  cells as faster-coco-eval); on LVIS it diverges from the `lvis-api`
+  reference by up to 8.0e-3 per cell on both GT-as-DT and jittered detections,
+  where vernier is bit-equal.
+- **Objects365 v2 val scale workload** — `objects365_val_jittered_seed<N>`
+  (80k images, 1.24M GT boxes, 365 categories, ~1.06M detections, bbox only).
+  Annotations are fetched CC BY 4.0 and SHA-256-pinned by the new
+  `tools/objects365_val_cache`; images are never downloaded and no dataset
+  bytes are committed. vernier stays bit-exact to pycocotools at that size
+  while being 35.8x faster and using 4.5x less memory; faster-coco-eval is
+  OOM-killed at ~30 GiB.
+- **Per-cell CPU budget in the bench harness** (ADR-0049) — every batch runner
+  is pinned to `cpu_budget(num_threads)` logical CPUs (1 for headline cells),
+  chosen one per physical core before SMT siblings, with the budget also
+  forwarded to `RAYON_NUM_THREADS` / `rle_iou_max_workers` /
+  `boundary_cpu_count` / `torch.set_num_threads`. Needed because
+  faster-coco-eval >= 1.8, hotcoco and mmsegmentation are multi-threaded by
+  default; without it the headline compared 1 thread against 8.
+- **Exact per-stage memory** — stages record RSS at entry and the kernel's
+  `VmHWM` high-water mark (reset per stage via `/proc/self/clear_refs`), plus
+  process CPU time and the observed CPU affinity. `docs/benchmarks.md` gains
+  CPU/wall, peak RSS and eval-Δ-RSS columns and generated thread-scaling
+  tables.
 - **`vernier` is now a real facade crate** (ADR-0048). `crates/vernier/`
   is a seventh publishable workspace member whose entire content is
   whole-crate re-exports plus rustdoc:
@@ -73,6 +100,14 @@ additive / perf / docs".
   completeness of the public typed surface (baseline 100%).
 
 ### Fixed
+
+- **LVIS val cache never verified** — `lvis_val_cache.ensure_gt` compared the
+  *extracted* JSON against a SHA-256 that is the *zip's*, so it raised on every
+  clean cache; `just test-parity-lvis-val` and the bench LVIS cell were both
+  unreachable from scratch. Now verifies the archive before extraction,
+  matching the sibling `lvis_v1_val_cache`. The pinned value is unchanged — the
+  upstream artifact has not drifted — so ADR-0026's "bumping the pin is an
+  ADR-level decision" is not engaged.
 
 - **rkyv bumped to 0.8.18 for RUSTSEC-2026-0233 / -0234 / -0235.** The
   archive validator that ADR-0031 relies on — `bytecheck` running under

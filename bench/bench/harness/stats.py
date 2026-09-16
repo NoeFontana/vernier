@@ -52,12 +52,30 @@ def aggregate_reps(reps: Iterable[RepResult]) -> dict[str, StageAggregation]:
     }
 
 
+def _rep_peak_rss_bytes(rep: RepResult) -> int:
+    """Peak RSS for one rep: the ``total`` stage's recorded high-water mark
+    when the runner captured one, else the ``ru_maxrss`` the orchestrator
+    read from ``wait4``.
+
+    Runners reset the kernel's RSS watermark per stage (see
+    :mod:`bench.harness.timing`), and that reset also clears what
+    ``getrusage`` reports as ``ru_maxrss`` — so for those runners
+    ``ru_maxrss_bytes`` covers only the final stage onward and the stage
+    peak is the correct process peak. The fallback keeps results recorded
+    before that instrumentation readable.
+    """
+    total = rep.stages.get("total")
+    if total is not None and total.peak_rss_bytes is not None:
+        return total.peak_rss_bytes
+    return rep.ru_maxrss_bytes
+
+
 def aggregate_memory(reps: Iterable[RepResult]) -> MemoryAggregation:
-    """Median / min / max of ``ru_maxrss_bytes`` across measurement reps."""
+    """Median / min / max peak RSS across measurement reps."""
     measurements = [r for r in reps if not r.warmup]
     if not measurements:
         raise ValueError("aggregate_memory requires at least one non-warmup rep")
-    arr = np.asarray([r.ru_maxrss_bytes for r in measurements], dtype=np.int64)
+    arr = np.asarray([_rep_peak_rss_bytes(r) for r in measurements], dtype=np.int64)
     return MemoryAggregation(
         median_bytes=int(np.median(arr)),
         min_bytes=int(arr.min()),

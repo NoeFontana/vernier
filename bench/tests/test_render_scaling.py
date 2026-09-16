@@ -22,7 +22,7 @@ def _make_curve(*, slope: int, x_values: list[int]) -> list[ScalingPoint]:
             x_value=float(x),
             median_ns=slope * x,
             iqr_ns=slope * x // 100,
-            ru_maxrss_bytes=150 * 1024 * 1024,
+            peak_rss_bytes=150 * 1024 * 1024,
         )
         for x in x_values
     ]
@@ -50,12 +50,12 @@ def test_scaling_table_renders_one_row_per_impl_x_value() -> None:
 def test_scaling_table_vs_vernier_ratio_uses_per_x_denominator() -> None:
     points = {
         "vernier": [
-            ScalingPoint(x_value=1000.0, median_ns=100, iqr_ns=1, ru_maxrss_bytes=None),
-            ScalingPoint(x_value=10000.0, median_ns=1000, iqr_ns=10, ru_maxrss_bytes=None),
+            ScalingPoint(x_value=1000.0, median_ns=100, iqr_ns=1, peak_rss_bytes=None),
+            ScalingPoint(x_value=10000.0, median_ns=1000, iqr_ns=10, peak_rss_bytes=None),
         ],
         "pycocotools": [
-            ScalingPoint(x_value=1000.0, median_ns=1500, iqr_ns=15, ru_maxrss_bytes=None),
-            ScalingPoint(x_value=10000.0, median_ns=20000, iqr_ns=200, ru_maxrss_bytes=None),
+            ScalingPoint(x_value=1000.0, median_ns=1500, iqr_ns=15, peak_rss_bytes=None),
+            ScalingPoint(x_value=10000.0, median_ns=20000, iqr_ns=200, peak_rss_bytes=None),
         ],
     }
     md = render_scaling_table(
@@ -154,8 +154,8 @@ def _synth_row(*, wid: str, impl: str, median_ns: int, iou: str = "bbox") -> dic
         "reps_count": 10,
         "total_median_ns": median_ns,
         "total_iqr_ns": median_ns // 100,
-        "ru_maxrss_median_bytes": 150 * 1024 * 1024,
-        "ru_maxrss_max_bytes": 160 * 1024 * 1024,
+        "peak_rss_median_bytes": 150 * 1024 * 1024,
+        "peak_rss_max_bytes": 160 * 1024 * 1024,
         "tensor_sha256": "0" * 64,
         "mtime": 0.0,
     }
@@ -211,7 +211,7 @@ def test_group_by_synthetic_param_empty_df_returns_empty() -> None:
 def test_scaling_table_iqr_relative_to_median() -> None:
     points = {
         "vernier": [
-            ScalingPoint(x_value=1000.0, median_ns=10000, iqr_ns=200, ru_maxrss_bytes=None),
+            ScalingPoint(x_value=1000.0, median_ns=10000, iqr_ns=200, peak_rss_bytes=None),
         ],
     }
     md = render_scaling_table(points, x_param="n_images", iou_type="bbox", workload_family="fam")

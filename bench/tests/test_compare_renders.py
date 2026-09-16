@@ -159,8 +159,8 @@ def test_compare_rows_have_expected_deltas(synthetic_tree: Path) -> None:
     assert by_impl["faster-coco-eval"].status == "head_only"
     assert by_impl["faster-coco-eval"].delta_ns is None
 
-    assert by_impl["vernier"].base_ru_maxrss_bytes == 200 * 1024 * 1024
-    assert by_impl["vernier"].head_ru_maxrss_bytes == 210 * 1024 * 1024
+    assert by_impl["vernier"].base_peak_rss_bytes == 200 * 1024 * 1024
+    assert by_impl["vernier"].head_peak_rss_bytes == 210 * 1024 * 1024
 
 
 def test_compare_markdown_renders_each_impl(synthetic_tree: Path) -> None:

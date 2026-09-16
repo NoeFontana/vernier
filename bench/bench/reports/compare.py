@@ -44,8 +44,8 @@ class CompareRow:
     # head/base - 1; None when base is missing/zero.
     delta_relative: float | None
     status: CompareStatus
-    base_ru_maxrss_bytes: int | None = None
-    head_ru_maxrss_bytes: int | None = None
+    base_peak_rss_bytes: int | None = None
+    head_peak_rss_bytes: int | None = None
 
 
 def _filter_sha(df: pl.DataFrame, git_sha: str) -> pl.DataFrame:
@@ -60,14 +60,14 @@ def compare_shas(df: pl.DataFrame, *, base_sha: str, head_sha: str) -> list[Comp
     silently dropped.
     """
     join_keys = ["machine_fingerprint", "workload_id", "iou_type", "impl"]
-    select_cols = [*join_keys, "total_median_ns", "ru_maxrss_median_bytes"]
+    select_cols = [*join_keys, "total_median_ns", "peak_rss_median_bytes"]
     base = (
         _filter_sha(df, base_sha)
         .select(select_cols)
         .rename(
             {
                 "total_median_ns": "base_median_ns",
-                "ru_maxrss_median_bytes": "base_ru_maxrss_bytes",
+                "peak_rss_median_bytes": "base_peak_rss_bytes",
             }
         )
     )
@@ -77,7 +77,7 @@ def compare_shas(df: pl.DataFrame, *, base_sha: str, head_sha: str) -> list[Comp
         .rename(
             {
                 "total_median_ns": "head_median_ns",
-                "ru_maxrss_median_bytes": "head_ru_maxrss_bytes",
+                "peak_rss_median_bytes": "head_peak_rss_bytes",
             }
         )
     )
@@ -101,8 +101,8 @@ def compare_shas(df: pl.DataFrame, *, base_sha: str, head_sha: str) -> list[Comp
             base_int = int(base_ns)
             delta_ns = int(head_ns) - base_int
             delta_relative = (delta_ns / base_int) if base_int != 0 else None
-        base_rss = r.get("base_ru_maxrss_bytes")
-        head_rss = r.get("head_ru_maxrss_bytes")
+        base_rss = r.get("base_peak_rss_bytes")
+        head_rss = r.get("head_peak_rss_bytes")
         rows.append(
             CompareRow(
                 key=CompareKey(
@@ -116,8 +116,8 @@ def compare_shas(df: pl.DataFrame, *, base_sha: str, head_sha: str) -> list[Comp
                 delta_ns=delta_ns,
                 delta_relative=delta_relative,
                 status=status,
-                base_ru_maxrss_bytes=int(base_rss) if base_rss is not None else None,
-                head_ru_maxrss_bytes=int(head_rss) if head_rss is not None else None,
+                base_peak_rss_bytes=int(base_rss) if base_rss is not None else None,
+                head_peak_rss_bytes=int(head_rss) if head_rss is not None else None,
             )
         )
     return rows

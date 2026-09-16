@@ -8,6 +8,14 @@ together.
 
 ## Index
 
+* [2026-09-hotcoco-fce-1.8-and-scale.md](./2026-09-hotcoco-fce-1.8-and-scale.md)
+  — **current headline snapshot.** Adds hotcoco as a baseline, moves
+  faster-coco-eval to 1.8.0, enforces a per-cell CPU budget so every
+  impl gets equal compute (ADR-0049), measures memory exactly
+  (per-stage `VmHWM`), and adds an Objects365 scale cell where
+  faster-coco-eval OOMs. Supersedes the 2026-05 numbers below: the
+  budget changed what a "single-thread" cell means, and the host
+  differs.
 * [2026-05-vernier-vs-alternatives.md](./2026-05-vernier-vs-alternatives.md)
   — current cross-paradigm dev-mode snapshot. Instance (bbox / segm /
   boundary / keypoints), panoptic, and the vernier-only synthetic

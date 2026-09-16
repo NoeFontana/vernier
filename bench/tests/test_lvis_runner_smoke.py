@@ -19,10 +19,12 @@ from __future__ import annotations
 import json
 import subprocess
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
+from bench.harness.parity import ALIGNED_ATOL
 from bench.harness.paths import BENCH_ROOT
 from tests.conftest import skip_if_no_env
 
@@ -239,3 +241,54 @@ def test_lvis_api_runner_inline_smoke(tmp_path: Path) -> None:
     tensor = np.load(tensor_output)
     assert tensor.ndim == 4
     assert tensor.shape[2] == 3
+
+
+def _run_lvis_runner(
+    impl: str, gt: Path, dt: Path, tmp_path: Path
+) -> tuple[dict[str, Any], np.ndarray]:
+    output = tmp_path / f"{impl}.json"
+    tensor_output = tmp_path / f"{impl}.npy"
+    cmd = uv_run_argv(
+        BENCH_ROOT,
+        impl,
+        "-m",
+        runner_module(impl),
+        "--gt",
+        str(gt),
+        "--dt",
+        str(dt),
+        "--iou-type",
+        "bbox",
+        "--workload-id",
+        "lvis_inline_smoke",
+        "--output",
+        str(output),
+        "--tensor-output",
+        str(tensor_output),
+    )
+    proc = subprocess.run(cmd, env=uv_run_env(BENCH_ROOT, impl), check=False, capture_output=True)
+    assert proc.returncode == 0, (
+        f"{impl} runner exited {proc.returncode}\n"
+        f"stdout:\n{proc.stdout.decode(errors='replace')}\n"
+        f"stderr:\n{proc.stderr.decode(errors='replace')}\n"
+    )
+    return json.loads(output.read_text()), np.load(tensor_output)
+
+
+def test_hotcoco_lvis_runner_inline_smoke(tmp_path: Path) -> None:
+    """hotcoco's ``lvis_style`` evaluator emits the same 13-key plan and
+    the M-squeezed ``(T, R, K, A)`` tensor as vernier_lvis, within the
+    aligned tier the LVIS comparator applies."""
+    skip_if_no_env("hotcoco")
+    skip_if_no_env("vernier")
+
+    gt, dt = _lvis_inline_fixture(tmp_path)
+    payload, tensor = _run_lvis_runner("hotcoco_lvis", gt, dt, tmp_path)
+    assert payload["impl"] == "hotcoco_lvis"
+    assert payload["paradigm"] == "lvis"
+    assert payload["summary_stats"]["AP"] >= 0.999
+    assert tensor.shape == (10, 101, 3, 4)
+
+    ref_payload, ref_tensor = _run_lvis_runner("vernier_lvis", gt, dt, tmp_path)
+    assert payload["summary_stats"].keys() == ref_payload["summary_stats"].keys()
+    np.testing.assert_allclose(tensor, ref_tensor, rtol=0, atol=ALIGNED_ATOL)

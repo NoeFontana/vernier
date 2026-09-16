@@ -82,6 +82,16 @@ class StageTimings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     wall_ns: int
+    # Process CPU time across all threads over the same span. ``None``
+    # for stages recorded without a CPU clock (and for results written
+    # before the field existed).
+    cpu_ns: int | None = None
+    # Resident set size when the stage began, and the kernel's exact RSS
+    # high-water mark while it ran (``VmHWM``, reset at stage start).
+    # ``peak_rss_bytes - rss_start_bytes`` on ``total`` is the memory the
+    # evaluation itself added on top of the interpreter + imports.
+    rss_start_bytes: int | None = None
+    peak_rss_bytes: int | None = None
     notes: list[str] = []
 
 
@@ -124,6 +134,11 @@ class RepResult(BaseModel):
     warmup: bool
     stages: dict[str, StageTimings]
     summary_stats: dict[str, float]
+    # ``wait4``'s ``ru_maxrss`` for the runner subprocess. NOT a
+    # process-lifetime peak for runners that record per-stage RSS: those
+    # reset the kernel watermark per stage, which also resets this. Read
+    # ``stages["total"].peak_rss_bytes`` instead; this field stays for
+    # results recorded before that instrumentation.
     ru_maxrss_bytes: int
     parent_wall_ns: int
 
@@ -138,7 +153,9 @@ class StageAggregation(BaseModel):
 
 
 class MemoryAggregation(BaseModel):
-    """Across-rep ``ru_maxrss`` summary (warmup reps excluded)."""
+    """Across-rep peak-RSS summary (warmup reps excluded). Sourced from
+    the per-rep ``total`` stage peak where recorded — see
+    :func:`bench.harness.stats.aggregate_memory`."""
 
     model_config = ConfigDict(extra="forbid")
 

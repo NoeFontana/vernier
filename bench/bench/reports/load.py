@@ -52,17 +52,18 @@ def _row_from_result(result: BenchResult, mtime: float) -> dict[str, object]:
         total_iqr = None
 
     # Older result files (no memory aggregation) fall back to recomputing
-    # from per-rep RSS values via the same helper orchestrate uses.
+    # from per-rep RSS values via the same helper orchestrate uses (which
+    # prefers the recorded stage peak over ``ru_maxrss``).
     if result.aggregation is not None and result.aggregation.memory is not None:
-        ru_maxrss_median: int | None = result.aggregation.memory.median_bytes
-        ru_maxrss_max: int | None = result.aggregation.memory.max_bytes
+        peak_rss_median: int | None = result.aggregation.memory.median_bytes
+        peak_rss_max: int | None = result.aggregation.memory.max_bytes
     elif measurement_reps:
         m = aggregate_memory(measurement_reps)
-        ru_maxrss_median = m.median_bytes
-        ru_maxrss_max = m.max_bytes
+        peak_rss_median = m.median_bytes
+        peak_rss_max = m.max_bytes
     else:
-        ru_maxrss_median = None
-        ru_maxrss_max = None
+        peak_rss_median = None
+        peak_rss_max = None
 
     # v2 keeps the tensor under the canonical ``"tensor"`` slot for
     # detection cells; downstream filters and tests still expect a
@@ -83,8 +84,8 @@ def _row_from_result(result: BenchResult, mtime: float) -> dict[str, object]:
         "reps_count": result.reps_count,
         "total_median_ns": total_median,
         "total_iqr_ns": total_iqr,
-        "ru_maxrss_median_bytes": ru_maxrss_median,
-        "ru_maxrss_max_bytes": ru_maxrss_max,
+        "peak_rss_median_bytes": peak_rss_median,
+        "peak_rss_max_bytes": peak_rss_max,
         "tensor_sha256": tensor_sha256,
         "mtime": mtime,
     }
@@ -129,8 +130,8 @@ _EMPTY_SCHEMA: dict[str, pl.DataType] = {
     "reps_count": pl.Int64,
     "total_median_ns": pl.Int64,
     "total_iqr_ns": pl.Int64,
-    "ru_maxrss_median_bytes": pl.Int64,
-    "ru_maxrss_max_bytes": pl.Int64,
+    "peak_rss_median_bytes": pl.Int64,
+    "peak_rss_max_bytes": pl.Int64,
     "tensor_sha256": pl.Utf8,
     "mtime": pl.Float64,
 }

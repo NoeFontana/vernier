@@ -103,10 +103,10 @@ def _add_num_threads_arg(p: argparse.ArgumentParser) -> None:
         default=None,
         help=(
             "ADR-0047 threading axis. None (default) preserves the single-"
-            "threaded library default; an explicit int is forwarded to "
-            "the corresponding ``num_threads`` kwarg on the evaluator. "
-            "Non-vernier runners accept the flag for argspec uniformity "
-            "and ignore the value."
+            "threaded headline cell; an explicit int is forwarded to "
+            "the library's own thread knob where one exists. Runners "
+            "without a knob accept the flag for argspec uniformity; the "
+            "orchestrator's CPU pinning bounds them either way."
         ),
     )
 
@@ -531,6 +531,24 @@ def parse_lvis_runner_args() -> argparse.Namespace:
     return p.parse_args()
 
 
+def squeeze_lvis_m_axis(precision: np.ndarray, *, max_dets: int, impl: str) -> np.ndarray:
+    """Drop the trailing length-1 ``M`` axis from a pycocotools-shaped
+    ``(T, R, K, A, M)`` precision tensor, yielding the ``(T, R, K, A)``
+    shape the LVIS comparator expects (AF5: LVIS has no max-dets axis).
+
+    Every LVIS runner whose upstream surface is COCO-shaped needs this,
+    so the assertion that ``M == 1`` lives here rather than in each
+    runner — it is a parity-contract check, not incidental reshaping.
+    """
+    if precision.ndim != 5:
+        return precision
+    if precision.shape[-1] != 1:
+        raise AssertionError(
+            f"{impl} precision M-axis must be 1 at max_dets={max_dets}; got {precision.shape}"
+        )
+    return np.ascontiguousarray(precision[..., 0])
+
+
 def write_lvis_outputs(
     *,
     args: argparse.Namespace,
@@ -632,9 +650,8 @@ def run_cocoeval_pipeline(
 
     ``cocoeval_kwargs`` is forwarded to the ``cocoeval_cls`` constructor
     alongside ``iouType``. Used today by the faster-coco-eval runner to
-    pass ``boundary_cpu_count`` when the cell pins ``num_threads`` on a
-    boundary-IoU cell — the only surface in any pycocotools-shaped
-    drop-in that exposes a thread knob (ADR-0047).
+    forward the cell's CPU budget to its ``rle_iou_max_workers`` /
+    ``boundary_cpu_count`` thread knobs (ADR-0047).
     """
     stages = StageTable()
     extra: dict[str, Any] = dict(cocoeval_kwargs or {})
@@ -655,7 +672,7 @@ def run_cocoeval_pipeline(
     names = stat_names(args.iou_type)
     summary_stats: dict[str, float] = {name: float(raw_stats[i]) for i, name in enumerate(names)}
 
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     write_outputs(
         args=args,

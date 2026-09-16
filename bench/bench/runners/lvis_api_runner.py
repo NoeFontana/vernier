@@ -95,12 +95,11 @@ def main() -> int:
     for k in keys:
         if k not in ev.results:
             raise AssertionError(
-                f"lvis-api results is missing key {k!r}; "
-                f"present keys: {sorted(ev.results.keys())}"
+                f"lvis-api results is missing key {k!r}; present keys: {sorted(ev.results.keys())}"
             )
         summary_stats[k] = float(ev.results[k])
 
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     write_lvis_outputs(
         args=args,

@@ -36,6 +36,7 @@ from bench.harness.timing import StageTable
 from bench.runners._protocol import (
     lvis_stat_names,
     parse_lvis_runner_args,
+    squeeze_lvis_m_axis,
     write_lvis_outputs,
 )
 
@@ -82,25 +83,17 @@ def main() -> int:
     # ``asarray`` is sufficient; ``ascontiguousarray`` after the squeeze
     # gives ``np.save`` a contiguous buffer without an extra copy of
     # the 5D parent.
-    precision = np.asarray(accum.precision)
-    if precision.ndim == 5:
-        if precision.shape[-1] != 1:
-            raise AssertionError(
-                f"vernier precision M-axis must be 1 at max_dets={max_dets}; "
-                f"got {precision.shape}"
-            )
-        precision = np.ascontiguousarray(precision[..., 0])
+    precision = squeeze_lvis_m_axis(np.asarray(accum.precision), max_dets=max_dets, impl="vernier")
 
     keys = lvis_stat_names(max_dets)
     raw_stats = [float(line) for line in summary.stats]
     if len(raw_stats) != len(keys):
         raise AssertionError(
-            f"vernier lvis_default returned {len(raw_stats)} stats; "
-            f"expected {len(keys)} (AF1)"
+            f"vernier lvis_default returned {len(raw_stats)} stats; expected {len(keys)} (AF1)"
         )
     summary_stats: dict[str, float] = dict(zip(keys, raw_stats, strict=True))
 
-    stages.record("total", stages.total_so_far_ns())
+    stages.record_total()
 
     write_lvis_outputs(
         args=args,

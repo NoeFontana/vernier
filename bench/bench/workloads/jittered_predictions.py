@@ -85,8 +85,23 @@ _MASK_RNG_SPAWN_KEY = (0x6D61736B,)  # b"mask"
 # denominator: a unit jitter at keypoint ``i`` corresponds to one
 # OKS-equivalent on a unit-area object.
 COCO_PERSON_SIGMAS: tuple[float, ...] = (
-    0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072,
-    0.062, 0.062, 0.107, 0.107, 0.087, 0.087, 0.089, 0.089,
+    0.026,
+    0.025,
+    0.025,
+    0.035,
+    0.035,
+    0.079,
+    0.079,
+    0.072,
+    0.072,
+    0.062,
+    0.062,
+    0.107,
+    0.107,
+    0.087,
+    0.087,
+    0.089,
+    0.089,
 )
 
 # Keypoint jitter knobs. ``KP_JITTER_SCALE`` sets the per-keypoint
@@ -101,11 +116,6 @@ KP_VISIBILITY_FLIP_PROB = 0.02
 # and mask streams so seed=N's keypoint workload is reproducible
 # without mass-perturbing other workloads' caches.
 _KP_RNG_SPAWN_KEY = (0x6B70_6B70,)  # b"kpkp"
-
-
-def _jittered_dt_path(seed: int) -> Path:
-    cache = bench_cache_root() / "jittered"
-    return cache / f"coco_val2017_jittered_seed{seed}_v{JITTER_PARAMS_VERSION}.json"
 
 
 def workload_id(seed: int) -> str:
@@ -294,27 +304,35 @@ def _generate(*, gt_path: Path, seed: int, out: Path) -> None:
 
 
 def dt_path(*, gt_path: Path, seed: int) -> Path:
-    """Return the cached jittered DT, generating it if missing."""
-    out = _jittered_dt_path(seed)
+    """COCO val2017 jittered DT (see :func:`_dataset_dt_path`)."""
+    return _dataset_dt_path(dataset="coco_val2017", gt_path=gt_path, seed=seed)
+
+
+def _dataset_dt_path(*, dataset: str, gt_path: Path, seed: int) -> Path:
+    """Cache sibling of :func:`dt_path` for a non-COCO GT.
+
+    The same generator runs against another dataset's GT bytes; only
+    the cache filename differs, so same-seed DTs for different datasets
+    live in different files instead of clobbering each other. Seed
+    identity is therefore a property of (workload, seed), not of
+    (paradigm, seed).
+    """
+    cache = bench_cache_root() / "jittered"
+    out = cache / f"{dataset}_jittered_seed{seed}_v{JITTER_PARAMS_VERSION}.json"
     if not out.exists():
         _generate(gt_path=gt_path, seed=seed, out=out)
     return out
 
 
 def lvis_dt_path(*, gt_path: Path, seed: int) -> Path:
-    """LVIS-keyed cache sibling of :func:`dt_path`.
+    """LVIS v1 val jittered DT (see :func:`_dataset_dt_path`)."""
+    return _dataset_dt_path(dataset="lvis_v1_val", gt_path=gt_path, seed=seed)
 
-    The same generator runs against the LVIS GT bytes; the only
-    difference is the cache filename, so a same-seed COCO and LVIS
-    jittered DT live in different files instead of clobbering each
-    other. Seed identity is therefore a property of (workload, seed),
-    not of (paradigm, seed).
-    """
-    cache = bench_cache_root() / "jittered"
-    out = cache / f"lvis_v1_val_jittered_seed{seed}_v{JITTER_PARAMS_VERSION}.json"
-    if not out.exists():
-        _generate(gt_path=gt_path, seed=seed, out=out)
-    return out
+
+def objects365_dt_path(*, gt_path: Path, seed: int) -> Path:
+    """Objects365 val jittered DT (see :func:`_dataset_dt_path`). The O365
+    GT carries no ``segmentation``, so detections are bbox-only."""
+    return _dataset_dt_path(dataset="objects365_val", gt_path=gt_path, seed=seed)
 
 
 def _generate_keypoints(*, gt_path: Path, seed: int, out: Path) -> None:

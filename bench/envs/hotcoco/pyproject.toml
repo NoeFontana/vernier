@@ -1,0 +1,26 @@
+[project]
+name = "vernier-bench-env-hotcoco"
+version = "0.0.0"
+description = "uv env for the hotcoco runner subprocess (ADR-0017)"
+requires-python = ">=3.10"
+license = { text = "MIT OR Apache-2.0" }
+
+# hotcoco is a Rust/PyO3 pycocotools-shaped surface (``hotcoco.COCO`` /
+# ``hotcoco.COCOeval``). The runner imports those names directly rather
+# than going through ``init_as_pycocotools()`` — no namespace patching, so
+# there is no bootstrap-order hazard like faster-coco-eval's.
+dependencies = [
+    "vernier-bench",
+    "numpy>=2.0",
+    "pydantic>=2.0",
+    "hotcoco==1.0.1",
+]
+
+[tool.uv]
+package = false
+# Benchmark the PyPI wheel users get, never a local sdist compile whose
+# flags could differ from the published build.
+no-build-package = ["hotcoco"]
+
+[tool.uv.sources]
+vernier-bench = { path = "../..", editable = true }

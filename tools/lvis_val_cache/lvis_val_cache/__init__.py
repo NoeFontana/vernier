@@ -35,11 +35,17 @@ GT_URL = "https://s3-us-west-2.amazonaws.com/dl.fbaipublicfiles.com/LVIS/lvis_v1
 #: Inner-zip path of the GT we extract.
 GT_INNER_PATH = "lvis_v1_val.json"
 GT_FILENAME = "lvis_v1_val.json"
+#: SHA-256 of the published **zip**, which is the integrity surface:
+#: the extracted JSON's byte sequence depends on the extracting
+#: zipfile implementation, so the archive is what we pin. Same
+#: convention (and same value) as
+#: :data:`lvis_v1_val_cache.GT_ZIP_SHA256`.
+#:
 #: Bumping is an ADR-level decision per ADR-0026 §"Parity strategy" —
 #: every quirk vernier reproduces is keyed to this exact byte
 #: sequence. Verified at vendor time on 2026-05-03 against the FAIR
 #: public-files mirror; the LVIS v1 release is frozen since 2020-06.
-GT_SHA256 = "5cae9a3c79aadb667550c2b5dcf7f4d86e059a41ec91ef690225b667e28e9ba5"
+GT_ZIP_SHA256 = "5cae9a3c79aadb667550c2b5dcf7f4d86e059a41ec91ef690225b667e28e9ba5"
 
 CACHE_ENV = "VERNIER_LVIS_CACHE"
 
@@ -95,36 +101,37 @@ def _atomic_download(url: str, dest: Path) -> None:
 def ensure_gt(*, cache: Path | None = None) -> Path:
     """Return a verified path to the GT JSON, downloading if necessary.
 
-    Idempotent. If the cached file matches :data:`GT_SHA256`, returns
-    immediately. Otherwise (re)downloads from :data:`GT_URL`, extracts
-    the inner JSON, verifies, returns the path. Raises ``RuntimeError``
-    on a post-download SHA mismatch.
+    Idempotent. An already-extracted GT is returned as-is; otherwise the
+    zip is downloaded, verified against :data:`GT_ZIP_SHA256`, and the
+    inner JSON extracted. Raises ``RuntimeError`` on a SHA mismatch.
+
+    The verified artefact is the **zip**, not the extracted JSON: the
+    JSON's byte sequence depends on the extracting zipfile
+    implementation, so hashing it would fail spuriously across
+    platforms. Same convention as :mod:`lvis_v1_val_cache`.
     """
     cache = cache_root(cache)
     cache.mkdir(parents=True, exist_ok=True)
     gt = cache / GT_FILENAME
 
-    if gt.is_file() and file_sha256(gt) == GT_SHA256:
+    if gt.is_file():
         return gt
 
-    gt.unlink(missing_ok=True)
     zip_path = cache / "lvis_v1_val.json.zip"
     try:
         _atomic_download(GT_URL, zip_path)
+        actual = file_sha256(zip_path)
+        if actual != GT_ZIP_SHA256:
+            raise RuntimeError(
+                f"LVIS GT zip SHA256 mismatch: expected {GT_ZIP_SHA256}, got {actual}. "
+                f"Either the upstream CDN served a different artifact or the "
+                f"download was corrupted; rerun, and if the mismatch persists "
+                f"open an issue."
+            )
         with zipfile.ZipFile(zip_path) as z, z.open(GT_INNER_PATH) as src, gt.open("wb") as dst:
             shutil.copyfileobj(src, dst, length=_COPY_BUF_SIZE)
     finally:
         zip_path.unlink(missing_ok=True)
-
-    actual = file_sha256(gt)
-    if actual != GT_SHA256:
-        gt.unlink(missing_ok=True)
-        raise RuntimeError(
-            f"LVIS GT SHA256 mismatch: expected {GT_SHA256}, got {actual}. "
-            f"Either the upstream CDN served a different artifact or the "
-            f"download was corrupted; rerun, and if the mismatch persists "
-            f"open an issue."
-        )
     return gt
 
 

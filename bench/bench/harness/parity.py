@@ -10,9 +10,9 @@ and asserts the cross-impl invariants documented in the parity ADRs:
   which is two-valued):
     - *strict* — vernier reproduces pycocotools bit-exactly
       (``np.array_equal``).
-    - *aligned* — vernier matches faster-coco-eval within a small
-      absolute tolerance; faster-coco-eval has documented float-order
-      quirks.
+    - *aligned* — vernier matches faster-coco-eval and hotcoco within
+      a small absolute tolerance; both reimplement the accumulation
+      with their own float order.
     - *boundary* — vernier matches the boundary-iou-api oracle within
       ``BOUNDARY_PARITY_EPS``.
 - **panoptic** — strict vs ``pq_compute_single_core(proc_id=0, ...)``
@@ -376,14 +376,17 @@ _TIER_PAIRS: dict[IouType, tuple[tuple[Tier, str, str, float], ...]] = {
     "bbox": (
         ("strict", "vernier", "pycocotools", 0.0),
         ("aligned", "vernier", "faster-coco-eval", ALIGNED_ATOL),
+        ("aligned", "vernier", "hotcoco", ALIGNED_ATOL),
     ),
     "segm": (
         ("strict", "vernier", "pycocotools", 0.0),
         ("aligned", "vernier", "faster-coco-eval", ALIGNED_ATOL),
+        ("aligned", "vernier", "hotcoco", ALIGNED_ATOL),
     ),
     "keypoints": (
         ("strict", "vernier", "pycocotools", 0.0),
         ("aligned", "vernier", "faster-coco-eval", ALIGNED_ATOL),
+        ("aligned", "vernier", "hotcoco", ALIGNED_ATOL),
     ),
     "boundary": (("boundary", "vernier", "boundary-iou-api", BOUNDARY_PARITY_EPS),),
 }
@@ -980,6 +983,7 @@ def _compare_streaming_cross_impl(
 # fixtures use ALIGNED_ATOL without a schema change.
 _LVIS_TIER_PAIRS: tuple[tuple[Tier, str, str, float], ...] = (
     ("strict", "vernier_lvis", "lvis-api", 0.0),
+    ("aligned", "vernier_lvis", "hotcoco_lvis", ALIGNED_ATOL),
 )
 
 
