@@ -64,14 +64,30 @@ walks each end-to-end.
 
 | Workload | vernier median | Speedup vs alternatives |
 | --- | ---: | --- |
-| Instance — bbox AP (val2017) | 356 ms | **1.6×** hotcoco · **4.6×** faster-coco-eval · **15.6×** pycocotools |
-| Instance — segm AP (val2017) | 976 ms | **1.4×** hotcoco · **3.4×** faster-coco-eval · **6.6×** pycocotools |
-| Instance — boundary AP (val2017) | 3.2 s | **16.7×** faster-coco-eval · **19.4×** boundary-iou-api |
-| Instance — keypoints AP (val2017, OKS) | 134 ms | **1.6×** hotcoco · **5.7×** faster-coco-eval · **17.1×** pycocotools |
-| Panoptic — PQ (val2017) | 10.5 s | **3.3×** panopticapi |
+| Instance — bbox AP (val2017) | 354 ms | **1.6×** hotcoco · **4.7×** faster-coco-eval · **16.0×** pycocotools |
+| Instance — segm AP (val2017) | 968 ms | **1.4×** hotcoco · **3.5×** faster-coco-eval · **6.7×** pycocotools |
+| Instance — boundary AP (val2017) | 3.2 s | **16.7×** faster-coco-eval · **19.5×** boundary-iou-api |
+| Instance — keypoints AP (val2017, OKS) | 136 ms | **1.6×** hotcoco · **5.7×** faster-coco-eval · **16.9×** pycocotools |
+| Panoptic — PQ (val2017) | 10.6 s | **3.3×** panopticapi |
 | Semantic — mIoU (val2017) | 2.9 s | **14.0×** mmsegmentation |
-| Instance — LVIS bbox AP (v1 val, perfect-DT) | 3.4 s | **1.03×** hotcoco · **54.9×** lvis-api · 10× lower peak RSS (1.44 GiB vs 15.01 GiB) |
-| Instance — bbox AP (Objects365 val, 1.06M dets) <sup>†</sup> | 10.0 s | **1.5×** hotcoco · **35.7×** pycocotools · faster-coco-eval did not finish (OOM at ~30 GiB) |
+| Instance — LVIS bbox AP (v1 val, perfect-DT) | 2.6 s | **1.4×** hotcoco · **73.1×** lvis-api · 10× lower peak RSS (1.45 GiB vs 15.01 GiB) |
+| Instance — bbox AP (Objects365 val, 1.06M dets) <sup>†</sup> | 8.8 s | **1.7×** hotcoco · **41.9×** pycocotools · faster-coco-eval did not finish (OOM at ~30 GiB) |
+
+**Thread scaling** (`num_threads`, each cell pinned to that many CPUs —
+`nt=8` is every library's out-of-the-box configuration on this 8-vCPU host):
+
+| Workload | `nt=1` | `nt=2` | `nt=4` | `nt=8` | vs hotcoco / faster-coco-eval at `nt=8` |
+| --- | ---: | ---: | ---: | ---: | --- |
+| bbox (val2017) | 354 ms | 267 ms | 229 ms | **226 ms** | **1.6×** hotcoco · **6.5×** faster-coco-eval |
+| segm (val2017) | 983 ms | 569 ms | 375 ms | **319 ms** | **1.7×** hotcoco · **11.0×** faster-coco-eval |
+| boundary (val2017) | 3.20 s | 1.70 s | 937 ms | **790 ms** | **21.5×** faster-coco-eval |
+| keypoints (val2017) | 136 ms | 118 ms | 109 ms | **104 ms** | **1.5×** hotcoco · **7.3×** faster-coco-eval |
+| bbox (Objects365) | 8.8 s | — | — | **4.7 s** | **1.7×** hotcoco |
+
+faster-coco-eval ≥1.8 and hotcoco are multi-threaded too, so every column
+compares equal CPU budgets. Its parallelism pays off on boundary IoU but
+is flat on segm and keypoints, which is why vernier's lead widens with
+cores there.
 
 <sup>†</sup> The Objects365 row is harness mode `dev` (one measurement rep per impl, no IQR gate) — pycocotools alone needs ~6 minutes per rep at that size. Every other row is release mode.
 
@@ -99,7 +115,7 @@ when to pick which in [`docs/comparison.md`](docs/comparison.md).
 [`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8) (vendored),
 [`lvis-api` @ `031ac21`](https://github.com/lvis-dataset/lvis-api/commit/031ac21f939b)
 (PyPI `lvis==0.5.3`).
-All cells were measured at HEAD `b012b46c9087` (machine fingerprint
+All cells were measured at HEAD `e361050ef582` (machine fingerprint
 `59aab88b17f4`). That is a different host from the 2026-05 snapshot's
 `37652a58e939`, and the CPU budget above changed what a "single-thread"
 cell means, so absolute numbers are not comparable with earlier

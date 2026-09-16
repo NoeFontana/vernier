@@ -8,8 +8,13 @@ together.
 
 ## Index
 
+* [2026-09-longtail-perf-round.md](./2026-09-longtail-perf-round.md)
+  — **current headline snapshot.** Before/after for the four changes that
+  stopped the evaluate path paying for empty cells (ADR-0050, ADR-0051).
+  Objects365 at 8 threads 8.76 s → 4.70 s (from losing to hotcoco to
+  1.7× ahead), LVIS −23 %, COCO flat.
 * [2026-09-hotcoco-fce-1.8-and-scale.md](./2026-09-hotcoco-fce-1.8-and-scale.md)
-  — **current headline snapshot.** Adds hotcoco as a baseline, moves
+  — the round that added hotcoco as a baseline, moved
   faster-coco-eval to 1.8.0, enforces a per-cell CPU budget so every
   impl gets equal compute (ADR-0049), measures memory exactly
   (per-stage `VmHWM`), and adds an Objects365 scale cell where

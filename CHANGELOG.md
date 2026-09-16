@@ -14,6 +14,56 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-16
+
+### Performance
+
+- **The evaluate path stops paying for empty cells** (ADR-0051). Both
+  evaluate paths walked the full `K x I` cell grid and discovered
+  emptiness inside the per-cell body, and the parallel path then permuted
+  an image-major buffer into canonical layout. Both costs scale with
+  `K * A * I` however little of the grid holds anything — invisible at
+  COCO's 80 categories, dominant at Objects365's 365 (29.2 M cells, 2.1 %
+  occupied) and LVIS's 1203. `cell_occupancy` now builds the candidate
+  list once; skipping a non-candidate is output-identical, being the
+  negation of the emptiness check the per-cell body already performs. The
+  grid is filled one category per worker instead of permuted.
+- **`accumulate` parallelizes across the category axis** (ADR-0050),
+  which ADR-0047 had deferred. Categories own disjoint slices of all
+  three output tensors, so the fan-out is bit-identical by construction —
+  no float reduction crosses a thread boundary. `num_threads=None` keeps
+  the sequential walk and never enters rayon.
+- **GT and DT parse concurrently** when the call has a thread budget.
+  They are independent payloads that were parsed in sequence.
+
+  Measured on one host, same harness mode and CPU budget before and after
+  (`docs/engineering/benchmarking/2026-09-longtail-perf-round.md`):
+
+  | workload | before | after |
+  | --- | ---: | ---: |
+  | Objects365 val bbox, 8 threads | 8.76 s | **4.70 s** |
+  | Objects365 val bbox, 1 CPU | 10.00 s | **8.77 s** |
+  | LVIS v1 val bbox (1203 categories) | 3.42 s | **2.64 s** |
+
+  Thread scaling is where most of it lands — `num_threads` cells on
+  COCO val2017, before → after:
+
+  | iou | `nt=2` | `nt=4` | `nt=8` |
+  | --- | ---: | ---: | ---: |
+  | bbox | 350 → 267 ms | 316 → 229 ms | 314 → **226 ms** |
+  | segm | 652 → 569 ms | 468 → 375 ms | 408 → **319 ms** |
+  | boundary | 1.77 → 1.70 s | 1.02 → 0.94 s | 867 → **790 ms** |
+
+  bbox previously barely scaled (1.14× from 1 to 8 threads, parse-bound);
+  it now reaches 1.56×. Keypoints is unchanged — a one-category grid has
+  no empty cells to skip.
+
+  COCO single-CPU cells are unchanged (bbox 356 → 354 ms), as are
+  panoptic and semantic: the tax this removes grows with the category
+  axis. Output stays bit-equal to pycocotools at every thread count, and
+  `vernier_lvis` stays bit-equal to the `lvis-api` oracle.
+
+
 ### Changed (BREAKING — pre-1.0)
 
 - **`BackgroundEvaluator.finalize_with_tables(...)` is now keyword-only.**
