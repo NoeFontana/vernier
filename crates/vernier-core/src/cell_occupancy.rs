@@ -94,9 +94,20 @@ impl OccupiedCells {
 /// Position of each category bucket, for mapping an annotation's
 /// `category_id` back to its `k`. `None` buckets (the `use_cats=false`
 /// collapse) map every category to bucket 0.
+///
+/// `CocoDataset::from_parts` validates that annotations reference a
+/// *known* category but does not reject a `categories` array that
+/// repeats an id, so two buckets can carry the same `CategoryId`. The
+/// exhaustive loop evaluated both, so both must stay candidates —
+/// keeping only one would blank the other's precision row. Repeats are
+/// pathological, so they ride a side list and the common lookup stays a
+/// single hash probe.
 pub(crate) enum BucketIndex {
     Collapsed,
-    ById(FxHashMap<CategoryId, u32>),
+    ById {
+        first: FxHashMap<CategoryId, u32>,
+        repeats: Vec<(CategoryId, u32)>,
+    },
 }
 
 impl BucketIndex {
@@ -104,14 +115,20 @@ impl BucketIndex {
         if matches!(category_buckets, [None]) {
             return BucketIndex::Collapsed;
         }
-        let mut map = FxHashMap::default();
-        map.reserve(category_buckets.len());
+        let mut first = FxHashMap::default();
+        first.reserve(category_buckets.len());
+        let mut repeats = Vec::new();
         for (k, bucket) in category_buckets.iter().enumerate() {
             if let Some(cat) = bucket {
-                map.insert(*cat, u32::try_from(k).unwrap_or(u32::MAX));
+                let k = u32::try_from(k).unwrap_or(u32::MAX);
+                // `or_insert` keeps the earliest bucket as the primary;
+                // later ones ride the side list rather than displacing it.
+                if *first.entry(*cat).or_insert(k) != k {
+                    repeats.push((*cat, k));
+                }
             }
         }
-        BucketIndex::ById(map)
+        BucketIndex::ById { first, repeats }
     }
 
     #[inline]
@@ -122,7 +139,17 @@ impl BucketIndex {
             // A detection may name a category the GT never declares; it
             // has no bucket and no cell, so it drops out here exactly as
             // it would inside the per-cell lookup.
-            BucketIndex::ById(map) => map.get(&cat).copied(),
+            BucketIndex::ById { first, .. } => first.get(&cat).copied(),
+        }
+    }
+
+    /// Extra buckets sharing a `CategoryId` with an earlier one. Empty
+    /// for every well-formed dataset.
+    #[inline]
+    fn repeats(&self) -> &[(CategoryId, u32)] {
+        match self {
+            BucketIndex::Collapsed => &[],
+            BucketIndex::ById { repeats, .. } => repeats,
         }
     }
 }
@@ -138,17 +165,28 @@ fn occupied_pairs(
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
     let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(gt_anns.len() + dt_anns.len());
+    // Hoisted: empty for every well-formed dataset, so the hot loop
+    // below keeps a predictable branch instead of a second lookup.
+    let repeats = buckets.repeats();
+    let push = |pairs: &mut Vec<(u32, u32)>, i: u32, cat: CategoryId| {
+        if let Some(k) = buckets.bucket_of(cat) {
+            pairs.push((i, k));
+        }
+        if !repeats.is_empty() {
+            for &(repeat_cat, k) in repeats {
+                if repeat_cat == cat {
+                    pairs.push((i, k));
+                }
+            }
+        }
+    };
     for (i, image_id) in images.iter().enumerate() {
         let i = u32::try_from(i).unwrap_or(u32::MAX);
         for &j in gt.ann_indices_for_image(*image_id) {
-            if let Some(k) = buckets.bucket_of(gt_anns[j].category_id) {
-                pairs.push((i, k));
-            }
+            push(&mut pairs, i, gt_anns[j].category_id);
         }
         for &j in dt.indices_for_image(*image_id) {
-            if let Some(k) = buckets.bucket_of(dt_anns[j].category_id) {
-                pairs.push((i, k));
-            }
+            push(&mut pairs, i, dt_anns[j].category_id);
         }
     }
     pairs
@@ -310,5 +348,84 @@ mod tests {
         let by_img = by_image(&images, &gt, &dt, &index);
         assert_eq!(by_img.row(0), &[0]);
         assert!(by_img.row(1).is_empty());
+    }
+
+    /// A GT whose `categories` array repeats an id produces two buckets
+    /// with the same `CategoryId`. The exhaustive loop evaluated both,
+    /// so both must stay candidates — a bucket map that keeps only the
+    /// last would silently blank the earlier category's precision row.
+    #[test]
+    fn duplicate_category_ids_keep_every_bucket() {
+        let gt = CocoDataset::from_parts(vec![img(1)], vec![ann(1, 1, 1)], vec![cat(1), cat(1)])
+            .expect("gt");
+        let dt = CocoDetections::from_inputs(vec![]).expect("dt");
+        let images = vec![ImageId(1)];
+        let index = BucketIndex::new(&[Some(CategoryId(1)), Some(CategoryId(1))]);
+        let by_img = by_image(&images, &gt, &dt, &index);
+        assert_eq!(by_img.row(0), &[0, 1]);
+    }
+
+    /// The occupancy index is now the *only* thing deciding which cells
+    /// either evaluate path visits, so "parallel matches sequential"
+    /// can no longer catch a bug in it — both walks would skip the same
+    /// cell. Pin it against a brute-force enumeration of the predicate
+    /// the per-cell body actually applies
+    /// (`gt_indices.is_empty() && raw_dt_indices.is_empty()`), over a
+    /// federated (LVIS-shaped) dataset with crowd, zero-area and
+    /// DT-only cells.
+    #[test]
+    fn matches_brute_force_enumeration_on_a_federated_dataset() {
+        let images: Vec<ImageMeta> = (1..=6).map(img).collect();
+        let categories: Vec<CategoryMeta> = (1..=5).map(cat).collect();
+        let mut anns = Vec::new();
+        let mut next = 1_i64;
+        for image in 1..=6_i64 {
+            for category in 1..=5_i64 {
+                // Sparse, irregular coverage: ~a third of the cells.
+                if (image * 7 + category * 3) % 3 == 0 {
+                    let mut a = ann(next, image, category);
+                    a.is_crowd = image % 2 == 0;
+                    a.area = if category == 4 { 0.0 } else { 16.0 };
+                    anns.push(a);
+                    next += 1;
+                }
+            }
+        }
+        let gt = CocoDataset::from_parts(images, anns, categories).expect("gt");
+        // DT-only cells, plus one category the GT never declares.
+        let dt = CocoDetections::from_inputs(vec![
+            dt_input(2, 5),
+            dt_input(3, 1),
+            dt_input(3, 1),
+            dt_input(6, 99),
+        ])
+        .expect("dt");
+
+        let image_ids: Vec<ImageId> = (1..=6).map(ImageId).collect();
+        let buckets: Vec<Option<CategoryId>> = (1..=5).map(|c| Some(CategoryId(c))).collect();
+        let index = BucketIndex::new(&buckets);
+        let by_img = by_image(&image_ids, &gt, &dt, &index);
+        let by_cat = by_category(&image_ids, buckets.len(), &gt, &dt, &index);
+
+        for (i, image_id) in image_ids.iter().enumerate() {
+            for (k, bucket) in buckets.iter().enumerate() {
+                let occupied_by_predicate = !gt
+                    .ann_indices_for(*image_id, bucket.expect("cat"))
+                    .is_empty()
+                    || !dt.indices_for(*image_id, bucket.expect("cat")).is_empty();
+                let k32 = u32::try_from(k).expect("k fits");
+                let i32_ = u32::try_from(i).expect("i fits");
+                assert_eq!(
+                    by_img.row(i).contains(&k32),
+                    occupied_by_predicate,
+                    "by_image disagrees at (image {i}, category {k})"
+                );
+                assert_eq!(
+                    by_cat.row(k).contains(&i32_),
+                    occupied_by_predicate,
+                    "by_category disagrees at (image {i}, category {k})"
+                );
+            }
+        }
     }
 }
