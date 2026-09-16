@@ -366,17 +366,7 @@ impl PyEvalGrid {
                     n_area_ranges,
                     n_images,
                 };
-                match policy.thread_count() {
-                    // Sequential grids never enter rayon (ADR-0047).
-                    None => accumulate(eval_imgs, params, parity),
-                    Some(n) => match threads::build_scoped_pool(n) {
-                        Ok(pool) => pool.install(|| accumulate_parallel(eval_imgs, params, parity)),
-                        // A pool that won't build is not a reason to
-                        // fail an evaluation: the sequential walk
-                        // produces the same tensors, just slower.
-                        Err(_) => accumulate(eval_imgs, params, parity),
-                    },
-                }
+                accumulate_with_policy(eval_imgs, params, parity, policy)
             })
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Ok(PyAccumulated {
@@ -1630,7 +1620,13 @@ fn run_pipeline(
         retain_iou: false,
     };
     let grid = run_grid_with_policy(iou_type, gt, dt, eval_params, parity, thread_policy)?;
-    summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
+    summarize_grid(
+        &grid,
+        iou_type.is_keypoints(),
+        parity,
+        max_dets,
+        thread_policy,
+    )
 }
 
 /// End-to-end pipeline against a parsed-once dataset (ADR-0020).
@@ -1660,7 +1656,33 @@ fn run_pipeline_with_dataset(
     };
     let grid =
         run_grid_cached_with_policy(iou_type, gt, dt, eval_params, parity, caches, thread_policy)?;
-    summarize_grid(&grid, iou_type.is_keypoints(), parity, max_dets)
+    summarize_grid(
+        &grid,
+        iou_type.is_keypoints(),
+        parity,
+        max_dets,
+        thread_policy,
+    )
+}
+
+/// Run `accumulate` under a thread budget (ADR-0050).
+///
+/// `None` keeps the sequential walk and never enters rayon (ADR-0047).
+/// A pool that fails to build falls back to it too — the tensors are the
+/// same, only slower.
+fn accumulate_with_policy(
+    eval_imgs: &[Option<Box<PerImageEval>>],
+    params: AccumulateParams<'_>,
+    parity: ParityMode,
+    thread_policy: threads::ThreadPolicy,
+) -> Result<Accumulated, EvalError> {
+    match thread_policy.thread_count() {
+        None => accumulate(eval_imgs, params, parity),
+        Some(n) => match threads::build_scoped_pool(n) {
+            Ok(pool) => pool.install(|| accumulate_parallel(eval_imgs, params, parity)),
+            Err(_) => accumulate(eval_imgs, params, parity),
+        },
+    }
 }
 
 /// Shared accumulate + summarize tail for both pipeline shapes.
@@ -1669,6 +1691,7 @@ fn summarize_grid(
     is_keypoints: bool,
     parity: ParityMode,
     max_dets: &[usize],
+    thread_policy: threads::ThreadPolicy,
 ) -> Result<Summary, EvalError> {
     let iou_thr = iou_thresholds();
     let acc_params = AccumulateParams {
@@ -1679,7 +1702,7 @@ fn summarize_grid(
         n_area_ranges: grid.n_area_ranges,
         n_images: grid.n_images,
     };
-    let acc = accumulate(&grid.eval_imgs, acc_params, parity)?;
+    let acc = accumulate_with_policy(&grid.eval_imgs, acc_params, parity, thread_policy)?;
     if is_keypoints {
         // ADR-0012 / D5: kp summary is the 10-stat plan over the
         // 3-bucket area grid. Detection's 12-stat plan would index
