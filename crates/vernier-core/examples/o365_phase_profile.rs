@@ -65,6 +65,20 @@ fn main() {
     let (dt, parse_dt_ms) =
         time_ms(|| CocoDetections::from_json_bytes(&dt_bytes).expect("parse DT"));
 
+    #[cfg(feature = "bench-timings")]
+    {
+        let (gt_parse_ns, gt_parts_ns, dt_parse_ns, dt_parts_ns) =
+            vernier_core::read_and_reset_dataset_timings();
+        let ms = |ns: u64| ns as f64 / 1e6;
+        println!(
+            "  GT: serde {:>7.0} ms + index {:>7.0} ms | DT: serde {:>7.0} ms + index {:>7.0} ms",
+            ms(gt_parse_ns),
+            ms(gt_parts_ns),
+            ms(dt_parse_ns),
+            ms(dt_parts_ns)
+        );
+    }
+
     let area = AreaRange::coco_default();
     let params = EvaluateParams {
         iou_thresholds: iou_thresholds(),

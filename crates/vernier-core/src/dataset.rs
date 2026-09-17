@@ -41,6 +41,7 @@
 //!   `iscrowd=1` are silently dropped, matching pycocotools' overwrite.
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
 use rustc_hash::FxHashMap;
@@ -518,6 +519,58 @@ impl CocoDataset {
         result
     }
 
+    /// Parallel sibling of [`Self::from_json_bytes`] (ADR-0054).
+    ///
+    /// Splits the three top-level arrays into byte ranges and hands
+    /// each range to the same `serde_json` element deserializers the
+    /// serial loader uses, so the parsed values are bit-identical and
+    /// input order is preserved. Anything the splitter does not plainly
+    /// recognize — a different document shape, a duplicate key, a parse
+    /// error — falls back to [`Self::from_json_bytes`], which is also
+    /// what reports the canonical error for malformed input.
+    ///
+    /// `threads` is the caller's budget. Per ADR-0047 the
+    /// `num_threads=None` path never calls this; it stays on
+    /// [`Self::from_json_bytes`] and never enters rayon.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_json_bytes`].
+    pub fn from_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        #[cfg(feature = "bench-timings")]
+        let t0 = std::time::Instant::now();
+        let parts = Self::split_parse(bytes, threads);
+        #[cfg(feature = "bench-timings")]
+        {
+            let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            dataset_timings::COUNTERS.add(dataset_timings::GT_PARSE_NS, parse_ns);
+        }
+        match parts {
+            Some((images, annotations, categories)) => {
+                Self::from_parts(images, annotations, categories)
+            }
+            None => Self::from_json_bytes(bytes),
+        }
+    }
+
+    /// The parallel parse itself. `None` means "fall back".
+    fn split_parse(
+        bytes: &[u8],
+        threads: usize,
+    ) -> Option<(Vec<ImageMeta>, Vec<CocoAnnotation>, Vec<CategoryMeta>)> {
+        let arrays = crate::json_split::top_level_object_arrays(
+            bytes,
+            &["images", "annotations", "categories"],
+        )?;
+        let [images, annotations, categories] = <[Vec<Range<usize>>; 3]>::try_from(arrays).ok()?;
+        let n = crate::json_split::chunks_for(threads);
+        Some((
+            crate::json_split::parse_elements_parallel(bytes, &images, n).ok()?,
+            crate::json_split::parse_elements_parallel(bytes, &annotations, n).ok()?,
+            crate::json_split::parse_elements_parallel(bytes, &categories, n).ok()?,
+        ))
+    }
+
     /// Loads a dataset from already-typed parts.
     pub fn from_parts(
         images: Vec<ImageMeta>,
@@ -609,8 +662,46 @@ impl CocoDataset {
     /// empty set, which matches the LVIS v1 semantic ("no negatives /
     /// nothing flagged non-exhaustive on this image").
     pub fn from_lvis_json_bytes(bytes: &[u8]) -> Result<Self, EvalError> {
-        let raw: LvisJson = serde_json::from_slice(bytes)?;
+        Self::from_lvis_parts(serde_json::from_slice(bytes)?)
+    }
 
+    /// Parallel sibling of [`Self::from_lvis_json_bytes`] (ADR-0054).
+    ///
+    /// Same split-and-deserialize path as
+    /// [`Self::from_json_bytes_parallel`]; LVIS JSON is structurally
+    /// COCO JSON with the same three top-level arrays, only richer
+    /// element types. Falls back to the serial loader on anything the
+    /// splitter does not recognize.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_lvis_json_bytes`].
+    pub fn from_lvis_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        match Self::split_parse_lvis(bytes, threads) {
+            Some(raw) => Self::from_lvis_parts(raw),
+            None => Self::from_lvis_json_bytes(bytes),
+        }
+    }
+
+    /// The parallel LVIS parse. `None` means "fall back".
+    fn split_parse_lvis(bytes: &[u8], threads: usize) -> Option<LvisJson> {
+        let arrays = crate::json_split::top_level_object_arrays(
+            bytes,
+            &["images", "annotations", "categories"],
+        )?;
+        let [images, annotations, categories] = <[Vec<Range<usize>>; 3]>::try_from(arrays).ok()?;
+        let n = crate::json_split::chunks_for(threads);
+        Some(LvisJson {
+            images: crate::json_split::parse_elements_parallel(bytes, &images, n).ok()?,
+            annotations: crate::json_split::parse_elements_parallel(bytes, &annotations, n).ok()?,
+            categories: crate::json_split::parse_elements_parallel(bytes, &categories, n).ok()?,
+        })
+    }
+
+    /// Build an LVIS dataset from already-parsed JSON parts. Shared by
+    /// the serial and parallel loaders so the federated-metadata
+    /// derivation has exactly one implementation.
+    fn from_lvis_parts(raw: LvisJson) -> Result<Self, EvalError> {
         let images: Vec<ImageMeta> = raw
             .images
             .iter()
@@ -1260,6 +1351,39 @@ impl CocoDetections {
         result
     }
 
+    /// Parallel sibling of [`Self::from_json_bytes`] (ADR-0054).
+    ///
+    /// The detection payload is a top-level array, so there is no key
+    /// to find — only element boundaries. Elements go through the same
+    /// `serde_json` deserializer as the serial path, in input order,
+    /// which matters beyond parity: [`Self::from_inputs`] assigns
+    /// auto-ids by position (quirk **J1**).
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_json_bytes`].
+    pub fn from_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        #[cfg(feature = "bench-timings")]
+        let t0 = std::time::Instant::now();
+        let parsed = crate::json_split::document_object_array(bytes).and_then(|elements| {
+            crate::json_split::parse_elements_parallel::<DetectionInput>(
+                bytes,
+                &elements,
+                crate::json_split::chunks_for(threads),
+            )
+            .ok()
+        });
+        #[cfg(feature = "bench-timings")]
+        {
+            let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            dataset_timings::COUNTERS.add(dataset_timings::DT_PARSE_NS, parse_ns);
+        }
+        match parsed {
+            Some(inputs) => Self::from_inputs(inputs),
+            None => Self::from_json_bytes(bytes),
+        }
+    }
+
     /// Builds a [`CocoDetections`] from typed inputs. Auto-assigns ids
     /// (quirk **J1**) for inputs that did not supply one, validates
     /// finite scores, and derives areas (quirk **J3**).
@@ -1749,6 +1873,112 @@ mod tests {
         // Quirk L4 path: indices_for_image returns every category.
         let img1: Vec<usize> = dts.indices_for_image(ImageId(1)).to_vec();
         assert_eq!(img1, vec![0, 1]);
+    }
+
+    // ---- ADR-0054: split-and-parallel loaders -------------------------
+
+    /// Ground truth exercising every shape the splitter has to survive:
+    /// RLE `counts` holding structural bytes, polygon segmentation,
+    /// ragged optional fields and non-compact whitespace.
+    const SPLITTER_GT: &str = r#"{
+        "info": {"description": "unknown top-level members are skipped"},
+        "images": [
+            {"id": 1, "width": 100, "height": 80, "file_name": "a}.jpg"},
+            {"id": 2, "width": 60, "height": 60, "file_name": "b,{}.jpg"}
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 7, "bbox": [0, 0, 10, 10],
+             "area": 100.0, "iscrowd": 0, "segmentation": [[0,0, 10,0, 10,10]]},
+            {"id": 2, "image_id": 1, "category_id": 7, "bbox": [5, 5, 20, 20],
+             "area": 400.0, "iscrowd": 1,
+             "segmentation": {"counts": "a},{b", "size": [80, 100]}},
+            {"id": 3, "image_id": 2, "category_id": 9, "bbox": [1, 1, 2, 2],
+             "area": 4.0, "iscrowd": 0}
+        ],
+        "categories": [
+            {"id": 7, "name": "thing", "supercategory": "stuff"},
+            {"id": 9, "name": "other", "supercategory": "stuff"}
+        ]
+    }"#;
+
+    #[test]
+    fn parallel_gt_loader_matches_the_serial_loader() {
+        let serial = CocoDataset::from_json_bytes(SPLITTER_GT.as_bytes()).expect("serial");
+        for threads in [1usize, 2, 4, 8] {
+            let parallel = CocoDataset::from_json_bytes_parallel(SPLITTER_GT.as_bytes(), threads)
+                .expect("parallel");
+            assert_eq!(
+                format!("{:?}", serial.annotations()),
+                format!("{:?}", parallel.annotations()),
+                "threads={threads}"
+            );
+            assert_eq!(
+                format!("{:?}", serial.images()),
+                format!("{:?}", parallel.images())
+            );
+            assert_eq!(
+                format!("{:?}", serial.categories()),
+                format!("{:?}", parallel.categories())
+            );
+        }
+    }
+
+    /// A shape the splitter does not recognize must still load, via the
+    /// serial fallback — and a malformed one must still fail the same
+    /// way, since the fallback is what reports the error.
+    #[test]
+    fn parallel_gt_loader_falls_back_instead_of_failing() {
+        // `images` is an object, not an array of objects.
+        let odd = r#"{"images": {"id": 1}, "annotations": [], "categories": []}"#;
+        assert_eq!(
+            CocoDataset::from_json_bytes(odd.as_bytes()).is_err(),
+            CocoDataset::from_json_bytes_parallel(odd.as_bytes(), 4).is_err()
+        );
+
+        let malformed = r#"{"images": [{"id": 1}], "annotations": [ , ], "categories": []}"#;
+        let serial = CocoDataset::from_json_bytes(malformed.as_bytes()).unwrap_err();
+        let parallel = CocoDataset::from_json_bytes_parallel(malformed.as_bytes(), 4).unwrap_err();
+        assert_eq!(serial.to_string(), parallel.to_string());
+
+        // An annotation referencing an unknown image is a *semantic*
+        // error from `from_parts`, identical on both paths.
+        let dangling = r#"{"images": [], "annotations": [{"id": 1, "image_id": 4,
+            "category_id": 1, "bbox": [0,0,1,1], "area": 1.0, "iscrowd": 0}],
+            "categories": [{"id": 1, "name": "x", "supercategory": "y"}]}"#;
+        let serial = CocoDataset::from_json_bytes(dangling.as_bytes()).unwrap_err();
+        let parallel = CocoDataset::from_json_bytes_parallel(dangling.as_bytes(), 4).unwrap_err();
+        assert_eq!(serial.to_string(), parallel.to_string());
+    }
+
+    /// Detection ids are assigned by position (quirk **J1**), so a
+    /// splitter that reordered or dropped an element would show up here
+    /// even when the values themselves survived.
+    #[test]
+    fn parallel_dt_loader_preserves_input_order_and_auto_ids() {
+        let mut json = String::from("[");
+        for i in 0..200 {
+            if i > 0 {
+                json.push(',');
+            }
+            // No `id` field: ids come from position.
+            json.push_str(&format!(
+                r#"{{"image_id": {}, "category_id": 3, "bbox": [0,0,{},2], "score": 0.5}}"#,
+                i % 7,
+                i + 1
+            ));
+        }
+        json.push(']');
+
+        let serial = CocoDetections::from_json_bytes(json.as_bytes()).expect("serial");
+        for threads in [1usize, 3, 8] {
+            let parallel =
+                CocoDetections::from_json_bytes_parallel(json.as_bytes(), threads).expect("par");
+            assert_eq!(
+                format!("{:?}", serial.detections()),
+                format!("{:?}", parallel.detections()),
+                "threads={threads}"
+            );
+        }
     }
 
     #[test]
