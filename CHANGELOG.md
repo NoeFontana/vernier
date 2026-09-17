@@ -26,6 +26,39 @@ additive / perf / docs".
   the grid falls from 1.2-1.4 s to 0.45-0.6 s at 1 / 4 / 8 threads;
   core matching allocates a third less. Summary paths
   (`Evaluator.evaluate`) get this for free.
+- **`accumulate` sorts each category's detection stream once** (ADR-0052).
+  The `(K, A, M)` walk ran `argsort_score_desc` per cell — 12 stable
+  sorts per category on the COCO defaults — for 12 streams that are all
+  derivable from one. The four area ranges of a `(category, image)` pair
+  share a `dt_scores` vector, and each smaller `maxDet` stream is an
+  induced subsequence of the largest, so filtering one permutation
+  reproduces all twelve exactly. Both derivations assume scores are
+  totally ordered, so a grid built through the `pub` Rust API with a
+  `NaN` score — the dataset path rejects those — falls back to the
+  per-cell sort, and the area-range guard compares bit patterns so
+  `-0.0` keeps its sign. Bit-equal output; `accumulate` drops
+  16.9 % on a val2017-shaped grid. Long-tail grids (LVIS) barely move —
+  their per-category streams are short and the cost is the dense grid
+  walk, which this does not touch.
+- **Detections that cannot match no longer scan the GT list**
+  (ADR-0053). The matching ladder read all `G` GTs per
+  `(threshold, detection)` even when the detection's best overlap was
+  below the lowest rung. Per-cell column maxima make that skip exact —
+  `best` only rises from the threshold seed, so the scan was provably a
+  no-op — and the ladder is monomorphized on whether the prefilter is
+  active, so cells below the `G · D = 256` gate compile to the previous
+  loop. Dense cells (250 GT x 250 DT) drop 84 %; COCO-shaped cells are
+  unchanged.
+- **JSON ingestion splits across the thread budget** (ADR-0054). One
+  structural scan finds every element's byte range; the elements are then
+  handed to the same `serde_json` deserializers the serial path uses, in
+  input order, so parsed values are bit-identical and `loadRes` positional
+  ids (quirk **J1**) are preserved. Anything the splitter does not plainly
+  recognize — an unexpected shape, a duplicate key, a parse error — falls
+  back to the serial loader, which also owns the canonical error message.
+  LVIS v1 val GT parse: 732 ms -> 204 ms at 8 threads (3.6x); end-to-end
+  `evaluate_bbox_grid` on that dataset 1142 ms -> 554 ms (-51 %).
+  `num_threads=None` stays serial per ADR-0047.
 
 ### Changed (BREAKING — pre-1.0)
 
@@ -130,6 +163,13 @@ additive / perf / docs".
   empty `(0, 4)` / `(0,)` per-image batches from
   `tensor.contiguous().numpy()` no longer raise "not C-contiguous"; an
   empty torch tensor's null data pointer is accepted too.
+- **JSON floats are now correctly rounded** (ADR-0054). `serde_json`'s
+  default parser sent some near-tie decimals to the adjacent double,
+  which drifted ~16 % of `eval_imgs.dtScores` by 1 ULP against
+  pycocotools on real detector output (documented in
+  `docs/engineering/real-predictions-parity.md`, held at aligned tier).
+  Enabling `float_roundtrip` makes vernier's doubles bit-equal to
+  CPython's `json`. Costs ~4 % on the sequential parse path.
 
 ## [0.3.0] - 2026-09-16
 

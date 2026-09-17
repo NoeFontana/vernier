@@ -59,6 +59,7 @@ else is detail.
 | [0003](0003-stable-rust-simd-via-pulp.md) | `pulp` for stable-Rust SIMD with runtime CPU dispatch | accepted |
 | [0004](0004-numerical-layout-policy.md) | f32 internal, f64 boundary, SoA, pinned constants | accepted (bbox clause superseded by 0008) |
 | [0008](0008-bbox-iou-f64-end-to-end.md) | Bbox IoU computes in f64 end-to-end | accepted (supersedes 0004's bbox clause) |
+| [0056](0056-pin-no-fp-contraction-for-bbox-iou.md) | Pin the no-FP-contraction invariant for the bbox IoU kernel (cross-arch golden bits) | proposed |
 
 ### Architecture
 
@@ -126,6 +127,8 @@ else is detail.
 | [0049](0049-bench-cpu-budget.md) | Enforce a per-cell CPU budget and measure memory exactly (and add hotcoco as a baseline) | accepted |
 | [0050](0050-parallel-accumulate.md) | Parallelize `accumulate` across the category axis (bit-identical) | proposed |
 | [0051](0051-occupied-cell-visiting.md) | Visit only occupied cells; fill the grid in parallel | proposed |
+| [0053](0053-matching-dt-prefilter.md) | Skip the GT scan for detections that cannot match (per-cell column maxima) | proposed |
+| [0054](0054-split-parallel-json-ingestion.md) | Split JSON ingestion across the thread budget; round floats correctly | proposed (amended 2026-09-17) |
 | [0055](0055-drop-in-params-surface-and-coco-json-adapters.md) | Finish the `COCOeval` drop-in's mutable surface (`ious`, `catIds`); publish the COCO-JSON normalizers | proposed |
 
 ### TIDE design package — proposed cluster
