@@ -126,6 +126,7 @@ else is detail.
 | [0049](0049-bench-cpu-budget.md) | Enforce a per-cell CPU budget and measure memory exactly (and add hotcoco as a baseline) | accepted |
 | [0050](0050-parallel-accumulate.md) | Parallelize `accumulate` across the category axis (bit-identical) | proposed |
 | [0051](0051-occupied-cell-visiting.md) | Visit only occupied cells; fill the grid in parallel | proposed |
+| [0058](0058-keypoints-usecats-zero-disposition.md) | Dispose of keypoints-under-`useCats=0` as `corrected` (quirk F6) | proposed |
 
 ### TIDE design package — proposed cluster
 
