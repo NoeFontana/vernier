@@ -59,6 +59,7 @@ else is detail.
 | [0003](0003-stable-rust-simd-via-pulp.md) | `pulp` for stable-Rust SIMD with runtime CPU dispatch | accepted |
 | [0004](0004-numerical-layout-policy.md) | f32 internal, f64 boundary, SoA, pinned constants | accepted (bbox clause superseded by 0008) |
 | [0008](0008-bbox-iou-f64-end-to-end.md) | Bbox IoU computes in f64 end-to-end | accepted (supersedes 0004's bbox clause) |
+| [0056](0056-pin-no-fp-contraction-for-bbox-iou.md) | Pin the no-FP-contraction invariant for the bbox IoU kernel (cross-arch golden bits) | proposed |
 
 ### Architecture
 
