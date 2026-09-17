@@ -268,6 +268,7 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     let grid = EvalGrid {
         eval_imgs,
         eval_imgs_meta,
+        builds_meta: params.builds_meta(),
         n_categories: n_k,
         n_area_ranges: n_a,
         n_images: n_i,

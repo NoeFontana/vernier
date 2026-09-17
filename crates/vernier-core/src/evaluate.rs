@@ -876,6 +876,11 @@ pub struct EvalGrid {
     /// grid was built without [`EvaluateParams::retain_meta`] or
     /// [`EvaluateParams::retain_iou`]; see [`Self::has_meta`].
     pub eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>>,
+    /// Whether `eval_imgs_meta` was built — the resolved
+    /// [`EvaluateParams::builds_meta`] of the pass that produced this
+    /// grid, recorded rather than inferred. Read it through
+    /// [`Self::has_meta`].
+    pub builds_meta: bool,
     /// `K` axis size: the number of categories used for evaluation, or
     /// `1` when `use_cats=false`.
     pub n_categories: usize,
@@ -903,8 +908,13 @@ impl EvalGrid {
     /// Whether [`Self::eval_imgs_meta`] was built (the grid was
     /// evaluated with [`EvaluateParams::retain_meta`] or
     /// [`EvaluateParams::retain_iou`]).
+    ///
+    /// Reads the flag the build recorded rather than comparing vector
+    /// lengths: on an empty grid both vectors are empty, and a
+    /// length comparison would answer "yes, metadata" for a pass that
+    /// built none.
     pub fn has_meta(&self) -> bool {
-        self.eval_imgs_meta.len() == self.eval_imgs.len()
+        self.builds_meta
     }
 
     /// Pycocotools-shaped bookkeeping at `(category_index, area_index,
@@ -1207,6 +1217,7 @@ pub fn evaluate_with<K: EvalKernel>(
     Ok(EvalGrid {
         eval_imgs,
         eval_imgs_meta,
+        builds_meta,
         n_categories: n_k,
         n_area_ranges: n_a,
         n_images: n_i,

@@ -1606,6 +1606,7 @@ mod tests {
         let grid = EvalGrid {
             eval_imgs: vec![None; 3],
             eval_imgs_meta: vec![None; 3],
+            builds_meta: true,
             n_categories: 1,
             n_area_ranges: 3,
             n_images: 1,
@@ -1861,6 +1862,7 @@ mod tests {
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
             }))],
+            builds_meta: true,
             n_categories: 1,
             n_area_ranges: 1,
             n_images: 1,
@@ -1900,6 +1902,7 @@ mod tests {
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
             }))],
+            builds_meta: true,
             n_categories: 1,
             n_area_ranges: 1,
             n_images: 1,
@@ -1920,6 +1923,9 @@ mod tests {
     #[test]
     fn build_per_detection_rejects_a_grid_without_metadata() {
         let (mut grid, _) = perfect_match_grid_two_images();
+        // Exactly what a `builds_meta = false` pass leaves behind: the
+        // flag off and the metadata vec empty.
+        grid.builds_meta = false;
         grid.eval_imgs_meta.clear();
         let dets = CocoDetections::from_inputs(Vec::new()).unwrap();
         let err = build_per_detection(

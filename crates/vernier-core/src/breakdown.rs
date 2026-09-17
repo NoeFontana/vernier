@@ -287,27 +287,24 @@ impl Breakdown {
         if self.len() != 4 {
             return None;
         }
-        let all = self.bucket_at(0)?.to_area_rng();
-        let small = self.bucket_at(1)?.to_area_rng();
-        let medium = self.bucket_at(2)?.to_area_rng();
-        let large = self.bucket_at(3)?.to_area_rng();
-        use MaxDetSelector::{Index, Largest};
-        use Metric::{AveragePrecision, AverageRecall};
-        let [ap_plan, ..] = StatRequest::coco_detection(parity_mode);
-        Some([
-            StatRequest::new(AveragePrecision, None, all.clone(), ap_plan.max_dets),
-            StatRequest::new(AveragePrecision, Some(0.5), all.clone(), Largest),
-            StatRequest::new(AveragePrecision, Some(0.75), all.clone(), Largest),
-            StatRequest::new(AveragePrecision, None, small.clone(), Largest),
-            StatRequest::new(AveragePrecision, None, medium.clone(), Largest),
-            StatRequest::new(AveragePrecision, None, large.clone(), Largest),
-            StatRequest::new(AverageRecall, None, all.clone(), Index(0)),
-            StatRequest::new(AverageRecall, None, all.clone(), Index(1)),
-            StatRequest::new(AverageRecall, None, all, Index(2)),
-            StatRequest::new(AverageRecall, None, small, Largest),
-            StatRequest::new(AverageRecall, None, medium, Largest),
-            StatRequest::new(AverageRecall, None, large, Largest),
-        ])
+        // The canonical plan is the source of truth for every row's
+        // metric, IoU threshold, A-axis position and max-dets selector
+        // (including the parity-dependent aggregate-AP cap, quirk L9).
+        // The only thing this breakdown contributes is the *labels* of
+        // the four buckets, so rewrite `area` in place and copy nothing
+        // else — a new row in `coco_detection` is inherited rather than
+        // silently dropped here.
+        let areas = [
+            self.bucket_at(0)?.to_area_rng(),
+            self.bucket_at(1)?.to_area_rng(),
+            self.bucket_at(2)?.to_area_rng(),
+            self.bucket_at(3)?.to_area_rng(),
+        ];
+        let mut plan = StatRequest::coco_detection(parity_mode);
+        for request in &mut plan {
+            request.area = areas.get(request.area.index)?.clone();
+        }
+        Some(plan)
     }
 
     /// Build the canonical 10-row pycocotools keypoints plan over this
@@ -589,13 +586,53 @@ mod tests {
     }
 
     #[test]
-    fn detection_plan_matches_canonical_default_bitwise() {
-        // The Breakdown-built detection plan and the static
-        // `coco_detection` must produce stat-by-stat equal results in both
-        // parity modes
-        // when summarized over the same Accumulated. This pins the
-        // "default Breakdown produces byte-identical output to the prior
-        // hardcoded path" invariant.
+    fn detection_plan_is_the_canonical_plan_relabeled() {
+        // `detection_plan` rewrites nothing but each row's `area`:
+        // metric, IoU threshold, A-axis index and max-dets selector
+        // (including the parity-dependent aggregate-AP cap, quirk L9)
+        // all come from `StatRequest::coco_detection`. Asserting that
+        // relationship directly is what keeps the two from drifting —
+        // a row added to `coco_detection` is inherited, not dropped.
+        //
+        // A relabeled 4-bucket breakdown is the interesting case: the
+        // labels must be this breakdown's, everything else canonical.
+        let relabeled = Breakdown::new(
+            "area",
+            vec![
+                Bucket::from_static(0, "any", 0.0, AREA_UNBOUNDED),
+                Bucket::from_static(1, "tiny", 0.0, 32.0 * 32.0),
+                Bucket::from_static(2, "mid", 32.0 * 32.0, 96.0 * 96.0),
+                Bucket::from_static(3, "big", 96.0 * 96.0, AREA_UNBOUNDED),
+            ],
+        );
+        let canonical_labels = ["all", "small", "medium", "large"];
+        let relabeled_labels = ["any", "tiny", "mid", "big"];
+
+        for (bd, want_labels) in [
+            (Breakdown::coco_area_det(), canonical_labels),
+            (relabeled, relabeled_labels),
+        ] {
+            for parity_mode in [ParityMode::Strict, ParityMode::Corrected] {
+                let canonical = StatRequest::coco_detection(parity_mode);
+                let from_bd = bd.detection_plan(parity_mode).expect("4-bucket layout");
+                assert_eq!(canonical.len(), from_bd.len());
+                for (c, b) in canonical.iter().zip(from_bd.iter()) {
+                    assert_eq!(c.metric, b.metric);
+                    assert_eq!(c.iou_threshold, b.iou_threshold);
+                    assert_eq!(c.max_dets, b.max_dets);
+                    assert_eq!(c.area.index, b.area.index);
+                    assert_eq!(b.area.label, want_labels[b.area.index]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn detection_plan_on_the_default_breakdown_summarizes_identically() {
+        // The one end-to-end rung kept from the old lockstep test: the
+        // default breakdown's plan and the static plan must summarize
+        // to bit-equal stats, including on a ladder without 100 where
+        // quirk L9's `-1` sentinel is live.
         let iou = iou_thresholds();
         let accum = crate::Accumulated {
             precision: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 0.5),
@@ -603,27 +640,18 @@ mod tests {
             scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 1.0),
         };
         let bd = Breakdown::coco_area_det();
-
         for parity_mode in [ParityMode::Strict, ParityMode::Corrected] {
-            // Quirk L9: the non-100 ladder exercises the parity-dependent
-            // AP line and the positional AR lines.
             for max_dets in [[1usize, 10, 100], [1, 10, 500]] {
-                let static_plan = StatRequest::coco_detection(parity_mode);
+                let from_static = summarize_with(
+                    &accum,
+                    &StatRequest::coco_detection(parity_mode),
+                    iou,
+                    &max_dets,
+                )
+                .unwrap();
                 let bd_plan = bd.detection_plan(parity_mode).expect("4-bucket layout");
-
-                let from_static = summarize_with(&accum, &static_plan, iou, &max_dets).unwrap();
                 let from_bd = summarize_with(&accum, &bd_plan, iou, &max_dets).unwrap();
-
                 assert_eq!(from_static.stats(), from_bd.stats());
-                // Stat-by-stat: metric, threshold, label, max_dets, value.
-                for (s, b) in from_static.lines.iter().zip(from_bd.lines.iter()) {
-                    assert_eq!(s.metric, b.metric);
-                    assert_eq!(s.iou_threshold, b.iou_threshold);
-                    assert_eq!(s.area.label, b.area.label);
-                    assert_eq!(s.area.index, b.area.index);
-                    assert_eq!(s.max_dets, b.max_dets);
-                    assert_eq!(s.value.to_bits(), b.value.to_bits());
-                }
             }
         }
     }

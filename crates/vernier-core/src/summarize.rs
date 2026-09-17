@@ -170,6 +170,14 @@ pub enum MaxDetSelector {
     Largest,
     /// Pick the M-axis entry whose value equals this. Errors via
     /// [`EvalError::InvalidConfig`] if the value is absent.
+    ///
+    /// No plan `vernier-core` ships uses this — the strict detection
+    /// plan's aggregate-AP line wants the `-1` sentinel, not an error
+    /// (quirk **L9**), so it uses [`Self::ValueOrSentinel`]. It is
+    /// retained because this enum is public API on a published crate
+    /// and callers composing their own [`StatRequest`] plans may be
+    /// relying on the loud variant; the two share one lookup in
+    /// [`summarize_with`].
     Value(usize),
     /// Pick the M-axis entry at this position — pycocotools'
     /// `maxDets[i]`. Errors via [`EvalError::InvalidConfig`] if the
@@ -603,12 +611,18 @@ fn summarize_dispatch(
             }
             let m_idx = match req.max_dets {
                 MaxDetSelector::Largest => MaxDetsEntry::At(m_max),
-                MaxDetSelector::Value(v) => {
-                    MaxDetsEntry::At(max_dets.iter().position(|&d| d == v).ok_or_else(|| {
-                        EvalError::InvalidConfig {
-                            detail: format!("max_dets does not contain {v}"),
+                // One lookup for both value-keyed selectors: they agree
+                // on the hit and differ only in the miss branch.
+                MaxDetSelector::Value(v) | MaxDetSelector::ValueOrSentinel(v) => {
+                    match (max_dets.iter().position(|&d| d == v), req.max_dets) {
+                        (Some(m), _) => MaxDetsEntry::At(m),
+                        (None, MaxDetSelector::ValueOrSentinel(_)) => MaxDetsEntry::Absent(v),
+                        (None, _) => {
+                            return Err(EvalError::InvalidConfig {
+                                detail: format!("max_dets does not contain {v}"),
+                            });
                         }
-                    })?)
+                    }
                 }
                 MaxDetSelector::Index(i) if i < max_dets.len() => MaxDetsEntry::At(i),
                 MaxDetSelector::Index(i) => {
@@ -619,10 +633,6 @@ fn summarize_dispatch(
                         ),
                     });
                 }
-                MaxDetSelector::ValueOrSentinel(v) => match max_dets.iter().position(|&d| d == v) {
-                    Some(m) => MaxDetsEntry::At(m),
-                    None => MaxDetsEntry::Absent(v),
-                },
             };
             let t_range = match req.iou_threshold {
                 None => 0..n_t,
@@ -962,8 +972,11 @@ mod tests {
 
     #[test]
     fn missing_max_det_value_is_typed_error() {
-        // A plain `Value(1)` request requires max_dets to contain 1;
-        // without it, summarization fails with InvalidConfig.
+        // `Value` is public API with no in-crate plan behind it (the
+        // strict AP line wants `ValueOrSentinel`), so this hand-built
+        // plan is its coverage: a plain `Value(1)` request requires
+        // max_dets to contain 1; without it, summarization fails with
+        // InvalidConfig rather than emitting the `-1` sentinel.
         let iou = iou_thresholds();
         let max_dets = [10usize, 100];
         let accum = Accumulated {
