@@ -1,4 +1,4 @@
-# ADR-0056: Two direct detection-ingest routes for in-process callers
+# ADR-0057: Two direct detection-ingest routes for in-process callers
 
 - **Status:** proposed
 - **Date:** 2026-09-17
