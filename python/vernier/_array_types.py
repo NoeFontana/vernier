@@ -45,6 +45,37 @@ class CompressedRLE(TypedDict):
 RLEInput: TypeAlias = UncompressedRLE | CompressedRLE | NDArray[np.bool_] | NDArray[np.uint8]
 
 
+class JsonRLE(TypedDict):
+    """The RLE shape a COCO results *file* carries, as ``json.load``
+    leaves it.
+
+    ``counts`` is either the compressed 6-bit string (quirk **K3**: JSON
+    has no bytes type, so the same payload arrives as ``str``) or the
+    uncompressed run lengths as a plain list of ints. ``size`` is
+    ``(height, width)`` in COCO order.
+
+    Accepted on :attr:`ResultAnnotation.segmentation` only — the
+    columnar :attr:`Detections.rles` is an in-memory array surface and
+    takes :data:`RLEInput`.
+    """
+
+    counts: str | Sequence[int]
+    size: Sequence[int]
+
+
+#: COCO polygon segmentation: one flat ``[x0, y0, x1, y1, …]`` list per
+#: polygon, nested one level. Sub-polygons are unioned into a single mask
+#: (quirk **K2**).
+PolygonSegmentation: TypeAlias = Sequence[Sequence[float]]
+
+#: Per-annotation ``segmentation`` shape on the result-dict route. It is
+#: everything a results file can hold (:data:`PolygonSegmentation`,
+#: :class:`JsonRLE`) plus the in-memory forms ADR-0030 added
+#: (:data:`RLEInput`), so the route accepts every payload the file route
+#: does and then some.
+SegmentationInput: TypeAlias = RLEInput | JsonRLE | PolygonSegmentation
+
+
 class Detections(TypedDict, total=False):
     """One per-image detection batch in array form.
 
@@ -85,10 +116,15 @@ class ResultAnnotation(TypedDict, total=False):
     pay for the same data.
 
     ``image_id``, ``category_id``, ``bbox`` and ``score`` are always
-    required. ``segmentation`` is required under ``iou_type='segm'`` /
-    ``'boundary'`` and takes the same forms as one element of
-    :attr:`Detections.rles`; ``keypoints`` is required under
-    ``iou_type='keypoints'``.
+    required. ``keypoints`` is required under ``iou_type='keypoints'``.
+
+    ``segmentation`` is optional on every ``iou_type``, exactly as it is
+    in a results *file*: under ``'segm'`` / ``'boundary'`` an annotation
+    without one is governed by quirk **J2** (``parity_mode='strict'``
+    synthesizes the bbox rectangle pycocotools synthesizes;
+    ``'corrected'`` refuses and names the detection). It takes
+    :data:`SegmentationInput` — polygons, either RLE ``counts``
+    encoding, or a 2-D bitmask.
 
     ``area`` and ``iscrowd`` are accepted and ignored: area is derived
     (quirk **J3**) and detections are never crowd (quirks **E2**/**J4**).
@@ -101,7 +137,7 @@ class ResultAnnotation(TypedDict, total=False):
     bbox: Sequence[float]
     score: float
     id: int
-    segmentation: RLEInput
+    segmentation: SegmentationInput
     keypoints: Sequence[float]
     num_keypoints: int
 
@@ -127,7 +163,10 @@ __all__ = [
     "DetectionMatrix",
     "Detections",
     "DetectionsInput",
+    "JsonRLE",
+    "PolygonSegmentation",
     "RLEInput",
     "ResultAnnotation",
+    "SegmentationInput",
     "UncompressedRLE",
 ]

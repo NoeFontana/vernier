@@ -2141,8 +2141,16 @@ pub(crate) fn build_update_payload<'py>(
         array_ingest::DetectionsArg::AnnList(dicts) => UpdatePayload::Inputs(
             array_ingest::ann_dicts_to_inputs(py, &dicts, iou_type, cast_state)?,
         ),
+        // `iou_type` does not gate this arm. An `(N, 7)` matrix carries
+        // no segmentation and no keypoints, which is the same thing a
+        // bbox-only results *file* carries — so under `segm`/`boundary`
+        // it means quirk **J2** (strict: synthesize the bbox rectangle;
+        // corrected: refuse, naming the detection), and under
+        // `keypoints` core's `missing_keypoints_err` refuses. Guarding
+        // here would make the matrix route stricter than the file route
+        // it is supposed to be indistinguishable from. See ADR-0057.
         array_ingest::DetectionsArg::Matrix(arr) => {
-            UpdatePayload::Inputs(result_ingest::matrix_to_inputs(&arr)?)
+            UpdatePayload::Inputs(array_ingest::matrix_to_inputs(py, &arr, cast_state)?)
         }
     })
 }

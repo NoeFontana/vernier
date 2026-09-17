@@ -16,22 +16,31 @@
 //!   module-lifetime interned strings (`intern!`), so `PyDict_GetItem`
 //!   takes the pointer-equality fast path instead of hashing and
 //!   comparing a freshly-built `str` per annotation per field.
+//!   Every field a results file can carry is accepted, including the
+//!   polygon `segmentation` shape — see [`extract_segmentation`].
 //! - [`matrix_to_inputs`] — an `(N, 7)` C-contiguous float64 array laid
 //!   out as `image_id, x, y, w, h, score, category_id`. No per-element
-//!   Python object is touched at all.
+//!   Python object is touched at all. It carries no segmentation and no
+//!   keypoints, which is exactly what a *bbox-only* results file carries:
+//!   under `iou_type="segm"`/`"boundary"` quirk **J2** decides what that
+//!   means, and under `"keypoints"` core refuses. Neither is restated
+//!   here; see ADR-0057.
 //!
 //! Neither routine can release the GIL: both read Python objects. They
 //! are written as one tight pass so that the serial floor they impose
 //! is as short as it can be, and the caller detaches immediately after.
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PySequence};
+use pyo3::types::{PyAny, PyDict, PySequence, PyString};
 
 use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
+use vernier_core::segmentation::Segmentation;
 
-use crate::array_ingest::{extract_one_rle, ArrayIouType, CastCtx};
+use crate::array_ingest::{
+    extract_one_rle_with, type_name_of, ArrayIouType, CastCtx, CountsShapes,
+};
 use crate::dlpack;
 
 /// Largest magnitude at which every integer is exactly representable in
@@ -114,17 +123,17 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             _ => None,
         };
 
-        let segmentation = match iou_type {
-            ArrayIouType::Segm | ArrayIouType::Boundary => {
-                let obj = required(dict, k_segmentation, i, "segmentation")?;
-                Some(extract_one_rle(&obj, i, ctx)?)
-            }
-            ArrayIouType::Bbox | ArrayIouType::Keypoints => dict
-                .get_item(k_segmentation)?
-                .filter(|v| !v.is_none())
-                .map(|obj| extract_one_rle(&obj, i, ctx))
-                .transpose()?,
-        };
+        // `segmentation` is optional on every `iou_type`, exactly as it
+        // is in a results *file*: `serde_json` leaves the field `None`
+        // and quirk **J2** decides what that means downstream (strict
+        // synthesizes a rectangle from the bbox; corrected refuses,
+        // naming the detection). Requiring it here would make the list
+        // route reject a bbox-only payload the file route evaluates.
+        let segmentation = dict
+            .get_item(k_segmentation)?
+            .filter(|v| !v.is_none())
+            .map(|obj| extract_segmentation(&obj, i, ctx))
+            .transpose()?;
 
         let keypoints = match iou_type {
             ArrayIouType::Keypoints => Some(extract_keypoints(
@@ -153,6 +162,71 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
         });
     }
     Ok(inputs)
+}
+
+/// One `segmentation` field, in every shape a COCO results *file*
+/// carries plus the in-memory shapes ADR-0030 added.
+///
+/// - `{"counts": …, "size": [h, w]}` — RLE. `counts` may be the
+///   compressed `str` a file carries (quirk **K3**), the `bytes`
+///   `pycocotools.mask.encode` returns, an uncompressed list of ints, or
+///   a uint32 array.
+/// - `[[x0, y0, x1, y1, …], …]` — polygons, merged into one RLE by
+///   [`Segmentation::to_rle`] under quirk **K2**, exactly as the file
+///   route's do. The file route accepted these before this route
+///   existed, so refusing them here would have made "the routes are
+///   indistinguishable downstream" false.
+/// - a 2-D `bool`/`uint8` bitmask — the ADR-0030 form, accepted here too
+///   because a caller building result dicts from a model output has one
+///   in hand.
+fn extract_segmentation<'py>(
+    obj: &Bound<'py, PyAny>,
+    i: usize,
+    ctx: &CastCtx<'py, '_>,
+) -> PyResult<Segmentation> {
+    let field = format!("detections[{i}].segmentation");
+    // A dict is an RLE and an array is a bitmask; both are
+    // `extract_one_rle_with`'s business. Anything else that is a
+    // non-`str` sequence is the polygon shape.
+    if obj.is_instance_of::<PyDict>() || obj.hasattr("__dlpack_device__")? {
+        return extract_one_rle_with(obj, &field, ctx, CountsShapes::AlsoJsonWire);
+    }
+    if obj.is_instance_of::<PyString>() {
+        // `str` satisfies the sequence protocol, so it would otherwise
+        // be read as a polygon list of one-character "polygons".
+        return Err(segmentation_type_err(&field, obj));
+    }
+    let Ok(seq) = obj.cast::<PySequence>() else {
+        return Err(segmentation_type_err(&field, obj));
+    };
+    let n_polys = seq.len()?;
+    let mut polygons: Vec<Vec<f64>> = Vec::with_capacity(n_polys);
+    for p in 0..n_polys {
+        let poly_obj = seq.get_item(p)?;
+        let poly = poly_obj.cast::<PySequence>().map_err(|e| {
+            PyTypeError::new_err(format!(
+                "{field}[{p}]: expected a flat [x0, y0, x1, y1, …] polygon; \
+                 COCO nests polygons one level ([[…], […]]): {e}"
+            ))
+        })?;
+        let len = poly.len()?;
+        let mut coords = Vec::with_capacity(len);
+        for j in 0..len {
+            coords.push(poly.get_item(j)?.extract::<f64>().map_err(|e| {
+                PyValueError::new_err(format!("{field}[{p}][{j}]: expected a float: {e}"))
+            })?);
+        }
+        polygons.push(coords);
+    }
+    Ok(Segmentation::Polygons(polygons))
+}
+
+fn segmentation_type_err(field: &str, obj: &Bound<'_, PyAny>) -> PyErr {
+    PyTypeError::new_err(format!(
+        "{field}: expected an RLE dict {{counts, size}}, a polygon list \
+         [[x0, y0, x1, y1, …], …], or a 2-D bool/uint8 bitmask, got {}",
+        type_name_of(obj)
+    ))
 }
 
 fn required<'py>(
@@ -243,9 +317,12 @@ const COL_NAMES: [&str; MATRIX_COLS] = ["image_id", "x", "y", "w", "h", "score",
 ///
 /// - **dtype** must be float64 and **C-contiguity** is required; both
 ///   are enforced by [`dlpack::extract_f64_2d`], which raises a
-///   `TypeError` naming `np.ascontiguousarray` as the fix. We do not
-///   silently copy: a hidden copy of an `(N, 7)` array is exactly the
-///   cost this route exists to avoid, so the caller is told instead.
+///   `TypeError` naming `np.ascontiguousarray` (and torch's
+///   `.contiguous()`) as the fix. We do not silently copy by default: a
+///   hidden copy of an `(N, 7)` array is exactly the cost this route
+///   exists to avoid, so the caller is told instead. `cast_inputs=True`
+///   is the documented opt-in that asks for the copy, and it is
+///   honoured here on the same terms as `Detections.boxes`.
 /// - **shape** must be 2-D with exactly 7 columns.
 /// - `image_id` and `category_id` are **round-trip checked**: a value
 ///   that is not finite, has a fractional part, or exceeds 2^53 is
@@ -255,8 +332,12 @@ const COL_NAMES: [&str; MATRIX_COLS] = ["image_id", "x", "y", "w", "h", "score",
 ///   any diagnostic.
 ///
 /// `score` is taken verbatim; `from_inputs` rejects a non-finite score.
-pub(crate) fn matrix_to_inputs(obj: &Bound<'_, PyAny>) -> PyResult<Vec<DetectionInput>> {
-    let view = dlpack::extract_f64_2d(obj, "detections", MATRIX_COLS)?;
+pub(crate) fn matrix_to_inputs<'py>(
+    obj: &Bound<'py, PyAny>,
+    ctx: &CastCtx<'py, '_>,
+) -> PyResult<Vec<DetectionInput>> {
+    let obj = ctx.maybe_cast(obj.clone(), "detections", "float64")?;
+    let view = dlpack::extract_f64_2d(&obj, "detections", MATRIX_COLS)?;
     let flat = view.as_slice();
     let n = flat.len() / MATRIX_COLS;
     let mut inputs = Vec::with_capacity(n);
