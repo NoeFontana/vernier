@@ -156,22 +156,6 @@ pub(crate) struct MatchResult {
     pub dt_ignore: Array2<bool>,
 }
 
-/// Greedy assignment of detections to ground-truth annotations across
-/// every IoU threshold.
-///
-/// Inputs are in the caller's natural order. `iou_matrix` has shape
-/// `(G, D)` per ADR-0005 (rows = GT, cols = DT), produced by some
-/// [`crate::Similarity`] impl. `parity_mode` is plumbed through for the
-/// ADR-0002 contract; only **A1**'s corrected tiebreak would change
-/// matching behavior, and that tiebreak needs an `ann_id` input the
-/// ADR-0005 signature does not carry — so for now both modes match
-/// strict numerically.
-///
-/// # Errors
-///
-/// Returns [`EvalError::DimensionMismatch`] if `iou_matrix` shape does
-/// not equal `(gt_ignore.len(), dt_scores.len())`, or if `gt_ignore`
-/// and `gt_iscrowd` have different lengths.
 /// The `(threshold, DT)` matching ladder.
 ///
 /// Monomorphized on `PREFILTER`: with it off, `dt_best` is unused and
@@ -185,7 +169,6 @@ pub(crate) struct MatchResult {
 // `ArrayView2` is a `Copy` view, so by-value is idiomatic here too
 // (same rationale as the ADR-0005 entry points below).
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-#[inline]
 fn run_ladder<const PREFILTER: bool>(
     iou_matrix: ArrayView2<'_, f64>,
     iou_thresholds: &[f64],
@@ -272,9 +255,9 @@ const PREFILTER_MIN_CELL: usize = 256;
 /// mask that, and a `NaN` bbox can reach here through the ADR-0030
 /// array-ingest path, which does not go via JSON.
 #[allow(clippy::needless_pass_by_value)]
-fn column_maxima(iou_matrix: ArrayView2<'_, f64>, n_g: usize) -> Vec<f64> {
+fn column_maxima(iou_matrix: ArrayView2<'_, f64>) -> Vec<f64> {
     let mut best = vec![f64::NEG_INFINITY; iou_matrix.ncols()];
-    for g in 0..n_g {
+    for g in 0..iou_matrix.nrows() {
         for (slot, &v) in best.iter_mut().zip(iou_matrix.row(g)) {
             *slot = if v.is_nan() {
                 f64::INFINITY
@@ -286,6 +269,22 @@ fn column_maxima(iou_matrix: ArrayView2<'_, f64>, n_g: usize) -> Vec<f64> {
     best
 }
 
+/// Greedy assignment of detections to ground-truth annotations across
+/// every IoU threshold.
+///
+/// Inputs are in the caller's natural order. `iou_matrix` has shape
+/// `(G, D)` per ADR-0005 (rows = GT, cols = DT), produced by some
+/// [`crate::similarity::Similarity`] impl. `parity_mode` is plumbed
+/// through for the ADR-0002 contract; only **A1**'s corrected tiebreak
+/// would change matching behavior, and that tiebreak needs an `ann_id`
+/// input the ADR-0005 signature does not carry — so for now both
+/// modes match strict numerically.
+///
+/// # Errors
+///
+/// Returns [`EvalError::DimensionMismatch`] if `iou_matrix` shape does
+/// not equal `(gt_ignore.len(), dt_scores.len())`, or if `gt_ignore`
+/// and `gt_iscrowd` have different lengths.
 // Signature pinned by ADR-0005. `ArrayView2` is a `Copy` view (a
 // `(ptr, dims, strides)` triple), so by-value is idiomatic; clippy's
 // `needless_pass_by_value` doesn't recognize that here.
@@ -419,7 +418,7 @@ fn match_image_with_perm_gated(
     // On a COCO-shaped grid, where the median non-empty cell is
     // `G · D = 1`, that branch alone cost ~4 %.
     if n_g * n_d >= prefilter_min_cell {
-        let dt_best = column_maxima(iou_matrix, n_g);
+        let dt_best = column_maxima(iou_matrix);
         run_ladder::<true>(
             iou_matrix,
             iou_thresholds,
@@ -725,7 +724,7 @@ mod tests {
         // Guard against a vacuous test: the cell must actually produce
         // matches, and must actually have skippable columns.
         assert!(forced.dt_matches.iter().any(|&m| m >= 0));
-        let best = column_maxima(iou.view(), n_g);
+        let best = column_maxima(iou.view());
         assert!(best.iter().any(|&b| b < 0.5), "no column is skippable");
     }
 
@@ -767,7 +766,7 @@ mod tests {
             run_both_gates(&iou, &gt_ignore, &gt_iscrowd, &dt_scores, &thresholds);
         assert_same_matching("nan cell", &forced, &disabled);
 
-        assert_eq!(column_maxima(iou.view(), n_g)[7], f64::INFINITY);
+        assert_eq!(column_maxima(iou.view())[7], f64::INFINITY);
         // DT 7 is at sorted position 7 (scores are strictly decreasing)
         // and matches on both paths. It lands on the *last* GT, not on
         // GT 3: once `best` is `NaN`, every later `iou < best` is false

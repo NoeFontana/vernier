@@ -112,6 +112,23 @@ per-`(threshold, DT)` branch on an inactive `Option` cost ~4 % on
   tie-break exactly (**B2**) — a much larger parity surface for a
   regime option 2 already handles.
 
+## Follow-up (not in this change)
+
+`column_maxima` is recomputed once per area range over the *same*
+matrix. `evaluate_cell` is called four times per `(category, image)`
+cell — once per area range — against one `buffers.iou`
+(`evaluate.rs`, `evaluate_parallel.rs`); only `gt_ignore` varies
+between those calls, and `dt_best` does not depend on it. So the
+prefilter pays for four passes and four `D`-long allocations where one
+would do.
+
+Hoisting `dt_best` into `CellScratch` as a reusable scratch `Vec` — in
+the style of the existing `gt_ignore_buf` — would recover most of
+that, and it lands in exactly the dense regime this ADR targets.
+Deliberately left out of scope here: it is **unmeasured**, and the
+decision above rests on measurements. Take it as its own change, with
+its own numbers, on an uncontended box.
+
 ## Links and references
 
 - Quirks **B1** (threshold seed), **B2** (non-strict comparison),
