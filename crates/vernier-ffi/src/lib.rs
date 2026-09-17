@@ -342,6 +342,47 @@ impl PyEvalGrid {
         Ok(list)
     }
 
+    /// Pycocotools-shaped `{(image_id, category_id): ndarray}` map of the
+    /// per-`(image, category)` similarity matrices, retained only when the
+    /// grid was built with `retain_iou=True` (raises `ValueError`
+    /// otherwise).
+    ///
+    /// Each value is `(D, G)` — detections score-descending and truncated
+    /// to the grid's `max_dets_per_image`, ground truths in dataset order
+    /// — which is the transpose of the `(G, D)` layout
+    /// [`vernier_core::EvalGrid::retained_ious`] stores internally, and is
+    /// what `pycocotools.cocoeval.COCOeval.ious` holds.
+    ///
+    /// Only `(image, category)` pairs with at least one detection *and*
+    /// one ground truth appear: quirk **F5** has pycocotools' `computeIoU`
+    /// / `computeOks` return a bare `[]` for every other pair, and a
+    /// caller mirroring that surface fills the gaps itself rather than
+    /// paying for `|images| * |categories|` empty arrays here.
+    /// `category_id` is `-1` when the grid was built with
+    /// `use_cats=False`, matching pycocotools' collapsed key.
+    fn ious<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        let Some(retained) = self.inner.retained_ious.as_ref() else {
+            return Err(PyValueError::new_err(
+                "EvalGrid.ious() needs the per-(image, category) similarity matrices; \
+                 build the grid with retain_iou=True",
+            ));
+        };
+        let out = PyDict::new(py);
+        for (k, i, view) in retained.iter() {
+            if view.is_empty() {
+                continue;
+            }
+            // `retain_iou` implies per-cell metadata, and retention runs
+            // after the area loop has filled every `a`, so the `a = 0`
+            // cell carries this pair's ids whenever a matrix exists.
+            let Some(meta) = self.inner.cell_meta(k, 0, i) else {
+                continue;
+            };
+            out.set_item((meta.image_id, meta.category_id), view.t().to_pyarray(py))?;
+        }
+        Ok(out)
+    }
+
     /// Accumulate this grid into precision / recall / scores tensors.
     /// `max_dets` is the full ladder fed to pycocotools' `accumulate`
     /// (default `[1, 10, 100]`); each entry must be `<=` the
@@ -1598,7 +1639,7 @@ fn evaluate_summary_with_dataset_impl(
 /// carry `keypoints` fields. `sigmas` matches
 /// [`evaluate_keypoints_summary`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_keypoints_grid<'py>(
     py: Python<'py>,
@@ -1608,6 +1649,7 @@ fn evaluate_keypoints_grid<'py>(
     max_dets_per_image: usize,
     use_cats: bool,
     sigmas: &Bound<'py, PyDict>,
+    retain_iou: bool,
     cast_inputs: bool,
     iou_thresholds: Option<Vec<f64>>,
     recall_thresholds: Option<Vec<f64>>,
@@ -1627,7 +1669,7 @@ fn evaluate_keypoints_grid<'py>(
         parity_mode,
         max_dets_per_image,
         use_cats,
-        false,
+        retain_iou,
         cast_inputs,
         iou_thresholds,
         recall_thresholds,

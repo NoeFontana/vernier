@@ -733,8 +733,12 @@ impl RetainedIous {
 
     /// Iterate `(k, i, view)` triplets in arbitrary order. The
     /// distributed-eval encoder (ADR-0031) walks this to materialize
-    /// the wire-format `retained_ious` section, then sorts.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, usize, ArrayView2<'_, f64>)> + '_ {
+    /// the wire-format `retained_ious` section, then sorts; the FFI's
+    /// pycocotools-shaped `EvalGrid.ious()` walks it to key the same
+    /// matrices by `(image_id, category_id)`. Callers that need a
+    /// deterministic order sort the triplets themselves — the backing
+    /// store is a hash map.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, usize, ArrayView2<'_, f64>)> + '_ {
         self.inner.iter().map(|(&(k, i), arr)| (k, i, arr.view()))
     }
 }

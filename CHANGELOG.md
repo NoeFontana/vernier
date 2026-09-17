@@ -50,10 +50,34 @@ additive / perf / docs".
 - **`evaluate_{bbox,segm,boundary,keypoints}_grid` and
   `evaluate_bbox_grid_with_dataset` take `retain_meta=False`**;
   `EvalGrid.eval_imgs()` raises `ValueError` on a grid built without
-  `retain_meta=True`. `vernier.COCOeval` passes it.
+  `retain_meta=True`. `vernier.COCOeval` leaves it off and re-evaluates
+  on first read of `evalImgs` (see Added below).
 
 ### Added
 
+- **`vernier.COCOeval.ious`**, the pycocotools-shaped
+  `{(imgId, catId): matrix}` map TorchMetrics reads under
+  `extended_summary=True` (ADR-0055). Each matrix is
+  `(detections, ground truths)` with detections score-descending and
+  truncated to `max(params.maxDets)`; a pair with nothing on one side is
+  the bare `[]` upstream returns (quirk **F5**). Backed by a new
+  `EvalGrid.ious()` on the FFI, which requires `retain_iou=True`;
+  `evaluate_keypoints_grid` gains the `retain_iou` flag the other three
+  grids already had, and `RetainedIous::iter` is public.
+- **`vernier.COCOeval` supports `params.catIds` subsetting** (ADR-0055),
+  which is how `MeanAveragePrecision(class_metrics=True)` drives one
+  evaluator around a per-class loop. The shim filters `categories` and
+  `annotations` exactly as `COCOeval._prepare` does; a category the
+  dataset never declares evaluates to a row of `-1`s, as upstream.
+  `params.imgIds` subsetting and `params.areaRng` mutation still raise.
+- **`evalImgs` and `ious` are built on first read** and cached, so the
+  evaluate / accumulate / summarize cycle keeps both retentions off and
+  a caller that reads either pays for it once.
+- **`vernier.adapters` publishes the COCO-JSON normalizers**
+  (ADR-0055): `with_placeholder_image_sizes`, `with_mask_image_sizes`,
+  `coco_json_default` and `to_coco_json` — the conversions the drop-in
+  applies to a `pycocotools`-shaped dataset, for callers that assemble
+  one and drive a vernier grid directly rather than through the shim.
 - **NumPy 1 is supported again: `numpy>=1.26`** (was `>=2.0`). The abi3
   extension binds to NumPy 1 or 2 at runtime and the Python layer uses no
   NumPy-2-only API; CI's `test (python 3.10, numpy 1.26.4)` leg runs the
@@ -94,7 +118,10 @@ additive / perf / docs".
     `summarize()`.
   - `evalImgs` is built on first read instead of in `evaluate()`; an
     evaluate / accumulate / summarize cycle no longer pays for the
-    per-image dicts it never reads.
+    per-image dicts it never reads, nor for the per-cell metadata behind
+    them (see Added).
+  - `params.catIds = [class_id]` evaluates that category instead of
+    raising, so `MeanAveragePrecision(class_metrics=True)` works.
 
 - **Array ingest accepts every buffer NumPy and torch call contiguous.**
   A size-1 axis's stride is ignored and a zero-element array is
