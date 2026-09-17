@@ -1,7 +1,9 @@
 # Migrating from `pycocotools` to vernier
 
 vernier reproduces `pycocotools==2.0.11`'s evaluation semantics
-bit-for-bit in strict parity mode. ADR-0002 (parity model) and
+bit-for-bit in strict parity mode, on every architecture it ships
+(see [Bit-for-bit, and against which build](#bit-for-bit-and-against-which-build)
+for the one scoping caveat). ADR-0002 (parity model) and
 ADR-0007 (drop-in policy) are the design records; this guide is the
 user-facing migration path. Audience: anyone moving an existing
 `COCOeval`-based evaluation pipeline onto vernier.
@@ -193,6 +195,34 @@ vernier's strict-mode parity is keyed to `pycocotools==2.0.11`
 ADR-level decision per CLAUDE.md §"Parity contract" — every quirk
 vernier reproduces is keyed to this version, and the parity harness
 double-runs reference and candidate at exactly this SHA.
+
+### Bit-for-bit, and against which build
+
+"Bit-for-bit" is measured against `pycocotools==2.0.11` **as published
+on PyPI** — the wheel `pyproject.toml` pins and the parity harness
+installs. That is the reference on x86-64 and on aarch64 alike, and
+vernier matches it on both.
+
+The scoping matters for one narrow case. pycocotools' IoU kernel is C,
+and a C compiler is allowed to fuse a multiply and an add into a single
+rounding step. The published wheels do not (checked by disassembly on
+all three aarch64 builds), but a pycocotools you compile yourself —
+`pip install --no-binary pycocotools`, a distro package, a conda-forge
+build — goes through your compiler, not the wheel builder's. On ARM,
+where the fused instruction is always available, such a build can round
+the union differently from the published one.
+
+If that happens, expect vernier and your locally built pycocotools to
+disagree by 1-2 units in the last place of the IoU, on roughly one box
+pair in a million. It is far below any reporting precision and it is
+not a divergence vernier introduces: vernier's output is byte-identical
+on x86-64 and ARM by design, because a result that depended on the CPU
+that produced it could not be cached, shipped between machines, or
+combined across a heterogeneous cluster. Install the published wheel
+and the question does not arise.
+
+Design record: [ADR-0056](../adr/0056-pin-no-fp-contraction-for-bbox-iou.md);
+quirk **I7** in the [quirks survey](../engineering/pycocotools-quirks.md).
 
 ## Whole-dataset parity smoke
 

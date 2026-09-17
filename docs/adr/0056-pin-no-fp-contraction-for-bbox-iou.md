@@ -148,6 +148,85 @@ the existing `test-rust` job:
   `fma(dx, dx, dy * dy)`. Not pinned by this ADR; recorded below as a
   follow-up so it is tracked rather than forgotten.
 
+### The reference side: pin to the x86-64 reference on every architecture
+
+Strict parity is a two-sided statement, and the golden table pins only
+*our* side. pycocotools' `bbIou` is C compiled by the wheel builder, and
+GCC's default for C is `-ffp-contract=fast`. On x86-64 the baseline ISA
+has no FMA, so a stock manylinux x86_64 wheel *cannot* contract. On
+aarch64, `fmadd` is baseline and nothing stops it.
+
+**Decision: vernier's bbox IoU output is architecture-independent.** The
+golden bits encode the non-contracting (x86-64) evaluation of
+`da + ga - i`, and that same table is asserted on every architecture we
+ship. We do not make vernier's output track a per-architecture
+reference.
+
+The rationale is that the alternative is worse in every direction. An
+arch-dependent kernel would mean the same wheel version produces
+different APs on different machines: `from_partials` (ADR-0031 /
+ADR-0032) would stop being well-defined across a heterogeneous cluster,
+a cached result would stop being portable, and a published number would
+need its CPU recorded next to it. A 1-2 ULP tie against one build of the
+reference is a much smaller cost than losing reproducibility of our own
+output.
+
+#### What the reference actually does (verified 2026-09-17)
+
+This ADR originally flagged aarch64 contraction in `bbIou` as a plausible
+but unverified risk. It has since been checked directly, by disassembling
+the published wheels rather than by running them — no aarch64 host
+required:
+
+| wheel (pycocotools 2.0.11, aarch64)      | fused ops in `bbIou` |
+| ---------------------------------------- | -------------------- |
+| `cp312-abi3-manylinux_2_17_aarch64`       | none                 |
+| `cp39-manylinux_2_17_aarch64`             | none                 |
+| `cp312-abi3-musllinux_1_2_aarch64`        | none                 |
+
+`bbIou` is an exported symbol, so the check is exact. In all three the
+kernel emits separate `fmul` / `fadd` / `fsub` / `fdiv` and **no**
+`fmadd` / `fmsub` / `fnmsub` / `fmla`. The published aarch64 wheels
+therefore compute the same unfused `da + ga - i` as the x86-64 ones, and
+strict bbox parity against the pinned oracle holds bit-for-bit on both
+architectures we ship.
+
+This is structural rather than lucky. In `maskApi.c:125-136` every
+multiply feeding the union has a *second* consumer that needs the
+rounded intermediate:
+
+```c
+BB D=dt+d*4; da=D[2]*D[3]; ...
+i=w*h; u = crowd ? da : da+ga-i; o[g*m+d]=i/u;
+```
+
+`i` is used both in `u` and as the numerator of `i/u`, and `da` is used
+both in `da+ga` and as the whole of `u` on the crowd branch (quirk
+**E1**). Contracting either one would force the compiler to keep the
+rounded value *and* recompute the product, so `-ffp-contract=fast` has
+nothing to gain and leaves the arithmetic alone. `ga` is loop-invariant
+and hoisted to its own `fmul` above the inner loop.
+
+#### The residual divergence, and where it is recorded
+
+What is *not* covered is a pycocotools built from the sdist on the user's
+own machine (`pip install --no-binary pycocotools`, a distro package, a
+conda-forge build) with a compiler that contracts more eagerly than the
+wheel builder's GCC. Nothing in this repository can constrain that
+toolchain. On such a build, on aarch64, a locally compiled `bbIou` may
+contract and land 1-2 ULP away from vernier on roughly one box pair in
+10^6 — a divergence introduced by the user's compiler, not by vernier.
+
+That is recorded as quirk **I7** in
+`docs/engineering/pycocotools-quirks.md`, dispositioned **strict**: the
+parity claim is against `pycocotools==2.0.11` *as published on PyPI*,
+which is the artifact `pyproject.toml` pins and the harness installs, and
+against that artifact vernier is bit-equal on both architectures. The
+two-tier vocabulary (ADR-0002, as amended 2026-05-10) has no cell for a
+per-architecture disposition and this row does not need one — the
+condition is "reference rebuilt with a different compiler", not
+"architecture", and it is out of scope of the pin either way.
+
 ### Consequences
 
 - **Positive.** The rounding contract of the most-reused kernel is
@@ -166,6 +245,11 @@ the existing `test-rust` job:
   cross-builds aarch64 but never runs the result.
 - **Neutral.** No kernel code changed. This ADR pins existing behavior;
   it does not alter any output.
+- **Neutral.** The reference side is now checked rather than assumed,
+  but nothing enforces it on an ongoing basis — a future pycocotools
+  release could be built by a compiler that contracts. Re-running the
+  disassembly is part of the work of bumping the `pycocotools` pin,
+  which is already an ADR-level decision.
 
 ## Pros and cons of the options
 
@@ -211,18 +295,12 @@ the existing `test-rust` job:
   `exp()` and then a sum, so a 1-ULP input shift propagates rather than
   cancels. It should get the same treatment; it is deferred here only
   to keep this ADR's change set to one kernel.
-- **The reference side of the claim.** Strict parity is a two-sided
-  statement, and this ADR only pins *our* side. pycocotools' `bbIou` is
-  C compiled by the wheel builder; GCC's default for C is
-  `-ffp-contract=fast`. On x86-64 the baseline ISA has no FMA, so
-  stock manylinux x86_64 wheels cannot contract. On aarch64, `fmadd`
-  *is* baseline. Whether the published `pycocotools` aarch64 wheel
-  contracts in `bbIou` is unverified — it needs an aarch64 host to
-  check, which was not available when this was written. If it does,
-  strict bbox parity on aarch64 is a claim about a moving reference and
-  needs its own disposition row in
-  `docs/engineering/pycocotools-quirks.md`. Flagging it as a known
-  risk rather than asserting either way.
+- **The reference side of the claim.** *Resolved* — see
+  §"[The reference side: pin to the x86-64 reference on every
+  architecture](#the-reference-side-pin-to-the-x86-64-reference-on-every-architecture)".
+  vernier pins the non-contracting form everywhere; the published
+  aarch64 wheels were disassembled and do not contract; the residual
+  locally-recompiled case is quirk **I7**.
 
 ## Links and references
 
@@ -240,4 +318,6 @@ the existing `test-rust` job:
   `fp_contract_pin` module.
 - `.github/workflows/ci.yml` — job `test-rust-cross-arch`.
 - `docs/engineering/pycocotools-quirks.md` — quirks **B2**, **E1**,
-  **I3**, **I4**.
+  **I3**, **I4**, and **I7** (the reference-side row this ADR adds).
+- `docs/migrate/from-pycocotools.md` — §"Bit-for-bit, and against
+  which build", the user-facing statement of the same caveat.
