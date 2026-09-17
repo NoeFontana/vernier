@@ -633,6 +633,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            area: None,
             segmentation: None,
             keypoints: None,
             num_keypoints: None,

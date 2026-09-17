@@ -1817,15 +1817,18 @@ fn require_nonempty_max_dets(max_dets: &[usize]) -> PyResult<()> {
 
 /// Parse the `dt_area` keyword of the `evaluate_*_grid` entry points
 /// (quirk **J3**): `"bbox"` derives each detection's area from its bbox
-/// like pycocotools' `loadRes` on bbox results; `"mask"` takes the RLE
-/// foreground area like `loadRes` on segm results, and only applies to
-/// the mask kernels (checked in [`evaluate_grid_impl`]).
+/// like pycocotools' `loadRes` on bbox results; `"supplied"` reads a
+/// supplied `area` verbatim like pycocotools' `COCOeval`, falling back
+/// to the bbox; `"mask"` takes the RLE foreground area like `loadRes` on
+/// segm results, and only applies to the mask kernels (checked in
+/// [`evaluate_grid_impl`]).
 pub(crate) fn parse_dt_area(s: &str) -> PyResult<DetectionArea> {
     match s {
         "bbox" => Ok(DetectionArea::FromBbox),
+        "supplied" => Ok(DetectionArea::Supplied),
         "mask" => Ok(DetectionArea::Mask),
         other => Err(PyValueError::new_err(format!(
-            "invalid dt_area {other:?}; expected 'bbox' or 'mask'"
+            "invalid dt_area {other:?}; expected 'bbox', 'supplied' or 'mask'"
         ))),
     }
 }
@@ -2200,6 +2203,8 @@ pub(crate) fn realize_dt(payload: UpdatePayload, area: DetectionArea) -> PyResul
         UpdatePayload::Bytes(b) => {
             CocoDetections::from_json_bytes_with_area(&b, area).map_err(coco_load_error_to_pyerr)
         }
+        // Array-form detections carry no area: `Supplied` falls back to
+        // the bbox-derived value (quirk J3).
         UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs_with_area(inputs, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }

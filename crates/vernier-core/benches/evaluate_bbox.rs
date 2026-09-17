@@ -160,6 +160,7 @@ fn build_dataset(s: Scenario) -> (CocoDataset, CocoDetections) {
                 category_id: CategoryId(cat as i64 + 1),
                 score,
                 bbox: Bbox { x, y, w, h },
+                area: None,
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,

@@ -297,7 +297,7 @@ def evaluate_bbox_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
-    dt_area: Literal["bbox"] = ...,
+    dt_area: Literal["bbox", "supplied"] = ...,
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_bbox_grid_with_dataset(
@@ -344,7 +344,7 @@ def evaluate_segm_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
-    dt_area: Literal["bbox", "mask"] = ...,
+    dt_area: Literal["bbox", "supplied", "mask"] = ...,
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
@@ -380,7 +380,7 @@ def evaluate_boundary_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
-    dt_area: Literal["bbox", "mask"] = ...,
+    dt_area: Literal["bbox", "supplied", "mask"] = ...,
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
@@ -415,7 +415,7 @@ def evaluate_keypoints_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
-    dt_area: Literal["bbox"] = ...,
+    dt_area: Literal["bbox", "supplied"] = ...,
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 

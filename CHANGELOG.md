@@ -59,6 +59,12 @@ additive / perf / docs".
   NumPy-2-only API; CI's `test (python 3.10, numpy 1.26.4)` leg runs the
   PR test suite against NumPy 1 so the floor stays honest. Unblocks
   installs next to packages that still pin NumPy 1 (e.g. `onnx2tf`).
+- `evaluate_*_grid(..., dt_area="supplied")` reads a supplied `area`
+  verbatim, falling back to the bbox when absent — pycocotools'
+  `COCOeval`, which takes `d['area']` off whatever `cocoDt` it is handed
+  (quirk J3). `DetectionInput` gains an optional `area` (Rust struct
+  literals need `area: None`), ignored unless the detections are built
+  with `DetectionArea::Supplied`.
 - `evaluate_{segm,boundary}_grid(..., dt_area="mask")` takes
   `maskUtils.area` of each detection's RLE, as `loadRes` does for segm
   results, for JSON and array-form detections (compressed, uncompressed
@@ -67,6 +73,28 @@ additive / perf / docs".
   one array payload can now bucket each pass by its own area.
 
 ### Fixed
+
+- **`vernier.COCOeval` matches pycocotools on in-memory COCO objects**
+  such as the ones TorchMetrics builds:
+  - Mutated `params.iouThrs` / `params.recThrs` are evaluated as given
+    (e.g. float32-rounded ladders from `torch.linspace(...).tolist()`)
+    instead of raising `NotImplementedError`.
+  - Detection `area` is read from `cocoDt`, as `COCOeval` does, instead
+    of being re-derived from the bbox; a detection whose mask and box
+    fall in different area buckets was mis-bucketed under `segm`.
+  - RLE `counts` given as `bytes` (straight from
+    `pycocotools.mask.encode`) serialize instead of raising `TypeError`.
+  - GT images without `width` / `height` evaluate wherever pycocotools
+    never reads the size: always under bbox / keypoints; under segm /
+    boundary when no GT annotation is on the image (the size comes from
+    the cocoDt image when DT masks are on it). Where pycocotools raises
+    `KeyError`, vernier still raises its schema error.
+  - `maxDets` ladders without `100` summarize (see L9 above) instead of
+    raising from `accumulate()`; plan errors now surface from
+    `summarize()`.
+  - `evalImgs` is built on first read instead of in `evaluate()`; an
+    evaluate / accumulate / summarize cycle no longer pays for the
+    per-image dicts it never reads.
 
 - **Array ingest accepts every buffer NumPy and torch call contiguous.**
   A size-1 axis's stride is ignored and a zero-element array is
