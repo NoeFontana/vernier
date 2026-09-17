@@ -1,242 +1,235 @@
 # vernier
 
-[![CI](https://github.com/NoeFontana/vernier/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/NoeFontana/vernier/actions/workflows/ci.yml)
-[![PyPI](https://img.shields.io/pypi/v/vernier.svg?label=pypi%20%7C%20vernier)](https://pypi.org/project/vernier/)
-[![crates.io vernier](https://img.shields.io/crates/v/vernier.svg?label=crates.io%20%7C%20vernier)](https://crates.io/crates/vernier)
-[![crates.io vernier-core](https://img.shields.io/crates/v/vernier-core.svg?label=crates.io%20%7C%20vernier-core)](https://crates.io/crates/vernier-core)
-[![crates.io vernier-mask](https://img.shields.io/crates/v/vernier-mask.svg?label=crates.io%20%7C%20vernier-mask)](https://crates.io/crates/vernier-mask)
-[![crates.io vernier-cli](https://img.shields.io/crates/v/vernier-cli.svg?label=crates.io%20%7C%20vernier-cli)](https://crates.io/crates/vernier-cli)
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/NoeFontana/vernier/blob/main/docs/tutorials/notebooks/colab_smoke.ipynb)
+[![PyPI](https://img.shields.io/pypi/v/vernier.svg)](https://pypi.org/project/vernier/)
+[![Python](https://img.shields.io/pypi/pyversions/vernier.svg)](https://pypi.org/project/vernier/)
+[![Crates.io](https://img.shields.io/crates/v/vernier.svg)](https://crates.io/crates/vernier)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-Fast, parity-preserving evaluation for object detection, instance / panoptic / semantic segmentation, boundary IoU, OKS keypoints, LVIS federated, LRP / oLRP error decomposition, and detection-family calibration (ECE / MCE / reliability). Rust core, Python frontend, optional CLI.
+**Fast, auditable evaluation for 2D vision models.** Detection, instance and
+panoptic segmentation, semantic segmentation, keypoints, and LVIS, all in one
+package with a Rust core, a Python API, and a standalone CLI.
 
-## 60-second example
+- **Bit-exact** with `pycocotools==2.0.11`, `panopticapi`, `lvis-api` and
+  `boundary-iou-api` in strict mode. Every upstream quirk has a documented
+  disposition ([quirks survey](docs/engineering/pycocotools-quirks.md)).
+- **Drop-in** for `pycocotools.cocoeval.COCOeval`: change one import, or none.
+- **3–17× faster** than faster-coco-eval and pycocotools at equal CPU budget
+  ([benchmarks](#performance)).
+- **Built for real pipelines**: training-loop evaluation, multi-rank
+  gathering, per-image tables, error decomposition, calibration, scenario
+  slicing.
 
-Post training, if your predictions are already serialized to JSON (CI gate, post-training inspection):
+## Install
 
-```python
-from pathlib import Path
-from vernier.instance import Bbox, CocoDataset, Evaluator
-
-gt_bytes = Path("instances_val2017.json").read_bytes()
-dt_bytes = Path("detections.json").read_bytes()
-
-dataset = CocoDataset.from_json(gt_bytes)
-summary = Evaluator(iou=Bbox()).evaluate(dataset, dt_bytes)
-for line in summary.pretty_lines():
-    print(line)
+```sh
+pip install vernier               # Python ≥ 3.10, abi3 wheels
+cargo binstall vernier-cli        # standalone `vernier` binary, no Python needed
+cargo add vernier                 # Rust library
 ```
 
-In a training loop, vernier supports overlapping eval with the data loading and inference. The matching kernel runs on a worker thread, so `submit(...)` returns immediately and the main thread keeps moving. Passing a `CocoDataset` reuses the parsed-once GT and its per-kernel derivation cache across every epoch (ADR-0020). On a dedicated validation pass (no trainer competing for cores), pass `num_threads=N` to parallelise the matching kernel inside the worker (ADR-0047):
+## Quickstart: the COCO API you already know
+
+`vernier.COCOeval` has the same constructor, the same
+`evaluate() / accumulate() / summarize()` sequence, and the same `.stats`
+as pycocotools. It defaults to `parity_mode="strict"`, so the output is
+bit-identical.
+
+```python
+from pycocotools.coco import COCO
+from vernier import COCOeval  # was: from pycocotools.cocoeval import COCOeval
+
+coco_gt = COCO("instances_val2017.json")
+coco_dt = coco_gt.loadRes("detections.json")
+
+E = COCOeval(coco_gt, coco_dt, iouType="bbox")  # "segm" | "keypoints" | "boundary"
+E.evaluate()
+E.accumulate()
+E.summarize()
+```
+
+**Code you can't edit** (mmdetection, detectron2, ultralytics, …): patch
+the symbol before anything imports `pycocotools.cocoeval`.
+
+```python
+import vernier
+
+unpatch = vernier.patch_pycocotools()  # pycocotools.cocoeval.COCOeval -> vernier
+run_existing_eval()
+unpatch()
+```
+
+The patch is explicit, reversible, and never happens on import. A context
+manager (`vernier.adapters.patched_pycocotools`) and a one-fixture pytest
+recipe are in the [pycocotools migration guide](docs/migrate/from-pycocotools.md#pytest-integration).
+
+## Recommended: the native API
+
+The shim exists for migration. New code should use the native `Evaluator`:
+immutable configuration, typed results, no pycocotools dependency, and
+access to everything below.
 
 ```python
 from pathlib import Path
 from vernier.instance import Bbox, CocoDataset, Evaluator
 
 gt = CocoDataset.from_json(Path("instances_val2017.json").read_bytes())
-evaluator = Evaluator(iou=Bbox())
-with evaluator.background(gt, num_threads=8) as bg:  # default: single core
+dt = Path("detections.json").read_bytes()
+
+evaluator = Evaluator(iou=Bbox(), parity_mode="strict")
+summary = evaluator.evaluate(gt, dt, num_threads=8)
+
+print("\n".join(summary.pretty_lines()))  # the familiar 12-line table
+ap = summary.stats[0]
+```
+
+> The native `Evaluator` defaults to `parity_mode="corrected"`, which applies
+> the [itemized fixes](docs/engineering/pycocotools-quirks.md) to upstream
+> bugs. Pass `"strict"` when your numbers must match published pycocotools
+> results.
+
+**Inside a training loop**, evaluate on a background worker and feed it
+tensors directly (torch, JAX, CuPy, NumPy via DLPack, zero-copy):
+
+```python
+with evaluator.background(gt) as bg:
     for images, targets in val_loader:
-        # torchvision detection API shape: list[dict] of length batch_size,
-        # each with "boxes" (N,4 xywh), "scores" (N,), "labels" (N,) as
-        # torch.Tensor. vernier consumes any DLPack-producing array library
-        # (torch, jax, cupy, numpy) zero-copy.
-        predictions = model(images)
-        bg.submit([
-            {"image_id": int(t["image_id"]), **p}
-            for t, p in zip(targets, predictions)
-        ])
+        preds = model(images)
+        bg.submit([{"image_id": int(t["image_id"]), **p} for t, p in zip(targets, preds)])
     summary = bg.finalize()
-print("AP =", summary.stats[0])
 ```
 
-Both end in the same 12-line `pycocotools`-shaped Summary;
-[`docs/tutorials/first-evaluation.md`](docs/tutorials/first-evaluation.md)
-walks each end-to-end.
+**Per-image and per-class diagnostics** as Polars DataFrames
+(`pip install "vernier[tables]"`):
 
-## Benchmarks
-
-<!-- The headline table and pinned-baselines block below are hand-mirrored from
-     docs/benchmarks.md (which is auto-generated by tools/render_benchmarks.py).
-     After a fresh bench round, refresh both: re-run the renderer, then update
-     the numbers + version pins here. -->
-
-| Workload | vernier median | Speedup vs alternatives |
-| --- | ---: | --- |
-| Instance — bbox AP (val2017) | 354 ms | **1.6×** hotcoco · **4.7×** faster-coco-eval · **16.0×** pycocotools |
-| Instance — segm AP (val2017) | 968 ms | **1.4×** hotcoco · **3.5×** faster-coco-eval · **6.7×** pycocotools |
-| Instance — boundary AP (val2017) | 3.2 s | **16.7×** faster-coco-eval · **19.5×** boundary-iou-api |
-| Instance — keypoints AP (val2017, OKS) | 136 ms | **1.6×** hotcoco · **5.7×** faster-coco-eval · **16.9×** pycocotools |
-| Panoptic — PQ (val2017) | 10.6 s | **3.3×** panopticapi |
-| Semantic — mIoU (val2017) | 2.9 s | **14.0×** mmsegmentation |
-| Instance — LVIS bbox AP (v1 val, perfect-DT) | 2.6 s | **1.4×** hotcoco · **73.1×** lvis-api · 10× lower peak RSS (1.45 GiB vs 15.01 GiB) |
-| Instance — bbox AP (Objects365 val, 1.06M dets) <sup>†</sup> | 8.8 s | **1.7×** hotcoco · **41.9×** pycocotools · faster-coco-eval did not finish (OOM at ~30 GiB) |
-
-**Thread scaling** (`num_threads`, each cell pinned to that many CPUs —
-`nt=8` is every library's out-of-the-box configuration on this 8-vCPU host):
-
-| Workload | `nt=1` | `nt=2` | `nt=4` | `nt=8` | vs hotcoco / faster-coco-eval at `nt=8` |
-| --- | ---: | ---: | ---: | ---: | --- |
-| bbox (val2017) | 354 ms | 267 ms | 229 ms | **226 ms** | **1.6×** hotcoco · **6.5×** faster-coco-eval |
-| segm (val2017) | 983 ms | 569 ms | 375 ms | **319 ms** | **1.7×** hotcoco · **11.0×** faster-coco-eval |
-| boundary (val2017) | 3.20 s | 1.70 s | 937 ms | **790 ms** | **21.5×** faster-coco-eval |
-| keypoints (val2017) | 136 ms | 118 ms | 109 ms | **104 ms** | **1.5×** hotcoco · **7.3×** faster-coco-eval |
-| bbox (Objects365) | 8.8 s | — | — | **4.7 s** | **1.7×** hotcoco |
-
-faster-coco-eval ≥1.8 and hotcoco are multi-threaded too, so every column
-compares equal CPU budgets. Its parallelism pays off on boundary IoU but
-is flat on segm and keypoints, which is why vernier's lead widens with
-cores there.
-
-<sup>†</sup> The Objects365 row is harness mode `dev` (one measurement rep per impl, no IQR gate) — pycocotools alone needs ~6 minutes per rep at that size. Every other row is release mode.
-
-Median total-stage wall time on a KVM VPS (AMD EPYC-Milan, 4 cores ×
-2 threads = 8 logical CPUs, `x86_64` — not a bare-metal Milan box),
-harness mode `release` (N=10 measurement reps + 2 warmup, randomised
-impl order, 5% relative-IQR gate per impl), build profile = cargo
-release defaults (`opt-level=3`, `lto=thin`, `codegen-units=1`, no
-`target-cpu`) — same as the PyPI wheel. **Every impl gets one CPU**:
-faster-coco-eval ≥1.8, hotcoco and mmsegmentation are multi-threaded by
-default, so each runner is pinned to the cell's CPU budget and each
-result records its CPU/wall ratio as evidence (ADR-0049). vernier
-scales with `num_threads` — the thread-scaling tables on the benchmarks
-page cover 1/2/4/8. Full per-cell breakdown
-(including IQRs), peak and eval-delta memory, and methodology in
-[`docs/benchmarks.md`](docs/benchmarks.md); per-library comparison of
-when to pick which in [`docs/comparison.md`](docs/comparison.md).
-
-**Baselines pinned for these numbers** —
-[`pycocotools==2.0.11`](https://pypi.org/project/pycocotools/2.0.11/),
-[`hotcoco==1.0.1`](https://pypi.org/project/hotcoco/1.0.1/),
-[`faster-coco-eval==1.8.0`](https://pypi.org/project/faster-coco-eval/1.8.0/),
-[`panopticapi` @ `7bb4655`](https://github.com/cocodataset/panopticapi/commit/7bb4655548f9),
-[`boundary-iou-api` @ `37d2558`](https://github.com/bowenc0221/boundary-iou-api/commit/37d25586a677),
-[`mmsegmentation` @ `c685fe6`](https://github.com/open-mmlab/mmsegmentation/commit/c685fe6767c4cadf6b051983ca6208f1b9d1ccb8) (vendored),
-[`lvis-api` @ `031ac21`](https://github.com/lvis-dataset/lvis-api/commit/031ac21f939b)
-(PyPI `lvis==0.5.3`).
-All cells were measured at HEAD `e361050ef582` (machine fingerprint
-`59aab88b17f4`). That is a different host from the 2026-05 snapshot's
-`37652a58e939`, and the CPU budget above changed what a "single-thread"
-cell means, so absolute numbers are not comparable with earlier
-snapshots — ratios within this one are. Each baseline is locked in its own uv-managed venv per
-[ADR-0017](docs/adr/0017-local-bench-harness.md).
-
-## Install
-
-```bash
-pip install vernier                  # Python wheel
-cargo add vernier                    # Rust library (all paradigms)
-cargo install vernier-cli            # `vernier` CLI binary
+```python
+result = evaluator.evaluate(gt, dt, tables="all")
+result.per_class
 ```
 
-Wheels ship for linux x86_64 / aarch64 (glibc + musl), macOS
-x86_64 / arm64, and windows x64.
+### Paradigms
 
-On the Rust side, `vernier` is a facade
-([ADR-0048](docs/adr/0048-vernier-facade-crate.md)): it re-exports the
-paradigm crates under one dependency and one module map —
-`vernier::{instance, mask, panoptic, semantic, partial}` — mirroring the
-Python namespace. It holds no code of its own, so depending on a leaf
-crate directly (`cargo add vernier-core` for bbox / segm / boundary /
-keypoints AP alone) is equally supported; the three optional paradigms
-can also be trimmed in place with `default-features = false`. Note the
-asymmetry: `cargo add vernier` gets the library, `cargo install
-vernier-cli` gets the binary — the CLI stays out of the library's
-dependency tree so `clap` never lands in a consumer's build.
+Pick the submodule that matches your model's output. They have different
+data models and matching rules, so they are separate evaluators rather than
+one class with a mode switch ([why](docs/explanation/three-paradigms.md)).
+
+| Submodule | Input | Metrics |
+| --- | --- | --- |
+| `vernier.instance` | Scored detections: boxes, masks, keypoints | AP / AR (bbox, segm, boundary, OKS), LVIS federated AP |
+| `vernier.panoptic` | Panoptic PNGs + `segments_info` | PQ / SQ / RQ, boundary PQ |
+| `vernier.semantic` | Class-id label maps | mIoU, FWIoU, pixel accuracy, mean accuracy |
+
+### Beyond the COCO API
+
+| Need | Feature | Guide |
+| --- | --- | --- |
+| Evaluate without blocking training | `Evaluator.background(...)` | [how-to](docs/how-to/background-evaluator.md) |
+| Evaluate across DDP ranks | `evaluate_to_partial` / `from_partials` | [how-to](docs/how-to/distributed-eval.md) |
+| Find which images/classes regressed | `tables="all"` | [how-to](docs/how-to/result-tables.md) |
+| Explain an AP gap | TIDE error decomposition, oLRP | [tutorial](docs/tutorials/debugging-with-tide.md) |
+| Check score calibration | ECE / MCE / reliability (`calibration=True`) | [how-to](docs/how-to/calibration.md) |
+| Metrics per weather, time of day, … | Manifest slicing, `vernier aggregate` (mPC / rPC) | [how-to](docs/how-to/scenario-slicing.md) |
+| Non-standard IoU / recall / area grids | `iou_thresholds=`, `recall_thresholds=`, `area_ranges=` | [how-to](docs/how-to/custom-evaluation-grids.md) |
+
+## CLI
+
+A static binary for CI gates and robotics replay pipelines. Output is
+byte-deterministic (sorted keys, no timestamps), so artifacts diff cleanly.
+
+```sh
+vernier eval --gt gt.json --dt dt.json --iou-type bbox                  # pycocotools-identical stdout
+vernier eval --gt gt.json --dt dt.json --iou-type segm --emit json=result.json --threads 8
+```
+
+Exit codes: `0` success, `1` evaluation error, `2` invalid arguments.
+Full reference: [`crates/vernier-cli`](crates/vernier-cli/README.md).
 
 ## Status & validation
 
-Pre-1.0; public API is unstable. See [`docs/adr/`](docs/adr/) for the design decisions shaping it.
+Every row is checked by a parity harness that runs the reference
+implementation and vernier on the same inputs. "Bit-exact" means
+`parity_mode="strict"`.
 
-`pycocotools==2.0.11` is the de-facto reference for COCO evaluation — slow, unmaintained, and full of edge-case quirks. Faster reimplementations exist, but each silently fixes some quirks and not others, so you discover the divergences empirically. vernier takes a third path:
-
-- **Auditable parity.** Every divergence from pycocotools is filed in the quirks survey under
-  [ADR-0002](docs/adr/0002-three-tier-parity-model.md) as either
-  `strict` (bit-equal output, even when vernier's implementation is
-  structurally different) or `corrected` (opt-in opinionated fix).
-  Strict is the default; corrected fixes are itemized so you always
-  know when your numbers diverge from a reference run. A drop-in shim
-  (`vernier.patch_pycocotools()`) keeps existing pycocotools-based
-  scripts working with one line.
-- **Rust core, Python frontend.** The matching kernel is pure Rust
-  with runtime SIMD dispatch; the FFI layer is data conversion only.
-  The CLI ships as a static binary, so CI pipelines call vernier
-  without provisioning a Python interpreter.
-- **One toolkit instead of five.** bbox / segm / boundary / keypoints
-  AP, panoptic PQ, semantic mIoU, LVIS federated, oLRP error
-  decomposition, and detection-family calibration all live behind
-  one Python API and one CLI — folded over a single matching pass.
-  Per-paradigm migration guides under
-  [`docs/migrate/`](docs/migrate/) show how to replace `pycocotools`,
-  `faster-coco-eval`, `panopticapi`, `lvis-api`, and
-  `mmsegmentation` one at a time.
-- **Scenario slicing + cross-run aggregation.** A partition manifest
-  (`weather`, `time_of_day`, …) feeds `vernier eval --manifest` for
-  per-slice headline metrics and `vernier aggregate` for cross-run
-  corruption tables (mPC / rPC) — one matching pass, N slices
-  ([ADR-0046](docs/adr/0046-slice-and-aggregate.md)).
-
-Per-paradigm parity status:
-
-| Paradigm / metric | Oracle | Parity tier | Open caveat |
+| Metric | Reference | Parity | Notes |
 | --- | --- | --- | --- |
-| Instance bbox / segm / keypoints AP | `pycocotools==2.0.11` | strict bit-equal | none |
-| Instance boundary IoU | `boundary-iou-api` | strict bit-equal | none |
-| Segm + boundary TIDE thresholds (`t_b`) | none yet | corrected-only | [ADR-0022](docs/adr/0022-tide-thresholds.md) still `proposed`; defaults extrapolated, not measured |
-| Panoptic PQ | `panopticapi` (single-core path) | strict bit-equal | none |
-| Panoptic boundary PQ | `bowenc0221/boundary-iou-api` (single-core path, same SHA as the instance vendor) | strict bit-equal | [ADR-0025 §Z1/Z2 amendment](docs/adr/0025-panoptic-api.md); Cityscapes panoptic (Z3) deferred |
-| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` vendored at v1.2.2 ([ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md), still `proposed`); cityscapesScripts + ADE20K cross-impl bench externally blocked | strict bit-equal on the four per-class u64 marginals at val2017 scale | [ADR-0028](docs/adr/0028-sem-seg.md); ADE20K-scale bench gated on license-cleared cache |
-| LVIS federated AP | `lvis-api` (vendored at `031ac21f`, ORACLE_LVIS_COMMIT_SHA) | strict bit-equal on the `(T, R, K, A)` precision tensor at full LVIS v1 val | bench paradigm wired; segm cell waits on `evaluate_segm_grid_with_dataset` |
-| LRP / oLRP error decomposition (instance bbox / segm / boundary / keypoints) | pure-NumPy oracle ([ADR-0043](docs/adr/0043-lrp-oracle-and-namespace.md)) | strict against the oracle within 1e-9; `kemaloksuz/LRP-Error` tripwire vendored opt-in | panoptic LRP is a typed `NotImplementedError` stub — panoptic predictions carry no per-segment scores (ADR follow-up) |
-| Detection-family calibration — ECE / MCE / reliability (instance bbox / segm / boundary / keypoints) | clean-room NumPy oracle ([ADR-0018](docs/adr/0018-calibration.md)) with isolated P1–P10 quirks survey | strict bit-equal against the oracle (16/16 parity tests) | panoptic (Shape 2) and semantic (Shape 3) calibration deferred on data-model prerequisites; Clopper-Pearson CI documented Phase-2 |
+| bbox / segm / keypoints AP | `pycocotools==2.0.11` | bit-exact | |
+| Boundary AP | `boundary-iou-api` | bit-exact | |
+| LVIS federated AP | `lvis-api` 0.5.3 | bit-exact | full v1 val, bbox |
+| Panoptic PQ, boundary PQ | `panopticapi` (single-core path) | bit-exact | Cityscapes panoptic deferred |
+| Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` v1.2.2 (vendored) | bit-exact on class marginals | [ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md) proposed; ADE20K-scale check pending |
+| oLRP | clean-room NumPy oracle | ≤ 1e-9 | panoptic not supported |
+| Calibration (ECE / MCE) | clean-room NumPy oracle | bit-exact | detection family only |
+| TIDE thresholds (segm, boundary) | none | corrected only | [ADR-0022](docs/adr/0022-tide-thresholds.md) proposed |
 
-Three-tier parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md);
-per-library comparison: [`docs/comparison.md`](docs/comparison.md).
+Parity model: [ADR-0002](docs/adr/0002-three-tier-parity-model.md).
+Library-by-library comparison: [`docs/comparison.md`](docs/comparison.md).
 
-## Three evaluation paradigms
+## Performance
 
-They have different data models, different matching rules, and
-different parity oracles:
+Median wall time at a one-CPU budget (CPU/wall is 1.00 in every cell).
+COCO val2017 throughout, except the LVIS row, which is LVIS v1 val.
+Speedup is the other library's time divided by vernier's.
 
-- `vernier.instance` — detections with scores → bbox / segm /
-  boundary / keypoints AP.
-- `vernier.panoptic` — RGB-encoded panoptic PNGs + `segments_info`
-  JSON → PQ.
-- `vernier.semantic` — single-channel class-id label maps → mIoU /
-  FWIoU / pAcc / mAcc.
+<!-- Hand-mirrored from docs/benchmarks.md (generated by tools/render_benchmarks.py).
+     After a bench round, re-run the renderer, then update these numbers. -->
 
-See [Three paradigms](docs/explanation/three-paradigms.md).
+| Workload | vernier | vs pycocotools | vs faster-coco-eval | vs hotcoco |
+| --- | ---: | ---: | ---: | ---: |
+| bbox AP | 354 ms | 16.0× | 4.7× | 1.6× |
+| segm AP | 968 ms | 6.7× | 3.5× | 1.4× |
+| keypoints AP | 136 ms | 16.9× | 5.7× | 1.6× |
+| boundary AP | 3.2 s | 19.5× ¹ | 16.7× | — |
+| Panoptic PQ | 10.6 s | 3.3× ² | — | — |
+| Semantic mIoU | 2.9 s | 14.0× ³ | — | — |
+| LVIS v1 bbox AP | 2.6 s | 73.1× ⁴ | — | 1.4× |
+
+¹ boundary-iou-api · ² panopticapi · ³ mmsegmentation · ⁴ lvis-api, with 10× lower peak memory (1.45 vs 15.0 GiB)
+
+<details>
+<summary>Thread scaling (<code>num_threads</code>, 8-vCPU host)</summary>
+
+faster-coco-eval ≥ 1.8 and hotcoco are multi-threaded by default, so each
+column compares equal CPU budgets.
+
+| Workload | 1 | 2 | 4 | 8 | vs hotcoco @ 8 | vs faster-coco-eval @ 8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| bbox | 354 ms | 267 ms | 229 ms | 226 ms | 1.6× | 6.5× |
+| segm | 983 ms | 569 ms | 375 ms | 319 ms | 1.7× | 11.0× |
+| boundary | 3.20 s | 1.70 s | 937 ms | 790 ms | — | 21.5× |
+| keypoints | 136 ms | 118 ms | 109 ms | 104 ms | 1.5× | 7.3× |
+| bbox, Objects365 (1.06M dets) † | 8.8 s | — | — | 4.7 s | 1.7× | OOM at ~30 GiB |
+
+Strict-mode results are bit-identical across thread counts.
+† Single-rep dev run; pycocotools takes ~6 min per rep at this size.
+
+</details>
+
+AMD EPYC-Milan KVM VPS (4 cores x 2 threads = 8 logical CPUs), harness
+mode `release` (N=10 measurement reps + 2 warmup, randomised impl order,
+5% relative-IQR gate), against `hotcoco==1.0.1`,
+`faster-coco-eval==1.8.0` and `pycocotools==2.0.11`. Full methodology,
+every baseline pin and the complete results:
+[`docs/benchmarks.md`](docs/benchmarks.md).
 
 ## Documentation
 
-- **Tutorials** — [`docs/tutorials/`](docs/tutorials/)
-- **Migration guides** (from pycocotools, faster-coco-eval,
-  panopticapi, lvis-api, mmsegmentation) —
-  [`docs/migrate/`](docs/migrate/)
-- **How-to** —  [`docs/how-to/`](docs/how-to/)
-- **Reference** — [`docs/reference/`](docs/reference/)
-- **Design / ADRs** — [`docs/adr/`](docs/adr/)
-- **Comparison vs pycocotools / faster-coco-eval / panopticapi /
-  boundary-iou-api / lvis-api / mmsegmentation** —
-  [`docs/comparison.md`](docs/comparison.md)
+- [Tutorials](docs/tutorials/): first evaluation, training-loop integration
+- [Migration guides](docs/migrate/): pycocotools, faster-coco-eval,
+  panopticapi, lvis-api, mmsegmentation
+- [How-to guides](docs/how-to/) · [Reference](docs/reference/) ·
+  [Design decisions (ADRs)](docs/adr/)
 
 ## Contributing
 
-Local checks: `just lint && just test && just audit`. The full
-contributor workflow (ADR lifecycle, vendoring policy, code style) is
-in [`CONTRIBUTING.md`](CONTRIBUTING.md). Repository layout and
-common just recipes are in [`CLAUDE.md`](CLAUDE.md).
+```sh
+just lint && just test && just audit
+```
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the ADR workflow, vendoring
+policy, and code style.
 
 ## License
 
-Dual-licensed under [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT)
-at your option.
-
-## Third-party code
-
-vernier vendors a small number of test-only reference implementations
-to support parity testing. None of this code is included in published
-wheels or linked into the Rust binary. See
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for the full
-inventory and license attributions.
+Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT)
+at your option. Test-only reference implementations used for parity checks
+are listed in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). They are not
+shipped in wheels or binaries.
