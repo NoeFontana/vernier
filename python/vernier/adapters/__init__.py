@@ -11,11 +11,11 @@ sanctioned entry point for swapping
 rationale are in ADR-0007.
 
 The COCO-JSON normalizers (:func:`with_placeholder_image_sizes`,
-:func:`with_mask_image_sizes`, :func:`coco_json_default`,
-:func:`to_coco_json`) are the same conversions the drop-in applies,
-published for callers that assemble a pycocotools-shaped COCO
-dictionary and drive a vernier grid directly. ADR-0055 is the record.
-This module is their canonical import path.
+:func:`with_mask_image_sizes`, :func:`detection_image_sizes`,
+:func:`coco_json_default`, :func:`to_coco_json`) are the same
+conversions the drop-in applies, published for callers that assemble a
+pycocotools-shaped COCO dictionary and drive a vernier grid directly.
+ADR-0055 is the record. This module is their canonical import path.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ from collections.abc import Callable, Generator
 
 from vernier._coco_json import (
     coco_json_default,
+    detection_image_sizes,
     to_coco_json,
     with_mask_image_sizes,
     with_placeholder_image_sizes,
@@ -121,6 +122,7 @@ def patched_pycocotools(parity_mode: ParityMode = "strict") -> Generator[None, N
 
 __all__ = [
     "coco_json_default",
+    "detection_image_sizes",
     "patch_pycocotools",
     "patched_pycocotools",
     "to_coco_json",

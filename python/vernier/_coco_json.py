@@ -10,9 +10,16 @@ carry `bytes` RLE counts straight out of `pycocotools.mask.encode`
 that :func:`json.dumps` refuses.
 
 Re-exported from :mod:`vernier.adapters`, which is the canonical
-import path — this module is private so the drop-in in
-:mod:`vernier._compat` can share it without an import cycle through
-the adapters package. See ADR-0055.
+import path. See ADR-0055.
+
+This module is a dependency-free leaf that both the drop-in in
+:mod:`vernier._compat` and the :mod:`vernier.adapters` package sit on;
+it imports nothing from either. It is not a cycle workaround to be
+"fixed" by inlining it back into one of them: :mod:`vernier.adapters`
+already imports :mod:`vernier._compat`, so these conversions cannot
+live in ``adapters`` (that direction *is* the cycle), and putting them
+in ``_compat`` would file published, shim-independent helpers under the
+pycocotools-shaped shim.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ from typing import Any
 
 __all__ = [
     "coco_json_default",
+    "detection_image_sizes",
     "to_coco_json",
     "with_mask_image_sizes",
     "with_placeholder_image_sizes",
@@ -87,10 +95,22 @@ def with_mask_image_sizes(
     ``detection_sizes`` is keyed by the image ids the *detections* point
     at — that key set is what distinguishes the first two cases — and
     maps each to that side's ``(height, width)``, or to ``None`` when the
-    detection side does not know it either. Build it from the
-    detections' ``images`` entries for a `pycocotools` ``COCO`` object,
-    or from the first detection mask's ``size`` for a caller driving the
-    array grid.
+    detection side does not know it either.
+
+    For a `pycocotools`-shaped detection dataset,
+    :func:`detection_image_sizes` builds it; that is the pairing the
+    drop-in itself uses::
+
+        from vernier.adapters import (
+            detection_image_sizes,
+            with_mask_image_sizes,
+        )
+
+        gt = with_mask_image_sizes(coco_gt.dataset, detection_image_sizes(coco_dt.dataset))
+
+    A caller driving the array grid, with detection RLEs but no
+    ``cocoDt`` dataset, builds the same mapping from the first detection
+    mask's ``size`` per image instead.
 
     Returns ``dataset`` unchanged when every image is already sized;
     otherwise a shallow copy. The caller's dictionaries are never
@@ -114,6 +134,33 @@ def with_mask_image_sizes(
         return {"width": 0, "height": 0, **image}
 
     return {**dataset, "images": [sized(image) for image in images]}
+
+
+def detection_image_sizes(dataset: Mapping[str, Any]) -> dict[Any, tuple[int, int] | None]:
+    """The ``detection_sizes`` mapping :func:`with_mask_image_sizes` reads.
+
+    Takes a `pycocotools`-shaped *detection* dataset (a ``COCO``
+    object's ``.dataset``) and returns
+    ``{image_id: (height, width) | None}`` over exactly the images its
+    annotations point at — the key set that tells
+    :func:`with_mask_image_sizes` "a detection points at this image".
+    The value is ``None`` where the detection side carries no size
+    either, which is where `pycocotools`' ``annToRLE`` raises
+    ``KeyError`` and vernier's schema error stands in.
+
+    See :func:`with_mask_image_sizes` for the pairing.
+    """
+    known = {
+        image["id"]: (image["height"], image["width"])
+        for image in dataset.get("images", [])
+        if "width" in image and "height" in image
+    }
+    # Dedupe the annotation ids before probing `known`: the result has at
+    # most one entry per image, and `dict.fromkeys` keeps first-seen
+    # order, so this is the same mapping the per-annotation comprehension
+    # built with one probe per annotation.
+    annotated = dict.fromkeys(ann["image_id"] for ann in dataset.get("annotations", []))
+    return {image_id: known.get(image_id) for image_id in annotated}
 
 
 def coco_json_default(obj: Any) -> Any:

@@ -184,16 +184,32 @@ accepted (quirk **K3**), and a missing image `width` / `height` is
 filled wherever `annToRLE` would never have looked at it.
 
 If you assemble such a dataset yourself and drive a vernier grid
-*directly* rather than through the shim, the same three conversions are
+*directly* rather than through the shim, the same conversions are
 published:
 
 ```python
 from vernier.adapters import (
+    detection_image_sizes,
     to_coco_json,
     with_mask_image_sizes,
     with_placeholder_image_sizes,
 )
+
+# bbox / keypoints: no kernel reads an image size, so fill every gap.
+gt = with_placeholder_image_sizes(coco_gt.dataset)
+
+# segm / boundary: fill only where `annToRLE` would never have looked,
+# which needs the sizes the *detection* side knows.
+gt = with_mask_image_sizes(coco_gt.dataset, detection_image_sizes(coco_dt.dataset))
+
+gt_bytes = to_coco_json(gt)
+dt_bytes = to_coco_json(coco_dt.dataset["annotations"])
 ```
+
+`with_mask_image_sizes` takes a `{image_id: (height, width) | None}`
+mapping rather than a second dataset, so a caller with detection RLEs
+but no `cocoDt` object can build it from the first detection mask's
+`size` per image instead of calling `detection_image_sizes`.
 
 ADR-0055 is the record for both the `params` surface above and these
 helpers.

@@ -75,9 +75,10 @@ additive / perf / docs".
   a caller that reads either pays for it once.
 - **`vernier.adapters` publishes the COCO-JSON normalizers**
   (ADR-0055): `with_placeholder_image_sizes`, `with_mask_image_sizes`,
-  `coco_json_default` and `to_coco_json` — the conversions the drop-in
-  applies to a `pycocotools`-shaped dataset, for callers that assemble
-  one and drive a vernier grid directly rather than through the shim.
+  `detection_image_sizes`, `coco_json_default` and `to_coco_json` — the
+  conversions the drop-in applies to a `pycocotools`-shaped dataset, for
+  callers that assemble one and drive a vernier grid directly rather
+  than through the shim.
 - **NumPy 1 is supported again: `numpy>=1.26`** (was `>=2.0`). The abi3
   extension binds to NumPy 1 or 2 at runtime and the Python layer uses no
   NumPy-2-only API; CI's `test (python 3.10, numpy 1.26.4)` leg runs the

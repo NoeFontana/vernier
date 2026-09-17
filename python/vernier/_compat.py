@@ -18,14 +18,17 @@ alias.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from datetime import datetime
+from itertools import product
 from typing import Any, ClassVar, Final, Literal, Protocol, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
 
 from vernier._coco_json import (
+    detection_image_sizes,
     to_coco_json,
     with_mask_image_sizes,
     with_placeholder_image_sizes,
@@ -205,6 +208,16 @@ _ADR_0040_NATIVE_FIELDS: Final[dict[str, str]] = {
     "area_ranges": "areaRng",
 }
 
+# How much optional per-cell bookkeeping a grid was built with, as one
+# ordered level rather than a pair of flags: `retain_iou` implies
+# `retain_meta` (the table builders read the metadata), so the reachable
+# states are exactly none < meta < iou and a level comparison answers
+# "does this grid already cover what I need?" — see
+# :meth:`PycocotoolsCOCOeval._grid_for`.
+_RETAIN_NONE: Final[int] = 0
+_RETAIN_META: Final[int] = 1
+_RETAIN_IOU: Final[int] = 2
+
 
 class PycocotoolsCOCOeval:
     """Drop-in for ``pycocotools.cocoeval.COCOeval`` (bbox / segm / boundary / keypoints).
@@ -255,10 +268,12 @@ class PycocotoolsCOCOeval:
         self.stats: NDArray[np.float64] = np.empty(0, dtype=np.float64)
         self._grid: EvalGrid | None = None
         # Which optional per-cell retention `self._grid` was built with,
-        # as `(meta, iou)`. Both start off: `accumulate` / `summarize`
-        # read neither, so the common evaluate → accumulate → summarize
-        # cycle never pays for them (see :meth:`_grid_for`).
-        self._retained: tuple[bool, bool] = (False, False)
+        # as one of the `_RETAIN_*` levels. Starts at none: `accumulate`
+        # / `summarize` read no bookkeeping, so the common evaluate →
+        # accumulate → summarize cycle never pays for it (see
+        # :meth:`_grid_for`). Written only by :meth:`_build_grid`, so it
+        # cannot drift from what `self._grid` actually holds.
+        self._grid_level: int = _RETAIN_NONE
         self._gt_bytes: bytes = b""
         self._dt_bytes: bytes = b""
         self._accumulated: Accumulated | None = None
@@ -271,14 +286,13 @@ class PycocotoolsCOCOeval:
             raise RuntimeError("evaluate requires both cocoGt and cocoDt")
         self._validate_supported_params()
         self._gt_bytes, self._dt_bytes = self._serialize_inputs()
-        # Neither optional retention is on: `accumulate` reads the
-        # matched cells, not the pycocotools-shaped bookkeeping, and
-        # `evalImgs` / `ious` re-evaluate on first read (see
-        # :meth:`_grid_for`). Retaining metadata for every cell roughly
-        # doubles the evaluation's allocations, and the callers that
-        # drive this shim mostly never look at either attribute.
-        self._retained = (False, False)
-        self._grid = self._build_grid(retain_meta=False, retain_iou=False)
+        # No optional retention: `accumulate` reads the matched cells,
+        # not the pycocotools-shaped bookkeeping, and `evalImgs` /
+        # `ious` re-evaluate on first read (see :meth:`_grid_for`).
+        # Retaining metadata for every cell roughly doubles the
+        # evaluation's allocations, and the callers that drive this shim
+        # mostly never look at either attribute.
+        self._build_grid(_RETAIN_NONE)
         self._eval_imgs = None
         self._ious = None
 
@@ -292,7 +306,7 @@ class PycocotoolsCOCOeval:
         that ask.
         """
         if self._eval_imgs is None:
-            self._eval_imgs = self._grid_for(meta=True).eval_imgs()
+            self._eval_imgs = self._grid_for(_RETAIN_META).eval_imgs()
         return self._eval_imgs
 
     @evalImgs.setter
@@ -319,82 +333,104 @@ class PycocotoolsCOCOeval:
         reads them.
         """
         if self._ious is None:
-            retained = self._grid_for(iou=True).ious()
+            retained = self._grid_for(_RETAIN_IOU).ious()
             empty: _IouMatrix = []
-            self._ious = {
-                (int(image_id), int(category_id)): retained.get((image_id, category_id), empty)
-                for image_id in self.params.imgIds
-                for category_id in self._axis_category_ids()
-            }
+            # `product` walks image-major / category-inner, the order the
+            # nested pycocotools comprehension yields, and builds each
+            # key tuple once. Both axes are normalized to `int` before
+            # the product so the densification does no per-cell
+            # conversion: the category axis is already `int` (see
+            # :meth:`_axis_category_ids`) and the image axis converts
+            # once per image rather than once per cell.
+            keys = product(
+                [int(image_id) for image_id in self.params.imgIds],
+                self._axis_category_ids(),
+            )
+            retained_get = retained.get
+            self._ious = {key: retained_get(key, empty) for key in keys}
         return self._ious
 
     @ious.setter
     def ious(self, value: dict[tuple[int, int], _IouMatrix]) -> None:
         self._ious = value
 
-    def _grid_for(self, *, meta: bool = False, iou: bool = False) -> EvalGrid:
-        """The evaluated grid, re-evaluated if it lacks a retention.
+    def _grid_for(self, level: int) -> EvalGrid:
+        """The evaluated grid, re-evaluated if it was built below ``level``.
 
-        The retention flags only ever widen: asking for ``ious`` after
-        ``evalImgs`` rebuilds once with both, so a caller that reads
-        both attributes pays for at most two extra passes over the
-        lifetime of the object, not one per read.
+        The retention level only ever widens: asking for ``ious`` after
+        ``evalImgs`` rebuilds once at the ``iou`` level, so a caller
+        that reads both attributes pays for at most two extra passes
+        over the lifetime of the object, not one per read.
         """
         if self._grid is None:
             raise RuntimeError("Please run evaluate() first")
-        has_meta, has_iou = self._retained
-        if (has_meta or not meta) and (has_iou or not iou):
+        if self._grid_level >= level:
             return self._grid
-        want_iou = has_iou or iou
-        # `retain_iou` builds the metadata too (the table builders read
-        # it), so record that rather than rebuilding for it later.
-        self._retained = (has_meta or meta or want_iou, want_iou)
-        self._grid = self._build_grid(retain_meta=self._retained[0], retain_iou=self._retained[1])
-        return self._grid
+        return self._build_grid(level)
 
-    def _build_grid(self, *, retain_meta: bool, retain_iou: bool) -> EvalGrid:
+    def _build_grid(self, level: int) -> EvalGrid:
+        """Evaluate the grid at retention ``level`` and record it as current.
+
+        The level is recorded here, next to the build it describes, so
+        ``self._grid_level`` cannot disagree with what ``self._grid``
+        actually holds.
+        """
         max_det_top = max(self.params.maxDets)
         use_cats = bool(self.params.useCats)
-        gt_bytes = self._gt_bytes
-        dt_bytes = self._dt_bytes
         grid_options: _GridOptions = {
             "iou_thresholds": _custom_ladder(self.params.iouThrs, _DEFAULT_IOU_THRS),
             "recall_thresholds": _custom_ladder(self.params.recThrs, _DEFAULT_REC_THRS),
             # Quirk J3: COCOeval reads `d['area']` off the cocoDt it is
             # handed; only `loadRes` derives it.
             "dt_area": "supplied",
-            "retain_meta": retain_meta,
-            "retain_iou": retain_iou,
+            # `retain_iou` builds the metadata too (the table builders
+            # read it), which is what makes the levels an order.
+            "retain_meta": level >= _RETAIN_META,
+            "retain_iou": level >= _RETAIN_IOU,
         }
         if self.params.iouType == IOU_BBOX:
-            return evaluate_bbox_grid(
-                gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats, **grid_options
+            grid = evaluate_bbox_grid(
+                self._gt_bytes,
+                self._dt_bytes,
+                self._parity_mode,
+                max_det_top,
+                use_cats,
+                **grid_options,
             )
-        if self.params.iouType == IOU_SEGM:
-            return evaluate_segm_grid(
-                gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats, **grid_options
+        elif self.params.iouType == IOU_SEGM:
+            grid = evaluate_segm_grid(
+                self._gt_bytes,
+                self._dt_bytes,
+                self._parity_mode,
+                max_det_top,
+                use_cats,
+                **grid_options,
             )
-        if self.params.iouType == IOU_BOUNDARY:
-            return evaluate_boundary_grid(
-                gt_bytes,
-                dt_bytes,
+        elif self.params.iouType == IOU_BOUNDARY:
+            grid = evaluate_boundary_grid(
+                self._gt_bytes,
+                self._dt_bytes,
                 self._parity_mode,
                 max_det_top,
                 use_cats,
                 self._dilation_ratio,
                 **grid_options,
             )
-        if self.params.iouType == IOU_KEYPOINTS:
-            return evaluate_keypoints_grid(
-                gt_bytes,
-                dt_bytes,
+        elif self.params.iouType == IOU_KEYPOINTS:
+            grid = evaluate_keypoints_grid(
+                self._gt_bytes,
+                self._dt_bytes,
                 self._parity_mode,
                 max_det_top,
                 use_cats,
                 self._resolve_kp_sigmas(),
                 **grid_options,
             )
-        raise NotImplementedError(f"unsupported iouType {self.params.iouType!r}")
+        else:
+            raise NotImplementedError(f"unsupported iouType {self.params.iouType!r}")
+        self._grid = grid
+        self._grid_level = level
+        return grid
 
     def _serialize_inputs(self) -> tuple[bytes, bytes]:
         """GT dataset + DT annotations as the JSON bytes the grid parses.
@@ -412,12 +448,21 @@ class PycocotoolsCOCOeval:
         selected = self._selected_category_ids()
         if selected is not None:
             gt_dataset = _with_categories(gt_dataset, selected)
-            dt_anns = [ann for ann in dt_anns if int(ann["category_id"]) in selected]
+            dt_anns = _anns_in_categories(dt_anns, set(selected))
         if self.params.iouType in (IOU_BBOX, IOU_KEYPOINTS):
             gt_dataset = with_placeholder_image_sizes(gt_dataset)
         else:
-            gt_dataset = with_mask_image_sizes(gt_dataset, _detection_sizes(dt_dataset))
+            gt_dataset = with_mask_image_sizes(gt_dataset, detection_image_sizes(dt_dataset))
         return to_coco_json(gt_dataset), to_coco_json(dt_anns)
+
+    def _requested_category_ids(self) -> list[int]:
+        """``params.catIds`` deduplicated, coerced to ``int`` and sorted.
+
+        The one place the raw ``params.catIds`` is normalized; both the
+        :attr:`ious` key axis and the ``_prepare``-time category filter
+        read it through here so they cannot disagree.
+        """
+        return sorted({int(cat) for cat in self.params.catIds})
 
     def _axis_category_ids(self) -> list[int]:
         """The ``catId`` axis of :attr:`ious`, as pycocotools keys it.
@@ -428,20 +473,20 @@ class PycocotoolsCOCOeval:
         """
         if not self.params.useCats:
             return [-1]
-        return sorted({int(cat) for cat in self.params.catIds})
+        return self._requested_category_ids()
 
-    def _selected_category_ids(self) -> dict[int, None] | None:
-        """``params.catIds`` as an ordered set, or ``None`` if it is everything.
+    def _selected_category_ids(self) -> list[int] | None:
+        """``params.catIds`` in axis order, or ``None`` if it is everything.
 
         ``None`` means "no filtering needed" and keeps the whole-dataset
         path allocation-free; it is the case every caller but a
         per-class loop hits.
         """
         assert self.cocoGt is not None  # evaluate() guards this
-        requested = sorted({int(cat) for cat in self.params.catIds})
+        requested = self._requested_category_ids()
         if requested == sorted(self.cocoGt.getCatIds()):
             return None
-        return dict.fromkeys(requested)
+        return requested
 
     def accumulate(self, p: Any = None) -> None:
         if self._grid is None:
@@ -542,7 +587,15 @@ def _custom_ladder(actual: NDArray[np.float64], default: NDArray[np.float64]) ->
     return [float(v) for v in np.asarray(actual, dtype=np.float64).ravel()]
 
 
-def _with_categories(dataset: Mapping[str, Any], selected: Mapping[int, None]) -> Mapping[str, Any]:
+def _anns_in_categories(anns: Iterable[Any], selected: AbstractSet[int]) -> list[Any]:
+    # The `params.catIds` filter `COCOeval._prepare` applies, on both
+    # sides: `getAnnIds(catIds=p.catIds)` keeps an annotation only when
+    # its category was asked for. One spelling so the GT and DT sides
+    # cannot drift (e.g. over how the id is coerced).
+    return [ann for ann in anns if int(ann["category_id"]) in selected]
+
+
+def _with_categories(dataset: Mapping[str, Any], selected: Sequence[int]) -> Mapping[str, Any]:
     # `COCOeval._prepare` loads only the annotations `getAnnIds(imgIds=
     # p.imgIds, catIds=p.catIds)` returns, so a subset `params.catIds`
     # evaluates a dataset that holds nothing else — which is exactly
@@ -559,24 +612,8 @@ def _with_categories(dataset: Mapping[str, Any], selected: Mapping[int, None]) -
     return {
         **dataset,
         "categories": [declared.get(cat, {"id": cat, "name": str(cat)}) for cat in selected],
-        "annotations": [
-            ann for ann in dataset.get("annotations", []) if int(ann["category_id"]) in selected
-        ],
+        "annotations": _anns_in_categories(dataset.get("annotations", []), set(selected)),
     }
-
-
-def _detection_sizes(dataset: Mapping[str, Any]) -> dict[Any, tuple[int, int] | None]:
-    # `{image_id: (height, width) | None}` over the images the cocoDt's
-    # annotations point at — the shape
-    # `vernier.adapters.with_mask_image_sizes` reads. `None` where that
-    # side does not carry a size either, which is where pycocotools'
-    # `annToRLE` raises `KeyError` and vernier's schema error stands in.
-    known = {
-        image["id"]: (image["height"], image["width"])
-        for image in dataset.get("images", [])
-        if "width" in image and "height" in image
-    }
-    return {ann["image_id"]: known.get(ann["image_id"]) for ann in dataset.get("annotations", [])}
 
 
 def _raise_unsupported(name: str, detail: str = "") -> None:

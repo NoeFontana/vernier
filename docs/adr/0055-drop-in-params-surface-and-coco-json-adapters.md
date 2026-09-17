@@ -115,22 +115,28 @@ matrix is reachable the same way.
 
 ### The published normalizers
 
-`vernier.adapters` gains four functions, which is the canonical import
+`vernier.adapters` gains five functions, which is the canonical import
 path for all of them:
 
 ```python
 from vernier.adapters import (
     with_placeholder_image_sizes,  # bbox / keypoints: fill every gap with 0
     with_mask_image_sizes,         # segm / boundary: fill only where annToRLE would not have run
+    detection_image_sizes,         # the {image_id: size | None} mapping the above reads
     coco_json_default,             # json.dumps hook: bytes RLE counts, NumPy scalars
     to_coco_json,                  # the dumps + encode one-liner
 )
 ```
 
-They live in a private `vernier._coco_json` module so `vernier._compat`
-can import them without a cycle through the `adapters` package; the
-re-export is the only public path, and nothing is exposed under two
-names. `with_mask_image_sizes` takes the detection side as a
+They live in a `vernier._coco_json` module, a dependency-free leaf that
+both `vernier._compat` and the `vernier.adapters` package sit on. It is
+not a cycle workaround: `adapters` imports `_compat`, so these
+conversions cannot live in `adapters`, and filing published,
+shim-independent helpers under the pycocotools-shaped shim would be
+worse. The `adapters` re-export is the only public path, and nothing is
+exposed under two names.
+
+`with_mask_image_sizes` takes the detection side as a
 `{image_id: (height, width) | None}` mapping rather than a second COCO
 dataset, so a caller that has detection RLEs but no `cocoDt` — the
 array-grid case — can use it. The mapping's *key set* carries the
@@ -138,6 +144,14 @@ array-grid case — can use it. The mapping's *key set* carries the
 `None` marks an image the detection side cannot size either, which is
 where pycocotools raises `KeyError` and vernier's schema error has to
 stand rather than a `0x0` fill scoring silently.
+
+`detection_image_sizes` builds that mapping from a pycocotools-shaped
+detection dataset, and is published for the same reason
+`with_mask_image_sizes` is: without it the published helper has an
+unpublished prerequisite, and a direct-grid caller would have to
+re-derive the drop-in's own input. The `cocoDt`-less array-grid caller
+still builds the mapping itself, from the first detection mask's `size`
+per image.
 
 The names describe what the function does to the dataset. None of them
 is borrowed from `pycocotools`, `faster-coco-eval` or `hotcoco`.
