@@ -165,6 +165,47 @@ pub(crate) fn linspace(start: f64, stop: f64, num: usize) -> Vec<f64> {
 
 #[cfg(test)]
 mod tests {
+
+    /// JSON float parsing must be correctly rounded — bit-equal to
+    /// CPython's `strtod`-based `json` module, not merely close.
+    ///
+    /// `serde_json`'s default parser is not: it rounds some near-tie
+    /// decimals to the adjacent double. That surfaced as ~16 % of
+    /// `eval_imgs.dtScores` drifting by exactly 1 ULP on the DETR-R50
+    /// real-prediction gate (`docs/engineering/real-predictions-parity.md`),
+    /// which held `dtScores` and the `scores` tensor at aligned tier
+    /// while the summary stayed strict — AP depends on detection
+    /// *order*, and 1 ULP does not reorder.
+    ///
+    /// The `float_roundtrip` feature switches `serde_json` to a
+    /// correctly-rounded path. Rust's own `str::parse::<f64>` is
+    /// correctly rounded too, so it stands in for the oracle here;
+    /// `tests/python/` pins the same values against CPython directly.
+    #[test]
+    fn json_float_parsing_is_correctly_rounded() {
+        // The first entry is the value named in the parity doc as the
+        // one that drifted on real DETR-R50 output.
+        for literal in [
+            "0.9992794394493103",
+            "0.9999999999999999",
+            "2.2250738585072011e-308",
+            "0.05",
+            "0.1",
+            "0.30000000000000004",
+            "1e-7",
+            "8.98846567431158e307",
+            "123456789.123456789",
+            "0.000244140625",
+        ] {
+            let parsed: f64 = serde_json::from_str(literal).expect("serde_json parse");
+            let oracle: f64 = literal.parse().expect("std parse");
+            assert_eq!(
+                parsed.to_bits(),
+                oracle.to_bits(),
+                "{literal}: serde_json {parsed:?} != correctly-rounded {oracle:?}"
+            );
+        }
+    }
     use super::*;
 
     #[test]

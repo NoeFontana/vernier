@@ -62,7 +62,8 @@ numpy = "0.29"
 pulp = "0.22"
 # JSON serialization for COCO dataset round-tripping (Phase 1+).
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+memchr = "2"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 # CLI argument parsing for `vernier-cli` (per ADR-0015). Pinned by
 # minor version so the binary's flag surface evolves on a single
 # clap version across the workspace.

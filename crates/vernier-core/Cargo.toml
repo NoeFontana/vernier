@@ -38,6 +38,7 @@ bench-timings = []
 ndarray.workspace = true
 thiserror.workspace = true
 serde = { workspace = true }
+memchr = { workspace = true }
 serde_json = { workspace = true }
 pulp.workspace = true
 # Pure-Rust mask kernels per ADR-0009. One-way dependency: core consumes

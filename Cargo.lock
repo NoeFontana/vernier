@@ -1681,6 +1681,7 @@ dependencies = [
  "crc32fast",
  "csv",
  "divan",
+ "memchr",
  "ndarray",
  "proptest",
  "pulp",

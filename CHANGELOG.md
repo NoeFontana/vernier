@@ -39,6 +39,26 @@ additive / perf / docs".
   active, so cells below the `G · D = 256` gate compile to the previous
   loop. Dense cells (250 GT x 250 DT) drop 84 %; COCO-shaped cells are
   unchanged.
+- **JSON ingestion splits across the thread budget** (ADR-0054). One
+  structural scan finds every element's byte range; the elements are then
+  handed to the same `serde_json` deserializers the serial path uses, in
+  input order, so parsed values are bit-identical and `loadRes` positional
+  ids (quirk **J1**) are preserved. Anything the splitter does not plainly
+  recognize — an unexpected shape, a duplicate key, a parse error — falls
+  back to the serial loader, which also owns the canonical error message.
+  LVIS v1 val GT parse: 732 ms -> 204 ms at 8 threads (3.6x); end-to-end
+  `evaluate_bbox_grid` on that dataset 1142 ms -> 554 ms (-51 %).
+  `num_threads=None` stays serial per ADR-0047.
+
+### Fixed
+
+- **JSON floats are now correctly rounded** (ADR-0054). `serde_json`'s
+  default parser sent some near-tie decimals to the adjacent double,
+  which drifted ~16 % of `eval_imgs.dtScores` by 1 ULP against
+  pycocotools on real detector output (documented in
+  `docs/engineering/real-predictions-parity.md`, held at aligned tier).
+  Enabling `float_roundtrip` makes vernier's doubles bit-equal to
+  CPython's `json`. Costs ~4 % on the sequential parse path.
 
 ## [0.3.0] - 2026-09-16
 
