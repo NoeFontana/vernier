@@ -1981,6 +1981,159 @@ mod tests {
         }
     }
 
+    /// Detections shaped like a real DT payload, for the equivalence
+    /// gates below.
+    const SPLITTER_DT: &str = r#"[
+        {"image_id": 1, "category_id": 7, "bbox": [0, 0, 10, 10], "score": 0.5,
+         "segmentation": {"counts": "a},{b", "size": [80, 100]}},
+        {"id": 12, "image_id": 2, "category_id": 9, "bbox": [1, 1, 2, 2],
+         "score": 0.9992794394493103},
+        {"image_id": 2, "category_id": 9, "bbox": [1.5, 1.5, 2.5, 2.5], "score": 1e-3}
+    ]"#;
+
+    /// Acceptance must not be a function of `num_threads` (ADR-0054:
+    /// "errors on malformed input must keep their current text and
+    /// byte offsets"). The splitter walks past the parts of the
+    /// document it does not parse, so every such part gets a case
+    /// here: bytes after the document, and a member nobody asked for.
+    #[test]
+    fn parallel_loaders_accept_exactly_what_the_serial_loaders_accept() {
+        let gt_cases = [
+            // Trailing bytes after the top-level object.
+            format!("{SPLITTER_GT}}}}}}}garbage"),
+            format!("{SPLITTER_GT} ["),
+            format!("{SPLITTER_GT}{SPLITTER_GT}"),
+            // A skipped member that is not valid JSON.
+            SPLITTER_GT.replacen(r#""description""#, r#""description": tru, "x""#, 1),
+            SPLITTER_GT.replacen(r#"{"description""#, r#"{"a": NaN, "description""#, 1),
+            SPLITTER_GT.replacen(r#"{"description""#, r#"{"a": 01+2x, "description""#, 1),
+            SPLITTER_GT.replacen(r#""info""#, r#""in\qfo""#, 1),
+            // And the well-formed original, which must still split.
+            SPLITTER_GT.to_owned(),
+        ];
+        for case in &gt_cases {
+            let serial = CocoDataset::from_json_bytes(case.as_bytes());
+            for threads in [1usize, 2, 3, 8] {
+                let parallel = CocoDataset::from_json_bytes_parallel(case.as_bytes(), threads);
+                assert_outcomes_match(
+                    serial.as_ref().map(|d| format!("{:?}", d.annotations())),
+                    parallel.as_ref().map(|d| format!("{:?}", d.annotations())),
+                    &format!("threads={threads} case={case}"),
+                );
+            }
+        }
+
+        let dt_cases = [
+            format!("{SPLITTER_DT}{SPLITTER_DT}"),
+            format!("{SPLITTER_DT} xyz"),
+            format!("{SPLITTER_DT}]"),
+            SPLITTER_DT.to_owned(),
+        ];
+        for case in &dt_cases {
+            let serial = CocoDetections::from_json_bytes(case.as_bytes());
+            for threads in [1usize, 2, 3, 8] {
+                let parallel = CocoDetections::from_json_bytes_parallel(case.as_bytes(), threads);
+                assert_outcomes_match(
+                    serial.as_ref().map(|d| format!("{:?}", d.detections())),
+                    parallel.as_ref().map(|d| format!("{:?}", d.detections())),
+                    &format!("threads={threads} case={case}"),
+                );
+            }
+        }
+    }
+
+    /// Serial and parallel must agree on acceptance, on the loaded
+    /// values, and — when they reject — on the exact message, which is
+    /// where the byte offset users debug against lives.
+    fn assert_outcomes_match(
+        serial: Result<String, &EvalError>,
+        parallel: Result<String, &EvalError>,
+        context: &str,
+    ) {
+        match (serial, parallel) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b, "values diverged: {context}"),
+            (Err(a), Err(b)) => assert_eq!(
+                a.to_string(),
+                b.to_string(),
+                "error text diverged: {context}"
+            ),
+            (Ok(_), Err(e)) => panic!("parallel rejected what serial accepted ({e}): {context}"),
+            (Err(e), Ok(_)) => panic!("parallel accepted what serial rejected ({e}): {context}"),
+        }
+    }
+
+    // Seeded byte mutations over the two fixtures, asserting the same
+    // equivalence the hand-written cases do. Single-byte edits are the
+    // shape that breaks a structural scanner: they turn a quote into a
+    // brace, a digit into a letter, or a closing bracket into
+    // whitespace, anywhere in the document — including the regions the
+    // splitter only walks.
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn mutated_gt_loads_identically_on_both_paths(
+            offset in any::<prop::sample::Index>(),
+            byte in any::<u8>(),
+            threads in 1usize..=8,
+        ) {
+            let mut bytes = SPLITTER_GT.as_bytes().to_vec();
+            let at = offset.index(bytes.len());
+            bytes[at] = byte;
+            let serial = CocoDataset::from_json_bytes(&bytes);
+            let parallel = CocoDataset::from_json_bytes_parallel(&bytes, threads);
+            assert_outcomes_match(
+                serial.as_ref().map(|d| format!("{:?}", d.annotations())),
+                parallel.as_ref().map(|d| format!("{:?}", d.annotations())),
+                &format!("threads={threads} at={at} byte={byte}"),
+            );
+        }
+
+        #[test]
+        fn mutated_dt_loads_identically_on_both_paths(
+            offset in any::<prop::sample::Index>(),
+            byte in any::<u8>(),
+            threads in 1usize..=8,
+        ) {
+            let mut bytes = SPLITTER_DT.as_bytes().to_vec();
+            let at = offset.index(bytes.len());
+            bytes[at] = byte;
+            let serial = CocoDetections::from_json_bytes(&bytes);
+            let parallel = CocoDetections::from_json_bytes_parallel(&bytes, threads);
+            assert_outcomes_match(
+                serial.as_ref().map(|d| format!("{:?}", d.detections())),
+                parallel.as_ref().map(|d| format!("{:?}", d.detections())),
+                &format!("threads={threads} at={at} byte={byte}"),
+            );
+        }
+
+        // Truncation and insertion, which a single-byte overwrite
+        // cannot reach: both move every later offset, so a scanner
+        // that survived them by luck would not survive twice.
+        #[test]
+        fn truncated_or_extended_gt_loads_identically_on_both_paths(
+            offset in any::<prop::sample::Index>(),
+            byte in any::<u8>(),
+            truncate in any::<bool>(),
+            threads in 1usize..=8,
+        ) {
+            let mut bytes = SPLITTER_GT.as_bytes().to_vec();
+            let at = offset.index(bytes.len());
+            if truncate {
+                bytes.truncate(at);
+            } else {
+                bytes.insert(at, byte);
+            }
+            let serial = CocoDataset::from_json_bytes(&bytes);
+            let parallel = CocoDataset::from_json_bytes_parallel(&bytes, threads);
+            assert_outcomes_match(
+                serial.as_ref().map(|d| format!("{:?}", d.annotations())),
+                parallel.as_ref().map(|d| format!("{:?}", d.annotations())),
+                &format!("threads={threads} at={at} truncate={truncate} byte={byte}"),
+            );
+        }
+    }
+
     #[test]
     fn loads_detections_from_json_array() {
         const JSON: &str = r#"[
