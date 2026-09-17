@@ -532,9 +532,8 @@ impl CocoDataset {
     /// `threads` is the caller's budget. Per ADR-0047 the
     /// `num_threads=None` path never calls this; it stays on
     /// [`Self::from_json_bytes`] and never enters rayon. A budget below
-    /// [`json_split::MIN_THREADS_TO_SPLIT`] also stays serial — the
-    /// structural scan is only worth its cost once there are threads to
-    /// spend it on.
+    /// `MIN_THREADS_TO_SPLIT` also stays serial — the structural scan is
+    /// only worth its cost once there are threads to spend it on.
     ///
     /// # Errors
     ///
@@ -1377,8 +1376,8 @@ impl CocoDetections {
     /// which matters beyond parity: [`Self::from_inputs`] assigns
     /// auto-ids by position (quirk **J1**).
     ///
-    /// A budget below [`json_split::MIN_THREADS_TO_SPLIT`] stays on the
-    /// serial loader; see that constant for the crossover measurement.
+    /// A budget below `MIN_THREADS_TO_SPLIT` stays on the serial loader;
+    /// see that constant for the crossover measurement.
     ///
     /// # Errors
     ///
