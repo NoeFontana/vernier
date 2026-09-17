@@ -56,7 +56,8 @@ additive / perf / docs".
   default parser sent some near-tie decimals to the adjacent double,
   which drifted ~16 % of `eval_imgs.dtScores` by 1 ULP against
   pycocotools on real detector output (documented in
-  `docs/engineering/real-predictions-parity.md`, held at aligned tier).
+  `docs/engineering/real-predictions-parity.md`, where it was held under
+  that page's float-tolerance gate).
   Enabling `float_roundtrip` makes vernier's doubles bit-equal to
   CPython's `json`. Costs ~4 % on the sequential parse path.
 

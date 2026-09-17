@@ -44,11 +44,14 @@ LVIS paradigms.
 > folded `aligned` into `strict`, and `parity_mode="aligned"` is not a
 > value the API accepts. The float band here is **not** homed in the
 > two-tier model, and cannot be relabelled `strict` without making a
-> false bit-equality claim: the drift is real (see the `serde_json`
-> f64-parser follow-up under the Instance cell). Per the amendment's
-> revival clause, giving it a ratified name is a new ADR with a
-> per-surface argument — not a passive rename. Until then, read
-> "aligned tier" below as "this harness's float-tolerance gate".
+> false bit-equality claim: the panoptic, LVIS and boundary cells all
+> gate on a real, non-zero tolerance today. (The Instance cell's band is
+> a narrower case — ADR-0054 fixed its root cause and it should collapse
+> to bit-equality on the next re-measure; see the follow-up under that
+> cell.) Per the amendment's revival clause, giving the band a ratified
+> name is a new ADR with a per-surface argument — not a passive rename.
+> Until then, read "aligned tier" below as "this harness's
+> float-tolerance gate".
 
 > **Status:** the three original SOTA parity tests (DETR,
 > Mask2Former panoptic, Mask2Former ADE) pass on the live cache
