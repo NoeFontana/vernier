@@ -90,7 +90,7 @@ test-coco-val:
 # ---------------------------------------------------------------------------
 
 # Run all linters (CI-equivalent, read-only).
-lint: lint-rust lint-py
+lint: lint-rust lint-py lint-citations
 
 lint-rust: check-features
     cargo fmt --all -- --check
@@ -106,6 +106,12 @@ lint-py:
     uv run ruff check .
     uv run ruff format --check .
     uv run pyright
+
+# Validate the `Wired-by` citations in docs/engineering/pycocotools-quirks.md.
+# Names, never line numbers: the check fails on a stale path, an ambiguous
+# one, or a name with no definition. Stdlib-only, no build, no network.
+lint-citations:
+    python3 tools/check_quirk_citations.py
 
 # Auto-format Rust and Python (writes changes).
 fmt:
