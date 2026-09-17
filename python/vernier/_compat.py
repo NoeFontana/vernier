@@ -262,11 +262,23 @@ class PycocotoolsCOCOeval:
         use_cats = bool(self.params.useCats)
         if self.params.iouType == IOU_BBOX:
             self._grid = evaluate_bbox_grid(
-                gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats
+                gt_bytes,
+                dt_bytes,
+                self._parity_mode,
+                max_det_top,
+                use_cats,
+                # `evalImgs` below needs the grid's per-cell ids.
+                retain_meta=True,
             )
         elif self.params.iouType == IOU_SEGM:
             self._grid = evaluate_segm_grid(
-                gt_bytes, dt_bytes, self._parity_mode, max_det_top, use_cats
+                gt_bytes,
+                dt_bytes,
+                self._parity_mode,
+                max_det_top,
+                use_cats,
+                # `evalImgs` below needs the grid's per-cell ids.
+                retain_meta=True,
             )
         elif self.params.iouType == IOU_BOUNDARY:
             self._grid = evaluate_boundary_grid(
@@ -276,6 +288,8 @@ class PycocotoolsCOCOeval:
                 max_det_top,
                 use_cats,
                 self._dilation_ratio,
+                # `evalImgs` below needs the grid's per-cell ids.
+                retain_meta=True,
             )
         elif self.params.iouType == IOU_KEYPOINTS:
             self._grid = evaluate_keypoints_grid(
@@ -285,6 +299,8 @@ class PycocotoolsCOCOeval:
                 max_det_top,
                 use_cats,
                 self._resolve_kp_sigmas(),
+                # `evalImgs` below needs the grid's per-cell ids.
+                retain_meta=True,
             )
         else:
             raise NotImplementedError(f"unsupported iouType {self.params.iouType!r}")

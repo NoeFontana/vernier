@@ -956,6 +956,7 @@ pub fn build_per_detection(
             detail: "per_detection requires at least one area range".into(),
         });
     }
+    require_meta(grid, "per_detection")?;
     let t50 = find_iou_index(iou_thresholds, 0.5)?;
     const A_ALL: usize = 0;
 
@@ -1060,6 +1061,21 @@ pub fn build_per_detection(
     })
 }
 
+/// The per-detection / per-pair builders read [`EvalGrid::cell_meta`];
+/// on a grid built without metadata every cell would be skipped and the
+/// table would come back silently empty.
+fn require_meta(grid: &EvalGrid, table: &str) -> Result<(), EvalError> {
+    if grid.has_meta() {
+        return Ok(());
+    }
+    Err(EvalError::InvalidConfig {
+        detail: format!(
+            "{table} requires per-cell metadata; build the grid with \
+             EvaluateParams::retain_iou=true (or retain_meta=true)"
+        ),
+    })
+}
+
 /// Build a [`PerPairTable`] from retained IoU matrices.
 ///
 /// Emits one row per `(DT, GT)` pair where IoU >=
@@ -1079,6 +1095,7 @@ pub fn build_per_pair(
             detail: "per_pair requires at least one area range".into(),
         });
     }
+    require_meta(grid, "per_pair")?;
     const A_ALL: usize = 0;
     let mut out = PerPairTable::default();
     let cap = config.per_pair_max_rows;
@@ -1471,6 +1488,7 @@ mod tests {
                 max_dets_per_image: 100,
                 use_cats: true,
                 retain_iou: false,
+                retain_meta: true,
             },
             ParityMode::Corrected,
         )
@@ -1563,6 +1581,7 @@ mod tests {
                 max_dets_per_image: 100,
                 use_cats: true,
                 retain_iou: false,
+                retain_meta: false,
             },
             ParityMode::Corrected,
         )
@@ -1686,6 +1705,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid_off =
             evaluate_bbox(&dataset, &detections, params_off, ParityMode::Corrected).unwrap();
@@ -1718,10 +1738,20 @@ mod tests {
             crate::accumulate::accumulate(&grid_off.eval_imgs, p, ParityMode::Corrected).unwrap();
         let acc_on =
             crate::accumulate::accumulate(&grid_on.eval_imgs, p, ParityMode::Corrected).unwrap();
-        let sum_off =
-            crate::summarize::summarize_detection(&acc_off, iou_thresholds(), &max_dets).unwrap();
-        let sum_on =
-            crate::summarize::summarize_detection(&acc_on, iou_thresholds(), &max_dets).unwrap();
+        let sum_off = crate::summarize::summarize_detection(
+            &acc_off,
+            iou_thresholds(),
+            &max_dets,
+            ParityMode::Strict,
+        )
+        .unwrap();
+        let sum_on = crate::summarize::summarize_detection(
+            &acc_on,
+            iou_thresholds(),
+            &max_dets,
+            ParityMode::Strict,
+        )
+        .unwrap();
         for (a, b) in sum_off.stats().iter().zip(sum_on.stats().iter()) {
             assert_eq!(a.to_bits(), b.to_bits(), "stat drift: off={a} on={b}");
         }
@@ -1877,6 +1907,22 @@ mod tests {
         // Rows are emitted in (gt, dt) order: (g=1,d=0)=0.7 and (g=1,d=1)=0.8.
         assert_eq!(table.detection_id, vec![10, 20]);
         assert_eq!(table.ground_truth_id, vec![200, 200]);
+    }
+
+    #[test]
+    fn build_per_detection_rejects_a_grid_without_metadata() {
+        let (mut grid, _) = perfect_match_grid_two_images();
+        grid.eval_imgs_meta.clear();
+        let dets = CocoDetections::from_inputs(Vec::new()).unwrap();
+        let err = build_per_detection(
+            &grid,
+            &dets,
+            iou_thresholds(),
+            None,
+            &TablesConfig::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, EvalError::InvalidConfig { .. }));
     }
 
     #[test]

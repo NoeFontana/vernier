@@ -42,6 +42,7 @@ fn run_bbox(gt: &CocoDataset, dt: &CocoDetections) -> EvalGrid {
         max_dets_per_image: 100,
         use_cats: true,
         retain_iou: false,
+        retain_meta: false,
     };
     evaluate_bbox(gt, dt, params, ParityMode::Strict).unwrap()
 }
@@ -98,7 +99,8 @@ fn overall_matches_unpartitioned_eval() {
         ParityMode::Strict,
     )
     .unwrap();
-    let reference = summarize_detection(&accum, iou_thresholds(), &[1, 10, 100]).unwrap();
+    let reference =
+        summarize_detection(&accum, iou_thresholds(), &[1, 10, 100], ParityMode::Strict).unwrap();
 
     let got_stats = part.overall.stats();
     let want_stats = reference.stats();

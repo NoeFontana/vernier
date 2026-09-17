@@ -49,7 +49,7 @@ use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 use vernier_core::accumulate::{
     accumulate, accumulate_parallel, sort_max_dets, AccumulateParams, PerImageEval,
 };
-use vernier_core::dataset::{CategoryId, DetectionInput};
+use vernier_core::dataset::{CategoryId, DetectionArea, DetectionInput};
 use vernier_core::evaluate::{
     evaluate_boundary_cached, evaluate_segm_cached, BoundaryIouCached, EvalImageMeta, EvalKernel,
     OwnedEvaluateParams, SegmIouCached,
@@ -321,6 +321,12 @@ impl PyEvalGrid {
     /// `image_id`, `category_id`, `aRng`, `maxDet`, `dtIds`, `gtIds`,
     /// `dtMatches`, `gtMatches`, `dtScores`, `gtIgnore`, `dtIgnore`.
     fn eval_imgs<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        if !self.inner.has_meta() {
+            return Err(PyValueError::new_err(
+                "EvalGrid.eval_imgs() needs per-cell metadata; build the grid with \
+                 retain_meta=True",
+            ));
+        }
         let list = PyList::empty(py);
         for (cell, meta) in self
             .inner
@@ -373,6 +379,7 @@ impl PyEvalGrid {
             inner: acc,
             max_dets,
             iou_thresholds: iou_thr,
+            parity,
         })
     }
 
@@ -440,6 +447,9 @@ struct PyAccumulated {
     /// canonical ladder when the grid was built on a custom one would
     /// silently mis-slice.
     iou_thresholds: Vec<f64>,
+    /// Parity mode propagated from the source [`PyEvalGrid`]; selects
+    /// the detection summary plan's aggregate-AP cap (quirk **L9**).
+    parity: ParityMode,
 }
 
 #[pymethods]
@@ -473,7 +483,8 @@ impl PyAccumulated {
 
     /// Summarize this accumulator. `plan` selects the stat plan:
     /// `"detection"` (default) yields the canonical 12-stat detection
-    /// vector via [`vernier_core::summarize_detection`]; `"keypoints"`
+    /// vector via [`vernier_core::summarize_detection`] under the source
+    /// grid's parity mode (quirk **L9**); `"keypoints"`
     /// yields the 10-stat keypoints vector via
     /// [`vernier_core::StatRequest::coco_keypoints_default`] (ADR-0012).
     /// Pairing the kp plan with a detection-grid accumulator (4-bucket
@@ -499,9 +510,10 @@ impl PyAccumulated {
         sort_max_dets(&mut dets);
         let acc = &self.inner;
         let iou_thr = self.iou_thresholds.clone();
+        let parity = self.parity;
         let summary = py
             .detach(|| match plan {
-                SummarizePlan::Detection => summarize_detection(acc, &iou_thr, &dets),
+                SummarizePlan::Detection => summarize_detection(acc, &iou_thr, &dets, parity),
                 SummarizePlan::Keypoints => {
                     summarize_with(acc, &StatRequest::coco_keypoints_default(), &iou_thr, &dets)
                 }
@@ -785,7 +797,17 @@ pub(crate) fn evaluate_grid_impl(
     recall_thresholds_arg: Option<Vec<f64>>,
     area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    dt_area: DetectionArea,
+    retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
+    if dt_area == DetectionArea::Mask
+        && !matches!(iou_type, EvalIouType::Segm | EvalIouType::Boundary { .. })
+    {
+        return Err(PyValueError::new_err(
+            "dt_area='mask' derives the area from each detection's mask; it applies to \
+             evaluate_segm_grid and evaluate_boundary_grid only",
+        ));
+    }
     let parity = parse_parity_mode(parity_mode)?;
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
         &iou_type,
@@ -806,13 +828,14 @@ pub(crate) fn evaluate_grid_impl(
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
-        let (gt, dt) = parse_gt_dt_with_policy(&gt_bytes, dt_payload, thread_policy)?;
+        let (gt, dt) = parse_gt_dt_with_policy(&gt_bytes, dt_payload, dt_area, thread_policy)?;
         let params = EvaluateParams {
             iou_thresholds: &iou_for_run,
             area_ranges: &area,
             max_dets_per_image,
             use_cats,
             retain_iou,
+            retain_meta,
         };
         let grid = run_grid_with_policy(&iou_type, &gt, &dt, params, parity, thread_policy)
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
@@ -852,12 +875,13 @@ const TWO_THREADS: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(2)
 fn parse_gt_dt_with_policy(
     gt_bytes: &[u8],
     dt_payload: UpdatePayload,
+    dt_area: DetectionArea,
     thread_policy: threads::ThreadPolicy,
 ) -> PyResult<(CocoDataset, CocoDetections)> {
     match thread_policy.thread_count() {
         None => {
             let gt = parse_gt(gt_bytes)?;
-            let dt = realize_dt(dt_payload)?;
+            let dt = realize_dt(dt_payload, dt_area)?;
             Ok((gt, dt))
         }
         // Two tasks, so two threads; the rest of the budget would sit
@@ -865,14 +889,15 @@ fn parse_gt_dt_with_policy(
         // the full count.
         Some(n) => match threads::build_scoped_pool(n.min(TWO_THREADS)) {
             Ok(pool) => {
-                let (gt, dt) =
-                    pool.install(|| rayon::join(|| parse_gt(gt_bytes), || realize_dt(dt_payload)));
+                let (gt, dt) = pool.install(|| {
+                    rayon::join(|| parse_gt(gt_bytes), || realize_dt(dt_payload, dt_area))
+                });
                 Ok((gt?, dt?))
             }
             // Pool build failure is not a reason to fail a parse.
             Err(_) => {
                 let gt = parse_gt(gt_bytes)?;
-                let dt = realize_dt(dt_payload)?;
+                let dt = realize_dt(dt_payload, dt_area)?;
                 Ok((gt, dt))
             }
         },
@@ -945,6 +970,7 @@ fn evaluate_grid_with_dataset_impl(
     recall_thresholds_arg: Option<Vec<f64>>,
     area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     let parity = parse_parity_mode(parity_mode)?;
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
@@ -960,7 +986,7 @@ fn evaluate_grid_with_dataset_impl(
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt) =
         py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let dt = realize_dt(dt_payload)?;
+            let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
             // ADR-0026 AC2: federated datasets trim DTs at input time
             // (mirrors `LVISResults.limit_dets_per_image` at construction).
             // The trim is a no-op when fewer than `max_dets_per_image`
@@ -980,6 +1006,7 @@ fn evaluate_grid_with_dataset_impl(
                 max_dets_per_image,
                 use_cats,
                 retain_iou,
+                retain_meta,
             };
             let grid = run_grid_cached_with_policy(
                 &iou_type,
@@ -1053,7 +1080,7 @@ fn resolve_grid_axes(
 /// construction; defaults to `False` so existing callers pay no extra
 /// allocation.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_grid<'py>(
     py: Python<'py>,
@@ -1068,6 +1095,8 @@ fn evaluate_bbox_grid<'py>(
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    dt_area: &str,
+    retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -1083,6 +1112,8 @@ fn evaluate_bbox_grid<'py>(
         recall_thresholds,
         area_ranges,
         num_threads,
+        parse_dt_area(dt_area)?,
+        retain_meta,
     )
 }
 
@@ -1092,7 +1123,7 @@ fn evaluate_bbox_grid<'py>(
 /// strips ADR-0026 federated metadata at GT load, so the
 /// orchestrator's AA3/AA4 branches never fire on that path.
 #[pyfunction]
-#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
+#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_grid_with_dataset<'py>(
     py: Python<'py>,
@@ -1107,6 +1138,7 @@ fn evaluate_bbox_grid_with_dataset<'py>(
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_with_dataset_impl(
         py,
@@ -1122,6 +1154,7 @@ fn evaluate_bbox_grid_with_dataset<'py>(
         recall_thresholds,
         area_ranges,
         num_threads,
+        retain_meta,
     )
 }
 
@@ -1129,7 +1162,7 @@ fn evaluate_bbox_grid_with_dataset<'py>(
 /// `segmentation` field on every entry; absent fields raise a typed
 /// `ValueError` instead of being silently treated as empty.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_segm_grid<'py>(
     py: Python<'py>,
@@ -1144,6 +1177,8 @@ fn evaluate_segm_grid<'py>(
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    dt_area: &str,
+    retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_impl(
         py,
@@ -1159,6 +1194,8 @@ fn evaluate_segm_grid<'py>(
         recall_thresholds,
         area_ranges,
         num_threads,
+        parse_dt_area(dt_area)?,
+        retain_meta,
     )
 }
 
@@ -1167,7 +1204,7 @@ fn evaluate_segm_grid<'py>(
 /// `dilation_ratio` is the boundary band width as a fraction of the
 /// image diagonal (`0.02` COCO default; `0.008` LVIS variant).
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_boundary_grid<'py>(
     py: Python<'py>,
@@ -1183,6 +1220,8 @@ fn evaluate_boundary_grid<'py>(
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    dt_area: &str,
+    retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
     evaluate_grid_impl(
@@ -1199,6 +1238,8 @@ fn evaluate_boundary_grid<'py>(
         recall_thresholds,
         area_ranges,
         num_threads,
+        parse_dt_area(dt_area)?,
+        retain_meta,
     )
 }
 
@@ -1242,7 +1283,12 @@ fn evaluate_summary_impl(
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
 
     let summary = py.detach(move || -> PyResult<Summary> {
-        let (gt, dt) = parse_gt_dt_with_policy(&gt_bytes, dt_payload, thread_policy)?;
+        let (gt, dt) = parse_gt_dt_with_policy(
+            &gt_bytes,
+            dt_payload,
+            DetectionArea::FromBbox,
+            thread_policy,
+        )?;
         run_pipeline(
             &iou_type,
             &gt,
@@ -1532,7 +1578,7 @@ fn evaluate_summary_with_dataset_impl(
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let snapshot = dataset.snapshot();
     let summary = py.detach(move || -> PyResult<Summary> {
-        let dt = realize_dt(dt_payload)?;
+        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
         run_pipeline_with_dataset(
             &iou_type,
             &snapshot.gt,
@@ -1552,7 +1598,7 @@ fn evaluate_summary_with_dataset_impl(
 /// carry `keypoints` fields. `sigmas` matches
 /// [`evaluate_keypoints_summary`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None))]
+#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_keypoints_grid<'py>(
     py: Python<'py>,
@@ -1567,6 +1613,8 @@ fn evaluate_keypoints_grid<'py>(
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    dt_area: &str,
+    retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
@@ -1585,6 +1633,8 @@ fn evaluate_keypoints_grid<'py>(
         recall_thresholds,
         area_ranges,
         num_threads,
+        parse_dt_area(dt_area)?,
+        retain_meta,
     )
 }
 
@@ -1618,6 +1668,7 @@ fn run_pipeline(
         max_dets_per_image: max_det_top,
         use_cats,
         retain_iou: false,
+        retain_meta: false,
     };
     let grid = run_grid_with_policy(iou_type, gt, dt, eval_params, parity, thread_policy)?;
     summarize_grid(
@@ -1653,6 +1704,7 @@ fn run_pipeline_with_dataset(
         max_dets_per_image: max_det_top,
         use_cats,
         retain_iou: false,
+        retain_meta: false,
     };
     let grid =
         run_grid_cached_with_policy(iou_type, gt, dt, eval_params, parity, caches, thread_policy)?;
@@ -1714,7 +1766,7 @@ fn summarize_grid(
             max_dets,
         )
     } else {
-        summarize_detection(&acc, iou_thr, max_dets)
+        summarize_detection(&acc, iou_thr, max_dets, parity)
     }
 }
 
@@ -1760,6 +1812,21 @@ fn require_nonempty_max_dets(max_dets: &[usize]) -> PyResult<()> {
         ))
     } else {
         Ok(())
+    }
+}
+
+/// Parse the `dt_area` keyword of the `evaluate_*_grid` entry points
+/// (quirk **J3**): `"bbox"` derives each detection's area from its bbox
+/// like pycocotools' `loadRes` on bbox results; `"mask"` takes the RLE
+/// foreground area like `loadRes` on segm results, and only applies to
+/// the mask kernels (checked in [`evaluate_grid_impl`]).
+pub(crate) fn parse_dt_area(s: &str) -> PyResult<DetectionArea> {
+    match s {
+        "bbox" => Ok(DetectionArea::FromBbox),
+        "mask" => Ok(DetectionArea::Mask),
+        other => Err(PyValueError::new_err(format!(
+            "invalid dt_area {other:?}; expected 'bbox' or 'mask'"
+        ))),
     }
 }
 
@@ -2128,10 +2195,12 @@ pub(crate) fn build_update_payload<'py>(
 /// [`CocoDetections`] the foreground pipeline takes by reference.
 /// `Bytes` is parsed via `from_json_bytes`; `Inputs` runs `from_inputs`
 /// — both happen without the GIL.
-pub(crate) fn realize_dt(payload: UpdatePayload) -> PyResult<CocoDetections> {
+pub(crate) fn realize_dt(payload: UpdatePayload, area: DetectionArea) -> PyResult<CocoDetections> {
     match payload {
-        UpdatePayload::Bytes(b) => parse_dt(&b),
-        UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs(inputs)
+        UpdatePayload::Bytes(b) => {
+            CocoDetections::from_json_bytes_with_area(&b, area).map_err(coco_load_error_to_pyerr)
+        }
+        UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs_with_area(inputs, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }
 }

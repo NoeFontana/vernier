@@ -194,6 +194,7 @@ fn run(bencher: Bencher, s: Scenario) {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         evaluate_segm(black_box(&gt), black_box(&dt), params, ParityMode::Strict).unwrap()
     });

@@ -224,17 +224,29 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
 
     let total_slots = n_k * chunk_len;
     let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; total_slots];
-    eval_imgs
-        .par_chunks_mut(chunk_len.max(1))
-        .zip(eval_imgs_meta.par_chunks_mut(chunk_len.max(1)))
-        .zip(by_category.into_par_iter())
-        .for_each(|((eval_chunk, meta_chunk), cells)| {
-            for (offset, eval, meta) in cells {
-                eval_chunk[offset] = eval;
-                meta_chunk[offset] = meta;
-            }
-        });
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = Vec::new();
+    if params.builds_meta() {
+        eval_imgs_meta = vec![None; total_slots];
+        eval_imgs
+            .par_chunks_mut(chunk_len.max(1))
+            .zip(eval_imgs_meta.par_chunks_mut(chunk_len.max(1)))
+            .zip(by_category.into_par_iter())
+            .for_each(|((eval_chunk, meta_chunk), cells)| {
+                for (offset, eval, meta) in cells {
+                    eval_chunk[offset] = eval;
+                    meta_chunk[offset] = meta;
+                }
+            });
+    } else {
+        eval_imgs
+            .par_chunks_mut(chunk_len.max(1))
+            .zip(by_category.into_par_iter())
+            .for_each(|(eval_chunk, cells)| {
+                for (offset, eval, _) in cells {
+                    eval_chunk[offset] = eval;
+                }
+            });
+    }
 
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
     for (i, per_image) in retained_per_image.into_iter().enumerate() {
@@ -423,9 +435,10 @@ fn process_one_cell_into<K: EvalKernel>(
             area,
             params.iou_thresholds,
             parity_mode,
+            params.builds_meta(),
         )?;
         eval_slice[a] = Some(Box::new(cell));
-        meta_slice[a] = Some(Box::new(meta));
+        meta_slice[a] = meta.map(Box::new);
     }
 
     if params.retain_iou {
@@ -657,6 +670,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let kernel = BboxIou;
 
@@ -703,6 +717,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let kernel = BboxIou;
 

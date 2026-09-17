@@ -297,6 +297,8 @@ def evaluate_bbox_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_bbox_grid_with_dataset(
     gt: CocoDataset,
@@ -310,6 +312,7 @@ def evaluate_bbox_grid_with_dataset(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
@@ -341,6 +344,8 @@ def evaluate_segm_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox", "mask"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
     gt_json: bytes,
@@ -375,6 +380,8 @@ def evaluate_boundary_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox", "mask"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
     gt_json: bytes,
@@ -408,6 +415,8 @@ def evaluate_keypoints_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 
 # ADR-0046 partitioned-eval surface.

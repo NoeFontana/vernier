@@ -1120,7 +1120,12 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                 &kp_max_dets,
             )?
         } else {
-            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
+            summarize_detection(
+                &accumulated,
+                &self.params.iou_thresholds,
+                &max_dets,
+                self.parity_mode,
+            )?
         };
         Ok((summary, accumulated))
     }

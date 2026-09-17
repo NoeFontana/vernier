@@ -72,6 +72,7 @@ fn main() {
         max_dets_per_image: 100,
         use_cats: true,
         retain_iou: false,
+        retain_meta: false,
     };
     let (grid, match_ms) =
         time_ms(|| evaluate_bbox(&gt, &dt, params, ParityMode::Strict).expect("evaluate"));

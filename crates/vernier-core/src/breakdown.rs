@@ -44,6 +44,7 @@ use std::borrow::Cow;
 use std::collections::BTreeSet;
 
 use crate::evaluate::{AreaRange, AREA_UNBOUNDED};
+use crate::parity::ParityMode;
 use crate::summarize::{AreaRng, MaxDetSelector, Metric, StatRequest};
 
 /// One bucket on a [`Breakdown`].
@@ -265,13 +266,14 @@ impl Breakdown {
         self.buckets.iter().map(Bucket::to_area_rng).collect()
     }
 
-    /// Build the canonical 12-row pycocotools detection plan over this
-    /// breakdown.
+    /// Build the canonical 12-row detection plan for `parity_mode` over
+    /// this breakdown — [`StatRequest::coco_detection`] with this
+    /// breakdown's bucket labels.
     ///
     /// The breakdown must have the four-bucket layout `(0, 1, 2, 3)`
     /// matching `(all, small, medium, large)`; otherwise this method
     /// returns `None` and the caller falls back to
-    /// [`StatRequest::coco_detection_default`] (which assumes the
+    /// [`StatRequest::coco_detection`] (which assumes the
     /// canonical layout). For breakdowns with non-canonical bucket
     /// counts (e.g., a 5-bucket fine-grained area split), callers
     /// should compose their own plan via
@@ -281,7 +283,7 @@ impl Breakdown {
     /// the only failure mode is "this breakdown isn't the canonical
     /// detection shape", which the caller resolves by composing a
     /// custom plan, not by surfacing an error.
-    pub fn detection_plan(&self) -> Option<[StatRequest; 12]> {
+    pub fn detection_plan(&self, parity_mode: ParityMode) -> Option<[StatRequest; 12]> {
         if self.len() != 4 {
             return None;
         }
@@ -289,18 +291,19 @@ impl Breakdown {
         let small = self.bucket_at(1)?.to_area_rng();
         let medium = self.bucket_at(2)?.to_area_rng();
         let large = self.bucket_at(3)?.to_area_rng();
-        use MaxDetSelector::{Largest, Value};
+        use MaxDetSelector::{Index, Largest};
         use Metric::{AveragePrecision, AverageRecall};
+        let [ap_plan, ..] = StatRequest::coco_detection(parity_mode);
         Some([
-            StatRequest::new(AveragePrecision, None, all.clone(), Largest),
+            StatRequest::new(AveragePrecision, None, all.clone(), ap_plan.max_dets),
             StatRequest::new(AveragePrecision, Some(0.5), all.clone(), Largest),
             StatRequest::new(AveragePrecision, Some(0.75), all.clone(), Largest),
             StatRequest::new(AveragePrecision, None, small.clone(), Largest),
             StatRequest::new(AveragePrecision, None, medium.clone(), Largest),
             StatRequest::new(AveragePrecision, None, large.clone(), Largest),
-            StatRequest::new(AverageRecall, None, all.clone(), Value(1)),
-            StatRequest::new(AverageRecall, None, all.clone(), Value(10)),
-            StatRequest::new(AverageRecall, None, all, Value(100)),
+            StatRequest::new(AverageRecall, None, all.clone(), Index(0)),
+            StatRequest::new(AverageRecall, None, all.clone(), Index(1)),
+            StatRequest::new(AverageRecall, None, all, Index(2)),
             StatRequest::new(AverageRecall, None, small, Largest),
             StatRequest::new(AverageRecall, None, medium, Largest),
             StatRequest::new(AverageRecall, None, large, Largest),
@@ -501,7 +504,7 @@ mod tests {
     use super::*;
     use crate::accumulate::{accumulate, AccumulateParams};
     use crate::evaluate::AreaRange;
-    use crate::parity::{iou_thresholds, recall_thresholds, ParityMode};
+    use crate::parity::{iou_thresholds, recall_thresholds};
     use crate::summarize::{summarize_with, Metric};
     use ndarray::{Array4, Array5};
 
@@ -588,34 +591,40 @@ mod tests {
     #[test]
     fn detection_plan_matches_canonical_default_bitwise() {
         // The Breakdown-built detection plan and the static
-        // `coco_detection_default` must produce stat-by-stat equal results
+        // `coco_detection` must produce stat-by-stat equal results in both
+        // parity modes
         // when summarized over the same Accumulated. This pins the
         // "default Breakdown produces byte-identical output to the prior
         // hardcoded path" invariant.
         let iou = iou_thresholds();
-        let max_dets = [1usize, 10, 100];
         let accum = crate::Accumulated {
             precision: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 0.5),
             recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 3), 0.7),
             scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 1.0),
         };
-
-        let static_plan = StatRequest::coco_detection_default();
         let bd = Breakdown::coco_area_det();
-        let bd_plan = bd.detection_plan().expect("4-bucket layout");
 
-        let from_static = summarize_with(&accum, &static_plan, iou, &max_dets).unwrap();
-        let from_bd = summarize_with(&accum, &bd_plan, iou, &max_dets).unwrap();
+        for parity_mode in [ParityMode::Strict, ParityMode::Corrected] {
+            // Quirk L9: the non-100 ladder exercises the parity-dependent
+            // AP line and the positional AR lines.
+            for max_dets in [[1usize, 10, 100], [1, 10, 500]] {
+                let static_plan = StatRequest::coco_detection(parity_mode);
+                let bd_plan = bd.detection_plan(parity_mode).expect("4-bucket layout");
 
-        assert_eq!(from_static.stats(), from_bd.stats());
-        // Stat-by-stat: metric, threshold, label, max_dets, value.
-        for (s, b) in from_static.lines.iter().zip(from_bd.lines.iter()) {
-            assert_eq!(s.metric, b.metric);
-            assert_eq!(s.iou_threshold, b.iou_threshold);
-            assert_eq!(s.area.label, b.area.label);
-            assert_eq!(s.area.index, b.area.index);
-            assert_eq!(s.max_dets, b.max_dets);
-            assert_eq!(s.value.to_bits(), b.value.to_bits());
+                let from_static = summarize_with(&accum, &static_plan, iou, &max_dets).unwrap();
+                let from_bd = summarize_with(&accum, &bd_plan, iou, &max_dets).unwrap();
+
+                assert_eq!(from_static.stats(), from_bd.stats());
+                // Stat-by-stat: metric, threshold, label, max_dets, value.
+                for (s, b) in from_static.lines.iter().zip(from_bd.lines.iter()) {
+                    assert_eq!(s.metric, b.metric);
+                    assert_eq!(s.iou_threshold, b.iou_threshold);
+                    assert_eq!(s.area.label, b.area.label);
+                    assert_eq!(s.area.index, b.area.index);
+                    assert_eq!(s.max_dets, b.max_dets);
+                    assert_eq!(s.value.to_bits(), b.value.to_bits());
+                }
+            }
         }
     }
 
@@ -651,7 +660,7 @@ mod tests {
         // composing their own plan rather than getting a silently-wrong
         // shape.
         let bd = Breakdown::coco_area_keypoints(); // 3 buckets
-        assert!(bd.detection_plan().is_none());
+        assert!(bd.detection_plan(ParityMode::Strict).is_none());
     }
 
     #[test]
