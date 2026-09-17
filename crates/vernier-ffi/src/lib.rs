@@ -82,6 +82,7 @@ mod numpy_utils;
 mod panoptic;
 mod panoptic_tables;
 mod partition_py;
+mod result_ingest;
 mod semantic;
 mod semantic_tables;
 mod tables;
@@ -2137,6 +2138,12 @@ pub(crate) fn build_update_payload<'py>(
         array_ingest::DetectionsArg::Dicts(dicts) => UpdatePayload::Inputs(
             array_ingest::dicts_to_inputs(py, &dicts, iou_type, cast_state)?,
         ),
+        array_ingest::DetectionsArg::AnnList(dicts) => UpdatePayload::Inputs(
+            array_ingest::ann_dicts_to_inputs(py, &dicts, iou_type, cast_state)?,
+        ),
+        array_ingest::DetectionsArg::Matrix(arr) => {
+            UpdatePayload::Inputs(result_ingest::matrix_to_inputs(&arr)?)
+        }
     })
 }
 

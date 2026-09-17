@@ -76,13 +76,58 @@ class Detections(TypedDict, total=False):
 
 
 #: Union of legal forms for ``StreamingEvaluator.update`` / ``BackgroundEvaluator.submit``.
-DetectionsInput: TypeAlias = bytes | Detections | Sequence[Detections]
+class ResultAnnotation(TypedDict, total=False):
+    """One COCO *result* annotation — the shape ``loadRes`` consumes.
+
+    This is the per-annotation dict a pycocotools- or TorchMetrics-style
+    caller already has in hand. Passing the list directly skips the
+    ``json.dumps`` / parse round trip the bytes route would otherwise
+    pay for the same data.
+
+    ``image_id``, ``category_id``, ``bbox`` and ``score`` are always
+    required. ``segmentation`` is required under ``iou_type='segm'`` /
+    ``'boundary'`` and takes the same forms as one element of
+    :attr:`Detections.rles`; ``keypoints`` is required under
+    ``iou_type='keypoints'``.
+
+    ``area`` and ``iscrowd`` are accepted and ignored: area is derived
+    (quirk **J3**) and detections are never crowd (quirks **E2**/**J4**).
+    An explicit ``id`` is preserved; an absent one is auto-assigned
+    ``1..N`` by position (quirk **J1**).
+    """
+
+    image_id: int
+    category_id: int
+    bbox: Sequence[float]
+    score: float
+    id: int
+    segmentation: RLEInput
+    keypoints: Sequence[float]
+    num_keypoints: int
+
+
+#: ``(N, 7)`` C-contiguous float64 detection matrix, laid out as
+#: ``image_id, x, y, w, h, score, category_id``. The ``image_id`` and
+#: ``category_id`` columns must hold exact integers within 2^53; a
+#: fractional or oversized value is rejected rather than truncated.
+DetectionMatrix: TypeAlias = NDArray[np.float64]
+
+DetectionsInput: TypeAlias = (
+    bytes
+    | Detections
+    | Sequence[Detections]
+    | ResultAnnotation
+    | Sequence[ResultAnnotation]
+    | DetectionMatrix
+)
 
 
 __all__ = [
     "CompressedRLE",
+    "DetectionMatrix",
     "Detections",
     "DetectionsInput",
     "RLEInput",
+    "ResultAnnotation",
     "UncompressedRLE",
 ]

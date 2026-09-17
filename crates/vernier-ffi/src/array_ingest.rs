@@ -38,6 +38,13 @@ pub(crate) enum DetectionsArg<'py> {
     /// One or more per-image `Detections` dicts. Single-image inputs
     /// land here as a one-element vec.
     Dicts(Vec<Bound<'py, PyDict>>),
+    /// A list of per-annotation COCO *result* dicts — the shape
+    /// `loadRes` consumes and TorchMetrics-style callers build. Handled
+    /// by `result_ingest::ann_dicts_to_inputs`.
+    AnnList(Vec<Bound<'py, PyDict>>),
+    /// An `(N, 7)` C-contiguous float64 array laid out as
+    /// `image_id, x, y, w, h, score, category_id`.
+    Matrix(Bound<'py, PyAny>),
 }
 
 impl<'py> DetectionsArg<'py> {
@@ -48,7 +55,19 @@ impl<'py> DetectionsArg<'py> {
             return Ok(Self::Bytes(PyBackedBytes::from(b.clone())));
         }
         if let Ok(d) = obj.cast::<PyDict>() {
-            return Ok(Self::Dicts(vec![d.clone()]));
+            let d = d.clone();
+            return Ok(if crate::result_ingest::dict_is_result_annotation(&d)? {
+                Self::AnnList(vec![d])
+            } else {
+                Self::Dicts(vec![d])
+            });
+        }
+        // The `(N, 7)` matrix must be probed *before* the sequence
+        // branch: numpy arrays and torch tensors satisfy the `Sequence`
+        // protocol, so an array reaching the loop below would be
+        // iterated row by row and rejected as "not a dict".
+        if crate::result_ingest::looks_like_matrix(obj)? {
+            return Ok(Self::Matrix(obj.clone()));
         }
         if let Ok(seq) = obj.cast::<PySequence>() {
             let len = seq.len()?;
@@ -62,15 +81,28 @@ impl<'py> DetectionsArg<'py> {
                 })?;
                 dicts.push(dict);
             }
-            return Ok(Self::Dicts(dicts));
+            // The list is homogeneous by construction in every caller we
+            // support, so the first element decides the route. `boxes`
+            // (columnar) wins over `bbox` (per-annotation), so an
+            // ADR-0030 payload can never be re-routed here.
+            let is_ann = match dicts.first() {
+                Some(first) => crate::result_ingest::dict_is_result_annotation(first)?,
+                // An empty list is the same empty payload either way.
+                None => false,
+            };
+            return Ok(if is_ann {
+                Self::AnnList(dicts)
+            } else {
+                Self::Dicts(dicts)
+            });
         }
         let type_name = obj
             .get_type()
             .name()
             .map_or_else(|_| "<unknown>".to_string(), |n| n.to_string());
         Err(PyTypeError::new_err(format!(
-            "detections must be bytes, a Detections dict, or a sequence of Detections dicts; \
-             got {type_name}"
+            "detections must be bytes, a Detections dict, a sequence of Detections dicts, \
+             a list of COCO result dicts, or an (N, 7) float64 array; got {type_name}"
         )))
     }
 }
@@ -134,7 +166,7 @@ fn emit_cast_warning_once(py: Python<'_>, latch: &AtomicBool) -> PyResult<()> {
 /// Per-call state threaded through validation helpers. `cast.is_some()`
 /// gates the f32→f64 / i32→i64 promotion path. The numpy resolvers are
 /// cached so inner loops don't re-walk `sys.modules` per (dict × field).
-struct CastCtx<'py, 'a> {
+pub(crate) struct CastCtx<'py, 'a> {
     py: Python<'py>,
     cast: Option<(&'a AtomicBool, &'a Bound<'py, PyAny>)>,
     asfortranarray: OnceCell<Bound<'py, PyAny>>,
@@ -309,27 +341,36 @@ fn extract_rles<'py>(
     }
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        let item = seq.get_item(i)?;
-        let seg = if let Ok(dict) = item.cast::<PyDict>() {
-            extract_rle_dict(dict, i)?
-        } else if item.hasattr("__dlpack_device__")? {
-            // Cheap protocol probe: lets us name all three accepted forms
-            // in the dispatch error below instead of falling through into
-            // a DLPack-specific message that hides forms 1 + 2.
-            extract_rle_bitmask(&item, i, ctx)?
-        } else {
-            let type_name = item
-                .get_type()
-                .name()
-                .map_or_else(|_| "<unknown>".to_string(), |n| n.to_string());
-            return Err(PyTypeError::new_err(format!(
-                "detections.rles[{i}]: expected RLE dict {{counts, size}} \
-                 or 2-D bool/uint8 array, got {type_name}"
-            )));
-        };
-        out.push(seg);
+        out.push(extract_one_rle(&seq.get_item(i)?, i, ctx)?);
     }
     Ok(out)
+}
+
+/// One segmentation, in any of the three accepted forms. Shared with
+/// the result-annotation route (`result_ingest`), whose `segmentation`
+/// field takes exactly the same shapes as one element of `rles`.
+pub(crate) fn extract_one_rle<'py>(
+    item: &Bound<'py, PyAny>,
+    i: usize,
+    ctx: &CastCtx<'py, '_>,
+) -> PyResult<Segmentation> {
+    if let Ok(dict) = item.cast::<PyDict>() {
+        extract_rle_dict(dict, i)
+    } else if item.hasattr("__dlpack_device__")? {
+        // Cheap protocol probe: lets us name all three accepted forms
+        // in the dispatch error below instead of falling through into
+        // a DLPack-specific message that hides forms 1 + 2.
+        extract_rle_bitmask(item, i, ctx)
+    } else {
+        let type_name = item
+            .get_type()
+            .name()
+            .map_or_else(|_| "<unknown>".to_string(), |n| n.to_string());
+        Err(PyTypeError::new_err(format!(
+            "detections.rles[{i}]: expected RLE dict {{counts, size}} \
+             or 2-D bool/uint8 array, got {type_name}"
+        )))
+    }
 }
 
 /// Forms 1 + 2: dict-shaped RLE. `counts` may be either `bytes`
@@ -486,6 +527,28 @@ pub(crate) fn dicts_to_inputs(
         all_inputs.extend(extract_inputs_one(dict, iou_type, &ctx)?);
     }
     Ok(all_inputs)
+}
+
+/// Sibling of [`dicts_to_inputs`] for the per-annotation result-dict
+/// route. Builds the same [`CastCtx`] (the `segmentation` field accepts
+/// the same bitmask forms as `rles`) and delegates the pass itself to
+/// `result_ingest`.
+pub(crate) fn ann_dicts_to_inputs(
+    py: Python<'_>,
+    dicts: &[Bound<'_, PyDict>],
+    iou_type: ArrayIouType,
+    cast_state: &CastState,
+) -> PyResult<Vec<DetectionInput>> {
+    let ascontig = match cast_state {
+        Some(_) => Some(resolve_ascontiguousarray(py)?),
+        None => None,
+    };
+    let ctx = CastCtx {
+        py,
+        cast: cast_state.as_ref().zip(ascontig.as_ref()),
+        asfortranarray: OnceCell::new(),
+    };
+    crate::result_ingest::ann_dicts_to_inputs(py, dicts, iou_type, &ctx)
 }
 
 // ---------------------------------------------------------------------------

@@ -128,6 +128,7 @@ else is detail.
 | [0051](0051-occupied-cell-visiting.md) | Visit only occupied cells; fill the grid in parallel | proposed |
 | [0053](0053-matching-dt-prefilter.md) | Skip the GT scan for detections that cannot match (per-cell column maxima) | proposed |
 | [0054](0054-split-parallel-json-ingestion.md) | Split JSON ingestion across the thread budget; round floats correctly | proposed (amended 2026-09-17) |
+| [0056](0056-python-detection-ingest-routes.md) | Two direct detection-ingest routes for in-process callers (list of result dicts, `(N, 7)` matrix) | proposed |
 
 ### TIDE design package — proposed cluster
 
