@@ -29,11 +29,43 @@
 //! objects, and any scanner bug — a mis-split leaves a fragment that
 //! does not parse, and the fallback re-runs the serial loader to
 //! produce the canonical error at the canonical byte offset.
+//!
+//! ## Acceptance must not depend on the thread count
+//!
+//! The splitter sees the whole document but only *parses* the elements
+//! of the arrays it was asked for. Everything else — trailing bytes
+//! after the document, and the members the caller did not ask for — is
+//! walked, not validated, and a walk that is happy to step over
+//! nonsense would accept input `serde_json::from_slice` rejects. That
+//! would make acceptance a function of `num_threads`, which ADR-0054
+//! rules out: errors on malformed input keep their text and their byte
+//! offsets.
+//!
+//! Two rules close that gap, and both resolve towards the serial
+//! loader rather than towards a second error-reporting implementation:
+//!
+//! - **Nothing may follow the document.** Both entry points require
+//!   the bytes after the closing bracket to be whitespace, so
+//!   `[{…}][{…}]` and `{…}}}}garbage` fall back and get serde's
+//!   `trailing characters` error at serde's offset.
+//! - **A skipped member is skipped by `serde_json` itself.**
+//!   [`skip_ignored_member`] runs the same `IgnoredAny` deserializer a
+//!   derived `Deserialize` impl uses for an unknown field, which both
+//!   validates the member and reports where it ends. Nothing here
+//!   re-implements "is this a number"; a malformed `"info"` value
+//!   returns `None` and the serial loader produces the message.
+//!
+//! One residual divergence is accepted and not worth a second pass to
+//! close: `serde_json`'s 128-deep recursion limit is counted from the
+//! start of whatever slice it is handed, so an element (or a skipped
+//! member) nested within one or two levels of the document limit is
+//! accepted here and rejected serially. Real COCO/LVIS payloads nest
+//! four deep.
 
 use std::ops::Range;
 
 use rayon::prelude::*;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, IgnoredAny};
 
 /// Index of the first non-whitespace byte at or after `i`.
 ///
@@ -47,15 +79,36 @@ fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// Bytes of a string scanned by the plain byte loop before
+/// [`skip_string`] hands the rest to `memchr2`.
+///
+/// Measured, not guessed. `memchr` everywhere is a loss on field names
+/// — the next quote is ~10 bytes away and the per-call SIMD setup costs
+/// more than the bytes it skips — but a `segmentation.counts` RLE
+/// string is multi-KB and the byte loop is the serial cap on the whole
+/// split. Gating on length gets both. Structural scan, best of 40, 8
+/// cores, no `target-cpu=native`, median ms:
+///
+/// | payload                     | scalar | memchr2 | gate 16 | gate 32 | gate 64 |
+/// |-----------------------------|--------|---------|---------|---------|---------|
+/// | Objects365 bbox DT, 171 MiB | 78.6   | 92.6    | 76.3    | 76.2    | 77.6    |
+/// | COCO GT (polygons), 20 MiB  | 4.67   | 5.62    | 4.76    | 4.65    | 4.81    |
+/// | COCO segm DT (RLE), 18 MiB  | 8.61   | 7.90    | 6.89    | 6.99    | 7.54    |
+/// | LVIS segm DT (RLE), 96 MiB  | 49.2   | 49.6    | 42.6    | 43.1    | 46.3    |
+///
+/// 32 is best-or-tied on three of the four and never worse than the
+/// byte loop, which 16 is not (COCO GT) and 64 is not (both RLE
+/// payloads).
+const STRING_SCALAR_GATE: usize = 32;
+
 /// Index just past the string starting at `i` (its opening quote).
 ///
-/// A plain byte loop, deliberately. `memchr` was measured here and is
-/// slower: JSON field names put the next quote ~10 bytes away, and at
-/// that distance the per-call SIMD setup costs more than the bytes it
-/// skips.
+/// A byte loop for the first [`STRING_SCALAR_GATE`] bytes, `memchr2`
+/// beyond it — see that constant for the measurements behind the gate.
 fn skip_string(bytes: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1;
-    while j < bytes.len() {
+    let gate = (j + STRING_SCALAR_GATE).min(bytes.len());
+    while j < gate {
         match bytes[j] {
             // An escape consumes the next byte whatever it is, which is
             // what keeps `\"` from ending the string. `\uXXXX` needs no
@@ -65,7 +118,17 @@ fn skip_string(bytes: &[u8], i: usize) -> Option<usize> {
             _ => j += 1,
         }
     }
-    None
+    // Past the gate the same two rules hold, found with SIMD. An
+    // escape at the gate boundary may have pushed `j` past the end;
+    // `bytes.get` then yields `None`, exactly as the byte loop did.
+    loop {
+        let rel = memchr::memchr2(b'\\', b'"', bytes.get(j..)?)?;
+        let at = j + rel;
+        if bytes[at] == b'"' {
+            return Some(at + 1);
+        }
+        j = at + 2;
+    }
 }
 
 /// Index just past the object or array starting at `i`.
@@ -102,24 +165,56 @@ fn skip_container(bytes: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// Index just past the JSON value starting at `i`.
-fn skip_value(bytes: &[u8], i: usize) -> Option<usize> {
-    match *bytes.get(i)? {
-        b'"' => skip_string(bytes, i),
-        b'{' | b'[' => skip_container(bytes, i),
-        // Numbers, `true`, `false`, `null`: run to the next structural
-        // byte. Their exact spelling is `serde_json`'s business — we
-        // only need to know where the value stops.
-        _ => {
-            let mut j = i;
-            while j < bytes.len()
-                && !matches!(bytes[j], b',' | b'}' | b']' | b' ' | b'\t' | b'\r' | b'\n')
-            {
-                j += 1;
-            }
-            (j > i).then_some(j)
-        }
-    }
+/// Index just past the `"key": value` pair starting at `key` (its
+/// opening quote), for a member the caller did not ask for — validated
+/// by `serde_json`, not by this module.
+///
+/// A skipped member still has to be *legal*, or the parallel path would
+/// accept documents the serial path rejects: `{"info": tru, …}` and
+/// `{"info": 01+2x, …}` are errors at a specific byte offset and must
+/// stay errors. Rather than re-derive JSON's number and literal
+/// grammars — a second implementation to keep in step with serde's —
+/// this hands the bytes to the very deserializer a derived
+/// `Deserialize` impl uses for an unknown field, `IgnoredAny`, and
+/// reads the end position back off the stream. Wrong input therefore
+/// returns `None` and the serial loader reports it, with serde's own
+/// message at serde's own offset.
+///
+/// The key goes through `String`, not `IgnoredAny`, and the difference
+/// is load-bearing: a derived impl always *decodes* an unknown key —
+/// it has to, to compare it against the known field names — so an
+/// invalid escape, an unpaired surrogate or a raw non-UTF-8 byte in a
+/// key is an error serially. `IgnoredAny` skips a string without
+/// decoding it and would have let those through. (A requested key
+/// matched raw bytes and is therefore escape-free ASCII, so it needs
+/// no check.) Inside the ignored *value*, by contrast, `IgnoredAny` is
+/// exactly right: it is what the serial path uses there too, so the
+/// two agree on strings it does not decode.
+///
+/// Cost is bounded by the skipped member, which on COCO and LVIS is
+/// `info` and `licenses` — a few hundred bytes against the hundreds of
+/// megabytes in `annotations`.
+fn skip_ignored_member(bytes: &[u8], key: usize, value: usize) -> Option<usize> {
+    json_value_end::<String>(bytes, key)?;
+    json_value_end::<IgnoredAny>(bytes, value)
+}
+
+/// Index just past the single JSON value starting at `i`, or `None` if
+/// `serde_json` will not read a `T` there.
+fn json_value_end<T: DeserializeOwned>(bytes: &[u8], i: usize) -> Option<usize> {
+    let mut stream = serde_json::Deserializer::from_slice(bytes.get(i..)?).into_iter::<T>();
+    stream.next()?.ok()?;
+    Some(i + stream.byte_offset())
+}
+
+/// `true` when nothing but JSON whitespace follows `end`.
+///
+/// Without this the parallel path stops reading at the first complete
+/// document and silently drops whatever came after it —
+/// `[{…}][{…}]` would load half the detections instead of raising
+/// `trailing characters`.
+fn only_whitespace_follows(bytes: &[u8], end: usize) -> bool {
+    skip_ws(bytes, end) == bytes.len()
 }
 
 /// Element ranges of an array of objects, plus the index just past its
@@ -154,9 +249,14 @@ fn scan_object_array(bytes: &[u8], i: usize) -> Option<(Vec<Range<usize>>, usize
 }
 
 /// Element ranges of a whole-document array of objects.
+///
+/// The array must *be* the document: anything but whitespace after its
+/// closing bracket falls back, so `trailing characters` stays an error
+/// instead of becoming a silent truncation.
 pub(crate) fn document_object_array(bytes: &[u8]) -> Option<Vec<Range<usize>>> {
     let start = skip_ws(bytes, 0);
-    scan_object_array(bytes, start).map(|(elements, _)| elements)
+    let (elements, end) = scan_object_array(bytes, start)?;
+    only_whitespace_follows(bytes, end).then_some(elements)
 }
 
 /// Element ranges of the named array members of a top-level object, in
@@ -166,8 +266,9 @@ pub(crate) fn document_object_array(bytes: &[u8]) -> Option<Vec<Range<usize>>> {
 /// it, and `annotations` is most of the file.
 ///
 /// `None` when the document is not a plain object, a requested key is
-/// missing, a requested value is not an array of objects, or a key
-/// appears more than once.
+/// missing, a requested value is not an array of objects, a key
+/// appears more than once, a skipped member is malformed, or anything
+/// but whitespace follows the closing brace.
 pub(crate) fn top_level_object_arrays(
     bytes: &[u8],
     keys: &[&str],
@@ -203,12 +304,17 @@ pub(crate) fn top_level_object_arrays(
                 found[slot] = Some(elements);
                 end
             }
-            None => skip_value(bytes, value)?,
+            None => skip_ignored_member(bytes, i, value)?,
         };
         i = skip_ws(bytes, value_end);
         match bytes.get(i)? {
             b',' => i = skip_ws(bytes, i + 1),
-            b'}' => break,
+            b'}' => {
+                if !only_whitespace_follows(bytes, i + 1) {
+                    return None;
+                }
+                break;
+            }
             _ => return None,
         }
     }
@@ -308,6 +414,29 @@ where
 pub(crate) fn chunks_for(threads: usize) -> usize {
     threads.max(1).saturating_mul(4)
 }
+
+/// Smallest thread budget at which splitting beats parsing serially.
+///
+/// The split is not free: it walks the whole document once before any
+/// element is deserialized, and it builds a `Range` per element. One
+/// thread has nothing to spend that on, so it pays the scan and keeps
+/// the serial parse — and [`chunks_for`] would still cut four chunks
+/// for it. `num_threads=1` is a setting callers actually pass, so the
+/// loaders short-circuit below this value instead of taking the loss.
+///
+/// Measured best-of-5, 8 cores, release profile, parallel ÷ serial
+/// (>1 is a speedup):
+///
+/// | payload                      | t1   | t2   | t3   | t4   | t8   |
+/// |------------------------------|------|------|------|------|------|
+/// | Objects365 bbox DT, 300k det | 0.87 | 1.09 | 1.27 | 1.32 | 1.47 |
+/// | COCO segm DT (RLE)           | 0.74 | 1.17 | 1.19 | 1.42 | 1.24 |
+/// | LVIS segm DT (RLE)           | 0.84 | 1.35 | 1.50 | 1.66 | 1.97 |
+/// | COCO GT (`instances_val2017`)| 0.94 | 1.67 | 1.90 | 2.14 | 2.98 |
+///
+/// The crossover is between one thread and two on every payload, so
+/// the threshold is 2 — not the "a few threads" one would guess.
+pub(crate) const MIN_THREADS_TO_SPLIT: usize = 2;
 
 #[cfg(test)]
 mod tests {
@@ -466,6 +595,161 @@ mod tests {
                 "expected fallback for {json}"
             );
         }
+    }
+
+    /// Nothing may follow the document. Before this check the splitter
+    /// stopped at the first closing bracket and silently dropped the
+    /// rest, so `[{..}][{..}]` parsed as half a payload while
+    /// `serde_json` called it `trailing characters`.
+    #[test]
+    fn trailing_bytes_after_the_document_fall_back() {
+        for json in [
+            r#"[{"id":1}][{"id":2}]"#,
+            r#"[{"id":1}] xyz"#,
+            r#"[{"id":1}]]"#,
+            "[{\"id\":1}]\u{0}",
+        ] {
+            assert!(
+                document_object_array(json.as_bytes()).is_none(),
+                "expected fallback for {json}"
+            );
+        }
+        // Whitespace, however, is not trailing content.
+        assert!(document_object_array(b" [{\"id\":1}] \n\t\r").is_some());
+
+        for json in [
+            r#"{"items":[{"id":1}]}}}}garbage"#,
+            r#"{"items":[{"id":1}]} ["#,
+            r#"{"items":[{"id":1}]}{"items":[]}"#,
+        ] {
+            assert!(
+                top_level_object_arrays(json.as_bytes(), &["items"]).is_none(),
+                "expected fallback for {json}"
+            );
+        }
+        assert!(top_level_object_arrays(b"{\"items\":[{\"id\":1}]}  \n", &["items"]).is_some());
+    }
+
+    /// A member the caller did not ask for is still part of the
+    /// document, so it has to be as legal as the rest of it. The
+    /// scalar walk it used to get accepted `tru`, `NaN` and `01+2x`,
+    /// which `serde_json` rejects at a named byte offset.
+    #[test]
+    fn a_malformed_skipped_member_falls_back() {
+        for tail in [
+            "tru",
+            "NaN",
+            "01+2x",
+            "-",
+            "1.",
+            "0x10",
+            "+1",
+            "'x'",
+            "[1,]",
+            "{\"a\":}",
+            "\"a\\q\"",
+            "01",
+            "1e",
+            "nul",
+            "truefalse",
+            "{\"a\":1,}",
+        ] {
+            let json = format!(r#"{{"info": {tail}, "items":[{{"id":1}}]}}"#);
+            assert!(
+                top_level_object_arrays(json.as_bytes(), &["items"]).is_none(),
+                "expected fallback for skipped value {tail}"
+            );
+            assert!(
+                serde_json::from_str::<serde_json::Value>(&json).is_err(),
+                "fixture {tail} should be malformed"
+            );
+        }
+        // A skipped key is validated too: a bad escape in one is an
+        // error serially and must not be walked past here.
+        let bad_key = r#"{"in\qfo": 1, "items":[{"id":1}]}"#;
+        assert!(top_level_object_arrays(bad_key.as_bytes(), &["items"]).is_none());
+        assert!(serde_json::from_str::<serde_json::Value>(bad_key).is_err());
+
+        // ...and the key is decoded, not merely skipped. `IgnoredAny`
+        // walks a string without validating its bytes, so it accepted a
+        // raw non-UTF-8 byte here while the serial path — which has to
+        // decode every key to match it against the known fields —
+        // raised `invalid unicode code point`. Found by
+        // `mutated_gt_loads_identically_on_both_paths`.
+        #[derive(Deserialize)]
+        struct Doc {
+            #[allow(dead_code)]
+            items: Vec<Item>,
+        }
+        let mut raw_key = br#"{"info": 1, "items":[{"id":1}]}"#.to_vec();
+        raw_key[2] = 0x80;
+        assert!(top_level_object_arrays(&raw_key, &["items"]).is_none());
+        assert!(serde_json::from_slice::<Doc>(&raw_key).is_err());
+        // An undecoded byte inside a skipped *value* is the mirror
+        // case: the serial path skips that string with `IgnoredAny`
+        // too, so both accept it and the splitter must not get
+        // stricter than the loader it stands in for.
+        let mut raw_value = br#"{"info": "xx", "items":[{"id":1}]}"#.to_vec();
+        raw_value[11] = 0x80;
+        assert!(top_level_object_arrays(&raw_value, &["items"]).is_some());
+        assert!(serde_json::from_slice::<Doc>(&raw_value).is_ok());
+    }
+
+    /// The legal spellings a skipped member can take must all still be
+    /// stepped over, or every COCO file with an `info` block would
+    /// take the slow path.
+    #[test]
+    fn well_formed_skipped_members_are_stepped_over() {
+        for tail in [
+            "true",
+            "false",
+            "null",
+            "0",
+            "-0.0",
+            "1e-3",
+            "12345.6789",
+            "\"a string with } and , in it\"",
+            "[1, 2, [3, {\"x\": null}]]",
+            "{\"nested\": {\"deep\": [1]}}",
+            "{}",
+            "[]",
+            "\"\\u00e9\\\"\"",
+        ] {
+            let json = format!(r#"{{"info": {tail} , "items":[{{"id":1}}]}}"#);
+            let arrays = top_level_object_arrays(json.as_bytes(), &["items"])
+                .unwrap_or_else(|| panic!("expected a split for skipped value {tail}"));
+            assert_eq!(arrays[0].len(), 1, "skipped value {tail}");
+        }
+    }
+
+    /// The gate in `skip_string` changes which loop finds the closing
+    /// quote; both sides of it must agree, including when an escape
+    /// straddles the boundary.
+    #[test]
+    fn the_string_scan_gate_is_invisible() {
+        for len in 0..(STRING_SCALAR_GATE * 3) {
+            for prefix in [0usize, 1] {
+                // `prefix` shifts an escaped quote across the gate.
+                let mut s = String::from("\"");
+                s.push_str(&"x".repeat(prefix));
+                s.push_str(&"\\\"".repeat(len));
+                s.push('"');
+                let bytes = s.as_bytes();
+                assert_eq!(
+                    skip_string(bytes, 0),
+                    Some(bytes.len()),
+                    "len={len} prefix={prefix}"
+                );
+                // Unterminated: dropping the closing quote must yield
+                // `None`, not a runaway index.
+                assert!(skip_string(&bytes[..bytes.len() - 1], 0).is_none());
+            }
+        }
+        // A trailing backslash consumes the byte that would have been
+        // the terminator, on either side of the gate.
+        assert!(skip_string(b"\"abc\\\"", 0).is_none());
+        let long = format!("\"{}\\\"", "y".repeat(STRING_SCALAR_GATE * 2));
+        assert!(skip_string(long.as_bytes(), 0).is_none());
     }
 
     /// A whole-document array is the detection payload's shape.

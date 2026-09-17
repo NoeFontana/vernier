@@ -531,24 +531,38 @@ impl CocoDataset {
     ///
     /// `threads` is the caller's budget. Per ADR-0047 the
     /// `num_threads=None` path never calls this; it stays on
-    /// [`Self::from_json_bytes`] and never enters rayon.
+    /// [`Self::from_json_bytes`] and never enters rayon. A budget below
+    /// `MIN_THREADS_TO_SPLIT` also stays serial — the structural scan is
+    /// only worth its cost once there are threads to spend it on.
     ///
     /// # Errors
     ///
     /// Same as [`Self::from_json_bytes`].
     pub fn from_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
+            return Self::from_json_bytes(bytes);
+        }
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
         let parts = Self::split_parse(bytes, threads);
         #[cfg(feature = "bench-timings")]
-        {
-            let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            dataset_timings::COUNTERS.add(dataset_timings::GT_PARSE_NS, parse_ns);
-        }
+        let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
         match parts {
             Some((images, annotations, categories)) => {
-                Self::from_parts(images, annotations, categories)
+                #[cfg(feature = "bench-timings")]
+                let t1 = std::time::Instant::now();
+                let result = Self::from_parts(images, annotations, categories);
+                #[cfg(feature = "bench-timings")]
+                {
+                    let from_parts_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    dataset_timings::COUNTERS.add(dataset_timings::GT_PARSE_NS, parse_ns);
+                    dataset_timings::COUNTERS.add(dataset_timings::GT_FROM_PARTS_NS, from_parts_ns);
+                }
+                result
             }
+            // The fallback records nothing of its own: `from_json_bytes`
+            // owns both counters, and adding the abandoned scan to
+            // `GT_PARSE_NS` here would count the same phase twice.
             None => Self::from_json_bytes(bytes),
         }
     }
@@ -677,6 +691,9 @@ impl CocoDataset {
     ///
     /// Same as [`Self::from_lvis_json_bytes`].
     pub fn from_lvis_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
+            return Self::from_lvis_json_bytes(bytes);
+        }
         match Self::split_parse_lvis(bytes, threads) {
             Some(raw) => Self::from_lvis_parts(raw),
             None => Self::from_lvis_json_bytes(bytes),
@@ -1359,10 +1376,16 @@ impl CocoDetections {
     /// which matters beyond parity: [`Self::from_inputs`] assigns
     /// auto-ids by position (quirk **J1**).
     ///
+    /// A budget below `MIN_THREADS_TO_SPLIT` stays on the serial loader;
+    /// see that constant for the crossover measurement.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::from_json_bytes`].
     pub fn from_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
+            return Self::from_json_bytes(bytes);
+        }
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
         let parsed = crate::json_split::document_object_array(bytes).and_then(|elements| {
@@ -1374,12 +1397,24 @@ impl CocoDetections {
             .ok()
         });
         #[cfg(feature = "bench-timings")]
-        {
-            let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            dataset_timings::COUNTERS.add(dataset_timings::DT_PARSE_NS, parse_ns);
-        }
+        let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
         match parsed {
-            Some(inputs) => Self::from_inputs(inputs),
+            Some(inputs) => {
+                #[cfg(feature = "bench-timings")]
+                let t1 = std::time::Instant::now();
+                let result = Self::from_inputs(inputs);
+                #[cfg(feature = "bench-timings")]
+                {
+                    let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
+                    dataset_timings::COUNTERS.add(dataset_timings::DT_PARSE_NS, parse_ns);
+                    dataset_timings::COUNTERS
+                        .add(dataset_timings::DT_FROM_INPUTS_NS, from_inputs_ns);
+                }
+                result
+            }
+            // As on the GT side: the fallback's own instrumentation is
+            // the only one that fires, so the abandoned scan is not
+            // added to `DT_PARSE_NS` a second time.
             None => Self::from_json_bytes(bytes),
         }
     }
@@ -1977,6 +2012,250 @@ mod tests {
                 format!("{:?}", serial.detections()),
                 format!("{:?}", parallel.detections()),
                 "threads={threads}"
+            );
+        }
+    }
+
+    /// LVIS GT with the federated extras the COCO fixture cannot
+    /// reach: `neg_category_ids`, `not_exhaustive_category_ids` and
+    /// per-category `frequency`, plus a skipped top-level member.
+    const SPLITTER_LVIS_GT: &str = r#"{
+        "info": {"version": "1.0"},
+        "licenses": [{"id": 1, "name": "cc"}],
+        "images": [
+            {"id": 1, "width": 100, "height": 80, "file_name": "a,{}.jpg",
+             "neg_category_ids": [9], "not_exhaustive_category_ids": [7]},
+            {"id": 2, "width": 60, "height": 60, "file_name": "b.jpg",
+             "neg_category_ids": []}
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 7, "bbox": [0, 0, 10, 10],
+             "area": 100.0, "iscrowd": 0,
+             "segmentation": {"counts": "a},{b", "size": [80, 100]}},
+            {"id": 2, "image_id": 2, "category_id": 9, "bbox": [1, 1, 2, 2],
+             "area": 4.0, "iscrowd": 0}
+        ],
+        "categories": [
+            {"id": 7, "name": "thing", "supercategory": "stuff", "frequency": "c"},
+            {"id": 9, "name": "other", "supercategory": "stuff", "frequency": "r"}
+        ]
+    }"#;
+
+    /// `LvisImageRaw` / `LvisCategoryRaw` reach `serde_json` through
+    /// the splitter's element ranges rather than through one
+    /// `from_slice`, so the federated fields need their own equivalence
+    /// gate — the COCO fixture never deserializes them.
+    #[test]
+    fn parallel_lvis_loader_matches_the_serial_loader() {
+        let serial =
+            CocoDataset::from_lvis_json_bytes(SPLITTER_LVIS_GT.as_bytes()).expect("serial");
+        let serial_fed = serial.federated().expect("federated");
+        for threads in [1usize, 2, 4, 8] {
+            let parallel =
+                CocoDataset::from_lvis_json_bytes_parallel(SPLITTER_LVIS_GT.as_bytes(), threads)
+                    .expect("parallel");
+            assert_eq!(
+                format!("{:?}", serial.annotations()),
+                format!("{:?}", parallel.annotations()),
+                "threads={threads}"
+            );
+            assert_eq!(
+                format!("{:?}", serial.images()),
+                format!("{:?}", parallel.images()),
+                "threads={threads}"
+            );
+            assert_eq!(
+                format!("{:?}", serial.categories()),
+                format!("{:?}", parallel.categories()),
+                "threads={threads}"
+            );
+            let fed = parallel.federated().expect("federated");
+            for image in [ImageId(1), ImageId(2)] {
+                assert_eq!(
+                    serial_fed.pos_category_ids.get(&image),
+                    fed.pos_category_ids.get(&image),
+                    "pos threads={threads}"
+                );
+                assert_eq!(
+                    serial_fed.neg_category_ids.get(&image),
+                    fed.neg_category_ids.get(&image),
+                    "neg threads={threads}"
+                );
+                assert_eq!(
+                    serial_fed.not_exhaustive_category_ids.get(&image),
+                    fed.not_exhaustive_category_ids.get(&image),
+                    "not_exhaustive threads={threads}"
+                );
+            }
+            let sorted = |m: &HashMap<CategoryId, Frequency>| {
+                let mut v: Vec<(i64, Frequency)> = m.iter().map(|(k, f)| (k.0, *f)).collect();
+                v.sort_unstable_by_key(|(id, _)| *id);
+                v
+            };
+            assert_eq!(
+                sorted(&serial_fed.category_frequency),
+                sorted(&fed.category_frequency),
+                "frequency threads={threads}"
+            );
+        }
+
+        // A malformed LVIS document must fail identically on both.
+        let malformed = SPLITTER_LVIS_GT.replacen(r#""version": "1.0""#, r#""version": tru"#, 1);
+        let serial = CocoDataset::from_lvis_json_bytes(malformed.as_bytes()).unwrap_err();
+        let parallel =
+            CocoDataset::from_lvis_json_bytes_parallel(malformed.as_bytes(), 4).unwrap_err();
+        assert_eq!(serial.to_string(), parallel.to_string());
+    }
+
+    /// Detections shaped like a real DT payload, for the equivalence
+    /// gates below.
+    const SPLITTER_DT: &str = r#"[
+        {"image_id": 1, "category_id": 7, "bbox": [0, 0, 10, 10], "score": 0.5,
+         "segmentation": {"counts": "a},{b", "size": [80, 100]}},
+        {"id": 12, "image_id": 2, "category_id": 9, "bbox": [1, 1, 2, 2],
+         "score": 0.9992794394493103},
+        {"image_id": 2, "category_id": 9, "bbox": [1.5, 1.5, 2.5, 2.5], "score": 1e-3}
+    ]"#;
+
+    /// Acceptance must not be a function of `num_threads` (ADR-0054:
+    /// "errors on malformed input must keep their current text and
+    /// byte offsets"). The splitter walks past the parts of the
+    /// document it does not parse, so every such part gets a case
+    /// here: bytes after the document, and a member nobody asked for.
+    #[test]
+    fn parallel_loaders_accept_exactly_what_the_serial_loaders_accept() {
+        let gt_cases = [
+            // Trailing bytes after the top-level object.
+            format!("{SPLITTER_GT}}}}}}}garbage"),
+            format!("{SPLITTER_GT} ["),
+            format!("{SPLITTER_GT}{SPLITTER_GT}"),
+            // A skipped member that is not valid JSON.
+            SPLITTER_GT.replacen(r#""description""#, r#""description": tru, "x""#, 1),
+            SPLITTER_GT.replacen(r#"{"description""#, r#"{"a": NaN, "description""#, 1),
+            SPLITTER_GT.replacen(r#"{"description""#, r#"{"a": 01+2x, "description""#, 1),
+            SPLITTER_GT.replacen(r#""info""#, r#""in\qfo""#, 1),
+            // And the well-formed original, which must still split.
+            SPLITTER_GT.to_owned(),
+        ];
+        for case in &gt_cases {
+            let serial = CocoDataset::from_json_bytes(case.as_bytes());
+            for threads in [1usize, 2, 3, 8] {
+                let parallel = CocoDataset::from_json_bytes_parallel(case.as_bytes(), threads);
+                assert_outcomes_match(
+                    serial.as_ref().map(|d| format!("{:?}", d.annotations())),
+                    parallel.as_ref().map(|d| format!("{:?}", d.annotations())),
+                    &format!("threads={threads} case={case}"),
+                );
+            }
+        }
+
+        let dt_cases = [
+            format!("{SPLITTER_DT}{SPLITTER_DT}"),
+            format!("{SPLITTER_DT} xyz"),
+            format!("{SPLITTER_DT}]"),
+            SPLITTER_DT.to_owned(),
+        ];
+        for case in &dt_cases {
+            let serial = CocoDetections::from_json_bytes(case.as_bytes());
+            for threads in [1usize, 2, 3, 8] {
+                let parallel = CocoDetections::from_json_bytes_parallel(case.as_bytes(), threads);
+                assert_outcomes_match(
+                    serial.as_ref().map(|d| format!("{:?}", d.detections())),
+                    parallel.as_ref().map(|d| format!("{:?}", d.detections())),
+                    &format!("threads={threads} case={case}"),
+                );
+            }
+        }
+    }
+
+    /// Serial and parallel must agree on acceptance, on the loaded
+    /// values, and — when they reject — on the exact message, which is
+    /// where the byte offset users debug against lives.
+    fn assert_outcomes_match(
+        serial: Result<String, &EvalError>,
+        parallel: Result<String, &EvalError>,
+        context: &str,
+    ) {
+        match (serial, parallel) {
+            (Ok(a), Ok(b)) => assert_eq!(a, b, "values diverged: {context}"),
+            (Err(a), Err(b)) => assert_eq!(
+                a.to_string(),
+                b.to_string(),
+                "error text diverged: {context}"
+            ),
+            (Ok(_), Err(e)) => panic!("parallel rejected what serial accepted ({e}): {context}"),
+            (Err(e), Ok(_)) => panic!("parallel accepted what serial rejected ({e}): {context}"),
+        }
+    }
+
+    // Seeded byte mutations over the two fixtures, asserting the same
+    // equivalence the hand-written cases do. Single-byte edits are the
+    // shape that breaks a structural scanner: they turn a quote into a
+    // brace, a digit into a letter, or a closing bracket into
+    // whitespace, anywhere in the document — including the regions the
+    // splitter only walks.
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+
+        #[test]
+        fn mutated_gt_loads_identically_on_both_paths(
+            offset in any::<prop::sample::Index>(),
+            byte in any::<u8>(),
+            threads in 1usize..=8,
+        ) {
+            let mut bytes = SPLITTER_GT.as_bytes().to_vec();
+            let at = offset.index(bytes.len());
+            bytes[at] = byte;
+            let serial = CocoDataset::from_json_bytes(&bytes);
+            let parallel = CocoDataset::from_json_bytes_parallel(&bytes, threads);
+            assert_outcomes_match(
+                serial.as_ref().map(|d| format!("{:?}", d.annotations())),
+                parallel.as_ref().map(|d| format!("{:?}", d.annotations())),
+                &format!("threads={threads} at={at} byte={byte}"),
+            );
+        }
+
+        #[test]
+        fn mutated_dt_loads_identically_on_both_paths(
+            offset in any::<prop::sample::Index>(),
+            byte in any::<u8>(),
+            threads in 1usize..=8,
+        ) {
+            let mut bytes = SPLITTER_DT.as_bytes().to_vec();
+            let at = offset.index(bytes.len());
+            bytes[at] = byte;
+            let serial = CocoDetections::from_json_bytes(&bytes);
+            let parallel = CocoDetections::from_json_bytes_parallel(&bytes, threads);
+            assert_outcomes_match(
+                serial.as_ref().map(|d| format!("{:?}", d.detections())),
+                parallel.as_ref().map(|d| format!("{:?}", d.detections())),
+                &format!("threads={threads} at={at} byte={byte}"),
+            );
+        }
+
+        // Truncation and insertion, which a single-byte overwrite
+        // cannot reach: both move every later offset, so a scanner
+        // that survived them by luck would not survive twice.
+        #[test]
+        fn truncated_or_extended_gt_loads_identically_on_both_paths(
+            offset in any::<prop::sample::Index>(),
+            byte in any::<u8>(),
+            truncate in any::<bool>(),
+            threads in 1usize..=8,
+        ) {
+            let mut bytes = SPLITTER_GT.as_bytes().to_vec();
+            let at = offset.index(bytes.len());
+            if truncate {
+                bytes.truncate(at);
+            } else {
+                bytes.insert(at, byte);
+            }
+            let serial = CocoDataset::from_json_bytes(&bytes);
+            let parallel = CocoDataset::from_json_bytes_parallel(&bytes, threads);
+            assert_outcomes_match(
+                serial.as_ref().map(|d| format!("{:?}", d.annotations())),
+                parallel.as_ref().map(|d| format!("{:?}", d.annotations())),
+                &format!("threads={threads} at={at} truncate={truncate} byte={byte}"),
             );
         }
     }
