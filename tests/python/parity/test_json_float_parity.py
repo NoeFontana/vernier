@@ -94,6 +94,9 @@ def _dt_scores_from_grid(num_threads: int | None) -> list[float]:
         100,
         use_cats=True,
         num_threads=num_threads,
+        # `eval_imgs()` reads per-cell metadata, which is opt-in since
+        # retention became a caller's choice (ADR-0055).
+        retain_meta=True,
     )
     scores: list[float] = []
     cells: list[dict[str, Any] | None] = grid.eval_imgs()
