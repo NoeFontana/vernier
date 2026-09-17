@@ -884,6 +884,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Pinned pycocotools version">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bit-for-bit-and-against-which-build" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bit-for-bit, and against which build
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2051,7 +2068,9 @@
 
 <h1 id="migrating-from-pycocotools-to-vernier">Migrating from <code>pycocotools</code> to vernier</h1>
 <p>vernier reproduces <code>pycocotools==2.0.11</code>'s evaluation semantics
-bit-for-bit in strict parity mode. ADR-0002 (parity model) and
+bit-for-bit in strict parity mode, on every architecture it ships
+(see <a href="#bit-for-bit-and-against-which-build">Bit-for-bit, and against which build</a>
+for the one scoping caveat). ADR-0002 (parity model) and
 ADR-0007 (drop-in policy) are the design records; this guide is the
 user-facing migration path. Audience: anyone moving an existing
 <code>COCOeval</code>-based evaluation pipeline onto vernier.</p>
@@ -2241,6 +2260,31 @@ the cross-codebase reference.</p>
 ADR-level decision per CLAUDE.md §"Parity contract" — every quirk
 vernier reproduces is keyed to this version, and the parity harness
 double-runs reference and candidate at exactly this SHA.</p>
+<h3 id="bit-for-bit-and-against-which-build">Bit-for-bit, and against which build</h3>
+<p>"Bit-for-bit" is measured against <code>pycocotools==2.0.11</code> <strong>as published
+on PyPI</strong> — the wheel <code>pyproject.toml</code> pins and the parity harness
+installs. That is the reference on x86-64 and on aarch64 alike, and
+vernier matches it on both.</p>
+<p>The scoping matters for one narrow case. pycocotools' IoU kernel is C,
+and a C compiler is allowed to fuse a multiply and an add into a single
+rounding step. The published builds do not (checked by disassembly on
+five arm64 binaries, covering the Linux glibc and musl wheels, the
+macOS universal2 arm64 slice and the Windows arm64 build), but a
+pycocotools you compile yourself —
+<code>pip install --no-binary pycocotools</code>, a distro package, a conda-forge
+build — goes through your compiler, not the wheel builder's. On ARM,
+where the fused instruction is always available, such a build can round
+the union differently from the published one.</p>
+<p>If that happens, expect vernier and your locally built pycocotools to
+disagree by 1-2 units in the last place of the IoU, on roughly one box
+pair in a million. It is far below any reporting precision and it is
+not a divergence vernier introduces: vernier's output is byte-identical
+on x86-64 and ARM by design, because a result that depended on the CPU
+that produced it could not be cached, shipped between machines, or
+combined across a heterogeneous cluster. Install the published wheel
+and the question does not arise.</p>
+<p>Design record: <a href="../../adr/0056-pin-no-fp-contraction-for-bbox-iou/">ADR-0056</a>;
+quirk <strong>I7</strong> in the <a href="../../engineering/pycocotools-quirks/">quirks survey</a>.</p>
 <h2 id="whole-dataset-parity-smoke">Whole-dataset parity smoke</h2>
 <p>The <code>tests/python/parity/test_parity.py</code> suite double-runs vernier
 and pycocotools on a fixture corpus and diffs every intermediate
