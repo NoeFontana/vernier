@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
-    "numpy>=2.0",
+    "numpy>=1.26",
     # ADR-0046 §F2: ``vernier.aggregate`` is implemented on top of
     # pyarrow's Table/RecordBatch primitives. It is part of the
     # top-level :mod:`vernier` namespace, so importing the package
