@@ -806,4 +806,80 @@ mod tests {
         // 16x16 = 256 is the first cell that engages the prefilter.
         assert_eq!(PREFILTER_MIN_CELL, 256);
     }
+
+    /// `dt_best` is indexed by the DT's **original column**, not by its
+    /// rank in `dt_perm`. Every other prefilter test above feeds
+    /// score-descending `dt_scores`, so `dt_perm` is the identity and
+    /// the two indices coincide — which hides the difference entirely.
+    ///
+    /// The permutation is genuinely non-identity in production:
+    /// `crate::tide::assignment` calls [`match_image`] with raw,
+    /// unsorted `dt_scores` over whole-category cells, which are large
+    /// enough to cross the `PREFILTER_MIN_CELL` gate. So this cell
+    /// shuffles the scores and anti-correlates overlap quality with
+    /// score rank: a detection with a real match sits at a rank whose
+    /// *column index* overlaps nothing. Confusing the two indices skips
+    /// every true match and turns it into a false negative.
+    #[test]
+    fn prefilter_indexes_dt_best_by_original_column_not_by_rank() {
+        let n_g = 16;
+        let n_d = 24; // 16 * 24 = 384, comfortably above the gate.
+        let thresholds = crate::parity::iou_thresholds();
+
+        // A shuffled permutation of `0..n_d` (7 is coprime to 24), so
+        // `argsort_score_desc` is nowhere near the identity. Its parity
+        // inverts: rank `k` holds column `7 * (n_d - 1 - k) mod n_d`,
+        // whose parity is opposite to `k`'s.
+        let dt_scores: Vec<f64> = (0..n_d)
+            .map(|d| ((d * 7) % n_d) as f64 / n_d as f64)
+            .collect();
+
+        // Overlap quality keys off the *column* index: odd columns hold
+        // one strong match, even columns overlap nothing above the
+        // lowest rung. Combined with the parity inversion above, reading
+        // `dt_best` by rank inspects exactly the wrong column every time.
+        let iou = Array2::from_shape_fn((n_g, n_d), |(g, d)| {
+            if d % 2 == 0 {
+                0.04 * ((g + d) % 3) as f64
+            } else if g == d / 2 {
+                0.95 - 0.01 * d as f64
+            } else {
+                0.05 * ((g * 5 + d) % 4) as f64
+            }
+        });
+        // Interleaved ignores, so `gt_perm` is non-identity too, plus a
+        // crowd — the B3/B4 paths run alongside the shuffled DT order.
+        let gt_ignore: Vec<bool> = (0..n_g).map(|g| g % 7 == 3).collect();
+        let gt_iscrowd: Vec<bool> = (0..n_g).map(|g| g == 5).collect();
+
+        let (forced, disabled) =
+            run_both_gates(&iou, &gt_ignore, &gt_iscrowd, &dt_scores, thresholds);
+        assert_same_matching("shuffled dt scores", &forced, &disabled);
+
+        // Guard against the test going vacuous: the permutations must
+        // really be non-identity, and the cell must really match.
+        assert_ne!(
+            forced.dt_perm,
+            (0..n_d).collect::<Vec<usize>>(),
+            "dt_perm must not be the identity"
+        );
+        assert_ne!(
+            forced.gt_perm,
+            (0..n_g).collect::<Vec<usize>>(),
+            "gt_perm must not be the identity"
+        );
+        assert!(forced.dt_matches.iter().any(|&m| m >= 0));
+
+        // The sharp edge. Rank 0 is column `7 * 23 mod 24 == 17`, whose
+        // best overlap is 0.78; column 0 — what a rank-indexed lookup
+        // would read — tops out at 0.08 and is skippable at every rung.
+        let dt_best = column_maxima(iou.view());
+        assert_eq!(forced.dt_perm[0], 17);
+        assert!(dt_best[17] >= 0.5, "rank 0's column must be matchable");
+        assert!(dt_best[0] < 0.5, "column 0 must be skippable");
+        assert!(
+            forced.dt_matches[(0, 0)] >= 0,
+            "the top-scoring DT must still match under the prefilter"
+        );
+    }
 }
