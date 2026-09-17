@@ -16,6 +16,20 @@ additive / perf / docs".
 
 ### Performance
 
+- **`accumulate` sorts each category's detection stream once** (ADR-0052).
+  The `(K, A, M)` walk ran `argsort_score_desc` per cell — 12 stable
+  sorts per category on the COCO defaults — for 12 streams that are all
+  derivable from one. The four area ranges of a `(category, image)` pair
+  share a `dt_scores` vector, and each smaller `maxDet` stream is an
+  induced subsequence of the largest, so filtering one permutation
+  reproduces all twelve exactly. Both derivations assume scores are
+  totally ordered, so a grid built through the `pub` Rust API with a
+  `NaN` score — the dataset path rejects those — falls back to the
+  per-cell sort, and the area-range guard compares bit patterns so
+  `-0.0` keeps its sign. Bit-equal output; `accumulate` drops
+  16.9 % on a val2017-shaped grid. Long-tail grids (LVIS) barely move —
+  their per-category streams are short and the cost is the dense grid
+  walk, which this does not touch.
 - **Detections that cannot match no longer scan the GT list**
   (ADR-0053). The matching ladder read all `G` GTs per
   `(threshold, detection)` even when the detection's best overlap was

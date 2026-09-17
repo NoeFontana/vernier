@@ -321,12 +321,208 @@ pub fn accumulate_parallel(
     })
 }
 
+/// One score-descending permutation, shared by every `(area range,
+/// max-det)` cell of a category (ADR-0052).
+///
+/// `scores` is the *cap stream*: the concatenation, in image order, of
+/// `cell.dt_scores[..min(len, cap)]` for the largest `maxDet` in the
+/// ladder. `perm` is its stable score-descending permutation. Every
+/// smaller `maxDet` stream is an induced subsequence of the cap stream,
+/// so its permutation is `perm` filtered rather than a second sort.
+///
+/// Quirk **A1**'s disposition row anticipates an opt-in `corrected`
+/// mode that breaks score ties by `(-score, ann_id)` instead of by
+/// input position. When it lands it has to be threaded through
+/// `SortPlan::build`, which is the category's single sort: a per-cell
+/// re-tie-break bolted on after the plan exists would desync the
+/// derived streams from the cap permutation they filter, and Claim 2's
+/// "restriction of a stable order" argument only holds while every cell
+/// of the category is ordered by the same key.
+struct SortPlan {
+    /// Largest `maxDet` this plan was built for.
+    cap: usize,
+    /// Per-cell take at `cap`, in cell order.
+    takes: Vec<usize>,
+    /// Concatenated cap-stream scores.
+    scores: Vec<f64>,
+    /// Stable score-descending permutation of `scores` (quirk **A1**).
+    perm: Vec<usize>,
+    /// Whether the cap stream carries a `NaN`.
+    ///
+    /// `argsort_score_desc` degrades to `partial_cmp(..).unwrap_or(Equal)`
+    /// there, which is *intransitive* — so `(-score, position)` is no
+    /// longer a total order and neither claim's proof applies. Both
+    /// derivations are switched off when this is set: `matches` never
+    /// reuses the plan across area ranges (Claim 1) and
+    /// `DerivedStream::fill_from` sorts each `maxDet` stream from
+    /// scratch (Claim 2).
+    has_nan: bool,
+}
+
+impl SortPlan {
+    /// Build the cap stream for `cells` and sort it once.
+    fn build(cells: &[&PerImageEval], cap: usize) -> Self {
+        let mut takes: Vec<usize> = Vec::with_capacity(cells.len());
+        let mut total = 0usize;
+        for cell in cells {
+            let take = cell.dt_scores.len().min(cap);
+            takes.push(take);
+            total += take;
+        }
+        let mut scores: Vec<f64> = Vec::with_capacity(total);
+        for (cell, &take) in cells.iter().zip(&takes) {
+            scores.extend_from_slice(&cell.dt_scores[..take]);
+        }
+        let perm = argsort_score_desc(&scores);
+        let has_nan = scores.iter().any(|s| s.is_nan());
+        Self {
+            cap,
+            takes,
+            scores,
+            perm,
+            has_nan,
+        }
+    }
+
+    /// Whether this plan's cap stream is the one `cells` would build.
+    ///
+    /// ADR-0052 Claim 1 says it always is for grids built by vernier's
+    /// own evaluate paths: `evaluate_cell` runs the four area ranges
+    /// over one `CellBuffers`, so the `PerImageEval`s of a
+    /// `(category, image)` pair share a `dt_scores` vector and only
+    /// their ignore flags differ. The check is what makes that a
+    /// verified precondition rather than an assumption — `accumulate`
+    /// is public and its grid can be built by hand.
+    ///
+    /// A plan built from a `NaN` stream is never reused: its
+    /// permutation came out of an intransitive comparator, so "the same
+    /// stream sorts the same way" is the only property it has, and this
+    /// keeps the reuse surface at zero rather than resting on it.
+    ///
+    /// The per-element comparison is on **bit patterns**, not `==`:
+    /// `-0.0 == 0.0` holds, so a plain `==` would let an area range
+    /// that presents `-0.0` reuse a plan holding `+0.0` and then emit
+    /// the plan's `+0.0` into the scores tensor. The two sort
+    /// identically (`partial_cmp` calls them `Equal`), so this costs
+    /// nothing in ordering — it only keeps the emitted score the one
+    /// that cell actually carried, which the module's bit-exactness
+    /// premise asks for.
+    fn matches(&self, cells: &[&PerImageEval], cap: usize) -> bool {
+        if self.has_nan || cap != self.cap || cells.len() != self.takes.len() {
+            return false;
+        }
+        let mut cursor = 0usize;
+        for (cell, &take) in cells.iter().zip(&self.takes) {
+            if cell.dt_scores.len().min(cap) != take {
+                return false;
+            }
+            let cached = &self.scores[cursor..cursor + take];
+            if cell.dt_scores[..take]
+                .iter()
+                .zip(cached)
+                .any(|(a, b)| a.to_bits() != b.to_bits())
+            {
+                return false;
+            }
+            cursor += take;
+        }
+        true
+    }
+}
+
+/// Reusable buffers for a `maxDet < cap` stream derived from a
+/// [`SortPlan`]. One per category walk, refilled per `(area, maxDet)`.
+#[derive(Default)]
+struct DerivedStream {
+    takes: Vec<usize>,
+    scores: Vec<f64>,
+    /// Cap-stream position → derived-stream position, [`Self::DROPPED`]
+    /// where the cap stream's entry is past this `maxDet`.
+    map: Vec<usize>,
+    perm: Vec<usize>,
+}
+
+impl DerivedStream {
+    const DROPPED: usize = usize::MAX;
+
+    /// Refill from `plan`, keeping the first `max_det` detections of
+    /// each cell.
+    ///
+    /// The kept positions carry strictly increasing derived-stream
+    /// indices, so filtering `plan.perm` through `map` preserves both
+    /// the score order and the input-order tie-break — ADR-0052 Claim 2.
+    ///
+    /// That argument needs `(-score, position)` to be a *total* order,
+    /// which a `NaN` in the stream destroys: `argsort_score_desc` falls
+    /// back to `Ordering::Equal` on an incomparable pair, and the
+    /// resulting comparator is intransitive, so a restriction of the
+    /// cap permutation is no longer the permutation the restricted
+    /// stream sorts to. When `plan.has_nan` is set this sorts the
+    /// derived stream directly instead — the pre-ADR-0052 path, which
+    /// is by definition what that `(a, m)` cell would have produced.
+    fn fill_from(&mut self, plan: &SortPlan, max_det: usize) {
+        let Self {
+            takes,
+            scores,
+            map,
+            perm,
+        } = self;
+        takes.clear();
+        scores.clear();
+        perm.clear();
+        map.clear();
+        let derive = !plan.has_nan;
+        if derive {
+            map.resize(plan.scores.len(), Self::DROPPED);
+        }
+
+        let mut cap_cursor = 0usize;
+        let mut out_cursor = 0usize;
+        for &take in &plan.takes {
+            let keep = take.min(max_det);
+            if derive {
+                for j in 0..keep {
+                    map[cap_cursor + j] = out_cursor + j;
+                }
+            }
+            scores.extend_from_slice(&plan.scores[cap_cursor..cap_cursor + keep]);
+            takes.push(keep);
+            cap_cursor += take;
+            out_cursor += keep;
+        }
+
+        if derive {
+            perm.extend(plan.perm.iter().filter_map(|&i| {
+                let mapped = map[i];
+                (mapped != Self::DROPPED).then_some(mapped)
+            }));
+        } else {
+            perm.extend(argsort_score_desc(scores));
+        }
+    }
+}
+
+/// The score stream one `(area range, max-det)` cell sweeps over.
+#[derive(Clone, Copy)]
+struct StreamView<'s> {
+    /// Per-cell take, in cell order. Length equals the cell count.
+    takes: &'s [usize],
+    /// Concatenated scores, cell-major.
+    scores: &'s [f64],
+    /// Stable score-descending permutation of `scores`.
+    perm: &'s [usize],
+}
+
 /// Every `(area range, max-det)` cell of one category, writing into
 /// that category's slice of the output tensors.
 ///
 /// Split out of [`accumulate`] so the sequential walk and
 /// [`accumulate_parallel`] run byte-identical arithmetic — the only
 /// difference between them is which thread holds the category.
+///
+/// Per ADR-0052 the category sorts its detection stream once: the plan
+/// survives across area ranges while they present the same stream, and
+/// the shorter `maxDet` ladders filter it instead of re-sorting.
 #[allow(clippy::too_many_arguments)]
 fn accumulate_category(
     eval_imgs: &[Option<Box<PerImageEval>>],
@@ -340,11 +536,17 @@ fn accumulate_category(
     scores: &mut ArrayViewMut4<'_, f64>,
 ) {
     let nk = k * n_a * n_i;
+    // A2 keeps `max_dets` ascending, so the cap is the last entry; take
+    // the max anyway rather than depend on it here.
+    let cap = p.max_dets.iter().copied().max().unwrap_or(0);
+    let mut plan: Option<SortPlan> = None;
+    let mut derived = DerivedStream::default();
+    let mut cells: Vec<&PerImageEval> = Vec::with_capacity(n_i);
+
     for a in 0..n_a {
         let na = a * n_i;
-        let cells: Vec<&PerImageEval> = (0..n_i)
-            .filter_map(|i| eval_imgs[nk + na + i].as_deref())
-            .collect();
+        cells.clear();
+        cells.extend((0..n_i).filter_map(|i| eval_imgs[nk + na + i].as_deref()));
         if cells.is_empty() {
             continue;
         }
@@ -356,10 +558,32 @@ fn accumulate_category(
             continue;
         }
 
+        // Drop a plan this area range's stream no longer matches, then
+        // build on demand: one `SortPlan::build` call site, and no
+        // unreachable `None` arm to explain.
+        if plan.as_ref().is_some_and(|plan| !plan.matches(&cells, cap)) {
+            plan = None;
+        }
+        let plan = plan.get_or_insert_with(|| SortPlan::build(&cells, cap));
+
         for (m, &max_det) in p.max_dets.iter().enumerate() {
+            let stream = if max_det >= cap {
+                StreamView {
+                    takes: &plan.takes,
+                    scores: &plan.scores,
+                    perm: &plan.perm,
+                }
+            } else {
+                derived.fill_from(plan, max_det);
+                StreamView {
+                    takes: &derived.takes,
+                    scores: &derived.scores,
+                    perm: &derived.perm,
+                }
+            };
             accumulate_cell(
                 &cells,
-                max_det,
+                stream,
                 npig,
                 n_t,
                 p.recall_thresholds,
@@ -376,7 +600,7 @@ fn accumulate_category(
 #[allow(clippy::too_many_arguments)]
 fn accumulate_cell(
     cells: &[&PerImageEval],
-    max_det: usize,
+    stream: StreamView<'_>,
     npig: usize,
     n_t: usize,
     recall_thresholds: &[f64],
@@ -386,19 +610,7 @@ fn accumulate_cell(
     recall: &mut ArrayViewMut3<'_, f64>,
     scores: &mut ArrayViewMut4<'_, f64>,
 ) {
-    let mut takes: Vec<usize> = Vec::with_capacity(cells.len());
-    let mut total = 0usize;
-    for cell in cells {
-        let take = cell.dt_scores.len().min(max_det);
-        takes.push(take);
-        total += take;
-    }
-    let mut all_scores: Vec<f64> = Vec::with_capacity(total);
-    for (cell, &take) in cells.iter().zip(&takes) {
-        all_scores.extend_from_slice(&cell.dt_scores[..take]);
-    }
-
-    let n_d = all_scores.len();
+    let n_d = stream.scores.len();
     if n_d == 0 {
         // No detections, but npig > 0. Pycocotools (cocoeval.py:442-465)
         // initializes `q = np.zeros((R,))` and `ss = np.zeros((R,))`
@@ -422,8 +634,6 @@ fn accumulate_cell(
         return;
     }
 
-    let perm = argsort_score_desc(&all_scores);
-
     let npig_f = npig as f64;
     let mut rc = vec![0.0_f64; n_d];
     let mut pr = vec![0.0_f64; n_d];
@@ -432,7 +642,7 @@ fn accumulate_cell(
 
     for t in 0..n_t {
         let mut cursor = 0;
-        for (cell, &take) in cells.iter().zip(&takes) {
+        for (cell, &take) in cells.iter().zip(stream.takes) {
             let m_row = cell.dt_matched.row(t);
             let g_row = cell.dt_ignore.row(t);
             for d in 0..take {
@@ -445,7 +655,7 @@ fn accumulate_cell(
         // C7: cumulative TP/FP exclude ignore-tagged DTs.
         let mut tp = 0.0_f64;
         let mut fp = 0.0_f64;
-        for (out_idx, &src_idx) in perm.iter().enumerate() {
+        for (out_idx, &src_idx) in stream.perm.iter().enumerate() {
             if !dtg[src_idx] {
                 if dtm[src_idx] {
                     tp += 1.0;
@@ -482,7 +692,7 @@ fn accumulate_cell(
             let pi = rc.partition_point(|&v| v < target);
             if pi < n_d {
                 p_lane[ri] = pr[pi];
-                s_lane[ri] = all_scores[perm[pi]];
+                s_lane[ri] = stream.scores[stream.perm[pi]];
             } else {
                 p_lane[ri] = 0.0;
                 s_lane[ri] = 0.0;
@@ -1011,5 +1221,375 @@ mod tests {
             dt_ignore: Array2::from_shape_vec((2, n), ignore).expect("dt_ignore shape"),
             gt_ignore,
         }
+    }
+
+    // ---- ADR-0052: one sort per category ------------------------------
+
+    /// Claim 2: the `maxDet = m` stream is the cap stream restricted to
+    /// each image's first `m` detections, and filtering the cap
+    /// permutation reproduces the stable sort of that restriction.
+    /// Checked against `argsort_score_desc` on an independently
+    /// gathered stream — the pre-ADR-0052 code path, verbatim.
+    #[test]
+    fn derived_max_det_stream_matches_an_independent_sort() {
+        // Ragged cells, ties inside one image, ties across images, and
+        // an empty cell — every shape the filter has to survive.
+        let raw = [
+            vec![0.9, 0.7, 0.7, 0.2],
+            vec![0.9, 0.5],
+            vec![],
+            vec![0.8, 0.8, 0.8],
+        ];
+        let owned: Vec<PerImageEval> = raw
+            .iter()
+            .map(|scores| {
+                let n = scores.len();
+                one_threshold_eval(scores.clone(), vec![true; n], vec![false; n], vec![false])
+            })
+            .collect();
+        let cells: Vec<&PerImageEval> = owned.iter().collect();
+
+        let cap = 100usize;
+        let plan = SortPlan::build(&cells, cap);
+        let mut derived = DerivedStream::default();
+
+        for max_det in [0usize, 1, 2, 3, 4, 99] {
+            derived.fill_from(&plan, max_det);
+
+            // The reference: gather this maxDet's stream from scratch
+            // and sort it, exactly as `accumulate_cell` used to.
+            let mut expect_takes = Vec::new();
+            let mut expect_scores: Vec<f64> = Vec::new();
+            for cell in &cells {
+                let take = cell.dt_scores.len().min(max_det);
+                expect_takes.push(take);
+                expect_scores.extend_from_slice(&cell.dt_scores[..take]);
+            }
+            let expect_perm = argsort_score_desc(&expect_scores);
+
+            assert_eq!(derived.takes, expect_takes, "takes at maxDet={max_det}");
+            assert_eq!(derived.scores, expect_scores, "stream at maxDet={max_det}");
+            assert_eq!(derived.perm, expect_perm, "perm at maxDet={max_det}");
+        }
+    }
+
+    /// The cap itself needs no filtering: the plan is the stream.
+    #[test]
+    fn plan_stream_equals_the_cap_max_det_stream() {
+        let owned = [
+            one_threshold_eval(vec![0.6, 0.4], vec![true; 2], vec![false; 2], vec![false]),
+            one_threshold_eval(vec![0.5], vec![true], vec![false], vec![false]),
+        ];
+        let cells: Vec<&PerImageEval> = owned.iter().collect();
+        let plan = SortPlan::build(&cells, 100);
+
+        assert_eq!(plan.takes, vec![2, 1]);
+        assert_eq!(plan.scores, vec![0.6, 0.4, 0.5]);
+        assert_eq!(plan.perm, argsort_score_desc(&[0.6, 0.4, 0.5]));
+    }
+
+    /// Claim 1 is verified, not assumed. A grid whose area ranges carry
+    /// different score streams — which vernier's own evaluate paths
+    /// never build, but a hand-built grid can — must rebuild the plan.
+    #[test]
+    fn plan_is_rejected_when_the_next_area_range_diverges() {
+        let base = one_threshold_eval(vec![0.9, 0.3], vec![true; 2], vec![false; 2], vec![false]);
+        let cells = vec![&base];
+        let plan = SortPlan::build(&cells, 100);
+        assert!(plan.matches(&cells, 100));
+
+        // Different values, same length.
+        let other = one_threshold_eval(vec![0.9, 0.2], vec![true; 2], vec![false; 2], vec![false]);
+        assert!(!plan.matches(&[&other], 100));
+
+        // Different length.
+        let shorter = one_threshold_eval(vec![0.9], vec![true], vec![false], vec![false]);
+        assert!(!plan.matches(&[&shorter], 100));
+
+        // Different cell count.
+        assert!(!plan.matches(&[&base, &base], 100));
+
+        // Different cap — the takes would differ.
+        assert!(!plan.matches(&cells, 1));
+
+        // A plan whose cap stream carries a NaN is never reused: its
+        // permutation came out of an intransitive comparator.
+        let nan = one_threshold_eval(
+            vec![f64::NAN, 0.3],
+            vec![true; 2],
+            vec![false; 2],
+            vec![false],
+        );
+        assert!(!plan.matches(&[&nan], 100));
+        let nan_plan = SortPlan::build(&[&nan], 100);
+        assert!(nan_plan.has_nan);
+        assert!(!nan_plan.matches(&[&nan], 100));
+    }
+
+    /// End-to-end guard check: a grid that violates Claim 1 still
+    /// accumulates each area range against its own stream. Each area
+    /// range is compared to the same cell accumulated on its own.
+    #[test]
+    fn divergent_area_ranges_accumulate_against_their_own_streams() {
+        let rec: Vec<f64> = (0..101).map(|r| f64::from(r) / 100.0).collect();
+        let max_dets = [1usize, 10, 100];
+        let iou = [0.5];
+
+        // a=0: two DTs, the top one a TP. a=1: different scores *and* a
+        // different match pattern, so reusing a=0's permutation would
+        // show up in the tensors.
+        let a0 = one_threshold_eval(
+            vec![0.9, 0.3],
+            vec![true, false],
+            vec![false, false],
+            vec![false, false],
+        );
+        let a1 = one_threshold_eval(
+            vec![0.8, 0.75, 0.7],
+            vec![false, true, true],
+            vec![false, false, false],
+            vec![false, false],
+        );
+
+        let combined = accumulate(
+            &[Some(Box::new(a0.clone())), Some(Box::new(a1.clone()))],
+            AccumulateParams {
+                iou_thresholds: &iou,
+                recall_thresholds: &rec,
+                max_dets: &max_dets,
+                n_categories: 1,
+                n_area_ranges: 2,
+                n_images: 1,
+            },
+            ParityMode::Strict,
+        )
+        .expect("combined");
+
+        for (a, cell) in [a0, a1].into_iter().enumerate() {
+            let solo = accumulate(
+                &[Some(Box::new(cell))],
+                AccumulateParams {
+                    iou_thresholds: &iou,
+                    recall_thresholds: &rec,
+                    max_dets: &max_dets,
+                    n_categories: 1,
+                    n_area_ranges: 1,
+                    n_images: 1,
+                },
+                ParityMode::Strict,
+            )
+            .expect("solo");
+
+            for m in 0..max_dets.len() {
+                assert_eq!(
+                    combined.recall[(0, 0, a, m)],
+                    solo.recall[(0, 0, 0, m)],
+                    "recall a={a} m={m}"
+                );
+                for ri in 0..rec.len() {
+                    assert_eq!(
+                        combined.precision[(0, ri, 0, a, m)],
+                        solo.precision[(0, ri, 0, 0, m)],
+                        "precision a={a} ri={ri} m={m}"
+                    );
+                    assert_eq!(
+                        combined.scores[(0, ri, 0, a, m)],
+                        solo.scores[(0, ri, 0, 0, m)],
+                        "scores a={a} ri={ri} m={m}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The `NaN` hole in Claim 2. `argsort_score_desc` degrades to an
+    /// intransitive comparator on a stream carrying a `NaN`, so
+    /// filtering the cap permutation is no longer the permutation the
+    /// restricted stream sorts to: for these cells at `maxDet = 1` the
+    /// filter yields `[0, 1, 2]` where a fresh sort yields `[1, 0, 2]`,
+    /// which would send the sweep to `0.9` before `0.95`.
+    #[test]
+    fn nan_in_the_cap_stream_sorts_each_derived_max_det_stream() {
+        let raw = [
+            vec![0.9, f64::NAN, 0.8, 0.7],
+            vec![0.95, 0.85, f64::NAN, 0.1],
+            vec![f64::NAN, 0.99, 0.5],
+        ];
+        let owned: Vec<PerImageEval> = raw
+            .iter()
+            .map(|scores| {
+                let n = scores.len();
+                one_threshold_eval(scores.clone(), vec![true; n], vec![false; n], vec![false])
+            })
+            .collect();
+        let cells: Vec<&PerImageEval> = owned.iter().collect();
+
+        let plan = SortPlan::build(&cells, 100);
+        assert!(plan.has_nan, "cap stream carries NaNs");
+
+        let mut derived = DerivedStream::default();
+        derived.fill_from(&plan, 1);
+
+        assert_eq!(derived.takes, vec![1, 1, 1]);
+        assert_eq!(derived.scores[0], 0.9);
+        assert_eq!(derived.scores[1], 0.95);
+        assert!(derived.scores[2].is_nan());
+
+        // The fallback is a fresh sort of the derived stream — by
+        // definition what this `(a, m)` cell sorted to before ADR-0052.
+        assert_eq!(derived.perm, argsort_score_desc(&derived.scores));
+        assert_eq!(derived.perm, vec![1, 0, 2]);
+
+        // And it differs from what filtering the cap permutation gives,
+        // which is the pre-fix behaviour this test exists to pin.
+        let mut map = vec![DerivedStream::DROPPED; plan.scores.len()];
+        let mut cap_cursor = 0usize;
+        let mut out_cursor = 0usize;
+        for &take in &plan.takes {
+            let keep = take.min(1);
+            for j in 0..keep {
+                map[cap_cursor + j] = out_cursor + j;
+            }
+            cap_cursor += take;
+            out_cursor += keep;
+        }
+        let filtered: Vec<usize> = plan
+            .perm
+            .iter()
+            .filter_map(|&i| (map[i] != DerivedStream::DROPPED).then_some(map[i]))
+            .collect();
+        assert_ne!(
+            filtered, derived.perm,
+            "filter and fresh sort must disagree here, or the repro has gone stale"
+        );
+    }
+
+    /// End-to-end: on a `NaN`-carrying grid every `maxDet` lane must
+    /// equal the same grid pre-truncated to that `maxDet` and
+    /// accumulated on its own — one sort per cell, which is what the
+    /// fallback restores.
+    #[test]
+    fn nan_scores_accumulate_like_a_pre_truncated_grid() {
+        let rec: Vec<f64> = (0..101).map(|r| f64::from(r) / 100.0).collect();
+        let iou = [0.5];
+        let max_dets = [1usize, 100];
+
+        let raw: [(Vec<f64>, Vec<bool>); 3] = [
+            (
+                vec![0.9, f64::NAN, 0.8, 0.7],
+                vec![true, false, true, false],
+            ),
+            (
+                vec![0.95, 0.85, f64::NAN, 0.1],
+                vec![false, true, false, true],
+            ),
+            (vec![f64::NAN, 0.99, 0.5], vec![true, true, false]),
+        ];
+        let truncate = |take: usize| -> Vec<Option<Box<PerImageEval>>> {
+            raw.iter()
+                .map(|(scores, matched)| {
+                    let n = scores.len().min(take);
+                    Some(Box::new(one_threshold_eval(
+                        scores[..n].to_vec(),
+                        matched[..n].to_vec(),
+                        vec![false; n],
+                        vec![false, false],
+                    )))
+                })
+                .collect()
+        };
+
+        let combined = accumulate(
+            &truncate(usize::MAX),
+            AccumulateParams {
+                iou_thresholds: &iou,
+                recall_thresholds: &rec,
+                max_dets: &max_dets,
+                n_categories: 1,
+                n_area_ranges: 1,
+                n_images: 3,
+            },
+            ParityMode::Strict,
+        )
+        .expect("combined");
+
+        for (m, &max_det) in max_dets.iter().enumerate() {
+            let ladder = [max_det];
+            let solo = accumulate(
+                &truncate(max_det),
+                AccumulateParams {
+                    iou_thresholds: &iou,
+                    recall_thresholds: &rec,
+                    max_dets: &ladder,
+                    n_categories: 1,
+                    n_area_ranges: 1,
+                    n_images: 3,
+                },
+                ParityMode::Strict,
+            )
+            .expect("solo");
+
+            assert_eq!(
+                combined.recall[(0, 0, 0, m)].to_bits(),
+                solo.recall[(0, 0, 0, 0)].to_bits(),
+                "recall at maxDet={max_det}"
+            );
+            for ri in 0..rec.len() {
+                assert_eq!(
+                    combined.precision[(0, ri, 0, 0, m)].to_bits(),
+                    solo.precision[(0, ri, 0, 0, 0)].to_bits(),
+                    "precision ri={ri} at maxDet={max_det}"
+                );
+                assert_eq!(
+                    combined.scores[(0, ri, 0, 0, m)].to_bits(),
+                    solo.scores[(0, ri, 0, 0, 0)].to_bits(),
+                    "scores ri={ri} at maxDet={max_det}"
+                );
+            }
+        }
+    }
+
+    /// Signed zero: `-0.0 == 0.0`, so an `==` guard would call a `-0.0`
+    /// area range a match for a cached `+0.0` and then emit the plan's
+    /// sign into the scores tensor. `matches` compares bit patterns, so
+    /// each area range keeps the zero it was given.
+    #[test]
+    fn signed_zero_rebuilds_the_plan_and_keeps_its_sign() {
+        let pos = one_threshold_eval(
+            vec![0.5, 0.0],
+            vec![true, true],
+            vec![false, false],
+            vec![false, false],
+        );
+        let neg = one_threshold_eval(
+            vec![0.5, -0.0],
+            vec![true, true],
+            vec![false, false],
+            vec![false, false],
+        );
+
+        let plan = SortPlan::build(&[&pos], 100);
+        assert!(plan.matches(&[&pos], 100));
+        assert!(!plan.matches(&[&neg], 100), "-0.0 is not +0.0 bitwise");
+
+        // a=0 carries +0.0, a=1 carries -0.0. Recall threshold 1.0
+        // samples the second detection in both.
+        let rec = [0.0, 1.0];
+        let out = accumulate(
+            &[Some(Box::new(pos)), Some(Box::new(neg))],
+            AccumulateParams {
+                iou_thresholds: &[0.5],
+                recall_thresholds: &rec,
+                max_dets: &[100],
+                n_categories: 1,
+                n_area_ranges: 2,
+                n_images: 1,
+            },
+            ParityMode::Strict,
+        )
+        .expect("accumulate");
+
+        assert_eq!(out.scores[(0, 1, 0, 0, 0)].to_bits(), 0.0_f64.to_bits());
+        assert_eq!(out.scores[(0, 1, 0, 1, 0)].to_bits(), (-0.0_f64).to_bits());
     }
 }
