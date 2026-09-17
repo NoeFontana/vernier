@@ -32,7 +32,8 @@ cargo add vernier                 # Rust library
 `vernier.COCOeval` has the same constructor, the same
 `evaluate() / accumulate() / summarize()` sequence, and the same `.stats`
 as pycocotools. It defaults to `parity_mode="strict"`, so the output is
-bit-identical.
+bit-identical (see [Status & validation](#status--validation) for what
+that is measured against).
 
 ```python
 from pycocotools.coco import COCO
@@ -147,7 +148,11 @@ Full reference: [`crates/vernier-cli`](crates/vernier-cli/README.md).
 
 Every row is checked by a parity harness that runs the reference
 implementation and vernier on the same inputs. "Bit-exact" means
-`parity_mode="strict"`.
+`parity_mode="strict"`, against the reference **as published on PyPI**
+— vernier's own output is identical on x86-64 and ARM. (A pycocotools
+you recompile from source can round bbox IoU 1-2 ULP differently on
+ARM; see [ADR-0056](docs/adr/0056-pin-no-fp-contraction-for-bbox-iou.md)
+and the [migration guide](docs/migrate/from-pycocotools.md#bit-for-bit-and-against-which-build).)
 
 | Metric | Reference | Parity | Notes |
 | --- | --- | --- | --- |

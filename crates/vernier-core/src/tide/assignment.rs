@@ -40,6 +40,7 @@ use crate::error::EvalError;
 use crate::evaluate::dt_top_indices_for_cell;
 use crate::matching::{match_image, MatchResult};
 use crate::parity::ParityMode;
+use crate::similarity::{BboxAnn, BboxIou, Similarity};
 use crate::tables::CrossClassIous;
 
 use super::params::TideParams;
@@ -377,22 +378,40 @@ fn same_class_match_one_category(
     let n_g = gts_in_cat.len();
     let n_d = dts_in_cat.len();
 
-    // Build same-class IoU matrix by computing afresh via the bbox
+    // Build the same-class IoU matrix afresh via the shared bbox
     // kernel. Rebuilding here (rather than reading from CrossClassIous's
     // submatrix) keeps the assignment module free of an axis-orientation
     // mistake — the cross-class storage is `(D, G)` and the matching
     // engine needs `(G, D)`, so a sub-slice would have to be transposed
     // anyway. Bbox IoU is cheap and the alternative slicing is trickier
     // to get right.
+    //
+    // `is_crowd: false` on *both* sides is deliberate. TIDE's spec is
+    // `oracle.py::bbox_iou` (ADR-0021), which is plain symmetric IoU
+    // with no crowd branch — crowd GTs enter TIDE through `gt_ignore`
+    // below, never through quirk E1's IoA denominator. Suppressing E1
+    // here reproduces the expression the oracle evaluates bit-for-bit
+    // (`tide_same_class_iou_matches_oracle_bitwise` pins that), while
+    // putting this matrix under the ADR-0056 no-FP-contraction pin that
+    // `BboxIou::compute` carries and a private copy of the formula
+    // would not.
     let mut iou = Array2::<f64>::zeros((n_g, n_d));
     if n_g > 0 {
-        for (gi_local, &(_, gi)) in gts_in_cat.iter().enumerate() {
-            let g_box = gt_anns[gi].bbox;
-            for (di_local, &(_, di)) in dts_in_cat.iter().enumerate() {
-                let d_box = dt_anns[di].bbox;
-                iou[(gi_local, di_local)] = bbox_iou_pair(g_box, d_box);
-            }
-        }
+        let gt_kernel: Vec<BboxAnn> = gts_in_cat
+            .iter()
+            .map(|&(_, gi)| BboxAnn {
+                bbox: gt_anns[gi].bbox,
+                is_crowd: false,
+            })
+            .collect();
+        let dt_kernel: Vec<BboxAnn> = dts_in_cat
+            .iter()
+            .map(|&(_, di)| BboxAnn {
+                bbox: dt_anns[di].bbox,
+                is_crowd: false,
+            })
+            .collect();
+        BboxIou.compute(&gt_kernel, &dt_kernel, &mut iou.view_mut())?;
     }
 
     let gt_ignore: Vec<bool> = gts_in_cat
@@ -461,24 +480,6 @@ fn same_class_match_one_category(
         gt_taken_by.insert(col_idx, dt_input_idx);
     }
     Ok(())
-}
-
-/// Pure axis-aligned bbox IoU on COCO `[x, y, w, h]`. Mirrors
-/// `oracle.py::bbox_iou` for one pair.
-fn bbox_iou_pair(g: crate::dataset::Bbox, d: crate::dataset::Bbox) -> f64 {
-    let g_x2 = g.x + g.w;
-    let g_y2 = g.y + g.h;
-    let d_x2 = d.x + d.w;
-    let d_y2 = d.y + d.h;
-    let inter_w = (g_x2.min(d_x2) - g.x.max(d.x)).max(0.0);
-    let inter_h = (g_y2.min(d_y2) - g.y.max(d.y)).max(0.0);
-    let inter = inter_w * inter_h;
-    let union = g.w * g.h + d.w * d.h - inter;
-    if union <= 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
 }
 
 /// Pull `iou_same` / `iou_cross` for one DT row out of the cross-class
@@ -560,5 +561,154 @@ fn pick_bin(
         target_gt_local_idx: target,
         iou_same,
         iou_cross,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dataset::Bbox;
+
+    /// The expression this module used to evaluate inline, kept as the
+    /// reference for [`tide_same_class_iou_matches_oracle_bitwise`]. It
+    /// is a transcription of `tests/python/oracle/tide/oracle.py::
+    /// bbox_iou` for one pair: plain symmetric IoU, left-associative
+    /// union, no crowd branch.
+    fn oracle_bbox_iou_pair(g: Bbox, d: Bbox) -> f64 {
+        let g_x2 = g.x + g.w;
+        let g_y2 = g.y + g.h;
+        let d_x2 = d.x + d.w;
+        let d_y2 = d.y + d.h;
+        let inter_w = (g_x2.min(d_x2) - g.x.max(d.x)).max(0.0);
+        let inter_h = (g_y2.min(d_y2) - g.y.max(d.y)).max(0.0);
+        let inter = inter_w * inter_h;
+        let union = g.w * g.h + d.w * d.h - inter;
+        if union <= 0.0 {
+            0.0
+        } else {
+            inter / union
+        }
+    }
+
+    /// Deterministic COCO-scale box generator (xorshift64*, so the
+    /// sample is reproducible across architectures and runs).
+    fn boxes(seed: u64, n: usize) -> Vec<Bbox> {
+        let mut state = seed | 1;
+        let mut next = move || {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            let v = state.wrapping_mul(0x2545_F491_4F6C_DD1D);
+            // 53-bit mantissa → [0, 1).
+            ((v >> 11) as f64) / ((1u64 << 53) as f64)
+        };
+        (0..n)
+            .map(|_| Bbox {
+                x: next() * 640.0,
+                y: next() * 480.0,
+                w: 1.0 + next() * 300.0,
+                h: 1.0 + next() * 300.0,
+            })
+            .collect()
+    }
+
+    /// `same_class_match_one_category` used to own a second, private
+    /// `f64` bbox-IoU expression. It now calls [`BboxIou::compute`] with
+    /// the crowd flag forced off, which must be *bit*-identical — not
+    /// merely close — to the expression the TIDE oracle evaluates, or
+    /// a match can flip at `t_f` and error types get re-attributed.
+    ///
+    /// Also the reason the ADR-0056 no-FP-contraction pin on
+    /// [`BboxIou::compute`] genuinely covers the TIDE same-class path.
+    #[test]
+    fn tide_same_class_iou_matches_oracle_bitwise() {
+        let gts = boxes(0x9E37_79B9_7F4A_7C15, 64);
+        let dts = boxes(0xBF58_476D_1CE4_E5B9, 64);
+
+        let gt_kernel: Vec<BboxAnn> = gts
+            .iter()
+            .map(|&bbox| BboxAnn {
+                bbox,
+                is_crowd: false,
+            })
+            .collect();
+        let dt_kernel: Vec<BboxAnn> = dts
+            .iter()
+            .map(|&bbox| BboxAnn {
+                bbox,
+                is_crowd: false,
+            })
+            .collect();
+
+        // 64x64 = 4096 clears `SMALL_CELL_THRESHOLD`, so this runs the
+        // `pulp`-dispatched body, which is the one compiled with `fma`
+        // available.
+        let mut out = Array2::<f64>::zeros((gts.len(), dts.len()));
+        BboxIou
+            .compute(&gt_kernel, &dt_kernel, &mut out.view_mut())
+            .expect("dimensions match by construction");
+
+        let mut overlapping = 0usize;
+        for (gi, &g) in gts.iter().enumerate() {
+            for (di, &d) in dts.iter().enumerate() {
+                let expected = oracle_bbox_iou_pair(g, d);
+                if expected > 0.0 {
+                    overlapping += 1;
+                }
+                assert_eq!(
+                    out[(gi, di)].to_bits(),
+                    expected.to_bits(),
+                    "({gi},{di}): kernel {:?} (0x{:016x}) != oracle {:?} \
+                     (0x{:016x}); gt={g:?} dt={d:?}",
+                    out[(gi, di)],
+                    out[(gi, di)].to_bits(),
+                    expected,
+                    expected.to_bits(),
+                );
+            }
+        }
+        assert!(
+            overlapping > 100,
+            "sample must actually exercise the union denominator; only \
+             {overlapping} pairs overlapped"
+        );
+    }
+
+    /// The one semantic the two expressions did *not* share: the kernel
+    /// applies quirk E1 (IoA) when the GT carries `iscrowd`, and the
+    /// TIDE oracle never does. This pins that the call site suppresses
+    /// it — if someone "fixes" the `is_crowd: false` to propagate the
+    /// real flag, TIDE's numbers move and this test says so.
+    #[test]
+    fn tide_same_class_iou_suppresses_the_crowd_asymmetry() {
+        // DT strictly inside GT: IoU = 1/4, IoA (crowd) = 1.0.
+        let g = Bbox {
+            x: 0.0,
+            y: 0.0,
+            w: 20.0,
+            h: 20.0,
+        };
+        let d = Bbox {
+            x: 5.0,
+            y: 5.0,
+            w: 10.0,
+            h: 10.0,
+        };
+        let mut out = Array2::<f64>::zeros((1, 1));
+        BboxIou
+            .compute(
+                &[BboxAnn {
+                    bbox: g,
+                    is_crowd: false,
+                }],
+                &[BboxAnn {
+                    bbox: d,
+                    is_crowd: false,
+                }],
+                &mut out.view_mut(),
+            )
+            .expect("1x1");
+        assert_eq!(out[(0, 0)].to_bits(), 0.25_f64.to_bits());
+        assert_eq!(out[(0, 0)].to_bits(), oracle_bbox_iou_pair(g, d).to_bits());
     }
 }
