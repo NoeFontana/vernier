@@ -581,9 +581,21 @@ pub(crate) fn parse_gt(bytes: &[u8]) -> PyResult<CocoDataset> {
     CocoDataset::from_json_bytes(bytes).map_err(coco_load_error_to_pyerr)
 }
 
+/// [`parse_gt`] across a thread budget (ADR-0054). Must run inside a
+/// rayon pool.
+fn parse_gt_parallel(bytes: &[u8], threads: usize) -> PyResult<CocoDataset> {
+    CocoDataset::from_json_bytes_parallel(bytes, threads).map_err(coco_load_error_to_pyerr)
+}
+
 /// Parse a COCO detections payload (sibling of [`parse_gt`]).
 pub(crate) fn parse_dt(bytes: &[u8]) -> PyResult<CocoDetections> {
     CocoDetections::from_json_bytes(bytes).map_err(coco_load_error_to_pyerr)
+}
+
+/// [`parse_dt`] across a thread budget (ADR-0054). Must run inside a
+/// rayon pool.
+fn parse_dt_parallel(bytes: &[u8], threads: usize) -> PyResult<CocoDetections> {
+    CocoDetections::from_json_bytes_parallel(bytes, threads).map_err(coco_load_error_to_pyerr)
 }
 
 /// GIL-free subset of [`eval_error_to_pyerr`] for the variants that can
@@ -833,12 +845,6 @@ pub(crate) fn evaluate_grid_impl(
     })
 }
 
-/// GT and DT are one task each, so the overlap never needs more.
-const TWO_THREADS: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(2) {
-    Some(n) => n,
-    None => unreachable!(),
-};
-
 /// Parse GT and DT, overlapping them when the cell has a thread budget.
 ///
 /// The two payloads are independent, but parsing them in sequence made
@@ -846,6 +852,10 @@ const TWO_THREADS: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(2)
 /// GT plus 686 ms of DT — 1.6 s of a ~9 s evaluation spent on one core
 /// while the other seven idle. `rayon::join` overlaps them, so the
 /// phase costs the slower of the two instead of their sum.
+///
+/// Since ADR-0054 each payload also splits internally, so the pool gets
+/// the caller's whole budget rather than the two threads the `join`
+/// alone could use.
 ///
 /// `num_threads=None` keeps the sequential path and never enters rayon
 /// (ADR-0047).
@@ -860,13 +870,19 @@ fn parse_gt_dt_with_policy(
             let dt = realize_dt(dt_payload)?;
             Ok((gt, dt))
         }
-        // Two tasks, so two threads; the rest of the budget would sit
-        // idle here. The grid build downstream opens its own pool at
-        // the full count.
-        Some(n) => match threads::build_scoped_pool(n.min(TWO_THREADS)) {
+        // The full budget, not two threads: since ADR-0054 each payload
+        // splits internally, so the two `join` arms are themselves
+        // parallel and rayon rebalances between them. Before that, only
+        // two tasks existed and the rest of the budget sat idle.
+        Some(n) => match threads::build_scoped_pool(n) {
             Ok(pool) => {
-                let (gt, dt) =
-                    pool.install(|| rayon::join(|| parse_gt(gt_bytes), || realize_dt(dt_payload)));
+                let budget = n.get();
+                let (gt, dt) = pool.install(|| {
+                    rayon::join(
+                        || parse_gt_parallel(gt_bytes, budget),
+                        || realize_dt_parallel(dt_payload, budget),
+                    )
+                });
                 Ok((gt?, dt?))
             }
             // Pool build failure is not a reason to fail a parse.
@@ -2131,6 +2147,16 @@ pub(crate) fn build_update_payload<'py>(
 pub(crate) fn realize_dt(payload: UpdatePayload) -> PyResult<CocoDetections> {
     match payload {
         UpdatePayload::Bytes(b) => parse_dt(&b),
+        UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs(inputs)
+            .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
+    }
+}
+
+/// [`realize_dt`] across a thread budget. Only the JSON arm has
+/// anything to split; the array arm is already parse-free (ADR-0030).
+fn realize_dt_parallel(payload: UpdatePayload, threads: usize) -> PyResult<CocoDetections> {
+    match payload {
+        UpdatePayload::Bytes(b) => parse_dt_parallel(&b, threads),
         UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs(inputs)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }

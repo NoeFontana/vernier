@@ -38,6 +38,7 @@ bench-timings = []
 ndarray.workspace = true
 thiserror.workspace = true
 serde = { workspace = true }
+memchr = { workspace = true }
 serde_json = { workspace = true }
 pulp.workspace = true
 # Pure-Rust mask kernels per ADR-0009. One-way dependency: core consumes
@@ -81,6 +82,10 @@ proptest = { workspace = true }
 # wheel or any non-bench target. `harness = false` on each [[bench]]
 # entry keeps libtest out as well.
 divan = "0.1"
+
+[[bench]]
+name = "accumulate_shapes"
+harness = false
 
 [[bench]]
 name = "bbox_iou"

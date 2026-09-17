@@ -109,9 +109,16 @@ cell) so a pin bump invalidates by construction.
   - All 12 stats (AP, AP50, AP75, APs/m/l, AR1/10/100, ARs/m/l)
     bit-equal.
 
-Follow-up parity item: tighten `serde_json`'s f64 parser or normalise
-scores at ingest to retire the aligned-tier band. Not a blocker for
-shipping the real-prediction gate.
+Follow-up parity item — **root cause fixed, band not yet re-measured.**
+ADR-0054 enables `serde_json`'s `float_roundtrip` feature, which makes
+the parse correctly rounded and therefore bit-equal to CPython's
+`strtod`. The drift described above cannot recur from that cause;
+`tests/python/parity/test_json_float_parity.py` and
+`vernier-core`'s `json_float_parsing_is_correctly_rounded` pin it, and
+both were verified to fail with the feature off. The numbers in this
+section predate that change: the aligned-tier band stays documented as
+measured until the DETR-R50 cell is re-run against a build carrying
+ADR-0054, at which point it should narrow to strict.
 
 ## Panoptic — Mask2Former Swin-T vs panopticapi (PQ)
 

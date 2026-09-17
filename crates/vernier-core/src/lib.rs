@@ -26,6 +26,7 @@ pub mod distributed;
 pub mod error;
 pub mod evaluate;
 pub mod evaluate_parallel;
+pub(crate) mod json_split;
 pub mod lrp;
 pub mod lvis_parity;
 pub mod manifest;
