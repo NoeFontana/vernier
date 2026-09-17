@@ -34,7 +34,7 @@
 //!
 //! ## Quirk dispositions handled here
 //!
-//! - **D3** (`aligned`): per-call `_ignore` computed without mutating
+//! - **D3** (`strict`): per-call `_ignore` computed without mutating
 //!   the dataset.
 //! - **D6/D7** (`strict`): area filter uses non-strict `<=` / `>=` on
 //!   both bounds (mirrors `cocoeval.py:251`'s
@@ -58,7 +58,7 @@
 //!   and no `neg` listing produce no `eval_imgs` entry — the existing
 //!   `Option<PerImageEval>` distinction (`None` vs an empty cell) is
 //!   the same one lvis-api's `eval.py:336` filter relies on.
-//! - **L4** (`aligned`): `use_cats=false` collapses every category onto
+//! - **L4** (`strict`): `use_cats=false` collapses every category onto
 //!   a single virtual `k=0` bucket, with `category_id` carried through
 //!   matching as a no-op.
 //! - **E2 / J4** (`strict`): DTs never carry an `is_crowd` flag — the
@@ -246,7 +246,7 @@ pub struct EvaluateParams<'p> {
     /// [`crate::accumulate::AccumulateParams::max_dets`] ladder; smaller caps are
     /// sliced downstream.
     pub max_dets_per_image: usize,
-    /// Quirk **L4** (`aligned`): when `false`, every category is
+    /// Quirk **L4** (`strict`): when `false`, every category is
     /// collapsed onto a single bucket `k=0` and `category_id` is ignored
     /// for gather purposes.
     pub use_cats: bool,

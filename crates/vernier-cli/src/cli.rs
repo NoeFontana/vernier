@@ -332,17 +332,18 @@ impl IouTypeArg {
 }
 
 /// Parity-mode selector. Per ADR-0015 §"Surface", the CLI accepts
-/// three values; `aligned` is output-equivalent to `strict` (per the
-/// `ParityMode` doc in `vernier-core`) and is mapped to
-/// [`ParityMode::Strict`] downstream.
+/// three values; `aligned` is a retired alias kept for backward
+/// compatibility and is mapped to [`ParityMode::Strict`] downstream.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lower")]
 pub(crate) enum ParityModeArg {
     /// Reproduce pycocotools bit-exactly.
     Strict,
-    /// Output-equivalent to `strict`; documented separately because the
-    /// quirk-disposition table treats `aligned` and `strict` as distinct
-    /// at the disposition level (per ADR-0002).
+    /// Retired alias for `strict`. ADR-0002's 2026-05-10 amendment
+    /// folded the `aligned` disposition tier into `strict`, so the
+    /// quirk-disposition table no longer distinguishes them. The flag
+    /// value is retained so existing invocations keep working;
+    /// removing it is its own ADR per ADR-0015's CLI-flag-change rule.
     Aligned,
     /// Apply the opinionated `corrected` fixes (per ADR-0002).
     Corrected,
@@ -351,10 +352,9 @@ pub(crate) enum ParityModeArg {
 impl From<ParityModeArg> for ParityMode {
     fn from(value: ParityModeArg) -> Self {
         match value {
-            // `Aligned` collapses to `Strict` because aligned-tier
-            // changes are output-equivalent to strict; the CLI exposes
-            // the third value purely for documentation symmetry with
-            // ADR-0002.
+            // `Aligned` collapses to `Strict`: the tier was folded
+            // into `strict` by ADR-0002's 2026-05-10 amendment, and
+            // the flag value survives only as a compatibility alias.
             ParityModeArg::Strict | ParityModeArg::Aligned => Self::Strict,
             ParityModeArg::Corrected => Self::Corrected,
         }

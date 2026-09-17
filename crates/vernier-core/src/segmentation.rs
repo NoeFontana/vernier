@@ -10,7 +10,7 @@
 //! 2. `{"size": [h, w], "counts": [u32, …]}` — uncompressed RLE,
 //!    counts as a JSON array of integers.
 //! 3. `{"size": [h, w], "counts": "…"}` — compressed RLE, counts as
-//!    the COCO 6-bit char string. Quirk **K3** (`aligned`): we accept
+//!    the COCO 6-bit char string. Quirk **K3** (`strict`): we accept
 //!    `str` only because JSON has no bytes type; the decoder treats
 //!    every wire byte as ASCII regardless.
 //!
@@ -29,7 +29,7 @@
 //!   produces malformed RLE.
 //! - **K2** (`strict`): polygon-side normalization unions every
 //!   sub-polygon into a single RLE, matching `mask.merge`.
-//! - **K3** (`aligned`): bytes-vs-str distinction collapses on the
+//! - **K3** (`strict`): bytes-vs-str distinction collapses on the
 //!   JSON wire — counts are always a `String` here.
 //! - **H2** (`corrected`): an RLE whose declared `size` disagrees
 //!   with the requested `(h, w)` raises

@@ -12,7 +12,7 @@
 //!   `intersect / dt_area`, *not* `intersect / union`. A small DT inside
 //!   a large crowd scores 1.0. The asymmetry lives here so that
 //!   matching code stays IoU-type-agnostic (per ADR-0005).
-//! - **I3** (`aligned`): pycocotools uses two different zero guards
+//! - **I3** (`strict`): pycocotools uses two different zero guards
 //!   (`u==0` for RLE, `w<=0 || h<=0` for bbox). Both yield IoU=0; we
 //!   express it as a single `denom > 0` guard at the last step.
 //! - **I4** (`strict`): edge-sharing boxes (e.g. `[0,0,1,1]` and

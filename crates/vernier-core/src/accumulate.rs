@@ -37,7 +37,7 @@
 //! - **C7** (`strict`): TP and FP cumsums skip DTs whose `dt_ignore`
 //!   flag is set — both B6 (matched-to-ignore) and B7 (out-of-area
 //!   unmatched) are folded into `dt_ignore` upstream.
-//! - **C8** (`aligned`): precision denominator uses
+//! - **C8** (`strict`): precision denominator uses
 //!   [`crate::parity::PARITY_EPS`] (= `f64::EPSILON`), bit-equal to
 //!   `np.spacing(1)`.
 //! - **L1, L2** (`strict`): `iou_thresholds` and `recall_thresholds`

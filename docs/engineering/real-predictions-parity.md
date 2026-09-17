@@ -35,6 +35,21 @@ LVIS paradigms.
 > absolute mAP without affecting the parity claim, which holds at
 > any N.
 
+> **"strict tier" / "aligned tier" on this page name assertion bands,
+> not parity modes.** They are this harness's two gates — bit-equality
+> on the integer surfaces, a documented `rtol / atol` band on the float
+> surfaces. They are *not* the ADR-0002 disposition tiers: that
+> vocabulary has been two-valued (`strict` / `corrected`) since the
+> [2026-05-10 amendment](../adr/0002-three-tier-parity-model.md#amendment-2026-05-10-collapse-aligned-into-strict)
+> folded `aligned` into `strict`, and `parity_mode="aligned"` is not a
+> value the API accepts. The float band here is **not** homed in the
+> two-tier model, and cannot be relabelled `strict` without making a
+> false bit-equality claim: the drift is real (see the `serde_json`
+> f64-parser follow-up under the Instance cell). Per the amendment's
+> revival clause, giving it a ratified name is a new ADR with a
+> per-surface argument — not a passive rename. Until then, read
+> "aligned tier" below as "this harness's float-tolerance gate".
+
 > **Status:** the three original SOTA parity tests (DETR,
 > Mask2Former panoptic, Mask2Former ADE) pass on the live cache
 > (machine `84edec51fd71`, 2026-05-31, harness SHA `b9dc053`).
@@ -181,7 +196,6 @@ ADR-0054, at which point it should narrow to strict.
   - Σ union: `529,188,289` pixels
   - All 150 classes present in both `label` and `pred`.
 
-<<<<<<< HEAD
 ## Calibration — DETR-R50 vs numpy reference (ECE/MCE)
 
 - **Workload**: same `coco_val2017_detr_r50_v1d5f47b` cache as the
