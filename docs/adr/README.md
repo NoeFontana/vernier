@@ -126,6 +126,7 @@ else is detail.
 | [0049](0049-bench-cpu-budget.md) | Enforce a per-cell CPU budget and measure memory exactly (and add hotcoco as a baseline) | accepted |
 | [0050](0050-parallel-accumulate.md) | Parallelize `accumulate` across the category axis (bit-identical) | proposed |
 | [0051](0051-occupied-cell-visiting.md) | Visit only occupied cells; fill the grid in parallel | proposed |
+| [0053](0053-matching-dt-prefilter.md) | Skip the GT scan for detections that cannot match (per-cell column maxima) | proposed |
 
 ### TIDE design package — proposed cluster
 

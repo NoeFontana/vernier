@@ -156,16 +156,129 @@ pub(crate) struct MatchResult {
     pub dt_ignore: Array2<bool>,
 }
 
+/// The `(threshold, DT)` matching ladder.
+///
+/// Monomorphized on `PREFILTER`: with it off, `dt_best` is unused and
+/// the skip test folds away, leaving the loop the compiler saw before
+/// the prefilter existed. With it on, `dt_best[d]` is the DT's best
+/// overlap with any GT — below the threshold seed, the DT cannot match
+/// (`best` only ever rises from the seed, so every `iou < best` test
+/// would `continue` and `m` would stay -1, which the `m < 0` guard
+/// turns into a no-op), so its whole `G`-long scan is dead work.
+/// Skipping it is output-identical, not an approximation.
+// `ArrayView2` is a `Copy` view, so by-value is idiomatic here too
+// (same rationale as the ADR-0005 entry points below).
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn run_ladder<const PREFILTER: bool>(
+    iou_matrix: ArrayView2<'_, f64>,
+    iou_thresholds: &[f64],
+    dt_perm: &[usize],
+    gt_perm: &[usize],
+    gt_ignore_sorted: &[bool],
+    gt_iscrowd_sorted: &[bool],
+    dt_best: &[f64],
+    dt_matches: &mut Array2<i64>,
+    gt_matches: &mut Array2<i64>,
+    dt_ignore: &mut Array2<bool>,
+) {
+    let n_g = gt_ignore_sorted.len();
+    for (tind, &t) in iou_thresholds.iter().enumerate() {
+        // B1: seed best at `min(t, 1 - 1e-10)` so a DT whose best
+        // overlap exactly equals the threshold still matches.
+        let seed = t.min(1.0 - IOU_BOUNDARY_EPS);
+        for (k_d, &d_orig) in dt_perm.iter().enumerate() {
+            if PREFILTER && dt_best[d_orig] < seed {
+                continue;
+            }
+            let mut best = seed;
+            let mut m: i64 = -1;
+
+            for k_g in 0..n_g {
+                // B4: skip already-matched GT unless it is a crowd
+                // (crowds are many-to-one).
+                if gt_matches[(tind, k_g)] >= 0 && !gt_iscrowd_sorted[k_g] {
+                    continue;
+                }
+                // B3: once a non-ignore match has been made, stop at the
+                // first ignore-GT. A4 guarantees ignore-GTs are at the
+                // tail, so this short-circuits the rest of the row.
+                if m >= 0 && !gt_ignore_sorted[m as usize] && gt_ignore_sorted[k_g] {
+                    break;
+                }
+
+                let g_orig = gt_perm[k_g];
+                let iou = iou_matrix[(g_orig, d_orig)];
+
+                // B2: non-strict comparison. On equality the later GT
+                // wins (the update path runs when `iou >= best`).
+                if iou < best {
+                    continue;
+                }
+                best = iou;
+                m = k_g as i64;
+            }
+
+            if m < 0 {
+                continue;
+            }
+            let m_idx = m as usize;
+            // B6: matched-to-ignore DTs inherit the ignore flag.
+            dt_ignore[(tind, k_d)] = gt_ignore_sorted[m_idx];
+            dt_matches[(tind, k_d)] = m;
+            gt_matches[(tind, m_idx)] = k_d as i64;
+        }
+    }
+}
+
+/// Minimum `G · D` at which the per-DT prefilter pays for itself.
+///
+/// The prefilter costs one pass over the IoU matrix plus a `D`-long
+/// buffer, and saves a `G`-long scan per `(threshold, skipped DT)`. On
+/// a COCO-shaped grid the median non-empty cell sits at `G · D = 1`
+/// (see `benches/evaluate_bbox.rs`), where the scan it would skip is
+/// shorter than its own setup. Dense cells — the surveillance /
+/// autonomous-driving regime at `G · D` in the tens of thousands — are
+/// where it earns its keep, so the gate is set well above the COCO
+/// median and well below that regime.
+const PREFILTER_MIN_CELL: usize = 256;
+
+/// `out[d] = max_g iou[(g, d)]` — the best overlap each DT has with any
+/// GT, used to skip DTs that cannot match at a given threshold.
+///
+/// Walks the matrix in row-major order (the layout ADR-0005 pins) so
+/// the read stream stays sequential; the accumulator is the `D`-long
+/// output, which is cache-resident for any cell worth prefiltering.
+///
+/// `NaN` maps to `+inf` rather than being dropped. `f64::max` ignores
+/// `NaN`, but the match loop does not: `iou < best` is false for `NaN`,
+/// so a `NaN` overlap *matches*. Column maxima must not be able to
+/// mask that, and a `NaN` bbox can reach here through the ADR-0030
+/// array-ingest path, which does not go via JSON.
+#[allow(clippy::needless_pass_by_value)]
+fn column_maxima(iou_matrix: ArrayView2<'_, f64>) -> Vec<f64> {
+    let mut best = vec![f64::NEG_INFINITY; iou_matrix.ncols()];
+    for g in 0..iou_matrix.nrows() {
+        for (slot, &v) in best.iter_mut().zip(iou_matrix.row(g)) {
+            *slot = if v.is_nan() {
+                f64::INFINITY
+            } else {
+                slot.max(v)
+            };
+        }
+    }
+    best
+}
+
 /// Greedy assignment of detections to ground-truth annotations across
 /// every IoU threshold.
 ///
 /// Inputs are in the caller's natural order. `iou_matrix` has shape
 /// `(G, D)` per ADR-0005 (rows = GT, cols = DT), produced by some
-/// [`crate::Similarity`] impl. `parity_mode` is plumbed through for the
-/// ADR-0002 contract; only **A1**'s corrected tiebreak would change
-/// matching behavior, and that tiebreak needs an `ann_id` input the
-/// ADR-0005 signature does not carry — so for now both modes match
-/// strict numerically.
+/// [`crate::similarity::Similarity`] impl. `parity_mode` is plumbed
+/// through for the ADR-0002 contract; only **A1**'s corrected tiebreak
+/// would change matching behavior, and that tiebreak needs an `ann_id`
+/// input the ADR-0005 signature does not carry — so for now both
+/// modes match strict numerically.
 ///
 /// # Errors
 ///
@@ -218,7 +331,34 @@ pub(crate) fn match_image_with_perm(
     gt_iscrowd: &[bool],
     dt_perm: Vec<usize>,
     iou_thresholds: &[f64],
+    parity_mode: ParityMode,
+) -> Result<MatchResult, EvalError> {
+    match_image_with_perm_gated(
+        iou_matrix,
+        gt_ignore,
+        gt_iscrowd,
+        dt_perm,
+        iou_thresholds,
+        parity_mode,
+        PREFILTER_MIN_CELL,
+    )
+}
+
+/// [`match_image_with_perm`] with the prefilter gate as a parameter.
+///
+/// The prefilter is a pure optimization — `prefilter_min_cell` moves
+/// *when* it engages, never what comes out. Tests pin that by running a
+/// cell through with the gate at `0` and at `usize::MAX` and comparing
+/// the results.
+#[allow(clippy::needless_pass_by_value)]
+fn match_image_with_perm_gated(
+    iou_matrix: ArrayView2<'_, f64>,
+    gt_ignore: &[bool],
+    gt_iscrowd: &[bool],
+    dt_perm: Vec<usize>,
+    iou_thresholds: &[f64],
     _parity_mode: ParityMode,
+    prefilter_min_cell: usize,
 ) -> Result<MatchResult, EvalError> {
     let n_g = gt_ignore.len();
     let n_d = dt_perm.len();
@@ -272,47 +412,38 @@ pub(crate) fn match_image_with_perm(
         });
     }
 
-    for (tind, &t) in iou_thresholds.iter().enumerate() {
-        for (k_d, &d_orig) in dt_perm.iter().enumerate() {
-            // B1: seed best at `min(t, 1 - 1e-10)` so a DT whose best
-            // overlap exactly equals the threshold still matches.
-            let mut best = t.min(1.0 - IOU_BOUNDARY_EPS);
-            let mut m: i64 = -1;
-
-            for k_g in 0..n_g {
-                // B4: skip already-matched GT unless it is a crowd
-                // (crowds are many-to-one).
-                if gt_matches[(tind, k_g)] >= 0 && !gt_iscrowd_sorted[k_g] {
-                    continue;
-                }
-                // B3: once a non-ignore match has been made, stop at the
-                // first ignore-GT. A4 guarantees ignore-GTs are at the
-                // tail, so this short-circuits the rest of the row.
-                if m >= 0 && !gt_ignore_sorted[m as usize] && gt_ignore_sorted[k_g] {
-                    break;
-                }
-
-                let g_orig = gt_perm[k_g];
-                let iou = iou_matrix[(g_orig, d_orig)];
-
-                // B2: non-strict comparison. On equality the later GT
-                // wins (the update path runs when `iou >= best`).
-                if iou < best {
-                    continue;
-                }
-                best = iou;
-                m = k_g as i64;
-            }
-
-            if m < 0 {
-                continue;
-            }
-            let m_idx = m as usize;
-            // B6: matched-to-ignore DTs inherit the ignore flag.
-            dt_ignore[(tind, k_d)] = gt_ignore_sorted[m_idx];
-            dt_matches[(tind, k_d)] = m;
-            gt_matches[(tind, m_idx)] = k_d as i64;
-        }
+    // The ladder is monomorphized on whether the prefilter is active,
+    // so a sub-gate cell compiles to exactly the pre-prefilter loop —
+    // no residual per-`(threshold, DT)` branch on an inactive Option.
+    // On a COCO-shaped grid, where the median non-empty cell is
+    // `G · D = 1`, that branch alone cost ~4 %.
+    if n_g * n_d >= prefilter_min_cell {
+        let dt_best = column_maxima(iou_matrix);
+        run_ladder::<true>(
+            iou_matrix,
+            iou_thresholds,
+            &dt_perm,
+            &gt_perm,
+            &gt_ignore_sorted,
+            &gt_iscrowd_sorted,
+            &dt_best,
+            &mut dt_matches,
+            &mut gt_matches,
+            &mut dt_ignore,
+        );
+    } else {
+        run_ladder::<false>(
+            iou_matrix,
+            iou_thresholds,
+            &dt_perm,
+            &gt_perm,
+            &gt_ignore_sorted,
+            &gt_iscrowd_sorted,
+            &[],
+            &mut dt_matches,
+            &mut gt_matches,
+            &mut dt_ignore,
+        );
     }
 
     Ok(MatchResult {
@@ -512,5 +643,243 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, EvalError::DimensionMismatch { .. }));
+    }
+
+    // ---- per-DT prefilter (column maxima) ----------------------------
+
+    /// Run one cell twice — prefilter forced on, then forced off — and
+    /// return both results. The gate is a pure performance switch, so
+    /// the two must agree field for field.
+    fn run_both_gates(
+        iou: &Array2<f64>,
+        gt_ignore: &[bool],
+        gt_iscrowd: &[bool],
+        dt_scores: &[f64],
+        thresholds: &[f64],
+    ) -> (MatchResult, MatchResult) {
+        let forced = match_image_with_perm_gated(
+            iou.view(),
+            gt_ignore,
+            gt_iscrowd,
+            argsort_score_desc(dt_scores),
+            thresholds,
+            ParityMode::Strict,
+            0,
+        )
+        .expect("prefilter forced on");
+        let disabled = match_image_with_perm_gated(
+            iou.view(),
+            gt_ignore,
+            gt_iscrowd,
+            argsort_score_desc(dt_scores),
+            thresholds,
+            ParityMode::Strict,
+            usize::MAX,
+        )
+        .expect("prefilter disabled");
+        (forced, disabled)
+    }
+
+    fn assert_same_matching(label: &str, a: &MatchResult, b: &MatchResult) {
+        assert_eq!(a.dt_perm, b.dt_perm, "{label}: dt_perm");
+        assert_eq!(a.gt_perm, b.gt_perm, "{label}: gt_perm");
+        assert_eq!(a.dt_matches, b.dt_matches, "{label}: dt_matches");
+        assert_eq!(a.gt_matches, b.gt_matches, "{label}: gt_matches");
+        assert_eq!(a.dt_ignore, b.dt_ignore, "{label}: dt_ignore");
+    }
+
+    /// A dense cell with the full 10-threshold ladder, crowds, ignores,
+    /// score ties and a broad spread of overlaps — including values that
+    /// sit exactly on a threshold, where the B1 seed decides the match.
+    #[test]
+    fn prefilter_agrees_with_the_unfiltered_scan_on_a_dense_cell() {
+        let n_g = 24;
+        let n_d = 32;
+        let thresholds = crate::parity::iou_thresholds();
+
+        // Deterministic spread: many columns land below 0.5 (the
+        // skippable majority), some straddle individual thresholds.
+        let iou = Array2::from_shape_fn((n_g, n_d), |(g, d)| {
+            if d % 3 == 0 {
+                // Junk DT: overlaps nothing above the lowest rung, so
+                // the prefilter skips its whole scan at every threshold.
+                0.03 * ((g + d) % 5) as f64
+            } else if (g + d) % 7 == 0 {
+                // Exactly on a ladder rung: the B1 boundary case.
+                thresholds[(g + d) % thresholds.len()]
+            } else {
+                (((g * 37 + d * 11) % 23) as f64 / 22.0) * 0.95
+            }
+        });
+        let gt_ignore: Vec<bool> = (0..n_g).map(|g| g % 5 == 0).collect();
+        let gt_iscrowd: Vec<bool> = (0..n_g).map(|g| g % 9 == 0).collect();
+        let dt_scores: Vec<f64> = (0..n_d)
+            .map(|d| 1.0 - ((d / 2) as f64) / (n_d as f64))
+            .collect();
+
+        let (forced, disabled) =
+            run_both_gates(&iou, &gt_ignore, &gt_iscrowd, &dt_scores, thresholds);
+        assert_same_matching("dense cell", &forced, &disabled);
+
+        // Guard against a vacuous test: the cell must actually produce
+        // matches, and must actually have skippable columns.
+        assert!(forced.dt_matches.iter().any(|&m| m >= 0));
+        let best = column_maxima(iou.view());
+        assert!(best.iter().any(|&b| b < 0.5), "no column is skippable");
+    }
+
+    /// An all-low cell: every column is below the lowest rung, so the
+    /// prefilter skips every DT at every threshold. Nothing may match.
+    #[test]
+    fn prefilter_skipping_every_dt_leaves_the_cell_unmatched() {
+        let iou = Array2::from_shape_fn((20, 20), |(g, d)| 0.01 * ((g + d) % 4) as f64);
+        let gt_ignore = vec![false; 20];
+        let gt_iscrowd = vec![false; 20];
+        let dt_scores: Vec<f64> = (0..20).map(|d| 1.0 - d as f64 / 20.0).collect();
+        let thresholds = crate::parity::iou_thresholds();
+
+        let (forced, disabled) =
+            run_both_gates(&iou, &gt_ignore, &gt_iscrowd, &dt_scores, thresholds);
+        assert_same_matching("all-low cell", &forced, &disabled);
+        assert!(forced.dt_matches.iter().all(|&m| m < 0));
+    }
+
+    /// `NaN` overlap *matches* in pycocotools (`iou < best` is false for
+    /// `NaN`, so the update path runs). `f64::max` would drop it from
+    /// the column maxima and the prefilter would then skip a DT that
+    /// the scan matches, so `column_maxima` sends `NaN` to `+inf`.
+    /// A `NaN` bbox reaches here through ADR-0030 array ingest, which
+    /// does not pass through JSON.
+    #[test]
+    fn nan_overlap_survives_the_prefilter() {
+        let n_g = 20;
+        let n_d = 20;
+        let mut iou = Array2::from_elem((n_g, n_d), 0.02);
+        // One DT whose only non-trivial entry is NaN.
+        iou[(3, 7)] = f64::NAN;
+        let gt_ignore = vec![false; n_g];
+        let gt_iscrowd = vec![false; n_g];
+        let dt_scores: Vec<f64> = (0..n_d).map(|d| 1.0 - d as f64 / 100.0).collect();
+        let thresholds = [0.5];
+
+        let (forced, disabled) =
+            run_both_gates(&iou, &gt_ignore, &gt_iscrowd, &dt_scores, &thresholds);
+        assert_same_matching("nan cell", &forced, &disabled);
+
+        assert_eq!(column_maxima(iou.view())[7], f64::INFINITY);
+        // DT 7 is at sorted position 7 (scores are strictly decreasing)
+        // and matches on both paths. It lands on the *last* GT, not on
+        // GT 3: once `best` is `NaN`, every later `iou < best` is false
+        // too, so the update path runs for each remaining GT in turn.
+        // That is what the reference does, and reproducing it is the
+        // point — the prefilter must not turn it into a non-match.
+        assert_eq!(forced.dt_matches[(0, 7)], (n_g - 1) as i64);
+    }
+
+    /// The gate itself: below `PREFILTER_MIN_CELL` no buffer is built,
+    /// above it one is — and neither changes the answer. Checked at the
+    /// boundary so a future retune cannot silently flip behaviour.
+    #[test]
+    fn prefilter_gate_does_not_change_results_at_its_boundary() {
+        let thresholds = crate::parity::iou_thresholds();
+        for n in [15usize, 16, 17] {
+            let iou = Array2::from_shape_fn((n, n), |(g, d)| ((g * 3 + d) % 11) as f64 / 10.0);
+            let gt_ignore: Vec<bool> = (0..n).map(|g| g % 4 == 0).collect();
+            let gt_iscrowd = vec![false; n];
+            let dt_scores: Vec<f64> = (0..n).map(|d| 1.0 - d as f64 / (n as f64)).collect();
+
+            let (forced, disabled) =
+                run_both_gates(&iou, &gt_ignore, &gt_iscrowd, &dt_scores, thresholds);
+            assert_same_matching(&format!("n={n}"), &forced, &disabled);
+
+            let auto = match_image(
+                iou.view(),
+                &gt_ignore,
+                &gt_iscrowd,
+                &dt_scores,
+                thresholds,
+                ParityMode::Strict,
+            )
+            .expect("auto gate");
+            assert_same_matching(&format!("auto n={n}"), &auto, &disabled);
+        }
+        // 16x16 = 256 is the first cell that engages the prefilter.
+        assert_eq!(PREFILTER_MIN_CELL, 256);
+    }
+
+    /// `dt_best` is indexed by the DT's **original column**, not by its
+    /// rank in `dt_perm`. Every other prefilter test above feeds
+    /// score-descending `dt_scores`, so `dt_perm` is the identity and
+    /// the two indices coincide — which hides the difference entirely.
+    ///
+    /// The permutation is genuinely non-identity in production:
+    /// `crate::tide::assignment` calls [`match_image`] with raw,
+    /// unsorted `dt_scores` over whole-category cells, which are large
+    /// enough to cross the `PREFILTER_MIN_CELL` gate. So this cell
+    /// shuffles the scores and anti-correlates overlap quality with
+    /// score rank: a detection with a real match sits at a rank whose
+    /// *column index* overlaps nothing. Confusing the two indices skips
+    /// every true match and turns it into a false negative.
+    #[test]
+    fn prefilter_indexes_dt_best_by_original_column_not_by_rank() {
+        let n_g = 16;
+        let n_d = 24; // 16 * 24 = 384, comfortably above the gate.
+        let thresholds = crate::parity::iou_thresholds();
+
+        // A shuffled permutation of `0..n_d` (7 is coprime to 24), so
+        // `argsort_score_desc` is nowhere near the identity. Its parity
+        // inverts: rank `k` holds column `7 * (n_d - 1 - k) mod n_d`,
+        // whose parity is opposite to `k`'s.
+        let dt_scores: Vec<f64> = (0..n_d)
+            .map(|d| ((d * 7) % n_d) as f64 / n_d as f64)
+            .collect();
+
+        // Overlap quality keys off the *column* index: odd columns hold
+        // one strong match, even columns overlap nothing above the
+        // lowest rung. Combined with the parity inversion above, reading
+        // `dt_best` by rank inspects exactly the wrong column every time.
+        let iou = Array2::from_shape_fn((n_g, n_d), |(g, d)| {
+            if d % 2 == 0 {
+                0.04 * ((g + d) % 3) as f64
+            } else if g == d / 2 {
+                0.95 - 0.01 * d as f64
+            } else {
+                0.05 * ((g * 5 + d) % 4) as f64
+            }
+        });
+        // Interleaved ignores, so `gt_perm` is non-identity too, plus a
+        // crowd — the B3/B4 paths run alongside the shuffled DT order.
+        let gt_ignore: Vec<bool> = (0..n_g).map(|g| g % 7 == 3).collect();
+        let gt_iscrowd: Vec<bool> = (0..n_g).map(|g| g == 5).collect();
+
+        let (forced, disabled) =
+            run_both_gates(&iou, &gt_ignore, &gt_iscrowd, &dt_scores, thresholds);
+        assert_same_matching("shuffled dt scores", &forced, &disabled);
+
+        // Guard against the test going vacuous: the permutations must
+        // really be non-identity, and the cell must really match.
+        assert_ne!(
+            forced.dt_perm,
+            (0..n_d).collect::<Vec<usize>>(),
+            "dt_perm must not be the identity"
+        );
+        assert_ne!(
+            forced.gt_perm,
+            (0..n_g).collect::<Vec<usize>>(),
+            "gt_perm must not be the identity"
+        );
+        assert!(forced.dt_matches.iter().any(|&m| m >= 0));
+
+        // The sharp edge. Rank 0 is column `7 * 23 mod 24 == 17`, whose
+        // best overlap is 0.78; column 0 — what a rank-indexed lookup
+        // would read — tops out at 0.08 and is skippable at every rung.
+        let dt_best = column_maxima(iou.view());
+        assert_eq!(forced.dt_perm[0], 17);
+        assert!(dt_best[17] >= 0.5, "rank 0's column must be matchable");
+        assert!(dt_best[0] < 0.5, "column 0 must be skippable");
+        assert!(
+            forced.dt_matches[(0, 0)] >= 0,
+            "the top-scoring DT must still match under the prefilter"
+        );
     }
 }
