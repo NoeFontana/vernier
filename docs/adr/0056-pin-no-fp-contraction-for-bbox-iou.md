@@ -177,9 +177,15 @@ are by construction:
 - same intersection — `(min - max).max(0.0)` with the same operand
   order, so quirks **I4** and the exact `+0.0` carry over;
 - same zero guard — `denom > 0.0` and `union <= 0.0` are complements on
-  every non-NaN input, and a NaN denominator cannot arise from finite
-  box coordinates (the kernel's guard is the safer of the two, returning
-  `+0.0` where the old copy returned `NaN`);
+  every non-NaN input. A NaN denominator cannot arise from
+  *non-overflowing* coordinates, but it can from overflowing ones:
+  `w = h = 1e200` sends both areas to `inf`, and `inf + inf - inf` is
+  `NaN`. There the kernel returns `+0.0` where the deleted copy returned
+  `NaN` — strictly better, because `oracle.py` guards the same direction
+  (`np.where(union > 0.0, …, 0.0)`), so the reroute removes a latent
+  divergence rather than adding one. A `NaN` would not have been inert
+  downstream either: `NaN < threshold` is false, so `match_image` would
+  have treated it as a match candidate;
 - the **one** semantic the kernel adds is quirk **E1**, the crowd IoA
   denominator, which the TIDE oracle (`oracle.py::bbox_iou`, ADR-0021)
   does not have — crowd GTs reach TIDE through `gt_ignore`, not through
