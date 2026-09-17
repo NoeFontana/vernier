@@ -992,6 +992,11 @@ pub fn evaluate_with<K: EvalKernel>(
     let strict_lvis_zero_area_filter =
         matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
 
+    // Quirk **F6** (corrected, ADR-0058): `computeOks` has no `useCats`
+    // fork, so pycocotools scores every keypoints cell against an empty
+    // IoU matrix when `useCats=0`. See `strict_oks_use_cats_blackout`.
+    let oks_use_cats_blackout = strict_oks_use_cats_blackout(kernel, params.use_cats, parity_mode);
+
     // Visit only cells that can hold anything. The `(gt, dt)` empty
     // check below is what decides a cell is a no-op, and it costs two
     // index lookups to reach; at 365 categories x 80k images that is
@@ -1111,7 +1116,7 @@ pub fn evaluate_with<K: EvalKernel>(
             let d = kernel_scratch.dt.len();
             scratch.iou_buf.clear();
             scratch.iou_buf.resize(g * d, 0.0);
-            if g > 0 && d > 0 {
+            if g > 0 && d > 0 && !oks_use_cats_blackout {
                 let mut iou_view = ArrayViewMut2::from_shape((g, d), &mut scratch.iou_buf[..])
                     .map_err(|e| EvalError::DimensionMismatch {
                         detail: format!("iou scratch view: {e}"),
@@ -1589,6 +1594,43 @@ pub fn evaluate_keypoints(
     sigmas: HashMap<i64, Vec<f64>>,
 ) -> Result<EvalGrid, EvalError> {
     evaluate_with(gt, dt, params, parity_mode, &OksSimilarity::new(sigmas))
+}
+
+/// Quirk **F6** (`corrected`, ADR-0058): does this run have to reproduce
+/// pycocotools' keypoints-under-`useCats=0` blackout?
+///
+/// `COCOeval.evaluate` computes the per-cell similarity matrix as
+/// `computeIoU(imgId, catId)` / `computeOks(imgId, catId)` over
+/// `catIds = p.catIds if p.useCats else [-1]` (`ce:142`). `computeIoU`
+/// opens with a `if p.useCats: ... else: <gather every category>` fork
+/// (`ce:165-170`), so the `-1` sentinel still resolves to real
+/// annotations. `computeOks` has **no such fork** — it indexes
+/// `self._gts[imgId, catId]` directly (`ce:195-196`), finds nothing
+/// under the `-1` sentinel, and returns `[]`. `evaluateImg` *does*
+/// gather across categories (`ce:241-246`), so the cell still carries
+/// its GTs and DTs, but the `len(self.ious[imgId, catId]) > 0` guard
+/// (`ce:266`) collapses the IoU matrix to empty and the matching loop
+/// is skipped outright: every DT is an unmatched FP, every GT an
+/// unmatched FN, and keypoint AP/AR come out **0**.
+///
+/// Vernier's L4 collapse gathers correctly for every kernel, so its
+/// natural answer is the semantically right one. Under
+/// [`ParityMode::Strict`] we reproduce the upstream blackout by leaving
+/// the (already zero-filled) IoU scratch untouched — an all-zero `g×d`
+/// matrix is observationally identical to pycocotools' empty `ious`,
+/// since quirk **B1**'s `min(t, 1 - 1e-10)` seed admits no match at
+/// IoU 0. [`ParityMode::Corrected`] keeps the gather and scores the
+/// cell.
+///
+/// Scoped to the keypoints kernel via [`EvalKernel::is_keypoints`]:
+/// bbox / segm / boundary route through `computeIoU`, which has the
+/// fork, and must not be blacked out.
+pub(crate) fn strict_oks_use_cats_blackout<K: EvalKernel>(
+    kernel: &K,
+    use_cats: bool,
+    parity_mode: ParityMode,
+) -> bool {
+    matches!(parity_mode, ParityMode::Strict) && !use_cats && kernel.is_keypoints()
 }
 
 pub(crate) fn gt_indices_for_cell(
@@ -2135,6 +2177,116 @@ mod tests {
         assert_eq!(all.gt_ignore.len(), 2);
         assert_eq!(all.dt_scores.len(), 1);
         assert!(all.dt_matched.iter().all(|&m| m));
+    }
+
+    /// One image, one `person` category, one GT and one byte-identical
+    /// DT — the perfect-prediction keypoints shape. OKS collapses to
+    /// 1.0, so the DT matches at every IoU threshold when the kernel
+    /// actually runs.
+    fn kp_perfect_match_parts() -> (CocoDataset, CocoDetections) {
+        let kps: Vec<f64> = (0..17)
+            .flat_map(|i| [10.0 + f64::from(i), 10.0 + f64::from(i) * 2.0, 2.0])
+            .collect();
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "person")];
+        let mut gt_ann = ann(1, 1, 1, (0.0, 0.0, 40.0, 80.0));
+        gt_ann.area = 3200.0;
+        gt_ann.keypoints = Some(kps.clone());
+        gt_ann.num_keypoints = Some(17);
+        let gt = CocoDataset::from_parts(images, vec![gt_ann], cats).unwrap();
+        let mut dt_in = dt_input(1, 1, 0.99, (0.0, 0.0, 40.0, 80.0));
+        dt_in.keypoints = Some(kps);
+        dt_in.num_keypoints = Some(17);
+        let dts = CocoDetections::from_inputs(vec![dt_in]).unwrap();
+        (gt, dts)
+    }
+
+    fn kp_grid(use_cats: bool, parity_mode: ParityMode) -> EvalGrid {
+        let (gt, dts) = kp_perfect_match_parts();
+        let area = AreaRange::keypoints_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 20,
+            use_cats,
+            retain_iou: false,
+        };
+        evaluate_keypoints(&gt, &dts, params, parity_mode, HashMap::new()).unwrap()
+    }
+
+    #[test]
+    fn f6_strict_keypoints_use_cats_false_matches_nothing() {
+        // F6 (corrected): pycocotools' `computeOks` has no `useCats`
+        // fork, so the `-1` sentinel cell hands `evaluateImg` an empty
+        // IoU matrix and *nothing* matches — keypoint AP is 0. Strict
+        // mode reproduces that: the cell still carries its GT and DT
+        // (evaluateImg *does* gather across categories), but the DT is
+        // an unmatched FP at every threshold.
+        let grid = kp_grid(false, ParityMode::Strict);
+        assert_eq!(grid.n_categories, 1);
+        let all = grid.cell(0, 0, 0).unwrap();
+        assert_eq!(all.gt_ignore, vec![false]);
+        assert_eq!(all.dt_scores.len(), 1);
+        assert!(
+            all.dt_matched.iter().all(|&m| !m),
+            "strict mode must reproduce pycocotools' blackout: no DT matches"
+        );
+    }
+
+    #[test]
+    fn f6_corrected_keypoints_use_cats_false_matches() {
+        // Corrected mode keeps vernier's L4 gather and scores the cell:
+        // the perfect DT matches at every IoU threshold.
+        let grid = kp_grid(false, ParityMode::Corrected);
+        assert_eq!(grid.n_categories, 1);
+        let all = grid.cell(0, 0, 0).unwrap();
+        assert_eq!(all.dt_scores.len(), 1);
+        assert!(
+            all.dt_matched.iter().all(|&m| m),
+            "corrected mode scores the collapsed keypoints cell"
+        );
+    }
+
+    #[test]
+    fn f6_blackout_does_not_fire_when_use_cats_is_true() {
+        // The blackout is scoped to the `useCats=0` collapse; the
+        // standard keypoints configuration is untouched in both modes.
+        for mode in [ParityMode::Strict, ParityMode::Corrected] {
+            let grid = kp_grid(true, mode);
+            let all = grid.cell(0, 0, 0).unwrap();
+            assert!(
+                all.dt_matched.iter().all(|&m| m),
+                "use_cats=true must match in {mode:?} mode"
+            );
+        }
+    }
+
+    #[test]
+    fn f6_blackout_is_keypoints_only() {
+        // bbox / segm / boundary route through `computeIoU`, which
+        // *does* have the `useCats` fork — the blackout must not bleed
+        // across kernels. `l4_use_cats_false_collapses_categories`
+        // covers the bbox behavior end-to-end; this pins the predicate.
+        assert!(strict_oks_use_cats_blackout(
+            &OksSimilarity::new(HashMap::new()),
+            false,
+            ParityMode::Strict
+        ));
+        assert!(!strict_oks_use_cats_blackout(
+            &OksSimilarity::new(HashMap::new()),
+            false,
+            ParityMode::Corrected
+        ));
+        assert!(!strict_oks_use_cats_blackout(
+            &OksSimilarity::new(HashMap::new()),
+            true,
+            ParityMode::Strict
+        ));
+        assert!(!strict_oks_use_cats_blackout(
+            &BboxIou,
+            false,
+            ParityMode::Strict
+        ));
     }
 
     #[test]

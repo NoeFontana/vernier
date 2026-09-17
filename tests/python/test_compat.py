@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 from pycocotools.coco import COCO
 
 from vernier import COCOeval
@@ -250,6 +252,127 @@ def test_keypoints_shim_matches_pycocotools_strict(
     shim.summarize()
 
     np.testing.assert_array_equal(shim.stats, ref.stats)
+
+
+def _run_kp(cls: Any, gt: COCO, dt: COCO, use_cats: int, **kwargs: Any) -> NDArray[np.float64]:
+    """Drive a pycocotools-shaped keypoints evaluator with a ``useCats`` override."""
+    e = cls(gt, dt, iouType="keypoints", **kwargs)
+    e.params.useCats = use_cats
+    e.evaluate()
+    e.accumulate()
+    e.summarize()
+    return np.asarray(e.stats, dtype=np.float64)
+
+
+def test_keypoints_use_cats_zero_strict_matches_pycocotools(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    # Quirk F6 (corrected, ADR-0058). `COCOeval.evaluate` computes the
+    # per-cell similarity over `catIds = p.catIds if p.useCats else [-1]`
+    # (ce:142). `computeIoU` forks on `p.useCats` and gathers every
+    # category under the `-1` sentinel (ce:165-170); `computeOks` does
+    # not (ce:195-196) — it indexes `self._gts[imgId, -1]`, finds
+    # nothing, and returns `[]`. `evaluateImg` still gathers the cell's
+    # GTs and DTs (ce:241-246), so the perfect DT survives as an
+    # unmatched FP and keypoint AP comes out 0.
+    #
+    # Strict is the drop-in's default parity mode, so the default path
+    # must reproduce that 0 exactly — bugs included. Assert against the
+    # real library, not a hand-written expectation.
+    from pycocotools.cocoeval import COCOeval as PycocoEval
+
+    gt, dt = perfect_match_kp_coco
+    ref = _run_kp(PycocoEval, gt, dt, use_cats=0)
+    # Pin the direction: the oracle really does report AP 0 here, even
+    # though the DT is byte-identical to the GT.
+    assert ref[0] == 0.0
+    shim_default = _run_kp(COCOeval, gt, dt, use_cats=0)
+    shim_strict = _run_kp(COCOeval, gt, dt, use_cats=0, parity_mode="strict")
+    np.testing.assert_array_equal(shim_default, ref)
+    np.testing.assert_array_equal(shim_strict, ref)
+
+
+def test_keypoints_use_cats_zero_corrected_scores_the_collapsed_cell(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    # The other direction of quirk F6: corrected mode keeps vernier's
+    # category-agnostic gather (quirk L4) on the OKS path too, so the
+    # perfect DT matches and AP is 1.0 — the same answer `useCats=1`
+    # gives, which is what "ignore category labels" is supposed to mean
+    # on a single-category dataset.
+    from pycocotools.cocoeval import COCOeval as PycocoEval
+
+    gt, dt = perfect_match_kp_coco
+    corrected = _run_kp(COCOeval, gt, dt, use_cats=0, parity_mode="corrected")
+    ref_use_cats_one = _run_kp(PycocoEval, gt, dt, use_cats=1)
+    np.testing.assert_array_equal(corrected, ref_use_cats_one)
+    assert corrected[0] == pytest.approx(1.0)
+    # And it is a real divergence from the oracle's `useCats=0` answer —
+    # that divergence is the whole point of the `corrected` disposition.
+    assert corrected[0] != _run_kp(PycocoEval, gt, dt, use_cats=0)[0]
+
+
+def test_keypoints_use_cats_zero_corrected_matches_across_categories(
+    tmp_path: Path,
+) -> None:
+    # Cross-category evidence for quirk F6's corrected side: a GT
+    # labelled `person` and a keypoint-identical DT labelled `animal`.
+    # `useCats=0` means "ignore category labels", so the semantically
+    # right answer is a match (AP 1.0). pycocotools and strict mode both
+    # report 0; corrected recovers the match.
+    from pycocotools.cocoeval import COCOeval as PycocoEval
+
+    gt_dict = _kp_gt_dict()
+    gt_dict["categories"] = [{"id": 1, "name": "person"}, {"id": 2, "name": "animal"}]
+    dt_list = _kp_dt_list()
+    dt_list[0]["category_id"] = 2
+
+    gt_path = tmp_path / "xcat_gt.json"
+    dt_path = tmp_path / "xcat_dt.json"
+    gt_path.write_text(json.dumps(gt_dict))
+    dt_path.write_text(json.dumps(dt_list))
+    gt = COCO(str(gt_path))
+    dt = gt.loadRes(str(dt_path))
+
+    assert _run_kp(PycocoEval, gt, dt, use_cats=0)[0] == 0.0
+    assert _run_kp(COCOeval, gt, dt, use_cats=0, parity_mode="strict")[0] == 0.0
+    assert _run_kp(COCOeval, gt, dt, use_cats=0, parity_mode="corrected")[0] == pytest.approx(1.0)
+
+
+def test_keypoints_use_cats_one_is_unaffected_by_f6(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    # The F6 blackout is scoped to the `useCats=0` collapse: the
+    # standard keypoints configuration must be untouched in both modes.
+    from pycocotools.cocoeval import COCOeval as PycocoEval
+
+    gt, dt = perfect_match_kp_coco
+    ref = _run_kp(PycocoEval, gt, dt, use_cats=1)
+    for mode in ("strict", "corrected"):
+        np.testing.assert_array_equal(_run_kp(COCOeval, gt, dt, use_cats=1, parity_mode=mode), ref)
+
+
+def test_bbox_use_cats_zero_is_not_blacked_out(
+    perfect_match_coco: tuple[COCO, COCO],
+) -> None:
+    # F6 is keypoints-only: bbox routes through `computeIoU`, which
+    # *does* have the `useCats` fork, so strict mode must keep matching
+    # under `useCats=0` and stay bit-equal to the oracle.
+    from pycocotools.cocoeval import COCOeval as PycocoEval
+
+    gt, dt = perfect_match_coco
+    ref = PycocoEval(gt, dt, iouType="bbox")
+    ref.params.useCats = 0
+    ref.evaluate()
+    ref.accumulate()
+    ref.summarize()
+    shim = COCOeval(gt, dt, iouType="bbox", parity_mode="strict")
+    shim.params.useCats = 0
+    shim.evaluate()
+    shim.accumulate()
+    shim.summarize()
+    assert ref.stats[0] == pytest.approx(1.0)
+    np.testing.assert_array_equal(shim.stats, np.asarray(ref.stats, dtype=np.float64))
 
 
 def test_keypoints_shim_matches_evaluator_api(
