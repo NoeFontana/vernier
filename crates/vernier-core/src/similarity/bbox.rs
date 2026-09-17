@@ -769,10 +769,22 @@ mod tests {
 /// [`BoundaryIou`](crate::similarity::BoundaryIou) accumulate integer
 /// (`u64`) areas and divide once at the end, and
 /// [`BboxIou::compute_overlap_mask`] — the prefilter they share — has
-/// no multiply at all. Pinning [`BboxIou::compute`] therefore also
-/// pins the TIDE, LRP, LVIS and streaming paths, which reuse it
-/// verbatim. The one remaining `f64` contraction site in the crate is
-/// `dx * dx + dy * dy` in the OKS kernel; see ADR-0056.
+/// no multiply at all.
+///
+/// Pinning [`BboxIou::compute`] therefore also pins the TIDE, LRP,
+/// LVIS and streaming paths — but *only* because each of them routes
+/// through this function rather than restating the formula. That is a
+/// property to maintain, not one to assume: TIDE's same-class matching
+/// held a private copy of the union expression until it was rerouted
+/// here, and while it did, this pin did not cover it. A second copy of
+/// `g_area + d_area - inter` anywhere in the crate is a second,
+/// unpinned kernel. `tide::assignment`'s
+/// `tide_same_class_iou_matches_oracle_bitwise` holds that path to this
+/// one bit-for-bit.
+///
+/// The remaining exposed `f64` contraction site on a similarity
+/// kernel's output path is `dx * dx + dy * dy` in the OKS kernel. It is
+/// not pinned here; see ADR-0056 §Scope.
 #[cfg(test)]
 mod fp_contract_pin {
     use super::*;
@@ -788,10 +800,25 @@ mod fp_contract_pin {
         label: &'static str,
     }
 
-    /// Golden table. The three non-trivial union cases were selected so
-    /// the set discriminates against *each* contraction site
-    /// independently — `fp_contract_cases_discriminate_against_both_fma_sites`
-    /// asserts that property rather than leaving it to a comment.
+    /// Golden table.
+    ///
+    /// **Provenance — read before touching a constant.** These bit
+    /// patterns are the *reference's* values: they come from
+    /// pycocotools' `bbIou` (`maskApi.c`, `pycocotools==2.0.11` as
+    /// published on PyPI), evaluated as three separately-rounded
+    /// operations. They are **not** a recording of vernier's own
+    /// output and must never be regenerated from it. If a build of
+    /// this crate disagrees with them, that build has diverged from
+    /// the oracle — "refreshing" the table from the new output would
+    /// convert the pin into a tautology that pins whatever the
+    /// compiler happened to do.
+    ///
+    /// The three non-trivial union cases were selected so the set
+    /// discriminates against *each* contraction site independently —
+    /// and against both sites fused at once, which is what a
+    /// regenerated table would look like.
+    /// `fp_contract_cases_discriminate_against_both_fma_sites` asserts
+    /// all three properties rather than leaving them to a comment.
     const CASES: &[Case] = &[
         // Sensitive to the `sum` site only.
         Case {
@@ -936,6 +963,23 @@ mod fp_contract_pin {
         }
     }
 
+    /// Both sites fused at once — `fnmadd(iw, ih, fma(dw, dh, g_area))`.
+    /// This is the form a table regenerated from a *contracting* build
+    /// would encode, and the one a single-site check cannot see: on the
+    /// current table the single-site counts happen to stay non-zero
+    /// after such a regeneration (they merely swap, 2/1 → 1/2), so both
+    /// single-site assertions would still pass on a worthless pin.
+    fn fused_both_sites(c: &Case) -> f64 {
+        let (g_area, _, iw, ih) = parts(c);
+        let inter = iw * ih;
+        let denom = (-iw).mul_add(ih, c.dt[2].mul_add(c.dt[3], g_area));
+        if denom > 0.0 {
+            inter / denom
+        } else {
+            0.0
+        }
+    }
+
     /// `sum - inter` fused into `fnmadd(iw, ih, sum)`.
     fn fused_sub_site(c: &Case) -> f64 {
         let (g_area, d_area, iw, ih) = parts(c);
@@ -977,8 +1021,11 @@ mod fp_contract_pin {
     /// `arch().dispatch` and LLVM compiles the loop body with `fma` /
     /// `neon` target features enabled. This is the path the shipped
     /// wheel executes on dense cells, and before this test it had no
-    /// bit-exactness coverage at all — every pre-existing bbox test
-    /// used a cell of at most 3x3.
+    /// bit-exactness coverage at all — the largest cell any pre-existing
+    /// bbox test built was 5x5
+    /// (`overlap_mask_survivor_bit_matches_full_iou`, with one 4x4
+    /// alongside it), and 25 < [`SMALL_CELL_THRESHOLD`] = 32 routes
+    /// every one of them to the scalar body.
     #[test]
     fn fp_contract_golden_bits_on_dispatched_path() {
         // Sized from the constant rather than hardcoded, so raising the
@@ -1018,7 +1065,21 @@ mod fp_contract_pin {
     /// Self-validation for the golden table. If a future edit replaced
     /// these constants with contraction-insensitive values, the pins
     /// above would still pass while protecting nothing. Assert instead
-    /// that the table discriminates against *each* fusion site.
+    /// that the table discriminates against *each* fusion site — and
+    /// against both fused together.
+    ///
+    /// The both-sites arm is the one that closes the realistic failure
+    /// mode. The dangerous edit is not "someone invents insensitive
+    /// constants"; it is "the golden test goes red on a contracting
+    /// toolchain and a contributor refreshes the constants from the new
+    /// output on both architectures". A table regenerated that way is
+    /// still sensitive to each site *individually* (the counts swap
+    /// rather than vanish), so `sum_site > 0 && sub_site > 0` stays
+    /// green. It is identical to the both-fused form by construction,
+    /// which is exactly what `both_sites > 0` rejects. Combined with
+    /// the provenance note on [`CASES`] — the constants are the
+    /// reference's, never ours — the pin cannot be quietly re-anchored
+    /// to whatever the compiler did.
     #[test]
     fn fp_contract_cases_discriminate_against_both_fma_sites() {
         let sum_site = CASES
@@ -1028,6 +1089,10 @@ mod fp_contract_pin {
         let sub_site = CASES
             .iter()
             .filter(|c| !c.is_crowd && fused_sub_site(c).to_bits() != c.expected_bits)
+            .count();
+        let both_sites = CASES
+            .iter()
+            .filter(|c| !c.is_crowd && fused_both_sites(c).to_bits() != c.expected_bits)
             .count();
 
         assert!(
@@ -1039,6 +1104,15 @@ mod fp_contract_pin {
             sub_site > 0,
             "no pinned case detects fusion of `sum - inter` into \
              fnmadd(iw, ih, sum); the golden table protects nothing there"
+        );
+        assert!(
+            both_sites > 0,
+            "no pinned case distinguishes the unfused expression from \
+             the fully contracted one. Either the table was regenerated \
+             from a contracting build — see the provenance note on \
+             `CASES`, the constants must come from pycocotools' `bbIou`, \
+             never from vernier's own output — or the cases no longer \
+             anchor the pin to anything"
         );
     }
 
