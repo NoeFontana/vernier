@@ -84,6 +84,10 @@ proptest = { workspace = true }
 divan = "0.1"
 
 [[bench]]
+name = "accumulate_shapes"
+harness = false
+
+[[bench]]
 name = "bbox_iou"
 harness = false
 
