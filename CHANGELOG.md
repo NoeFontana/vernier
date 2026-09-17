@@ -14,6 +14,19 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Performance
+
+- **`accumulate` sorts each category's detection stream once** (ADR-0052).
+  The `(K, A, M)` walk ran `argsort_score_desc` per cell — 12 stable
+  sorts per category on the COCO defaults — for 12 streams that are all
+  derivable from one. The four area ranges of a `(category, image)` pair
+  share a `dt_scores` vector, and each smaller `maxDet` stream is an
+  induced subsequence of the largest, so filtering one permutation
+  reproduces all twelve exactly. Bit-equal output; `accumulate` drops
+  16.9 % on a val2017-shaped grid. Long-tail grids (LVIS) barely move —
+  their per-category streams are short and the cost is the dense grid
+  walk, which this does not touch.
+
 ## [0.3.0] - 2026-09-16
 
 ### Performance
