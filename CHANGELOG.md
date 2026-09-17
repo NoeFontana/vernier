@@ -30,6 +30,15 @@ additive / perf / docs".
   16.9 % on a val2017-shaped grid. Long-tail grids (LVIS) barely move —
   their per-category streams are short and the cost is the dense grid
   walk, which this does not touch.
+- **Detections that cannot match no longer scan the GT list**
+  (ADR-0053). The matching ladder read all `G` GTs per
+  `(threshold, detection)` even when the detection's best overlap was
+  below the lowest rung. Per-cell column maxima make that skip exact —
+  `best` only rises from the threshold seed, so the scan was provably a
+  no-op — and the ladder is monomorphized on whether the prefilter is
+  active, so cells below the `G · D = 256` gate compile to the previous
+  loop. Dense cells (250 GT x 250 DT) drop 84 %; COCO-shaped cells are
+  unchanged.
 
 ## [0.3.0] - 2026-09-16
 
