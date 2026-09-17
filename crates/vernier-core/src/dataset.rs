@@ -531,12 +531,18 @@ impl CocoDataset {
     ///
     /// `threads` is the caller's budget. Per ADR-0047 the
     /// `num_threads=None` path never calls this; it stays on
-    /// [`Self::from_json_bytes`] and never enters rayon.
+    /// [`Self::from_json_bytes`] and never enters rayon. A budget below
+    /// [`json_split::MIN_THREADS_TO_SPLIT`] also stays serial — the
+    /// structural scan is only worth its cost once there are threads to
+    /// spend it on.
     ///
     /// # Errors
     ///
     /// Same as [`Self::from_json_bytes`].
     pub fn from_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
+            return Self::from_json_bytes(bytes);
+        }
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
         let parts = Self::split_parse(bytes, threads);
@@ -677,6 +683,9 @@ impl CocoDataset {
     ///
     /// Same as [`Self::from_lvis_json_bytes`].
     pub fn from_lvis_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
+            return Self::from_lvis_json_bytes(bytes);
+        }
         match Self::split_parse_lvis(bytes, threads) {
             Some(raw) => Self::from_lvis_parts(raw),
             None => Self::from_lvis_json_bytes(bytes),
@@ -1359,10 +1368,16 @@ impl CocoDetections {
     /// which matters beyond parity: [`Self::from_inputs`] assigns
     /// auto-ids by position (quirk **J1**).
     ///
+    /// A budget below [`json_split::MIN_THREADS_TO_SPLIT`] stays on the
+    /// serial loader; see that constant for the crossover measurement.
+    ///
     /// # Errors
     ///
     /// Same as [`Self::from_json_bytes`].
     pub fn from_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
+            return Self::from_json_bytes(bytes);
+        }
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
         let parsed = crate::json_split::document_object_array(bytes).and_then(|elements| {

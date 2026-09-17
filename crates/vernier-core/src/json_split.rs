@@ -79,15 +79,36 @@ fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
     i
 }
 
+/// Bytes of a string scanned by the plain byte loop before
+/// [`skip_string`] hands the rest to `memchr2`.
+///
+/// Measured, not guessed. `memchr` everywhere is a loss on field names
+/// — the next quote is ~10 bytes away and the per-call SIMD setup costs
+/// more than the bytes it skips — but a `segmentation.counts` RLE
+/// string is multi-KB and the byte loop is the serial cap on the whole
+/// split. Gating on length gets both. Structural scan, best of 40, 8
+/// cores, no `target-cpu=native`, median ms:
+///
+/// | payload                     | scalar | memchr2 | gate 16 | gate 32 | gate 64 |
+/// |-----------------------------|--------|---------|---------|---------|---------|
+/// | Objects365 bbox DT, 171 MiB | 78.6   | 92.6    | 76.3    | 76.2    | 77.6    |
+/// | COCO GT (polygons), 20 MiB  | 4.67   | 5.62    | 4.76    | 4.65    | 4.81    |
+/// | COCO segm DT (RLE), 18 MiB  | 8.61   | 7.90    | 6.89    | 6.99    | 7.54    |
+/// | LVIS segm DT (RLE), 96 MiB  | 49.2   | 49.6    | 42.6    | 43.1    | 46.3    |
+///
+/// 32 is best-or-tied on three of the four and never worse than the
+/// byte loop, which 16 is not (COCO GT) and 64 is not (both RLE
+/// payloads).
+const STRING_SCALAR_GATE: usize = 32;
+
 /// Index just past the string starting at `i` (its opening quote).
 ///
-/// A plain byte loop, deliberately. `memchr` was measured here and is
-/// slower: JSON field names put the next quote ~10 bytes away, and at
-/// that distance the per-call SIMD setup costs more than the bytes it
-/// skips.
+/// A byte loop for the first [`STRING_SCALAR_GATE`] bytes, `memchr2`
+/// beyond it — see that constant for the measurements behind the gate.
 fn skip_string(bytes: &[u8], i: usize) -> Option<usize> {
     let mut j = i + 1;
-    while j < bytes.len() {
+    let gate = (j + STRING_SCALAR_GATE).min(bytes.len());
+    while j < gate {
         match bytes[j] {
             // An escape consumes the next byte whatever it is, which is
             // what keeps `\"` from ending the string. `\uXXXX` needs no
@@ -97,7 +118,17 @@ fn skip_string(bytes: &[u8], i: usize) -> Option<usize> {
             _ => j += 1,
         }
     }
-    None
+    // Past the gate the same two rules hold, found with SIMD. An
+    // escape at the gate boundary may have pushed `j` past the end;
+    // `bytes.get` then yields `None`, exactly as the byte loop did.
+    loop {
+        let rel = memchr::memchr2(b'\\', b'"', bytes.get(j..)?)?;
+        let at = j + rel;
+        if bytes[at] == b'"' {
+            return Some(at + 1);
+        }
+        j = at + 2;
+    }
 }
 
 /// Index just past the object or array starting at `i`.
@@ -384,6 +415,29 @@ pub(crate) fn chunks_for(threads: usize) -> usize {
     threads.max(1).saturating_mul(4)
 }
 
+/// Smallest thread budget at which splitting beats parsing serially.
+///
+/// The split is not free: it walks the whole document once before any
+/// element is deserialized, and it builds a `Range` per element. One
+/// thread has nothing to spend that on, so it pays the scan and keeps
+/// the serial parse — and [`chunks_for`] would still cut four chunks
+/// for it. `num_threads=1` is a setting callers actually pass, so the
+/// loaders short-circuit below this value instead of taking the loss.
+///
+/// Measured best-of-5, 8 cores, release profile, parallel ÷ serial
+/// (>1 is a speedup):
+///
+/// | payload                      | t1   | t2   | t3   | t4   | t8   |
+/// |------------------------------|------|------|------|------|------|
+/// | Objects365 bbox DT, 300k det | 0.87 | 1.09 | 1.27 | 1.32 | 1.47 |
+/// | COCO segm DT (RLE)           | 0.74 | 1.17 | 1.19 | 1.42 | 1.24 |
+/// | LVIS segm DT (RLE)           | 0.84 | 1.35 | 1.50 | 1.66 | 1.97 |
+/// | COCO GT (`instances_val2017`)| 0.94 | 1.67 | 1.90 | 2.14 | 2.98 |
+///
+/// The crossover is between one thread and two on every payload, so
+/// the threshold is 2 — not the "a few threads" one would guess.
+pub(crate) const MIN_THREADS_TO_SPLIT: usize = 2;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -666,6 +720,36 @@ mod tests {
                 .unwrap_or_else(|| panic!("expected a split for skipped value {tail}"));
             assert_eq!(arrays[0].len(), 1, "skipped value {tail}");
         }
+    }
+
+    /// The gate in `skip_string` changes which loop finds the closing
+    /// quote; both sides of it must agree, including when an escape
+    /// straddles the boundary.
+    #[test]
+    fn the_string_scan_gate_is_invisible() {
+        for len in 0..(STRING_SCALAR_GATE * 3) {
+            for prefix in [0usize, 1] {
+                // `prefix` shifts an escaped quote across the gate.
+                let mut s = String::from("\"");
+                s.push_str(&"x".repeat(prefix));
+                s.push_str(&"\\\"".repeat(len));
+                s.push('"');
+                let bytes = s.as_bytes();
+                assert_eq!(
+                    skip_string(bytes, 0),
+                    Some(bytes.len()),
+                    "len={len} prefix={prefix}"
+                );
+                // Unterminated: dropping the closing quote must yield
+                // `None`, not a runaway index.
+                assert!(skip_string(&bytes[..bytes.len() - 1], 0).is_none());
+            }
+        }
+        // A trailing backslash consumes the byte that would have been
+        // the terminator, on either side of the gate.
+        assert!(skip_string(b"\"abc\\\"", 0).is_none());
+        let long = format!("\"{}\\\"", "y".repeat(STRING_SCALAR_GATE * 2));
+        assert!(skip_string(long.as_bytes(), 0).is_none());
     }
 
     /// A whole-document array is the detection payload's shape.
