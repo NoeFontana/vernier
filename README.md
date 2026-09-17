@@ -13,6 +13,9 @@ package with a Rust core, a Python API, and a standalone CLI.
   `boundary-iou-api` in strict mode. Every upstream quirk has a documented
   disposition ([quirks survey](docs/engineering/pycocotools-quirks.md)).
 - **Drop-in** for `pycocotools.cocoeval.COCOeval`: change one import, or none.
+  Same constructor, same `params` mutations, same `eval` / `evalImgs` /
+  `ious` / `stats` read back off the instance ([what carries
+  over](docs/migrate/from-pycocotools.md#params-what-the-shim-honors-and-what-it-rejects)).
 - **3–17× faster** than faster-coco-eval and pycocotools at equal CPU budget
   ([benchmarks](#performance)).
 - **Built for real pipelines**: training-loop evaluation, multi-rank
@@ -61,6 +64,15 @@ unpatch()
 The patch is explicit, reversible, and never happens on import. A context
 manager (`vernier.adapters.patched_pycocotools`) and a one-fixture pytest
 recipe are in the [pycocotools migration guide](docs/migrate/from-pycocotools.md#pytest-integration).
+
+TorchMetrics' `MeanAveragePrecision` runs under the patch unchanged,
+including `class_metrics=True` and `extended_summary=True`
+(`tests/python/test_compat_torchmetrics.py` asserts the patched and
+unpatched results are equal). Two `params` fields are the exception and
+raise rather than diverge quietly: `imgIds` subsetting, and `areaRng`
+(custom area ranges are a native-`Evaluator` feature, ADR-0040). The
+[migration guide](docs/migrate/from-pycocotools.md#params-what-the-shim-honors-and-what-it-rejects)
+has the field-by-field table.
 
 ## Recommended: the native API
 
