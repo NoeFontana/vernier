@@ -81,7 +81,7 @@ vernier-mask → vernier-partial → vernier-core → {vernier-panoptic, vernier
 
 | Registry | Name | Version | Disposition |
 |---|---|---|---|
-| crates.io | `vernier` | `0.0.0` | Empty placeholder. **Yank once `vernier@0.2.0` is live** — never before (see below). |
+| crates.io | `vernier` | `0.0.0` | Empty placeholder. Yanked 2026-08-23, after `vernier@0.2.0` went live — the order was load-bearing (see below). |
 | crates.io | `vernier-core` / `vernier-mask` / `vernier-cli` | `0.0.0` | Empty placeholders, superseded by real releases from v0.0.1 onward. |
 | PyPI | `vernier` | `0.0.0` | Empty placeholder, superseded by the v0.0.1 wheel. |
 
@@ -120,6 +120,24 @@ token is needed only for a crate's *first* publish, because Trusted
 Publishers can attach to an existing crate but cannot create one. That
 does not apply to `vernier`: the name is already owned (v0.0.0), so its
 trusted-publisher entry is a `publish-update` scope, not `publish-new`.
+
+A one-shot token is also the only way to publish **outside** a GitHub
+Actions run, since Trusted Publisher tokens mint from the workflow's
+OIDC identity and nowhere else. Two publishes have used one:
+
+| Version | Why it bypassed CI | Date |
+|---|---|---|
+| `vernier@0.2.0` | Facade published ahead of a release; no tag was cut (ADR-0048) | 2026-08-23 |
+| `vernier@0.3.0` | The `vernier` trusted-publisher entry was missing, so the `v0.3.0` tag published six crates and 403'd on the seventh | 2026-09-17 |
+
+The 0.3.0 case is the one to learn from: the entry was supposed to be
+added as the final step of the 0.2.0 standalone publish and was not,
+and nothing detects a missing entry until a tag has already spent the
+six leaf crates. Verify all seven entries are present *before* pushing
+a release tag — crates.io exposes them only to a logged-in owner, so
+this cannot be a CI gate. The recovery, which costs no version bump, is
+in [`release-runbook.md`](release-runbook.md) §"Recovering a
+facade-only publish failure".
 
 ### PyPI
 

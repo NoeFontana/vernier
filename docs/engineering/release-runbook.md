@@ -349,12 +349,37 @@ resolution.
 One extra step, once only (ADR-0048): add the `vernier` Trusted
 Publisher entry from "One-time setup §2" **before the tag**. It is a
 `publish-update` scope — the name is already owned — so no one-shot
-token is needed. Without the entry, `publish-crates-io`'s final step
-fails *after* the other six crates have published, which costs a patch
-bump.
+token is needed.
 
-If the standalone publish above already happened, this entry is
-already in place and there is nothing to do.
+**This step was missed, and v0.3.0 is what that looks like.** The
+standalone publish on 2026-08-23 ended with "revoke the token, then add
+the Trusted Publisher entry"; the entry was not added. Nothing
+surfaced the gap for three weeks, because no tag had tried to publish
+the facade yet. On the `v0.3.0` tag (2026-09-16) `publish-crates-io`
+uploaded all six leaf crates and then failed its seventh step:
+
+```
+error: failed to publish vernier v0.3.0 to registry at https://crates.io
+Caused by:
+  the remote server responded with an error (status 403 Forbidden):
+  The provided access token is not valid for crate `vernier`
+```
+
+The entry was added on 2026-09-17 and the facade published out-of-band
+(see "Recovering a facade-only publish failure" below). Every tag from
+`v0.4.0` on takes the normal path.
+
+An earlier version of this section claimed that if the standalone
+publish had happened, the entry "is already in place and there is
+nothing to do". That inference is wrong and is what cost the release:
+the standalone publish authenticates with a **one-shot API token**,
+which creates no Trusted Publisher. The two are independent, and
+nothing in the tag flow checks for the entry before the six leaf
+crates are already spent — so the only cheap moment to verify it is
+before pushing the tag: open
+<https://crates.io/me/trusted-publishers> and count seven entries, one
+per crate. This cannot be a CI gate, because crates.io exposes trusted
+publishers only to a logged-in owner.
 
 ## Rollback / failure modes
 
@@ -391,10 +416,56 @@ other.
   re-tag. Don't try to resume from the middle of the dependency chain
   on the same version. The publish order
   (`mask → partial → core → panoptic → semantic → cli`) means an
-  early failure is cheaper to roll back than a late one. The facade
-  `vernier` publishes last, so a facade-only failure is the cheapest
-  case — but it still costs a patch bump, because the six crates ahead
-  of it already landed.
+  early failure is cheaper to roll back than a late one.
+- **Facade-only** — the one case that does *not* need a bump. See
+  below; this is what happened on `v0.3.0`.
+
+### Recovering a facade-only publish failure
+
+`vernier` publishes last and **nothing depends on it**, so when the six
+leaf crates land and only the facade fails, the dependency graph on
+crates.io is already consistent. There is nothing to yank and no reason
+to move PyPI: the facade can be published out-of-band at the *same*
+version, reusing the "publishing the facade ahead of a release"
+procedure above.
+
+This supersedes an earlier claim here that a facade-only failure "still
+costs a patch bump". It does not. That advice was written by analogy to
+the mid-chain case, where resuming really is unsafe because a published
+crate can be left unresolvable; the facade has no dependents, so the
+analogy doesn't hold. Validated on 2026-09-17 for `vernier@0.3.0`.
+
+```sh
+# Prerequisite: a clean tree at the release commit, so the upload
+# matches the tag's tree even though it isn't the tag that pushes it.
+git switch main && git pull && git status --porcelain   # must be empty
+
+# 1-2. Same verification as the standalone publish: the packaged crate
+#      must resolve against the registry, and its docs must be true.
+cargo publish -p vernier --dry-run          # downloads the leaves from crates.io
+rm -rf /tmp/facade-check && mkdir -p /tmp/facade-check
+cp -r target/package/vernier-X.Y.Z /tmp/facade-check/
+(cd /tmp/facade-check/vernier-X.Y.Z && cargo test --doc)
+
+# 3. Publish with a one-shot publish-update token. Trusted Publisher
+#    tokens mint only inside a GitHub Actions run, so they are not
+#    available here even once the entry exists.
+read -rs CARGO_REGISTRY_TOKEN && export CARGO_REGISTRY_TOKEN
+cargo publish -p vernier
+unset CARGO_REGISTRY_TOKEN                  # then revoke at https://crates.io/me
+
+# 4. Verify from outside the workspace — the upload log is not proof
+#    that the facade resolves for a third party.
+cargo new /tmp/facade-resolve && cd /tmp/facade-resolve
+cargo add vernier@X.Y.Z && cargo build
+```
+
+**Re-running CI is not an alternative.** `publish-crates-io` is seven
+sequential `cargo publish` steps in one job; step 1 aborts on
+`vernier-mask@X.Y.Z` already being uploaded, six steps before it
+reaches the facade. Dispatching `wheels.yml` against the tag ref uses
+the workflow file *as of that tag*, so there is nothing to patch around
+it either.
 
 ### `release.yml` (cargo-dist) fails
 
