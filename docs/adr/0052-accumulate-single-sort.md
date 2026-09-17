@@ -91,13 +91,41 @@ Claim 1 is a property of *this repository's* producer, not of the type.
 `accumulate` is public and its grid can be built by hand (the tests do
 exactly that), so the implementation **verifies** Claim 1 rather than
 trusting it: a cached plan is reused only when the next area range
-presents the same cell count and bitwise-equal score blocks. A mismatch
-— including a `NaN` score, which fails `==` — rebuilds the plan. The
-fallback is the status quo, so a producer that violates the invariant
-gets the old behaviour, not a wrong answer.
+presents the same cell count and score blocks with identical *bit
+patterns* (`==` would call `-0.0` and `+0.0` interchangeable and then
+emit the plan's sign into the scores tensor). A mismatch rebuilds the
+plan. The fallback is the status quo, so a producer that violates the
+invariant gets the old behaviour, not a wrong answer.
 
-Claim 2 needs no runtime guard: it follows from `takes` being prefix
-lengths, which the plan computes itself.
+#### Both claims assume a total order, so `NaN` disables both
+
+Each claim's proof reads `(-score, position)` as a total order.
+`argsort_score_desc` implements the comparison as
+`partial_cmp(..).unwrap_or(Ordering::Equal)`, which on a stream
+containing `NaN` is **intransitive** — `NaN` compares `Equal` to
+everything while the finite scores still order among themselves. Under
+that comparator a stable sort's output is an artifact of the algorithm's
+comparison schedule, not of the key, and neither "the same stream sorts
+the same way across area ranges" nor "a restriction of the order is the
+order of the restriction" survives. Concretely, for cells
+`[0.9, NaN, 0.8, 0.7] / [0.95, 0.85, NaN, 0.1] / [NaN, 0.99, 0.5]` at
+`maxDets = [1, 100]`, filtering the cap permutation gives `[0, 1, 2]`
+where a fresh sort of the `maxDet = 1` stream gives `[1, 0, 2]`: the
+sweep would visit `0.9` before `0.95` and shift the curve.
+
+This is not a parity question — numpy's `argsort(-s, kind='mergesort')`
+sorts `NaN` to the *end*, giving `[0, 2, 1]`, which vernier has never
+matched — and it is unreachable from the dataset path, which rejects
+non-finite scores at `dataset.rs`'s `CocoDetections::from_inputs`. It is
+reachable through the `pub` Rust API, so the plan records whether its
+cap stream carries a `NaN` and switches **both** derivations off when it
+does: `matches` never reuses such a plan across area ranges, and the
+`maxDet` streams are sorted from scratch rather than filtered. The
+result is the pre-ADR-0052 behaviour — one sort per `(a, m)` cell — for
+exactly the grids whose proof does not hold.
+
+Away from `NaN`, Claim 2 needs no runtime guard: it follows from `takes`
+being prefix lengths, which the plan computes itself.
 
 ### Why not the k-way merge
 
@@ -136,14 +164,27 @@ would have had to extend to.
   where streams are long and near-zero where they are short — roughly
   3 % of a COCO-shaped end-to-end evaluation, nothing on LVIS. No API
   change, no new knob, no parity tier change.
+
+  Two things the table does not show. The `O(N)` filter that replaces a
+  sort is not free: `DerivedStream::fill_from` opens with
+  `map.resize(plan.scores.len(), DROPPED)`, an 8·N-byte memset per
+  derived stream, so the constant in front of the filter is a full
+  cap-stream write plus the filtered scan. And a producer that
+  *genuinely* varies its score stream per area range now pays the `O(N)`
+  bitwise compare **and** the rebuild it fails into — boundedly worse
+  than the unconditional sort it replaced, by one linear pass per area
+  range.
 - **Positive:** the `m == M` cell stops re-gathering its own score
   stream — the plan already holds it.
 - **Negative:** `accumulate_category` now carries a cached plan with a
   validity check, which is more state than a stateless loop. The check
   is `O(A · N)` bitwise comparisons against `O(A · N log N)` saved.
-- **Neutral:** peak memory grows by one `Vec<f64>` and one `Vec<usize>`
-  of cap-stream length per *worker* (not per cell), bounded by the
-  largest category's detection count.
+- **Neutral:** peak memory grows by the plan plus its derived-stream
+  scratch, per *worker* (not per cell) and bounded by the largest
+  category's cap-stream length `N`: `plan.{scores, perm}` and
+  `derived.{scores, perm, map}` — two `f64` streams and three `usize`
+  streams, so ≈ 40·N bytes — plus `plan.takes` / `derived.takes`, which
+  are cell-count-length rather than `N`.
 - **Neutral:** this does not make `accumulate` fast on long-tail grids.
   The measurement above says the remaining cost there is the dense
   `K · A · I` walk and the per-threshold `dtm` / `dtg` gather, which run

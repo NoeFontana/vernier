@@ -101,7 +101,8 @@ fn build_grid(shape: Shape) -> Vec<Option<Box<PerImageEval>>> {
             }
             let d = 1 + (xorshift(&mut state) as usize % shape.d_max);
             let mut dt_scores: Vec<f64> = (0..d).map(|_| unit(&mut state)).collect();
-            // Cells reach `accumulate` score-descending (quirk A4).
+            // Cells reach `accumulate` score-descending (quirk A1 —
+            // the stable mergesort on `-score`; A4 is the *GT* sort).
             dt_scores.sort_by(|a, b| b.partial_cmp(a).unwrap());
             // Deterministic match/ignore texture: some TPs, some FPs,
             // and a sprinkling of ignored DTs so the C7 branch is live.
