@@ -65,9 +65,10 @@ assumption:
    digits moving, on the subset of images with overlapping crowd GT.
 
 A related gap surfaced while writing this up: **no pre-existing test
-exercised the dispatched path at all.** Every bbox unit test used a
-cell of at most 3×3, and `SMALL_CELL_THRESHOLD = 32` routes those to
-the plain scalar body. The `pulp` path — the one compiled with FMA
+exercised the dispatched path at all.** The largest cell any bbox unit
+test built was 5×5 (`overlap_mask_survivor_bit_matches_full_iou`, with
+one 4×4 alongside it), and `SMALL_CELL_THRESHOLD = 32` routes
+everything below 32 to the plain scalar body, so all of them took it. The `pulp` path — the one compiled with FMA
 available, and the one that runs on dense cells in production — had
 zero bit-exactness coverage.
 
@@ -80,9 +81,14 @@ zero bit-exactness coverage.
   build-level switch available to us.
 - The pin must live where it cannot be satisfied vacuously: a test that
   passes because it stopped testing anything is worse than no test.
-- The bbox kernel is shared. `BboxIou::compute` backs standalone bbox
-  eval, TIDE, LRP, LVIS, and the streaming evaluator; a single pin
-  covers all of them.
+- The bbox kernel is shared — *once the duplicates are gone*.
+  `BboxIou::compute` backs standalone bbox eval, TIDE cross-class, LRP,
+  LVIS and the streaming evaluator, so a single pin covers all of them.
+  It did not cover TIDE's **same-class** matching, which carried a
+  second, private `f64` union expression
+  (`tide::assignment::bbox_iou_pair`) that no pin reached; this ADR's
+  change set removes it (see §"One kernel, or the pin is a half-pin").
+  A pin on a shared kernel is only worth what the sharing is worth.
 
 ## Considered options
 
@@ -106,11 +112,25 @@ A `fp_contract_pin` module in
   `SMALL_CELL_THRESHOLD` — sized *from the constant*, so raising the
   threshold cannot silently stop covering the `pulp` path,
 - with a **self-validation** test asserting the table discriminates
-  against each fusion site independently (recomputing both fused forms
-  via `mul_add` and requiring at least one case to differ per site).
-  Without this, a future edit could replace the constants with
-  contraction-insensitive values and leave a green test protecting
-  nothing.
+  against each fusion site independently *and* against both sites fused
+  together (recomputing all three forms via `mul_add` and requiring at
+  least one case to differ per form).
+
+  The third arm is what makes the test load-bearing. The realistic
+  decay is not "someone invents contraction-insensitive constants"; it
+  is "a future toolchain contracts, the golden test goes red, and a
+  contributor refreshes the constants from the new output on both
+  architectures". A table regenerated that way is still sensitive to
+  each site *individually* — the counts merely swap, 2/1 → 1/2 — so
+  single-site assertions stay green on a pin that now pins the
+  contracted form. It is, by construction, identical to the both-fused
+  form, which is exactly what the third assertion rejects.
+
+  Backing that up, the constants carry an explicit **provenance** note:
+  they are the *reference's* values, derived from pycocotools' `bbIou`,
+  and are never to be regenerated from vernier's own output. A
+  disagreement between this crate and the table means the crate has
+  diverged, not that the table is stale.
 
 The table also pins the two semantics that sit next to the rounding
 question and are easy to "simplify" away: crowd GT divides by `d_area`
@@ -132,9 +152,57 @@ the existing `test-rust` job:
   nothing exits 0, so a rename would otherwise convert this job into a
   vacuous green.
 
+### One kernel, or the pin is a half-pin
+
+A golden test on `BboxIou::compute` pins every caller of
+`BboxIou::compute` and nothing else. That distinction was not academic:
+`tide::assignment::same_class_match_one_category` built its own IoU
+matrix from a private `bbox_iou_pair`, a verbatim restatement of the
+same union expression. All three fusion candidates were present there,
+and unlike pycocotools' C — where every multiply feeding the union has a
+second consumer, see below — each multiply in that copy had exactly one
+use, so not even that argument applied. Contraction could have moved
+TIDE's same-class IoU by 1-2 ULP, flipped a match at `t_f`, and silently
+re-attributed error types, with the bbox golden test green on both
+architectures throughout.
+
+**This ADR's change set reroutes that call site through
+`BboxIou::compute`** rather than adding a second golden table. The two
+expressions were verified bit-identical before the switch, which they
+are by construction:
+
+- same association — `(g_area + d_area) - inter` on both sides
+  (the TIDE oracle writes `dt_area + gt_area - inter`; `+` is
+  commutative and exactly rounded, so the bits agree);
+- same intersection — `(min - max).max(0.0)` with the same operand
+  order, so quirks **I4** and the exact `+0.0` carry over;
+- same zero guard — `denom > 0.0` and `union <= 0.0` are complements on
+  every non-NaN input, and a NaN denominator cannot arise from finite
+  box coordinates (the kernel's guard is the safer of the two, returning
+  `+0.0` where the old copy returned `NaN`);
+- the **one** semantic the kernel adds is quirk **E1**, the crowd IoA
+  denominator, which the TIDE oracle (`oracle.py::bbox_iou`, ADR-0021)
+  does not have — crowd GTs reach TIDE through `gt_ignore`, not through
+  the denominator. The call site therefore passes `is_crowd: false` on
+  both sides, which selects the union branch and leaves every value
+  unchanged.
+
+`tide::assignment`'s `tide_same_class_iou_matches_oracle_bitwise`
+asserts the first three points against a transcription of the oracle
+over a 64×64 deterministic COCO-scale sample (which also clears
+`SMALL_CELL_THRESHOLD`, so it runs the dispatched body), and
+`tide_same_class_iou_suppresses_the_crowd_asymmetry` pins the fourth.
+Output is unchanged; `just test-parity` confirms it.
+
+The general rule this leaves behind: a new `f64` bbox-IoU expression
+anywhere in the crate is a new unpinned kernel, not a duplication of
+code. Route it through `BboxIou::compute` or extend the table.
+
 ### Scope: which kernels are actually exposed
 
-- **bbox** — exposed on its output path. Pinned here.
+- **bbox** — exposed on its output path. Pinned here, at
+  `BboxIou::compute`, which after this change set is the crate's only
+  `f64` bbox-IoU expression.
 - **segm** (`SegmIou`) and **boundary** (`BoundaryIou`) — **not**
   exposed. Both accumulate intersection and union as integer `u64`
   areas and perform a single `as f64` divide at the end
@@ -175,25 +243,33 @@ output.
 
 This ADR originally flagged aarch64 contraction in `bbIou` as a plausible
 but unverified risk. It has since been checked directly, by disassembling
-the published wheels rather than by running them — no aarch64 host
+the published binaries rather than by running them — no aarch64 host
 required:
 
-| wheel (pycocotools 2.0.11, aarch64)      | fused ops in `bbIou` |
-| ---------------------------------------- | -------------------- |
-| `cp312-abi3-manylinux_2_17_aarch64`       | none                 |
-| `cp39-manylinux_2_17_aarch64`             | none                 |
-| `cp312-abi3-musllinux_1_2_aarch64`        | none                 |
+| pycocotools 2.0.11 binary (arm64)               | toolchain    | fused ops in `bbIou` |
+| ----------------------------------------------- | ------------ | -------------------- |
+| `cp312-abi3-manylinux_2_17_aarch64`              | GCC, glibc   | none                 |
+| `cp39-manylinux_2_17_aarch64`                    | GCC, glibc   | none                 |
+| `cp312-abi3-musllinux_1_2_aarch64`               | GCC, musl    | none                 |
+| `macosx-universal2`, **arm64 slice**             | Apple clang  | none                 |
+| `win_arm64`, `_mask.pyd`                         | MSVC         | none                 |
 
-`bbIou` is an exported symbol, so the check is exact. In all three the
-kernel emits separate `fmul` / `fadd` / `fsub` / `fdiv` and **no**
-`fmadd` / `fmsub` / `fnmsub` / `fmla`. The published aarch64 wheels
-therefore compute the same unfused `da + ga - i` as the x86-64 ones, and
-strict bbox parity against the pinned oracle holds bit-for-bit on both
-architectures we ship.
+`bbIou` is an exported symbol, so each check is exact: the kernel emits
+separate `fmul` / `fadd` / `fsub` / `fdiv` and **no** `fmadd` / `fmsub` /
+`fnmsub` / `fmla`.
 
-This is structural rather than lucky. In `maskApi.c:125-136` every
-multiply feeding the union has a *second* consumer that needs the
-rounded intermediate:
+**What this does and does not claim.** pycocotools 2.0.11 publishes on
+the order of twenty files that carry arm64 code; the five above are a
+sample, not the set. They were chosen to span every compiler family
+pycocotools ships arm64 with — GCC against glibc and against musl,
+Apple clang, MSVC — so the result is not a statement about one
+toolchain's flags, and in particular it is not limited to manylinux.
+Every arm64 binary inspected is unfused; nothing here rules out an
+uninspected file, and nothing enforces the property on an ongoing basis
+(see the last Consequences bullet).
+
+The mechanism is partly structural rather than wholly lucky, but weaker
+than a first reading suggests. In `maskApi.c:125-136`:
 
 ```c
 BB D=dt+d*4; da=D[2]*D[3]; ...
@@ -204,8 +280,20 @@ i=w*h; u = crowd ? da : da+ga-i; o[g*m+d]=i/u;
 both in `da+ga` and as the whole of `u` on the crowd branch (quirk
 **E1**). Contracting either one would force the compiler to keep the
 rounded value *and* recompute the product, so `-ffp-contract=fast` has
-nothing to gain and leaves the arithmetic alone. `ga` is loop-invariant
-and hoisted to its own `fmul` above the inner loop.
+nothing to gain there and leaves the arithmetic alone. That argument is
+solid, and it covers two of the three candidates.
+
+It does **not** cover the third. `ga = G[2]*G[3]` has exactly one
+consumer — the `da+ga` in the union — so the multi-use argument says
+nothing about it, and `fmadd(G[2], G[3], da)` would be a legal
+contraction. What blocks it in practice is that `ga` is loop-invariant
+and gets hoisted to its own `fmul` above the inner `d` loop; folding it
+back into the loop body to save a rounding would cost a multiply per
+iteration, which no cost heuristic wants. That is a compiler *judgement*
+call, not a correctness constraint, and a different optimizer could
+decide otherwise. It happens to be unfused in all five binaries above;
+treat that as an empirical result with a plausible explanation rather
+than as a guarantee.
 
 #### The residual divergence, and where it is recorded
 
@@ -233,9 +321,10 @@ condition is "reference rebuilt with a different compiler", not
   stated and enforced, on both shipped architectures, in the profile
   that ships. The `pulp` dispatch path gains its first bit-exactness
   coverage.
-- **Positive.** The pin is cheap: six cases, five tests, microseconds
-  of runtime, and one small CI job whose aarch64 leg is free for public
-  repositories.
+- **Positive.** The pin is cheap: six cases, five tests in
+  `fp_contract_pin` plus two bit-equality tests on the rerouted TIDE
+  path, microseconds of runtime, and one small CI job whose aarch64 leg
+  is free for public repositories.
 - **Negative.** Golden bit patterns are opaque to a reader who does not
   know why they are there. Mitigated by keeping the derivation, the
   fusion-site table, and the self-validation test next to the
@@ -243,8 +332,12 @@ condition is "reference rebuilt with a different compiler", not
 - **Negative.** One extra CI job (two legs). Accepted: it is the only
   thing in CI that executes vernier code on aarch64 at all — `wheels.yml`
   cross-builds aarch64 but never runs the result.
-- **Neutral.** No kernel code changed. This ADR pins existing behavior;
-  it does not alter any output.
+- **Neutral.** No kernel *arithmetic* changed. One call site moved:
+  TIDE's same-class matching now calls `BboxIou::compute` instead of a
+  private copy of the same expression, which is bit-identical (with the
+  E1 branch suppressed, as the TIDE oracle requires) and brings that
+  path under the pin. This ADR pins existing behavior; it does not
+  alter any output.
 - **Neutral.** The reference side is now checked rather than assumed,
   but nothing enforces it on an ongoing basis — a future pycocotools
   release could be built by a compiler that contracts. Re-running the
@@ -291,7 +384,9 @@ condition is "reference rebuilt with a different compiler", not
 ## Open questions and follow-ups
 
 - **OKS contraction site.** `dx * dx + dy * dy` in `similarity/oks.rs`
-  is the one remaining `f64` contraction site in the crate. It feeds an
+  (both the in-bbox and F4-surrogate branches) is the remaining exposed
+  `f64` contraction site among the similarity kernels — the one known
+  unpinned site, now that TIDE's private bbox copy is gone. It feeds an
   `exp()` and then a sum, so a 1-ULP input shift propagates rather than
   cancels. It should get the same treatment; it is deferred here only
   to keep this ADR's change set to one kernel.
@@ -316,6 +411,9 @@ condition is "reference rebuilt with a different compiler", not
   rather than `target-cpu=native`).
 - `crates/vernier-core/src/similarity/bbox.rs` — the kernel and the
   `fp_contract_pin` module.
+- `crates/vernier-core/src/tide/assignment.rs` — the same-class matching
+  path rerouted onto that kernel, and the bit-equality tests that hold
+  it there.
 - `.github/workflows/ci.yml` — job `test-rust-cross-arch`.
 - `docs/engineering/pycocotools-quirks.md` — quirks **B2**, **E1**,
   **I3**, **I4**, and **I7** (the reference-side row this ADR adds).

@@ -205,8 +205,10 @@ vernier matches it on both.
 
 The scoping matters for one narrow case. pycocotools' IoU kernel is C,
 and a C compiler is allowed to fuse a multiply and an add into a single
-rounding step. The published wheels do not (checked by disassembly on
-all three aarch64 builds), but a pycocotools you compile yourself —
+rounding step. The published builds do not (checked by disassembly on
+five arm64 binaries, covering the Linux glibc and musl wheels, the
+macOS universal2 arm64 slice and the Windows arm64 build), but a
+pycocotools you compile yourself —
 `pip install --no-binary pycocotools`, a distro package, a conda-forge
 build — goes through your compiler, not the wheel builder's. On ARM,
 where the fused instruction is always available, such a build can round
