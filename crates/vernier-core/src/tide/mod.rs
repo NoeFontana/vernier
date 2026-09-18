@@ -132,6 +132,7 @@ pub fn error_decomposition_with<K: EvalKernel>(
         max_dets_per_image: params.max_dets_per_image,
         use_cats: params.use_cats,
         retain_iou: false,
+        retain_meta: false,
     };
 
     // 1. Baseline pass + cross-class side pass in one call.
@@ -300,6 +301,7 @@ fn run_fix_pass<K: EvalKernel>(
         max_dets_per_image: params.max_dets_per_image,
         use_cats: params.use_cats,
         retain_iou: false,
+        retain_meta: false,
     };
     // Re-evaluate. Use `evaluate_with` (not the retention variant) —
     // we only need the EvalGrid for the corrected mAP, not the cross-

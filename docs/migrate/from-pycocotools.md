@@ -124,6 +124,98 @@ vernier` (ADR-0007 §"Discoverability"): a silent rewrite would make
 unexpected score differences untraceable. The cost of that policy is
 that ordering is the user's responsibility, hence this section.
 
+## `params`: what the shim honors, and what it rejects
+
+The shim mirrors `pycocotools.cocoeval.Params` as a plain mutable
+namespace, so downstream code that pokes at `cocoEval.params` keeps
+working. Where vernier cannot reproduce a mutation it raises
+`NotImplementedError` from `evaluate()` rather than ignoring it — a
+divergence you can see beats one you cannot.
+
+| `params` field | Mutable? | Notes |
+|---|---|---|
+| `iouThrs` | yes | Any ladder. Evaluated as given, including a ladder round-tripped through float32 (what `torch.linspace(...).tolist()` yields). |
+| `recThrs` | yes | Any ladder. |
+| `maxDets` | yes | Sorted ascending at `accumulate()` time, as pycocotools does (quirk **A2**). The largest entry caps the per-cell detections. |
+| `catIds` | yes | Subsetting supported. Mirrors `_prepare`: only annotations in the selected categories are evaluated. A category the dataset never declares evaluates to a row of `-1`s, as upstream. |
+| `useCats` | yes | `0` runs the collapsed single-bucket fold (quirk **L4**). |
+| `kpt_oks_sigmas` | yes | `iouType="keypoints"` only; applied to every category (quirk **F1**). |
+| `imgIds` | **no** | Subsetting raises. Evaluate the full dataset, or slice the result with [`vernier.aggregate`](../how-to/per-class-by-slice.md). |
+| `areaRng` | **no** | Raises. Custom area ranges live on `vernier.instance.Evaluator(area_ranges=...)` per ADR-0040. |
+| `useSegm` | **no** | Any non-`None` assignment raises. pycocotools deprecated it years ago but still honors it, silently overriding `iouType`; vernier drops the honor path (quirk **L3**). Pass `iouType=` instead. |
+
+Assigning a *snake_case* `Evaluator` field name (`iou_thresholds`,
+`recall_thresholds`, `area_ranges`) on `params` raises `AttributeError`
+immediately, with a pointer to the native surface. The camelCase
+pycocotools names above still mutate normally.
+
+### Reading results back off the instance
+
+`evaluate()` populates the grid; `accumulate()` populates `eval`;
+`summarize()` populates `stats`. Two further attributes exist and are
+built the first time they are read, because they cost a second
+evaluation pass and most callers never touch them:
+
+- **`evalImgs`** — the flat `[k][a][i]` list of per-image dicts
+  (`dtIds`, `gtIds`, `dtMatches`, `gtMatches`, …).
+- **`ious`** — `{(imgId, catId): matrix}`, one entry per pair in
+  `imgIds x catIds`, with `catId == -1` under `useCats=0`. Each matrix
+  is `(detections, ground truths)` with detections score-descending and
+  truncated to `max(maxDets)`. A pair with nothing on one side is a
+  bare `[]`, not an empty array — quirk **F5**, and what
+  `maskUtils.iou` returns.
+
+Both are also assignable, so code that overwrites them keeps working.
+Two caveats on `ious`, neither of which moves a score:
+
+- On coordinates that are arbitrary decimals a retained IoU can land
+  one ULP off pycocotools'. The kernel arithmetic is bit-identical;
+  the drift is in vernier's JSON number parser and is closed by
+  ADR-0054.
+- Under `useCats=0` the matrix agrees up to a permutation of its
+  ground-truth axis: pycocotools concatenates a cell's ground truths
+  category by category, vernier keeps them in annotation order.
+
+### `COCOeval` on an in-memory `COCO`
+
+TorchMetrics and similar callers build `cocoGt` / `cocoDt` by assigning
+`coco.dataset` and calling `createIndex()`, never `loadRes`. The shim
+handles that the way `COCOeval` does — detection `area` is read off the
+object rather than derived (quirk **J3**), `bytes` RLE counts are
+accepted (quirk **K3**), and a missing image `width` / `height` is
+filled wherever `annToRLE` would never have looked at it.
+
+If you assemble such a dataset yourself and drive a vernier grid
+*directly* rather than through the shim, the same conversions are
+published:
+
+```python
+from vernier.adapters import (
+    detection_image_sizes,
+    to_coco_json,
+    with_mask_image_sizes,
+    with_placeholder_image_sizes,
+)
+
+# bbox / keypoints: no kernel reads an image size, so fill every gap.
+gt = with_placeholder_image_sizes(coco_gt.dataset)
+
+# segm / boundary: fill only where `annToRLE` would never have looked,
+# which needs the sizes the *detection* side knows.
+gt = with_mask_image_sizes(coco_gt.dataset, detection_image_sizes(coco_dt.dataset))
+
+gt_bytes = to_coco_json(gt)
+dt_bytes = to_coco_json(coco_dt.dataset["annotations"])
+```
+
+`with_mask_image_sizes` takes a `{image_id: (height, width) | None}`
+mapping rather than a second dataset, so a caller with detection RLEs
+but no `cocoDt` object can build it from the first detection mask's
+`size` per image instead of calling `detection_image_sizes`.
+
+ADR-0055 is the record for both the `params` surface above and these
+helpers.
+
 ## Worked example
 
 Native `Evaluator` form, end-to-end:

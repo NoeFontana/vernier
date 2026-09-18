@@ -149,6 +149,7 @@ fn build_dataset(s: Scenario) -> (CocoDataset, CocoDetections) {
                 category_id: CategoryId(cat as i64 + 1),
                 score,
                 bbox: Bbox { x, y, w, h },
+                area: None,
                 segmentation: Some(rect_polygon(x, y, w, h)),
                 keypoints: None,
                 num_keypoints: None,
@@ -172,6 +173,7 @@ fn run(bencher: Bencher, s: Scenario) {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         evaluate_boundary(
             black_box(&gt),

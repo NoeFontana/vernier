@@ -234,6 +234,7 @@ fn run_kernel(
         max_dets_per_image: max_det_top,
         use_cats,
         retain_iou: false,
+        retain_meta: false,
     };
     let grid = match iou_type {
         IouTypeArg::Bbox => evaluate_bbox(gt, dt, eval_params, parity)?,

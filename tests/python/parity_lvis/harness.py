@@ -98,6 +98,7 @@ def _vernier_snapshot(
         "strict",
         max_dets,
         True,
+        retain_meta=True,
     )
     accum = grid.accumulate([max_dets])
     norm: list[dict[str, Any] | None] = []

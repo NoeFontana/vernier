@@ -310,10 +310,11 @@ impl<'a> SummaryPlan<'a> {
         &self,
         accum: &crate::accumulate::Accumulated,
         iou_thresholds: &[f64],
+        parity_mode: ParityMode,
     ) -> Result<Summary, EvalError> {
         match self {
             Self::DetectionDefault => {
-                summarize_detection(accum, iou_thresholds, &DETECTION_MAX_DETS)
+                summarize_detection(accum, iou_thresholds, &DETECTION_MAX_DETS, parity_mode)
             }
             Self::KeypointsDefault => {
                 let plan = StatRequest::coco_keypoints_default();
@@ -391,7 +392,7 @@ pub fn evaluate_partitioned(
     };
 
     let accum_overall = accumulate(eval_imgs, accum_params, parity_mode)?;
-    let overall = summary_plan.summarize(&accum_overall, iou_thresholds)?;
+    let overall = summary_plan.summarize(&accum_overall, iou_thresholds, parity_mode)?;
     let overall_n_detections = count_detections(eval_imgs, grid, None);
 
     let mut slices_out: Vec<SliceResult> = Vec::with_capacity(spec.slices.len());
@@ -399,7 +400,7 @@ pub fn evaluate_partitioned(
         let (filtered, n_detections) =
             filtered_flatten_and_count(eval_imgs, grid, &slice.image_indices);
         let accum = accumulate(&filtered, accum_params, parity_mode)?;
-        let summary = summary_plan.summarize(&accum, iou_thresholds)?;
+        let summary = summary_plan.summarize(&accum, iou_thresholds, parity_mode)?;
         slices_out.push(SliceResult {
             n_images: slice.image_ids.len() as u64,
             n_detections,
