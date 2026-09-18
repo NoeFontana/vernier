@@ -1171,7 +1171,238 @@ def test_ious_are_bit_exact_on_exactly_representable_boxes() -> None:
 # `dtIgnore`. Same shape of assertion as
 # `tests/python/test_ingest_route_equivalence.py`, one level up: there
 # the routes are compared at the FFI, here through the whole shim.
+#
+# The fixture below is built for that job. `perfect_match` and
+# `perfect_match_segm` carry *one* detection on *one* image, which pins
+# nothing about ordering — a route that reordered or renumbered the
+# payload would evaluate identically — so they are not used here.
 # ---------------------------------------------------------------------------
+
+_ROUTE_IMAGES: list[dict[str, Any]] = [
+    {"id": 1, "width": 128, "height": 128},
+    {"id": 2, "width": 128, "height": 128},
+]
+_ROUTE_CATEGORIES: list[dict[str, Any]] = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+
+# (id, image_id, category_id, x, y, w, h)
+_ROUTE_GT_BOXES: tuple[tuple[int, int, int, int, int, int, int], ...] = (
+    (1, 1, 1, 10, 10, 30, 30),
+    (2, 1, 1, 60, 60, 40, 40),
+    (3, 1, 2, 70, 20, 40, 30),
+    (4, 2, 1, 5, 5, 40, 40),
+    (5, 2, 2, 50, 50, 40, 40),
+)
+
+
+def _rect_poly(x: float, y: float, w: float, h: float) -> list[list[float]]:
+    """The COCO polygon spelling of a rectangle: one flat, nested ring."""
+    return [[x, y, x + w, y, x + w, y + h, x, y + h]]
+
+
+def _kp_at(x: float, y: float) -> list[float]:
+    """The 17-keypoint skeleton translated to ``(x, y)``, all visible."""
+    flat: list[float] = []
+    for kx, ky in _KP_COORDS:
+        flat.extend((kx + x, ky + y, 2.0))
+    return flat
+
+
+def _route_equivalence_gt() -> dict[str, Any]:
+    """Five ground truths over two images and two categories.
+
+    Every annotation carries a polygon *and* keypoints, so one dataset
+    serves all four iou types.
+    """
+    return {
+        "images": [dict(image) for image in _ROUTE_IMAGES],
+        "categories": [dict(category) for category in _ROUTE_CATEGORIES],
+        "annotations": [
+            {
+                "id": ann_id,
+                "image_id": image_id,
+                "category_id": category_id,
+                "bbox": [float(x), float(y), float(w), float(h)],
+                "area": float(w * h),
+                "iscrowd": 0,
+                "segmentation": _rect_poly(x, y, w, h),
+                "keypoints": _kp_at(x, y),
+                "num_keypoints": 17,
+            }
+            for ann_id, image_id, category_id, x, y, w, h in _ROUTE_GT_BOXES
+        ],
+    }
+
+
+def _route_equivalence_dt() -> dict[str, Any]:
+    """Eight detections, and every pycocotools-shaped spelling at once.
+
+    Ordering first: the list is unsorted by score, interleaved across
+    both images, and carries two score ties *inside* one
+    ``(image, category)`` cell each — ids 3/4 at 0.80 on image 1
+    category 1, ids 2/7 at 0.55 on image 2 category 1. The sort is
+    stable, so a tie is broken by input position, which is also what
+    quirk **J1** numbers ``dtIds`` by: a route that handed the sorter a
+    different order would show up cell for cell.
+
+    Payload shapes second, because the two routes reach the same
+    ``Vec<DetectionInput>`` through different readers and the spellings
+    are where they could diverge:
+
+    - ``bytes`` ``counts`` straight out of ``pycocotools.mask.encode``
+      (ids 3, 4, 6) — quirk **K3**. The JSON route ASCII-decodes them to
+      a ``str`` on the way through; the list route hands the ``bytes``
+      to the RLE decoder untouched.
+    - polygons (ids 2, 5, 7).
+    - *no* ``segmentation`` at all (ids 1, 8): under ``segm`` /
+      ``boundary`` that is quirk **J2**, a rectangle synthesized from
+      the bbox, and it has to be J2 identically on both routes.
+    - NumPy scalar ``score`` / ``category_id`` / ``area`` (id 4), which
+      ``loadRes`` and ``mask.area`` leave behind.
+    - a ``tuple`` ``bbox`` (id 2).
+    - a supplied ``area`` on every entry, deliberately *not* the bbox
+      area — the shim reads it rather than deriving it (quirk **J3**),
+      so it moves detections between area buckets and the routes have to
+      agree about that too.
+
+    Scores are short decimals on purpose. vernier's JSON number parser
+    can land one ULP off the ``float`` Python already holds (PR #265,
+    real-data only) and the list route never goes through it, so a
+    fixture carrying real prediction scores would make the
+    exact-equality assertions below flaky in a way that says nothing
+    about the routes.
+    """
+    annotations: list[dict[str, Any]] = [
+        {
+            # Top score in its cell, and no `segmentation` at all (J2).
+            "id": 1,
+            "image_id": 1,
+            "category_id": 2,
+            "score": 0.95,
+            "bbox": [69.0, 21.0, 40.0, 30.0],
+            "area": 1100.0,
+            "keypoints": _kp_at(69, 21),
+        },
+        {
+            # Polygon, and a `tuple` bbox.
+            "id": 2,
+            "image_id": 2,
+            "category_id": 1,
+            "score": 0.55,
+            "bbox": (6.0, 4.0, 39.0, 41.0),
+            "area": 1500.0,
+            "segmentation": _rect_poly(6, 4, 39, 41),
+            "keypoints": _kp_at(6, 4),
+        },
+        {
+            # `bytes` counts, straight out of `mask.encode`.
+            "id": 3,
+            "image_id": 1,
+            "category_id": 1,
+            "score": 0.80,
+            "bbox": [11.0, 9.0, 30.0, 31.0],
+            "area": 900.0,
+            "segmentation": _rle(slice(9, 40), slice(11, 41)),
+            "keypoints": _kp_at(11, 9),
+        },
+        {
+            # NumPy scalars where `loadRes` / `mask.area` leave them, and
+            # a score tied with id 3 inside the same cell.
+            "id": 4,
+            "image_id": 1,
+            "category_id": np.int64(1),
+            "score": np.float64(0.80),
+            "bbox": [59.0, 61.0, 41.0, 39.0],
+            "area": np.float64(1500.0),
+            "segmentation": _rle(slice(61, 100), slice(59, 100)),
+            "keypoints": _kp_at(59, 61),
+        },
+        {
+            "id": 5,
+            "image_id": 2,
+            "category_id": 2,
+            "score": 0.31,
+            "bbox": [52.0, 48.0, 36.0, 44.0],
+            "area": 1000.0,
+            "segmentation": _rect_poly(52, 48, 36, 44),
+            "keypoints": _kp_at(52, 48),
+        },
+        {
+            "id": 6,
+            "image_id": 2,
+            "category_id": 2,
+            "score": 0.67,
+            "bbox": [49.0, 51.0, 42.0, 38.0],
+            "area": 1600.0,
+            "segmentation": _rle(slice(51, 89), slice(49, 91)),
+            "keypoints": _kp_at(49, 51),
+        },
+        {
+            # Ties id 2 at 0.55, same (image, category) cell.
+            "id": 7,
+            "image_id": 2,
+            "category_id": 1,
+            "score": 0.55,
+            "bbox": [8.0, 8.0, 36.0, 36.0],
+            "area": 1300.0,
+            "segmentation": _rect_poly(8, 8, 36, 36),
+            "keypoints": _kp_at(8, 8),
+        },
+        {
+            # No `segmentation` again (J2), lowest score in its cell.
+            "id": 8,
+            "image_id": 1,
+            "category_id": 1,
+            "score": 0.42,
+            "bbox": [15.0, 15.0, 22.0, 22.0],
+            "area": 500.0,
+            "keypoints": _kp_at(15, 15),
+        },
+    ]
+    return {
+        "images": [dict(image) for image in _ROUTE_IMAGES],
+        "categories": [dict(category) for category in _ROUTE_CATEGORIES],
+        "annotations": annotations,
+    }
+
+
+@pytest.fixture(scope="module")
+def route_equivalence_coco() -> tuple[COCO, COCO]:
+    # `_coco` (no `loadRes`) is the point: it keeps the ids, the supplied
+    # `area`, the `bytes` counts and the NumPy scalars exactly as written
+    # above — which is what an in-memory caller such as TorchMetrics
+    # hands the shim.
+    return _coco(_route_equivalence_gt()), _coco(_route_equivalence_dt())
+
+
+def test_route_equivalence_fixture_carries_the_shapes_it_claims() -> None:
+    # The fixture's teeth are load-bearing and invisible at the call
+    # site: `perfect_match_segm` reads as a mask fixture while carrying
+    # only polygons, and the test that used it claimed `bytes` coverage
+    # it did not have. Assert the claims rather than commenting them.
+    annotations = _route_equivalence_dt()["annotations"]
+    scores = [float(ann["score"]) for ann in annotations]
+    cells = [(ann["image_id"], int(ann["category_id"])) for ann in annotations]
+
+    assert len({ann["image_id"] for ann in annotations}) == 2
+    assert scores != sorted(scores, reverse=True), "must be unsorted by score"
+    assert any(
+        scores[a] == scores[b] and cells[a] == cells[b]
+        for a in range(len(annotations))
+        for b in range(a + 1, len(annotations))
+    ), "must carry a score tie inside one (image, category) cell"
+    assert max(cells.count(cell) for cell in set(cells)) >= 3, "must carry a multi-detection cell"
+
+    segmentations = [ann.get("segmentation") for ann in annotations]
+    assert any(isinstance(s, dict) and isinstance(s["counts"], bytes) for s in segmentations)
+    assert any(isinstance(s, list) for s in segmentations)
+    assert any(s is None for s in segmentations), "J2 needs a DT with no segmentation"
+    assert any(isinstance(ann["bbox"], tuple) for ann in annotations)
+    assert any(isinstance(ann["score"], np.floating) for ann in annotations)
+    assert any(isinstance(ann["category_id"], np.integer) for ann in annotations)
+    assert all("area" in ann for ann in annotations)
+    assert any(float(ann["area"]) != ann["bbox"][2] * ann["bbox"][3] for ann in annotations), (
+        "a supplied area that differs from the bbox area is what exercises J3"
+    )
 
 
 class _BytesRouteCOCOeval(PycocotoolsCOCOeval):
@@ -1204,9 +1435,16 @@ def _render_cells(eval_imgs: list[Any]) -> list[dict[str, Any]]:
     return rendered
 
 
-def _assert_routes_agree(gt: COCO, dt: COCO, iou_type: str, **params: Any) -> PycocotoolsCOCOeval:
+def _assert_routes_agree(
+    gt: COCO,
+    dt: COCO,
+    iou_type: str,
+    *,
+    reference_type: type[PycocotoolsCOCOeval] = _BytesRouteCOCOeval,
+    **params: Any,
+) -> PycocotoolsCOCOeval:
     native = COCOeval(gt, dt, iouType=iou_type)
-    bytes_route = _BytesRouteCOCOeval(gt, dt, iouType=iou_type)
+    bytes_route = reference_type(gt, dt, iouType=iou_type)
     for name, value in params.items():
         setattr(native.params, name, copy.deepcopy(value))
         setattr(bytes_route.params, name, copy.deepcopy(value))
@@ -1216,6 +1454,10 @@ def _assert_routes_agree(gt: COCO, dt: COCO, iou_type: str, **params: Any) -> Py
             evaluator.accumulate()
             evaluator.summarize()
 
+    # Exact equality, not `allclose`: the two routes converge on the same
+    # `Vec<DetectionInput>`, so any difference at all is a real one. That
+    # is only safe because the fixture's scores are short decimals — see
+    # `_route_equivalence_dt` on the PR #265 parser drift.
     assert _render_cells(native.evalImgs) == _render_cells(bytes_route.evalImgs)
     np.testing.assert_array_equal(native.stats, bytes_route.stats)
     np.testing.assert_array_equal(native.eval["precision"], bytes_route.eval["precision"])
@@ -1227,39 +1469,32 @@ def _assert_routes_agree(gt: COCO, dt: COCO, iou_type: str, **params: Any) -> Py
     return native
 
 
+@pytest.mark.parametrize("iou_type", ["bbox", "segm", "boundary", "keypoints"])
 def test_native_dt_route_matches_the_bytes_route_cell_for_cell(
-    perfect_match_coco: tuple[COCO, COCO],
+    route_equivalence_coco: tuple[COCO, COCO], iou_type: str
 ) -> None:
-    gt, dt = perfect_match_coco
-    _assert_routes_agree(gt, dt, "bbox")
-
-
-@pytest.mark.parametrize("iou_type", ["segm", "boundary"])
-def test_native_dt_route_matches_the_bytes_route_on_masks(
-    perfect_match_segm_coco: tuple[COCO, COCO], iou_type: str
-) -> None:
-    # The mask paradigms are where the two routes could most plausibly
-    # diverge: the JSON round trip turns `bytes` RLE counts into an
-    # ASCII `str` on the way through, while the list route hands the
-    # `bytes` to the RLE decoder untouched.
-    gt, dt = perfect_match_segm_coco
+    gt, dt = route_equivalence_coco
     _assert_routes_agree(gt, dt, iou_type)
-
-
-def test_native_dt_route_matches_the_bytes_route_on_keypoints(
-    perfect_match_kp_coco: tuple[COCO, COCO],
-) -> None:
-    gt, dt = perfect_match_kp_coco
-    _assert_routes_agree(gt, dt, "keypoints")
 
 
 @pytest.mark.parametrize("category_id", [1, 2])
 def test_native_dt_route_matches_the_bytes_route_under_cat_ids(
+    route_equivalence_coco: tuple[COCO, COCO], category_id: int
+) -> None:
+    # `params.catIds` subsetting is unchanged by ADR-0057 — the same
+    # comprehension over the same dicts it always was — but it is the one
+    # place the shim hands the route a list it built rather than the
+    # caller's own, so the survivors are worth pinning cell for cell.
+    gt, dt = route_equivalence_coco
+    _assert_routes_agree(gt, dt, "segm", catIds=[category_id])
+
+
+@pytest.mark.parametrize("category_id", [1, 2])
+def test_native_dt_route_matches_the_bytes_route_on_synthetic_cat_ids(
     synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]], category_id: int
 ) -> None:
-    # `params.catIds` subsetting used to filter the annotations and then
-    # re-serialize the survivors; it is now a list comprehension over the
-    # caller's own dicts. Same detections in, same cells out.
+    # Eighty jittered detections over four images: fractional AP on every
+    # summary line, so a route divergence has nowhere flat to hide.
     gt, dt = synthetic_bbox_datasets
     _assert_routes_agree(_coco(gt), _coco(dt), "bbox", catIds=[category_id])
 
@@ -1310,3 +1545,73 @@ def test_retention_widening_works_off_the_held_list(
     assert e.evalImgs
     assert e.ious
     assert not hasattr(e, "_dt_bytes")
+
+
+def test_detections_mutated_after_evaluate_reach_the_lazy_attributes() -> None:
+    # The aliasing window documented in `vernier._compat`'s module
+    # docstring, pinned so it cannot change silently: `stats` is frozen
+    # at `evaluate()` time, but `evalImgs` / `ious` re-ingest the held
+    # list on first read, so a detection mutated in place afterwards
+    # reaches them and not `stats`. It is the cost of holding the
+    # caller's list instead of a snapshot of it — which is the whole
+    # memory win, so the answer is to document it, not to copy.
+    gt = _coco(_route_equivalence_gt())
+    dt = _coco(_route_equivalence_dt())
+    # pycocotools' stubs type an annotation as its file-loaded
+    # TypedDict; a detection result dict carries `score` too.
+    held: list[dict[str, Any]] = cast(Any, dt.dataset["annotations"])
+
+    e = COCOeval(gt, dt, iouType="bbox")
+    with contextlib.redirect_stdout(io.StringIO()):
+        e.evaluate()
+        e.accumulate()
+        e.summarize()
+    frozen_stats = e.stats.copy()
+
+    held[0]["score"] = 0.01
+    assert np.array_equal(e.stats, frozen_stats)
+    assert 0.01 in [score for cell in e.evalImgs if cell for score in cell["dtScores"]]
+
+    e2 = COCOeval(gt, dt, iouType="bbox")
+    with contextlib.redirect_stdout(io.StringIO()):
+        e2.evaluate()
+    held.clear()
+    assert all(not len(cell["dtIds"]) for cell in e2.evalImgs if cell)
+
+
+class _ScoreReversedBytesRouteCOCOeval(_BytesRouteCOCOeval):
+    """`_BytesRouteCOCOeval` with the score column reversed.
+
+    The negative control for :func:`_assert_routes_agree`: an assertion
+    that never fails proves nothing, so one deliberate divergence is
+    driven through the same harness.
+    """
+
+    def _prepare_inputs(self) -> tuple[bytes, Any]:
+        gt_bytes, dt_anns = PycocotoolsCOCOeval._prepare_inputs(self)
+        scores = [float(ann["score"]) for ann in dt_anns]
+        reversed_scores = [{**ann, "score": score} for ann, score in zip(dt_anns, reversed(scores))]
+        return gt_bytes, vernier_compat.to_coco_json(reversed_scores)
+
+
+@pytest.mark.parametrize("iou_type", ["bbox", "segm", "boundary", "keypoints"])
+def test_route_equivalence_harness_fails_on_a_perturbed_payload(
+    route_equivalence_coco: tuple[COCO, COCO], iou_type: str
+) -> None:
+    # Measured on this fixture, reversing the score column: 6 of the 7
+    # assertions in `_assert_routes_agree` fail under bbox / segm /
+    # boundary (`evalImgs`, `stats`, `precision`, `recall`, `scores`,
+    # `ious`) and 5 under keypoints, where `recall` happens to survive.
+    # `ious.keys()` is the seventh and cannot fail here — the key axis is
+    # `imgIds x catIds` and no score touches it — so 6 is the ceiling for
+    # a score perturbation, not a shortfall.
+    #
+    # Two weaker perturbations, for calibration: a *monotone* rescale
+    # (`s -> s/2 + 0.01`), which changes values but not the ranking,
+    # fails only 2 of 7 (`evalImgs`, `scores`); Gaussian jitter at
+    # sigma=0.2 fails 5 of 7. And on a one-detection fixture such as
+    # `perfect_match`, reversal fails **0** of 7 — there is nothing to
+    # reorder. That is why this fixture exists.
+    gt, dt = route_equivalence_coco
+    with pytest.raises(AssertionError):
+        _assert_routes_agree(gt, dt, iou_type, reference_type=_ScoreReversedBytesRouteCOCOeval)

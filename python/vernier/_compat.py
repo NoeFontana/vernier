@@ -14,6 +14,23 @@ honored on the params object per pycocotools convention.
 The class is named ``PycocotoolsCOCOeval`` so the swap is visible in
 tracebacks and ``repr()`` even though it lives behind the ``COCOeval``
 alias.
+
+Detections are *held, not copied.* :meth:`PycocotoolsCOCOeval.evaluate`
+keeps a reference to the caller's ``cocoDt`` annotation list and hands
+it to ADR-0057's list route; the ``json.dumps`` snapshot it replaces is
+where the memory this shim used to spend went, so the reference is
+deliberate. The consequence is an aliasing window. ``eval`` and
+``stats`` are computed during ``evaluate`` / ``accumulate`` and frozen,
+but :attr:`~PycocotoolsCOCOeval.evalImgs` and
+:attr:`~PycocotoolsCOCOeval.ious` re-ingest the held list on first read
+(ADR-0055's lazy widening), so a detection dict mutated in place *after*
+``evaluate`` shows up there while ``stats`` still reports the
+pre-mutation numbers, and clearing the list yields cells with empty
+``dtIds``. The window is asymmetric: under a ``params.catIds`` subset
+the shim holds a *new* list of the same dicts, so appending to or
+clearing the caller's list no longer propagates, while mutating a dict
+it still shares does. Callers that mutate detections between passes
+should hand each pass its own copy.
 """
 
 from __future__ import annotations
