@@ -32,6 +32,16 @@
 //! (`__dlpack_device__` for GPU rejection, capsule name check), so the
 //! unsafe footprint is reached only after the input is known to satisfy
 //! ADR-0030's CPU-only constraint.
+//!
+//! ## The `field` argument
+//!
+//! Every extractor takes a `field: &str` that is the **fully qualified**
+//! user-facing path of the array being validated — `detections.boxes`,
+//! `detections.rles[3]`, `detections[3].segmentation`. It is pasted into
+//! the error verbatim. Callers own the whole path because the ADR-0057
+//! result-dict route indexes the annotation (`detections[3].segmentation`)
+//! while the ADR-0030 columnar route indexes the field
+//! (`detections.rles[3]`), and neither prefix is derivable here.
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
@@ -153,7 +163,7 @@ pub(crate) fn extract_f64_2d<'py>(
     expect_ndim(&meta, field, 2)?;
     if meta.shape[1] as usize != expected_cols {
         return Err(PyValueError::new_err(format!(
-            "detections.{field}: expected shape (N, {expected_cols}), got ({}, {})",
+            "{field}: expected shape (N, {expected_cols}), got ({}, {})",
             meta.shape[0], meta.shape[1]
         )));
     }
@@ -171,7 +181,7 @@ pub(crate) fn extract_f64_3d_kp<'py>(
     expect_ndim(&meta, field, 3)?;
     if meta.shape[2] != 3 {
         return Err(PyValueError::new_err(format!(
-            "detections.{field}: expected shape (N, K, 3), got ({}, {}, {})",
+            "{field}: expected shape (N, K, 3), got ({}, {}, {})",
             meta.shape[0], meta.shape[1], meta.shape[2]
         )));
     }
@@ -227,9 +237,7 @@ pub(crate) fn extract_u8_or_bool_2d_fortran<'py>(
             // the F-order copy, so the producer's deleter runs first.
             drop(view);
             let f_obj = asfortranarray.call1((obj,)).map_err(|e| {
-                PyTypeError::new_err(format!(
-                    "detections.{field}: numpy.asfortranarray copy failed: {e}"
-                ))
+                PyTypeError::new_err(format!("{field}: numpy.asfortranarray copy failed: {e}"))
             })?;
             let (view, _, _, _) = open_u8_or_bool_2d(&f_obj, field)?;
             Ok((view, h, w))
@@ -251,29 +259,25 @@ fn open_u8_or_bool_2d<'py>(
         Order::F
     } else {
         return Err(PyTypeError::new_err(format!(
-            "detections.{field}: array is not contiguous \
-             (fix: pass np.ascontiguousarray(arr) or np.asfortranarray(arr))"
+            "{field}: array is not contiguous \
+             (fix: np.ascontiguousarray(arr) / np.asfortranarray(arr), \
+             or arr.contiguous() for a torch tensor)"
         )));
     };
 
     let h_i64 = meta.shape[0];
     let w_i64 = meta.shape[1];
     let h = u32::try_from(h_i64).map_err(|_| {
-        PyValueError::new_err(format!(
-            "detections.{field}: height {h_i64} does not fit in u32"
-        ))
+        PyValueError::new_err(format!("{field}: height {h_i64} does not fit in u32"))
     })?;
     let w = u32::try_from(w_i64).map_err(|_| {
-        PyValueError::new_err(format!(
-            "detections.{field}: width {w_i64} does not fit in u32"
-        ))
+        PyValueError::new_err(format!("{field}: width {w_i64} does not fit in u32"))
     })?;
 
     // `into_view` enforces C-contiguity, so build the view manually for
     // the F-order branch. Element-size check is implicit (bool/uint8 = 1).
-    let len = n_elements(&meta).ok_or_else(|| {
-        PyValueError::new_err(format!("detections.{field}: shape product overflows usize"))
-    })?;
+    let len = n_elements(&meta)
+        .ok_or_else(|| PyValueError::new_err(format!("{field}: shape product overflows usize")))?;
     let view = DLPackView {
         _capsule: capsule,
         data_ptr: view_ptr::<u8>(&meta, len),
@@ -322,13 +326,13 @@ fn open_cpu_tensor<'py>(
 
     let capsule_obj = obj.call_method0("__dlpack__").map_err(|e| {
         PyTypeError::new_err(format!(
-            "detections.{field}: object does not support DLPack \
+            "{field}: object does not support DLPack \
              (no __dlpack__ method): {e}"
         ))
     })?;
     let capsule: Bound<'py, PyCapsule> = capsule_obj.cast_into().map_err(|e| {
         PyTypeError::new_err(format!(
-            "detections.{field}: __dlpack__ did not return a PyCapsule: {e}"
+            "{field}: __dlpack__ did not return a PyCapsule: {e}"
         ))
     })?;
 
@@ -341,7 +345,7 @@ fn open_cpu_tensor<'py>(
 
     if dl_tensor.ndim < 0 || dl_tensor.ndim > 8 {
         return Err(PyValueError::new_err(format!(
-            "detections.{field}: implausible ndim {}",
+            "{field}: implausible ndim {}",
             dl_tensor.ndim
         )));
     }
@@ -353,7 +357,7 @@ fn open_cpu_tensor<'py>(
     for (i, &d) in shape.iter().enumerate() {
         if d < 0 {
             return Err(PyValueError::new_err(format!(
-                "detections.{field}: shape[{i}] is negative ({d})"
+                "{field}: shape[{i}] is negative ({d})"
             )));
         }
     }
@@ -366,9 +370,7 @@ fn open_cpu_tensor<'py>(
 
     let data_addr = (dl_tensor.data as usize)
         .checked_add(dl_tensor.byte_offset as usize)
-        .ok_or_else(|| {
-            PyValueError::new_err(format!("detections.{field}: byte_offset overflow"))
-        })?;
+        .ok_or_else(|| PyValueError::new_err(format!("{field}: byte_offset overflow")))?;
     // A zero-element tensor may carry a null data pointer (torch does);
     // nothing is ever read through it, so only a non-empty one must be
     // non-null.
@@ -377,7 +379,7 @@ fn open_cpu_tensor<'py>(
         None if shape.contains(&0) => NonNull::dangling(),
         None => {
             return Err(PyValueError::new_err(format!(
-                "detections.{field}: data pointer is null"
+                "{field}: data pointer is null"
             )))
         }
     };
@@ -401,17 +403,17 @@ fn into_view<'py, T>(
 ) -> PyResult<DLPackView<'py, T>> {
     if !is_contiguous(meta, Order::C) {
         return Err(PyTypeError::new_err(format!(
-            "detections.{field}: array is not C-contiguous \
-             (fix: pass np.ascontiguousarray(arr))"
+            "{field}: array is not C-contiguous \
+             (fix: np.ascontiguousarray(arr), or arr.contiguous() \
+             for a torch tensor)"
         )));
     }
-    let len = n_elements(meta).ok_or_else(|| {
-        PyValueError::new_err(format!("detections.{field}: shape product overflows usize"))
-    })?;
+    let len = n_elements(meta)
+        .ok_or_else(|| PyValueError::new_err(format!("{field}: shape product overflows usize")))?;
     let elem_bytes = (meta.dtype.bits as usize) / 8;
     if std::mem::size_of::<T>() != elem_bytes {
         return Err(PyValueError::new_err(format!(
-            "detections.{field}: internal dtype size mismatch ({} vs {})",
+            "{field}: internal dtype size mismatch ({} vs {})",
             std::mem::size_of::<T>(),
             elem_bytes
         )));
@@ -442,7 +444,7 @@ fn read_capsule_tensor<'a>(
 ) -> PyResult<&'a DLTensor> {
     let name = capsule.name()?.ok_or_else(|| {
         PyTypeError::new_err(format!(
-            "detections.{field}: DLPack capsule has no name (corrupt producer?)"
+            "{field}: DLPack capsule has no name (corrupt producer?)"
         ))
     })?;
     // SAFETY: `name` points at a NUL-terminated C string owned by the
@@ -463,11 +465,11 @@ fn read_capsule_tensor<'a>(
         Ok(&mt.dl_tensor)
     } else if name_bytes == b"used_dltensor" {
         Err(PyTypeError::new_err(format!(
-            "detections.{field}: DLPack capsule has already been consumed"
+            "{field}: DLPack capsule has already been consumed"
         )))
     } else {
         Err(PyTypeError::new_err(format!(
-            "detections.{field}: unexpected DLPack capsule name {:?}",
+            "{field}: unexpected DLPack capsule name {:?}",
             String::from_utf8_lossy(name_bytes)
         )))
     }
@@ -478,13 +480,13 @@ fn read_capsule_tensor<'a>(
 fn screen_cpu_device(obj: &Bound<'_, PyAny>, field: &str) -> PyResult<()> {
     let dev = obj.call_method0("__dlpack_device__").map_err(|e| {
         PyTypeError::new_err(format!(
-            "detections.{field}: object does not support DLPack \
+            "{field}: object does not support DLPack \
              (no __dlpack_device__ method): {e}"
         ))
     })?;
     let tup: Bound<'_, PyTuple> = dev.cast_into().map_err(|e| {
         PyTypeError::new_err(format!(
-            "detections.{field}: __dlpack_device__ did not return a tuple: {e}"
+            "{field}: __dlpack_device__ did not return a tuple: {e}"
         ))
     })?;
     let device_type: i32 = tup.get_item(0)?.extract()?;
@@ -501,7 +503,7 @@ fn gpu_rejection_error(field: &str, device_type: i32) -> PyErr {
     PyTypeError::new_err(format!(
         "vernier-0030 does not accept GPU-resident detections; \
          move to CPU with .cpu() or .to('cpu') \
-         (field detections.{field}, device_type={device_type})"
+         (field {field}, device_type={device_type})"
     ))
 }
 
@@ -563,7 +565,7 @@ fn expect_dtype(
     let got = describe_dtype(meta.dtype);
     let want = describe_dtype_code(expected_code, expected_bits);
     Err(PyTypeError::new_err(format!(
-        "detections.{field}: expected {want}, got {got} \
+        "{field}: expected {want}, got {got} \
          (fix: pass cast_inputs=True at construction or call .astype(np.{want}))"
     )))
 }
@@ -582,7 +584,7 @@ fn expect_byte_dtype(meta: &CpuTensorMeta, field: &str) -> PyResult<()> {
     }
     let got = describe_dtype(meta.dtype);
     Err(PyTypeError::new_err(format!(
-        "detections.{field}: expected 2-D bool or uint8 array, got {got}"
+        "{field}: expected 2-D bool or uint8 array, got {got}"
     )))
 }
 
@@ -591,7 +593,7 @@ fn expect_ndim(meta: &CpuTensorMeta, field: &str, expected: usize) -> PyResult<(
         return Ok(());
     }
     Err(PyValueError::new_err(format!(
-        "detections.{field}: expected {expected}-D array, got {}-D (shape {:?})",
+        "{field}: expected {expected}-D array, got {}-D (shape {:?})",
         meta.shape.len(),
         meta.shape
     )))

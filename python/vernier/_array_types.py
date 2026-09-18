@@ -45,6 +45,37 @@ class CompressedRLE(TypedDict):
 RLEInput: TypeAlias = UncompressedRLE | CompressedRLE | NDArray[np.bool_] | NDArray[np.uint8]
 
 
+class JsonRLE(TypedDict):
+    """The RLE shape a COCO results *file* carries, as ``json.load``
+    leaves it.
+
+    ``counts`` is either the compressed 6-bit string (quirk **K3**: JSON
+    has no bytes type, so the same payload arrives as ``str``) or the
+    uncompressed run lengths as a plain list of ints. ``size`` is
+    ``(height, width)`` in COCO order.
+
+    Accepted on :attr:`ResultAnnotation.segmentation` only — the
+    columnar :attr:`Detections.rles` is an in-memory array surface and
+    takes :data:`RLEInput`.
+    """
+
+    counts: str | Sequence[int]
+    size: Sequence[int]
+
+
+#: COCO polygon segmentation: one flat ``[x0, y0, x1, y1, …]`` list per
+#: polygon, nested one level. Sub-polygons are unioned into a single mask
+#: (quirk **K2**).
+PolygonSegmentation: TypeAlias = Sequence[Sequence[float]]
+
+#: Per-annotation ``segmentation`` shape on the result-dict route. It is
+#: everything a results file can hold (:data:`PolygonSegmentation`,
+#: :class:`JsonRLE`) plus the in-memory forms ADR-0030 added
+#: (:data:`RLEInput`), so the route accepts every payload the file route
+#: does and then some.
+SegmentationInput: TypeAlias = RLEInput | JsonRLE | PolygonSegmentation
+
+
 class Detections(TypedDict, total=False):
     """One per-image detection batch in array form.
 
@@ -75,14 +106,80 @@ class Detections(TypedDict, total=False):
     keypoints: NDArray[np.float64]
 
 
-#: Union of legal forms for ``StreamingEvaluator.update`` / ``BackgroundEvaluator.submit``.
-DetectionsInput: TypeAlias = bytes | Detections | Sequence[Detections]
+class ResultAnnotation(TypedDict, total=False):
+    """One COCO *result* annotation — the shape ``loadRes`` consumes.
+
+    This is the per-annotation dict a pycocotools- or TorchMetrics-style
+    caller already has in hand. Passing the list directly skips the
+    ``json.dumps`` / parse round trip the bytes route would otherwise
+    pay for the same data.
+
+    ``image_id``, ``category_id``, ``bbox`` and ``score`` are always
+    required. ``keypoints`` is required under ``iou_type='keypoints'``.
+
+    ``segmentation`` is optional on every ``iou_type``, exactly as it is
+    in a results *file*: under ``'segm'`` / ``'boundary'`` an annotation
+    without one is governed by quirk **J2** (``parity_mode='strict'``
+    synthesizes the bbox rectangle pycocotools synthesizes;
+    ``'corrected'`` refuses and names the detection). It takes
+    :data:`SegmentationInput` — polygons, either RLE ``counts``
+    encoding, or a 2-D bitmask.
+
+    ``area`` is **carried**, exactly as a results *file* carries it, and
+    what it does is decided downstream by ``dt_area`` (quirk **J3**):
+    under the ``"bbox"`` default it is ignored and the area is derived
+    from the box, and under ``dt_area="supplied"`` it is the area that
+    buckets the detection into small / medium / large. Dropping it here
+    would make this route score differently from the file route for the
+    same payload, so it is not dropped.
+
+    ``iscrowd`` is accepted and ignored: a detection is never a crowd
+    (quirks **E2**/**J4**).
+
+    An explicit ``id`` is preserved; an absent one is auto-assigned
+    ``1..N`` by position (quirk **J1**).
+    """
+
+    image_id: int
+    category_id: int
+    bbox: Sequence[float]
+    score: float
+    id: int
+    segmentation: SegmentationInput
+    keypoints: Sequence[float]
+    num_keypoints: int
+    area: float
+    iscrowd: int
+
+
+#: ``(N, 7)`` C-contiguous float64 detection matrix, laid out as
+#: ``image_id, x, y, w, h, score, category_id``. The ``image_id`` and
+#: ``category_id`` columns must hold exact integers within 2^53; a
+#: fractional or oversized value is rejected rather than truncated.
+DetectionMatrix: TypeAlias = NDArray[np.float64]
+
+#: Union of legal forms for ``StreamingEvaluator.update`` /
+#: ``BackgroundEvaluator.submit`` and for the ``dt=`` argument of every
+#: ``Evaluator.evaluate`` / ``evaluate_*_grid`` entry point.
+DetectionsInput: TypeAlias = (
+    bytes
+    | Detections
+    | Sequence[Detections]
+    | ResultAnnotation
+    | Sequence[ResultAnnotation]
+    | DetectionMatrix
+)
 
 
 __all__ = [
     "CompressedRLE",
+    "DetectionMatrix",
     "Detections",
     "DetectionsInput",
+    "JsonRLE",
+    "PolygonSegmentation",
     "RLEInput",
+    "ResultAnnotation",
+    "SegmentationInput",
     "UncompressedRLE",
 ]

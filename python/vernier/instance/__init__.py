@@ -15,9 +15,14 @@ from typing import Any, Final, Literal, NoReturn, TypeAlias, overload
 
 from vernier._array_types import (
     CompressedRLE,
+    DetectionMatrix,
     Detections,
     DetectionsInput,
+    JsonRLE,
+    PolygonSegmentation,
+    ResultAnnotation,
     RLEInput,
+    SegmentationInput,
     UncompressedRLE,
 )
 from vernier._confusion import confusion_matrix
@@ -112,6 +117,7 @@ __all__ = [
     "CategoryFilterFrequency",
     "CocoDataset",
     "CompressedRLE",
+    "DetectionMatrix",
     "Detections",
     "DetectionsInput",
     "DimensionMismatchError",
@@ -124,6 +130,7 @@ __all__ = [
     "InvalidEvalParams",
     "InvalidInstanceParams",
     "IouKind",
+    "JsonRLE",
     "Keypoints",
     "LrpConfig",
     "LrpPerClass",
@@ -138,9 +145,12 @@ __all__ = [
     "PartialPartitionOverlap",
     "PartialRankCollision",
     "PartitionedLrpReport",
+    "PolygonSegmentation",
     "QueueFullError",
     "RLEInput",
+    "ResultAnnotation",
     "Segm",
+    "SegmentationInput",
     "Summary",
     "TableName",
     "TablesConfig",
@@ -511,11 +521,23 @@ class Evaluator:
     ) -> Summary | EvalResult:
         """Run the evaluation pipeline against a GT/DT pair.
 
-        ``dt`` accepts the COCO ``loadRes``-shaped JSON payload as
-        ``bytes``, **or** the array-form ``Detections`` shapes
-        introduced by ADR-0030 (a single per-image dict or a sequence
-        of them). The array path skips JSON serialization end-to-end
-        and reads NumPy / DLPack buffers directly into the kernel.
+        ``dt`` accepts any of four shapes, all of which evaluate
+        identically for the same logical detections:
+
+        - the COCO ``loadRes``-shaped JSON payload as ``bytes``;
+        - the array-form :class:`Detections` shapes introduced by
+          ADR-0030 — a single per-image dict or a sequence of them;
+        - a list of per-annotation :class:`ResultAnnotation` dicts, the
+          shape ``pycocotools.COCO.loadRes`` consumes and the one a
+          TorchMetrics-style caller already holds (ADR-0057);
+        - a :data:`DetectionMatrix` — an ``(N, 7)`` C-contiguous
+          ``float64`` array laid out as ``image_id, x, y, w, h, score,
+          category_id`` (ADR-0057). It carries no segmentation and no
+          keypoints, exactly as a bbox-only results file does.
+
+        Everything but ``bytes`` skips JSON serialization end-to-end and
+        reads NumPy / DLPack buffers or Python scalars straight into the
+        kernel.
 
         ``gt`` is either the GT JSON bytes (parse-and-discard, identical
         to prior behavior) or a :class:`CocoDataset` handle (parsed-once,

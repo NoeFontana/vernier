@@ -88,6 +88,24 @@ additive / perf / docs".
 
 ### Added
 
+- **Two direct detection-ingest routes for in-process callers**
+  (ADR-0057). `dt=` now also takes a list of per-annotation COCO
+  *result* dicts — the shape `pycocotools.COCO.loadRes` consumes and a
+  TorchMetrics-style caller already holds — and an `(N, 7)`
+  C-contiguous float64 matrix laid out as
+  `image_id, x, y, w, h, score, category_id`. Both skip the
+  `json.dumps` / parse round trip entirely. Neither adds semantics:
+  both terminate in the same `Vec<DetectionInput>` the file route
+  produces, so `loadRes`'s id assignment (**J1**), area derivation
+  (**J3**) and forced non-crowd flag (**E2**/**J4**) keep happening in
+  exactly one place; `tests/python/test_ingest_route_equivalence.py`
+  pins the three routes cell-for-cell on `eval_imgs()`. The list
+  route's `segmentation` takes every shape a results file carries
+  (polygons, `str` and list-of-ints `counts`) plus ADR-0030's
+  in-memory forms; its `area` is carried, so `dt_area="supplied"`
+  reads it exactly as it does from a file. `vernier.instance` exports
+  the payload types: `ResultAnnotation`, `DetectionMatrix`,
+  `SegmentationInput`, `JsonRLE`, `PolygonSegmentation`.
 - **`vernier.COCOeval.ious`**, the pycocotools-shaped
   `{(imgId, catId): matrix}` map TorchMetrics reads under
   `extended_summary=True` (ADR-0055). Each matrix is

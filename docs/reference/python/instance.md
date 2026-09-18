@@ -13,12 +13,18 @@ variant for overlapping the kernel with the rest of the training step.
 
 ::: vernier.instance.CategoryFilter
 
+::: vernier.instance.DetectionMatrix
+
 ::: vernier.instance.DetectionsInput
 
 ::: vernier.instance.IouKind
 
 ::: vernier.instance.Manifest
 
+::: vernier.instance.PolygonSegmentation
+
 ::: vernier.instance.RLEInput
+
+::: vernier.instance.SegmentationInput
 
 ::: vernier.instance.TableName
