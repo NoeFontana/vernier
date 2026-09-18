@@ -799,6 +799,7 @@ mod tests {
             max_dets_per_image: 20,
             use_cats: false,
             retain_iou: false,
+            retain_meta: false,
         };
         let kernel = OksSimilarity::new(HashMap::new());
         let pool = rayon::ThreadPoolBuilder::new()

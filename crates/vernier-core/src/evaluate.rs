@@ -2271,6 +2271,7 @@ mod tests {
             max_dets_per_image: 20,
             use_cats,
             retain_iou: false,
+            retain_meta: false,
         };
         evaluate_keypoints(&gt, &dts, params, parity_mode, HashMap::new()).unwrap()
     }
