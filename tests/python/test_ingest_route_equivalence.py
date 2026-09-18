@@ -259,15 +259,6 @@ def test_matrix_rejects_image_id_beyond_two_pow_53() -> None:
         _grid(m)
 
 
-@pytest.mark.xfail(
-    reason="A zero-row array reports non-C-contiguous strides on this branch. "
-    "NumPy/torch flag semantics (a zero-element array is contiguous whatever "
-    "its strides) are restored by commit 3ab5002 on fix/pycocotools-shim-parity, "
-    "in dlpack::is_contiguous. This route needs no change of its own once that "
-    "lands.",
-    raises=TypeError,
-    strict=True,
-)
 def test_matrix_accepts_an_empty_detection_set() -> None:
     empty = np.zeros((0, 7), dtype=np.float64)
     assert (

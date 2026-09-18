@@ -13,14 +13,21 @@ state-machine compliance.
 
 from __future__ import annotations
 
+import contextlib
+import copy
+import io
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pytest
+from pycocotools import mask as mask_utils
 from pycocotools.coco import COCO
+from pycocotools.cocoeval import COCOeval as PycocotoolsReferenceCOCOeval
 
 from vernier import COCOeval
+from vernier import _compat as vernier_compat
 from vernier._compat import PycocotoolsCOCOeval
 from vernier.instance import Evaluator, Keypoints
 
@@ -148,6 +155,44 @@ def test_state_machine_populates_pycocotools_attrs(
     e.summarize()
     assert e.stats.shape == (12,)
     assert e.stats[0] == pytest.approx(1.0)
+
+
+def test_eval_imgs_is_built_only_when_read(
+    perfect_match_coco: tuple[COCO, COCO],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Materializing pycocotools' per-image dicts costs as much as the
+    # evaluation, and nothing in evaluate/accumulate/summarize reads them.
+    calls: list[int] = []
+
+    class _CountingGrid:
+        def __init__(self, grid: Any) -> None:
+            self._grid = grid
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._grid, name)
+
+        def eval_imgs(self) -> list[dict[str, Any] | None]:
+            calls.append(1)
+            return self._grid.eval_imgs()
+
+    build_grid = vernier_compat.evaluate_bbox_grid
+    monkeypatch.setattr(
+        vernier_compat,
+        "evaluate_bbox_grid",
+        lambda *args, **kwargs: _CountingGrid(build_grid(*args, **kwargs)),
+    )
+    gt, dt = perfect_match_coco
+    e = COCOeval(gt, dt, iouType="bbox")
+    with contextlib.redirect_stdout(io.StringIO()):
+        e.evaluate()
+        e.accumulate()
+        e.summarize()
+    assert calls == []
+    first = e.evalImgs
+    assert e.evalImgs is first
+    assert calls == [1]
+    assert any(record is not None for record in first)
 
 
 def test_eval_dict_date_is_iso_like(perfect_match_coco: tuple[COCO, COCO]) -> None:
@@ -443,14 +488,279 @@ def test_accumulate_normalizes_max_dets_ascending(
     np.testing.assert_array_equal(permuted.stats, canonical.stats)
 
 
-def test_unsupported_iou_thrs_mutation_raises(
-    perfect_match_coco: tuple[COCO, COCO],
+def _coco(dataset: dict[str, Any]) -> COCO:
+    # Build a COCO the way TorchMetrics and other in-memory callers do:
+    # assign `dataset` and index it, with no `loadRes` pass (so detection
+    # `area` stays whatever the caller wrote — quirk J3).
+    coco = COCO()
+    # pycocotools' stubs type `dataset` as its file-loaded TypedDict.
+    cast(Any, coco).dataset = copy.deepcopy(dataset)
+    with contextlib.redirect_stdout(io.StringIO()):
+        coco.createIndex()
+    return coco
+
+
+def _rle(rows: slice, cols: slice) -> dict[str, Any]:
+    mask = np.zeros((128, 128), dtype=np.uint8, order="F")
+    mask[rows, cols] = 1
+    return dict(mask_utils.encode(mask))
+
+
+def _mask_ann(ann_id: int, image_id: int, rows: slice, cols: slice, **extra: Any) -> dict[str, Any]:
+    return {
+        "id": ann_id,
+        "image_id": image_id,
+        "category_id": 1,
+        "bbox": [cols.start, rows.start, cols.stop - cols.start, rows.stop - rows.start],
+        "area": float((rows.stop - rows.start) * (cols.stop - cols.start)),
+        "segmentation": _rle(rows, cols),
+        **extra,
+    }
+
+
+def _run_eval(
+    evaluator_type: type[Any],
+    gt: dict[str, Any],
+    dt: dict[str, Any],
+    iou_type: str,
+    **params: Any,
+) -> Any:
+    evaluator = evaluator_type(_coco(gt), _coco(dt), iouType=iou_type)
+    for name, value in params.items():
+        setattr(evaluator.params, name, value)
+    with contextlib.redirect_stdout(io.StringIO()):
+        evaluator.evaluate()
+        evaluator.accumulate()
+        evaluator.summarize()
+    return evaluator
+
+
+def _assert_matches_pycocotools(
+    gt: dict[str, Any], dt: dict[str, Any], iou_type: str, **params: Any
+) -> PycocotoolsCOCOeval:
+    reference = _run_eval(PycocotoolsReferenceCOCOeval, gt, dt, iou_type, **copy.deepcopy(params))
+    candidate = _run_eval(COCOeval, gt, dt, iou_type, **copy.deepcopy(params))
+    np.testing.assert_array_equal(candidate.stats, reference.stats)
+    np.testing.assert_array_equal(candidate.eval["precision"], reference.eval["precision"])
+    np.testing.assert_array_equal(candidate.eval["recall"], reference.eval["recall"])
+    return candidate
+
+
+@pytest.fixture(scope="module")
+def synthetic_bbox_datasets() -> tuple[dict[str, Any], dict[str, Any]]:
+    # Jittered copies of random GT boxes: fractional AP/AR on every line,
+    # so a mis-sliced threshold or maxDets entry cannot hide.
+    rng = np.random.default_rng(0)
+    images = [{"id": i, "width": 128, "height": 128} for i in range(4)]
+    categories = [{"id": 1, "name": "a"}, {"id": 2, "name": "b"}]
+    gt_anns: list[dict[str, Any]] = []
+    dt_anns: list[dict[str, Any]] = []
+    for image in images:
+        image_gts = []
+        for _ in range(6):
+            x, y = rng.uniform(0, 80, 2).tolist()
+            w, h = rng.uniform(5, 60, 2).tolist()
+            ann = {
+                "id": len(gt_anns) + 1,
+                "image_id": image["id"],
+                "category_id": int(rng.integers(1, 3)),
+                "bbox": [x, y, w, h],
+                "area": w * h,
+                "iscrowd": 0,
+            }
+            gt_anns.append(ann)
+            image_gts.append(ann)
+        for _ in range(20):
+            target = image_gts[int(rng.integers(len(image_gts)))]
+            x, y, w, h = (np.asarray(target["bbox"]) + rng.normal(0, 4, 4)).tolist()
+            w, h = abs(w) + 1.0, abs(h) + 1.0
+            dt_anns.append(
+                {
+                    "id": len(dt_anns) + 1,
+                    "image_id": image["id"],
+                    "category_id": target["category_id"],
+                    "bbox": [x, y, w, h],
+                    "area": w * h,
+                    "score": float(rng.uniform()),
+                }
+            )
+    gt = {"images": images, "categories": categories, "annotations": gt_anns}
+    dt = {"images": images, "categories": categories, "annotations": dt_anns}
+    return gt, dt
+
+
+def test_float32_rounded_thresholds_match_pycocotools(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
 ) -> None:
-    gt, dt = perfect_match_coco
-    e = COCOeval(gt, dt, iouType="bbox")
-    e.params.iouThrs = np.array([0.5, 0.75])
-    with pytest.raises(NotImplementedError, match="iouThrs"):
-        e.evaluate()
+    # Callers that round-trip the canonical ladders through float32
+    # (TorchMetrics' `torch.linspace(...).tolist()`) land ~2e-8 off the
+    # defaults; the shim must evaluate on those exact values, as
+    # pycocotools does, instead of rejecting them.
+    gt, dt = synthetic_bbox_datasets
+    _assert_matches_pycocotools(
+        gt,
+        dt,
+        "bbox",
+        iouThrs=np.linspace(0.5, 0.95, 10, dtype=np.float32).astype(np.float64),
+        recThrs=np.linspace(0.0, 1.0, 101, dtype=np.float32).astype(np.float64),
+    )
+
+
+def test_custom_iou_thrs_match_pycocotools(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    gt, dt = synthetic_bbox_datasets
+    _assert_matches_pycocotools(gt, dt, "bbox", iouThrs=np.array([0.5, 0.75]))
+
+
+@pytest.mark.parametrize("max_dets", [[1, 10, 500], [2, 5, 20]])
+def test_max_dets_without_100_match_pycocotools(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+    max_dets: list[int],
+) -> None:
+    # Quirk L9 (strict): stats[0] reads maxDets=100 (-1 when absent) and
+    # AR_1/AR_10/AR_100 read maxDets[0|1|2] positionally.
+    gt, dt = synthetic_bbox_datasets
+    evaluator = _assert_matches_pycocotools(gt, dt, "bbox", maxDets=max_dets)
+    assert evaluator.stats[0] == -1.0
+    assert evaluator.stats[8] > 0.0
+
+
+def test_corrected_mode_reads_aggregate_ap_at_the_largest_max_det(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    # Quirk L9 (corrected): stats[0] is AP at maxDets[-1], computed from
+    # the same precision array the strict AP lines read.
+    gt, dt = synthetic_bbox_datasets
+    evaluator = COCOeval(_coco(gt), _coco(dt), iouType="bbox", parity_mode="corrected")
+    evaluator.params.maxDets = [1, 10, 500]
+    evaluator.evaluate()
+    evaluator.accumulate()
+    evaluator.summarize()
+    precision = evaluator.eval["precision"][:, :, :, 0, -1]
+    assert evaluator.stats[0] == np.mean(precision[precision > -1])
+    assert evaluator.stats[0] > 0.0
+
+
+def test_supplied_detection_area_matches_pycocotools() -> None:
+    # Quirk J3: COCOeval buckets a detection by the `area` its cocoDt
+    # carries. The top-scored false positive has a 25x25 box (small) but a
+    # 60x60 mask and area (medium); reading the bbox area would count it
+    # against AP_small and halve it.
+    images = [{"id": 0, "width": 128, "height": 128}]
+    categories = [{"id": 1, "name": "a"}]
+    gt = {
+        "images": images,
+        "categories": categories,
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 0,
+                "category_id": 1,
+                "iscrowd": 0,
+                "bbox": [0, 0, 20, 20],
+                "area": 400.0,
+                "segmentation": _rle(slice(0, 20), slice(0, 20)),
+            }
+        ],
+    }
+    dt = {
+        "images": images,
+        "categories": categories,
+        "annotations": [
+            {
+                "id": 1,
+                "image_id": 0,
+                "category_id": 1,
+                "score": 0.5,
+                "bbox": [0, 0, 20, 20],
+                "area": 625.0,
+                "segmentation": _rle(slice(0, 25), slice(0, 25)),
+            },
+            {
+                "id": 2,
+                "image_id": 0,
+                "category_id": 1,
+                "score": 0.95,
+                "bbox": [40, 40, 25, 25],
+                "area": 3600.0,
+                "segmentation": _rle(slice(40, 100), slice(40, 100)),
+            },
+        ],
+    }
+    # `mask_utils.encode` emits bytes counts, which the shim must also
+    # serialize (quirk K3).
+    assert isinstance(gt["annotations"][0]["segmentation"]["counts"], bytes)
+    evaluator = _assert_matches_pycocotools(gt, dt, "segm")
+    assert evaluator.stats[3] == pytest.approx(0.3)
+
+
+def test_bbox_images_without_sizes_match_pycocotools(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    # pycocotools reads image sizes only to rasterize segmentations.
+    gt, dt = copy.deepcopy(synthetic_bbox_datasets)
+    for image in gt["images"]:
+        del image["width"], image["height"]
+    gt_coco = _coco(gt)
+    _assert_matches_pycocotools(gt, dt, "bbox")
+    evaluator = COCOeval(gt_coco, _coco(dt), iouType="bbox")
+    with contextlib.redirect_stdout(io.StringIO()):
+        evaluator.evaluate()
+    assert all("width" not in image for image in gt_coco.dataset["images"])
+
+
+def _segm_datasets_with_sizeless_second_image() -> tuple[dict[str, Any], dict[str, Any]]:
+    # Image 0 is sized and matched; image 1 has no size on the GT side,
+    # the shape TorchMetrics gives an image with no GT masks.
+    categories = [{"id": 1, "name": "a"}]
+    gt = {
+        "images": [{"id": 0, "width": 128, "height": 128}, {"id": 1}],
+        "categories": categories,
+        "annotations": [_mask_ann(1, 0, slice(0, 20), slice(0, 20), iscrowd=0)],
+    }
+    dt = {
+        "images": [{"id": 0, "width": 128, "height": 128}, {"id": 1}],
+        "categories": categories,
+        "annotations": [_mask_ann(1, 0, slice(0, 22), slice(0, 20), score=0.9)],
+    }
+    return gt, dt
+
+
+def test_segm_sizeless_image_without_annotations_matches_pycocotools() -> None:
+    # annToRLE reads an image's size only for annotations on it, so an
+    # image nothing points at never needs one.
+    gt, dt = _segm_datasets_with_sizeless_second_image()
+    _assert_matches_pycocotools(gt, dt, "segm")
+    assert gt["images"][1] == {"id": 1}
+
+
+def test_segm_sizeless_gt_image_takes_the_detection_image_size() -> None:
+    # A DT mask on an image with no GT masks is converted against
+    # cocoDt.imgs, which carries the size the GT image lacks.
+    gt, dt = _segm_datasets_with_sizeless_second_image()
+    dt["images"][1] = {"id": 1, "width": 128, "height": 128}
+    dt["annotations"].append(_mask_ann(2, 1, slice(40, 60), slice(40, 60), score=0.95))
+    evaluator = _assert_matches_pycocotools(gt, dt, "segm")
+    assert 0.0 < evaluator.stats[0] < 1.0
+
+
+def test_segm_images_without_sizes_raise(
+    perfect_match_segm_coco: tuple[COCO, COCO],
+) -> None:
+    # A polygon GT on a sizeless image: pycocotools raises KeyError in
+    # annToRLE, and a 0x0 fill would rasterize the polygon to nothing and
+    # score silently.
+    gt, dt = perfect_match_segm_coco
+    dataset = cast(dict[str, Any], copy.deepcopy(gt.dataset))
+    for image in dataset["images"]:
+        del image["width"], image["height"]
+    reference = PycocotoolsReferenceCOCOeval(_coco(dataset), dt, iouType="segm")
+    with pytest.raises(KeyError, match="height"), contextlib.redirect_stdout(io.StringIO()):
+        reference.evaluate()
+    evaluator = COCOeval(_coco(dataset), dt, iouType="segm")
+    with pytest.raises(ValueError, match="width"):
+        evaluator.evaluate()
 
 
 def test_unsupported_area_rng_mutation_raises(
@@ -505,3 +815,226 @@ def test_assigned_use_segm_raises_with_l3_message(
     assert "useSegm" in msg
     assert "iouType" in msg
     assert "L3" in msg
+
+
+def _assert_ious_match(reference: Any, candidate: Any, *, exact: bool = True) -> None:
+    # `COCOeval.ious` is `{(imgId, catId): (D, G) array}` with a bare `[]`
+    # wherever one side of the pair is empty (quirk F5). Both the key set
+    # and the empty/array split are part of the surface: a consumer that
+    # branches on `len(...)` sees the difference.
+    #
+    # `exact=False` is for datasets whose coordinates are arbitrary
+    # decimals. The kernel arithmetic is bit-identical to `bbIou` — the
+    # array-ingest path reproduces pycocotools exactly on the same boxes
+    # — but serde_json's default number parser is not correctly rounded,
+    # so a coordinate can land one ULP off what CPython's `strtod`
+    # produced and carry that into the quotient. Same root cause as the
+    # `dtScores` drift; ADR-0054 turns on `float_roundtrip` and closes
+    # it. Matching is unaffected here: the `eval` tensors these same
+    # datasets produce compare bit-equal.
+    assert set(candidate.ious) == set(reference.ious)
+    for key, expected in reference.ious.items():
+        actual = candidate.ious[key]
+        assert np.shape(actual) == np.shape(expected), f"{key}: shape"
+        if len(expected) == 0:
+            assert isinstance(actual, list), f"{key}: empty pair must stay a bare list"
+            continue
+        if exact:
+            np.testing.assert_array_equal(actual, expected, err_msg=f"{key}")
+        else:
+            np.testing.assert_allclose(actual, expected, rtol=1e-13, atol=0, err_msg=f"{key}")
+
+
+def test_ious_match_pycocotools(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    # TorchMetrics reads `coco_eval.ious` whenever `extended_summary=True`
+    # (torchmetrics/detection/helpers.py), so it is drop-in surface.
+    gt, dt = synthetic_bbox_datasets
+    reference = _run_eval(PycocotoolsReferenceCOCOeval, gt, dt, "bbox")
+    candidate = _run_eval(COCOeval, gt, dt, "bbox")
+    _assert_ious_match(reference, candidate, exact=False)
+    assert any(np.size(matrix) for matrix in candidate.ious.values())
+
+
+def test_ious_match_pycocotools_under_segm(
+    perfect_match_segm_coco: tuple[COCO, COCO],
+) -> None:
+    gt_coco, dt_coco = perfect_match_segm_coco
+    gt = cast(dict[str, Any], gt_coco.dataset)
+    dt = cast(dict[str, Any], dt_coco.dataset)
+    reference = _run_eval(PycocotoolsReferenceCOCOeval, gt, dt, "segm")
+    candidate = _run_eval(COCOeval, gt, dt, "segm")
+    _assert_ious_match(reference, candidate)
+
+
+def test_ious_collapse_onto_the_minus_one_key_without_use_cats(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    # Quirk L4 / cocoeval.py:522: `catIds = p.catIds if p.useCats else [-1]`,
+    # so a collapsed evaluation keys every pair on the sentinel.
+    #
+    # The G axis is compared as a set per row, not positionally. With
+    # `useCats=0` pycocotools concatenates the cell's ground truths
+    # category by category (`[_ for cId in p.catIds for _ in
+    # self._gts[imgId, cId]]`, cocoeval.py:255) while vernier keeps them
+    # in annotation order, so the two agree on the matrix up to a
+    # permutation of its columns. The D axis is score-sorted on both
+    # sides and does line up. This is a pre-existing property of the
+    # collapsed gather that `evalImgs[...]["gtIds"]` already carried; it
+    # is visible here rather than introduced here, and the `eval` tensors
+    # for this dataset still compare bit-equal.
+    gt, dt = synthetic_bbox_datasets
+    reference = _run_eval(PycocotoolsReferenceCOCOeval, gt, dt, "bbox", useCats=0)
+    candidate = _run_eval(COCOeval, gt, dt, "bbox", useCats=0)
+    assert {cat for _, cat in candidate.ious} == {-1}
+    assert set(candidate.ious) == set(reference.ious)
+    for key, expected in reference.ious.items():
+        actual = candidate.ious[key]
+        assert np.shape(actual) == np.shape(expected), f"{key}: shape"
+        if len(expected) == 0:
+            assert isinstance(actual, list), f"{key}: empty pair must stay a bare list"
+            continue
+        np.testing.assert_allclose(
+            np.sort(np.asarray(actual), axis=1),
+            np.sort(np.asarray(expected), axis=1),
+            rtol=1e-13,
+            atol=0,
+            err_msg=f"{key}",
+        )
+
+
+def test_ious_is_empty_before_evaluate(perfect_match_coco: tuple[COCO, COCO]) -> None:
+    gt, dt = perfect_match_coco
+    assert COCOeval(gt, dt, iouType="bbox").ious == {}
+
+
+def test_optional_retention_is_off_until_an_attribute_is_read(
+    perfect_match_coco: tuple[COCO, COCO],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `retain_meta` roughly doubles the per-cell allocations and
+    # `retain_iou` holds an O(G x D) matrix per cell; the
+    # evaluate → accumulate → summarize cycle reads neither, and most
+    # callers (TorchMetrics among them) never touch `evalImgs` or `ious`.
+    retentions: list[tuple[bool, bool]] = []
+    build_grid = vernier_compat.evaluate_bbox_grid
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        retentions.append((kwargs["retain_meta"], kwargs["retain_iou"]))
+        return build_grid(*args, **kwargs)
+
+    monkeypatch.setattr(vernier_compat, "evaluate_bbox_grid", recording)
+
+    gt, dt = perfect_match_coco
+    e = COCOeval(gt, dt, iouType="bbox")
+    with contextlib.redirect_stdout(io.StringIO()):
+        e.evaluate()
+        e.accumulate()
+        e.summarize()
+    assert retentions == [(False, False)]
+
+    assert e.evalImgs
+    assert retentions == [(False, False), (True, False)]
+
+    assert e.ious
+    # Widening to `retain_iou` re-evaluates once, with both retentions,
+    # and every later read is served from the cache.
+    assert retentions == [(False, False), (True, False), (True, True)]
+    first_ious, first_eval_imgs = e.ious, e.evalImgs
+    assert e.ious is first_ious
+    assert e.evalImgs is first_eval_imgs
+    assert retentions == [(False, False), (True, False), (True, True)]
+
+
+@pytest.mark.parametrize("category_id", [1, 2])
+def test_cat_ids_subsetting_matches_pycocotools(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+    category_id: int,
+) -> None:
+    # `MeanAveragePrecision(class_metrics=True)` reuses one evaluator and
+    # assigns `params.catIds = [class_id]` per class
+    # (torchmetrics/detection/helpers.py). pycocotools implements this in
+    # `_prepare`, which loads only `getAnnIds(catIds=p.catIds)`.
+    gt, dt = synthetic_bbox_datasets
+    _assert_matches_pycocotools(gt, dt, "bbox", catIds=[category_id])
+
+
+def test_cat_ids_subsetting_matches_pycocotools_under_segm(
+    perfect_match_segm_coco: tuple[COCO, COCO],
+) -> None:
+    gt_coco, dt_coco = perfect_match_segm_coco
+    gt = cast(dict[str, Any], gt_coco.dataset)
+    dt = cast(dict[str, Any], dt_coco.dataset)
+    _assert_matches_pycocotools(gt, dt, "segm", catIds=[1])
+
+
+def test_cat_ids_subsetting_for_an_absent_category_matches_pycocotools(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    # pycocotools evaluates a category the dataset never declares as a
+    # K axis of one with nothing in it, i.e. a row of -1s. Dropping it
+    # instead would shorten the axis and renumber the rest.
+    gt, dt = synthetic_bbox_datasets
+    candidate = _assert_matches_pycocotools(gt, dt, "bbox", catIds=[9999])
+    np.testing.assert_array_equal(candidate.stats, np.full(12, -1.0))
+
+
+def test_one_evaluator_walks_the_class_loop(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    # The exact shape TorchMetrics uses: construct once, re-assign
+    # `params.catIds` and re-run the whole cycle per class. Each pass must
+    # land where a fresh evaluator for that class would.
+    gt, dt = synthetic_bbox_datasets
+    shared = COCOeval(_coco(gt), _coco(dt), iouType="bbox")
+    for category_id in (1, 2, 1):
+        shared.params.catIds = [category_id]
+        with contextlib.redirect_stdout(io.StringIO()):
+            shared.evaluate()
+            shared.accumulate()
+            shared.summarize()
+        expected = _run_eval(PycocotoolsReferenceCOCOeval, gt, dt, "bbox", catIds=[category_id])
+        np.testing.assert_array_equal(shared.stats, expected.stats)
+        _assert_ious_match(expected, shared, exact=False)
+
+
+def test_ious_are_bit_exact_on_exactly_representable_boxes() -> None:
+    # The `exact=False` arms above absorb a JSON-parse ULP, not a kernel
+    # difference. On coordinates that are exact binary fractions — so
+    # every parser agrees on the double — the IoU matrix is bit-identical
+    # to pycocotools', which is what strict parity claims.
+    images = [{"id": 0, "width": 128, "height": 128}]
+    categories = [{"id": 1, "name": "a"}]
+    boxes = [
+        ([8.0, 8.0, 16.0, 16.0], [9.5, 8.25, 15.5, 17.0]),
+        ([40.0, 12.5, 20.0, 10.0], [41.25, 13.0, 18.5, 11.5]),
+        ([70.0, 70.0, 12.0, 12.0], [96.0, 96.0, 8.0, 8.0]),
+    ]
+    gt: dict[str, Any] = {"images": images, "categories": categories, "annotations": []}
+    dt: dict[str, Any] = {"images": images, "categories": categories, "annotations": []}
+    for index, (gt_box, dt_box) in enumerate(boxes):
+        gt["annotations"].append(
+            {
+                "id": index + 1,
+                "image_id": 0,
+                "category_id": 1,
+                "bbox": gt_box,
+                "area": gt_box[2] * gt_box[3],
+                "iscrowd": 0,
+            }
+        )
+        dt["annotations"].append(
+            {
+                "id": index + 1,
+                "image_id": 0,
+                "category_id": 1,
+                "bbox": dt_box,
+                "area": dt_box[2] * dt_box[3],
+                "score": 0.9 - 0.125 * index,
+            }
+        )
+    reference = _run_eval(PycocotoolsReferenceCOCOeval, gt, dt, "bbox")
+    candidate = _run_eval(COCOeval, gt, dt, "bbox")
+    _assert_ious_match(reference, candidate)
+    assert np.size(candidate.ious[0, 1]) == 9

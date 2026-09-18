@@ -733,8 +733,12 @@ impl RetainedIous {
 
     /// Iterate `(k, i, view)` triplets in arbitrary order. The
     /// distributed-eval encoder (ADR-0031) walks this to materialize
-    /// the wire-format `retained_ious` section, then sorts.
-    pub(crate) fn iter(&self) -> impl Iterator<Item = (usize, usize, ArrayView2<'_, f64>)> + '_ {
+    /// the wire-format `retained_ious` section, then sorts; the FFI's
+    /// pycocotools-shaped `EvalGrid.ious()` walks it to key the same
+    /// matrices by `(image_id, category_id)`. Callers that need a
+    /// deterministic order sort the triplets themselves — the backing
+    /// store is a hash map.
+    pub fn iter(&self) -> impl Iterator<Item = (usize, usize, ArrayView2<'_, f64>)> + '_ {
         self.inner.iter().map(|(&(k, i), arr)| (k, i, arr.view()))
     }
 }
@@ -956,6 +960,7 @@ pub fn build_per_detection(
             detail: "per_detection requires at least one area range".into(),
         });
     }
+    require_meta(grid, "per_detection")?;
     let t50 = find_iou_index(iou_thresholds, 0.5)?;
     const A_ALL: usize = 0;
 
@@ -1060,6 +1065,21 @@ pub fn build_per_detection(
     })
 }
 
+/// The per-detection / per-pair builders read [`EvalGrid::cell_meta`];
+/// on a grid built without metadata every cell would be skipped and the
+/// table would come back silently empty.
+fn require_meta(grid: &EvalGrid, table: &str) -> Result<(), EvalError> {
+    if grid.has_meta() {
+        return Ok(());
+    }
+    Err(EvalError::InvalidConfig {
+        detail: format!(
+            "{table} requires per-cell metadata; build the grid with \
+             EvaluateParams::retain_iou=true (or retain_meta=true)"
+        ),
+    })
+}
+
 /// Build a [`PerPairTable`] from retained IoU matrices.
 ///
 /// Emits one row per `(DT, GT)` pair where IoU >=
@@ -1079,6 +1099,7 @@ pub fn build_per_pair(
             detail: "per_pair requires at least one area range".into(),
         });
     }
+    require_meta(grid, "per_pair")?;
     const A_ALL: usize = 0;
     let mut out = PerPairTable::default();
     let cap = config.per_pair_max_rows;
@@ -1439,6 +1460,7 @@ mod tests {
                     w: 10.0,
                     h: 10.0,
                 },
+                area: None,
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
@@ -1455,6 +1477,7 @@ mod tests {
                     w: 10.0,
                     h: 10.0,
                 },
+                area: None,
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
@@ -1471,6 +1494,7 @@ mod tests {
                 max_dets_per_image: 100,
                 use_cats: true,
                 retain_iou: false,
+                retain_meta: true,
             },
             ParityMode::Corrected,
         )
@@ -1548,6 +1572,7 @@ mod tests {
                 w: 10.0,
                 h: 10.0,
             },
+            area: None,
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
@@ -1563,6 +1588,7 @@ mod tests {
                 max_dets_per_image: 100,
                 use_cats: true,
                 retain_iou: false,
+                retain_meta: false,
             },
             ParityMode::Corrected,
         )
@@ -1580,6 +1606,7 @@ mod tests {
         let grid = EvalGrid {
             eval_imgs: vec![None; 3],
             eval_imgs_meta: vec![None; 3],
+            builds_meta: true,
             n_categories: 1,
             n_area_ranges: 3,
             n_images: 1,
@@ -1672,6 +1699,7 @@ mod tests {
                 w: 10.0,
                 h: 10.0,
             },
+            area: None,
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
@@ -1686,6 +1714,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid_off =
             evaluate_bbox(&dataset, &detections, params_off, ParityMode::Corrected).unwrap();
@@ -1718,10 +1747,20 @@ mod tests {
             crate::accumulate::accumulate(&grid_off.eval_imgs, p, ParityMode::Corrected).unwrap();
         let acc_on =
             crate::accumulate::accumulate(&grid_on.eval_imgs, p, ParityMode::Corrected).unwrap();
-        let sum_off =
-            crate::summarize::summarize_detection(&acc_off, iou_thresholds(), &max_dets).unwrap();
-        let sum_on =
-            crate::summarize::summarize_detection(&acc_on, iou_thresholds(), &max_dets).unwrap();
+        let sum_off = crate::summarize::summarize_detection(
+            &acc_off,
+            iou_thresholds(),
+            &max_dets,
+            ParityMode::Strict,
+        )
+        .unwrap();
+        let sum_on = crate::summarize::summarize_detection(
+            &acc_on,
+            iou_thresholds(),
+            &max_dets,
+            ParityMode::Strict,
+        )
+        .unwrap();
         for (a, b) in sum_off.stats().iter().zip(sum_on.stats().iter()) {
             assert_eq!(a.to_bits(), b.to_bits(), "stat drift: off={a} on={b}");
         }
@@ -1823,6 +1862,7 @@ mod tests {
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
             }))],
+            builds_meta: true,
             n_categories: 1,
             n_area_ranges: 1,
             n_images: 1,
@@ -1862,6 +1902,7 @@ mod tests {
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
             }))],
+            builds_meta: true,
             n_categories: 1,
             n_area_ranges: 1,
             n_images: 1,
@@ -1880,6 +1921,25 @@ mod tests {
     }
 
     #[test]
+    fn build_per_detection_rejects_a_grid_without_metadata() {
+        let (mut grid, _) = perfect_match_grid_two_images();
+        // Exactly what a `builds_meta = false` pass leaves behind: the
+        // flag off and the metadata vec empty.
+        grid.builds_meta = false;
+        grid.eval_imgs_meta.clear();
+        let dets = CocoDetections::from_inputs(Vec::new()).unwrap();
+        let err = build_per_detection(
+            &grid,
+            &dets,
+            iou_thresholds(),
+            None,
+            &TablesConfig::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, EvalError::InvalidConfig { .. }));
+    }
+
+    #[test]
     fn build_per_detection_marks_perfect_match_as_tp_and_unmatched_as_fp() {
         let (grid, dataset) = perfect_match_grid_two_images();
         let dt_inputs = vec![
@@ -1894,6 +1954,7 @@ mod tests {
                     w: 10.0,
                     h: 10.0,
                 },
+                area: None,
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
@@ -1909,6 +1970,7 @@ mod tests {
                     w: 10.0,
                     h: 10.0,
                 },
+                area: None,
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,

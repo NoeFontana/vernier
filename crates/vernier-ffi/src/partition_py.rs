@@ -24,6 +24,7 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
+use vernier_core::dataset::DetectionArea;
 use vernier_core::evaluate::AreaRange;
 use vernier_core::lrp::{LrpKernelMarker, LrpParams, LrpPerClass, LrpReport};
 use vernier_core::manifest::partition_spec_from_manifest;
@@ -167,6 +168,8 @@ fn evaluate_instance_partitioned_impl(
         recall_thresholds,
         area_ranges,
         num_threads,
+        DetectionArea::FromBbox,
+        false, // retain_meta
     )?;
 
     // image_id -> sorted-index map matches `evaluate_with` exactly

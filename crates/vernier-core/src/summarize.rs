@@ -25,6 +25,7 @@ use ndarray::Axis;
 use crate::accumulate::Accumulated;
 use crate::dataset::{CategoryId, Frequency};
 use crate::error::EvalError;
+use crate::parity::ParityMode;
 
 /// Tolerance for matching a user-supplied IoU threshold to a value in
 /// the `iou_thresholds` ladder. Rounds out the ulp-level error from the
@@ -158,10 +159,10 @@ impl Summary {
 /// How a [`StatRequest`] picks an entry on the M-axis of an
 /// [`Accumulated`].
 ///
-/// Pycocotools hard-codes `maxDets[0|1|2]` for `AR_{1,10,100}` and
-/// `maxDets[-1]` for everything else; this enum lets a plan express
-/// that intent — "the largest cap available" or "the entry whose value
-/// equals N" — without binding to fixed positional indices.
+/// Pycocotools' `_summarizeDets` reads `AP` at the literal
+/// `maxDets=100`, `AR_{1,10,100}` at the positional `maxDets[0|1|2]`,
+/// and every other line at `maxDets[2]` (quirk **L9**); this enum lets
+/// a plan express each of those intents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MaxDetSelector {
     /// Pick the largest cap in the supplied `max_dets` slice. This is
@@ -169,7 +170,25 @@ pub enum MaxDetSelector {
     Largest,
     /// Pick the M-axis entry whose value equals this. Errors via
     /// [`EvalError::InvalidConfig`] if the value is absent.
+    ///
+    /// No plan `vernier-core` ships uses this — the strict detection
+    /// plan's aggregate-AP line wants the `-1` sentinel, not an error
+    /// (quirk **L9**), so it uses [`Self::ValueOrSentinel`]. It is
+    /// retained because this enum is public API on a published crate
+    /// and callers composing their own [`StatRequest`] plans may be
+    /// relying on the loud variant; the two share one lookup in
+    /// [`summarize_with`].
     Value(usize),
+    /// Pick the M-axis entry at this position — pycocotools'
+    /// `maxDets[i]`. Errors via [`EvalError::InvalidConfig`] if the
+    /// ladder is shorter than `i + 1`.
+    Index(usize),
+    /// Pick the M-axis entry whose value equals this, or emit the `-1`
+    /// sentinel when the ladder lacks it — pycocotools'
+    /// `_summarize(maxDets=100)` on a ladder without `100`, whose empty
+    /// slice falls through the `s > -1` filter (quirk **L9**). The
+    /// emitted [`StatLine::max_dets`] is the requested value.
+    ValueOrSentinel(usize),
 }
 
 /// K-axis subset selector (ADR-0026 D2). Filters which categories
@@ -291,21 +310,38 @@ impl StatRequest {
 
     /// The canonical 12-entry pycocotools detection plan, in the
     /// `[AP, AP50, AP75, AP_S, AP_M, AP_L, AR_1, AR_10, AR_100, AR_S,
-    /// AR_M, AR_L]` order. Bit-exact with cocoeval is by construction:
-    /// [`summarize_detection`] is just `summarize_with(.., this, ..)`.
+    /// AR_M, AR_L]` order. Equivalent to
+    /// [`Self::coco_detection`]`(ParityMode::Strict)`.
     pub const fn coco_detection_default() -> [Self; 12] {
-        use MaxDetSelector::{Largest, Value};
+        Self::coco_detection(ParityMode::Strict)
+    }
+
+    /// The 12-entry detection plan for `parity_mode` (quirk **L9**).
+    ///
+    /// Both modes read `AR_1` / `AR_10` / `AR_100` at the positional
+    /// `maxDets[0|1|2]`, as pycocotools does. They differ only on the
+    /// aggregate `AP` line: [`ParityMode::Strict`] reads it at the
+    /// literal `maxDets=100` — `-1` when the ladder lacks `100`, bit-exact
+    /// with cocoeval — and [`ParityMode::Corrected`] at the largest cap,
+    /// like every other AP line. On the default `[1, 10, 100]` ladder the
+    /// two plans are identical.
+    pub const fn coco_detection(parity_mode: ParityMode) -> [Self; 12] {
+        use MaxDetSelector::{Index, Largest, ValueOrSentinel};
         use Metric::{AveragePrecision, AverageRecall};
+        let ap_max_dets = match parity_mode {
+            ParityMode::Strict => ValueOrSentinel(100),
+            ParityMode::Corrected => Largest,
+        };
         [
-            Self::new(AveragePrecision, None, AreaRng::ALL, Largest),
+            Self::new(AveragePrecision, None, AreaRng::ALL, ap_max_dets),
             Self::new(AveragePrecision, Some(0.5), AreaRng::ALL, Largest),
             Self::new(AveragePrecision, Some(0.75), AreaRng::ALL, Largest),
             Self::new(AveragePrecision, None, AreaRng::SMALL, Largest),
             Self::new(AveragePrecision, None, AreaRng::MEDIUM, Largest),
             Self::new(AveragePrecision, None, AreaRng::LARGE, Largest),
-            Self::new(AverageRecall, None, AreaRng::ALL, Value(1)),
-            Self::new(AverageRecall, None, AreaRng::ALL, Value(10)),
-            Self::new(AverageRecall, None, AreaRng::ALL, Value(100)),
+            Self::new(AverageRecall, None, AreaRng::ALL, Index(0)),
+            Self::new(AverageRecall, None, AreaRng::ALL, Index(1)),
+            Self::new(AverageRecall, None, AreaRng::ALL, Index(2)),
             Self::new(AverageRecall, None, AreaRng::SMALL, Largest),
             Self::new(AverageRecall, None, AreaRng::MEDIUM, Largest),
             Self::new(AverageRecall, None, AreaRng::LARGE, Largest),
@@ -421,7 +457,7 @@ impl StatRequest {
 /// Twelve-stat COCO detection summary, bit-exact with cocoeval.
 ///
 /// Thin wrapper over [`summarize_with`] that supplies the canonical
-/// 12-entry plan from [`StatRequest::coco_detection_default`].
+/// 12-entry plan from [`StatRequest::coco_detection`] for `parity_mode`.
 /// Downstream callers who need a different shape (keypoint `[20]`
 /// maxDets, custom AP@.30, …) should call `summarize_with` directly
 /// with their own plan; the canonical plan is available via the
@@ -434,10 +470,11 @@ pub fn summarize_detection(
     accum: &Accumulated,
     iou_thresholds: &[f64],
     max_dets: &[usize],
+    parity_mode: ParityMode,
 ) -> Result<Summary, EvalError> {
     summarize_with(
         accum,
-        &StatRequest::coco_detection_default(),
+        &StatRequest::coco_detection(parity_mode),
         iou_thresholds,
         max_dets,
     )
@@ -456,8 +493,9 @@ pub fn summarize_detection(
 /// Returns [`EvalError::DimensionMismatch`] if `iou_thresholds` or
 /// `max_dets` lengths disagree with `accum`'s `T`/`M` axes. Returns
 /// [`EvalError::InvalidConfig`] if any request names an IoU threshold
-/// not present in `iou_thresholds` (within `1e-12`) or a
-/// [`MaxDetSelector::Value`] absent from `max_dets`.
+/// not present in `iou_thresholds` (within `1e-12`), a
+/// [`MaxDetSelector::Value`] absent from `max_dets`, or a
+/// [`MaxDetSelector::Index`] past its end.
 pub fn summarize_with(
     accum: &Accumulated,
     plan: &[StatRequest],
@@ -560,7 +598,7 @@ fn summarize_dispatch(
     let n_a = p_shape[3];
     let n_k = p_shape[2];
     let m_max = max_dets.len() - 1;
-    let resolved: Vec<(usize, Range<usize>, Option<Vec<bool>>)> = plan
+    let resolved: Vec<(MaxDetsEntry, Range<usize>, Option<Vec<bool>>)> = plan
         .iter()
         .map(|req| {
             if req.area.index >= n_a {
@@ -572,13 +610,28 @@ fn summarize_dispatch(
                 });
             }
             let m_idx = match req.max_dets {
-                MaxDetSelector::Largest => m_max,
-                MaxDetSelector::Value(v) => {
-                    max_dets.iter().position(|&d| d == v).ok_or_else(|| {
-                        EvalError::InvalidConfig {
-                            detail: format!("max_dets does not contain {v}"),
+                MaxDetSelector::Largest => MaxDetsEntry::At(m_max),
+                // One lookup for both value-keyed selectors: they agree
+                // on the hit and differ only in the miss branch.
+                MaxDetSelector::Value(v) | MaxDetSelector::ValueOrSentinel(v) => {
+                    match (max_dets.iter().position(|&d| d == v), req.max_dets) {
+                        (Some(m), _) => MaxDetsEntry::At(m),
+                        (None, MaxDetSelector::ValueOrSentinel(_)) => MaxDetsEntry::Absent(v),
+                        (None, _) => {
+                            return Err(EvalError::InvalidConfig {
+                                detail: format!("max_dets does not contain {v}"),
+                            });
                         }
-                    })?
+                    }
+                }
+                MaxDetSelector::Index(i) if i < max_dets.len() => MaxDetsEntry::At(i),
+                MaxDetSelector::Index(i) => {
+                    return Err(EvalError::InvalidConfig {
+                        detail: format!(
+                            "max_dets index {i} is out of range for a ladder of length {}",
+                            max_dets.len()
+                        ),
+                    });
                 }
             };
             let t_range = match req.iou_threshold {
@@ -602,25 +655,42 @@ fn summarize_dispatch(
         .iter()
         .zip(resolved)
         .map(|(req, (m_idx, t_range, k_mask))| {
-            let value = mean_slice(
-                accum,
-                req.metric,
-                t_range,
-                req.area.index,
-                m_idx,
-                k_mask.as_deref(),
-            );
+            let (value, line_max_dets) = match m_idx {
+                MaxDetsEntry::At(m_idx) => (
+                    mean_slice(
+                        accum,
+                        req.metric,
+                        t_range,
+                        req.area.index,
+                        m_idx,
+                        k_mask.as_deref(),
+                    ),
+                    max_dets[m_idx],
+                ),
+                // Quirk L9: pycocotools' empty M-axis slice reports -1.
+                MaxDetsEntry::Absent(requested) => (-1.0, requested),
+            };
             StatLine {
                 metric: req.metric,
                 iou_threshold: req.iou_threshold,
                 area: req.area.clone(),
-                max_dets: max_dets[m_idx],
+                max_dets: line_max_dets,
                 value,
             }
         })
         .collect();
 
     Ok(Summary { lines })
+}
+
+/// A [`MaxDetSelector`] resolved against a concrete `max_dets` ladder.
+#[derive(Debug, Clone, Copy)]
+enum MaxDetsEntry {
+    /// M-axis index to slice.
+    At(usize),
+    /// [`MaxDetSelector::ValueOrSentinel`] cap absent from the ladder:
+    /// the line reports `-1` at this requested cap (quirk **L9**).
+    Absent(usize),
 }
 
 /// Resolve a [`CategoryFilter`] to a K-axis bool mask of length `n_k`.
@@ -867,7 +937,7 @@ mod tests {
             n_images: 1,
         };
         let accum = accumulate(&grid, p, ParityMode::Strict).unwrap();
-        let summary = summarize_detection(&accum, iou, &max_dets).unwrap();
+        let summary = summarize_detection(&accum, iou, &max_dets, ParityMode::Strict).unwrap();
 
         let stats = summary.stats();
         assert_eq!(stats.len(), 12);
@@ -896,14 +966,17 @@ mod tests {
             n_images: 0,
         };
         let accum = accumulate(&[], p, ParityMode::Strict).unwrap();
-        let summary = summarize_detection(&accum, iou, &max_dets).unwrap();
+        let summary = summarize_detection(&accum, iou, &max_dets, ParityMode::Strict).unwrap();
         assert!(summary.stats().iter().all(|&v| v == -1.0));
     }
 
     #[test]
     fn missing_max_det_value_is_typed_error() {
-        // AR_1 line requires max_dets to contain 1; without it,
-        // summarization fails with InvalidConfig.
+        // `Value` is public API with no in-crate plan behind it (the
+        // strict AP line wants `ValueOrSentinel`), so this hand-built
+        // plan is its coverage: a plain `Value(1)` request requires
+        // max_dets to contain 1; without it, summarization fails with
+        // InvalidConfig rather than emitting the `-1` sentinel.
         let iou = iou_thresholds();
         let max_dets = [10usize, 100];
         let accum = Accumulated {
@@ -911,8 +984,94 @@ mod tests {
             recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 2), -1.0),
             scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 2), -1.0),
         };
-        let err = summarize_detection(&accum, iou, &max_dets).unwrap_err();
+        let plan = [StatRequest::new(
+            Metric::AverageRecall,
+            None,
+            AreaRng::ALL,
+            MaxDetSelector::Value(1),
+        )];
+        let err = summarize_with(&accum, &plan, iou, &max_dets).unwrap_err();
         assert!(matches!(err, EvalError::InvalidConfig { .. }));
+    }
+
+    #[test]
+    fn detection_plan_on_a_ladder_shorter_than_three_is_typed_error() {
+        // The AR_100 line reads `maxDets[2]` positionally (quirk L9), which
+        // a two-rung ladder does not have — pycocotools raises IndexError.
+        let iou = iou_thresholds();
+        let max_dets = [10usize, 100];
+        let accum = Accumulated {
+            precision: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 2), -1.0),
+            recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 2), -1.0),
+            scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 2), -1.0),
+        };
+        for parity_mode in [ParityMode::Strict, ParityMode::Corrected] {
+            let err = summarize_detection(&accum, iou, &max_dets, parity_mode).unwrap_err();
+            assert!(matches!(err, EvalError::InvalidConfig { .. }));
+        }
+    }
+
+    /// Accumulator whose M-axis entry `m` carries precision `0.25 * (m + 1)`
+    /// and recall `0.125 * (m + 1)` everywhere, so each stat line reveals
+    /// which M-axis entry it read. The
+    /// tags are exact binary fractions, so each mean is exact.
+    fn m_tagged_accum(n_t: usize) -> Accumulated {
+        let mut precision = Array5::<f64>::zeros((n_t, 101, 1, 4, 3));
+        let mut recall = Array4::<f64>::zeros((n_t, 1, 4, 3));
+        for m in 0..3 {
+            let tag = f64::from(u8::try_from(m + 1).unwrap_or(0));
+            precision.index_axis_mut(Axis(4), m).fill(0.25 * tag);
+            recall.index_axis_mut(Axis(3), m).fill(0.125 * tag);
+        }
+        Accumulated {
+            scores: Array5::<f64>::zeros((n_t, 101, 1, 4, 3)),
+            precision,
+            recall,
+        }
+    }
+
+    #[test]
+    fn l9_strict_reads_aggregate_ap_at_100_and_ar_positionally() {
+        let iou = iou_thresholds();
+        let accum = m_tagged_accum(iou.len());
+        let summary = summarize_detection(&accum, iou, &[1, 10, 500], ParityMode::Strict).unwrap();
+        let stats = summary.stats();
+        // pycocotools `_summarize(1)` reads maxDets=100: absent → -1.
+        assert_eq!(stats[0], -1.0);
+        assert_eq!(summary.lines[0].max_dets, 100);
+        // Every other AP line reads the largest cap.
+        assert_eq!(stats[1], 0.75);
+        // AR_1 / AR_10 / AR_100 read maxDets[0|1|2].
+        assert_eq!(stats[6], 0.125);
+        assert_eq!(stats[7], 0.25);
+        assert_eq!(stats[8], 0.375);
+        assert_eq!(summary.lines[8].max_dets, 500);
+    }
+
+    #[test]
+    fn l9_corrected_reads_aggregate_ap_at_the_largest_cap() {
+        let iou = iou_thresholds();
+        let accum = m_tagged_accum(iou.len());
+        let summary =
+            summarize_detection(&accum, iou, &[1, 10, 500], ParityMode::Corrected).unwrap();
+        let stats = summary.stats();
+        assert_eq!(stats[0], 0.75);
+        assert_eq!(summary.lines[0].max_dets, 500);
+        assert_eq!(stats[6], 0.125);
+        assert_eq!(stats[8], 0.375);
+    }
+
+    #[test]
+    fn l9_parity_modes_agree_on_the_default_ladder() {
+        let iou = iou_thresholds();
+        let accum = m_tagged_accum(iou.len());
+        let strict = summarize_detection(&accum, iou, &[1, 10, 100], ParityMode::Strict).unwrap();
+        let corrected =
+            summarize_detection(&accum, iou, &[1, 10, 100], ParityMode::Corrected).unwrap();
+        for (s, c) in strict.lines.iter().zip(corrected.lines.iter()) {
+            assert_eq!(s.max_dets, c.max_dets);
+            assert_eq!(s.value.to_bits(), c.value.to_bits());
+        }
     }
 
     #[test]
@@ -924,7 +1083,13 @@ mod tests {
             scores: Array5::<f64>::from_elem((10, 101, 1, 4, 1), -1.0),
         };
         // pass only 5 thresholds — accum was built with 10.
-        let err = summarize_detection(&accum, &[0.5, 0.6, 0.7, 0.8, 0.9], &max_dets).unwrap_err();
+        let err = summarize_detection(
+            &accum,
+            &[0.5, 0.6, 0.7, 0.8, 0.9],
+            &max_dets,
+            ParityMode::Strict,
+        )
+        .unwrap_err();
         assert!(matches!(err, EvalError::DimensionMismatch { .. }));
     }
 
@@ -974,7 +1139,7 @@ mod tests {
             recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 3), 0.7),
             scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 1.0),
         };
-        let direct = summarize_detection(&accum, iou, &max_dets).unwrap();
+        let direct = summarize_detection(&accum, iou, &max_dets, ParityMode::Strict).unwrap();
         let via_plan = summarize_with(
             &accum,
             &StatRequest::coco_detection_default(),
@@ -1038,7 +1203,7 @@ mod tests {
             recall: Array4::<f64>::from_elem((iou.len(), 1, 4, 3), 1.0),
             scores: Array5::<f64>::from_elem((iou.len(), 101, 1, 4, 3), 1.0),
         };
-        let summary = summarize_detection(&accum, iou, &max_dets).unwrap();
+        let summary = summarize_detection(&accum, iou, &max_dets, ParityMode::Strict).unwrap();
         let lines = summary.pretty_lines();
         assert_eq!(lines.len(), 12);
         // Spot-check the first AP line and the first AR line for the

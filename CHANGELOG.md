@@ -16,6 +16,16 @@ additive / perf / docs".
 
 ### Performance
 
+- **Grids skip pycocotools-shaped per-cell metadata unless asked for
+  it.** Every populated `(k, a, i)` cell used to carry a boxed
+  `EvalImageMeta` (sorted DT / GT ids and matched-id arrays) that only
+  `EvalGrid.eval_imgs()` and the per_detection / per_pair / LRP paths
+  read; accumulate and summarize never do. At COCO-val bbox scale
+  (5000 images x 300 detections, 1.56 M populated cells) that was ~5 M
+  extra allocations, freed one by one when the grid dropped. Dropping
+  the grid falls from 1.2-1.4 s to 0.45-0.6 s at 1 / 4 / 8 threads;
+  core matching allocates a third less. Summary paths
+  (`Evaluator.evaluate`) get this for free.
 - **`accumulate` sorts each category's detection stream once** (ADR-0052).
   The `(K, A, M)` walk ran `argsort_score_desc` per cell — 12 stable
   sorts per category on the COCO defaults — for 12 streams that are all
@@ -50,8 +60,109 @@ additive / perf / docs".
   `evaluate_bbox_grid` on that dataset 1142 ms -> 554 ms (-51 %).
   `num_threads=None` stays serial per ADR-0047.
 
+### Changed (BREAKING — pre-1.0)
+
+- **`summarize_detection` takes a `ParityMode`** and reads the M-axis the
+  way pycocotools' `_summarizeDets` does (quirk L9): `AR_1` / `AR_10` /
+  `AR_100` read `max_dets[0|1|2]` positionally instead of looking up
+  `1` / `10` / `100`, so a ladder such as `[1, 10, 500]` summarizes
+  instead of raising `InvalidConfig`. The aggregate `AP` reads
+  `maxDets=100` in strict mode (`-1` when absent, bit-exact with
+  pycocotools) and the largest cap in corrected mode. Both modes are
+  unchanged on the default `[1, 10, 100]` ladder.
+  `StatRequest::coco_detection(parity_mode)` and
+  `Breakdown::detection_plan(parity_mode)` carry the same plans;
+  `MaxDetSelector` gains `Index(i)` and `ValueOrSentinel(n)`.
+  `Accumulated.summarize()` in Python uses the parity mode of the grid it
+  was accumulated from.
+- **`EvaluateParams` gains `retain_meta`** (Rust struct literals need
+  it). `EvalGrid::eval_imgs_meta` is filled only when `retain_meta` or
+  `retain_iou` is set, and is empty otherwise (`EvalGrid::has_meta`).
+  The per_detection / per_pair table builders now raise `InvalidConfig`
+  on a grid without metadata instead of returning empty tables.
+- **`evaluate_{bbox,segm,boundary,keypoints}_grid` and
+  `evaluate_bbox_grid_with_dataset` take `retain_meta=False`**;
+  `EvalGrid.eval_imgs()` raises `ValueError` on a grid built without
+  `retain_meta=True`. `vernier.COCOeval` leaves it off and re-evaluates
+  on first read of `evalImgs` (see Added below).
+
+### Added
+
+- **`vernier.COCOeval.ious`**, the pycocotools-shaped
+  `{(imgId, catId): matrix}` map TorchMetrics reads under
+  `extended_summary=True` (ADR-0055). Each matrix is
+  `(detections, ground truths)` with detections score-descending and
+  truncated to `max(params.maxDets)`; a pair with nothing on one side is
+  the bare `[]` upstream returns (quirk **F5**). Backed by a new
+  `EvalGrid.ious()` on the FFI, which requires `retain_iou=True`;
+  `evaluate_keypoints_grid` gains the `retain_iou` flag the other three
+  grids already had, and `RetainedIous::iter` is public.
+- **`vernier.COCOeval` supports `params.catIds` subsetting** (ADR-0055),
+  which is how `MeanAveragePrecision(class_metrics=True)` drives one
+  evaluator around a per-class loop. The shim filters `categories` and
+  `annotations` exactly as `COCOeval._prepare` does; a category the
+  dataset never declares evaluates to a row of `-1`s, as upstream.
+  `params.imgIds` subsetting and `params.areaRng` mutation still raise.
+- **`evalImgs` and `ious` are built on first read** and cached, so the
+  evaluate / accumulate / summarize cycle keeps both retentions off and
+  a caller that reads either pays for it once.
+- **`vernier.adapters` publishes the COCO-JSON normalizers**
+  (ADR-0055): `with_placeholder_image_sizes`, `with_mask_image_sizes`,
+  `detection_image_sizes`, `coco_json_default` and `to_coco_json` — the
+  conversions the drop-in applies to a `pycocotools`-shaped dataset, for
+  callers that assemble one and drive a vernier grid directly rather
+  than through the shim.
+- **NumPy 1 is supported again: `numpy>=1.26`** (was `>=2.0`). The abi3
+  extension binds to NumPy 1 or 2 at runtime and the Python layer uses no
+  NumPy-2-only API; CI's `test (python 3.10, numpy 1.26.4)` leg runs the
+  PR test suite against NumPy 1 so the floor stays honest. Unblocks
+  installs next to packages that still pin NumPy 1 (e.g. `onnx2tf`).
+- `evaluate_*_grid(..., dt_area="supplied")` reads a supplied `area`
+  verbatim, falling back to the bbox when absent — pycocotools'
+  `COCOeval`, which takes `d['area']` off whatever `cocoDt` it is handed
+  (quirk J3). `DetectionInput` gains an optional `area` (Rust struct
+  literals need `area: None`), ignored unless the detections are built
+  with `DetectionArea::Supplied`.
+- `evaluate_{segm,boundary}_grid(..., dt_area="mask")` takes
+  `maskUtils.area` of each detection's RLE, as `loadRes` does for segm
+  results, for JSON and array-form detections (compressed, uncompressed
+  or bitmask RLEs). It raises for a detection without an RLE, and on the
+  bbox / keypoints grids (quirk J3). Joint bbox + segm evaluation from
+  one array payload can now bucket each pass by its own area.
+
 ### Fixed
 
+- **`vernier.COCOeval` matches pycocotools on in-memory COCO objects**
+  such as the ones TorchMetrics builds:
+  - Mutated `params.iouThrs` / `params.recThrs` are evaluated as given
+    (e.g. float32-rounded ladders from `torch.linspace(...).tolist()`)
+    instead of raising `NotImplementedError`.
+  - Detection `area` is read from `cocoDt`, as `COCOeval` does, instead
+    of being re-derived from the bbox; a detection whose mask and box
+    fall in different area buckets was mis-bucketed under `segm`.
+  - RLE `counts` given as `bytes` (straight from
+    `pycocotools.mask.encode`) serialize instead of raising `TypeError`.
+  - GT images without `width` / `height` evaluate wherever pycocotools
+    never reads the size: always under bbox / keypoints; under segm /
+    boundary when no GT annotation is on the image (the size comes from
+    the cocoDt image when DT masks are on it). Where pycocotools raises
+    `KeyError`, vernier still raises its schema error.
+  - `maxDets` ladders without `100` summarize (see L9 above) instead of
+    raising from `accumulate()`; plan errors now surface from
+    `summarize()`.
+  - `evalImgs` is built on first read instead of in `evaluate()`; an
+    evaluate / accumulate / summarize cycle no longer pays for the
+    per-image dicts it never reads, nor for the per-cell metadata behind
+    them (see Added).
+  - `params.catIds = [class_id]` evaluates that category instead of
+    raising, so `MeanAveragePrecision(class_metrics=True)` works.
+
+- **Array ingest accepts every buffer NumPy and torch call contiguous.**
+  A size-1 axis's stride is ignored and a zero-element array is
+  contiguous whatever its strides, so one-detection `(1, 4)` boxes and
+  empty `(0, 4)` / `(0,)` per-image batches from
+  `tensor.contiguous().numpy()` no longer raise "not C-contiguous"; an
+  empty torch tensor's null data pointer is accepted too.
 - **JSON floats are now correctly rounded** (ADR-0054). `serde_json`'s
   default parser sent some near-tie decimals to the adjacent double,
   which drifted ~16 % of `eval_imgs.dtScores` by 1 ULP against

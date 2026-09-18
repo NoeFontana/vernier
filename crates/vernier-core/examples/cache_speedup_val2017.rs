@@ -88,6 +88,7 @@ fn main() {
         max_dets_per_image: 100,
         use_cats: true,
         retain_iou: false,
+        retain_meta: false,
     };
     let ratio = BOUNDARY_DILATION_RATIO_DEFAULT;
 

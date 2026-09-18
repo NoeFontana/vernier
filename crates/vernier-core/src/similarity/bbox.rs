@@ -715,3 +715,463 @@ mod tests {
         std::fs::remove_file(&tmp).ok();
     }
 }
+
+/// Cross-architecture bit-equality pins for the bbox-IoU `f64`
+/// expression (no floating-point contraction).
+///
+/// ## Why this module exists
+///
+/// [`iou_pair`]'s union denominator contains two multiply-then-add
+/// patterns that a compiler is free to fuse into a single FMA whenever
+/// floating-point *contraction* is enabled:
+///
+/// | site | source | fused form |
+/// |------|--------|------------|
+/// | sum  | `g_area + d_area`, `d_area = dw * dh` | `fma(dw, dh, g_area)` |
+/// | sub  | `sum - inter`, `inter = iw * ih`      | `fnmadd(iw, ih, sum)` |
+///
+/// Contraction drops a rounding step, so a fused result is *closer* to
+/// the real value — and for exactly that reason no longer bit-equal to
+/// pycocotools' unfused, left-associative `da + ga - i`. ADR-0008
+/// records that this is not a cosmetic difference: the matching loop's
+/// "later equal wins" rule (quirk **B2**, `strict`) turns an 8-ULP IoU
+/// difference into a different `dtMatches` row and a different AP. The
+/// cases below were found by random search over COCO-scale boxes and
+/// move by 1-2 ULP under contraction, well inside that blast radius.
+///
+/// rustc does not enable FP contraction — Rust has no `-ffast-math`,
+/// and `fp-contract` is off for Rust codegen — so the unfused form is
+/// what ships today. But that is an *inherited default*, not something
+/// this build states anywhere. Three things make it worth pinning
+/// rather than trusting:
+///
+/// 1. [`arch`]`().dispatch` compiles this kernel with `fma` (x86) or
+///    `neon` (aarch64) target features enabled, so the fused
+///    instruction is always available to LLVM on the code path that
+///    actually ships. On aarch64, `fmadd` is baseline.
+/// 2. We ship aarch64 wheels (`.github/workflows/wheels.yml`), and a
+///    contraction difference is per-architecture: a wrong answer on
+///    one wheel and not another is the hardest kind to notice.
+/// 3. The failure is silent. Nothing panics; AP just moves in the last
+///    digits on the subset of images with overlapping crowd GT.
+///
+/// Stable Rust exposes no build-level switch to assert this
+/// (`-Zfp-contract` is nightly-only), so the pin is a golden
+/// bit-pattern regression test instead. The golden values are computed
+/// from the unfused left-associative expression and are
+/// architecture-independent by construction; CI asserts them on both
+/// x86_64 and aarch64 (job `test-rust-cross-arch` in
+/// `.github/workflows/ci.yml`).
+///
+/// Coverage note: the bbox kernel is the *only* similarity kernel with
+/// this exposure on its output path.
+/// [`SegmIou`](crate::similarity::SegmIou) and
+/// [`BoundaryIou`](crate::similarity::BoundaryIou) accumulate integer
+/// (`u64`) areas and divide once at the end, and
+/// [`BboxIou::compute_overlap_mask`] — the prefilter they share — has
+/// no multiply at all.
+///
+/// Pinning [`BboxIou::compute`] therefore also pins the TIDE, LRP,
+/// LVIS and streaming paths — but *only* because each of them routes
+/// through this function rather than restating the formula. That is a
+/// property to maintain, not one to assume: TIDE's same-class matching
+/// held a private copy of the union expression until it was rerouted
+/// here, and while it did, this pin did not cover it. A second copy of
+/// `g_area + d_area - inter` anywhere in the crate is a second,
+/// unpinned kernel. `tide::assignment`'s
+/// `tide_same_class_iou_matches_oracle_bitwise` holds that path to this
+/// one bit-for-bit.
+///
+/// The remaining exposed `f64` contraction site on a similarity
+/// kernel's output path is `dx * dx + dy * dy` in the OKS kernel. It is
+/// not pinned here; see ADR-0056 §Scope.
+#[cfg(test)]
+mod fp_contract_pin {
+    use super::*;
+    use ndarray::Array2;
+
+    /// One pinned `(gt, dt)` pair and the exact `f64` bit pattern the
+    /// unfused expression must produce on every architecture.
+    struct Case {
+        gt: [f64; 4],
+        dt: [f64; 4],
+        is_crowd: bool,
+        expected_bits: u64,
+        label: &'static str,
+    }
+
+    /// Golden table.
+    ///
+    /// **Provenance — read before touching a constant.** These bit
+    /// patterns are the *reference's* values: they come from
+    /// pycocotools' `bbIou` (`maskApi.c`, `pycocotools==2.0.11` as
+    /// published on PyPI), evaluated as three separately-rounded
+    /// operations. They are **not** a recording of vernier's own
+    /// output and must never be regenerated from it. If a build of
+    /// this crate disagrees with them, that build has diverged from
+    /// the oracle — "refreshing" the table from the new output would
+    /// convert the pin into a tautology that pins whatever the
+    /// compiler happened to do.
+    ///
+    /// The three non-trivial union cases were selected so the set
+    /// discriminates against *each* contraction site independently —
+    /// and against both sites fused at once, which is what a
+    /// regenerated table would look like.
+    /// `fp_contract_cases_discriminate_against_both_fma_sites` asserts
+    /// all three properties rather than leaving them to a comment.
+    const CASES: &[Case] = &[
+        // Sensitive to the `sum` site only.
+        Case {
+            gt: [
+                503.7274054488,
+                327.73214678609116,
+                53.04384026360246,
+                107.18230388752784,
+            ],
+            dt: [
+                447.9992185208163,
+                377.3185207429823,
+                219.85219472018736,
+                279.29699692016214,
+            ],
+            is_crowd: false,
+            expected_bits: 0x3fa8_6d82_ee22_1179,
+            label: "union/sum-site",
+        },
+        // Sensitive to the `sub` site (and to both sites fused).
+        Case {
+            gt: [
+                349.92031884947653,
+                324.1008880649307,
+                229.69954099221138,
+                291.6958600521543,
+            ],
+            dt: [
+                457.2142849420551,
+                315.06013050061756,
+                178.7554487397345,
+                146.63484986113144,
+            ],
+            is_crowd: false,
+            expected_bits: 0x3fcc_3a52_8258_6f6e,
+            label: "union/sub-site",
+        },
+        // A second `sum`-site case, rounding the other way.
+        Case {
+            gt: [
+                124.69799657400799,
+                212.10947848212558,
+                80.62323589016734,
+                133.66959557666485,
+            ],
+            dt: [
+                61.37146496918177,
+                93.62300601264872,
+                245.16162744362393,
+                131.37111933898333,
+            ],
+            is_crowd: false,
+            expected_bits: 0x3f99_5c2c_443c_8fd2,
+            label: "union/sum-site-2",
+        },
+        // Quirk E1: same boxes as `union/sub-site`, GT marked crowd.
+        // The denominator becomes `d_area` alone, so this is IoA, not
+        // IoU — and the value is nothing like the non-crowd one.
+        // Contraction-immune (no add in the denominator), but pinned so
+        // the asymmetry cannot be "simplified" away.
+        Case {
+            gt: [
+                349.92031884947653,
+                324.1008880649307,
+                229.69954099221138,
+                291.6958600521543,
+            ],
+            dt: [
+                457.2142849420551,
+                315.06013050061756,
+                178.7554487397345,
+                146.63484986113144,
+            ],
+            is_crowd: true,
+            expected_bits: 0x3fe4_8fbd_7a6d_4540,
+            label: "crowd/E1-is-ioa",
+        },
+        // Quirk I4: edge-sharing boxes. pycocotools `continue`s on
+        // `w <= 0`, leaving the pre-zeroed cell; we must produce
+        // *exact* `+0.0`, not a computed negative or `-0.0`.
+        Case {
+            gt: [0.0, 0.0, 1.0, 1.0],
+            dt: [1.0, 0.0, 1.0, 1.0],
+            is_crowd: false,
+            expected_bits: 0x0000_0000_0000_0000,
+            label: "zero/I4-edge-sharing",
+        },
+        // Fully disjoint: both `w <= 0` and `h <= 0`.
+        Case {
+            gt: [0.0, 0.0, 1.0, 1.0],
+            dt: [10.0, 10.0, 1.0, 1.0],
+            is_crowd: false,
+            expected_bits: 0x0000_0000_0000_0000,
+            label: "zero/disjoint",
+        },
+    ];
+
+    fn gt_ann(c: &Case) -> BboxAnn {
+        BboxAnn {
+            bbox: Bbox {
+                x: c.gt[0],
+                y: c.gt[1],
+                w: c.gt[2],
+                h: c.gt[3],
+            },
+            is_crowd: c.is_crowd,
+        }
+    }
+
+    fn dt_ann(c: &Case) -> BboxAnn {
+        BboxAnn {
+            bbox: Bbox {
+                x: c.dt[0],
+                y: c.dt[1],
+                w: c.dt[2],
+                h: c.dt[3],
+            },
+            is_crowd: false,
+        }
+    }
+
+    /// Shared sub-expressions of [`iou_pair`], recomputed here so the
+    /// FMA-sensitivity self-check exercises the same algebra the kernel
+    /// does.
+    fn parts(c: &Case) -> (f64, f64, f64, f64) {
+        let (gxa, gya, gw, gh) = (c.gt[0], c.gt[1], c.gt[2], c.gt[3]);
+        let (dxa, dya, dw, dh) = (c.dt[0], c.dt[1], c.dt[2], c.dt[3]);
+        let iw = ((gxa + gw).min(dxa + dw) - gxa.max(dxa)).max(0.0);
+        let ih = ((gya + gh).min(dya + dh) - gya.max(dya)).max(0.0);
+        (gw * gh, dw * dh, iw, ih)
+    }
+
+    /// `g_area + d_area` fused into `fma(dw, dh, g_area)`.
+    fn fused_sum_site(c: &Case) -> f64 {
+        let (g_area, _, iw, ih) = parts(c);
+        let inter = iw * ih;
+        let denom = c.dt[2].mul_add(c.dt[3], g_area) - inter;
+        if denom > 0.0 {
+            inter / denom
+        } else {
+            0.0
+        }
+    }
+
+    /// Both sites fused at once — `fnmadd(iw, ih, fma(dw, dh, g_area))`.
+    /// This is the form a table regenerated from a *contracting* build
+    /// would encode, and the one a single-site check cannot see: on the
+    /// current table the single-site counts happen to stay non-zero
+    /// after such a regeneration (they merely swap, 2/1 → 1/2), so both
+    /// single-site assertions would still pass on a worthless pin.
+    fn fused_both_sites(c: &Case) -> f64 {
+        let (g_area, _, iw, ih) = parts(c);
+        let inter = iw * ih;
+        let denom = (-iw).mul_add(ih, c.dt[2].mul_add(c.dt[3], g_area));
+        if denom > 0.0 {
+            inter / denom
+        } else {
+            0.0
+        }
+    }
+
+    /// `sum - inter` fused into `fnmadd(iw, ih, sum)`.
+    fn fused_sub_site(c: &Case) -> f64 {
+        let (g_area, d_area, iw, ih) = parts(c);
+        let inter = iw * ih;
+        let denom = (-iw).mul_add(ih, g_area + d_area);
+        if denom > 0.0 {
+            inter / denom
+        } else {
+            0.0
+        }
+    }
+
+    /// The small-cell path: `G·D = 1`, so `compute` calls
+    /// `full_iou_inner` directly with no `pulp` dispatch.
+    #[test]
+    fn fp_contract_golden_bits_on_scalar_path() {
+        for c in CASES {
+            let mut out = Array2::<f64>::zeros((1, 1));
+            BboxIou
+                .compute(&[gt_ann(c)], &[dt_ann(c)], &mut out.view_mut())
+                .unwrap();
+            assert_eq!(
+                out[[0, 0]].to_bits(),
+                c.expected_bits,
+                "case {}: scalar path produced {:?} (0x{:016x}), expected \
+                 0x{:016x}. A 1-2 ULP move here means floating-point \
+                 contraction was enabled (see this module's docs, ADR-0008 \
+                 and ADR-0056).",
+                c.label,
+                out[[0, 0]],
+                out[[0, 0]].to_bits(),
+                c.expected_bits,
+            );
+        }
+    }
+
+    /// The dispatched path: the grid is tiled until `G·D` clears
+    /// [`SMALL_CELL_THRESHOLD`], so `compute` goes through
+    /// `arch().dispatch` and LLVM compiles the loop body with `fma` /
+    /// `neon` target features enabled. This is the path the shipped
+    /// wheel executes on dense cells, and before this test it had no
+    /// bit-exactness coverage at all — the largest cell any pre-existing
+    /// bbox test built was 5x5
+    /// (`overlap_mask_survivor_bit_matches_full_iou`, with one 4x4
+    /// alongside it), and 25 < [`SMALL_CELL_THRESHOLD`] = 32 routes
+    /// every one of them to the scalar body.
+    #[test]
+    fn fp_contract_golden_bits_on_dispatched_path() {
+        // Sized from the constant rather than hardcoded, so raising the
+        // threshold cannot silently stop covering the dispatched path.
+        let mut reps = 1usize;
+        while (CASES.len() * reps).pow(2) < SMALL_CELL_THRESHOLD {
+            reps += 1;
+        }
+        let n = CASES.len() * reps;
+        assert!(
+            n * n >= SMALL_CELL_THRESHOLD,
+            "grid {n}x{n} must reach the dispatched path"
+        );
+
+        let gts: Vec<BboxAnn> = (0..n).map(|i| gt_ann(&CASES[i % CASES.len()])).collect();
+        let dts: Vec<BboxAnn> = (0..n).map(|i| dt_ann(&CASES[i % CASES.len()])).collect();
+
+        let mut out = Array2::<f64>::zeros((n, n));
+        BboxIou.compute(&gts, &dts, &mut out.view_mut()).unwrap();
+
+        for i in 0..n {
+            let c = &CASES[i % CASES.len()];
+            assert_eq!(
+                out[[i, i]].to_bits(),
+                c.expected_bits,
+                "case {} at diagonal {i}: dispatched path produced {:?} \
+                 (0x{:016x}), expected 0x{:016x}. The scalar path and the \
+                 SIMD-dispatched path must agree bit-for-bit.",
+                c.label,
+                out[[i, i]],
+                out[[i, i]].to_bits(),
+                c.expected_bits,
+            );
+        }
+    }
+
+    /// Self-validation for the golden table. If a future edit replaced
+    /// these constants with contraction-insensitive values, the pins
+    /// above would still pass while protecting nothing. Assert instead
+    /// that the table discriminates against *each* fusion site — and
+    /// against both fused together.
+    ///
+    /// The both-sites arm is the one that closes the realistic failure
+    /// mode. The dangerous edit is not "someone invents insensitive
+    /// constants"; it is "the golden test goes red on a contracting
+    /// toolchain and a contributor refreshes the constants from the new
+    /// output on both architectures". A table regenerated that way is
+    /// still sensitive to each site *individually* (the counts swap
+    /// rather than vanish), so `sum_site > 0 && sub_site > 0` stays
+    /// green. It is identical to the both-fused form by construction,
+    /// which is exactly what `both_sites > 0` rejects. Combined with
+    /// the provenance note on [`CASES`] — the constants are the
+    /// reference's, never ours — the pin cannot be quietly re-anchored
+    /// to whatever the compiler did.
+    #[test]
+    fn fp_contract_cases_discriminate_against_both_fma_sites() {
+        let sum_site = CASES
+            .iter()
+            .filter(|c| !c.is_crowd && fused_sum_site(c).to_bits() != c.expected_bits)
+            .count();
+        let sub_site = CASES
+            .iter()
+            .filter(|c| !c.is_crowd && fused_sub_site(c).to_bits() != c.expected_bits)
+            .count();
+        let both_sites = CASES
+            .iter()
+            .filter(|c| !c.is_crowd && fused_both_sites(c).to_bits() != c.expected_bits)
+            .count();
+
+        assert!(
+            sum_site > 0,
+            "no pinned case detects fusion of `g_area + d_area` into \
+             fma(dw, dh, g_area); the golden table protects nothing there"
+        );
+        assert!(
+            sub_site > 0,
+            "no pinned case detects fusion of `sum - inter` into \
+             fnmadd(iw, ih, sum); the golden table protects nothing there"
+        );
+        assert!(
+            both_sites > 0,
+            "no pinned case distinguishes the unfused expression from \
+             the fully contracted one. Either the table was regenerated \
+             from a contracting build — see the provenance note on \
+             `CASES`, the constants must come from pycocotools' `bbIou`, \
+             never from vernier's own output — or the cases no longer \
+             anchor the pin to anything"
+        );
+    }
+
+    /// Quirk E1 stated as a relation rather than as one magic constant:
+    /// flipping the crowd flag on the *same* boxes must swap the
+    /// denominator from the union to `d_area` alone.
+    #[test]
+    fn fp_contract_crowd_denominator_is_dt_area_not_union() {
+        let c = CASES
+            .iter()
+            .find(|c| c.label == "crowd/E1-is-ioa")
+            .expect("crowd case present");
+
+        let crowd_gt = gt_ann(c);
+        let mut plain_gt = crowd_gt;
+        plain_gt.is_crowd = false;
+
+        let mut crowd_out = Array2::<f64>::zeros((1, 1));
+        BboxIou
+            .compute(&[crowd_gt], &[dt_ann(c)], &mut crowd_out.view_mut())
+            .unwrap();
+        let mut plain_out = Array2::<f64>::zeros((1, 1));
+        BboxIou
+            .compute(&[plain_gt], &[dt_ann(c)], &mut plain_out.view_mut())
+            .unwrap();
+
+        let (_, d_area, iw, ih) = parts(c);
+        assert_eq!(
+            crowd_out[[0, 0]].to_bits(),
+            ((iw * ih) / d_area).to_bits(),
+            "crowd GT must divide by dt_area (IoA), not the union"
+        );
+        assert!(
+            crowd_out[[0, 0]] > plain_out[[0, 0]],
+            "crowd IoA {} should exceed the symmetric IoU {} for these boxes",
+            crowd_out[[0, 0]],
+            plain_out[[0, 0]],
+        );
+    }
+
+    /// Non-overlapping pairs must be *exactly* `+0.0` — the same bit
+    /// pattern pycocotools leaves in place when it `continue`s past
+    /// `w <= 0`. `-0.0` compares equal under `==` but is a different
+    /// `to_bits()` value and a different JSON round-trip.
+    #[test]
+    fn fp_contract_non_overlap_is_positive_zero() {
+        for c in CASES.iter().filter(|c| c.expected_bits == 0) {
+            let mut out = Array2::<f64>::zeros((1, 1));
+            BboxIou
+                .compute(&[gt_ann(c)], &[dt_ann(c)], &mut out.view_mut())
+                .unwrap();
+            assert_eq!(
+                out[[0, 0]].to_bits(),
+                0.0_f64.to_bits(),
+                "case {}: expected +0.0, got {:?}",
+                c.label,
+                out[[0, 0]],
+            );
+            assert!(out[[0, 0]].is_sign_positive());
+        }
+    }
+}

@@ -280,7 +280,7 @@ fn open_u8_or_bool_2d<'py>(
         .ok_or_else(|| PyValueError::new_err(format!("{field}: shape product overflows usize")))?;
     let view = DLPackView {
         _capsule: capsule,
-        data_ptr: meta.data_ptr.cast::<u8>(),
+        data_ptr: view_ptr::<u8>(&meta, len),
         len,
     };
     Ok((view, h, w, order))
@@ -371,8 +371,18 @@ fn open_cpu_tensor<'py>(
     let data_addr = (dl_tensor.data as usize)
         .checked_add(dl_tensor.byte_offset as usize)
         .ok_or_else(|| PyValueError::new_err(format!("{field}: byte_offset overflow")))?;
-    let data_ptr = NonNull::new(data_addr as *mut u8)
-        .ok_or_else(|| PyValueError::new_err(format!("{field}: data pointer is null")))?;
+    // A zero-element tensor may carry a null data pointer (torch does);
+    // nothing is ever read through it, so only a non-empty one must be
+    // non-null.
+    let data_ptr = match NonNull::new(data_addr as *mut u8) {
+        Some(ptr) => ptr,
+        None if shape.contains(&0) => NonNull::dangling(),
+        None => {
+            return Err(PyValueError::new_err(format!(
+                "{field}: data pointer is null"
+            )))
+        }
+    };
 
     let meta = CpuTensorMeta {
         shape,
@@ -410,9 +420,20 @@ fn into_view<'py, T>(
     }
     Ok(DLPackView {
         _capsule: capsule,
-        data_ptr: meta.data_ptr.cast::<T>(),
+        data_ptr: view_ptr::<T>(meta, len),
         len,
     })
+}
+
+/// Typed data pointer for a view of `len` elements. An empty view gets
+/// an aligned dangling pointer: `slice::from_raw_parts` needs one even at
+/// length zero, and an empty producer's pointer may be null or unaligned.
+fn view_ptr<T>(meta: &CpuTensorMeta, len: usize) -> NonNull<T> {
+    if len == 0 {
+        NonNull::dangling()
+    } else {
+        meta.data_ptr.cast::<T>()
+    }
 }
 
 /// Resolve the capsule pointer into a borrowed `&DLTensor`. The borrow is
@@ -486,10 +507,16 @@ fn gpu_rejection_error(field: &str, device_type: i32) -> PyErr {
     ))
 }
 
-/// Contiguity check for either layout. `None` strides means default
-/// C-layout per the DLPack contract; for F we then return `true` only
-/// when C and F coincide (≤1 non-degenerate axis).
+/// Contiguity check for either layout, with NumPy's flag semantics (and
+/// `torch.Tensor.is_contiguous`'s): a zero-element array is contiguous in
+/// both layouts whatever its strides, and a size-1 axis's stride is never
+/// read. `None` strides means default C-layout per the DLPack contract;
+/// for F we then return `true` only when C and F coincide (≤1
+/// non-degenerate axis).
 fn is_contiguous(meta: &CpuTensorMeta, order: Order) -> bool {
+    if meta.shape.contains(&0) {
+        return true;
+    }
     let strides = match &meta.strides {
         None => {
             return matches!(order, Order::C)
@@ -504,8 +531,8 @@ fn is_contiguous(meta: &CpuTensorMeta, order: Order) -> bool {
             Order::C => n - 1 - k,
             Order::F => k,
         };
-        // Zero-length axes don't constrain stride.
-        if meta.shape[i] != 0 && strides[i] != expected {
+        // A size-1 axis is never stepped along, so its stride is free.
+        if meta.shape[i] != 1 && strides[i] != expected {
             return false;
         }
         match expected.checked_mul(meta.shape[i]) {
@@ -632,6 +659,46 @@ mod tests {
         let meta = fake_meta(vec![4, 3], Some(vec![6, 2]));
         assert!(!is_contiguous(&meta, Order::C));
         assert!(!is_contiguous(&meta, Order::F));
+    }
+
+    #[test]
+    fn size_one_axis_stride_is_ignored() {
+        // numpy `(1, 4)` from `torch.Tensor.numpy()`: the size-1 axis
+        // carries an arbitrary stride.
+        let meta = fake_meta(vec![1, 4], Some(vec![7, 1]));
+        assert!(is_contiguous(&meta, Order::C));
+        let column = fake_meta(vec![4, 1], Some(vec![1, 9]));
+        assert!(is_contiguous(&column, Order::C));
+        assert!(is_contiguous(&column, Order::F));
+    }
+
+    #[test]
+    fn zero_element_arrays_are_contiguous_whatever_their_strides() {
+        for (shape, strides) in [
+            (vec![0, 4], vec![0, 0]),
+            (vec![0], vec![0]),
+            (vec![0, 4], vec![5, 3]),
+        ] {
+            let meta = fake_meta(shape, Some(strides));
+            assert!(is_contiguous(&meta, Order::C));
+            assert!(is_contiguous(&meta, Order::F));
+        }
+    }
+
+    #[test]
+    fn stepped_array_is_still_rejected() {
+        // `arr[:, ::2]` of a (3, 8) array: the width axis steps by 2.
+        let meta = fake_meta(vec![3, 4], Some(vec![8, 2]));
+        assert!(!is_contiguous(&meta, Order::C));
+        assert!(!is_contiguous(&meta, Order::F));
+        let one_d = fake_meta(vec![4], Some(vec![2]));
+        assert!(!is_contiguous(&one_d, Order::C));
+    }
+
+    #[test]
+    fn empty_view_pointer_is_aligned_dangling() {
+        let meta = fake_meta(vec![0, 4], Some(vec![0, 0]));
+        assert_eq!(view_ptr::<f64>(&meta, 0), NonNull::<f64>::dangling());
     }
 
     #[test]

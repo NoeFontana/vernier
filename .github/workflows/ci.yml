@@ -70,6 +70,53 @@ jobs:
       - name: cargo test --doc
         run: cargo test --doc --workspace --exclude vernier-ffi
 
+  # Cross-architecture bit-equality pin for the f64 bbox-IoU expression
+  # (ADR-0056). The union denominator `g_area + d_area - inter` contains
+  # two multiply-then-add patterns that a compiler with floating-point
+  # contraction enabled may fuse into FMAs, dropping a rounding step and
+  # moving the result 1-2 ULP off pycocotools' unfused value — enough to
+  # flip a match under quirk B2 and shift AP (ADR-0008).
+  #
+  # rustc does not contract today, but that is an inherited default, not
+  # something this build states, and `-Zfp-contract` is nightly-only so
+  # there is no stable switch to assert it with. The golden bit patterns
+  # in `similarity::bbox::fp_contract_pin` are the assertion instead, and
+  # this job is what makes them *cross-architecture*: aarch64 has `fmadd`
+  # in its baseline ISA and we ship aarch64 wheels (`wheels.yml`), so a
+  # contraction regression would be a wrong answer on one wheel and not
+  # the other — the hardest kind to notice.
+  #
+  # Two things this job does that `test-rust` above does not:
+  #   * `--release`. Contraction and auto-vectorization only happen under
+  #     optimization; a debug run would pass even on a toolchain that
+  #     contracts. This is the profile the shipped wheel uses (and
+  #     deliberately not `target-cpu=native`, per the bench discipline).
+  #   * `--no-tests=fail`. A filter expression that matches nothing exits
+  #     0 by default, which would turn a rename into a silently vacuous
+  #     green job.
+  test-rust-cross-arch:
+    name: fp-contract bit-equality (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: aarch64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: fp-contract-${{ matrix.arch }}
+      - uses: taiki-e/install-action@nextest
+      - name: bbox IoU golden bits (release, ${{ matrix.arch }})
+        run: >
+          cargo nextest run --release -p vernier-core
+          --no-tests=fail -E 'test(fp_contract)'
+
   # Builds rustdoc with the same `--cfg docsrs` flag docs.rs uses,
   # under `-D warnings` so broken intra-doc links and feature-gate
   # breakage fail the PR rather than slipping through to docs.rs at
@@ -145,7 +192,9 @@ jobs:
         run: uv run --no-sync --python 3.13 pyright
 
   test-py:
-    name: test (python ${{ matrix.python-version }})
+    # The `numpy` suffix appears only on the NumPy 1 leg, so the locked
+    # legs keep the `test (python X)` names the main ruleset requires.
+    name: test (python ${{ matrix.python-version }}${{ matrix.numpy != 'locked' && format(', numpy {0}', matrix.numpy) || '' }})
     needs: build-wheel
     runs-on: ubuntu-latest
     strategy:
@@ -156,6 +205,14 @@ jobs:
         # rarely informative; `slow.yml` (workflow_dispatch) backfills
         # the full suite before a release cut.
         python-version: ["3.10", "3.14"]
+        # `locked` runs the NumPy uv.lock resolves (2.x). The extension
+        # is one abi3 wheel that rust-numpy binds to NumPy 1 or 2 at
+        # runtime, so NumPy 1 support is only proven by running the suite
+        # against it: the `numpy>=1.26` floor on the oldest Python.
+        numpy: ["locked"]
+        include:
+          - python-version: "3.10"
+            numpy: "1.26.4"
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
@@ -171,6 +228,9 @@ jobs:
           path: dist
       - name: install built wheel
         run: uv pip install --python ${{ matrix.python-version }} dist/vernier-*.whl
+      - name: pin numpy
+        if: matrix.numpy != 'locked'
+        run: uv pip install --python ${{ matrix.python-version }} "numpy==${{ matrix.numpy }}"
       - name: pytest
         # PR gate skips the slow tier (boundary parity tree, env-gated
         # *_val.py whole-dataset smokes). Run the full suite via the

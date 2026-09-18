@@ -256,6 +256,21 @@ pub struct EvaluateParams<'p> {
     /// `false`; the no-retention path allocates nothing extra and is
     /// bit-identical to the 0.0.1 release.
     pub retain_iou: bool,
+    /// When `true`, [`evaluate_with`] fills [`EvalGrid::eval_imgs_meta`]
+    /// with each cell's pycocotools-shaped [`EvalImageMeta`] (ids and
+    /// matched ids, what `evalImgs` exposes). Also implied by
+    /// [`Self::retain_iou`], whose table builders read it. When neither
+    /// is set the metadata is never built: it roughly doubles the
+    /// per-cell allocations, and accumulate / summarize never read it.
+    pub retain_meta: bool,
+}
+
+impl EvaluateParams<'_> {
+    /// Whether [`EvalGrid::eval_imgs_meta`] is built (see
+    /// [`Self::retain_meta`]).
+    pub fn builds_meta(&self) -> bool {
+        self.retain_meta || self.retain_iou
+    }
 }
 
 /// Owned counterpart to [`EvaluateParams`].
@@ -289,6 +304,9 @@ impl OwnedEvaluateParams {
             max_dets_per_image: self.max_dets_per_image,
             use_cats: self.use_cats,
             retain_iou: self.retain_iou,
+            // Streaming retains `EvalImageMeta` only for its tables, which
+            // run under `retain_iou` (which implies it).
+            retain_meta: false,
         }
     }
 
@@ -854,8 +872,15 @@ pub struct EvalGrid {
     pub eval_imgs: Vec<Option<Box<PerImageEval>>>,
     /// Pycocotools-shaped bookkeeping for each populated cell (same
     /// `[k][a][i]` layout as `eval_imgs`; `None` wherever `eval_imgs` is
-    /// `None`). Boxed for the same reason as `eval_imgs`.
+    /// `None`). Boxed for the same reason as `eval_imgs`. Empty when the
+    /// grid was built without [`EvaluateParams::retain_meta`] or
+    /// [`EvaluateParams::retain_iou`]; see [`Self::has_meta`].
     pub eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>>,
+    /// Whether `eval_imgs_meta` was built — the resolved
+    /// [`EvaluateParams::builds_meta`] of the pass that produced this
+    /// grid, recorded rather than inferred. Read it through
+    /// [`Self::has_meta`].
+    pub builds_meta: bool,
     /// `K` axis size: the number of categories used for evaluation, or
     /// `1` when `use_cats=false`.
     pub n_categories: usize,
@@ -880,8 +905,22 @@ impl EvalGrid {
         self.eval_imgs.get(idx).and_then(Option::as_deref)
     }
 
+    /// Whether [`Self::eval_imgs_meta`] was built (the grid was
+    /// evaluated with [`EvaluateParams::retain_meta`] or
+    /// [`EvaluateParams::retain_iou`]).
+    ///
+    /// Reads the flag the build recorded rather than comparing vector
+    /// lengths: on an empty grid both vectors are empty, and a
+    /// length comparison would answer "yes, metadata" for a pass that
+    /// built none.
+    pub fn has_meta(&self) -> bool {
+        self.builds_meta
+    }
+
     /// Pycocotools-shaped bookkeeping at `(category_index, area_index,
-    /// image_index)`. `None` exactly when [`EvalGrid::cell`] is `None`.
+    /// image_index)`. `None` exactly when [`EvalGrid::cell`] is `None`,
+    /// and always `None` when the grid was built without metadata (see
+    /// [`Self::has_meta`]).
     pub fn cell_meta(&self, k: usize, a: usize, i: usize) -> Option<&EvalImageMeta> {
         let idx = self.flat_index(k, a, i)?;
         self.eval_imgs_meta.get(idx).and_then(Option::as_deref)
@@ -935,7 +974,12 @@ pub fn evaluate_with<K: EvalKernel>(
     let n_k = category_buckets.len();
 
     let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; n_k * n_a * n_i];
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = vec![None; n_k * n_a * n_i];
+    let builds_meta = params.builds_meta();
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = if builds_meta {
+        vec![None; n_k * n_a * n_i]
+    } else {
+        Vec::new()
+    };
     // Optional IoU retention, keyed by `(k, i)` — IoU is geometry-only,
     // so storing per-area would duplicate ~4× under the COCO grid.
     let mut retained_ious_map: Option<std::collections::HashMap<(usize, usize), Array2<f64>>> =
@@ -1145,10 +1189,13 @@ pub fn evaluate_with<K: EvalKernel>(
                     area,
                     params.iou_thresholds,
                     parity_mode,
+                    builds_meta,
                 )?;
                 let flat = nk + a * n_i + i;
                 eval_imgs[flat] = Some(Box::new(cell));
-                eval_imgs_meta[flat] = Some(Box::new(meta));
+                if let Some(meta) = meta {
+                    eval_imgs_meta[flat] = Some(Box::new(meta));
+                }
             }
 
             // Retain a clone of the IoU matrix exactly when the caller
@@ -1170,6 +1217,7 @@ pub fn evaluate_with<K: EvalKernel>(
     Ok(EvalGrid {
         eval_imgs,
         eval_imgs_meta,
+        builds_meta,
         n_categories: n_k,
         n_area_ranges: n_a,
         n_images: n_i,
@@ -1754,7 +1802,8 @@ pub(crate) fn evaluate_cell(
     area: &AreaRange,
     iou_thresholds: &[f64],
     parity_mode: ParityMode,
-) -> Result<(PerImageEval, EvalImageMeta), EvalError> {
+    build_meta: bool,
+) -> Result<(PerImageEval, Option<EvalImageMeta>), EvalError> {
     // D3 + D6/D7: per-call ignore = base | out-of-area. Filled into a
     // scratch buffer owned by the caller — this Vec is the same length
     // every cell-area pair on a given image, so reusing the allocation
@@ -1800,12 +1849,8 @@ pub(crate) fn evaluate_cell(
 
     let dt_scores_sorted: Vec<f64> = dt_perm.iter().map(|&k| buf.dt_scores[k]).collect();
     let gt_ignore_sorted: Vec<bool> = gt_perm.iter().map(|&k| gt_ignore[k]).collect();
-    let dt_ids_sorted: Vec<i64> = dt_perm.iter().map(|&k| buf.dt_ids[k]).collect();
-    let gt_ids_sorted: Vec<i64> = gt_perm.iter().map(|&k| buf.gt_ids[k]).collect();
 
     let mut dt_matched = Array2::<bool>::default((n_t, n_d));
-    let mut dt_matches_id = Array2::<i64>::zeros((n_t, n_d));
-    let mut gt_matches_id = Array2::<i64>::zeros((n_t, n_g));
     // d-outer / t-inner reorders the original loop so the per-d
     // `area.contains(buf.dt_areas[dt_perm[d]])` test runs once per
     // detection instead of `n_t` times — dropping the prior
@@ -1815,26 +1860,14 @@ pub(crate) fn evaluate_cell(
     for d in 0..n_d {
         let in_range = area.contains(buf.dt_areas[dt_perm[d]]);
         for t in 0..n_t {
-            let m = dt_matches_pos[(t, d)];
-            let matched = m >= 0;
+            let matched = dt_matches_pos[(t, d)] >= 0;
             dt_matched[(t, d)] = matched;
-            if matched {
-                dt_matches_id[(t, d)] = gt_ids_sorted[m as usize];
-            }
             // B7: unmatched AND out-of-area → ignore.
             // AA3 (LVIS): unmatched in a not_exhaustive cell → ignore.
             // Both branches share the same `dt_ignore` field; the
             // matching engine never sees the LVIS-specific flag.
             if !matched && (!in_range || buf.not_exhaustive) {
                 dt_ignore[(t, d)] = true;
-            }
-        }
-    }
-    for t in 0..n_t {
-        for g in 0..n_g {
-            let p = gt_matches_pos[(t, g)];
-            if p >= 0 {
-                gt_matches_id[(t, g)] = dt_ids_sorted[p as usize];
             }
         }
     }
@@ -1845,6 +1878,28 @@ pub(crate) fn evaluate_cell(
         dt_ignore,
         gt_ignore: gt_ignore_sorted,
     };
+    if !build_meta {
+        return Ok((cell, None));
+    }
+
+    let dt_ids_sorted: Vec<i64> = dt_perm.iter().map(|&k| buf.dt_ids[k]).collect();
+    let gt_ids_sorted: Vec<i64> = gt_perm.iter().map(|&k| buf.gt_ids[k]).collect();
+    let mut dt_matches_id = Array2::<i64>::zeros((n_t, n_d));
+    let mut gt_matches_id = Array2::<i64>::zeros((n_t, n_g));
+    for t in 0..n_t {
+        for d in 0..n_d {
+            let m = dt_matches_pos[(t, d)];
+            if m >= 0 {
+                dt_matches_id[(t, d)] = gt_ids_sorted[m as usize];
+            }
+        }
+        for g in 0..n_g {
+            let p = gt_matches_pos[(t, g)];
+            if p >= 0 {
+                gt_matches_id[(t, g)] = dt_ids_sorted[p as usize];
+            }
+        }
+    }
     let meta = EvalImageMeta {
         image_id: buf.image_id,
         category_id: buf.category_id,
@@ -1855,7 +1910,7 @@ pub(crate) fn evaluate_cell(
         dt_matches: dt_matches_id,
         gt_matches: gt_matches_id,
     };
-    Ok((cell, meta))
+    Ok((cell, Some(meta)))
 }
 
 #[cfg(test)]
@@ -1915,6 +1970,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            area: None,
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
@@ -1941,6 +1997,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: true,
         };
         evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap()
     }
@@ -2031,7 +2088,8 @@ mod tests {
             ParityMode::Strict,
         )
         .unwrap();
-        let summary = summarize_detection(&acc, iou_thresholds(), &max_dets).unwrap();
+        let summary =
+            summarize_detection(&acc, iou_thresholds(), &max_dets, ParityMode::Strict).unwrap();
         let stats = summary.stats();
         // GTs are 10x10 → area 100, which falls inside `small` (< 32²)
         // and `all`. `medium` and `large` see no in-range GTs, so AP and
@@ -2062,6 +2120,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let small = grid.cell(0, 1, 0).unwrap();
@@ -2091,6 +2150,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         // small (lo=0, hi=32²=1024): area 1024 == hi → included.
@@ -2127,6 +2187,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: false,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         assert_eq!(grid.n_categories, 1);
@@ -2156,6 +2217,7 @@ mod tests {
             max_dets_per_image: 2,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -2191,6 +2253,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
 
         let strict = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
@@ -2247,6 +2310,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: true,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let meta = grid.cell_meta(0, 0, 0).unwrap();
@@ -2272,6 +2336,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: false,
             retain_iou: false,
+            retain_meta: true,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let meta = grid.cell_meta(0, 0, 0).unwrap();
@@ -2294,6 +2359,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         for a in 0..4 {
@@ -2359,6 +2425,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            area: None,
             segmentation: Some(segm),
             keypoints: None,
             num_keypoints: None,
@@ -2392,6 +2459,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let max_dets = vec![1usize, 10, 100];
@@ -2408,7 +2476,8 @@ mod tests {
             ParityMode::Strict,
         )
         .unwrap();
-        let summary = summarize_detection(&acc, iou_thresholds(), &max_dets).unwrap();
+        let summary =
+            summarize_detection(&acc, iou_thresholds(), &max_dets, ParityMode::Strict).unwrap();
         let stats = summary.stats();
         assert!((stats[0] - 1.0).abs() < 1e-12, "AP={}", stats[0]);
     }
@@ -2440,6 +2509,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -2470,6 +2540,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap_err();
         match err {
@@ -2505,6 +2576,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
         match err {
@@ -2544,6 +2616,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -2592,6 +2665,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
         assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
@@ -2633,6 +2707,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let err = evaluate_segm(&gt, &dts, params, ParityMode::Corrected).unwrap_err();
         assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
@@ -2683,6 +2758,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -2721,6 +2797,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let max_dets = vec![1usize, 10, 100];
@@ -2737,7 +2814,8 @@ mod tests {
             ParityMode::Strict,
         )
         .unwrap();
-        let summary = summarize_detection(&acc, iou_thresholds(), &max_dets).unwrap();
+        let summary =
+            summarize_detection(&acc, iou_thresholds(), &max_dets, ParityMode::Strict).unwrap();
         let stats = summary.stats();
         assert!((stats[0] - 1.0).abs() < 1e-12, "AP={}", stats[0]);
     }
@@ -2771,6 +2849,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let all = grid.cell(0, 0, 0).unwrap();
@@ -3161,6 +3240,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            area: None,
             segmentation: None,
             keypoints: Some(keypoints),
             num_keypoints: None,
@@ -3199,6 +3279,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: true,
         };
         let grid =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
@@ -3248,6 +3329,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
@@ -3295,6 +3377,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap();
@@ -3358,6 +3441,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, sigmas).unwrap();
         // K-axis is [cat 1, cat 2]; each cell sees one GT and one DT.
@@ -3401,6 +3485,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let err =
             evaluate_keypoints(&gt, &dts, params, ParityMode::Strict, HashMap::new()).unwrap_err();
@@ -3476,6 +3561,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let err = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap_err();
         match err {
@@ -3597,6 +3683,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid_lvis = evaluate_bbox(&gt_lvis, &dts, params, ParityMode::Strict).unwrap();
         let grid_coco = evaluate_bbox(&gt_coco, &dts, params, ParityMode::Strict).unwrap();
@@ -3650,6 +3737,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let cell = grid
@@ -3692,6 +3780,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let cell = grid.cell(0, 0, 0).expect("cell must evaluate");
@@ -3737,6 +3826,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let cell = grid.cell(0, 0, 0).expect("cell must evaluate");
@@ -3778,6 +3868,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: false,
             retain_iou: false,
+            retain_meta: false,
         };
         // No panic, no skipped cell — the K-axis is collapsed to one
         // sentinel category so AA4 cannot apply.
@@ -3856,6 +3947,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: true,
         };
 
         let strict = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
@@ -3912,6 +4004,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
 
         let strict = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
@@ -3952,6 +4045,7 @@ mod tests {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: true,
         };
         let grid = evaluate_bbox(&gt, &dts, params, ParityMode::Strict).unwrap();
         let meta = grid.cell_meta(0, 0, 0).unwrap();

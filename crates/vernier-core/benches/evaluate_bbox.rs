@@ -160,6 +160,7 @@ fn build_dataset(s: Scenario) -> (CocoDataset, CocoDetections) {
                 category_id: CategoryId(cat as i64 + 1),
                 score,
                 bbox: Bbox { x, y, w, h },
+                area: None,
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
@@ -183,6 +184,7 @@ fn run(bencher: Bencher, s: Scenario) {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         evaluate_bbox(black_box(&gt), black_box(&dt), params, ParityMode::Strict).unwrap()
     });
@@ -222,6 +224,7 @@ fn run_parallel(bencher: Bencher, s: Scenario, num_threads: usize) {
             max_dets_per_image: 100,
             use_cats: true,
             retain_iou: false,
+            retain_meta: false,
         };
         pool.install(|| {
             evaluate_bbox_parallel(black_box(&gt), black_box(&dt), params, ParityMode::Strict)

@@ -461,6 +461,7 @@ pub(crate) fn prepare_lrp_pass<'gt, K: EvalKernel>(
         max_dets_per_image: params.max_dets_per_image,
         use_cats: params.use_cats,
         retain_iou: true,
+        retain_meta: false,
     };
     let mut grid = evaluate_with(gt, dt, eval_params, parity_mode, kernel)?;
 
