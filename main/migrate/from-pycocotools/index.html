@@ -843,6 +843,45 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#params-what-the-shim-honors-and-what-it-rejects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        params: what the shim honors, and what it rejects
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="params: what the shim honors, and what it rejects">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#reading-results-back-off-the-instance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Reading results back off the instance
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#cocoeval-on-an-in-memory-coco" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        COCOeval on an in-memory COCO
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#worked-example" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2198,20 +2237,145 @@ imports <code>pycocotools.cocoeval</code>. In practice that means one of:</p>
 vernier</code> (ADR-0007 §"Discoverability"): a silent rewrite would make
 unexpected score differences untraceable. The cost of that policy is
 that ordering is the user's responsibility, hence this section.</p>
+<h2 id="params-what-the-shim-honors-and-what-it-rejects"><code>params</code>: what the shim honors, and what it rejects</h2>
+<p>The shim mirrors <code>pycocotools.cocoeval.Params</code> as a plain mutable
+namespace, so downstream code that pokes at <code>cocoEval.params</code> keeps
+working. Where vernier cannot reproduce a mutation it raises
+<code>NotImplementedError</code> from <code>evaluate()</code> rather than ignoring it — a
+divergence you can see beats one you cannot.</p>
+<table>
+<thead>
+<tr>
+<th><code>params</code> field</th>
+<th>Mutable?</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>iouThrs</code></td>
+<td>yes</td>
+<td>Any ladder. Evaluated as given, including a ladder round-tripped through float32 (what <code>torch.linspace(...).tolist()</code> yields).</td>
+</tr>
+<tr>
+<td><code>recThrs</code></td>
+<td>yes</td>
+<td>Any ladder.</td>
+</tr>
+<tr>
+<td><code>maxDets</code></td>
+<td>yes</td>
+<td>Sorted ascending at <code>accumulate()</code> time, as pycocotools does (quirk <strong>A2</strong>). The largest entry caps the per-cell detections.</td>
+</tr>
+<tr>
+<td><code>catIds</code></td>
+<td>yes</td>
+<td>Subsetting supported. Mirrors <code>_prepare</code>: only annotations in the selected categories are evaluated. A category the dataset never declares evaluates to a row of <code>-1</code>s, as upstream.</td>
+</tr>
+<tr>
+<td><code>useCats</code></td>
+<td>yes</td>
+<td><code>0</code> runs the collapsed single-bucket fold (quirk <strong>L4</strong>).</td>
+</tr>
+<tr>
+<td><code>kpt_oks_sigmas</code></td>
+<td>yes</td>
+<td><code>iouType="keypoints"</code> only; applied to every category (quirk <strong>F1</strong>).</td>
+</tr>
+<tr>
+<td><code>imgIds</code></td>
+<td><strong>no</strong></td>
+<td>Subsetting raises. Evaluate the full dataset, or slice the result with <a href="../../how-to/per-class-by-slice/"><code>vernier.aggregate</code></a>.</td>
+</tr>
+<tr>
+<td><code>areaRng</code></td>
+<td><strong>no</strong></td>
+<td>Raises. Custom area ranges live on <code>vernier.instance.Evaluator(area_ranges=...)</code> per ADR-0040.</td>
+</tr>
+<tr>
+<td><code>useSegm</code></td>
+<td><strong>no</strong></td>
+<td>Any non-<code>None</code> assignment raises. pycocotools deprecated it years ago but still honors it, silently overriding <code>iouType</code>; vernier drops the honor path (quirk <strong>L3</strong>). Pass <code>iouType=</code> instead.</td>
+</tr>
+</tbody>
+</table>
+<p>Assigning a <em>snake_case</em> <code>Evaluator</code> field name (<code>iou_thresholds</code>,
+<code>recall_thresholds</code>, <code>area_ranges</code>) on <code>params</code> raises <code>AttributeError</code>
+immediately, with a pointer to the native surface. The camelCase
+pycocotools names above still mutate normally.</p>
+<h3 id="reading-results-back-off-the-instance">Reading results back off the instance</h3>
+<p><code>evaluate()</code> populates the grid; <code>accumulate()</code> populates <code>eval</code>;
+<code>summarize()</code> populates <code>stats</code>. Two further attributes exist and are
+built the first time they are read, because they cost a second
+evaluation pass and most callers never touch them:</p>
+<ul>
+<li><strong><code>evalImgs</code></strong> — the flat <code>[k][a][i]</code> list of per-image dicts
+  (<code>dtIds</code>, <code>gtIds</code>, <code>dtMatches</code>, <code>gtMatches</code>, …).</li>
+<li><strong><code>ious</code></strong> — <code>{(imgId, catId): matrix}</code>, one entry per pair in
+  <code>imgIds x catIds</code>, with <code>catId == -1</code> under <code>useCats=0</code>. Each matrix
+  is <code>(detections, ground truths)</code> with detections score-descending and
+  truncated to <code>max(maxDets)</code>. A pair with nothing on one side is a
+  bare <code>[]</code>, not an empty array — quirk <strong>F5</strong>, and what
+  <code>maskUtils.iou</code> returns.</li>
+</ul>
+<p>Both are also assignable, so code that overwrites them keeps working.
+Two caveats on <code>ious</code>, neither of which moves a score:</p>
+<ul>
+<li>On coordinates that are arbitrary decimals a retained IoU can land
+  one ULP off pycocotools'. The kernel arithmetic is bit-identical;
+  the drift is in vernier's JSON number parser and is closed by
+  ADR-0054.</li>
+<li>Under <code>useCats=0</code> the matrix agrees up to a permutation of its
+  ground-truth axis: pycocotools concatenates a cell's ground truths
+  category by category, vernier keeps them in annotation order.</li>
+</ul>
+<h3 id="cocoeval-on-an-in-memory-coco"><code>COCOeval</code> on an in-memory <code>COCO</code></h3>
+<p>TorchMetrics and similar callers build <code>cocoGt</code> / <code>cocoDt</code> by assigning
+<code>coco.dataset</code> and calling <code>createIndex()</code>, never <code>loadRes</code>. The shim
+handles that the way <code>COCOeval</code> does — detection <code>area</code> is read off the
+object rather than derived (quirk <strong>J3</strong>), <code>bytes</code> RLE counts are
+accepted (quirk <strong>K3</strong>), and a missing image <code>width</code> / <code>height</code> is
+filled wherever <code>annToRLE</code> would never have looked at it.</p>
+<p>If you assemble such a dataset yourself and drive a vernier grid
+<em>directly</em> rather than through the shim, the same conversions are
+published:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.adapters</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>    <span class="n">detection_image_sizes</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="n">to_coco_json</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">with_mask_image_sizes</span><span class="p">,</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">with_placeholder_image_sizes</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="c1"># bbox / keypoints: no kernel reads an image size, so fill every gap.</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="n">gt</span> <span class="o">=</span> <span class="n">with_placeholder_image_sizes</span><span class="p">(</span><span class="n">coco_gt</span><span class="o">.</span><span class="n">dataset</span><span class="p">)</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="c1"># segm / boundary: fill only where `annToRLE` would never have looked,</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="c1"># which needs the sizes the *detection* side knows.</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a><span class="n">gt</span> <span class="o">=</span> <span class="n">with_mask_image_sizes</span><span class="p">(</span><span class="n">coco_gt</span><span class="o">.</span><span class="n">dataset</span><span class="p">,</span> <span class="n">detection_image_sizes</span><span class="p">(</span><span class="n">coco_dt</span><span class="o">.</span><span class="n">dataset</span><span class="p">))</span>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a><span class="n">gt_bytes</span> <span class="o">=</span> <span class="n">to_coco_json</span><span class="p">(</span><span class="n">gt</span><span class="p">)</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a><span class="n">dt_bytes</span> <span class="o">=</span> <span class="n">to_coco_json</span><span class="p">(</span><span class="n">coco_dt</span><span class="o">.</span><span class="n">dataset</span><span class="p">[</span><span class="s2">&quot;annotations&quot;</span><span class="p">])</span>
+</span></code></pre></div>
+<p><code>with_mask_image_sizes</code> takes a <code>{image_id: (height, width) | None}</code>
+mapping rather than a second dataset, so a caller with detection RLEs
+but no <code>cocoDt</code> object can build it from the first detection mask's
+<code>size</code> per image instead of calling <code>detection_image_sizes</code>.</p>
+<p>ADR-0055 is the record for both the <code>params</code> surface above and these
+helpers.</p>
 <h2 id="worked-example">Worked example</h2>
 <p>Native <code>Evaluator</code> form, end-to-end:</p>
-<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">CocoDataset</span><span class="p">,</span> <span class="n">Evaluator</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">gt_bytes</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;instances_val2017.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">dt_bytes</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;detections.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span>
-</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="n">dataset</span> <span class="o">=</span> <span class="n">CocoDataset</span><span class="o">.</span><span class="n">from_json</span><span class="p">(</span><span class="n">gt_bytes</span><span class="p">)</span>
-</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">dt_bytes</span><span class="p">)</span>
-</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
-</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>              <span class="c1"># AP, e.g. 0.347</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">summary</span><span class="o">.</span><span class="n">pretty_lines</span><span class="p">():</span>  <span class="c1"># the pycocotools-shaped 12-line block</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="n">Bbox</span><span class="p">,</span> <span class="n">CocoDataset</span><span class="p">,</span> <span class="n">Evaluator</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="n">gt_bytes</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;instances_val2017.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="n">dt_bytes</span> <span class="o">=</span> <span class="n">Path</span><span class="p">(</span><span class="s2">&quot;detections.json&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">read_bytes</span><span class="p">()</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="n">dataset</span> <span class="o">=</span> <span class="n">CocoDataset</span><span class="o">.</span><span class="n">from_json</span><span class="p">(</span><span class="n">gt_bytes</span><span class="p">)</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">(),</span> <span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">evaluate</span><span class="p">(</span><span class="n">dataset</span><span class="p">,</span> <span class="n">dt_bytes</span><span class="p">)</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>              <span class="c1"># AP, e.g. 0.347</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="k">for</span> <span class="n">line</span> <span class="ow">in</span> <span class="n">summary</span><span class="o">.</span><span class="n">pretty_lines</span><span class="p">():</span>  <span class="c1"># the pycocotools-shaped 12-line block</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a>    <span class="nb">print</span><span class="p">(</span><span class="n">line</span><span class="p">)</span>
 </span></code></pre></div>
 <p>The 12-entry <code>summary.stats</code> vector matches pycocotools'
 <code>cocoEval.stats</code> position-for-position (<code>AP, AP50, AP75, APs, APm,
@@ -2292,8 +2456,8 @@ and pycocotools on a fixture corpus and diffs every intermediate
 <code>tests/python/parity/test_coco_val.py</code> is env-gated and pins the
 12-entry summary bit-equal against <code>COCOeval</code> on the full dataset.
 Run with:</p>
-<div class="language-sh highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>just<span class="w"> </span>test-parity<span class="w">                                              </span><span class="c1"># the fast fixture suite</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="nv">VERNIER_COCO_GT_PATH</span><span class="o">=</span>...<span class="w"> </span><span class="nv">VERNIER_COCO_DT_PATH</span><span class="o">=</span>...<span class="w"> </span>just<span class="w"> </span>test-coco-val<span class="w">  </span><span class="c1"># the val2017 smoke</span>
+<div class="language-sh highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>just<span class="w"> </span>test-parity<span class="w">                                              </span><span class="c1"># the fast fixture suite</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nv">VERNIER_COCO_GT_PATH</span><span class="o">=</span>...<span class="w"> </span><span class="nv">VERNIER_COCO_DT_PATH</span><span class="o">=</span>...<span class="w"> </span>just<span class="w"> </span>test-coco-val<span class="w">  </span><span class="c1"># the val2017 smoke</span>
 </span></code></pre></div>
 <p>The val2017 GT and a public-detector predictions JSON are downloaded
 under the COCO terms of use and never committed to the repo;

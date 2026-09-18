@@ -1469,6 +1469,34 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label=" COCOeval">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#vernier.COCOeval.evalImgs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;evalImgs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.COCOeval.ious" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;ious
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -2162,6 +2190,72 @@ lifetime.</p>
 
 
 
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="vernier.COCOeval.evalImgs" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">evalImgs</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+      <small class="doc doc-label doc-label-writable"><code>writable</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">evalImgs</span><span class="p">:</span> <span class="n"><span title="list">list</span></span><span class="p">[</span><span class="n"><span title="dict">dict</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">,</span> <span class="n"><span title="typing.Any">Any</span></span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Per-image evaluation records, built from the grid on first access.</p>
+<p>Reading this re-runs the per-image pass with per-cell metadata
+retained, once, and caches the result. Nothing else on this
+class needs the metadata, so the cost lands only on callers
+that ask.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+<h3 id="vernier.COCOeval.ious" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">ious</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+      <small class="doc doc-label doc-label-writable"><code>writable</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">ious</span><span class="p">:</span> <span class="n"><span title="dict">dict</span></span><span class="p">[</span><span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">,</span> <span class="n"><span title="int">int</span></span><span class="p">],</span> <span class="n"><span title="vernier._compat._IouMatrix">_IouMatrix</span></span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p><code>{(imgId, catId): similarity matrix}</code>, built on first access.</p>
+<p>Mirrors <code>pycocotools.cocoeval.COCOeval.ious</code>: one entry per
+<code>(image, category)</code> pair in <code>params.imgIds x params.catIds</code>
+(<code>catId</code> is <code>-1</code> when <code>params.useCats</code> is falsy), holding a
+<code>(D, G)</code> array of detections-by-ground-truths with detections
+score-descending and truncated to <code>max(params.maxDets)</code>.</p>
+<p>Per quirk <strong>F5</strong>, a pair with no detections <em>or</em> no ground truths
+is a bare <code>[]</code> rather than an empty array, which is what
+<code>maskUtils.iou</code> and <code>computeOks</code> both return.</p>
+<p>Reading this re-runs the per-image pass with the similarity
+matrices retained, once, and caches the result — they are
+O(G x D) per cell and neither <code>accumulate</code> nor <code>summarize</code>
+reads them.</p>
+
+    </div>
+
+</div>
 
 
 
