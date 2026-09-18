@@ -634,6 +634,27 @@ def render_document(
     cpu_clause = _cpu_provenance(cpu_model, cpu_arch)
     has_iqr_failures = any(stats.iqr_gate_passed is False for stats in cells.values())
 
+    # A round recorded entirely in `dev` renders one sample per impl with
+    # a 0 ns IQR and no warmup. The per-workload annotation below only
+    # fires for a cell whose mode *differs* from the headline, so an
+    # all-`dev` round would otherwise render silently — which is exactly
+    # what the old refresh recipe produced, having omitted
+    # `--mode release` under a comment that said "release". Refuse it
+    # here rather than trusting the next person to notice the flag.
+    if harness_mode and harness_mode != "release":
+        sys.exit(
+            f"error: refusing to render a page from harness mode "
+            f"'{harness_mode}'.\n"
+            f"  Every cell in {sha}/{mfp} was recorded without "
+            f"`--mode release`, so each is a single rep with no warmup "
+            f"and no IQR gate.\n"
+            f"  Re-run the round per docs/engineering/benchmarking/README.md "
+            f"§'Refreshing the published numbers'.\n"
+            f"  (Scale cells such as Objects365 are `dev` on purpose; they "
+            f"are fine *alongside* release cells, which is the case this "
+            f"check allows.)"
+        )
+
     header = f"""# Benchmarks
 
 Comparison of vernier against the third-party libraries it targets parity

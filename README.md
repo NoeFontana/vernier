@@ -16,7 +16,7 @@ package with a Rust core, a Python API, and a standalone CLI.
   Same constructor, same `params` mutations, same `eval` / `evalImgs` /
   `ious` / `stats` read back off the instance ([what carries
   over](docs/migrate/from-pycocotools.md#params-what-the-shim-honors-and-what-it-rejects)).
-- **3–17× faster** than faster-coco-eval and pycocotools at equal CPU budget
+- **3.7–19× faster** than faster-coco-eval and pycocotools at equal CPU budget
   ([benchmarks](#performance)).
 - **Built for real pipelines**: training-loop evaluation, multi-rank
   gathering, per-image tables, error decomposition, calibration, scenario
@@ -191,15 +191,18 @@ Speedup is the other library's time divided by vernier's.
 
 | Workload | vernier | vs pycocotools | vs faster-coco-eval | vs hotcoco |
 | --- | ---: | ---: | ---: | ---: |
-| bbox AP | 354 ms | 16.0× | 4.7× | 1.6× |
-| segm AP | 968 ms | 6.7× | 3.5× | 1.4× |
-| keypoints AP | 136 ms | 16.9× | 5.7× | 1.6× |
-| boundary AP | 3.2 s | 19.5× ¹ | 16.7× | — |
-| Panoptic PQ | 10.6 s | 3.3× ² | — | — |
-| Semantic mIoU | 2.9 s | 14.0× ³ | — | — |
-| LVIS v1 bbox AP | 2.6 s | 73.1× ⁴ | — | 1.4× |
+| bbox AP | 305 ms | 18.7× | 5.6× | 1.9× |
+| segm AP | 931 ms | 7.2× | 3.7× | 1.5× |
+| keypoints AP | 137 ms | 16.8× | 5.7× | 1.6× |
+| boundary AP | 3.15 s | 19.8× ¹ | 16.9× | — |
+| Panoptic PQ | 10.5 s | 3.3× ² | — | — |
+| Semantic mIoU | 2.87 s | 14.1× ³ | — | — |
+| LVIS v1 bbox AP | 2.50 s | 81.0× ⁴ | — | 1.6× |
 
-¹ boundary-iou-api · ² panopticapi · ³ mmsegmentation · ⁴ lvis-api, with 10× lower peak memory (1.45 vs 15.0 GiB)
+¹ boundary-iou-api · ² panopticapi · ³ mmsegmentation · ⁴ lvis-api, with 13.6× lower peak memory (1.11 vs 15.08 GiB)
+
+Peak RSS on the COCO cells is 200 MiB, against 274 MiB (hotcoco),
+569 MiB (pycocotools) and 691 MiB (faster-coco-eval).
 
 <details>
 <summary>Thread scaling (<code>num_threads</code>, 8-vCPU host)</summary>
@@ -209,14 +212,17 @@ column compares equal CPU budgets.
 
 | Workload | 1 | 2 | 4 | 8 | vs hotcoco @ 8 | vs faster-coco-eval @ 8 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| bbox | 354 ms | 267 ms | 229 ms | 226 ms | 1.6× | 6.5× |
-| segm | 983 ms | 569 ms | 375 ms | 319 ms | 1.7× | 11.0× |
-| boundary | 3.20 s | 1.70 s | 937 ms | 790 ms | — | 21.5× |
-| keypoints | 136 ms | 118 ms | 109 ms | 104 ms | 1.5× | 7.3× |
-| bbox, Objects365 (1.06M dets) † | 8.8 s | — | — | 4.7 s | 1.7× | OOM at ~30 GiB |
+| bbox | 306 ms | 221 ms | 146 ms | 131 ms | 2.8× | 11.4× |
+| segm | 926 ms | 536 ms | 304 ms | 239 ms | 2.3× | 14.6× |
+| boundary | 3.18 s | 1.68 s | 866 ms | 711 ms | — | 23.8× |
+| keypoints | 139 ms | 90 ms | 60 ms | 52 ms | 3.1× | 14.7× |
+| bbox, Objects365 (1.06M dets) † | 6.6 s | — | — | 3.2 s | 2.6× | OOM at ~30 GiB |
 
 Strict-mode results are bit-identical across thread counts.
-† Single-rep dev run; pycocotools takes ~6 min per rep at this size.
+† Single-rep dev run; pycocotools takes ~6 min per rep at this size. The
+faster-coco-eval OOM is carried forward from the previous round rather
+than re-measured — reproducing a 30 GiB OOM destabilises the host
+mid-round.
 
 </details>
 

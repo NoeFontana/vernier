@@ -172,15 +172,29 @@ the rest.
 Steady-state once the bootstrap above is done.
 
 ```sh
-# 0. Verify the benchmarks page is current. Re-bench any cell that's
-#    moved since the last release, then regenerate docs/benchmarks.md
-#    from the harness result tree:
-just bench-sync
-# (re-run any relevant `vernier-bench run` cells; see
-#  docs/engineering/benchmarking/2026-05-vernier-vs-alternatives.md
-#  for the canonical command list)
-python tools/render_benchmarks.py
-git add docs/benchmarks.md && git commit -m "docs(bench): refresh page"
+# 0. Refresh the published performance numbers.
+#
+#    The canonical command list is
+#      docs/engineering/benchmarking/README.md
+#        §"Refreshing the published numbers"
+#    Run it there; do not paste a copy into this file. (Copies are what
+#    drifted: this step used to point at the 2026-05 snapshot long after
+#    the 2026-09 one superseded it, and the recipe it pointed at ran in
+#    `dev` mode — one rep, no IQR gate — under a "release" caption.)
+#
+#    Two things that step covers which are easy to miss:
+#      * `--mode release`; the harness default is `dev` (N=1).
+#      * `render_benchmarks.py` regenerates docs/benchmarks.md ONLY.
+#        README.md, docs/comparison.md, docs/index.md,
+#        docs/migrate/from-faster-coco-eval.md and the two how-to pages
+#        hand-mirror those numbers and must change in the same commit.
+#
+#    Then add a dated snapshot under docs/engineering/benchmarking/ and
+#    re-point its index at it.
+git add docs/benchmarks.md README.md docs/comparison.md docs/index.md \
+        docs/migrate/from-faster-coco-eval.md docs/how-to/ \
+        docs/engineering/benchmarking/
+git commit -m "docs(bench): refresh published numbers for X.Y.Z"
 
 # 1. Open a release PR.
 git switch -c chore/release-X.Y.Z
