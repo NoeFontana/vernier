@@ -74,7 +74,24 @@ M2 = np.uint64(0x94D049BB133111EB)
 #: put a NaN in the fixture, whose payload is not something to pin
 #: across architectures (CI runs the Rust suite on x86_64 *and*
 #: aarch64). Every generated value, and every sum of them, is finite.
-EXPONENTS = [0, 1, 700, 1010, 1018, 1020, 1021, 1022, 1023, 1023, 1024, 1025, 1026, 1030, 1040, 1300]
+EXPONENTS = [
+    0,
+    1,
+    700,
+    1010,
+    1018,
+    1020,
+    1021,
+    1022,
+    1023,
+    1023,
+    1024,
+    1025,
+    1026,
+    1030,
+    1040,
+    1300,
+]
 
 
 def splitmix64(seed: int, count: int) -> np.ndarray:
@@ -99,7 +116,24 @@ def splitmix64(seed: int, count: int) -> np.ndarray:
 #: Comparable magnitudes plus mixed signs is the discriminating regime;
 #: the exotic values in this vector are hand-placed instead (see
 #: `main`), so the fixture covers them without losing its teeth.
-GOLDEN_EXPONENTS = [1020, 1021, 1022, 1022, 1023, 1023, 1023, 1023, 1023, 1023, 1023, 1024, 1024, 1024, 1025, 1026]
+GOLDEN_EXPONENTS = [
+    1020,
+    1021,
+    1022,
+    1022,
+    1023,
+    1023,
+    1023,
+    1023,
+    1023,
+    1023,
+    1023,
+    1024,
+    1024,
+    1024,
+    1025,
+    1026,
+]
 
 
 def bits_to_f64(u: np.ndarray, exponents: list[int] = EXPONENTS) -> np.ndarray:
@@ -223,12 +257,14 @@ def main() -> int:
     emit(
         "SWEEP_EXPONENTS",
         EXPONENTS,
-        "Biased exponents the sweep's value generator draws from, emitted\nhere so the Rust and Python halves of the PRNG cannot drift apart.",
+        "Biased exponents the sweep's value generator draws from, emitted\n"
+        "here so the Rust and Python halves of the PRNG cannot drift apart.",
     )
     emit(
         "GOLDEN_INPUT_BITS",
         [int(v) for v in golden_input.view(np.uint64)],
-        "The fixed 133-element input, as raw bit patterns so no decimal\nround-trip can smuggle in a 1-ULP change.",
+        "The fixed 133-element input, as raw bit patterns so no decimal\n"
+        "round-trip can smuggle in a 1-ULP change.",
     )
     emit(
         "GOLDEN_PREFIX_SUM_BITS",
@@ -243,7 +279,8 @@ def main() -> int:
     emit(
         "RANDOM_SWEEP_FIRST_SUM_BITS",
         first_sums,
-        "The first vector's sum for each n -- a concrete value to print\nwhen the digest above fails, so the failure is debuggable.",
+        "The first vector's sum for each n -- a concrete value to print\n"
+        "when the digest above fails, so the failure is debuggable.",
     )
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

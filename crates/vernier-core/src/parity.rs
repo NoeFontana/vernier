@@ -179,6 +179,20 @@ const PAIRWISE_BLOCKSIZE: usize = 128;
 /// patterns rather than merely comparing against a second Rust
 /// expression: a future `#[target_feature]` wrapper or a fast-math
 /// crate would otherwise change the answer with nothing to catch it.
+///
+/// # One canonical reduction
+///
+/// This is the crate's only numpy-order `f64` reduction. It absorbed
+/// `summarize::pairwise_sum`, which had the same three arms and served
+/// [`crate::summarize`]'s `np.mean(s[s>-1])`, [`crate::tables`]' per-row
+/// means and [`crate::calibration`]'s per-bin sums. That copy was
+/// correct on the arms it documented but **missing the reduction's
+/// identity seed**, so it returned `-0.0` where `np.sum` returns
+/// `+0.0`. Its callers only ever sum non-negative values, so the gap
+/// was unreachable for them — but it was a live bug waiting for the
+/// next caller, and exactly the kind of drift a second copy invites.
+/// Its numpy pin survives as
+/// [`tests::numpy_pairwise_sum_matches_add_reduce_on_the_summary_reduction_pin`].
 pub(crate) fn numpy_pairwise_sum(a: &[f64]) -> f64 {
     // `np.add.reduce` seeds its accumulator with `add`'s identity and
     // adds the pairwise total to it: `0.0 + DOUBLE_pairwise_sum(...)`.
@@ -562,6 +576,38 @@ mod tests {
             "premise: a 66/67 split must be a different double, or this \
              test cannot see the rounding-down of n/2"
         );
+    }
+
+    /// A second, independently-derived numpy pin, carried over from the
+    /// summary reduction this function absorbed
+    /// (`summarize::mean_ignoring_sentinel`, which rides on
+    /// `np.mean(s[s>-1])`): 1010 alternating elements, large enough to
+    /// drive both the 8-lane block and the recursive split.
+    ///
+    /// The expected hex is `np.add.reduce(v).hex()` for the same
+    /// sequence. Naive forward summation lands one ULP higher
+    /// (`0x1.f900000002309p+8`).
+    #[test]
+    fn numpy_pairwise_sum_matches_add_reduce_on_the_summary_reduction_pin() {
+        let v: Vec<f64> = (0..1010)
+            .map(|i| if i % 2 == 0 { 1.0 } else { 1e-12 })
+            .collect();
+        let got = numpy_pairwise_sum(&v);
+        let expected = f64::from_bits(0x407f_9000_0000_22b4);
+        assert_eq!(
+            got.to_bits(),
+            expected.to_bits(),
+            "drifts from numpy: got {got:e}, expected {expected:e}",
+        );
+    }
+
+    #[test]
+    fn numpy_pairwise_sum_handles_short_inputs_with_naive_fallback() {
+        // n < 8 uses the simple loop; verify a hand-checked tiny case.
+        let v = [1.0_f64, 2.0, 3.0, 4.0];
+        assert_eq!(numpy_pairwise_sum(&v), 10.0);
+        assert_eq!(numpy_pairwise_sum(&[]), 0.0);
+        assert_eq!(numpy_pairwise_sum(&[42.0]), 42.0);
     }
 
     /// Below 8 elements numpy left-folds from `+0.0`; from 8 to 128 it

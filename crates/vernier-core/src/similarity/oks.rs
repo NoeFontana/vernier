@@ -41,7 +41,7 @@
 //!   `f7_*` tests.
 //! - **F8** (`strict`): `np.sum` is not a left fold. The reduction goes
 //!   through numpy's `DOUBLE_pairwise_sum`, ported in
-//!   [`crate::parity::numpy_pairwise_sum`]. Left-folding the `exp(-e)`
+//!   `crate::parity::numpy_pairwise_sum`. Left-folding the `exp(-e)`
 //!   terms moves 22.9 % of COCO-person cells and 74.6 % of
 //!   COCO-WholeBody cells by at least one ULP.
 //! - **F9** (`strict`): [`COCO_PERSON_SIGMAS`] is
