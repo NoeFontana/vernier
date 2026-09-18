@@ -96,7 +96,7 @@ out-of-range or non-numeric env value falls back to sequential
 rather than aborting (threading is a perf knob, not a correctness
 switch). `RAYON_NUM_THREADS` is intentionally **not** consulted.
 
-Strict-mode bit-equality (`--parity strict`) is preserved across
+Strict-mode bit-equality (`--parity-mode strict`) is preserved across
 every thread count by construction — boundary's per-image deltas
 are sorted by `image_id` before the f64 fold, semantic
 accumulation is u64-additive. See

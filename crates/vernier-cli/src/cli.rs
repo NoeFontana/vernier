@@ -13,8 +13,11 @@
 //! det/segm/boundary pick `[1, 10, 100]` without the CLI carrying
 //! per-kind defaults of its own.
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 
+use clap::builder::{EnumValueParser, PossibleValue, TypedValueParser};
+use clap::error::ErrorKind;
 use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use vernier_core::ParityMode;
 
@@ -162,8 +165,13 @@ pub(crate) struct EvalArgs {
 
     /// Parity mode (per ADR-0002). Defaults to `strict` (the CLI's
     /// role as a parity oracle ranks above its role as an opinionated
-    /// fixer).
-    #[arg(long = "parity-mode", value_enum, default_value_t = ParityModeArg::Strict)]
+    /// fixer). The retired `aligned` value is rejected by ADR-0059.
+    #[arg(
+        long = "parity-mode",
+        value_name = "PARITY_MODE",
+        value_parser = ParityModeValueParser,
+        default_value = "strict"
+    )]
     pub(crate) parity_mode: ParityModeArg,
 
     /// Comma-separated `max_dets` ladder (e.g. `1,10,100`). Omit to
@@ -331,31 +339,78 @@ impl IouTypeArg {
     }
 }
 
-/// Parity-mode selector. Per ADR-0015 §"Surface", the CLI accepts
-/// three values; `aligned` is a retired alias kept for backward
-/// compatibility and is mapped to [`ParityMode::Strict`] downstream.
+/// Parity-mode selector. One variant per [`ParityMode`] — the CLI
+/// carries no parity vocabulary of its own. ADR-0059 removed the
+/// retired `aligned` value; [`ParityModeValueParser`] turns it into a hard
+/// error naming `strict` as its replacement.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 #[value(rename_all = "lower")]
 pub(crate) enum ParityModeArg {
     /// Reproduce pycocotools bit-exactly.
     Strict,
-    /// Retired alias for `strict`. ADR-0002's 2026-05-10 amendment
-    /// folded the `aligned` disposition tier into `strict`, so the
-    /// quirk-disposition table no longer distinguishes them. The flag
-    /// value is retained so existing invocations keep working;
-    /// removing it is its own ADR per ADR-0015's CLI-flag-change rule.
-    Aligned,
     /// Apply the opinionated `corrected` fixes (per ADR-0002).
     Corrected,
+}
+
+/// The `--parity-mode` value ADR-0059 removed. Named here only so the
+/// rejection below can say what to type instead, and so the test that
+/// pins the rejection has one spelling to reference.
+const RETIRED_PARITY_MODE: &str = "aligned";
+
+/// Value parser for `--parity-mode`.
+///
+/// Wraps clap's [`EnumValueParser`] rather than replacing it: every
+/// live value, the `--help` rendering, and shell completions keep
+/// coming from [`ParityModeArg`]'s [`ValueEnum`] derive. The wrapper
+/// exists for one thing — intercepting the spelling ADR-0059 removed,
+/// so an invocation pinned to `--parity-mode aligned` fails at parse
+/// time (exit code 2, clap's argument-error code) with a message
+/// naming its replacement instead of clap's bare "invalid value".
+/// Any other unknown value falls through to clap's own wording, which
+/// already enumerates the possible values.
+#[derive(Clone)]
+struct ParityModeValueParser;
+
+impl TypedValueParser for ParityModeValueParser {
+    type Value = ParityModeArg;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        arg: Option<&clap::Arg>,
+        value: &OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        let raw = value.to_string_lossy();
+        if raw.eq_ignore_ascii_case(RETIRED_PARITY_MODE) {
+            let flag = arg.map_or_else(|| "--parity-mode".to_owned(), ToString::to_string);
+            let mut cmd = cmd.clone();
+            return Err(cmd.error(
+                ErrorKind::InvalidValue,
+                format!(
+                    "invalid value '{raw}' for '{flag}': the `{RETIRED_PARITY_MODE}` \
+                     parity mode was removed (ADR-0059). ADR-0002 folded the \
+                     `{RETIRED_PARITY_MODE}` disposition tier into `strict`, so pass \
+                     `strict` for the behaviour it used to select.\n  \
+                     [possible values: strict, corrected]"
+                ),
+            ));
+        }
+        EnumValueParser::<ParityModeArg>::new().parse_ref(cmd, arg, value)
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(
+            ParityModeArg::value_variants()
+                .iter()
+                .filter_map(ValueEnum::to_possible_value),
+        ))
+    }
 }
 
 impl From<ParityModeArg> for ParityMode {
     fn from(value: ParityModeArg) -> Self {
         match value {
-            // `Aligned` collapses to `Strict`: the tier was folded
-            // into `strict` by ADR-0002's 2026-05-10 amendment, and
-            // the flag value survives only as a compatibility alias.
-            ParityModeArg::Strict | ParityModeArg::Aligned => Self::Strict,
+            ParityModeArg::Strict => Self::Strict,
             ParityModeArg::Corrected => Self::Corrected,
         }
     }
@@ -565,6 +620,58 @@ mod tests {
         assert_eq!(args.parity_mode, ParityModeArg::Strict);
         assert!(args.max_dets.is_none());
         assert!(args.effective_use_cats());
+    }
+
+    #[test]
+    fn retired_aligned_parity_mode_is_rejected_at_parse() {
+        // ADR-0059. Asserted at the clap boundary as well as at the
+        // process boundary (`tests/eval.rs`) so a future refactor of
+        // the value parser cannot silently reinstate the alias.
+        let err = Cli::try_parse_from([
+            "vernier",
+            "eval",
+            "--gt",
+            "gt.json",
+            "--dt",
+            "dt.json",
+            "--iou-type",
+            "bbox",
+            "--parity-mode",
+            RETIRED_PARITY_MODE,
+        ])
+        .expect_err("`aligned` must not parse");
+        assert_eq!(err.kind(), ErrorKind::InvalidValue);
+        let rendered = err.to_string();
+        assert!(rendered.contains("removed (ADR-0059)"), "{rendered}");
+        assert!(rendered.contains("pass `strict`"), "{rendered}");
+        assert!(
+            rendered.contains("[possible values: strict, corrected]"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn parity_mode_still_accepts_both_live_values() {
+        for (raw, expected) in [
+            ("strict", ParityModeArg::Strict),
+            ("corrected", ParityModeArg::Corrected),
+        ] {
+            let cli = parse(&[
+                "eval",
+                "--gt",
+                "gt.json",
+                "--dt",
+                "dt.json",
+                "--iou-type",
+                "bbox",
+                "--parity-mode",
+                raw,
+            ]);
+            let Command::Eval(args) = cli.command else {
+                panic!("expected Eval")
+            };
+            assert_eq!(args.parity_mode, expected);
+        }
     }
 
     #[test]

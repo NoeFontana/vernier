@@ -51,7 +51,7 @@ struct SchemaV1<'a> {
     /// IoU kind name as user-facing string (`bbox` / `segm` /
     /// `boundary` / `keypoints`).
     iou_type: &'a str,
-    /// Parity mode after the CLI's `aligned`→`strict` collapse.
+    /// Kernel-resolved parity mode (`strict` or `corrected`).
     parity_mode: &'a str,
     /// Resolved `max_dets` ladder.
     max_dets: &'a [usize],

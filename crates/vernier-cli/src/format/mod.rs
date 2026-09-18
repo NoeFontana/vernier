@@ -66,8 +66,7 @@ pub(crate) enum EvalArtifact<'a> {
 pub(crate) struct FormatContext<'a> {
     /// IoU kind that produced the summary.
     pub(crate) iou_type: IouTypeArg,
-    /// Parity mode that produced the summary (after the
-    /// `aligned`→`strict` collapse the CLI applies).
+    /// Parity mode that produced the summary.
     pub(crate) parity_mode: ParityMode,
     /// Resolved `max_dets` ladder (kernel-canonical default applied).
     pub(crate) max_dets: &'a [usize],

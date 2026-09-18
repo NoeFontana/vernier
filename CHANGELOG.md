@@ -61,6 +61,25 @@ additive / perf / docs".
   Enabling `float_roundtrip` makes vernier's doubles bit-equal to
   CPython's `json`. Costs ~4 % on the sequential parse path.
 
+### Removed
+
+- **`vernier eval --parity-mode aligned` is gone** (ADR-0059). Pass
+  `strict` instead: ADR-0002's 2026-05-10 amendment folded the
+  `aligned` disposition tier into `strict`, and the CLI value had been
+  a silent alias for `strict` ever since — so this changes no number
+  any invocation reports, only what you are allowed to type. It was
+  also the last place in the project where a user could name a parity
+  mode that does not exist: `ParityMode` has shipped `Strict` /
+  `Corrected` only, and the Python `parity_mode` argument has rejected
+  `"aligned"` since the amendment. Because the JSON formatter emits the
+  kernel-resolved mode, `--parity-mode aligned --emit json` used to
+  record `"parity_mode": "strict"`, so the flag never round-tripped
+  through its own result document. This is a breaking change to a
+  committed CLI surface (ADR-0015 §"Output stability"): a pinned
+  invocation now fails at argument-parse time with exit code 2, before
+  any eval work, and the error names `strict` as the replacement and
+  lists the valid values.
+
 ## [0.3.0] - 2026-09-16
 
 ### Performance
