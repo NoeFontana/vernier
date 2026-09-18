@@ -76,6 +76,7 @@ mod calibration;
 mod confusion;
 mod dataset;
 mod dlpack;
+mod gt_ingest;
 mod lrp;
 mod manifest_py;
 mod numpy_utils;
@@ -661,7 +662,7 @@ fn parse_dt_parallel(
 /// fire during JSON loading. The Partial* / OutOfBudget arms need a
 /// `Python<'_>` token to attach attributes and are unreachable here, so
 /// they collapse into the generic `PyValueError` fallback.
-fn coco_load_error_to_pyerr(e: EvalError) -> PyErr {
+pub(crate) fn coco_load_error_to_pyerr(e: EvalError) -> PyErr {
     match e {
         EvalError::InvalidAnnotation { .. } => InvalidAnnotationError::new_err(format!("{e}")),
         EvalError::NonFinite { .. } => NonFiniteError::new_err(format!("{e}")),
