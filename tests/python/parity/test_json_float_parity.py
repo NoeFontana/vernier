@@ -90,8 +90,8 @@ def _dt_scores_from_grid(num_threads: int | None) -> list[float]:
     grid = _vernier_core.evaluate_bbox_grid(
         _gt_bytes(),
         _dt_bytes(),
-        "strict",
-        100,
+        parity_mode="strict",
+        max_dets_per_image=100,
         use_cats=True,
         num_threads=num_threads,
         # `eval_imgs()` reads per-cell metadata, which is opt-in since

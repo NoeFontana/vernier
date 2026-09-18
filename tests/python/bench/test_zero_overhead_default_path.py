@@ -436,7 +436,7 @@ def test_evaluator_evaluate_default_path_within_tolerance_of_direct_ffi() -> Non
     direct ``evaluate_bbox_summary`` FFI."""
     _assert_no_wrapper_overhead(
         "Evaluator().evaluate",
-        lambda: evaluate_bbox_summary(_GT, _DT, _PARITY, _MAX_DETS, _USE_CATS),
+        lambda: evaluate_bbox_summary(_GT, _DT, parity_mode=_PARITY, max_dets=_MAX_DETS, use_cats=_USE_CATS),
         lambda: Evaluator().evaluate(_GT, _DT),
     )
 
@@ -496,7 +496,7 @@ def test_gate_detects_a_doubled_wrapper() -> None:
     """
 
     def direct() -> object:
-        return evaluate_bbox_summary(_GT, _DT, _PARITY, _MAX_DETS, _USE_CATS)
+        return evaluate_bbox_summary(_GT, _DT, parity_mode=_PARITY, max_dets=_MAX_DETS, use_cats=_USE_CATS)
 
     def doubled() -> None:
         direct()

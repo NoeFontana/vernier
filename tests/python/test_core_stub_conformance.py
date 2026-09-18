@@ -424,34 +424,3 @@ def test_class_signatures_match(class_name: str) -> None:
         if report is not None:
             mismatches.append(report)
     _assert_no_mismatches(mismatches)
-
-
-def test_instance_reexports_every_dataset_taking_entry_point() -> None:
-    """``vernier.instance`` must not omit a ``_with_dataset`` sibling.
-
-    The parsed-once dataset handle (ADR-0020) is the route a caller takes
-    to evaluate several IoU types, or several parameter sets, without
-    re-parsing the ground truth. It is only reachable from Python if the
-    wrapper re-exports it — and that list is maintained by hand, one
-    ``from vernier._core import ...`` entry per name.
-
-    0.4.0 shipped with exactly one member missing:
-    ``evaluate_bbox_grid_with_dataset`` was in ``_core`` and absent from
-    ``vernier.instance``, while all four ``_summary_with_dataset``
-    siblings were present. The effect was that the handle served summary
-    evaluation but not grid evaluation, so a downstream reading
-    ``accumulate()``'s per-class tensors — which is what a training-loop
-    metric does — had no public way to avoid re-parsing its ground
-    truth. It was found by an integration hitting exactly that wall, not
-    by this suite, which is why the invariant is pinned here rather than
-    the single name being added and forgotten.
-    """
-    from vernier import instance
-
-    runtime = {name for name in dir(_core) if name.endswith("_with_dataset")}
-    assert runtime, "no `_with_dataset` entry points found in _core — has the naming changed?"
-    missing = sorted(name for name in runtime if not hasattr(instance, name))
-    assert not missing, (
-        f"`vernier.instance` does not re-export {missing}; every `_with_dataset` entry point in "
-        "`_core` is part of the public surface and must be reachable without importing `_core`"
-    )

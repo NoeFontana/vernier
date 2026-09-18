@@ -58,7 +58,7 @@ use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
 #[allow(clippy::too_many_arguments)]
 fn run_lrp_pass<'py, F>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -79,7 +79,7 @@ where
     let parity = parse_parity_mode(parity_mode)?;
     // Copy the JSON bytes off the GIL-tied PyBytes borrow so the
     // parse and the LRP orchestration can run inside `py.detach`.
-    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let gt_bytes = gt.as_bytes().to_vec();
     let dt_bytes = dt_bytes.as_bytes().to_vec();
 
     let report = py.detach(move || -> PyResult<LrpReport> {
@@ -119,11 +119,11 @@ where
 ///
 /// Returns the report dict described in the module docstring.
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_bbox<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -133,7 +133,7 @@ pub(crate) fn optimal_lrp_bbox<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_lrp_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,
@@ -146,11 +146,11 @@ pub(crate) fn optimal_lrp_bbox<'py>(
 
 /// LRP / oLRP for the segm (mask) kernel.
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_segm<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -160,7 +160,7 @@ pub(crate) fn optimal_lrp_segm<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_lrp_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,
@@ -176,11 +176,11 @@ pub(crate) fn optimal_lrp_segm<'py>(
 /// `dilation_ratio` configures the boundary band thickness (ADR-0010
 /// default `0.02` for COCO, `0.008` for LVIS).
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, dilation_ratio))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_boundary<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -192,7 +192,7 @@ pub(crate) fn optimal_lrp_boundary<'py>(
     validate_dilation_ratio(dilation_ratio)?;
     run_lrp_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,
@@ -212,11 +212,11 @@ pub(crate) fn optimal_lrp_boundary<'py>(
 /// ...]}`); an empty mapping means "use the COCO-person 17-sigma
 /// table for every category".
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, sigmas))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, sigmas))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_keypoints<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -227,7 +227,7 @@ pub(crate) fn optimal_lrp_keypoints<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_lrp_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,

@@ -8,6 +8,13 @@
 
 ## Context and problem statement
 
+> **Superseded on this point by [ADR-0061](./0061-one-ground-truth-parameter-keyword-only-options.md).**
+> The `_with_dataset` function family described below no longer exists: the
+> ground-truth argument is one parameter, `gt`, accepting `bytes` or a
+> `CocoDataset`. References to `evaluate_*_with_dataset` here describe the
+> surface as it stood when this ADR was written.
+
+
 The detection side of the ingest boundary has been worked twice.
 ADR-0030 added the columnar `Detections` dict; ADR-0057 added the
 list-of-result-dicts and `(N, 7)` matrix routes. The ground-truth side

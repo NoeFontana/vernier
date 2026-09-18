@@ -49,19 +49,15 @@ from vernier._core import (
     evaluate_bbox_grid,
     evaluate_bbox_partitioned,
     evaluate_bbox_summary,
-    evaluate_bbox_summary_with_dataset,
     evaluate_boundary_grid,
     evaluate_boundary_partitioned,
     evaluate_boundary_summary,
-    evaluate_boundary_summary_with_dataset,
     evaluate_keypoints_grid,
     evaluate_keypoints_partitioned,
     evaluate_keypoints_summary,
-    evaluate_keypoints_summary_with_dataset,
     evaluate_segm_grid,
     evaluate_segm_partitioned,
     evaluate_segm_summary,
-    evaluate_segm_summary_with_dataset,
     per_class_to_arrow_pycapsule,
     per_detection_to_arrow_pycapsule,
     per_image_to_arrow_pycapsule,
@@ -71,13 +67,7 @@ from vernier._core import (
     cells_from_grid as _cells_from_grid,
 )
 from vernier._core import (
-    evaluate_bbox_grid_with_dataset as evaluate_bbox_grid_with_dataset,
-)
-from vernier._core import (
     evaluate_instance_to_partial as _evaluate_instance_to_partial,
-)
-from vernier._core import (
-    evaluate_segm_grid_with_dataset as evaluate_segm_grid_with_dataset,
 )
 from vernier._core import (
     merge_instance_partials as _merge_instance_partials,
@@ -630,49 +620,51 @@ class Evaluator:
                 calibration=calibration,
                 num_threads=num_threads,
             )
-        if isinstance(gt, CocoDataset):
-            return self._evaluate_with_dataset(gt, dt, max_dets_list, num_threads=num_threads)
+        # One dispatch for both ground-truth forms. ADR-0061 made `gt` a
+        # parameter that accepts `bytes` or a `CocoDataset`, so the handle no
+        # longer needs a parallel `_with_dataset` family -- nor this method a
+        # branch to pick between them.
         match self.iou:
             case Bbox():
                 return evaluate_bbox_summary(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets=max_dets_list,
+                    use_cats=self.use_cats,
+                    cast_inputs=self.cast_inputs,
                     num_threads=num_threads,
                 )
             case Segm():
                 return evaluate_segm_summary(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets=max_dets_list,
+                    use_cats=self.use_cats,
+                    cast_inputs=self.cast_inputs,
                     num_threads=num_threads,
                 )
             case Boundary(dilation_ratio=r):
                 return evaluate_boundary_summary(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    r,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets=max_dets_list,
+                    use_cats=self.use_cats,
+                    dilation_ratio=r,
+                    cast_inputs=self.cast_inputs,
                     num_threads=num_threads,
                 )
             case Keypoints(sigmas=s):
                 return evaluate_keypoints_summary(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    _normalize_sigmas(s),
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets=max_dets_list,
+                    use_cats=self.use_cats,
+                    sigmas=_normalize_sigmas(s),
+                    cast_inputs=self.cast_inputs,
                     num_threads=num_threads,
                 )
             case _:
@@ -698,11 +690,11 @@ class Evaluator:
                 psum = evaluate_bbox_partitioned(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    manifest,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    manifest=manifest,
+                    cast_inputs=self.cast_inputs,
                     cross_axes=cross,
                     num_threads=num_threads,
                 )
@@ -710,11 +702,11 @@ class Evaluator:
                 psum = evaluate_segm_partitioned(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    manifest,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    manifest=manifest,
+                    cast_inputs=self.cast_inputs,
                     cross_axes=cross,
                     num_threads=num_threads,
                 )
@@ -722,12 +714,12 @@ class Evaluator:
                 psum = evaluate_boundary_partitioned(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    r,
-                    manifest,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    dilation_ratio=r,
+                    manifest=manifest,
+                    cast_inputs=self.cast_inputs,
                     cross_axes=cross,
                     num_threads=num_threads,
                 )
@@ -735,12 +727,12 @@ class Evaluator:
                 psum = evaluate_keypoints_partitioned(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    _normalize_sigmas(s),
-                    manifest,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    sigmas=_normalize_sigmas(s),
+                    manifest=manifest,
+                    cast_inputs=self.cast_inputs,
                     cross_axes=cross,
                     num_threads=num_threads,
                 )
@@ -824,11 +816,11 @@ class Evaluator:
                 grid = evaluate_bbox_grid(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    need_retention,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    retain_iou=need_retention,
+                    cast_inputs=self.cast_inputs,
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
@@ -838,11 +830,11 @@ class Evaluator:
                 grid = evaluate_segm_grid(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    need_retention,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    retain_iou=need_retention,
+                    cast_inputs=self.cast_inputs,
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
@@ -852,12 +844,12 @@ class Evaluator:
                 grid = evaluate_boundary_grid(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    r,
-                    need_retention,
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    dilation_ratio=r,
+                    retain_iou=need_retention,
+                    cast_inputs=self.cast_inputs,
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
@@ -872,11 +864,11 @@ class Evaluator:
                 grid = evaluate_keypoints_grid(
                     gt,
                     dt,
-                    self.parity_mode,
-                    max_dets_list[-1],
-                    self.use_cats,
-                    _normalize_sigmas(s),
-                    self.cast_inputs,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    sigmas=_normalize_sigmas(s),
+                    retain_iou=self.cast_inputs,
                     iou_thresholds=custom_iou,
                     recall_thresholds=custom_recall,
                     area_ranges=custom_areas,
@@ -925,60 +917,6 @@ class Evaluator:
             _per_pair_batch=per_pair_batch,
             _eval_cells=eval_cells,
         )
-
-    def _evaluate_with_dataset(
-        self,
-        gt: CocoDataset,
-        dt: DetectionsInput,
-        max_dets_list: list[int],
-        *,
-        num_threads: int | None = None,
-    ) -> Summary:
-        match self.iou:
-            case Bbox():
-                return evaluate_bbox_summary_with_dataset(
-                    gt,
-                    dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    self.cast_inputs,
-                    num_threads=num_threads,
-                )
-            case Segm():
-                return evaluate_segm_summary_with_dataset(
-                    gt,
-                    dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    self.cast_inputs,
-                    num_threads=num_threads,
-                )
-            case Boundary(dilation_ratio=r):
-                return evaluate_boundary_summary_with_dataset(
-                    gt,
-                    dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    r,
-                    self.cast_inputs,
-                    num_threads=num_threads,
-                )
-            case Keypoints(sigmas=s):
-                return evaluate_keypoints_summary_with_dataset(
-                    gt,
-                    dt,
-                    self.parity_mode,
-                    max_dets_list,
-                    self.use_cats,
-                    _normalize_sigmas(s),
-                    self.cast_inputs,
-                    num_threads=num_threads,
-                )
-            case _:
-                _reject_unknown_iou(self.iou)
 
     def evaluate_to_partial(
         self,

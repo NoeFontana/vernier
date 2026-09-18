@@ -8,6 +8,13 @@
 
 ## Context and problem statement
 
+> **Superseded on this point by [ADR-0061](./0061-one-ground-truth-parameter-keyword-only-options.md).**
+> The `_with_dataset` function family described below no longer exists: the
+> ground-truth argument is one parameter, `gt`, accepting `bytes` or a
+> `CocoDataset`. References to `evaluate_*_with_dataset` here describe the
+> surface as it stood when this ADR was written.
+
+
 [ADR-0006](0006-threading-model.md) chose GIL-drop + single-threaded
 Rust compute for Phase 1 and explicitly reserved a slot for this ADR:
 "when a use case appears that justifies inter-image parallelism inside

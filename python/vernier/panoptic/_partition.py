@@ -69,11 +69,11 @@ def evaluate_partitioned(
     report = evaluate_panoptic_partitioned(
         gt,
         dt,
-        parity_mode,
-        things_stuff_split,
-        boundary,
-        dilation_ratio,
-        manifest,
+        parity_mode=parity_mode,
+        things_stuff_split=things_stuff_split,
+        boundary=boundary,
+        dilation_ratio=dilation_ratio,
+        manifest=manifest,
         cross_axes=cross,
         num_threads=num_threads,
     )

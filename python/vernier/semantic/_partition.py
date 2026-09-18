@@ -71,9 +71,9 @@ def evaluate_partitioned(
     report = evaluate_semantic_partitioned(
         dict(gt_label_maps),
         dict(dt_label_maps),
-        n_classes,
-        parity_mode,
-        manifest,
+        n_classes=n_classes,
+        parity_mode=parity_mode,
+        manifest=manifest,
         ignore_label=ignore_label,
         label_remap=dict(label_remap) if label_remap is not None else None,
         class_filter=class_filter,

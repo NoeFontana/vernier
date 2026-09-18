@@ -142,8 +142,22 @@ def test_joint_bbox_and_mask_areas_match_pycocotools(rle_form: str) -> None:
     gt_bytes = json.dumps(_gt_dataset()).encode()
     detections = _array_detections(rle_form)
 
-    bbox_grid = _core.evaluate_bbox_grid(gt_bytes, detections, "strict", 100, True, dt_area="bbox")
-    segm_grid = _core.evaluate_segm_grid(gt_bytes, detections, "strict", 100, True, dt_area="mask")
+    bbox_grid = _core.evaluate_bbox_grid(
+        gt_bytes,
+        detections,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area="bbox",
+    )
+    segm_grid = _core.evaluate_segm_grid(
+        gt_bytes,
+        detections,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area="mask",
+    )
 
     bbox_stats = _assert_grid_matches(bbox_grid, _pycocotools("bbox"))
     segm_stats = _assert_grid_matches(segm_grid, _pycocotools("segm"))
@@ -151,10 +165,10 @@ def test_joint_bbox_and_mask_areas_match_pycocotools(rle_form: str) -> None:
     assert segm_stats[3] == pytest.approx(0.3)
 
 
-def test_segm_grid_with_dataset_matches_the_bytes_grid_under_mask_area() -> None:
+def test_segm_grid_matches_its_bytes_form_under_mask_area() -> None:
     """The handle-taking segm grid on the one ``dt_area`` that needs a real mask.
 
-    ``evaluate_segm_grid_with_dataset`` exists so a caller evaluating
+    ``evaluate_segm_grid`` exists so a caller evaluating
     several IoU types parses its ground truth once. That is only useful
     if it is the same evaluator, and ``dt_area="mask"`` is the setting
     most able to diverge -- it reads each detection's area off its own
@@ -167,9 +181,21 @@ def test_segm_grid_with_dataset_matches_the_bytes_grid_under_mask_area() -> None
     gt_bytes = json.dumps(_gt_dataset()).encode()
     detections = _array_detections("compressed")
 
-    from_bytes = _core.evaluate_segm_grid(gt_bytes, detections, "strict", 100, True, dt_area="mask")
-    from_handle = _core.evaluate_segm_grid_with_dataset(
-        _core.CocoDataset.from_json(gt_bytes), detections, "strict", 100, True, dt_area="mask"
+    from_bytes = _core.evaluate_segm_grid(
+        gt_bytes,
+        detections,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area="mask",
+    )
+    from_handle = _core.evaluate_segm_grid(
+        _core.CocoDataset.from_json(gt_bytes),
+        detections,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area="mask",
     )
 
     left, right = from_bytes.accumulate(_MAX_DETS), from_handle.accumulate(_MAX_DETS)
@@ -184,9 +210,9 @@ def test_mask_area_is_rejected_on_the_bbox_grid() -> None:
         _core.evaluate_bbox_grid(
             gt_bytes,
             _array_detections("compressed"),
-            "strict",
-            100,
-            True,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
             dt_area=cast(Any, "mask"),
         )
 
@@ -197,4 +223,11 @@ def test_mask_area_requires_a_segmentation() -> None:
         [{"image_id": 0, "category_id": 1, "bbox": [0, 0, 20, 20], "score": 0.9}]
     ).encode()
     with pytest.raises(ValueError, match="requires an RLE `segmentation`"):
-        _core.evaluate_segm_grid(gt_bytes, dt_bytes, "strict", 100, True, dt_area="mask")
+        _core.evaluate_segm_grid(
+            gt_bytes,
+            dt_bytes,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
+            dt_area="mask",
+        )

@@ -38,12 +38,7 @@ def _make_cells() -> object:
     gt = (_FIXTURE / "gt.json").read_bytes()
     dt_bytes = (_FIXTURE / "dt.json").read_bytes()
     grid = evaluate_bbox_grid(
-        gt,
-        dt_bytes,
-        "strict",
-        100,
-        True,
-        False,
+        gt, dt_bytes, parity_mode="strict", max_dets_per_image=100, use_cats=True, retain_iou=False
     )
     return cells_from_grid(grid)
 

@@ -53,7 +53,7 @@ use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
 #[allow(clippy::too_many_arguments)]
 fn run_tide_pass<'py, F>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -74,7 +74,7 @@ where
     let parity = parse_parity_mode(parity_mode)?;
     // Copy the JSON bytes off the GIL-tied PyBytes borrow so the parse
     // and the eight-pass orchestration can run inside `py.detach`.
-    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let gt_bytes = gt.as_bytes().to_vec();
     let dt_bytes = dt_bytes.as_bytes().to_vec();
 
     let report = py.detach(move || -> PyResult<TideReport> {
@@ -108,11 +108,11 @@ where
 ///
 /// Returns the report dict described in the module docstring.
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn error_decomposition_bbox<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -122,7 +122,7 @@ pub(crate) fn error_decomposition_bbox<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_tide_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         t_f,
@@ -150,11 +150,11 @@ pub(crate) fn error_decomposition_bbox<'py>(
 /// Returns the report dict described in the module docstring (with
 /// `config.kernel = "segm"`).
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn error_decomposition_segm<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -164,7 +164,7 @@ pub(crate) fn error_decomposition_segm<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_tide_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         t_f,
@@ -189,11 +189,11 @@ pub(crate) fn error_decomposition_segm<'py>(
 /// the same constraint `evaluate_boundary_summary` enforces; polygon
 /// and RLE shapes both work.
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats, dilation_ratio))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn error_decomposition_boundary<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -205,7 +205,7 @@ pub(crate) fn error_decomposition_boundary<'py>(
     validate_dilation_ratio(dilation_ratio)?;
     run_tide_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         t_f,
@@ -226,7 +226,7 @@ pub(crate) fn error_decomposition_boundary<'py>(
 #[allow(clippy::too_many_arguments)]
 fn run_fp_histogram_pass<'py, F>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -244,7 +244,7 @@ where
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let gt_bytes = gt.as_bytes().to_vec();
     let dt_bytes = dt_bytes.as_bytes().to_vec();
 
     let mut histogram = py.detach(move || -> PyResult<FpIouHistogram> {
@@ -280,10 +280,10 @@ where
 /// values from this output (the `t_b` parameter on `error_decomposition_*`
 /// is not consumed here).
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
 pub(crate) fn fp_iou_histogram_bbox<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -292,7 +292,7 @@ pub(crate) fn fp_iou_histogram_bbox<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_fp_histogram_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         t_f,
@@ -304,10 +304,10 @@ pub(crate) fn fp_iou_histogram_bbox<'py>(
 
 /// FP-IoU histogram for the segm kernel.
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
 pub(crate) fn fp_iou_histogram_segm<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -316,7 +316,7 @@ pub(crate) fn fp_iou_histogram_segm<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_fp_histogram_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         t_f,
@@ -329,11 +329,11 @@ pub(crate) fn fp_iou_histogram_segm<'py>(
 /// FP-IoU histogram for the boundary-segm kernel. `dilation_ratio`
 /// configures the band thickness (ADR-0010 default `0.02` for COCO).
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats, dilation_ratio))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fp_iou_histogram_boundary<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     t_f: f64,
@@ -344,7 +344,7 @@ pub(crate) fn fp_iou_histogram_boundary<'py>(
     validate_dilation_ratio(dilation_ratio)?;
     run_fp_histogram_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         t_f,

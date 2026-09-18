@@ -256,8 +256,12 @@ def _grid(gt: Any, parity_mode: str = "strict", dt: bytes = DT_BYTES) -> Any:
     :attr:`CocoDataset.dataset_hash` rather than on cells.
     """
     if isinstance(gt, bytes):
-        return _core.evaluate_bbox_grid(gt, dt, parity_mode, 100, True, retain_meta=True)
-    return _core.evaluate_bbox_grid_with_dataset(gt, dt, parity_mode, 100, True, retain_meta=True)
+        return _core.evaluate_bbox_grid(
+            gt, dt, parity_mode=parity_mode, max_dets_per_image=100, use_cats=True, retain_meta=True
+        )
+    return _core.evaluate_bbox_grid(
+        gt, dt, parity_mode=parity_mode, max_dets_per_image=100, use_cats=True, retain_meta=True
+    )
 
 
 #: Per-cell column names ``eval_imgs`` emits. Named here so the negative
@@ -1004,9 +1008,11 @@ def _segm_dt() -> bytes:
 
 def _segm_stats(gt: Any) -> Any:
     if isinstance(gt, bytes):
-        return _core.evaluate_segm_summary(gt, _segm_dt(), "strict", [1, 10, 100], True).stats
-    return _core.evaluate_segm_summary_with_dataset(
-        gt, _segm_dt(), "strict", [1, 10, 100], True
+        return _core.evaluate_segm_summary(
+            gt, _segm_dt(), parity_mode="strict", max_dets=[1, 10, 100], use_cats=True
+        ).stats
+    return _core.evaluate_segm_summary(
+        gt, _segm_dt(), parity_mode="strict", max_dets=[1, 10, 100], use_cats=True
     ).stats
 
 
@@ -1344,10 +1350,10 @@ _KP_SIGMAS = {
 def _kp_stats(gt: Any) -> Any:
     if isinstance(gt, bytes):
         return _core.evaluate_keypoints_summary(
-            gt, _kp_dt(), "strict", [20], True, _KP_SIGMAS
+            gt, _kp_dt(), parity_mode="strict", max_dets=[20], use_cats=True, sigmas=_KP_SIGMAS
         ).stats
-    return _core.evaluate_keypoints_summary_with_dataset(
-        gt, _kp_dt(), "strict", [20], True, _KP_SIGMAS
+    return _core.evaluate_keypoints_summary(
+        gt, _kp_dt(), parity_mode="strict", max_dets=[20], use_cats=True, sigmas=_KP_SIGMAS
     ).stats
 
 

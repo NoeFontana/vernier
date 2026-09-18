@@ -427,38 +427,38 @@ class PycocotoolsCOCOeval:
             grid = evaluate_bbox_grid(
                 self._gt_bytes,
                 dt,
-                self._parity_mode,
-                max_det_top,
-                use_cats,
+                parity_mode=self._parity_mode,
+                max_dets_per_image=max_det_top,
+                use_cats=use_cats,
                 **grid_options,
             )
         elif self.params.iouType == IOU_SEGM:
             grid = evaluate_segm_grid(
                 self._gt_bytes,
                 dt,
-                self._parity_mode,
-                max_det_top,
-                use_cats,
+                parity_mode=self._parity_mode,
+                max_dets_per_image=max_det_top,
+                use_cats=use_cats,
                 **grid_options,
             )
         elif self.params.iouType == IOU_BOUNDARY:
             grid = evaluate_boundary_grid(
                 self._gt_bytes,
                 dt,
-                self._parity_mode,
-                max_det_top,
-                use_cats,
-                self._dilation_ratio,
+                parity_mode=self._parity_mode,
+                max_dets_per_image=max_det_top,
+                use_cats=use_cats,
+                dilation_ratio=self._dilation_ratio,
                 **grid_options,
             )
         elif self.params.iouType == IOU_KEYPOINTS:
             grid = evaluate_keypoints_grid(
                 self._gt_bytes,
                 dt,
-                self._parity_mode,
-                max_det_top,
-                use_cats,
-                self._resolve_kp_sigmas(),
+                parity_mode=self._parity_mode,
+                max_dets_per_image=max_det_top,
+                use_cats=use_cats,
+                sigmas=self._resolve_kp_sigmas(),
                 **grid_options,
             )
         else:
