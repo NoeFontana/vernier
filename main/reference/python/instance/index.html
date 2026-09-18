@@ -1500,6 +1500,39 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#vernier.instance.GtAnnotations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;GtAnnotations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.instance.GtCategory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;GtCategory
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.instance.GtImages" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;GtImages
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vernier.instance.JsonRLE" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1777,6 +1810,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#vernier.instance.CocoDataset.dataset_hash" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;dataset_hash
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#vernier.instance.CocoDataset.is_federated" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1869,6 +1913,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;clear_cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#vernier.instance.CocoDataset.from_arrays" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-method"></code>&nbsp;from_arrays
       
     </span>
   </a>
@@ -3272,6 +3327,211 @@ keypoints) lives under <code>vernier.instance</code>. Sibling to
 
 
 
+<h2 id="vernier.instance.GtAnnotations" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">GtAnnotations</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>The <code>annotations</code> section of a GT document, as columns (ADR-0060).</p>
+<p>Required, all length <code>N</code>:</p>
+<ul>
+<li><code>id</code>: <code>int64</code>. Ground-truth ids are <strong>supplied, never
+  assigned</strong> — the mirror image of quirk <strong>J1</strong> on the detection
+  side — and are observable through <code>evalImgs['gtIds']</code>.</li>
+<li><code>image_id</code>, <code>category_id</code>: <code>int64</code>.</li>
+<li><code>bbox</code>: <code>float64</code> <code>(N, 4)</code> C-contiguous, xywh.</li>
+<li><code>area</code>: <code>float64</code> <code>(N,)</code>. Read <strong>verbatim</strong>. Unlike a
+  detection's (quirk <strong>J3</strong>, derived from the box by default), a
+  ground truth's area is the number COCO recorded and the number the
+  small / medium / large bucketing reads, so it is required rather
+  than derivable.</li>
+<li><code>iscrowd</code>: <code>bool</code> / <code>uint8</code> / <code>int64</code> <code>(N,)</code>. Required,
+  because it drives the ignore resolution (quirk <strong>D1</strong>) and the
+  crowd IoA denominator (quirk <strong>E1</strong>).</li>
+</ul>
+<p>Optional:</p>
+<ul>
+<li><code>ignore</code>: <code>bool</code> / <code>uint8</code> / <code>int64</code> <code>(N,)</code>.</li>
+<li><code>segmentation</code>: a length-<code>N</code> sequence whose entries are
+  <code>None</code> or any :data:<code>SegmentationInput</code> shape. A DataFrame
+  column (an <code>object</code>-dtype array, or a <code>Series</code>) is accepted;
+  a <em>numeric</em> array is not, because a stacked <code>(N, H, W)</code> bitmask
+  would otherwise be walked into <code>N</code> planes.</li>
+<li><code>keypoints</code>: <code>float64</code> <code>(N, K, 3)</code> C-contiguous.</li>
+<li><code>num_keypoints</code>: <code>int64</code> <code>(N,)</code>.</li>
+</ul>
+<p><strong>Absent versus zero.</strong> A column has no null, but <code>ignore</code> and
+<code>num_keypoints</code> are genuinely optional <em>per annotation</em> in COCO
+JSON and mean something different absent than present-and-zero —
+under quirk <strong>D1</strong>, an absent <code>ignore</code> lets <code>parity_mode</code>
+<code>"corrected"</code> fall back to <code>iscrowd</code>, while a present <code>0</code> pins
+it false. So: pass such a column as a <strong>signed</strong> array, in which a
+<strong>negative entry means the field was absent on that annotation</strong>;
+omitting the column means absent on every annotation. A <code>bool</code> or
+<code>uint8</code> column has no negative and therefore means present
+everywhere. Neither field has a meaningful negative value otherwise.</p>
+<p>The rule is scoped to those two columns. <code>iscrowd</code> is <em>required</em>,
+so there is no "absent" for a negative entry to mean, and a negative
+one is rejected naming the annotation rather than read as false —
+which would hand back a different crowd set than was passed, and no
+diagnostic.</p>
+<p><code>keypoints</code> is the one field that is all-or-nothing per document
+rather than per annotation: an <code>(N, K, 3)</code> array cannot say
+"absent on row i". A GT document that carries keypoints on some
+annotations and not others has to use the JSON route.</p>
+<p>Non-finite values in <code>bbox</code>, <code>area</code> or <code>keypoints</code> are
+rejected. JSON has no <code>NaN</code> or <code>Infinity</code> literal, so a GT
+<em>file</em> cannot carry one either; refusing them is not a divergence
+from the file route but a refusal of input it could never produce.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.instance.GtCategory" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">GtCategory</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>One COCO <code>categories</code> entry (ADR-0060).</p>
+<p>The <code>categories</code> section is the one part of a GT document this
+surface does not express columnar-ly: <code>name</code> is a string, which has
+no array form, and the section is O(K) with K small (80 on COCO,
+1203 on LVIS) rather than O(N) in annotations.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.instance.GtImages" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">GtImages</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>The <code>images</code> section of a GT document, as columns (ADR-0060).</p>
+<p><code>id</code>, <code>width</code> and <code>height</code> are required <code>(M,)</code> <code>int64</code>
+arrays. <code>width</code> and <code>height</code> are range-checked into <code>u32</code>; a
+negative or oversized dimension is rejected, never truncated.</p>
+<p><code>file_name</code> is a per-image sequence of <code>str</code> (or <code>None</code>), not
+an array — nothing in the evaluation reads it, but it participates
+in :attr:<code>vernier.CocoDataset.dataset_hash</code>, so a caller
+reproducing a JSON document through this route can carry it.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
 <h2 id="vernier.instance.JsonRLE" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">JsonRLE</span>
 
@@ -4122,6 +4382,47 @@ dataset is not federated.</p>
 
 
 
+<h3 id="vernier.instance.CocoDataset.dataset_hash" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">dataset_hash</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-property"><code>property</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="n">dataset_hash</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>32-byte BLAKE3 fingerprint of the dataset's canonical form
+(ADR-0031), as <code>bytes</code>.</p>
+<p>Two handles have the same hash exactly when they carry the same
+images, categories, annotations and federated metadata — every
+field, including each annotation's <code>area</code>, <code>iscrowd</code>, <code>ignore</code>
+and <code>segmentation</code> bytes. Each section is sorted by id before
+hashing, so the fingerprint is <strong>independent of input order</strong>:
+it pins <em>content</em>, and the per-cell <code>evalImgs</code> columns pin
+order. That pair is how ADR-0060 shows the JSON and array GT
+routes are indistinguishable.</p>
+<p>Distributed evaluation carries this value in partial headers; a
+receiving rank refuses to merge partials whose hash disagrees
+with its live dataset's.</p>
+<p>The first call walks every annotation and is memoised on the
+handle (<code>Arc&lt;OnceLock&gt;</code>, shared by clones); it runs detached,
+because on an LVIS-scale dataset that walk is comparable to the
+whole ingest and would otherwise be the largest GIL-held block
+this module owns.</p>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
 <h3 id="vernier.instance.CocoDataset.is_federated" class="doc doc-heading">
 <code class="doc-symbol doc-symbol-heading doc-symbol-attribute"></code>            <span class="doc doc-object-name doc-attribute-name">is_federated</span>
 
@@ -4345,6 +4646,59 @@ caveats as [<code>Self::boundary_cache_len</code>].</p>
         <p>Drops every cached GT-side derivation. Reset point for users
 who want to free memory between long-lived training cycles
 without dropping the dataset itself.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h3 id="vernier.instance.CocoDataset.from_arrays" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-method"></code>            <span class="doc doc-object-name doc-function-name">from_arrays</span>
+
+
+  <span class="doc doc-labels">
+      <small class="doc doc-label doc-label-staticmethod"><code>staticmethod</code></small>
+  </span>
+
+</h3>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">from_arrays</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">images</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            GtImages (vernier._array_types.GtImages)" href="#vernier.instance.GtImages">GtImages</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">annotations</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            GtAnnotations (vernier._array_types.GtAnnotations)" href="#vernier.instance.GtAnnotations">GtAnnotations</a></span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">categories</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            GtCategory (vernier._array_types.GtCategory)" href="#vernier.instance.GtCategory">GtCategory</a></span><span class="p">],</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Builds a [<code>Dataset</code>] handle from columnar ground-truth arrays,
+with no JSON intermediate (ADR-0060).</p>
+<p><code>images</code> and <code>annotations</code> are dicts of equal-length columns;
+<code>categories</code> is a sequence of per-category dicts (<code>id</code>, <code>name</code>,
+optional <code>supercategory</code>), which is not columnar because <code>name</code>
+is a string and the section is O(K) with K small.</p>
+<p>Required annotation columns are <code>id</code>, <code>image_id</code>, <code>category_id</code>,
+<code>bbox</code> <code>(N, 4)</code> float64, <code>area</code> <code>(N,)</code> float64 and <code>iscrowd</code>.
+<code>area</code> is required because a GT's area is read <strong>verbatim</strong> —
+unlike a detection's, which quirk <strong>J3</strong> derives — and <code>iscrowd</code>
+because it drives the ignore resolution (<strong>D1</strong>) and the crowd
+IoA denominator (<strong>E1</strong>). <code>ignore</code>, <code>segmentation</code>, <code>keypoints</code>
+and <code>num_keypoints</code> are optional. GT ids are supplied, never
+assigned: <code>id</code> is required, and it is observable downstream
+through <code>evalImgs['gtIds']</code>.</p>
+<p>The resulting dataset is COCO-flat. LVIS federated metadata
+(<code>neg_category_ids</code>, <code>not_exhaustive_category_ids</code>, per-category
+<code>frequency</code>) has no columnar spelling here and is <strong>not</strong>
+supported on this route — <code>is_federated</code> is always <code>False</code>. LVIS
+callers use [<code>Self::from_lvis_json</code>]; see ADR-0060.</p>
+<p>Raises <code>TypeError</code> on a wrong dtype or layout and <code>ValueError</code> on
+a missing column, a length disagreement, a non-finite <code>bbox</code> /
+<code>area</code> / <code>keypoints</code> value, or an annotation referencing an
+unknown image or category.</p>
 
 
     </div>
