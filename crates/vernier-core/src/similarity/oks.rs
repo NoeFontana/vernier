@@ -32,6 +32,13 @@
 //!   matching pycocotools verbatim.
 //! - **F5** (`strict`): empty `gts` or `dts` returns the zero-shape
 //!   matrix unchanged. Mirrors the segm/bbox kernels.
+//! - **F7** (`strict`): the mean over the summed terms is a *division*
+//!   by the term count, matching `np.sum(np.exp(-e)) / e.shape[0]`
+//!   (ce:232). Multiplying by a hoisted `1.0 / count` reciprocal is
+//!   not bit-equal — the reciprocal rounds once and the product rounds
+//!   again, versus one correctly-rounded divide — and the resulting
+//!   1-ULP shift can flip a match at a threshold boundary. See the
+//!   `f7_*` tests.
 //!
 //! Quirk **D2** (DT keypoint visibility flags are unconstrained at the
 //! dataset boundary) is a *dataset* concern enforced by `loadRes`-equivalent
@@ -178,8 +185,7 @@ impl Similarity for OksSimilarity {
             // Denominator is fixed per GT row: `k1` visible terms on the
             // standard path, `k` total terms on the F3 surrogate path.
             // Hoisted out of the DT loop so cells that share the same
-            // row don't re-derive it. Falls back to 1 only as a guard
-            // for the (degenerate) `k == 0` config.
+            // row don't re-derive it.
             let denom_count = if k1 > 0 { k1 } else { k };
             if denom_count == 0 {
                 for d in 0..dts.len() {
@@ -187,7 +193,8 @@ impl Similarity for OksSimilarity {
                 }
                 continue;
             }
-            let inv_denom = 1.0 / (denom_count as f64);
+            // F7: divide, never multiply by a precomputed reciprocal.
+            let denom = denom_count as f64;
 
             for (d, dt) in dts.iter().enumerate() {
                 let mut e_sum = 0.0_f64;
@@ -222,7 +229,8 @@ impl Similarity for OksSimilarity {
                     }
                 }
 
-                out[[g, d]] = e_sum * inv_denom;
+                // F7: `np.sum(np.exp(-e)) / e.shape[0]` verbatim.
+                out[[g, d]] = e_sum / denom;
             }
         }
 
@@ -465,6 +473,74 @@ mod tests {
         let d = ann(1, &dt_kps, [0.0, 0.0, 10.0, 10.0], 100.0);
         let m = compute(&OksSimilarity::default(), &[g], &[d]);
         assert!((m[[0, 0]] - 1.0).abs() < 1e-12);
+    }
+
+    /// F7: the OKS mean must be `sum / count`, not `sum * (1 / count)`.
+    ///
+    /// With 49 keypoints all aligned exactly, every term is `exp(0) == 1.0`
+    /// and the sum is exactly `49.0`, so pycocotools' `np.sum(...) / 49`
+    /// is exactly `1.0`. `49.0 * (1.0 / 49.0)` rounds to
+    /// `0.9999999999999999` — one ULP low. `k = 49` is one of eight counts
+    /// at or below 200 (49, 98, 103, 107, 161, 187, 196, 197) where a
+    /// *perfect* match stops being bit-exactly 1.0 under the reciprocal.
+    #[test]
+    fn f7_perfect_match_is_bit_exactly_one_for_reciprocal_hostile_k() {
+        for k in [49_usize, 98, 103, 107] {
+            let kps: Vec<(f64, f64, u32)> = vec![(5.0, 7.0, 2); k];
+            let g = ann(1, &kps, [0.0, 0.0, 10.0, 10.0], 100.0);
+            let d = ann(1, &kps, [0.0, 0.0, 10.0, 10.0], 100.0);
+
+            let mut override_map = HashMap::new();
+            override_map.insert(1_i64, vec![0.05_f64; k]);
+            let m = compute(&OksSimilarity::new(override_map), &[g], &[d]);
+
+            // Bit-exact, not approximate: `assert_eq!` on f64 is the point.
+            assert_eq!(
+                m[[0, 0]],
+                1.0,
+                "k={k}: perfect match must be exactly 1.0 (got {:?})",
+                m[[0, 0]]
+            );
+        }
+    }
+
+    /// F7: a reachable 1-ULP shift that flips a match on the *default*
+    /// COCO threshold ladder.
+    ///
+    /// 35 keypoints, all GT-visible. 28 DT keypoints sit exactly on their
+    /// GT (`exp(0) == 1.0`); the remaining 7 are 1000px away, whose
+    /// exponent (`1e6 / 0.01 / 100 / 2 == 5e5`) underflows `exp(-e)` to
+    /// exactly `0.0`. The sum is therefore exactly `28.0`, and
+    /// `28.0 / 35.0` is exactly `0.8` — the COCO ladder's 7th threshold,
+    /// which matches under `iou >= t`. `28.0 * (1.0 / 35.0)` is
+    /// `0.7999999999999999`, which does not. Keypoint counts other than 17
+    /// are reachable because quirk **F1** (`corrected`) ships per-category
+    /// sigmas of arbitrary length.
+    #[test]
+    fn f7_reciprocal_would_flip_a_match_at_the_oks_0_80_threshold() {
+        const K: usize = 35;
+        let gt_kps: Vec<(f64, f64, u32)> = vec![(0.0, 0.0, 2); K];
+        let mut dt_kps: Vec<(f64, f64, u32)> = vec![(0.0, 0.0, 2); K];
+        for slot in dt_kps.iter_mut().skip(28) {
+            *slot = (1000.0, 0.0, 2);
+        }
+        let g = ann(1, &gt_kps, [0.0, 0.0, 10.0, 10.0], 100.0);
+        let d = ann(1, &dt_kps, [0.0, 0.0, 10.0, 10.0], 100.0);
+
+        let mut override_map = HashMap::new();
+        override_map.insert(1_i64, vec![0.05_f64; K]);
+        let m = compute(&OksSimilarity::new(override_map), &[g], &[d]);
+
+        assert_eq!(
+            m[[0, 0]],
+            0.8,
+            "28 of 35 exact keypoints must land bit-exactly on 0.80 (got {:?})",
+            m[[0, 0]]
+        );
+        // The matching ladder's gate is `iou >= t` (quirk B2). The
+        // reciprocal form lands one ULP below and silently drops the match.
+        assert!(m[[0, 0]] >= 0.8, "must match at the OKS=0.80 threshold");
+        assert_ne!(28.0_f64 * (1.0 / K as f64), 0.8, "premise of this test");
     }
 
     #[test]
