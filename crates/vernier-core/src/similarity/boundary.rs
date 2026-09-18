@@ -30,7 +30,7 @@
 //!   skip the boundary-band intersection sweep below. The prefilter is
 //!   sound for the `min` fold because `min(a, b) <= a` and the bbox
 //!   prefilter already upper-bounds the mask term.
-//! - **F5** (`aligned`): empty `gts` or `dts` returns the zero-shape
+//! - **F5** (`strict`): empty `gts` or `dts` returns the zero-shape
 //!   matrix unchanged.
 //! - **H2** (`corrected`): all RLEs in one call must share `(h, w)`.
 //!   Mismatch raises [`EvalError::DimensionMismatch`] instead of the

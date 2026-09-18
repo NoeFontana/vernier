@@ -16,7 +16,7 @@
 //!   the bbox prefilter and on the final RLE-pair denominator.
 //! - **I1** (`strict`): bbox-IoU prefilter. Pairs whose tight bboxes
 //!   don't overlap are zero by construction; they skip the RLE sweep.
-//! - **F5** (`aligned`): empty `gts` or `dts` returns the zero-shape
+//! - **F5** (`strict`): empty `gts` or `dts` returns the zero-shape
 //!   matrix unchanged.
 //! - **H2** (`corrected`): all RLEs in one call must share `(h, w)`.
 //!   Mismatch raises [`EvalError::DimensionMismatch`] instead of the

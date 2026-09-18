@@ -19,7 +19,7 @@
 //! - **F1** (`corrected`): per-category sigmas live in
 //!   [`OksSimilarity::sigmas`] as `HashMap<i64, Vec<f64>>`. An empty
 //!   override map means "use [`COCO_PERSON_SIGMAS`] for every category".
-//! - **F2** (`aligned`): area normaliser uses `gt.area + f64::EPSILON`
+//! - **F2** (`strict`): area normaliser uses `gt.area + f64::EPSILON`
 //!   (numpy's `np.spacing(1)` on f64). Outputs match within ULP of the
 //!   reference oracle.
 //! - **F3** (`strict`): when GT has zero visible keypoints (`k1 == 0`),
@@ -30,7 +30,7 @@
 //!   `[bb.x - bb.w, bb.x + 2 * bb.w]` and `[bb.y - bb.h, bb.y + 2 * bb.h]`.
 //!   The lower bound subtracts one width while the upper bound adds two,
 //!   matching pycocotools verbatim.
-//! - **F5** (`aligned`): empty `gts` or `dts` returns the zero-shape
+//! - **F5** (`strict`): empty `gts` or `dts` returns the zero-shape
 //!   matrix unchanged. Mirrors the segm/bbox kernels.
 //!
 //! Quirk **D2** (DT keypoint visibility flags are unconstrained at the

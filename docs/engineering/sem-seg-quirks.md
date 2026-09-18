@@ -29,7 +29,7 @@ Three oracles disagree on Cityscapes-19 in subtle, specific ways
 (rows AB1, AC2, AC4, AD3 below have the worst splits). The
 single-oracle disposition column from earlier surveys cannot honestly
 represent that — a row that's `strict` against mmsegmentation might
-be `aligned` against cityscapesScripts because the two upstreams
+be `corrected` against cityscapesScripts because the two upstreams
 implement the same metric differently. ADR-0028 §"Parity strategy"
 introduced **`(quirk, oracle) → mode`** keying for exactly this
 case; this survey is its first realization.
@@ -48,11 +48,15 @@ Each row has up to three disposition cells, one per oracle:
 A cell value is one of:
 
 - **strict** — vernier reproduces this oracle's behavior bit-exactly.
-- **aligned** — survey-row annotation for "vernier matches the
-  *semantics* but may differ in incidental details" (cross-oracle
-  tolerance, not the runtime `ParityMode`). Per-row `aligned`
-  cell-values below are pending re-audit against the amended
-  ADR-0002.
+  A structurally different implementation still counts as strict when
+  the output is bit-equal (e.g. AI1's bincount vs cs's Python loop);
+  the difference belongs in the cell's rationale.
+- **float-tolerance** — *not a disposition*: a numeric band. Used only
+  for the PA column, whose documentation oracles are compared within a
+  cross-oracle tolerance rather than bit-exactly (ADR-0028
+  §"Parity strategy"). It grades nothing and selects no behavior; it
+  records that the claim against that oracle is `|a - b| <= atol`, not
+  equality. Deliberately not spelled like a `ParityMode` value.
 - **corrected** — vernier opts to fix this. Default behavior
   diverges from the oracle and the divergence is documented as an
   opinionated improvement.
@@ -120,13 +124,13 @@ class-id tensors into a per-class confusion matrix.
 
 | # | Quirk | Source | MS | CS | PA |
 |---|---|---|---|---|---|
-| AI1 | The per-image kernel is `np.bincount(gt * n_classes + pred, minlength=n_classes**2).reshape(n_classes, n_classes)` (or the equivalent histogram fold). One pass over the joint label map. | ms:~80 | **strict** | **aligned** (cs uses a Python loop with class enumeration; bit-equal output, different control flow) | **aligned** |
+| AI1 | The per-image kernel is `np.bincount(gt * n_classes + pred, minlength=n_classes**2).reshape(n_classes, n_classes)` (or the equivalent histogram fold). One pass over the joint label map. | ms:~80 | **strict** | **strict** (cs uses a Python loop with class enumeration; bit-equal output, different control flow) | **float-tolerance** |
 | AI2 | Pixels where `gt == ignore_label` are excluded from the bincount input (mask-out before histogram). The pred value at those pixels is irrelevant. | ms:~75 | **strict** | **strict** (cs's ignore_label is 255) | **strict** (Pascal VOC's is 255; ADE20K's is 0) |
 | AI3 | Pixels where **`pred == ignore_label`** but `gt != ignore_label`: behavior diverges across oracles. mmsegmentation counts these as misses against the GT class (the pred value is recorded in the `pred=ignore_label` column, which lies *outside* the `n_classes × n_classes` confusion matrix and is silently dropped — so they contribute to FN but not to any FP cell). cityscapesScripts errors out if a prediction file contains the ignore label. | ms:~78 (silent drop), cs:~90 (error) | **strict** | **strict** (vernier's `parity_mode="strict"` against cs raises `PredictionContainsIgnore`) | **strict** (Pascal VOC follows mmsegmentation's silent-drop semantics) |
 | AI4 | The bincount `minlength` is `n_classes**2`. If a pixel's `pred` is `>= n_classes`, the result has more entries than expected; mmsegmentation simply truncates by reshaping to `(n_classes, n_classes)` (the over-class entries are dropped silently). cityscapesScripts validates that prediction values are in the valid 19-class set up front. | ms:~80, cs:~85 | **strict** for legacy compatibility, **corrected** by default (vernier rejects `pred >= n_classes` at `SemanticPredictions::from_arrays` with `OutOfRangePrediction { image_id, class_id }`) | **strict** (cs's eager validation matches vernier's corrected default) | **strict** for legacy compat |
 | AI5 | The confusion matrix is summed across images via element-wise integer addition. `u64` counts; safe to `2^64-1` per cell, well above the worst case (full Cityscapes train set: ~5000 images × 2048×1024 = 1.05e10 pixels, fits easily). | ms:~120 | **strict** (vernier uses `u64` per ADR-0028 §"Numerical layout") | **strict** | **strict** |
 | AI6 | Per-image GT and pred shapes must match. mmsegmentation raises `ValueError` from NumPy on shape mismatch; cityscapesScripts asserts before the kernel; both error inputs at the kernel boundary. | ms:~70, cs:~80 | **corrected** (vernier surfaces `ShapeMismatch { image_id, gt_shape, pred_shape }` at `SemanticPredictions` construction, not at eval time) | **corrected** | **corrected** |
-| AI7 | Per-image dtype: GT is typically `uint8` (Cityscapes) or `uint16` (ADE20K with 150 classes); predictions are typically `uint8`. The bincount fold promotes to `int64` internally; output cell counts are `int64` in mmsegmentation, accumulated to `int64` totals. | ms:~80 | **aligned** (vernier uses `u32` per pixel for the input, `u64` for the cell counts; bit-equal output for `n_classes ≤ 2^16`, which covers every realistic semseg dataset) | **aligned** | **aligned** |
+| AI7 | Per-image dtype: GT is typically `uint8` (Cityscapes) or `uint16` (ADE20K with 150 classes); predictions are typically `uint8`. The bincount fold promotes to `int64` internally; output cell counts are `int64` in mmsegmentation, accumulated to `int64` totals. | ms:~80 | **strict** (vernier uses `u32` per pixel for the input, `u64` for the cell counts; bit-equal output for `n_classes ≤ 2^16`, which covers every realistic semseg dataset) | **strict** | **float-tolerance** |
 
 ## AJ. Ignore-label handling
 
@@ -138,7 +142,7 @@ they propagate through the kernel and the summary.
 | AJ1 | `ignore_label = 255` is the Cityscapes / Pascal VOC convention; `ignore_label = 0` is the ADE20K convention. mmsegmentation defaults to `ignore_label = 255` if not specified; cityscapesScripts hardcodes 255 for Cityscapes. | ms:~50 (config), cs:~30 (hardcoded), voc:~10, ade:~15 | **strict** | **strict** (vernier's `cityscapes()` preset sets it) | **strict** for VOC, **strict** for ADE20K (vernier's `ade20k()` preset sets it to 0) |
 | AJ2 | Ignore-label pixels are excluded from BOTH numerator and denominator of per-class IoU. Equivalently, they contribute zero to TP, FP, and FN. This is the only sane semantics, but it must be stated — the alternative ("ignore label gets its own class row in the confusion matrix") would corrupt every metric. | ms:~75 | **strict** | **strict** | **strict** |
 | AJ3 | An ignore-label class is **not** counted toward `n_classes` for the mean. mmsegmentation's `IoUMetric` reports mIoU over the explicit class list; the ignore label is filtered out before iteration. cityscapesScripts maintains a separate "trainId" vs "id" mapping that filters ignore labels at the remap step (AK1). | ms:~140, cs:~70 | **strict** | **strict** | **strict** |
-| AJ4 | Multiple ignore labels per dataset: some configurations (e.g., mmsegmentation custom datasets) accept a *list* of ignore labels, masking pixels matching any of them. cityscapesScripts is single-ignore. | ms:~50 | **aligned** (vernier accepts `ignore_label: int | None` only — single ignore label per evaluator; rejects list inputs at construction with a typed error pointing to the multi-label workaround via `label_remap` AK2) | **strict** | **strict** |
+| AJ4 | Multiple ignore labels per dataset: some configurations (e.g., mmsegmentation custom datasets) accept a *list* of ignore labels, masking pixels matching any of them. cityscapesScripts is single-ignore. | ms:~50 | **corrected** (vernier accepts `ignore_label: int \| None` only — single ignore label per evaluator; rejects list inputs at construction with a typed error pointing to the multi-label workaround via `label_remap` AK2) | **strict** | **strict** |
 | AJ5 | The `ignore_label` value can in principle equal a real class id (e.g., `ignore_label=0` on ADE20K, where class 0 is "other/background"). mmsegmentation's `IoUMetric` handles this correctly by treating the ignore label as a sentinel before the bincount; the histogram never sees the value. | ms:~75 | **strict**. The "ignore equals real class" case is metric-relevant on ADE20K. | **n/a** (Cityscapes ignore=255 doesn't collide) | **strict** for ADE20K |
 
 ## AK. ID remapping
@@ -149,10 +153,10 @@ evaluation IDs) and the per-dataset preset resolution.
 | # | Quirk | Source | MS | CS | PA |
 |---|---|---|---|---|---|
 | AK1 | Cityscapes ships with 30+ class definitions ("labels" file); the standard 19-class evaluation maps these to a smaller set, with several IDs remapping to ignore (255). The mapping is in `cityscapesscripts/helpers/labels.py` as a list of `Label(name, id, trainId, ...)` tuples. cityscapesScripts uses `trainId` for evaluation; predictions are expected in `trainId` space. | cs:helpers/labels.py | **n/a** (mmsegmentation expects predictions already remapped to the 19-class space; user does the remap upstream) | **strict** (vernier's `cityscapes()` preset bakes the canonical 19-class remap table into the dataset constructor) | **n/a** |
-| AK2 | The user-side path: `SemanticEvaluator(label_remap={...})` accepts a per-class remap dict. Predictions are remapped to evaluation classes before the bincount; pixels remapped to `ignore_label` are masked. The dict can be shipped per-dataset via constructors (`cityscapes()` populates the canonical Cityscapes remap; users with custom datasets pass their own dict). | (vernier-side) | **aligned** (mmsegmentation has a similar `reduce_zero_label` flag with narrower semantics; the corrected disposition is documented in the migration guide) | **strict** | **aligned** |
+| AK2 | The user-side path: `SemanticEvaluator(label_remap={...})` accepts a per-class remap dict. Predictions are remapped to evaluation classes before the bincount; pixels remapped to `ignore_label` are masked. The dict can be shipped per-dataset via constructors (`cityscapes()` populates the canonical Cityscapes remap; users with custom datasets pass their own dict). | (vernier-side) | **corrected** (mmsegmentation has a similar `reduce_zero_label` flag with narrower semantics; the corrected disposition is documented in the migration guide) | **strict** | **float-tolerance** |
 | AK3 | Pascal VOC has 21 classes (background + 20 objects); no remap needed. ADE20K has 150 classes; the SceneParse150 convention is direct (no remap). The `pascal_voc()` and `ade20k()` presets set `label_remap=None`. | (vernier-side) | **n/a** | **n/a** | **strict** |
 | AK4 | `reduce_zero_label` (mmsegmentation): when `True`, predictions are decremented by 1 before evaluation, treating class 0 as "ignore" and shifting the remaining classes down. Used for ADE20K-style datasets where class 0 is background but the model emits 0-indexed class IDs. | ms:~55 | **strict** when `reduce_zero_label=True` is consumed via `label_remap={0: 255, 1: 0, 2: 1, ...}` (the equivalent dict). vernier doesn't ship a `reduce_zero_label` flag; the migration guide documents the equivalent dict. | **n/a** | **n/a** |
-| AK5 | Remapping pixels to `ignore_label`: a `label_remap` entry pointing at the ignore label converts that class's pixels to ignore during the mask-out step. Useful for dropping rare classes from evaluation. | (vernier-side) | **aligned** | **strict** (cs's labels file uses this for "void" classes; remap to trainId=255) | **aligned** |
+| AK5 | Remapping pixels to `ignore_label`: a `label_remap` entry pointing at the ignore label converts that class's pixels to ignore during the mask-out step. Useful for dropping rare classes from evaluation. | (vernier-side) | **corrected** | **strict** (cs's labels file uses this for "void" classes; remap to trainId=255) | **float-tolerance** |
 
 ## AL. Per-class IoU formula and aggregation
 
@@ -162,13 +166,13 @@ mIoU, FWIoU, pixel accuracy, mean accuracy.
 | # | Quirk | Source | MS | CS | PA |
 |---|---|---|---|---|---|
 | AL1 | Per-class IoU: `IoU_c = TP_c / (TP_c + FP_c + FN_c)`, where `TP_c = confusion[c, c]`, `FP_c = sum(confusion[:, c]) - TP_c`, `FN_c = sum(confusion[c, :]) - TP_c`. Denominator is the union; class is from the GT row, prediction from the column. | ms:~140 | **strict** | **strict** | **strict** |
-| AL2 | Per-class IoU when denominator is zero (class never seen and never predicted): mmsegmentation returns `nan`; cityscapesScripts returns `0.0`; ADE20K reference returns `nan`. The behavior diverges. | ms:~145, cs:~110, ade:~30 | **strict** (vernier's `parity_mode="strict"` against MS preserves NaN; `aligned` produces NaN; `corrected` returns 0.0 with a warning) | **aligned** (vernier's `cityscapes()` preset under MS-default reports NaN; the documented difference vs. cs's 0.0 is in the migration guide) | **strict** |
-| AL3 | mIoU: unweighted mean of per-class IoU over classes where `TP_c + FP_c + FN_c > 0`. Categories with no support are excluded from the mean (mirrors panopticapi quirk **W2** and LVIS quirk **AB3**). NaN handling diverges per AL2. | ms:~155 | **strict** (mmsegmentation's `np.nanmean`) | **aligned** (cs averages over a fixed 19-class set; missing classes contribute 0.0 — see AL2) | **strict** |
+| AL2 | Per-class IoU when denominator is zero (class never seen and never predicted): mmsegmentation returns `nan`; cityscapesScripts returns `0.0`; ADE20K reference returns `nan`. The behavior diverges. | ms:~145, cs:~110, ade:~30 | **strict** (vernier's `parity_mode="strict"` against MS preserves NaN; `corrected` returns 0.0 with a warning) | **corrected** (vernier's `cityscapes()` preset under MS-default reports NaN; the documented difference vs. cs's 0.0 is in the migration guide) | **strict** |
+| AL3 | mIoU: unweighted mean of per-class IoU over classes where `TP_c + FP_c + FN_c > 0`. Categories with no support are excluded from the mean (mirrors panopticapi quirk **W2** and LVIS quirk **AB3**). NaN handling diverges per AL2. | ms:~155 | **strict** (mmsegmentation's `np.nanmean`) | **corrected** (cs averages over a fixed 19-class set; missing classes contribute 0.0 — see AL2) | **strict** |
 | AL4 | FWIoU (frequency-weighted IoU): `FWIoU = sum_c (freq_c * IoU_c)` where `freq_c = (TP_c + FN_c) / total_evaluated_pixels`. Weighting reflects class prevalence in GT, not in predictions. | ms:~160 | **strict** | **n/a** (cs doesn't report FWIoU) | **strict** for VOC, **n/a** for ADE20K |
 | AL5 | Pixel accuracy: `pAcc = sum_c TP_c / total_evaluated_pixels = trace(confusion) / sum(confusion)`. Single scalar. | ms:~165 | **strict** | **strict** | **strict** |
 | AL6 | Mean accuracy (per-class recall, then mean): `mAcc = mean_c (TP_c / (TP_c + FN_c))` over classes with `TP_c + FN_c > 0`. Different from pixel accuracy: pAcc is global, mAcc averages per-class recall and is robust to class imbalance. | ms:~170 | **strict** | **n/a** (cs reports per-class IoU only) | **strict** |
 | AL7 | The order of classes in the per-class output is the order of the categories list passed in. mmsegmentation preserves construction order; cityscapesScripts uses `trainId` order (which is the canonical 19-class Cityscapes order). | ms:~140, cs:~95 | **strict** | **strict** (cs's order is what users expect on Cityscapes; the `cityscapes()` preset preserves it) | **strict** |
-| AL8 | The aggregated confusion matrix is itself a first-class output of mmsegmentation's `IoUMetric`. cityscapesScripts builds it implicitly but doesn't surface it. ADR-0028's `SemanticSummary.confusion_matrix` exposes it directly per F1; calibration / error-decomposition / model-diff tools consume it. | ms:~135 | **strict** | **aligned** (cs's per-class TP/FP/FN counts are equivalent; vernier surfaces a confusion matrix with the same data) | **aligned** |
+| AL8 | The aggregated confusion matrix is itself a first-class output of mmsegmentation's `IoUMetric`. cityscapesScripts builds it implicitly but doesn't surface it. ADR-0028's `SemanticSummary.confusion_matrix` exposes it directly per F1; calibration / error-decomposition / model-diff tools consume it. | ms:~135 | **strict** | **strict** (cs's per-class TP/FP/FN counts are equivalent; vernier surfaces a confusion matrix with the same data) | **float-tolerance** |
 
 ## AM. Image-list and prediction-coverage protocols
 
@@ -178,10 +182,10 @@ GT, and per-image iteration.
 | # | Quirk | Source | MS | CS | PA |
 |---|---|---|---|---|---|
 | AM1 | Iteration is **GT-driven**: every GT image must have a prediction. mmsegmentation's `IoUMetric` is called per-image during a typical training/eval loop, so the prediction list is constructed alongside the GT list. cityscapesScripts requires prediction files matching the GT directory structure exactly. | ms:~95 (per-image API), cs:~50 | **strict** | **strict** (vernier surfaces `MissingPrediction { image_id }` at evaluator entry) | **strict** |
-| AM2 | Predictions for images not in the GT set: mmsegmentation silently ignores; cityscapesScripts errors. | ms:~95, cs:~55 | **aligned** (vernier ignores extras silently; this is the COCO precedent and matches mmsegmentation) | **corrected** (vernier ignores extras even when the dataset is `cityscapes()`-loaded; documented divergence from cs's strict-error behavior in the migration guide) | **aligned** |
+| AM2 | Predictions for images not in the GT set: mmsegmentation silently ignores; cityscapesScripts errors. | ms:~95, cs:~55 | **strict** (vernier ignores extras silently; this is the COCO precedent and matches mmsegmentation) | **corrected** (vernier ignores extras even when the dataset is `cityscapes()`-loaded; documented divergence from cs's strict-error behavior in the migration guide) | **float-tolerance** |
 | AM3 | The `cityscapes()` preset auto-loads the 500-image val set from the Cityscapes directory layout. Image IDs derive from filenames (`<city>_<sequence>_<frame>_gtFine_labelTrainIds.png`). | cs:~40 (file globbing) | **n/a** (mmsegmentation accepts pre-loaded arrays; the loader path is upstream of `IoUMetric`) | **strict** | **n/a** |
 | AM4 | The `ade20k()` preset auto-loads the SceneParse150 val set (~2000 images) with the convention `ADE_val_00000001.png` naming. ADE20K predictions are typically uint8 with class IDs in `[0, 150]`. | ade:~25 (file globbing) | **n/a** | **n/a** | **strict** |
-| AM5 | Per-image evaluation order: mmsegmentation evaluates in the order images arrive (typically dataloader iteration order). cityscapesScripts sorts by filename. The order does not affect the final confusion matrix (additive aggregation per AI5), but a per-image table downstream sees a different order. | ms:~95, cs:~60 | **aligned** (vernier sorts by `image_id` for determinism; bit-equal aggregate output, ordered per-image rows) | **aligned** | **aligned** |
+| AM5 | Per-image evaluation order: mmsegmentation evaluates in the order images arrive (typically dataloader iteration order). cityscapesScripts sorts by filename. The order does not affect the final confusion matrix (additive aggregation per AI5), but a per-image table downstream sees a different order. | ms:~95, cs:~60 | **strict** (vernier sorts by `image_id` for determinism; bit-equal aggregate output, ordered per-image rows) | **strict** | **float-tolerance** |
 
 ## AN. Multi-class predictions vs. binary masks
 
@@ -218,7 +222,7 @@ oracles and `vernier.semantic.Evaluator`.
 
 | # | Quirk | Source | MS | CS | PA |
 |---|---|---|---|---|---|
-| AP1 | mmsegmentation's `IoUMetric` is constructed inside an evaluation loop, called per-batch with `process(data_batch, data_samples)`, and produces metrics via `compute_metrics(results)`. The lifecycle is "per-experiment instance"; reuse across experiments requires reset. | ms:~30 | **aligned** (vernier's `Evaluator` is immutable per ADR-0006; new evaluator per dataset/predictions pair) | **n/a** | **n/a** |
+| AP1 | mmsegmentation's `IoUMetric` is constructed inside an evaluation loop, called per-batch with `process(data_batch, data_samples)`, and produces metrics via `compute_metrics(results)`. The lifecycle is "per-experiment instance"; reuse across experiments requires reset. | ms:~30 | **corrected** (vernier's `Evaluator` is immutable per ADR-0006; new evaluator per dataset/predictions pair) | **n/a** | **n/a** |
 | AP2 | cityscapesScripts has a top-level `evaluatePair(predictionImg, groundTruthImg, args)` function plus a global `args` object holding configuration. The `args`-as-global pattern conflicts with vernier's frozen-evaluator (ADR-0006). | cs:~70 (function), cs:~30 (args) | **n/a** | **corrected** (vernier surfaces all configuration as constructor parameters; no globals) | **n/a** |
 | AP3 | mmsegmentation prints metrics via `mmengine.runner.runner.Runner._log_metrics`, which formats a structured table. cityscapesScripts prints a plain-text table to stdout. ADE20K reference prints with `print()` calls. | ms:~180, cs:~115, ade:~35 | **corrected** (vernier returns structured `SemanticSummary`; CLI subcommand reproduces the print format under `--format text` per ADR-0015 verb extensibility) | **corrected** | **corrected** |
 | AP4 | Errors raised mid-evaluation are bare `Exception` / `KeyError` / `ValueError` with f-string messages, parallel to pycocotools / panopticapi / lvis-api. | ms:~75, cs:~80, ade:~25 | **corrected** (vernier raises typed `SemanticError` variants matching each upstream raise site) | **corrected** | **corrected** |
@@ -245,13 +249,21 @@ venue where each cell is signed off. A short cheat-sheet:
   default; users who need cs-equivalent behavior pass an
   explicit flag (documented but not auto-set per ADR-0028 F2's
   precedent against hidden coupling).
-- **Aligned rows:** AI1 (different control flow, same output —
-  bincount vs. Python loop), AI7 (different per-pixel dtype,
-  same output for realistic class counts), AJ4
-  (single-vs-multi-ignore via `label_remap` workaround), AK2
-  (`reduce_zero_label` vs. equivalent dict), AL8 (confusion
-  matrix surfaced directly vs. derived counts), AM5 (sorted
-  vs. arrival-order iteration).
+- **Strict via a different implementation:** AI1 (bincount vs. cs's
+  Python loop — same output), AI7 (different per-pixel dtype, same
+  output for realistic class counts), AL8 (confusion matrix surfaced
+  directly vs. derived counts), AM5 (sorted vs. arrival-order
+  iteration — same aggregate), AM2 against MS (silent-ignore, which is
+  what mmsegmentation does). These were dispositioned `aligned` before
+  ADR-0002's 2026-05-10 amendment; each cell's own rationale already
+  asserted identical output, so they are `strict` and the structural
+  note stays in the rationale.
+- **Re-audited to corrected** (the same amendment, opposite direction —
+  these are chosen divergences, not equivalences): AJ4 against MS
+  (single-vs-multi-ignore; vernier rejects list inputs), AK2 and AK5
+  against MS (`label_remap` vs. the narrower `reduce_zero_label`), AL2
+  and AL3 against CS (NaN vs. `0.0` for absent classes), AP1 against MS
+  (immutable evaluator vs. mutable per-experiment lifecycle).
 - **Corrected:** AI4 (out-of-range pred rejection), AI6 (typed
   shape mismatch), AM2 vs cs (silent-ignore divergence), AN2-AN4
   (binary-mask merge selector), AP1-AP4 (typed errors,

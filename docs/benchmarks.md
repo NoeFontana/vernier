@@ -241,6 +241,6 @@ Release mode (N=10 + 2 warmup) gates each impl on relative IQR ≤ 5%;
 cells where the gate failed are marked with
 ` *` next to their IQR value — the median is still the best estimator,
 just with a wider confidence band than the gate accepts. Parity is a
-side effect of every timing run — strict-tier (vs pycocotools) and
-aligned-tier (vs faster-coco-eval and hotcoco) where applicable;
-a failed tier writes a divergence report next to the cell.
+side effect of every timing run — the bit-equal tier (vs pycocotools)
+and the float-tolerance tier (vs faster-coco-eval and hotcoco) where
+applicable; a failed tier writes a divergence report next to the cell.

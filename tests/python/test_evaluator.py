@@ -82,7 +82,7 @@ def test_evaluator_pretty_lines_match_pycocotools_shape() -> None:
 
 
 def test_evaluator_max_dets_order_does_not_affect_stats() -> None:
-    # Quirk A2 (aligned): the FFI surface sorts `max_dets` at the
+    # Quirk A2 (strict): the FFI surface sorts `max_dets` at the
     # boundary, so a permuted ladder must produce the same `stats`
     # vector as the canonical order. Without the sort, the M-axis slots
     # bind to the wrong threshold and AR_1 / AR_10 / AR_100 silently

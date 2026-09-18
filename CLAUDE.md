@@ -39,8 +39,8 @@ Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nex
 ## Parity contract — read before changing eval logic
 
 - `pycocotools==2.0.11` pinned **exactly** in `pyproject.toml` — the reference oracle. Bumping is ADR-level.
-- Each quirk gets one disposition in `docs/engineering/pycocotools-quirks.md`: **strict** (bit-exact, default) / **aligned** (semantic, documented tolerance) / **corrected** (opt-in fix; default diverges).
-- Parity harness: `tests/python/parity/harness.py`. Candidate (`_run_vernier`) today delegates to pycocotools — a tautology until the Rust evaluator lands. `_run_vernier` is the single swap point.
+- Each quirk gets one disposition in `docs/engineering/pycocotools-quirks.md`: **strict** (bit-exact, default) / **corrected** (opt-in fix; default diverges). Two tiers, not three — ADR-0002's 2026-05-10 amendment folded the old `aligned` tier into `strict` (every row tagged `aligned` was already asserted bit-equal). Do not reintroduce `aligned` in new guidance; reviving it needs its own ADR.
+- Parity harness: `tests/python/parity/harness.py`. `_run_vernier` is the candidate side and calls the real evaluator; `_run_pycocotools` is the oracle. `_run_vernier` is the single swap point.
 
 ## Code style — non-obvious bits
 

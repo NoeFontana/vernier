@@ -51,10 +51,13 @@ pub(crate) const PANOPTIC_VOID: u32 = 0;
 /// `256³ − 1`. Quirk **T1** — strict.
 ///
 /// vernier's intersection histogram uses a `HashMap<(u32, u32), u32>`
-/// rather than the OFFSET trick (T2 aligned: bit-equal output, no
-/// uint64 materialization), but the constant is preserved for
-/// compatibility with downstream tooling that diffs against the raw
-/// panopticapi keys.
+/// rather than the OFFSET trick — quirk **T2**, **strict**: the
+/// output is bit-equal, the uint64 intermediate is simply not
+/// materialized, and the structural difference belongs in the row's
+/// rationale rather than in the disposition (ADR-0002's 2026-05-10
+/// amendment; ADR-0025's `aligned` cell for T2 predates it). The
+/// constant is preserved for compatibility with downstream tooling
+/// that diffs against the raw panopticapi keys.
 pub const PANOPTIC_OFFSET: u64 = 256 * 256 * 256;
 
 /// IoU threshold for the panoptic matching rule. Strict greater-than
@@ -147,10 +150,11 @@ mod tests {
 
     #[test]
     fn parity_eps_matches_placeholder_magnitude() {
-        // Same magnitude as the boundary-IoU and LVIS aligned-mode
-        // tolerances. The val-measured ULP ceiling on COCO panoptic
-        // val replaces this exact bit-pattern check once the
-        // measurement procedure in
+        // Same magnitude as the boundary-IoU and LVIS tolerances.
+        // All three are harness-side comparison budgets for
+        // multi-process / cross-oracle traces, not parity modes. The
+        // val-measured ULP ceiling on COCO panoptic val replaces this
+        // exact bit-pattern check once the measurement procedure in
         // `tests/python/parity_panoptic/panoptic_val_paths.py` runs.
         assert_eq!(PANOPTIC_PARITY_EPS, 1e-9);
     }

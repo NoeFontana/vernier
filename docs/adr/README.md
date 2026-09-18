@@ -91,6 +91,7 @@ else is detail.
 | [0030](0030-buffer-protocol.md) | Accept detection arrays alongside JSON bytes in streaming update | accepted (amended 2026-05-09 — bitmask + compressed-bytes ingest readmitted) |
 | [0035](0035-api-surface-consolidation.md) | Consolidate the streaming / DDP / background public surface | proposed |
 | [0038](0038-tables-panoptic-semantic.md) | Result tables for panoptic and semantic — per-class only, sibling result types | accepted |
+| [0059](0059-remove-cli-aligned-parity-value.md) | Remove the `aligned` value from `vernier eval --parity-mode` | proposed |
 
 ### Sibling paradigms
 
@@ -130,8 +131,8 @@ else is detail.
 | [0053](0053-matching-dt-prefilter.md) | Skip the GT scan for detections that cannot match (per-cell column maxima) | proposed |
 | [0054](0054-split-parallel-json-ingestion.md) | Split JSON ingestion across the thread budget; round floats correctly | proposed (amended 2026-09-17) |
 | [0055](0055-drop-in-params-surface-and-coco-json-adapters.md) | Finish the `COCOeval` drop-in's mutable surface (`ious`, `catIds`); publish the COCO-JSON normalizers | proposed |
-| [0058](0058-keypoints-usecats-zero-disposition.md) | Dispose of keypoints-under-`useCats=0` as `corrected` (quirk F6) | proposed |
 | [0057](0057-python-detection-ingest-routes.md) | Two direct detection-ingest routes for in-process callers (list of result dicts, `(N, 7)` matrix) | proposed |
+| [0058](0058-keypoints-usecats-zero-disposition.md) | Dispose of keypoints-under-`useCats=0` as `corrected` (quirk F6) | proposed |
 
 ### TIDE design package — proposed cluster
 

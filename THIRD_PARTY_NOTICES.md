@@ -122,7 +122,7 @@ licensing implications first.
   (the boundary-iou-api LICENSE preserves the COCOAPI notice
   verbatim because it ships pycocotools derivatives).
 - **Quirks survey:** [`docs/engineering/pycocotools-quirks.md`](docs/engineering/pycocotools-quirks.md)
-  — every vernier-side disposition (`strict` / `aligned` / `corrected`)
+  — every vernier-side disposition (`strict` / `corrected`)
   is keyed against this exact version.
 
 ## faster-coco-eval

@@ -173,9 +173,9 @@ mod tests {
     /// decimals to the adjacent double. That surfaced as ~16 % of
     /// `eval_imgs.dtScores` drifting by exactly 1 ULP on the DETR-R50
     /// real-prediction gate (`docs/engineering/real-predictions-parity.md`),
-    /// which held `dtScores` and the `scores` tensor at aligned tier
-    /// while the summary stayed strict — AP depends on detection
-    /// *order*, and 1 ULP does not reorder.
+    /// which held `dtScores` and the `scores` tensor under that page's
+    /// float-tolerance gate while the summary stayed bit-equal — AP
+    /// depends on detection *order*, and 1 ULP does not reorder.
     ///
     /// The `float_roundtrip` feature switches `serde_json` to a
     /// correctly-rounded path. Rust's own `str::parse::<f64>` is

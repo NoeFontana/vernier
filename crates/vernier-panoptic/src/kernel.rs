@@ -4,19 +4,24 @@
 //! `panopticapi/evaluation.py:117-163` in pure Rust. Two structural
 //! deltas vs upstream:
 //!
-//! - **T2 aligned.** The intersection histogram is built directly into
+//! Both are **strict**: the output is bit-equal in each case and the
+//! structural difference is the row's rationale, not a disposition of
+//! its own (ADR-0002's 2026-05-10 amendment; ADR-0025 spells both
+//! cells `aligned`, which predates it).
+//!
+//! - **T2.** The intersection histogram is built directly into
 //!   a `HashMap<(u32, u32), u32>` in one pass over the GT/DT label-map
 //!   slices. panopticapi materializes a uint64 buffer
 //!   (`pan_gt * OFFSET + pan_pred`) and decodes it via `np.unique`;
 //!   vernier's hashmap output is bit-equal but skips the uint64
 //!   intermediate (no allocation of an `H * W * 8`-byte buffer).
 //!
-//! - **U1 aligned.** The matching loop iterates the histogram in a
+//! - **U1.** The matching loop iterates the histogram in a
 //!   sorted `(gt, pred)` order rather than dict-iteration order. By
 //!   quirk **U9** this is irrelevant — once a `(gt, pred)` pair clears
 //!   the IoU > 0.5 threshold, both labels go into `gt_matched` /
 //!   `pred_matched` and no other pair can re-match either side. The
-//!   sorted iteration produces a deterministic TP set under property
+//!   sorted iteration produces the same TP set, pinned by property
 //!   tests across input shuffles.
 //!
 //! FP / FN attribution lives in [`crate::attribute`]; this module
@@ -473,7 +478,7 @@ fn build_dense_boundary_intersections(
 /// `n_gt` carries the `(VOID, dt)` overlaps used by the attribute
 /// step's V4 FP exclusion.
 ///
-/// Quirk **T2** aligned: bit-equal to panopticapi's `np.unique` over
+/// Quirk **T2**, strict: bit-equal to panopticapi's `np.unique` over
 /// the OFFSET-encoded uint64 buffer (no uint64 intermediate). The
 /// dense layout additionally avoids a hashmap allocation per pair —
 /// for typical panoptic images (n_gt, n_dt ≤ ~64) the matrix is

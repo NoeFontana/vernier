@@ -85,7 +85,7 @@ def test_instance_comparator_matches_legacy_compare_cell_on_perfect_pair() -> No
         impl_sha256={"vernier": "a" * 64, "pycocotools": "b" * 64},
     )
     assert report.passed
-    strict = next(t for t in report.tiers if t.tier == "strict")
+    strict = next(t for t in report.tiers if t.tier == "bit-equal")
     assert strict.passed
     assert strict.divergent_count == 0
 
@@ -102,7 +102,7 @@ def test_instance_comparator_catches_strict_divergence() -> None:
         impl_tensors={"vernier": a, "pycocotools": b},
         impl_sha256={"vernier": "a" * 64, "pycocotools": "b" * 64},
     )
-    strict = next(t for t in report.tiers if t.tier == "strict")
+    strict = next(t for t in report.tiers if t.tier == "bit-equal")
     assert not strict.passed
 
 

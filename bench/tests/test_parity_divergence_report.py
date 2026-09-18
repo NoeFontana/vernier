@@ -19,7 +19,7 @@ from bench.harness.parity import (
 def test_strict_tier_catches_one_ulp_delta_at_known_index(zero_tensor: np.ndarray) -> None:
     target = (3, 50, 0, 1, 2)
     t2 = zero_tensor.copy()
-    t2[target] = PARITY_EPS  # one ULP above zero — strict rejects.
+    t2[target] = PARITY_EPS  # one ULP above zero — bit-equal rejects.
 
     report = compare_cell(
         workload_id="smoke",
@@ -28,7 +28,7 @@ def test_strict_tier_catches_one_ulp_delta_at_known_index(zero_tensor: np.ndarra
         impl_sha256={"vernier": "a" * 64, "pycocotools": "b" * 64},
     )
     assert not report.passed
-    strict = next(t for t in report.tiers if t.tier == "strict")
+    strict = next(t for t in report.tiers if t.tier == "bit-equal")
     assert strict.divergent_count == 1
     assert strict.first_divergence is not None
     assert strict.first_divergence.index == target
@@ -39,7 +39,7 @@ def test_strict_tier_catches_one_ulp_delta_at_known_index(zero_tensor: np.ndarra
     assert strict.tensor_sha256_b == "b" * 12
 
 
-def test_aligned_tier_catches_above_tolerance_delta(zero_tensor: np.ndarray) -> None:
+def test_float_tolerance_tier_catches_above_band_delta(zero_tensor: np.ndarray) -> None:
     target = (0, 0, 0, 0, 0)
     t2 = zero_tensor.copy()
     t2[target] = 1e-12  # well above 4*PARITY_EPS
@@ -50,10 +50,10 @@ def test_aligned_tier_catches_above_tolerance_delta(zero_tensor: np.ndarray) -> 
         impl_tensors={"vernier": zero_tensor, "faster-coco-eval": t2},
         impl_sha256={"vernier": "a" * 64, "faster-coco-eval": "b" * 64},
     )
-    aligned = next(t for t in report.tiers if t.tier == "aligned")
-    assert not aligned.passed
-    assert aligned.first_divergence is not None
-    assert aligned.first_divergence.index == target
+    banded = next(t for t in report.tiers if t.tier == "float-tolerance")
+    assert not banded.passed
+    assert banded.first_divergence is not None
+    assert banded.first_divergence.index == target
 
 
 def test_boundary_tier_catches_above_tolerance_delta(zero_tensor: np.ndarray) -> None:
@@ -67,7 +67,7 @@ def test_boundary_tier_catches_above_tolerance_delta(zero_tensor: np.ndarray) ->
         impl_tensors={"vernier": zero_tensor, "boundary-iou-api": t2},
         impl_sha256={"vernier": "a" * 64, "boundary-iou-api": "b" * 64},
     )
-    boundary = next(t for t in report.tiers if t.tier == "boundary")
+    boundary = next(t for t in report.tiers if t.tier == "boundary-tolerance")
     assert not boundary.passed
     assert boundary.first_divergence is not None
     assert boundary.first_divergence.index == target
@@ -90,7 +90,7 @@ def test_write_report_persists_round_trippable_json(tmp_path, zero_tensor: np.nd
     payload = json.loads(out.read_text())
     assert payload["schema_version"] == 1
     assert payload["iou_type"] == "bbox"
-    strict = next(t for t in payload["tiers"] if t["tier"] == "strict")
+    strict = next(t for t in payload["tiers"] if t["tier"] == "bit-equal")
     assert strict["passed"] is False
     assert strict["first_divergence"]["index"] == list(target)
 
