@@ -241,6 +241,7 @@ def _build_grid_and_cells(
         "strict",  # ADR-0002: matching parity is strict at the cell level.
         max_dets_per_image,
         use_cats=True,
+        retain_meta=True,
     )
     eval_imgs = grid.eval_imgs()
     cells_by_category = _extract_cells_by_category(

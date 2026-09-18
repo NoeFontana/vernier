@@ -13,6 +13,9 @@ package with a Rust core, a Python API, and a standalone CLI.
   `boundary-iou-api` in strict mode. Every upstream quirk has a documented
   disposition ([quirks survey](docs/engineering/pycocotools-quirks.md)).
 - **Drop-in** for `pycocotools.cocoeval.COCOeval`: change one import, or none.
+  Same constructor, same `params` mutations, same `eval` / `evalImgs` /
+  `ious` / `stats` read back off the instance ([what carries
+  over](docs/migrate/from-pycocotools.md#params-what-the-shim-honors-and-what-it-rejects)).
 - **3–17× faster** than faster-coco-eval and pycocotools at equal CPU budget
   ([benchmarks](#performance)).
 - **Built for real pipelines**: training-loop evaluation, multi-rank
@@ -32,7 +35,8 @@ cargo add vernier                 # Rust library
 `vernier.COCOeval` has the same constructor, the same
 `evaluate() / accumulate() / summarize()` sequence, and the same `.stats`
 as pycocotools. It defaults to `parity_mode="strict"`, so the output is
-bit-identical.
+bit-identical (see [Status & validation](#status--validation) for what
+that is measured against).
 
 ```python
 from pycocotools.coco import COCO
@@ -61,6 +65,15 @@ unpatch()
 The patch is explicit, reversible, and never happens on import. A context
 manager (`vernier.adapters.patched_pycocotools`) and a one-fixture pytest
 recipe are in the [pycocotools migration guide](docs/migrate/from-pycocotools.md#pytest-integration).
+
+TorchMetrics' `MeanAveragePrecision` runs under the patch unchanged,
+including `class_metrics=True` and `extended_summary=True`
+(`tests/python/test_compat_torchmetrics.py` asserts the patched and
+unpatched results are equal). Two `params` fields are the exception and
+raise rather than diverge quietly: `imgIds` subsetting, and `areaRng`
+(custom area ranges are a native-`Evaluator` feature, ADR-0040). The
+[migration guide](docs/migrate/from-pycocotools.md#params-what-the-shim-honors-and-what-it-rejects)
+has the field-by-field table.
 
 ## Recommended: the native API
 
@@ -147,7 +160,11 @@ Full reference: [`crates/vernier-cli`](crates/vernier-cli/README.md).
 
 Every row is checked by a parity harness that runs the reference
 implementation and vernier on the same inputs. "Bit-exact" means
-`parity_mode="strict"`.
+`parity_mode="strict"`, against the reference **as published on PyPI**
+— vernier's own output is identical on x86-64 and ARM. (A pycocotools
+you recompile from source can round bbox IoU 1-2 ULP differently on
+ARM; see [ADR-0056](docs/adr/0056-pin-no-fp-contraction-for-bbox-iou.md)
+and the [migration guide](docs/migrate/from-pycocotools.md#bit-for-bit-and-against-which-build).)
 
 | Metric | Reference | Parity | Notes |
 | --- | --- | --- | --- |

@@ -33,7 +33,10 @@
 //!   the per-call `_ignore` (which combines the dataset flag with the
 //!   current area range) is computed at eval time.
 //! - **J3** (`strict`): detection-side area is derived at construction
-//!   from the bbox (`bbox.w * bbox.h`) and never read from JSON.
+//!   from the bbox (`bbox.w * bbox.h`) and never read from JSON — the
+//!   `loadRes` surface. [`DetectionArea::Supplied`] opts into reading a
+//!   supplied `area` instead, the `COCOeval` surface, which takes
+//!   `d['area']` off an already-built `cocoDt`.
 //! - **J1** (`strict`): user-supplied DT ids are preserved verbatim;
 //!   absent ids are auto-assigned sequentially during construction.
 //! - **E2 / J4** (`strict`): detections never carry an `iscrowd` flag
@@ -1250,7 +1253,7 @@ impl CocoDataset {
 ///
 /// - `is_crowd` does not exist as a field — quirks **E2 / J4**.
 /// - `area` is derived from `bbox` at construction (`bbox.w * bbox.h`) —
-///   quirk **J3**.
+///   quirk **J3** — unless built with [`DetectionArea::Supplied`].
 /// - `id` is honored when the user supplies one and auto-assigned
 ///   otherwise — quirk **J1** (`strict`: pycocotools-shaped outputs are
 ///   bit-equal; preserving user ids is a structural difference, not a
@@ -1268,7 +1271,8 @@ pub struct CocoDetection {
     pub score: f64,
     /// Bounding box (`(x, y, w, h)`).
     pub bbox: Bbox,
-    /// Pixel area, derived from `bbox` per quirk **J3**.
+    /// Pixel area, derived from `bbox` per quirk **J3** unless built with
+    /// [`DetectionArea::Supplied`].
     pub area: f64,
     /// Segmentation prediction, when the detector emits one. `None`
     /// for bbox-only detectors. Parity dispositions match
@@ -1319,6 +1323,10 @@ pub struct DetectionInput {
     pub score: f64,
     /// Bounding box.
     pub bbox: Bbox,
+    /// Optional supplied area. Ignored unless the detections are built
+    /// with [`DetectionArea::Supplied`] (quirk **J3**).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<f64>,
     /// Optional segmentation prediction. `None` for bbox-only
     /// detectors. Stored verbatim and normalized via
     /// [`Segmentation::to_rle`] at eval time.
@@ -1332,6 +1340,47 @@ pub struct DetectionInput {
     /// `keypoints` when absent (DT side does not require it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_keypoints: Option<u32>,
+}
+
+/// Where [`CocoDetection::area`] comes from (quirk **J3**).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DetectionArea {
+    /// `bbox.w * bbox.h`, ignoring any supplied area — pycocotools'
+    /// `loadRes`, which overwrites `area` on every result.
+    #[default]
+    FromBbox,
+    /// [`DetectionInput::area`] verbatim, falling back to
+    /// `bbox.w * bbox.h` when absent — pycocotools' `COCOeval`, which
+    /// reads `d['area']` off whatever `cocoDt` it is handed.
+    Supplied,
+    /// The foreground pixel count of the detection's RLE segmentation —
+    /// pycocotools' `maskUtils.area`, which `loadRes` derives for segm
+    /// results. A detection without an RLE segmentation is an error.
+    Mask,
+}
+
+/// [`DetectionArea::Mask`]: the RLE foreground area of a detection.
+fn mask_area(input: &DetectionInput, id: AnnId) -> Result<f64, EvalError> {
+    let area = match &input.segmentation {
+        Some(segmentation) => segmentation.rle_area()?,
+        None => None,
+    };
+    // Exact: a pixel count stays far below 2^53.
+    #[allow(clippy::cast_precision_loss)]
+    area.map(|pixels| pixels as f64)
+        .ok_or_else(|| EvalError::InvalidAnnotation {
+            detail: format!(
+                "DT id={} on image {}: dt_area=\"mask\" requires an RLE `segmentation` \
+                 (maskUtils.area does not take {})",
+                id.0,
+                input.image_id.0,
+                if input.segmentation.is_some() {
+                    "polygons"
+                } else {
+                    "a missing segmentation"
+                }
+            ),
+        })
 }
 
 /// COCO detections collection — flat storage plus `(image, category)`-
@@ -1352,6 +1401,12 @@ impl CocoDetections {
     /// quirks **E2/J4** force `is_crowd=0` and quirk **J3** derives
     /// `area` from `bbox`.
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, EvalError> {
+        Self::from_json_bytes_with_area(bytes, DetectionArea::FromBbox)
+    }
+
+    /// [`Self::from_json_bytes`] with an explicit [`DetectionArea`]
+    /// source.
+    pub fn from_json_bytes_with_area(bytes: &[u8], area: DetectionArea) -> Result<Self, EvalError> {
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
         let raw: Vec<DetectionInput> = serde_json::from_slice(bytes)?;
@@ -1359,7 +1414,7 @@ impl CocoDetections {
         let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
         #[cfg(feature = "bench-timings")]
         let t1 = std::time::Instant::now();
-        let result = Self::from_inputs(raw);
+        let result = Self::from_inputs_with_area(raw, area);
         #[cfg(feature = "bench-timings")]
         {
             let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -1384,8 +1439,27 @@ impl CocoDetections {
     ///
     /// Same as [`Self::from_json_bytes`].
     pub fn from_json_bytes_parallel(bytes: &[u8], threads: usize) -> Result<Self, EvalError> {
+        Self::from_json_bytes_parallel_with_area(bytes, threads, DetectionArea::FromBbox)
+    }
+
+    /// [`Self::from_json_bytes_parallel`] with an explicit
+    /// [`DetectionArea`] source.
+    ///
+    /// The area source is applied by [`Self::from_inputs_with_area`]
+    /// after the split, so it is independent of how the payload was
+    /// parsed. Both serial fallbacks below carry it too, which is what
+    /// keeps the result independent of the thread budget.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_json_bytes`].
+    pub fn from_json_bytes_parallel_with_area(
+        bytes: &[u8],
+        threads: usize,
+        area: DetectionArea,
+    ) -> Result<Self, EvalError> {
         if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
-            return Self::from_json_bytes(bytes);
+            return Self::from_json_bytes_with_area(bytes, area);
         }
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
@@ -1403,7 +1477,7 @@ impl CocoDetections {
             Some(inputs) => {
                 #[cfg(feature = "bench-timings")]
                 let t1 = std::time::Instant::now();
-                let result = Self::from_inputs(inputs);
+                let result = Self::from_inputs_with_area(inputs, area);
                 #[cfg(feature = "bench-timings")]
                 {
                     let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -1416,7 +1490,7 @@ impl CocoDetections {
             // As on the GT side: the fallback's own instrumentation is
             // the only one that fires, so the abandoned scan is not
             // added to `DT_PARSE_NS` a second time.
-            None => Self::from_json_bytes(bytes),
+            None => Self::from_json_bytes_with_area(bytes, area),
         }
     }
 
@@ -1424,6 +1498,14 @@ impl CocoDetections {
     /// (quirk **J1**) for inputs that did not supply one, validates
     /// finite scores, and derives areas (quirk **J3**).
     pub fn from_inputs(inputs: Vec<DetectionInput>) -> Result<Self, EvalError> {
+        Self::from_inputs_with_area(inputs, DetectionArea::FromBbox)
+    }
+
+    /// [`Self::from_inputs`] with an explicit [`DetectionArea`] source.
+    pub fn from_inputs_with_area(
+        inputs: Vec<DetectionInput>,
+        area: DetectionArea,
+    ) -> Result<Self, EvalError> {
         let mut detections = Vec::with_capacity(inputs.len());
         let mut next_auto = 1i64;
         for input in inputs {
@@ -1446,7 +1528,11 @@ impl CocoDetections {
                 category_id: input.category_id,
                 score: input.score,
                 bbox: input.bbox,
-                area: input.bbox.w * input.bbox.h,
+                area: match (area, input.area) {
+                    (DetectionArea::Supplied, Some(supplied)) => supplied,
+                    (DetectionArea::Mask, _) => mask_area(&input, id)?,
+                    _ => input.bbox.w * input.bbox.h,
+                },
                 segmentation: input.segmentation,
                 keypoints: input.keypoints,
                 num_keypoints: input.num_keypoints,
@@ -1847,6 +1933,7 @@ mod tests {
                 w: bbox.2,
                 h: bbox.3,
             },
+            area: None,
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
@@ -1880,6 +1967,68 @@ mod tests {
         let dts =
             CocoDetections::from_inputs(vec![dt_input(1, 1, 0.5, (10.0, 10.0, 4.0, 5.0))]).unwrap();
         assert_eq!(dts.detections()[0].area, 20.0);
+    }
+
+    #[test]
+    fn j3_ignores_supplied_area_by_default() {
+        let json = br#"[{"image_id": 1, "category_id": 1, "score": 0.5, "bbox": [0, 0, 4, 5], "area": 99.0}]"#;
+        let dts = CocoDetections::from_json_bytes(json).unwrap();
+        assert_eq!(dts.detections()[0].area, 20.0);
+    }
+
+    #[test]
+    fn j3_supplied_area_is_read_verbatim_with_bbox_fallback() {
+        let json = br#"[
+            {"image_id": 1, "category_id": 1, "score": 0.5, "bbox": [0, 0, 4, 5], "area": 99.0},
+            {"image_id": 1, "category_id": 1, "score": 0.4, "bbox": [0, 0, 4, 5]}
+        ]"#;
+        let dts = CocoDetections::from_json_bytes_with_area(json, DetectionArea::Supplied).unwrap();
+        assert_eq!(dts.detections()[0].area, 99.0);
+        assert_eq!(dts.detections()[1].area, 20.0);
+    }
+
+    fn rle_input(counts: SegmentationRleCounts) -> DetectionInput {
+        DetectionInput {
+            segmentation: Some(Segmentation::Rle(crate::segmentation::SegmentationRle {
+                size: [4, 4],
+                counts,
+            })),
+            ..dt_input(1, 1, 0.5, (0.0, 0.0, 4.0, 4.0))
+        }
+    }
+
+    #[test]
+    fn j3_mask_area_is_the_rle_foreground_for_both_count_forms() {
+        // Runs: 3 background, 5 foreground, 2 background, 6 foreground.
+        let runs = vec![3u32, 5, 2, 6];
+        let compressed = vernier_mask::Rle::from_counts(4, 4, runs.clone()).to_string_bytes();
+        let dts = CocoDetections::from_inputs_with_area(
+            vec![
+                rle_input(SegmentationRleCounts::Compressed(
+                    String::from_utf8(compressed).unwrap(),
+                )),
+                rle_input(SegmentationRleCounts::Uncompressed(runs.into())),
+            ],
+            DetectionArea::Mask,
+        )
+        .unwrap();
+        assert_eq!(dts.detections()[0].area, 11.0);
+        assert_eq!(dts.detections()[1].area, 11.0);
+    }
+
+    #[test]
+    fn j3_mask_area_rejects_detections_without_an_rle() {
+        let polygon = DetectionInput {
+            segmentation: Some(Segmentation::Polygons(vec![vec![
+                0.0, 0.0, 4.0, 0.0, 4.0, 4.0,
+            ]])),
+            ..dt_input(1, 1, 0.5, (0.0, 0.0, 4.0, 4.0))
+        };
+        for input in [dt_input(1, 1, 0.5, (0.0, 0.0, 4.0, 4.0)), polygon] {
+            let err = CocoDetections::from_inputs_with_area(vec![input], DetectionArea::Mask)
+                .unwrap_err();
+            assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
+        }
     }
 
     #[test]

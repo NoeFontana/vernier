@@ -174,6 +174,7 @@ def _run_vernier(
             True,
             sigmas_dict,
             num_threads=num_threads,
+            retain_meta=True,
         )
         acc = grid.accumulate(max_dets)
         summary = acc.summarize(max_dets, plan="keypoints")
@@ -191,6 +192,7 @@ def _run_vernier(
             max(max_dets),
             use_cats=True,
             num_threads=num_threads,
+            retain_meta=True,
         )
         acc = grid.accumulate(max_dets)
         summary = acc.summarize(max_dets)

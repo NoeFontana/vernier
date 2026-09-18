@@ -31,7 +31,7 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Image Recognition",
 ]
 dependencies = [
-    "numpy>=2.0",
+    "numpy>=1.26",
     # ADR-0046 §F2: ``vernier.aggregate`` is implemented on top of
     # pyarrow's Table/RecordBatch primitives. It is part of the
     # top-level :mod:`vernier` namespace, so importing the package
@@ -82,6 +82,17 @@ real-models = [
     # checkpoints we'll add next (DETA, RT-DETR), so pinning here keeps
     # the dep set monotonic across paradigms.
     "timm>=1.0",
+    # Consumer-contract oracle for the ADR-0007 drop-in:
+    # `MeanAveragePrecision` drives `pycocotools.cocoeval.COCOeval` through
+    # params mutations (`iouThrs`, `recThrs`, `maxDets`, `catIds`) and reads
+    # `ious` / `eval` back out, which is the widest use of that surface any
+    # real consumer makes. `tests/python/test_compat_torchmetrics.py` runs it
+    # patched and unpatched and asserts equality; the test is fast (synthetic
+    # tensors, no checkpoints) and is *not* marked `real_models` / `slow`. It
+    # lands in this extra only because torchmetrics needs torch, which lives
+    # here. Floor, not a pin: this is a consumer we satisfy, not an oracle
+    # whose quirks we reproduce.
+    "torchmetrics>=1.5",
 ]
 
 [project.urls]

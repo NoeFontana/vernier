@@ -164,6 +164,7 @@ class EvalGrid:
     @property
     def n_images(self) -> int: ...
     def eval_imgs(self) -> list[dict[str, Any] | None]: ...
+    def ious(self) -> dict[tuple[int, int], NDArray[np.float64]]: ...
     def accumulate(self, max_dets: list[int]) -> Accumulated: ...
     def dataset(self) -> CocoDataset: ...
 
@@ -297,6 +298,8 @@ def evaluate_bbox_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_bbox_grid_with_dataset(
     gt: CocoDataset,
@@ -310,6 +313,7 @@ def evaluate_bbox_grid_with_dataset(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
     gt_json: bytes,
@@ -341,6 +345,8 @@ def evaluate_segm_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied", "mask"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
     gt_json: bytes,
@@ -375,6 +381,8 @@ def evaluate_boundary_grid(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied", "mask"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
     gt_json: bytes,
@@ -403,11 +411,14 @@ def evaluate_keypoints_grid(
     max_dets_per_image: int,
     use_cats: bool,
     sigmas: dict[int, list[float]],
+    retain_iou: bool = ...,
     cast_inputs: bool = ...,
     iou_thresholds: list[float] | None = ...,
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied"] = ...,
+    retain_meta: bool = ...,
 ) -> EvalGrid: ...
 
 # ADR-0046 partitioned-eval surface.
