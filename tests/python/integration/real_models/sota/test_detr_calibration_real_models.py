@@ -19,7 +19,7 @@ What this suite gates:
   combination. ``count`` is a pure histogram reduction; drift here is
   an outright accumulator bug because integers cannot shift under
   reduction-order changes.
-- **Aligned tier, 8 ULP relative + absolute, on the float surface** —
+- **Float-tolerance gate, 8 ULP relative + absolute, on the float surface** —
   the scalar ``ece`` / ``mce`` reductions and every float column of
   the reliability table (``mean_score`` / ``accuracy`` / ``gap`` /
   ``ci_lo`` / ``ci_hi``). The kernel uses Faer's pulp-driven
@@ -88,7 +88,7 @@ _COCO_IOU_LADDER: tuple[float, ...] = tuple(
 )
 
 #: 8 ULP of float64 — used as BOTH ``rtol`` and ``atol`` on the
-#: aligned-tier scalar / per-bin float assertions. Mirrors the panoptic
+#: float-tolerance scalar / per-bin float assertions. Mirrors the panoptic
 #: gate's symmetric band: a bin whose oracle gap rounds to exact
 #: ``0.0`` while vernier yields a sub-ULP non-zero (or vice versa)
 #: still passes; an ``rtol``-only check would fail at ``rtol * 0 = 0``
@@ -283,7 +283,7 @@ def test_detr_r50_calibration_parity_vs_numpy_oracle(
 
     Strict tier: per-bin u64 ``count`` bit-equal (integer reductions
     cannot drift under reduction-order changes — see module docstring).
-    Aligned tier: ``ece`` / ``mce`` scalars + every float column of
+    Float-tolerance gate: ``ece`` / ``mce`` scalars + every float column of
     the reliability table at 8 ULP rtol + atol. Single-IoU calibrate()
     call per parametrisation; ADR-0018's surface picks one T-slot at
     a time, so 0.5 / 0.75 / 0.95 cover the COCO T-axis endpoints + a
@@ -325,7 +325,7 @@ def test_detr_r50_calibration_parity_vs_numpy_oracle(
     # check doesn't silently weaken this PR's load-bearing claim, and
     # so the failure surface points specifically at the calibration
     # u64 reduction (not at any of the float reductions, which the
-    # aligned-tier helper covers).
+    # float-tolerance helper covers).
     oracle_count = oracle.reliability["count"]
     candidate_count = candidate.reliability["count"]
     assert np.array_equal(oracle_count, candidate_count), (
@@ -333,16 +333,16 @@ def test_detr_r50_calibration_parity_vs_numpy_oracle(
         f"oracle ={oracle_count}\nvernier={candidate_count}"
     )
 
-    # Aligned tier — ECE/MCE scalars + float columns of the
+    # Float-tolerance gate — ECE/MCE scalars + float columns of the
     # reliability table at 8 ULP rtol + atol. The synthetic-fixture
-    # harness pins ``aligned``-mode at ``4 * eps``; we widen to 8 ULP
+    # harness pins float-tolerance at ``4 * eps``; we widen to 8 ULP
     # here because the real-prediction reduction over ~150k
     # detections accumulates more drift than the 10-60 detection
     # fixtures the harness's 4-ULP gate was calibrated on.
-    _assert_calibration_aligned(oracle, candidate, iou=iou)
+    _assert_calibration_within_tolerance(oracle, candidate, iou=iou)
 
 
-def _assert_calibration_aligned(
+def _assert_calibration_within_tolerance(
     oracle: Any,
     candidate: Any,
     *,
@@ -351,7 +351,8 @@ def _assert_calibration_aligned(
     """8-ULP rtol+atol comparison of ECE/MCE + reliability float cols.
 
     Mirrors ``parity_calibration.harness.assert_snapshots_match``'s
-    aligned mode but with the wider 8-ULP gate justified above and a
+    tolerant mode (that harness keeps its own three-tier vocabulary,
+    ADR-0018) but with the wider 8-ULP gate justified above and a
     per-IoU error tag so a multi-parametrisation failure points at the
     exact threshold. NaN positions must still match bit-exact (zero-
     count bins emit NaN on both sides per the R2 convention).
@@ -377,7 +378,7 @@ def _assert_calibration_aligned(
     # score stream on both sides, with no per-bin float accumulator in
     # the way. Any drift here is a real divergence in the edge
     # construction (sort order, interpolation choice, or quantile
-    # weighting), not a reduction-order artefact, so the 8-ULP aligned
+    # weighting), not a reduction-order artefact, so the 8-ULP float-tolerance
     # band is the wrong gate. Bit-equal check FIRST so a strict-tier
     # regression surfaces as the strict-tier failure it is, not as a
     # loosened-tolerance pass.
@@ -390,7 +391,7 @@ def _assert_calibration_aligned(
             err_msg=f"reliability.{edge_col} (strict per ADR-0018 §P1) at iou={iou}",
         )
 
-    # Float columns of the reliability table (aligned tier — per-bin
+    # Float columns of the reliability table (float-tolerance gate — per-bin
     # float reductions over ~150k detections, where reduction-order
     # drift is expected at the few-ULP level).
     float_cols = ("mean_score", "accuracy", "gap", "ci_lo", "ci_hi")

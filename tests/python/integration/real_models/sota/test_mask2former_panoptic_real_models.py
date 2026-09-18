@@ -1,6 +1,6 @@
 """Real-prediction parity smoke for Mask2Former Swin-T panoptic vs panopticapi.
 
-Sibling to ``test_detr_real_models.py``: real DT, real GT, strict+aligned
+Sibling to ``test_detr_real_models.py``: real DT, real GT, bit-equality + float-tolerance
 two-tier parity claim. The model is
 ``facebook/mask2former-swin-tiny-coco-panoptic``; predictions land
 under ``mask2former_panoptic_cache_dir()`` as one rgb2id-encoded PNG
@@ -19,7 +19,7 @@ What this suite gates:
   (vernier ``EvalResult.per_class``). The category-id sets must
   match exactly. A divergence here is a real accumulator bug — float
   reduction order can't shift integers.
-- **Aligned-tier float drift, 8 ULP relative + absolute** — per-class
+- **Float-tolerance float drift, 8 ULP relative + absolute** — per-class
   ``iou_sum`` (the only reduction where reduction order matters at the
   integer-input layer), and the float averages emitted by
   ``PanopticSnapshot`` (global / Things / Stuff PQ/SQ/RQ + per-class
@@ -221,7 +221,7 @@ def _assert_integer_surface_strict(
     category id; vernier's ``EvalResult.per_class`` polars DataFrame has
     one row per category with ``n_tp / n_fp / n_fn / iou_sum`` columns.
     Category id sets must match exactly. ``iou_sum`` is a float
-    reduction, so it falls through to the aligned-tier 8-ULP gate.
+    reduction, so it falls through to the float-tolerance 8-ULP gate.
     """
     vernier_rows = {int(r["category_id"]): r for r in vernier_per_class.iter_rows(named=True)}
     oracle_cats = set(pq_stat.pq_per_cat.keys())
@@ -247,7 +247,7 @@ def _assert_integer_surface_strict(
             vernier_row["iou_sum"],
             rtol=_PANOPTIC_PARITY_RTOL,
             atol=_PANOPTIC_PARITY_ATOL,
-            err_msg=f"cat {cat_id} iou_sum (aligned-tier 8 ULP)",
+            err_msg=f"cat {cat_id} iou_sum (float-tolerance gate, 8 ULP)",
         )
 
 
@@ -258,7 +258,7 @@ def test_mask2former_panoptic_parity_vs_panopticapi(
     """Two-tier parity vs panopticapi on real Mask2Former predictions.
 
     Strict tier: per-class ``tp / fp / fn`` integers + coverage.
-    Aligned tier: per-class ``iou_sum`` + PQ/SQ/RQ float averages, at
+    Float-tolerance gate: per-class ``iou_sum`` + PQ/SQ/RQ float averages, at
     8 ULP relative AND absolute. The DETR-R50 ``dtScores`` ULP drift
     does not surface here — panoptic doesn't carry a score-tensor
     pipeline.
@@ -296,7 +296,7 @@ def test_mask2former_panoptic_parity_vs_panopticapi(
     # shift integers).
     _assert_integer_surface_strict(pq_stat, vernier_per_class)
 
-    # Aligned tier — float reductions at 8 ULP rtol AND atol. The atol
+    # Float-tolerance gate — float reductions at 8 ULP rtol AND atol. The atol
     # is what keeps a PQ-collapses-to-zero category from spuriously
     # failing the rtol-only gate (rtol * 0 = 0).
     assert_snapshots_equal(

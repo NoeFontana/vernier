@@ -21,44 +21,48 @@ LVIS paradigms.
 > `vernier ↔ <oracle>` agreement on the same `(GT JSON, DT JSON)`
 > bytes: pycocotools, panopticapi, mmsegmentation `IoUMetric`,
 > `lvis-api`, or vernier's own clean-room numpy oracle (calibration).
-> The strict tier asserts bit-equality on the integer / boolean
-> surfaces the orchestrator emits (`tp / fp / fn`, `dt_matches`,
-> `dt_ignore`, `gt_ignore`, `counts`); the aligned tier asserts
-> tolerated drift on the float surfaces (`precision`, summary
-> `stats`, per-cell `dt_scores`) at the per-cell `rtol / atol` band
-> documented under each section. **A cell that PASSES means: on the
-> exact prediction bytes the populator wrote, the orchestrator and
-> oracle agree to the documented tier**. A cell that PASSES does NOT
+> The **bit-equality gate** asserts exact agreement on the integer /
+> boolean surfaces the orchestrator emits (`tp / fp / fn`,
+> `dt_matches`, `dt_ignore`, `gt_ignore`, `counts`); the
+> **float-tolerance gate** asserts tolerated drift on the float
+> surfaces (`precision`, summary `stats`, per-cell `dt_scores`) at the
+> per-cell `rtol / atol` band documented under each section. **A cell
+> that PASSES means: on the exact prediction bytes the populator
+> wrote, the orchestrator and oracle agree to both gates**. A cell that PASSES does NOT
 > mean: vernier's headline numbers reproduce the model card's
 > published mAP. The "Headline snapshot" rows are cross-reference
 > only; under-sampled prefixes (currently: LVIS at 1000/19,809) skew
 > absolute mAP without affecting the parity claim, which holds at
 > any N.
 
-> **"strict tier" / "aligned tier" on this page name assertion bands,
-> not parity modes.** They are this harness's two gates — bit-equality
-> on the integer surfaces, a documented `rtol / atol` band on the float
-> surfaces. They are *not* the ADR-0002 disposition tiers: that
-> vocabulary has been two-valued (`strict` / `corrected`) since the
-> [2026-05-10 amendment](../adr/0002-three-tier-parity-model.md#amendment-2026-05-10-collapse-aligned-into-strict)
-> folded `aligned` into `strict`, and `parity_mode="aligned"` is not a
-> value the API accepts. The float band here is **not** homed in the
-> two-tier model, and cannot be relabelled `strict` without making a
-> false bit-equality claim: the panoptic, LVIS and boundary cells all
-> gate on a real, non-zero tolerance today. (The Instance cell's band is
-> a narrower case — ADR-0054 fixed its root cause and it should collapse
-> to bit-equality on the next re-measure; see the follow-up under that
-> cell.) Per the amendment's revival clause, giving the band a ratified
-> name is a new ADR with a per-surface argument — not a passive rename.
-> Until then, read "aligned tier" below as "this harness's
-> float-tolerance gate".
+> **The two gates on this page are test tolerances, not parity
+> dispositions.** A cell asserts two things: exact agreement on its
+> integer surfaces (the **bit-equality gate**) and agreement within a
+> documented `rtol / atol` band on its float surfaces (the
+> **float-tolerance gate**). Neither is a tier in ADR-0002's sense.
+> ADR-0002 dispositions a *quirk* — it says how vernier should behave —
+> and its vocabulary has been two-valued (`strict` / `corrected`) since
+> the [2026-05-10 amendment](../adr/0002-three-tier-parity-model.md#amendment-2026-05-10-collapse-aligned-into-strict).
+> What this page records is narrower and per-test: how far two already-
+> computed float arrays are allowed to sit apart before the assertion
+> fails. That number is chosen per cell and stated per cell; it grades
+> nothing and selects no behaviour, so it is deliberately *not* named
+> after a parity mode. In particular the float-tolerance gate must not
+> be read as `strict`: the panoptic, LVIS and boundary cells gate on a
+> real, non-zero band (8 / 8 / 2 ULP) today, so calling it `strict`
+> would assert a bit-equality that does not hold. (The Instance cell is
+> the one narrowing case — ADR-0054 fixed its root cause and its band
+> should collapse to zero on the next re-measure; see the follow-up
+> under that cell.) Reviving a third *disposition* would be a new ADR
+> per the amendment's revival clause; naming a per-test tolerance is
+> not that, and nothing on this page asks for one.
 
 > **Status:** the three original SOTA parity tests (DETR,
 > Mask2Former panoptic, Mask2Former ADE) pass on the live cache
 > (machine `84edec51fd71`, 2026-05-31, harness SHA `b9dc053`).
 > Bit-equality holds on the integer surfaces actually asserted by
-> each test; aligned-tier float tolerances are documented per cell
-> below and stay within their gates. Headline numerics in the
+> each test; the float-tolerance bands are documented per cell
+> below and every cell stays inside its own band. Headline numerics in the
 > sections below are SNAPSHOTS captured against the pinned model
 > revisions listed under "Cells covered"; the tests gate
 > vernier ↔ oracle parity, not absolute headline stability across
@@ -102,10 +106,10 @@ cell) so a pin bump invalidates by construction.
 - **Workload**: `coco_val2017_detr_r50_v1d5f47b` — 150,680 detections
   across 4,977 of 5,000 val2017 images (23 produce no above-threshold
   output at the 0.05 score floor), 80 categories.
-- **Strict tier** — bit-equality on the 12-stat det summary, dense
+- **Bit-equality gate** — bit-equality on the 12-stat det summary, dense
   `precision` / `recall` / `counts` aggregates. These are the numbers
   a user reads from `Evaluator.summarize()`.
-- **Aligned tier** — `eval_imgs.dtScores` and the COCOeval `scores`
+- **Float-tolerance gate** — `eval_imgs.dtScores` and the COCOeval `scores`
   tensor (per-recall-grid score-threshold projection of dtScores) at
   `rtol = 2 * eps`. On the first DETR-R50 val2017 run, ~16% of
   dtScores diverge by exactly 1 ULP of float64 and the `scores` tensor
@@ -117,9 +121,9 @@ cell) so a pin bump invalidates by construction.
   projection — precision / recall / mAP are bit-equal because AP
   depends only on detection order. Tolerance expressed as `rtol` (not
   `atol`) so the band tracks score magnitude across `[0.05, 1.0]`.
-- **Aligned tier (faster-coco-eval)** — separately checked; fce's
+- **Float-tolerance gate (faster-coco-eval)** — separately checked; fce's
   reductions are bit-identical to pycocotools on this cell, so the
-  same strict-tier surface holds.
+  same bit-equality surface holds.
 - **Headline numbers**
   - **mAP**: `0.4168586010785383` — bit-identical across vernier,
     pycocotools, and faster-coco-eval. Reproduces DETR-R50's published
@@ -134,9 +138,10 @@ the parse correctly rounded and therefore bit-equal to CPython's
 `tests/python/parity/test_json_float_parity.py` and
 `vernier-core`'s `json_float_parsing_is_correctly_rounded` pin it, and
 both were verified to fail with the feature off. The numbers in this
-section predate that change: the aligned-tier band stays documented as
-measured until the DETR-R50 cell is re-run against a build carrying
-ADR-0054, at which point it should narrow to strict.
+section predate that change: the float-tolerance band stays documented
+as measured until the DETR-R50 cell is re-run against a build carrying
+ADR-0054, at which point it should narrow to zero and the surface moves
+under the bit-equality gate.
 
 ## Panoptic — Mask2Former Swin-T vs panopticapi (PQ)
 
@@ -150,11 +155,11 @@ ADR-0054, at which point it should narrow to strict.
   at the end of a full run (the per-image sidecars cover resume), so
   its presence implies coverage; the assertion makes that contract
   explicit.
-- **Strict tier** — per-category integer surface: `PQStatCat.tp / fp / fn`
+- **Bit-equality gate** — per-category integer surface: `PQStatCat.tp / fp / fn`
   (panopticapi) vs `n_tp / n_fp / n_fn` (vernier `EvalResult.per_class`)
   are bit-equal across all 133 categories. Float reduction order
   cannot shift integers, so drift here is a real accumulator bug.
-- **Aligned tier** — float reductions at `rtol = atol = 8 * eps`.
+- **Float-tolerance gate** — float reductions at `rtol = atol = 8 * eps`.
   Covers per-category `iou_sum` + per-class PQ/SQ/RQ rows + global /
   Things / Stuff bucket means. Both bounds are passed so a category
   whose oracle metric collapses to exact `0.0` while vernier yields a
@@ -182,12 +187,12 @@ ADR-0054, at which point it should narrow to strict.
 - **Workload**: `ade20k_val_mask2former_swin_t_v<sha>` — 2,000 images
   at ~512×512, single-channel label-map PNGs (train-id `0..149` +
   `255` ignore).
-- **Strict tier** — bit-equality on the per-class u64 confusion-matrix
+- **Bit-equality gate** — bit-equality on the per-class u64 confusion-matrix
   totals: `intersect`, `union`, `pred`, `label`. Both
   mmsegmentation's `IoUMetric` and vernier-semantic produce identical
   totals from the same per-pixel (gt, dt) arrays. Derived float
   scalars (mIoU, aAcc, per-class IoU/Acc) follow trivially from the
-  same u64 inputs — no aligned tier needed because there's no
+  same u64 inputs — no float-tolerance gate needed because there's no
   reduction-order ambiguity once the u64 surface matches.
 - **Headline snapshot** (captured on the live cache at SHA `b9dc053`,
   machine `84edec51fd71`, 2026-05-31; the test asserts u64 array
@@ -216,11 +221,11 @@ ADR-0054, at which point it should narrow to strict.
 - **Bin config**: ADR-0018 "DETR-aware defaults" — 15 quantile bins,
   `min_score=0.05`, Wilson 95% CIs. Same config the user-facing
   `result.calibration()` exposes.
-- **Strict tier** — per-bin u64 `count` from the reliability table is
+- **Bit-equality gate** — per-bin u64 `count` from the reliability table is
   bit-equal at every IoU threshold tested. Integer reductions cannot
   drift under reduction-order changes; a diff here would be an
   outright accumulator bug.
-- **Aligned tier, 8 ULP rtol + atol** — `ece` / `mce` scalars and
+- **Float-tolerance gate, 8 ULP rtol + atol** — `ece` / `mce` scalars and
   every float column of the reliability table (`mean_score`,
   `accuracy`, `gap`, `ci_lo`, `ci_hi`). Both bounds are passed so a
   bin whose oracle gap rounds to exact `0.0` while vernier yields a
@@ -264,13 +269,13 @@ calibration smoke is free on a populated cache.
   and mirrors the canonical mmpose / MMCV ViTPose eval
   configuration the published numbers use. The cache content is
   fully determined by the weights pin + the (SHA-pinned) GT JSON.
-- **Strict tier** — bit-equality on the 10-stat OKS summary
+- **Bit-equality gate** — bit-equality on the 10-stat OKS summary
   (re-indexed A-axis, no `_S` row per ADR-0012 quirk D5) +
   dense `precision` / `recall` / `counts` aggregates. These are
   the numbers a user reads from `Evaluator.summarize()`; they must
   match pycocotools' `iouType="keypoints"` exactly. The 10 stats
   are `AP / AP50 / AP75 / APm / APl / AR / AR50 / AR75 / ARm / ARl`.
-- **Aligned tier** — `eval_imgs.dtScores` and the COCOeval `scores`
+- **Float-tolerance gate** — `eval_imgs.dtScores` and the COCOeval `scores`
   tensor at `rtol = 2 * eps`. Same root cause as the DETR cell:
   `serde_json` vs Python's `strtod`-based parser round near-tie
   decimal scores to different adjacent doubles. The divergence is
@@ -310,7 +315,7 @@ calibration smoke is free on a populated cache.
   images, env-var override) so the test runs on a single 8–16 GB box
   in seconds while still exercising the federated-evaluation
   semantics on real-model outputs.
-- **Strict tier** — per-category integer surface: `tp / fp / fn`
+- **Bit-equality gate** — per-category integer surface: `tp / fp / fn`
   bit-equal across all sampled categories vs the vendored
   `lvis-api` oracle. Federated cell-skip (AA4 — `eval_imgs[c, a, i]
   = None` when category `c` is not in image `i`'s federated set)
@@ -318,7 +323,7 @@ calibration smoke is free on a populated cache.
   `not_exhaustive` images flagged ignored not FP) are both
   exercised on real model outputs for the first time; the synthetic
   `federated_min` fixture covers only the topology.
-- **Aligned tier** — `AP / AP50 / AP75 / APr / APc / APf`
+- **Float-tolerance gate** — `AP / AP50 / AP75 / APr / APc / APf`
   frequency-bucketed values at `rtol = atol = 8 * eps`. Bucket
   means over 1,203 categories have ~36× more reduction-order
   opportunities than the 133-class panoptic cell, so this band is
@@ -368,14 +373,14 @@ calibration smoke is free on a populated cache.
   side change that affects on-disk bytes (currently:
   ``pin_inference_threads`` landing in the rfdetr predictor) forces
   a re-populate instead of silently serving stale pre-pin bytes.
-- **Strict tier** — bit-equality on the dense ``precision`` (T × R × K
+- **Bit-equality gate** — bit-equality on the dense ``precision`` (T × R × K
   × A × M = 10 × 101 × 80 × 4 × 3) + ``recall`` + ``counts`` aggregates
   + the 12-stat AP/AR boundary summary (`AP, AP50, AP75, APs/m/l,
   AR1/10/100, ARs/m/l`). Identical to the DETR-R50 (bbox) instance
   cell's contract — once a parity test holds the precision tensor
   bit-equal, the 12 derived stats follow by construction. Integer-
   reduction surfaces; reduction order cannot move them.
-- **Aligned tier** — per-cell ``scores`` array at ``rtol = 2 * eps``,
+- **Float-tolerance gate** — per-cell ``scores`` array at ``rtol = 2 * eps``,
   same documented ``serde_json`` vs Python ``strtod`` 1-ULP parser
   drift the DETR cell ships against. Boundary uses the same mask
   kernels so the same parser-drift band applies. Ranking-based AP
@@ -472,8 +477,8 @@ breakdowns) lives alongside the parity numbers in:
   oracles and are exercised by the per-quirk fixtures, not by these
   smokes. The Mask2Former-panoptic test uses `parity_mode="corrected"`
   for vernier's side because the oracles' bugs are documented under
-  panoptic quirks; the strict-tier integer surface still matches by
-  construction.
+  panoptic quirks; the integer surface under the bit-equality gate
+  still matches by construction.
 - **Other paradigms.** Boundary doesn't yet have a SOTA cell; the
   COCO val parity smoke is the headline gate for that paradigm. See
   [coco-val-parity.md](./coco-val-parity.md).

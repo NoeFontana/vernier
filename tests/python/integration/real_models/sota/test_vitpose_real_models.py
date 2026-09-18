@@ -73,10 +73,10 @@ def test_vitpose_keypoints_parity_vs_pycocotools(
 ) -> None:
     """Run vernier + pycocotools on ViTPose predictions; assert OKS parity.
 
-    See the module docstring for the strict-vs-aligned split: the
+    See the module docstring for the bit-equality-vs-float-tolerance split: the
     10-stat keypoints summary + dense precision/recall/counts are
     strict bit-equal; eval_imgs.dtScores + the COCOeval scores tensor
-    are aligned to 2 ULP (relative) to absorb the parser-level
+    are gated at 2 ULP (relative) to absorb the parser-level
     rounding drift.
     """
     ref = snapshot("pycocotools", coco_kp_gt_path, vitpose_predictions_path, "keypoints")
@@ -84,10 +84,10 @@ def test_vitpose_keypoints_parity_vs_pycocotools(
 
     # Strict tier — these are the numbers a user reads. Identical
     # surface to what the fixture parity suite would assert (minus the
-    # ``scores`` tensor, which the aligned-tier call below covers).
+    # ``scores`` tensor, which the float-tolerance call below covers).
     _assert_summary_strict(ref, cand)
 
-    # Aligned tier — eval_imgs.dtScores absorbs the parser drift.
+    # Float-tolerance gate — eval_imgs.dtScores absorbs the parser drift.
     assert_snapshots_equal(ref, cand, rtol=_DTSCORES_RTOL)
 
 
@@ -96,7 +96,7 @@ def _assert_summary_strict(a: EvalSnapshot, b: EvalSnapshot) -> None:
 
     Mirrors the DETR cell's helper exactly: carves out the surface
     ``assert_snapshots_equal`` checks minus ``eval_imgs`` and the
-    ``scores`` tensor (which the aligned-tier call below covers). Keeps
+    ``scores`` tensor (which the float-tolerance call below covers). Keeps
     the parity story bisectable: if this strict gate fires, the
     parser-level drift escaped from the dtScores path into precision /
     recall / AP, and a deeper investigation is warranted.

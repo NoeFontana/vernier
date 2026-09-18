@@ -76,8 +76,8 @@ ImplName = Literal["boundary_iou_api", "vernier"]
 # panoptic + boundary fold the floating-point work is the same shape as
 # the non-boundary panoptic path — pure division of integer sums — so
 # bit-equality at 0.0 is the strict target. We expose the constant so
-# tests can opt into a documented tolerance when running under aligned
-# / corrected modes.
+# tests can opt into a documented tolerance when comparing against
+# multi-process oracle traces.
 BOUNDARY_PARITY_EPS: float = 1e-9
 
 

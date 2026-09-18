@@ -2,7 +2,7 @@
 
 Sibling to the three Mask2Former / DETR SOTA cells: real DT (the
 rfdetr-segnano cache the TIDE harness already populates), real GT
-(COCO val2017), strict + aligned two-tier parity claim. Unlike the
+(COCO val2017), bit-equality + float-tolerance parity claim. Unlike the
 other SOTA cells, this one does NOT run inference — the rfdetr cache
 is keyed on the pip-pinned ``RFDETR_VERSION`` and is the only one the
 TIDE side already populates as part of its own validation run. We
@@ -23,7 +23,7 @@ What this suite gates:
   bit-equality holds — the parser-drift band documented below
   affects only the score-threshold projection (``scores`` tensor),
   not the AP integral itself. Mirrors the DETR-R50 cell exactly.
-- **Aligned tier, ``rtol = 2 * eps``** — the dense ``scores`` tensor
+- **Float-tolerance gate, ``rtol = 2 * eps``** — the dense ``scores`` tensor
   (per-recall-grid score-threshold projection of dtScores) at the
   parser-drift band documented on the DETR-R50 cell (see
   ``test_detr_real_models.py`` module docstring). rfdetr-segnano
@@ -141,11 +141,11 @@ def _assert_strict_surface(
     dense ``precision`` / ``recall`` arrays, the ``counts`` shape, AND
     the 12-stat AP / AR summary. ``stats`` is a pure reduction over
     ``precision`` / ``recall`` (themselves integer ratios over
-    identical match sets), so the parser-drift band the aligned tier
+    identical match sets), so the parser-drift band the float-tolerance gate
     absorbs cannot reach the summary numerics. Mirrors the DETR-R50
     cell's strict surface exactly. Drift in any of these is a real
     boundary-kernel divergence, not the documented score-parser drift
-    the aligned tier absorbs.
+    the float-tolerance gate absorbs.
     """
     assert ref.counts == cand.counts, f"counts differ: {ref.counts} vs {cand.counts}"
     np.testing.assert_array_equal(ref.precision, cand.precision, err_msg="precision")
@@ -178,7 +178,7 @@ def test_rfdetr_segnano_boundary_parity_vs_bowenc0221(
 
     Strict tier: per-class ``tp / fp / fn`` + dense ``precision`` /
     ``recall`` / ``counts`` + 12-stat AP / AR summary.
-    Aligned tier: dense ``scores`` tensor at ``rtol = 2 * eps`` (parser
+    Float-tolerance gate: dense ``scores`` tensor at ``rtol = 2 * eps`` (parser
     drift band, same constant as DETR-R50 cell).
     """
     ref = snapshot("oracle", coco_gt_path, rfdetr_segnano_predictions_path)
@@ -186,12 +186,13 @@ def test_rfdetr_segnano_boundary_parity_vs_bowenc0221(
 
     # Strict tier — integer-ish detection-matching surface plus the
     # AP / AR summary. Boundary IoU drift propagates through the
-    # match-decision integer here; the score-parser drift the aligned
-    # tier absorbs reaches only the per-recall-grid ``scores``
+    # match-decision integer here; the score-parser drift the
+    # float-tolerance gate absorbs reaches only the per-recall-grid
+    # ``scores``
     # projection, not match decisions and not the AP integrals.
     _assert_strict_surface(ref, cand)
 
-    # Aligned tier — the dense ``scores`` tensor at 2 ULP relative.
+    # Float-tolerance gate — the dense ``scores`` tensor at 2 ULP relative.
     # Scoped narrowly to ``scores`` so the parser-drift band doesn't
     # accidentally re-relax ``precision`` / ``recall`` / ``stats``
     # (already strict above). ``scores`` is the per-recall-grid

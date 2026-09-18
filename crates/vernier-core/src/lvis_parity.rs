@@ -109,8 +109,11 @@ mod tests {
 
     #[test]
     fn parity_eps_matches_boundary_magnitude() {
-        // Same magnitude as the boundary-IoU oracle's aligned-mode
-        // tolerance.
+        // Same magnitude as the boundary-IoU oracle's tolerance.
+        // Both are harness-side comparison budgets (see this
+        // constant's doc comment), not parity modes — vernier's LVIS
+        // output is bit-equal to the vendored lvis-api oracle on every
+        // cell the parity_lvis suite covers, so the budget is unspent.
         assert_eq!(LVIS_PARITY_EPS, 1e-9);
     }
 

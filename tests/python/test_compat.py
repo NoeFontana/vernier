@@ -419,7 +419,7 @@ def test_params_max_dets_mutation_propagates(
 def test_accumulate_normalizes_max_dets_ascending(
     perfect_match_coco: tuple[COCO, COCO],
 ) -> None:
-    # Quirk A2 (aligned): pycocotools' cocoeval.py:137 opens
+    # Quirk A2 (strict): pycocotools' cocoeval.py:137 opens
     # accumulate() with `p.maxDets = sorted(p.maxDets)`. The drop-in
     # mirrors that — feeding `[100, 1, 10]` must produce the same M-axis
     # layout (and therefore the same `stats` vector) as the canonical

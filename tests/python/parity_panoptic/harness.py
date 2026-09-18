@@ -10,7 +10,8 @@ The oracle path calls ``pq_compute_single_core`` **directly** with
 ``pq_compute``'s multiprocessing pool, which has no ``num_proc``
 parameter and would otherwise pin the comparison to the harness
 host's CPU count (X1, X2). Multi-process traces are out of scope
-here; they get bounded-ULP equality under ``ParityMode::Aligned`` only.
+here; they are only ever compared within ``PANOPTIC_PARITY_EPS`` — a
+harness tolerance, not a ``ParityMode``.
 
 Fixtures are constructed as Python ``np.uint32`` arrays. The oracle
 path round-trips them through PNGs (via :func:`id2rgb` + Pillow),
@@ -278,7 +279,7 @@ def assert_snapshots_equal(
     atol: float = 0.0,
 ) -> None:
     """Bit-equal by default. Pass ``rtol=BOUNDARY_PARITY_EPS`` (or
-    ``PANOPTIC_PARITY_EPS``) to gate aligned-mode comparisons. The
+    ``PANOPTIC_PARITY_EPS``) to gate float-tolerance comparisons. The
     `n_*` count fields are always compared exactly."""
     np.testing.assert_allclose(a.pq, b.pq, rtol=rtol, atol=atol, err_msg="global PQ differs")
     np.testing.assert_allclose(a.sq, b.sq, rtol=rtol, atol=atol, err_msg="global SQ differs")

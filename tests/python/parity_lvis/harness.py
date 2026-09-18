@@ -5,7 +5,7 @@ Mirrors ``tests/python/parity_boundary/harness.py`` and
 ``tests/python/parity/harness.py`` in shape: a ``snapshot`` function
 that returns a comparable dataclass for each implementation, plus an
 ``assert_snapshots_equal`` helper for bit-equality on the strict-mode
-fields and tolerated drift on aligned-mode ones.
+fields and tolerated drift on float-tolerance ones.
 
 This is the **PR-3 skeleton**: bbox-only, AP-only. We diff the
 per-cell ``eval_imgs`` payload (the ``Option<PerImageEval>`` shape) and
