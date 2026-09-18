@@ -240,8 +240,10 @@ fn extract_segmentation<'py>(
 /// that dispatch — not the arithmetic — is the per-annotation cost. A
 /// `list` (what `json.load` produces, and what a caller building result
 /// dicts by hand has) is walked directly instead; everything else
-/// (tuples, 1-D numpy arrays, …) keeps the generic path, so the set of
-/// accepted shapes is unchanged.
+/// (tuples, and anything else registered as a
+/// `collections.abc.Sequence`) keeps the generic path, so the set of
+/// accepted shapes is unchanged. NumPy arrays are not in that set on
+/// either route — see [`extract_bbox`].
 enum FloatSeq<'py> {
     List(Bound<'py, PyList>),
     Any(Bound<'py, PySequence>),
@@ -336,8 +338,13 @@ fn field_err(i: usize, name: &str, detail: &str) -> PyErr {
     PyValueError::new_err(format!("detections[{i}].{name}: {detail}"))
 }
 
-/// `[x, y, w, h]`, accepted from any 4-element sequence so lists,
-/// tuples and 1-D numpy arrays all work.
+/// `[x, y, w, h]`, accepted from any 4-element sequence, so a `list`
+/// (what `json.load` produces) and a `tuple` both work. A NumPy array
+/// does **not**: PyO3's `PySequence` cast is an
+/// `isinstance(_, collections.abc.Sequence)` test, and `ndarray` is not
+/// registered there. Neither is that a route divergence — the JSON
+/// route refuses it too, in `json.dumps` — so both routes take the same
+/// set of shapes.
 fn extract_bbox(obj: &Bound<'_, PyAny>, i: usize) -> PyResult<Bbox> {
     let seq = FloatSeq::of(obj)
         .map_err(|e| field_err(i, "bbox", &format!("expected a 4-element sequence: {e}")))?;

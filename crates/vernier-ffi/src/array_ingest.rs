@@ -633,7 +633,11 @@ fn extract_rle_bitmask<'py>(
 }
 
 fn extract_size_tuple(obj: &Bound<'_, PyAny>, field: FieldPath<'_>) -> PyResult<(u32, u32)> {
-    // Accept any 2-element sequence so users can pass tuples, lists, or numpy arrays.
+    // Accept any 2-element sequence, so `(h, w)` tuples and `[h, w]`
+    // lists both work. A NumPy array does not: PyO3's `PySequence` cast
+    // is an `isinstance(_, collections.abc.Sequence)` test, which
+    // `ndarray` fails — as it does on the JSON route, where
+    // `json.dumps` refuses it.
     let seq = obj.cast::<PySequence>().map_err(|e| {
         PyTypeError::new_err(format!("{field}.size: expected (h, w) sequence: {e}"))
     })?;

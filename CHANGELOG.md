@@ -16,6 +16,21 @@ additive / perf / docs".
 
 ### Performance
 
+- **`vernier.COCOeval` stops serializing detections** (ADR-0057). The
+  drop-in used to `json.dumps` the `cocoDt` annotations and hand the
+  bytes to the JSON parser, which rebuilt the objects Python was already
+  holding — and held the text and the parsed values at once. It now
+  passes the caller's own list of result dicts straight down the
+  ADR-0057 list route. The `params.catIds` filter itself did **not**
+  move — it is the same comprehension over the same annotation dicts it
+  always was, so ADR-0055's "a requested category the dataset never
+  declared evaluates as an empty category" is bit-identical by
+  construction; what is gone is the re-serialization of the survivors.
+  On 500 000 detections over 5 000 images, `evaluate()` end to end falls
+  from 1913 ms to 580 ms (**3.3x**, min of 7 interleaved samples, run-to-run
+  spread under 3 %) and the stage's peak memory (VmHWM delta) from
+  555 MiB to 468 MiB (**-16 %**). `evalImgs` / `ious` re-evaluate off the
+  held list, so widening retention costs no serialization either.
 - **Grids skip pycocotools-shaped per-cell metadata unless asked for
   it.** Every populated `(k, a, i)` cell used to carry a boxed
   `EvalImageMeta` (sorted DT / GT ids and matched-id arrays) that only
@@ -62,6 +77,27 @@ additive / perf / docs".
 
 ### Changed (BREAKING — pre-1.0)
 
+- **`vernier.COCOeval` holds the caller's detection list instead of a
+  JSON snapshot of it** (ADR-0057). That reference is where the memory
+  above is saved, and it opens an aliasing window the `json.dumps` path
+  closed by accident. `eval` and `stats` are computed during
+  `evaluate()` / `accumulate()` and frozen, but `evalImgs` and `ious`
+  re-ingest the held list on first read (ADR-0055's lazy widening), so a
+  detection dict mutated in place *after* `evaluate()` shows up in those
+  two while `stats` still reports the pre-mutation numbers, and
+  `.clear()`ing the list yields cells with empty `dtIds`. It is
+  asymmetric: under a `params.catIds` subset the shim holds a *new* list
+  of the same dicts, so list-level mutation no longer propagates while
+  element-level mutation still does. Hand each pass its own copy if you
+  mutate detections between passes.
+- **`vernier.COCOeval` detection scores can differ from 0.3.0's by one
+  ULP on real payloads.** The old path serialized scores and re-parsed
+  them through vernier's JSON number parser, which can land one ULP off
+  the `float` Python already held (the `dtScores` drift reported in
+  #265, visible only on real prediction data). The list route hands the
+  `float` straight over, so the drift is gone — an improvement, but the
+  retained `dtScores` and `eval["scores"]` do change against the
+  previous release, and that is worth knowing before you diff them.
 - **`summarize_detection` takes a `ParityMode`** and reads the M-axis the
   way pycocotools' `_summarizeDets` does (quirk L9): `AR_1` / `AR_10` /
   `AR_100` read `max_dets[0|1|2]` positionally instead of looking up
