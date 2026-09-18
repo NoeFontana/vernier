@@ -151,6 +151,33 @@ def test_joint_bbox_and_mask_areas_match_pycocotools(rle_form: str) -> None:
     assert segm_stats[3] == pytest.approx(0.3)
 
 
+def test_segm_grid_with_dataset_matches_the_bytes_grid_under_mask_area() -> None:
+    """The handle-taking segm grid on the one ``dt_area`` that needs a real mask.
+
+    ``evaluate_segm_grid_with_dataset`` exists so a caller evaluating
+    several IoU types parses its ground truth once. That is only useful
+    if it is the same evaluator, and ``dt_area="mask"`` is the setting
+    most able to diverge -- it reads each detection's area off its own
+    RLE rather than its box, so it depends on DT realization rather than
+    on the ground truth the handle carries. The RLE fixture this module
+    already validates against pycocotools is what makes the comparison
+    possible; the polygon fixture in ``test_dataset.py`` cannot express
+    it.
+    """
+    gt_bytes = json.dumps(_gt_dataset()).encode()
+    detections = _array_detections("compressed")
+
+    from_bytes = _core.evaluate_segm_grid(gt_bytes, detections, "strict", 100, True, dt_area="mask")
+    from_handle = _core.evaluate_segm_grid_with_dataset(
+        _core.CocoDataset.from_json(gt_bytes), detections, "strict", 100, True, dt_area="mask"
+    )
+
+    left, right = from_bytes.accumulate(_MAX_DETS), from_handle.accumulate(_MAX_DETS)
+    np.testing.assert_array_equal(left.summarize().stats, right.summarize().stats)
+    np.testing.assert_array_equal(left.precision, right.precision)
+    np.testing.assert_array_equal(left.recall, right.recall)
+
+
 def test_mask_area_is_rejected_on_the_bbox_grid() -> None:
     gt_bytes = json.dumps(_gt_dataset()).encode()
     with pytest.raises(ValueError, match="evaluate_segm_grid and evaluate_boundary_grid"):

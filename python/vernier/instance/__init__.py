@@ -77,6 +77,9 @@ from vernier._core import (
     evaluate_instance_to_partial as _evaluate_instance_to_partial,
 )
 from vernier._core import (
+    evaluate_segm_grid_with_dataset as evaluate_segm_grid_with_dataset,
+)
+from vernier._core import (
     merge_instance_partials as _merge_instance_partials,
 )
 from vernier._lrp import (

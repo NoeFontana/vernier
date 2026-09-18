@@ -1033,8 +1033,19 @@ fn evaluate_grid_with_dataset_impl(
     recall_thresholds_arg: Option<Vec<f64>>,
     area_ranges_arg: Option<&Bound<'_, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    dt_area: DetectionArea,
     retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
+    // Same guard the JSON-taking grids apply: `mask` reads an area off
+    // each detection's mask, which only the mask kernels have.
+    if dt_area == DetectionArea::Mask
+        && !matches!(iou_type, EvalIouType::Segm | EvalIouType::Boundary { .. })
+    {
+        return Err(PyValueError::new_err(
+            "dt_area='mask' derives the area from each detection's mask; it applies to \
+             evaluate_segm_grid_with_dataset only",
+        ));
+    }
     let parity = parse_parity_mode(parity_mode)?;
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
         &iou_type,
@@ -1049,7 +1060,7 @@ fn evaluate_grid_with_dataset_impl(
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt) =
         py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
+            let dt = realize_dt(dt_payload, dt_area)?;
             // ADR-0026 AC2: federated datasets trim DTs at input time
             // (mirrors `LVISResults.limit_dets_per_image` at construction).
             // The trim is a no-op when fewer than `max_dets_per_image`
@@ -1186,7 +1197,7 @@ fn evaluate_bbox_grid<'py>(
 /// strips ADR-0026 federated metadata at GT load, so the
 /// orchestrator's AA3/AA4 branches never fire on that path.
 #[pyfunction]
-#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, retain_meta=false))]
+#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_grid_with_dataset<'py>(
     py: Python<'py>,
@@ -1201,6 +1212,7 @@ fn evaluate_bbox_grid_with_dataset<'py>(
     recall_thresholds: Option<Vec<f64>>,
     area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
     num_threads: Option<usize>,
+    dt_area: &str,
     retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     evaluate_grid_with_dataset_impl(
@@ -1217,6 +1229,58 @@ fn evaluate_bbox_grid_with_dataset<'py>(
         recall_thresholds,
         area_ranges,
         num_threads,
+        parse_dt_area(dt_area)?,
+        retain_meta,
+    )
+}
+
+/// Segm per-image evaluation against a parsed [`Dataset`] handle —
+/// the ADR-0020 sibling of [`evaluate_segm_grid`].
+///
+/// This is the entry point a caller needs to evaluate several IoU
+/// types, or several parameter sets, off one parse. `evaluate_segm_grid`
+/// takes GT JSON bytes, so a `bbox` + `segm` run through it parses the
+/// same ground truth twice; both kernels can share one handle here.
+///
+/// Both GT and DT must carry a `segmentation` on every entry, exactly
+/// as the JSON-taking grid requires. `dt_area` defaults to `"bbox"` to
+/// match that grid rather than the kernel — quirk **J3** derives a
+/// detection's area from its box unless asked otherwise, and `"mask"`
+/// is the opt-in that reads it off the detection's own mask.
+#[pyfunction]
+#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
+#[allow(clippy::too_many_arguments)]
+fn evaluate_segm_grid_with_dataset<'py>(
+    py: Python<'py>,
+    gt: &PyDataset,
+    dt: &Bound<'py, PyAny>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    retain_iou: bool,
+    cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
+    dt_area: &str,
+    retain_meta: bool,
+) -> PyResult<PyEvalGrid> {
+    evaluate_grid_with_dataset_impl(
+        py,
+        EvalIouType::Segm,
+        gt,
+        dt,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+        retain_iou,
+        cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
+        num_threads,
+        parse_dt_area(dt_area)?,
         retain_meta,
     )
 }
@@ -3668,6 +3732,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid_with_dataset, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_segm_grid_with_dataset, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_boundary_summary, m)?)?;
