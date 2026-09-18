@@ -2261,7 +2261,7 @@
 <tr>
 <td><code>parity_mode</code></td>
 <td>string, one of <code>strict</code> / <code>corrected</code></td>
-<td>The kernel-resolved parity mode. <code>--parity-mode aligned</code> collapses to <code>strict</code> per ADR-0002 (aligned-tier changes are output-equivalent), so the JSON only ever carries the two distinct kernel modes. Default <code>strict</code> (ADR-0015).</td>
+<td>The kernel-resolved parity mode — the same two values <code>--parity-mode</code> accepts (ADR-0002). Default <code>strict</code> (ADR-0015). ADR-0059 removed the third value the flag once took; <code>--parity-mode aligned</code> is now an argument error, so no invocation can produce a third string here.</td>
 </tr>
 <tr>
 <td><code>max_dets</code></td>

@@ -2123,7 +2123,7 @@ parallelism budget. Explicit <code>--threads</code> wins over the env var; an
 out-of-range or non-numeric env value falls back to sequential
 rather than aborting (threading is a perf knob, not a correctness
 switch). <code>RAYON_NUM_THREADS</code> is intentionally <strong>not</strong> consulted.</p>
-<p>Strict-mode bit-equality (<code>--parity strict</code>) is preserved across
+<p>Strict-mode bit-equality (<code>--parity-mode strict</code>) is preserved across
 every thread count by construction — boundary's per-image deltas
 are sorted by <code>image_id</code> before the f64 fold, semantic
 accumulation is u64-additive. See
