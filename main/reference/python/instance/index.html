@@ -1500,6 +1500,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#vernier.instance.JsonRLE" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;JsonRLE
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.instance.ResultAnnotation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;ResultAnnotation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vernier.instance.UncompressedRLE" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2538,6 +2560,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#vernier.instance.DetectionMatrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.instance.DetectionMatrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vernier.instance.DetectionsInput" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2571,10 +2604,32 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#vernier.instance.PolygonSegmentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.instance.PolygonSegmentation
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vernier.instance.RLEInput" class="md-nav__link">
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.instance.RLEInput
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.instance.SegmentationInput" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-attribute"></code>&nbsp;vernier.instance.SegmentationInput
       
     </span>
   </a>
@@ -3183,6 +3238,134 @@ keypoints) lives under <code>vernier.instance</code>. Sibling to
 <li><code>rles[i]</code> (bitmask): 2-D <code>bool</code> or <code>uint8</code>, shape <code>(H, W)</code>, C- or F-order.</li>
 <li><code>keypoints</code>: <code>float64</code> <code>(N, K, 3)</code> C-contiguous.</li>
 </ul>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.instance.JsonRLE" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">JsonRLE</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>The RLE shape a COCO results <em>file</em> carries, as <code>json.load</code>
+leaves it.</p>
+<p><code>counts</code> is either the compressed 6-bit string (quirk <strong>K3</strong>: JSON
+has no bytes type, so the same payload arrives as <code>str</code>) or the
+uncompressed run lengths as a plain list of ints. <code>size</code> is
+<code>(height, width)</code> in COCO order.</p>
+<p>Accepted on :attr:<code>ResultAnnotation.segmentation</code> only — the
+columnar :attr:<code>Detections.rles</code> is an in-memory array surface and
+takes :data:<code>RLEInput</code>.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.instance.ResultAnnotation" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">ResultAnnotation</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>One COCO <em>result</em> annotation — the shape <code>loadRes</code> consumes.</p>
+<p>This is the per-annotation dict a pycocotools- or TorchMetrics-style
+caller already has in hand. Passing the list directly skips the
+<code>json.dumps</code> / parse round trip the bytes route would otherwise
+pay for the same data.</p>
+<p><code>image_id</code>, <code>category_id</code>, <code>bbox</code> and <code>score</code> are always
+required. <code>keypoints</code> is required under <code>iou_type='keypoints'</code>.</p>
+<p><code>segmentation</code> is optional on every <code>iou_type</code>, exactly as it is
+in a results <em>file</em>: under <code>'segm'</code> / <code>'boundary'</code> an annotation
+without one is governed by quirk <strong>J2</strong> (<code>parity_mode='strict'</code>
+synthesizes the bbox rectangle pycocotools synthesizes;
+<code>'corrected'</code> refuses and names the detection). It takes
+:data:<code>SegmentationInput</code> — polygons, either RLE <code>counts</code>
+encoding, or a 2-D bitmask.</p>
+<p><code>area</code> is <strong>carried</strong>, exactly as a results <em>file</em> carries it, and
+what it does is decided downstream by <code>dt_area</code> (quirk <strong>J3</strong>):
+under the <code>"bbox"</code> default it is ignored and the area is derived
+from the box, and under <code>dt_area="supplied"</code> it is the area that
+buckets the detection into small / medium / large. Dropping it here
+would make this route score differently from the file route for the
+same payload, so it is not dropped.</p>
+<p><code>iscrowd</code> is accepted and ignored: a detection is never a crowd
+(quirks <strong>E2</strong>/<strong>J4</strong>).</p>
+<p>An explicit <code>id</code> is preserved; an absent one is auto-assigned
+<code>1..N</code> by position (quirk <strong>J1</strong>).</p>
 
 
 
@@ -6650,11 +6833,23 @@ explicit override.</p>
     <div class="doc doc-contents ">
 
         <p>Run the evaluation pipeline against a GT/DT pair.</p>
-<p><code>dt</code> accepts the COCO <code>loadRes</code>-shaped JSON payload as
-<code>bytes</code>, <strong>or</strong> the array-form <code>Detections</code> shapes
-introduced by ADR-0030 (a single per-image dict or a sequence
-of them). The array path skips JSON serialization end-to-end
-and reads NumPy / DLPack buffers directly into the kernel.</p>
+<p><code>dt</code> accepts any of four shapes, all of which evaluate
+identically for the same logical detections:</p>
+<ul>
+<li>the COCO <code>loadRes</code>-shaped JSON payload as <code>bytes</code>;</li>
+<li>the array-form :class:<code>Detections</code> shapes introduced by
+  ADR-0030 — a single per-image dict or a sequence of them;</li>
+<li>a list of per-annotation :class:<code>ResultAnnotation</code> dicts, the
+  shape <code>pycocotools.COCO.loadRes</code> consumes and the one a
+  TorchMetrics-style caller already holds (ADR-0057);</li>
+<li>a :data:<code>DetectionMatrix</code> — an <code>(N, 7)</code> C-contiguous
+  <code>float64</code> array laid out as <code>image_id, x, y, w, h, score,
+  category_id</code> (ADR-0057). It carries no segmentation and no
+  keypoints, exactly as a bbox-only results file does.</li>
+</ul>
+<p>Everything but <code>bytes</code> skips JSON serialization end-to-end and
+reads NumPy / DLPack buffers or Python scalars straight into the
+kernel.</p>
 <p><code>gt</code> is either the GT JSON bytes (parse-and-discard, identical
 to prior behavior) or a :class:<code>CocoDataset</code> handle (parsed-once,
 with the cache reused across calls — see ADR-0020).</p>
@@ -7639,6 +7834,18 @@ on :func:<code>error_decomposition</code> is <em>not</em> consumed here.</p>
 
 
 
+<a id="vernier.instance.DetectionMatrix"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
 <a id="vernier.instance.DetectionsInput"></a>
     <div class="doc doc-contents first">
 
@@ -7675,7 +7882,31 @@ on :func:<code>error_decomposition</code> is <em>not</em> consumed here.</p>
 
 
 
+<a id="vernier.instance.PolygonSegmentation"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
 <a id="vernier.instance.RLEInput"></a>
+    <div class="doc doc-contents first">
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-attribute">
+
+
+
+
+<a id="vernier.instance.SegmentationInput"></a>
     <div class="doc doc-contents first">
 
     </div>
