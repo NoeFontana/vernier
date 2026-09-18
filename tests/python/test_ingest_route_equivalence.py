@@ -118,7 +118,7 @@ def _as_matrix() -> np.ndarray:
 
 
 def _grid(dt: Any) -> Any:
-    return _core.evaluate_bbox_grid(GT_BYTES, dt, "strict", 100, True)
+    return _core.evaluate_bbox_grid(GT_BYTES, dt, "strict", 100, True, retain_meta=True)
 
 
 def _normalize(eval_imgs: list[Any]) -> list[dict[str, Any]]:
@@ -439,7 +439,7 @@ def _compressed_counts(mask: np.ndarray) -> bytes:
 
 
 def _segm_grid(dt: Any, parity_mode: str = "strict") -> Any:
-    return _core.evaluate_segm_grid(SEGM_GT_BYTES, dt, parity_mode, 100, True)
+    return _core.evaluate_segm_grid(SEGM_GT_BYTES, dt, parity_mode, 100, True, retain_meta=True)
 
 
 @pytest.mark.parametrize(
@@ -500,7 +500,9 @@ def test_boundary_list_route_matches_file_route_cell_for_cell() -> None:
     """The boundary kernel reads the same masks through the same route."""
 
     def grid(dt: Any) -> Any:
-        return _core.evaluate_boundary_grid(SEGM_GT_BYTES, dt, "strict", 100, True, 0.02)
+        return _core.evaluate_boundary_grid(
+            SEGM_GT_BYTES, dt, "strict", 100, True, 0.02, retain_meta=True
+        )
 
     reference = _normalize(grid(json.dumps(_segm_detections("polygons")).encode()).eval_imgs())
     assert _normalize(grid(_segm_detections("polygons")).eval_imgs()) == reference
@@ -639,7 +641,9 @@ def test_keypoints_list_route_matches_file_route_cell_for_cell() -> None:
     """``keypoints`` and ``num_keypoints`` survive the list route intact."""
 
     def grid(dt: Any) -> Any:
-        return _core.evaluate_keypoints_grid(KP_GT_BYTES, dt, "strict", 20, True, {})
+        return _core.evaluate_keypoints_grid(
+            KP_GT_BYTES, dt, "strict", 20, True, {}, retain_meta=True
+        )
 
     reference = _normalize(grid(json.dumps(KP_DETECTIONS).encode()).eval_imgs())
     assert any(cell["dtIds"] for cell in reference), "fixture evaluates nothing"

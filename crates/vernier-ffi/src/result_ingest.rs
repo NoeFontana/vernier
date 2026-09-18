@@ -94,6 +94,7 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
     let k_segmentation = intern!(py, "segmentation");
     let k_keypoints = intern!(py, "keypoints");
     let k_num_keypoints = intern!(py, "num_keypoints");
+    let k_area = intern!(py, "area");
 
     let mut inputs = Vec::with_capacity(dicts.len());
     for (i, dict) in dicts.iter().enumerate() {
@@ -150,12 +151,25 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             _ => None,
         };
 
+        // Carried, not dropped: `from_inputs` ignores it unless the
+        // detections are built with `DetectionArea::Supplied`, and under
+        // that mode a dropped `area` would make this route observably
+        // different from the file route (quirk **J3**).
+        let area = match dict.get_item(k_area)? {
+            Some(v) if !v.is_none() => Some(
+                v.extract()
+                    .map_err(|e| field_err(i, "area", &format!("expected float: {e}")))?,
+            ),
+            _ => None,
+        };
+
         inputs.push(DetectionInput {
             id,
             image_id: ImageId(image_id),
             category_id: CategoryId(category_id),
             score,
             bbox,
+            area,
             segmentation,
             keypoints,
             num_keypoints,
@@ -344,6 +358,9 @@ pub(crate) fn matrix_to_inputs<'py>(
     for i in 0..n {
         let row = &flat[i * MATRIX_COLS..(i + 1) * MATRIX_COLS];
         inputs.push(DetectionInput {
+            // The (N, 7) layout has no area column; J3 derives it from
+            // the bbox, as it does for a bbox-only results file.
+            area: None,
             id: None,
             image_id: ImageId(exact_int(row[0], 0, i)?),
             category_id: CategoryId(exact_int(row[6], 6, i)?),
