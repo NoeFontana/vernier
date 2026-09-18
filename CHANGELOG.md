@@ -14,6 +14,47 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-18
+
+### Added
+
+- **Ground truth as columnar arrays** (ADR-0060).
+  `CocoDataset.from_arrays(images, annotations, categories)` builds a
+  dataset from NumPy columns with no JSON in the middle, converging on
+  the same `from_parts` constructor the file route ends at — so D1, D2,
+  A4, E1 and referential integrity are inherited rather than
+  reimplemented, and no route-specific parity surface is created. GT
+  `area` is required and read verbatim (unlike a detection's, which
+  quirk **J3** derives), and GT ids are supplied, never assigned — the
+  mirror image of quirk **J1**.
+
+  A columnar array has no null, but `ignore` and `num_keypoints` are
+  genuinely optional *per annotation* and mean something different
+  absent than present-and-zero (under **D1**, absent lets
+  `parity_mode="corrected"` fall back to `iscrowd`). So an optional
+  integer column may be passed signed, where a **negative entry means
+  the field was absent on that annotation**. The rule is scoped to
+  those two columns: `iscrowd` is required, so a negative entry there
+  is refused rather than read as false, which would hand back a
+  different crowd set than was passed.
+
+  Measured against `json.dumps` + parse on real published GT (min of 7,
+  every cell verified by `dataset_hash`): COCO val2017 bbox-only
+  84.4 ms -> 4.5 ms (**18.8x**), full segm 459.5 ms -> 43.0 ms
+  (**10.7x**), LVIS v1 val bbox-only 493.1 ms -> 32.1 ms (**15.4x**),
+  full segm 4 467.9 ms -> 355.7 ms (**12.6x**).
+
+  LVIS federated metadata has no columnar spelling on this route and is
+  **not** supported: `is_federated` is `False` on every dataset it
+  produces, pinned by test. LVIS callers use `from_lvis_json`.
+- **`CocoDataset.dataset_hash`** — the 32-byte BLAKE3 fingerprint of the
+  dataset's canonical form (ADR-0031) is now readable from Python. Two
+  handles hash equal exactly when they carry the same images,
+  categories, annotations and federated metadata; each section is
+  sorted by id first, so the fingerprint pins *content*, not input
+  order. It runs detached, because on an LVIS-scale dataset that walk
+  costs about as much as the whole ingest.
+
 ### Performance
 
 - **`vernier.COCOeval` stops serializing detections** (ADR-0057). The
@@ -74,6 +115,35 @@ additive / perf / docs".
   LVIS v1 val GT parse: 732 ms -> 204 ms at 8 threads (3.6x); end-to-end
   `evaluate_bbox_grid` on that dataset 1142 ms -> 554 ms (-51 %).
   `num_threads=None` stays serial per ADR-0047.
+
+### Benchmarks
+
+Full release-mode round on the host the previous two rounds used
+(`59aab88b17f4`), so these are directly comparable — see
+`docs/engineering/benchmarking/2026-09-release-0.4.0-round.md`.
+
+| cell | 0.3.0 | 0.4.0 |
+| --- | ---: | ---: |
+| COCO bbox, 1 CPU | 354 ms | **305 ms** |
+| COCO segm, 1 CPU | 968 ms | **931 ms** |
+| LVIS v1 val bbox | 2.64 s | **2.50 s** (81.0x over lvis-api) |
+| Objects365, 1 CPU | 8.771 s | **6.60 s** (-24.8 %) |
+| Objects365, 8 threads | 4.702 s | **3.20 s** (-32 %) |
+| thread scaling, bbox 1->8 | 1.56x | **2.34x** |
+| thread scaling, segm 1->8 | 3.08x | **3.87x** |
+| thread scaling, boundary 1->8 | 4.05x | **4.47x** |
+
+The Objects365 numbers carry their own control: hotcoco (+0.6 %,
++1.9 %) and pycocotools (+1.6 %) land within 2 % of the previous round
+on the same host, so the movement is the code (ADR-0050, ADR-0051), not
+the machine. The mechanism is ingest — vernier's `load` stage is 0.32 s
+against hotcoco's 5.77 s, and at eight threads 6.02 s of hotcoco's
+8.17 s total is still serial parsing.
+
+vernier is **bit-equal to `lvis-api`** on both LVIS cells (identical
+tensor hashes). `hotcoco_lvis` diverges from the reference at 7 069 and
+6 060 positions — a known-open divergence on hotcoco's side, not
+vernier's.
 
 ### Changed (BREAKING — pre-1.0)
 
