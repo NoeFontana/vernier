@@ -221,6 +221,9 @@ row.
   Peak RSS (VmHWM delta) on the list route is **126 MiB** against
   **1040 MiB** for the bytes route, which must hold the serialized text
   and the parsed objects at once.
+  The `COCOeval` drop-in is the first caller: it hands the list route
+  the `cocoDt` annotations it was given, and keeps no serialized copy —
+  `evaluate()` on 500 000 detections falls 3.3x with a 16 % lower peak.
 - **Negative.** Three input shapes to document and keep in parity. This
   is mitigated structurally (one convergence point) and by test, not by
   convention.

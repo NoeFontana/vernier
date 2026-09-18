@@ -185,6 +185,16 @@ object rather than derived (quirk **J3**), `bytes` RLE counts are
 accepted (quirk **K3**), and a missing image `width` / `height` is
 filled wherever `annToRLE` would never have looked at it.
 
+**Known limitation.** The shim hands those annotations to ADR-0057's
+list route, which reads the *first* entry's keys to choose between the
+per-annotation and the ADR-0030 columnar shape (quirk **J6**). A stray
+`boxes` key on detection **0** therefore routes the whole list as
+columnar and fails loudly — `TypeError: detections[0].boxes: object does
+not support DLPack` — where serializing to JSON first would have carried
+the key along and ignored it. The same key on any later entry is still
+ignored. No producer we know of writes `boxes` into a COCO result dict;
+if yours does, drop it or rename it.
+
 If you assemble such a dataset yourself and drive a vernier grid
 *directly* rather than through the shim, the same conversions are
 published:
