@@ -14,6 +14,30 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Added
+
+- **`evaluate_segm_grid_with_dataset`** — the segm sibling of
+  `evaluate_bbox_grid_with_dataset`, so ADR-0020's parsed-once handle
+  now serves *grid* evaluation on both instance kernels rather than
+  bbox alone. A caller evaluating `bbox` and `segm` had to hand GT JSON
+  to each grid separately and parse the same bytes twice; both kernels
+  can now read one `CocoDataset`. It takes `dt_area`, which segm needs —
+  `"mask"` reads each detection's area off its own RLE.
+
+### Changed
+
+- **`evaluate_bbox_grid_with_dataset` takes `dt_area`.** It previously
+  hard-coded "derive the area from the box" and exposed no argument,
+  while its bytes-taking twin `evaluate_bbox_grid` has always taken one
+  — so a caller wanting `"supplied"` had to abandon the handle and
+  re-parse. Purely additive: the default is `"bbox"`, which is exactly
+  the `DetectionArea::FromBbox` it applied unconditionally, pinned by
+  `test_bbox_grid_with_dataset_defaults_to_deriving_area_from_the_box`.
+
+  Both dataset-taking grids apply the same `dt_area="mask"` guard the
+  JSON-taking ones do: it reads an area off a detection's mask, which
+  the bbox kernel has not got.
+
 ## [0.4.1] - 2026-09-18
 
 ### Fixed

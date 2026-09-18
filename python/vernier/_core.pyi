@@ -326,6 +326,22 @@ def evaluate_bbox_grid_with_dataset(
     recall_thresholds: list[float] | None = ...,
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied"] = ...,
+    retain_meta: bool = ...,
+) -> EvalGrid: ...
+def evaluate_segm_grid_with_dataset(
+    gt: CocoDataset,
+    dt: DetectionsInput,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    retain_iou: bool = ...,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied", "mask"] = ...,
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
