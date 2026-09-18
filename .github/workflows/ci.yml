@@ -235,6 +235,27 @@ jobs:
       - name: pin numpy
         if: matrix.numpy != 'locked'
         run: uv pip install --python ${{ matrix.python-version }} "numpy==${{ matrix.numpy }}"
+      # TEMPORARY — remove before merging perf/oks-exact-reduction.
+      # Reports which `exp` kernel this runner's NumPy dispatches to, so
+      # the keypoints parity claim can be written against a measurement
+      # rather than an inference. Never fails the job.
+      - name: exp kernel probe (temporary diagnostic)
+        continue-on-error: true
+        run: |
+          lscpu | grep -iE '^(model name|flags)' | cut -c1-400 || true
+          grep -o 'avx512[a-z0-9_]*' /proc/cpuinfo | sort -u | tr '\n' ' ' || true
+          echo
+          uv run --no-sync --python ${{ matrix.python-version }} python - <<'PY'
+          import sys
+          sys.path.insert(0, "tests/python/parity")
+          import numpy as np
+          import test_oks_exact as t
+          print("numpy", np.__version__)
+          p = t._exp_kernel_probe()
+          print("PROBE_AGREES", p.agrees)
+          print("PROBE", p)
+          print("PROBE_REASON", p.reason())
+          PY
       - name: pytest
         # PR gate skips the slow tier (boundary parity tree, env-gated
         # *_val.py whole-dataset smokes). Run the full suite via the
