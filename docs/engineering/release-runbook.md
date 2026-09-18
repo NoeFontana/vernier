@@ -231,9 +231,9 @@ git push origin vX.Y.Z
 #    the only checkpoint between the tag and the irreversible publish.
 #    `gh run watch --exit-status` returns 0 once the workflow stops
 #    streaming, but in practice that can fire on a run whose overall
-#    conclusion is still `failure` (e.g., docs.yml's deploy job lost a
-#    gh-pages push race even though build/codespell succeeded). Always
-#    confirm with an explicit run-view after the watch returns:
+#    conclusion is still `failure` (e.g., docs.yml's deploy job failed
+#    even though build/codespell succeeded). Always confirm with an
+#    explicit run-view after the watch returns:
 gh run watch --exit-status
 for run in $(gh run list --commit "$(git rev-parse vX.Y.Z)" --json databaseId --jq '.[].databaseId'); do
     gh run view "$run" --json name,conclusion --jq '.name + ": " + .conclusion'
@@ -256,13 +256,17 @@ curl -L https://github.com/NoeFontana/vernier/releases/download/vX.Y.Z/vernier-i
 #    only minor releases update `stable`. (No manual `mike deploy`
 #    needed; it fires automatically when the tag pushes.)
 #
-#    Gotcha: docs.yml ALSO fires on the squash-merge push to main, so
-#    two `mike deploy --push` runs hit `gh-pages` back-to-back. The
-#    tag-triggered run can lose the race and exit with
-#    `! [rejected] gh-pages -> gh-pages (fetch first)`. Fix is
-#    one-shot: `gh run rerun <docs-run-id> --failed` — mike re-fetches
-#    gh-pages and the second push lands cleanly. See *Rollback /
-#    failure modes → `docs.yml` deploy lost the gh-pages race* below.
+#    Note: docs.yml ALSO fires on the squash-merge push to main, so a
+#    release always produces two `mike deploy --push` runs against
+#    `gh-pages`. They no longer race — the deploy job carries a
+#    ref-independent concurrency group (`docs-deploy-gh-pages`,
+#    `queue: max`, no cancellation), so the second one waits for the
+#    first instead of being rejected with
+#    `! [rejected] gh-pages -> gh-pages (fetch first)`. Expect the tag
+#    run's deploy job to sit `pending` for a couple of minutes; that
+#    is the queue working, not a stall. If a deploy does fail this
+#    way, see *Rollback / failure modes → `docs.yml` deploy lost the
+#    gh-pages race* below.
 ```
 
 > **No manual approval gate.** Tag push goes straight through to
@@ -497,11 +501,14 @@ Two cases:
 
 ### `docs.yml` deploy lost the gh-pages race
 
-Tag pushes and the squash-merge of the release PR both fire
-`docs.yml`. Both runs invoke `mike deploy --push`, which is a
-non-atomic clone + commit + push against the same `gh-pages` branch.
-If the tag-triggered run pushes second on a stale local copy, the
-deploy step fails:
+Should not happen any more: the deploy job serializes on a
+ref-independent concurrency group, so the tag-triggered deploy queues
+behind the main-triggered one instead of pushing on a stale copy. The
+recovery below stays documented because the underlying `mike deploy`
+is still a non-atomic clone + commit + push — anything that writes
+`gh-pages` from outside this job (a manual `mike deploy --push`, a
+`mike set-default --push`) can still lose to it, and the symptom is
+identical:
 
 ```
 ! [rejected]        gh-pages -> gh-pages (fetch first)
