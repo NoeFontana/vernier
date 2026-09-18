@@ -256,6 +256,34 @@ _PROBE_SIGMA = 0.5
 #: deriving it needs 34 000 exact-decimal exponentials.
 _PROBE_GLIBC_MISROUNDS = 30
 
+#: Kernels this probe has actually seen, by fingerprint, so an unfamiliar
+#: one is recognisable as unfamiliar rather than merely unequal. Not used
+#: for gating -- the gate is the direct comparison, which needs no table
+#: and cannot go stale on a libc update.
+#:
+#: * ``5413677b16f038c8`` -- glibc 2.39 x86-64, FMA path. What vernier's
+#:   ``f64::exp`` resolves to, and what NumPy resolves to on a CPU
+#:   without AVX512 (AMD EPYC-Milan locally; AMD EPYC 7763 and an
+#:   AVX512-masked EPYC 9V74 on GitHub's runners).
+#: * ``f0c033a043e12cfe`` -- NumPy 2.4.4 on an AVX512 AMD EPYC 9V74
+#:   (GitHub Actions, 2026-09-18). Disagrees with the libm fingerprint on
+#:   **1647 of 34 000** arguments (4.8 %) and **every one of them by
+#:   exactly 1 ULP**. That last number settles a question the dispatch
+#:   investigation had to leave open for want of AVX512 hardware: NumPy
+#:   is calling the *high-accuracy* SVML variant (``__svml_exp8_ha``,
+#:   faithful to ~0.5 ULP), not the ~4-ULP one. A 4-ULP kernel would
+#:   have broken the per-term premise `OKS_DELTA` rests on; it does not.
+#:
+#: Note what the 4.8 % rate is not: a bound on anything. It is 68x the
+#: 706 ppm of glibc's own FMA/non-FMA split, which is what a different
+#: polynomial rather than a different rounding mode looks like.
+
+#: Whether the AVX512 path is taken is a property of the *runner*, not of
+#: the NumPy version: the same `ubuntu-latest` pool served both an EPYC
+#: 9V74 exposing the full AVX512 flag set and one exposing none. So the
+#: pre-gate failure was a lottery, not a deterministic per-leg failure --
+#: worth knowing before reading anything into which matrix leg went red.
+
 
 @dataclass(frozen=True)
 class _ExpKernelProbe:
@@ -348,7 +376,12 @@ def _probe_dataset() -> tuple[dict[str, Any], dict[str, Any], NDArray[np.float64
 
 
 def _libm_verdict(args: NDArray[np.float64], vernier: NDArray[np.float64]) -> str:
-    """Name which side left the system libm, for the skip message."""
+    """Name each side's kernel against the system libm, for the report.
+
+    Computed on every probe, agreeing or not, so the happy path is the
+    same code the skip message goes through. It is a *naming* step, not
+    the gate: the gate is the direct vernier-vs-NumPy comparison.
+    """
     import ctypes
     import ctypes.util
 
@@ -372,10 +405,7 @@ def _libm_verdict(args: NDArray[np.float64], vernier: NDArray[np.float64]) -> st
     if numpy_is_libm and not vernier_is_libm:
         return "NumPy matches the system libm and vernier's `f64::exp` does not"
     if numpy_is_libm and vernier_is_libm:
-        return (
-            "both match the system libm on the sampled arguments, so the divergence is "
-            "outside them -- report this, it should not happen"
-        )
+        return "both are the system libm on the sampled arguments"
     return "neither matches the system libm on the sampled arguments"
 
 
