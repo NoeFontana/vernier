@@ -5,20 +5,35 @@ After every cell finishes, every runner has written its result
 artifacts to disk. The comparator for that cell's paradigm loads them
 and asserts the cross-impl invariants documented in the parity ADRs:
 
-- **instance** — the comparator's own three-tier cross-impl tolerance
-  taxonomy (independent of the runtime ADR-0002 ``ParityMode``,
-  which is two-valued):
-    - *strict* — vernier reproduces pycocotools bit-exactly
-      (``np.array_equal``).
-    - *aligned* — vernier matches faster-coco-eval and hotcoco within
-      a small absolute tolerance; both reimplement the accumulation
-      with their own float order.
-    - *boundary* — vernier matches the boundary-iou-api oracle within
-      ``BOUNDARY_PARITY_EPS``.
-- **panoptic** — strict vs ``pq_compute_single_core(proc_id=0, ...)``
-  per ADR-0025. Registered by B1.
-- **semantic** — first MVB cell deferred to S3-B (ADE20K + mmseg) as
-  an ``aligned``-tier pair pending PR-B6/7/8 vendoring. The
+A ``Tier`` here names **the assertion a comparison makes**, not a
+parity disposition. It has nothing to do with ADR-0002's
+``strict`` / ``corrected`` vocabulary: that is a runtime evaluation
+mode the user selects, this is how closely two already-computed
+tensors have to agree. The two were once spelled the same, which
+cost more review time than it saved, so the values are named after
+what they check:
+
+- ``bit-equal`` — exact equality, ``atol`` is 0. Reserved for a pair
+  where the oracle and vernier are supposed to agree to the last bit
+  (vernier vs pycocotools / panopticapi / lvis-api / mmsegmentation).
+- ``float-tolerance`` — agreement within a documented non-zero band.
+  Used where the other side reorders float accumulation and a ULP-scale
+  disagreement is expected rather than a defect: faster-coco-eval and
+  hotcoco, multi-process panopticapi traces, batch-vs-stream folds.
+- ``boundary-tolerance`` — the same band check against the
+  boundary-iou-api oracle at ``BOUNDARY_PARITY_EPS``, kept as its own
+  value because ADR-0010 makes boundary an isolated subsystem with its
+  own oracle and its own eps.
+
+Per paradigm:
+
+- **instance** — ``bit-equal`` vs pycocotools; ``float-tolerance`` vs
+  faster-coco-eval and hotcoco; ``boundary-tolerance`` vs
+  boundary-iou-api.
+- **panoptic** — ``bit-equal`` vs ``pq_compute_single_core(proc_id=0,
+  ...)`` per ADR-0025. Registered by B1.
+- **semantic** — first MVB cell deferred to S3-B (ADE20K + mmseg) as a
+  ``float-tolerance`` pair pending PR-B6/7/8 vendoring. The
   comparator + ``ConfusionMatrix`` artifact stay registered so the
   paradigm scaffolding is complete.
 - **streaming** — bit-equal ``Summary.stats`` between batch and stream
@@ -35,7 +50,7 @@ from pathlib import Path
 from typing import Any, ClassVar, Literal, Protocol, runtime_checkable
 
 import numpy as np
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from bench.harness.schema import IouType, Metric, Paradigm
 
@@ -48,15 +63,24 @@ PARITY_EPS: float = 2.220446049250313e-16
 BOUNDARY_PARITY_EPS: float = 1e-9
 
 # Mirror of ``crates/vernier-panoptic/src/parity.rs::PANOPTIC_PARITY_EPS``.
-# Aligned-mode tolerance for panoptic comparisons (B1).
+# Float-tolerance band for panoptic comparisons (B1).
 PANOPTIC_PARITY_EPS: float = 1e-9
 
-# Aligned tier: 4 ULP. Faster-coco-eval reorders some accumulations so
-# the tensor differs by a handful of ULP from pycocotools, even on
-# fixtures where the strict tier is bit-equal.
-ALIGNED_ATOL: float = 4.0 * PARITY_EPS
+# Default ``float-tolerance`` band: 4 ULP. Faster-coco-eval reorders
+# some accumulations so the tensor differs by a handful of ULP from
+# pycocotools, even on fixtures where the bit-equal tier passes.
+FLOAT_TOLERANCE_ATOL: float = 4.0 * PARITY_EPS
 
-Tier = Literal["strict", "aligned", "boundary"]
+Tier = Literal["bit-equal", "float-tolerance", "boundary-tolerance"]
+
+# Tier values used before this vocabulary was renamed after what each
+# comparison asserts. Kept so a ``divergence_report.json`` written by an
+# older harness still loads; nothing emits these.
+_LEGACY_TIER_NAMES: dict[str, Tier] = {
+    "strict": "bit-equal",
+    "aligned": "float-tolerance",
+    "boundary": "boundary-tolerance",
+}
 
 
 class Divergence(BaseModel):
@@ -72,6 +96,19 @@ class TierResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     tier: Tier
+
+    @field_validator("tier", mode="before")
+    @classmethod
+    def _accept_legacy_tier_names(cls, value: object) -> object:
+        """Read compatibility for reports written before the rename.
+
+        Emission is always the current vocabulary; this only widens what
+        parses, so an archived ``divergence_report.json`` stays readable.
+        """
+        if isinstance(value, str):
+            return _LEGACY_TIER_NAMES.get(value, value)
+        return value
+
     impl_a: str
     impl_b: str
     atol: float
@@ -374,21 +411,21 @@ class Comparator(Protocol):
 # compare them at this tier with this tolerance."
 _TIER_PAIRS: dict[IouType, tuple[tuple[Tier, str, str, float], ...]] = {
     "bbox": (
-        ("strict", "vernier", "pycocotools", 0.0),
-        ("aligned", "vernier", "faster-coco-eval", ALIGNED_ATOL),
-        ("aligned", "vernier", "hotcoco", ALIGNED_ATOL),
+        ("bit-equal", "vernier", "pycocotools", 0.0),
+        ("float-tolerance", "vernier", "faster-coco-eval", FLOAT_TOLERANCE_ATOL),
+        ("float-tolerance", "vernier", "hotcoco", FLOAT_TOLERANCE_ATOL),
     ),
     "segm": (
-        ("strict", "vernier", "pycocotools", 0.0),
-        ("aligned", "vernier", "faster-coco-eval", ALIGNED_ATOL),
-        ("aligned", "vernier", "hotcoco", ALIGNED_ATOL),
+        ("bit-equal", "vernier", "pycocotools", 0.0),
+        ("float-tolerance", "vernier", "faster-coco-eval", FLOAT_TOLERANCE_ATOL),
+        ("float-tolerance", "vernier", "hotcoco", FLOAT_TOLERANCE_ATOL),
     ),
     "keypoints": (
-        ("strict", "vernier", "pycocotools", 0.0),
-        ("aligned", "vernier", "faster-coco-eval", ALIGNED_ATOL),
-        ("aligned", "vernier", "hotcoco", ALIGNED_ATOL),
+        ("bit-equal", "vernier", "pycocotools", 0.0),
+        ("float-tolerance", "vernier", "faster-coco-eval", FLOAT_TOLERANCE_ATOL),
+        ("float-tolerance", "vernier", "hotcoco", FLOAT_TOLERANCE_ATOL),
     ),
-    "boundary": (("boundary", "vernier", "boundary-iou-api", BOUNDARY_PARITY_EPS),),
+    "boundary": (("boundary-tolerance", "vernier", "boundary-iou-api", BOUNDARY_PARITY_EPS),),
 }
 
 
@@ -409,9 +446,9 @@ def _compare_pair(
         )
 
     diff = np.abs(tensor_a - tensor_b)
-    # Strict tier: bit-equality, not "diff <= 0" (NaNs in either tensor
+    # bit-equal tier: equality, not "diff <= 0" (NaNs in either tensor
     # would make a finite-diff check pass spuriously).
-    divergent_mask = ~(tensor_a == tensor_b) if tier == "strict" else diff > atol
+    divergent_mask = ~(tensor_a == tensor_b) if tier == "bit-equal" else diff > atol
 
     divergent_count = int(divergent_mask.sum())
     first_divergence: Divergence | None = None
@@ -522,8 +559,8 @@ def _compare_panoptic_pair(
     ``tests/python/parity_panoptic/harness.py``: per-bucket
     pq/sq/rq elementwise + per-class dict union; count fields always
     exact regardless of tier; floats compared with ``abs(a-b) <= atol``
-    on the strict tier (atol=0 → bit-equality) or aligned tier
-    (atol=PANOPTIC_PARITY_EPS).
+    on the ``float-tolerance`` tier (atol=PANOPTIC_PARITY_EPS) or by
+    equality on the ``bit-equal`` tier (atol=0).
 
     The ``TierResult.first_divergence`` slot points at the first
     failing field via a sentinel ``index`` tuple; the field name is
@@ -540,9 +577,9 @@ def _compare_panoptic_pair(
 
     def _record(value_a: float, value_b: float, index_marker: tuple[int, ...]) -> None:
         nonlocal divergent_count, first
-        # Strict tier: bit-equality (NaNs in either side would make a
-        # finite-diff check pass spuriously). Aligned tier: tolerance.
-        diverges = (value_a != value_b) if tier == "strict" else abs(value_a - value_b) > atol
+        # bit-equal tier: equality (NaNs in either side would make a
+        # finite-diff check pass spuriously). Otherwise: the atol band.
+        diverges = (value_a != value_b) if tier == "bit-equal" else abs(value_a - value_b) > atol
         if not diverges:
             return
         divergent_count += 1
@@ -624,13 +661,13 @@ def _panoptic_canonical_hash(snap: PanopticSnapshot) -> str:
 
 
 # Panoptic tier table (B1). Only ``vernier_panoptic`` vs ``panopticapi``
-# is wired today; Stage 3 may add a strict-vs-aligned split if the
-# multi-process oracle path is ever pinned, but per ADR-0025 the
-# strict comparison is against ``pq_compute_single_core(proc_id=0,
+# is wired today; Stage 3 may split the two entries by oracle path if
+# the multi-process oracle is ever pinned, but per ADR-0025 the
+# bit-equal comparison is against ``pq_compute_single_core(proc_id=0,
 # ...)`` only.
 _PANOPTIC_TIER_PAIRS: tuple[tuple[Tier, str, str, float], ...] = (
-    ("strict", "vernier_panoptic", "panopticapi", 0.0),
-    ("aligned", "vernier_panoptic", "panopticapi", PANOPTIC_PARITY_EPS),
+    ("bit-equal", "vernier_panoptic", "panopticapi", 0.0),
+    ("float-tolerance", "vernier_panoptic", "panopticapi", PANOPTIC_PARITY_EPS),
 )
 
 
@@ -638,9 +675,9 @@ class _PanopticComparator:
     """Panoptic-quality comparator (ADR-0025 + ADR-0033 §B1).
 
     Consumes ``PanopticSnapshot`` artifacts (the panopticapi-shaped
-    All / Things / Stuff buckets + per-class table). The strict tier
-    matches ``pq_compute_single_core(proc_id=0, ...)`` bit-exactly per
-    the parity contract; the aligned tier permits
+    All / Things / Stuff buckets + per-class table). The ``bit-equal``
+    tier matches ``pq_compute_single_core(proc_id=0, ...)`` exactly per
+    the parity contract; the ``float-tolerance`` tier permits
     ``PANOPTIC_PARITY_EPS`` per the parity.rs constant.
 
     Adapts :func:`assert_snapshots_equal` from
@@ -704,26 +741,26 @@ class _PanopticComparator:
 # redistribution of derivative outputs, which doesn't fit the public
 # bench-result tree.
 _SEMANTIC_TIER_PAIRS: tuple[tuple[Tier, str, str], ...] = (
-    ("strict", "vernier_semantic", "mmsegmentation"),
+    ("bit-equal", "vernier_semantic", "mmsegmentation"),
 )
 
 
 class _SemanticComparator:
     """Semantic-segmentation comparator (ADR-0033 §B2).
 
-    Strict-tier path: ``np.array_equal(a.counts, b.counts)`` on the
+    ``bit-equal`` path: ``np.array_equal(a.counts, b.counts)`` on the
     integer NxN confusion matrices. mIoU / FWIoU / pixel_accuracy /
-    mean_accuracy are derived bit-deterministically from the counts,
-    so equal counts ⇒ equal floats — checking the integer array is
+    mean_accuracy are derived deterministically from the counts, so
+    equal counts ⇒ equal floats — checking the integer array is
     necessary and sufficient.
 
     The comparator's docstring is the canonical place to register the
-    future ADE20K-vs-mmseg path: that pair lands as an ``aligned`` tier
+    future ADE20K-vs-mmseg path: that pair lands at ``float-tolerance``
     with ``rtol=1e-9`` (mirroring ``SEMANTIC_PARITY_EPS`` in
     ``crates/vernier-semantic/src/parity.rs``) until PR-B6/B7/B8
-    vendor mmseg at a pinned SHA, at which point the tier re-grades
-    to ``strict``. The flag travels per-cell as ``parity_tier`` on
-    the ``TierResult`` so the report layer can flag the gap.
+    vendor mmseg at a pinned SHA, at which point it re-grades to
+    ``bit-equal``. The tier travels per-cell on the ``TierResult`` so
+    the report layer can flag the gap.
     """
 
     paradigm: ClassVar[Paradigm] = "semantic"
@@ -894,7 +931,7 @@ class _StreamingComparator:
                     a_summary=a_art.batch_summary,
                     b_summary=b_art.batch_summary,
                     atol=STREAMING_PARITY_ATOL,
-                    tier="aligned",
+                    tier="float-tolerance",
                 )
             )
         return CellParityReport(workload_id=workload_id, iou_type=iou_type, tiers=tiers)
@@ -931,15 +968,15 @@ def _compare_streaming_pair_internal(
     """Bit-equality check between the two halves of a single impl's
     ``StreamingPair`` (batch vs stream, or json vs array).
 
-    Uses ``tier="aligned"`` so ``_compare_pair`` exercises the
+    Uses ``tier="float-tolerance"`` so ``_compare_pair`` exercises the
     ``diff > atol`` branch (``STREAMING_PARITY_ATOL = 1e-12`` per the
-    streaming-vs-batch parity test); ``tier="strict"`` would force
-    bit-equality and reject the documented sub-ULP wobble.
+    streaming-vs-batch parity test); ``tier="bit-equal"`` would force
+    exact equality and reject the documented sub-ULP wobble.
     """
     batch = _stats_dict_to_array(artifact.batch_summary)
     stream = _stats_dict_to_array(artifact.stream_summary)
     return _compare_pair(
-        tier="aligned",
+        tier="float-tolerance",
         impl_a=f"{impl}/batch",
         impl_b=f"{impl}/stream",
         tensor_a=batch,
@@ -974,23 +1011,23 @@ def _compare_streaming_cross_impl(
     )
 
 
-# LVIS tier table (ADR-0026 + ADR-0033). Strict-tier path: bit-equal
+# LVIS tier table (ADR-0026 + ADR-0033). ``bit-equal`` path: identical
 # ``(T, R, K, A)`` precision tensor between vernier_lvis and the
 # vendored lvis-api oracle pinned at ORACLE_LVIS_COMMIT_SHA. AF5 quirk:
-# no M-axis, K=1203 on full LVIS v1 val. The aligned tier is unused
-# today (vernier_lvis matches lvis-api bit-equally on every cell the
-# parity_lvis suite covers); keeping the slot lets future stochastic
-# fixtures use ALIGNED_ATOL without a schema change.
+# no M-axis, K=1203 on full LVIS v1 val. The ``float-tolerance`` entry
+# exists for hotcoco_lvis, which does diverge; vernier_lvis itself
+# matches lvis-api bit-equally on every cell the parity_lvis suite
+# covers.
 _LVIS_TIER_PAIRS: tuple[tuple[Tier, str, str, float], ...] = (
-    ("strict", "vernier_lvis", "lvis-api", 0.0),
-    ("aligned", "vernier_lvis", "hotcoco_lvis", ALIGNED_ATOL),
+    ("bit-equal", "vernier_lvis", "lvis-api", 0.0),
+    ("float-tolerance", "vernier_lvis", "hotcoco_lvis", FLOAT_TOLERANCE_ATOL),
 )
 
 
 class _LvisComparator:
     """LVIS federated-AP comparator (ADR-0026 + ADR-0033).
 
-    Strict-tier path: bit-equal ``(T, R, K, A)`` precision tensor
+    ``bit-equal`` path: identical ``(T, R, K, A)`` precision tensor
     between vernier_lvis and the vendored lvis-api oracle. Same shape
     as the instance comparator — LVIS reuses the single-tensor parity
     surface — but with its own impl pair so the COCO-side
@@ -1099,7 +1136,7 @@ def compare_cell(
     """Run every applicable tier for ``iou_type`` over the impls present
     in ``impl_tensors``. Pairs whose impls aren't both present are
     silently skipped (e.g., bbox cell with only vernier + pycocotools
-    skips the aligned tier).
+    skips the ``float-tolerance`` tier).
 
     This is the legacy detection entry-point; the orchestrator calls
     it directly for instance cells. B-stream cells route through

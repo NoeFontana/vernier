@@ -18,11 +18,12 @@ don't pay the download twice.
 
 Two workloads:
 
-- ``lvis_v1_val_perfect`` — GT-as-DT smoke. Strict-tier oracle is
+- ``lvis_v1_val_perfect`` — GT-as-DT smoke. The bit-equal oracle is
   ``lvis-api`` (vendored at ``tests/python/parity_lvis/oracle/``);
   the bench harness today does not ship a dedicated lvis-api runner,
-  so the comparator surface remains the existing strict + aligned
-  tier pairs over (vernier, pycocotools, faster-coco-eval). Divergence
+  so the comparator surface remains the existing bit-equal +
+  float-tolerance tier pairs over (vernier, pycocotools,
+  faster-coco-eval). Divergence
   is expected and informational on this cell because pycocotools is
   not LVIS-aware; vernier-vs-vernier across reps remains bit-equal.
 - ``lvis_v1_val_jittered_seed<N>`` — bbox + segm jitter through the

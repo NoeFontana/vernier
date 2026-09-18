@@ -24,7 +24,7 @@ from typing import Any
 import numpy as np
 
 from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
-from bench.harness.parity import ALIGNED_ATOL
+from bench.harness.parity import FLOAT_TOLERANCE_ATOL
 from bench.harness.paths import BENCH_ROOT
 from tests.conftest import skip_if_no_env
 
@@ -278,7 +278,7 @@ def _run_lvis_runner(
 def test_hotcoco_lvis_runner_inline_smoke(tmp_path: Path) -> None:
     """hotcoco's ``lvis_style`` evaluator emits the same 13-key plan and
     the M-squeezed ``(T, R, K, A)`` tensor as vernier_lvis, within the
-    aligned tier the LVIS comparator applies."""
+    ``float-tolerance`` band the LVIS comparator applies."""
     skip_if_no_env("hotcoco")
     skip_if_no_env("vernier")
 
@@ -291,4 +291,4 @@ def test_hotcoco_lvis_runner_inline_smoke(tmp_path: Path) -> None:
 
     ref_payload, ref_tensor = _run_lvis_runner("vernier_lvis", gt, dt, tmp_path)
     assert payload["summary_stats"].keys() == ref_payload["summary_stats"].keys()
-    np.testing.assert_allclose(tensor, ref_tensor, rtol=0, atol=ALIGNED_ATOL)
+    np.testing.assert_allclose(tensor, ref_tensor, rtol=0, atol=FLOAT_TOLERANCE_ATOL)
