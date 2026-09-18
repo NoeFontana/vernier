@@ -150,6 +150,19 @@ additive / perf / docs".
 
 ### Fixed
 
+- **OKS divides by the keypoint count instead of multiplying by its
+  reciprocal** (quirk **F7**). The kernel hoisted a `1.0 / count` out of
+  the detection loop and multiplied; pycocotools computes
+  `np.sum(np.exp(-e)) / e.shape[0]`. For any count that is not a power
+  of two the reciprocal rounds once and the product rounds again, so the
+  OKS landed 1 ULP off the oracle on 8.4 % of cells at the COCO-person
+  count of 17 (29.4 % at 14, 36.6 % at 133). Because the matching ladder
+  gates on `iou >= t`, that shift can drop a match that sits exactly on
+  a threshold — reachable with the arbitrary-length per-category sigmas
+  quirk **F1** ships, and with user-supplied `iou_thresholds` at any
+  count. Perfect matches also stop being bit-exactly `1.0` at counts
+  such as 49 and 98. The division costs well under 1 % of a cell that
+  already runs `count` `exp()` calls.
 - **`vernier.COCOeval` matches pycocotools on in-memory COCO objects**
   such as the ones TorchMetrics builds:
   - Mutated `params.iouThrs` / `params.recThrs` are evaluated as given
