@@ -2336,6 +2336,15 @@ handles that the way <code>COCOeval</code> does — detection <code>area</code> 
 object rather than derived (quirk <strong>J3</strong>), <code>bytes</code> RLE counts are
 accepted (quirk <strong>K3</strong>), and a missing image <code>width</code> / <code>height</code> is
 filled wherever <code>annToRLE</code> would never have looked at it.</p>
+<p><strong>Known limitation.</strong> The shim hands those annotations to ADR-0057's
+list route, which reads the <em>first</em> entry's keys to choose between the
+per-annotation and the ADR-0030 columnar shape (quirk <strong>J6</strong>). A stray
+<code>boxes</code> key on detection <strong>0</strong> therefore routes the whole list as
+columnar and fails loudly — <code>TypeError: detections[0].boxes: object does
+not support DLPack</code> — where serializing to JSON first would have carried
+the key along and ignored it. The same key on any later entry is still
+ignored. No producer we know of writes <code>boxes</code> into a COCO result dict;
+if yours does, drop it or rename it.</p>
 <p>If you assemble such a dataset yourself and drive a vernier grid
 <em>directly</em> rather than through the shim, the same conversions are
 published:</p>
