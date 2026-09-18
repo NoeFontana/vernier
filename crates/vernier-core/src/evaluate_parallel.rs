@@ -25,8 +25,8 @@ use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, Image
 use crate::error::EvalError;
 use crate::evaluate::{
     dt_top_indices_for_cell_into, evaluate_cell, gt_indices_for_cell, raw_dt_indices_for_cell,
-    CellBuffers, CellScratch, EvalGrid, EvalImageMeta, EvalKernel, EvaluateParams, KernelScratch,
-    COLLAPSED_CATEGORY_SENTINEL,
+    strict_oks_use_cats_blackout, CellBuffers, CellScratch, EvalGrid, EvalImageMeta, EvalKernel,
+    EvaluateParams, KernelScratch, COLLAPSED_CATEGORY_SENTINEL,
 };
 use crate::parity::ParityMode;
 
@@ -399,7 +399,10 @@ fn process_one_cell_into<K: EvalKernel>(
     let d = kernel_scratch.dt.len();
     scratch.iou_buf.clear();
     scratch.iou_buf.resize(g * d, 0.0);
-    if g > 0 && d > 0 {
+    // Quirk **F6** (corrected, ADR-0058): strict mode reproduces
+    // `computeOks`' missing `useCats` fork by leaving the zero-filled
+    // scratch untouched. Mirrors `evaluate::evaluate_with`.
+    if g > 0 && d > 0 && !strict_oks_use_cats_blackout(kernel, params.use_cats, parity_mode) {
         let mut iou_view =
             ArrayViewMut2::from_shape((g, d), &mut scratch.iou_buf[..]).map_err(|e| {
                 EvalError::DimensionMismatch {
@@ -758,6 +761,67 @@ mod tests {
             assert_eq!(
                 acc_seq.scores, acc_par.scores,
                 "scores mismatch at n_threads={n_threads}"
+            );
+        }
+    }
+
+    #[test]
+    fn f6_keypoints_use_cats_false_blackout_holds_in_parallel() {
+        // Quirk F6 (corrected, ADR-0058): the strict-mode OKS blackout
+        // under `useCats=0` is applied in the per-cell body, so it must
+        // fire identically here and in `evaluate_with`. Assert both
+        // directions against the sequential orchestrator.
+        use std::collections::HashMap;
+
+        use crate::similarity::OksSimilarity;
+
+        let kps: Vec<f64> = (0..17)
+            .flat_map(|i| [10.0 + f64::from(i), 10.0 + f64::from(i) * 2.0, 2.0])
+            .collect();
+        let images = vec![img(1, 100, 100)];
+        let cats = vec![cat(1, "person"), cat(2, "animal")];
+        let mut gt_ann = ann(1, 1, 1, (0.0, 0.0, 40.0, 80.0));
+        gt_ann.area = 3200.0;
+        gt_ann.keypoints = Some(kps.clone());
+        gt_ann.num_keypoints = Some(17);
+        let gt = CocoDataset::from_parts(images, vec![gt_ann], cats).expect("dataset");
+        // DT carries the *other* category — only the `useCats=0`
+        // collapse can bring it into the same cell as the GT.
+        let mut dt_in = dt_input(1, 2, 0.99, (0.0, 0.0, 40.0, 80.0));
+        dt_in.keypoints = Some(kps);
+        dt_in.num_keypoints = Some(17);
+        let dts = CocoDetections::from_inputs(vec![dt_in]).expect("detections");
+
+        let area = AreaRange::keypoints_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 20,
+            use_cats: false,
+            retain_iou: false,
+            retain_meta: false,
+        };
+        let kernel = OksSimilarity::new(HashMap::new());
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(4)
+            .build()
+            .expect("pool");
+
+        for (mode, want_match) in [(ParityMode::Strict, false), (ParityMode::Corrected, true)] {
+            let seq = evaluate_with(&gt, &dts, params, mode, &kernel).expect("seq");
+            let par = pool
+                .install(|| evaluate_with_parallel(&gt, &dts, params, mode, &kernel))
+                .expect("par");
+            let seq_cell = seq.cell(0, 0, 0).expect("seq cell");
+            let par_cell = par.cell(0, 0, 0).expect("par cell");
+            assert_eq!(
+                seq_cell.dt_matched, par_cell.dt_matched,
+                "parallel diverges from sequential in {mode:?} mode"
+            );
+            assert_eq!(
+                par_cell.dt_matched.iter().all(|&m| m),
+                want_match,
+                "unexpected match outcome in {mode:?} mode"
             );
         }
     }
