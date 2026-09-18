@@ -111,7 +111,9 @@ def _vernier_total_dts_seen(gt_bytes: bytes, dt_bytes: bytes, max_dets: int) -> 
     from vernier.instance import CocoDataset
 
     gt_ds = CocoDataset.from_lvis_json(gt_bytes)
-    grid = evaluate_bbox_grid_with_dataset(gt_ds, dt_bytes, "strict", max_dets, True)
+    grid = evaluate_bbox_grid_with_dataset(
+        gt_ds, dt_bytes, "strict", max_dets, True, retain_meta=True
+    )
     seen_ids: set[int] = set()
     for cell in grid.eval_imgs():
         if cell is None:
@@ -226,7 +228,7 @@ def test_lvis_trim_uses_well_separated_scores_for_strict_membership() -> None:
     from vernier.instance import CocoDataset
 
     gt_ds = CocoDataset.from_lvis_json(gt_b)
-    grid = evaluate_bbox_grid_with_dataset(gt_ds, dt_b, "strict", 300, True)
+    grid = evaluate_bbox_grid_with_dataset(gt_ds, dt_b, "strict", 300, True, retain_meta=True)
     vernier_by_id: dict[int, float] = {}
     for cell in grid.eval_imgs():
         if cell is None:

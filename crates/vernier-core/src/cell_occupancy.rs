@@ -272,6 +272,7 @@ mod tests {
                 w: 4.0,
                 h: 4.0,
             },
+            area: None,
             segmentation: None,
             keypoints: None,
             num_keypoints: None,

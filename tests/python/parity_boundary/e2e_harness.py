@@ -117,6 +117,7 @@ def _run_vernier(gt_path: Path, dt_path: Path, dilation_ratio: float) -> Boundar
         max(max_dets),
         use_cats=True,
         dilation_ratio=dilation_ratio,
+        retain_meta=True,
     )
     acc = grid.accumulate(max_dets)
     summary = acc.summarize(max_dets)

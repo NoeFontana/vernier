@@ -831,6 +831,11 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         let synthetic_grid = crate::evaluate::EvalGrid {
             eval_imgs,
             eval_imgs_meta,
+            // Dense either way — the non-`retain_iou` branch above fills
+            // `total` `None`s rather than leaving the vec empty — and the
+            // builders that read cell metadata are already refused above
+            // unless `retain_iou` is on.
+            builds_meta: true,
             n_categories: n_k,
             n_area_ranges: n_a,
             n_images: n_i,
@@ -1120,7 +1125,12 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                 &kp_max_dets,
             )?
         } else {
-            summarize_detection(&accumulated, &self.params.iou_thresholds, &max_dets)?
+            summarize_detection(
+                &accumulated,
+                &self.params.iou_thresholds,
+                &max_dets,
+                self.parity_mode,
+            )?
         };
         Ok((summary, accumulated))
     }

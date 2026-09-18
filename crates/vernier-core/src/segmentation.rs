@@ -100,6 +100,34 @@ mod arc_u32_serde {
 }
 
 impl Segmentation {
+    /// Foreground pixel count of an RLE segmentation — pycocotools'
+    /// `maskUtils.area` (quirk **G5**: the sum of odd-indexed runs), the
+    /// area `loadRes` derives for segm results (quirk **J3**). `None` for
+    /// polygons, which `maskUtils.area` does not accept.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EvalError::Mask`] if compressed counts are malformed.
+    pub fn rle_area(&self) -> Result<Option<u64>, EvalError> {
+        fn foreground(counts: &[u32]) -> u64 {
+            counts
+                .iter()
+                .skip(1)
+                .step_by(2)
+                .map(|&c| u64::from(c))
+                .sum()
+        }
+        match self {
+            Self::Polygons(_) => Ok(None),
+            Self::Rle(rle) => Ok(Some(match &rle.counts {
+                SegmentationRleCounts::Compressed(s) => {
+                    foreground(&vernier_mask::decode_counts(s.as_bytes())?)
+                }
+                SegmentationRleCounts::Uncompressed(counts) => foreground(counts),
+            })),
+        }
+    }
+
     /// Normalizes this segmentation into a single [`Rle`] of shape
     /// `(h, w)`.
     ///

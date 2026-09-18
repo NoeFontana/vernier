@@ -191,6 +191,7 @@ fn run_pipeline(
         max_dets_per_image: max_det_top,
         use_cats,
         retain_iou: false,
+        retain_meta: false,
     };
 
     let grid = run_grid_for_threads(
@@ -223,7 +224,7 @@ fn run_pipeline(
             max_dets,
         )
     } else {
-        summarize_detection(&acc, iou_thr, max_dets)
+        summarize_detection(&acc, iou_thr, max_dets, parity)
     }
 }
 

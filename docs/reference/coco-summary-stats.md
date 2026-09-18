@@ -32,12 +32,13 @@ For each row, the reported number is the mean of every cell in the slice whose v
 
 ## How `summarize_detection` resolves the M-axis
 
-vernier does not assume the M-axis is `[1, 10, 100]`. The summarizer:
+vernier does not assume the M-axis is `[1, 10, 100]`. `summarize_detection` takes a `ParityMode` and resolves the M-axis the way pycocotools' `_summarizeDets` does (quirk **L9**):
 
-- Uses `max_dets[m_max]` (the largest cap) for every AP line and for `AR_S` / `AR_M` / `AR_L`.
-- Looks up `1`, `10`, `100` by value for `AR_1`, `AR_10`, `AR_100` respectively. If any of those three are missing from the supplied `max_dets`, summarization fails with [`EvalError::InvalidConfig`].
+- `AR_1`, `AR_10`, `AR_100` read `max_dets[0]`, `max_dets[1]`, `max_dets[2]` positionally (`cocoeval.py:466-468`). A ladder shorter than three fails with [`EvalError::InvalidConfig`] (pycocotools raises `IndexError`).
+- `AP@.50` through `AP_L` and `AR_S` / `AR_M` / `AR_L` read `max_dets[m_max]`, the largest cap.
+- `AP` (index 0) is the one parity-dependent line. pycocotools reads it at the literal `maxDets=100`, so on a ladder without `100` it reports `-1`; `ParityMode::Strict` reproduces that. `ParityMode::Corrected` reads it at the largest cap, like every other AP line.
 
-This matches what pycocotools does at `cocoeval.py:466-471` (`maxDets[0]`, `maxDets[1]`, `maxDets[2]`), but the value-lookup makes it robust to the default being changed by a caller.
+On the default `[1, 10, 100]` ladder both modes produce the table above.
 
 ## How `summarize_detection` resolves the IoU axis
 
@@ -47,9 +48,14 @@ For all other lines, the IoU axis is averaged across (length `T`).
 
 ## Custom summary plans
 
-`summarize_detection` is a thin wrapper over `summarize_with`, which evaluates an arbitrary `&[StatRequest]` plan against an `Accumulated`. The canonical 12-entry plan is exposed as `StatRequest::coco_detection_default()` for callers that want to extend rather than replace it (push extra `StatRequest` entries, swap the M-axis selectors, pin different IoU thresholds). Bit-exact parity with cocoeval is by construction: the wrapper produces the same `Summary` whether called directly or via `summarize_with(.., StatRequest::coco_detection_default(), ..)`.
+`summarize_detection` is a thin wrapper over `summarize_with`, which evaluates an arbitrary `&[StatRequest]` plan against an `Accumulated`. The 12-entry plan is exposed as `StatRequest::coco_detection(parity_mode)` (and `StatRequest::coco_detection_default()`, the strict plan) for callers that want to extend rather than replace it (push extra `StatRequest` entries, swap the M-axis selectors, pin different IoU thresholds). Bit-exact parity with cocoeval is by construction: the wrapper produces the same `Summary` whether called directly or via `summarize_with(.., StatRequest::coco_detection(parity_mode), ..)`.
 
-`MaxDetSelector::Largest` picks the trailing entry of the supplied `max_dets`; `MaxDetSelector::Value(n)` looks the value up. This preserves the cocoeval intent ("AR_1 means maxDets=1") without binding to fixed positional indices, so callers passing non-default `max_dets` (e.g. keypoint `[20]`) still get sensible plans.
+`MaxDetSelector` picks the M-axis entry for each line:
+
+- `Largest` — the trailing entry of the supplied `max_dets`.
+- `Value(n)` — the entry equal to `n`; `InvalidConfig` when absent.
+- `Index(i)` — the entry at position `i` (pycocotools' `maxDets[i]`); `InvalidConfig` when out of range.
+- `ValueOrSentinel(n)` — the entry equal to `n`, or a `-1` line when absent (pycocotools' `_summarize(maxDets=100)`).
 
 ## Custom area buckets
 

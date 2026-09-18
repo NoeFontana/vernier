@@ -192,7 +192,9 @@ jobs:
         run: uv run --no-sync --python 3.13 pyright
 
   test-py:
-    name: test (python ${{ matrix.python-version }})
+    # The `numpy` suffix appears only on the NumPy 1 leg, so the locked
+    # legs keep the `test (python X)` names the main ruleset requires.
+    name: test (python ${{ matrix.python-version }}${{ matrix.numpy != 'locked' && format(', numpy {0}', matrix.numpy) || '' }})
     needs: build-wheel
     runs-on: ubuntu-latest
     strategy:
@@ -203,6 +205,14 @@ jobs:
         # rarely informative; `slow.yml` (workflow_dispatch) backfills
         # the full suite before a release cut.
         python-version: ["3.10", "3.14"]
+        # `locked` runs the NumPy uv.lock resolves (2.x). The extension
+        # is one abi3 wheel that rust-numpy binds to NumPy 1 or 2 at
+        # runtime, so NumPy 1 support is only proven by running the suite
+        # against it: the `numpy>=1.26` floor on the oldest Python.
+        numpy: ["locked"]
+        include:
+          - python-version: "3.10"
+            numpy: "1.26.4"
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v8.1.0
@@ -218,6 +228,9 @@ jobs:
           path: dist
       - name: install built wheel
         run: uv pip install --python ${{ matrix.python-version }} dist/vernier-*.whl
+      - name: pin numpy
+        if: matrix.numpy != 'locked'
+        run: uv pip install --python ${{ matrix.python-version }} "numpy==${{ matrix.numpy }}"
       - name: pytest
         # PR gate skips the slow tier (boundary parity tree, env-gated
         # *_val.py whole-dataset smokes). Run the full suite via the
