@@ -130,6 +130,7 @@ else is detail.
 | [0053](0053-matching-dt-prefilter.md) | Skip the GT scan for detections that cannot match (per-cell column maxima) | proposed |
 | [0054](0054-split-parallel-json-ingestion.md) | Split JSON ingestion across the thread budget; round floats correctly | proposed (amended 2026-09-17) |
 | [0055](0055-drop-in-params-surface-and-coco-json-adapters.md) | Finish the `COCOeval` drop-in's mutable surface (`ious`, `catIds`); publish the COCO-JSON normalizers | proposed |
+| [0058](0058-keypoints-usecats-zero-disposition.md) | Dispose of keypoints-under-`useCats=0` as `corrected` (quirk F6) | proposed |
 | [0057](0057-python-detection-ingest-routes.md) | Two direct detection-ingest routes for in-process callers (list of result dicts, `(N, 7)` matrix) | proposed |
 
 ### TIDE design package — proposed cluster
