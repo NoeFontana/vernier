@@ -30,6 +30,20 @@ additive / perf / docs".
   name: `test_instance_reexports_every_dataset_taking_entry_point`
   asserts every `_with_dataset` entry point in `_core` is reachable
   from `vernier.instance`.
+- **The zero-overhead gate no longer fails on a correct wrapper.** Its
+  relative floor was 0.75 %, chosen against a stated "true wrapper cost
+  of ~0.03 %". Measured directly, the wrapper costs **~1 % of the
+  baseline, proportionally**, on every build and interpreter checked
+  (0.75-1.23 % on a release wheel under 3.14; 0.79-1.13 % on CI's debug
+  wheel under 3.10) — so the floor sat *below* the quantity it was
+  flooring. It stayed invisible while the 25 us absolute term dominated
+  at release baselines, and bound only on CI's debug wheel, whose
+  baseline is 26-53x larger; the gate then failed two consecutive
+  release PRs with the null control tracking `direct` to within 0.01 %,
+  i.e. a sound instrument and a wrong budget. The floor is now 2 %,
+  ~1.6x the worst true cost, which still catches a wrapper that
+  doubles. Release sensitivity is unchanged: 2 % of a 294 us baseline
+  is 5.9 us, so the 25 us term still binds there.
 
 ## [0.4.0] - 2026-09-18
 

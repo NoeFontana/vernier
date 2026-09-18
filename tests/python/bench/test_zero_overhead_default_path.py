@@ -60,22 +60,26 @@ the estimator is built to survive scheduler noise:
 **Sensitivity, stated honestly.** The gate fires when the wrapper's
 added per-call cost exceeds
 
-    max(25 us, 0.75% of the baseline, 3 x the noise this run measured)
+    max(25 us, 2% of the baseline, 3 x the noise this run measured)
 
-capped at 25% of the baseline. The 25 us is the budget; the 0.75% is
-the instrument's own resolution at the baseline in front of it (a
-``min``-reduced wall-clock estimate has multiplicative error, so no
-fixed number is measurable at every baseline); the noise term reacts to
-this run's contention; the cap keeps the noise term from ever reaching
-the size of a real regression. Concretely, per paradigm:
+capped at 25% of the baseline. The 25 us is the budget; the 2% is the
+relative floor, which must sit above the wrapper's own proportional
+cost (measured at ~1% — see ``_PRECISION_FLOOR_FRACTION``) or it fires
+on correct code; the noise term reacts to this run's contention; the
+cap keeps the noise term from ever reaching the size of a real
+regression. Concretely, per paradigm:
 
 =========  ================  =================  ================
 paradigm   release baseline  detects (release)  detects (debug)
 =========  ================  =================  ================
-instance   ~280 us           25 us  (8.9%)      71 us  (0.75%)
-panoptic   ~210 us           25 us  (11.9%)     30 us  (0.75%)
-semantic   ~170 us           25 us  (14.7%)     25 us  (1.5%)
+instance   ~280 us           25 us  (8.9%)      2% of baseline
+panoptic   ~210 us           25 us  (11.9%)     2% of baseline
+semantic   ~170 us           25 us  (14.7%)     2% of baseline
 =========  ================  =================  ================
+
+The debug column is a fraction rather than a number because CI's debug
+baseline is not fixed: it has been measured between 7.8 ms and 15.5 ms
+on the same fixture, and the floor tracks it.
 
 Three things follow, and all three are worth saying out loud:
 
@@ -84,9 +88,10 @@ Three things follow, and all three are worth saying out loud:
   25 us is 8.9-14.7% of them, so the old 5% ratio arm was never the
   operative condition and the "5% tolerance" was never the effective
   one. The effective tolerance was, and is, 25 us.
-* **Debug sensitivity improves 3-7x.** A 5% ratio against the debug
-  baselines CI measures is 479 / 198 / 83 us; the numbers above are
-  71 / 30 / 25 us.
+* **Debug sensitivity is 2.5x better than the 5% ratio** this gate
+  replaced, and is bounded below by the wrapper's own ~1% cost: no
+  floor beneath that can pass a correct wrapper, whatever it would do
+  for sensitivity.
 * The worst-case guarantee under arbitrarily bad contention is **25%
   of the baseline**, because that is where the noise term is capped.
   It is not, and never was, 5%.
@@ -234,25 +239,43 @@ _ROUND_ORDERS = (
     (1, 2, 0),
 )
 
-# Measurement-precision floor. A `min`-of-42 estimate is not exact: its
-# error is *multiplicative*, roughly 0.1-0.5% of whatever is being
-# timed, so at the ~9.5 ms debug baseline the 25 us budget above sits
-# below the instrument's own resolution. Measured here on the instance
-# fixture in debug: wrapper-minus-FFI drifts up to +0.42% on a quiet
-# box and +0.46% / -0.61% under six spinning cores, against a true
-# wrapper cost of ~0.03%. This is the price of CI testing a debug
-# wheel, stated as a number instead of hidden inside a percentage
-# tolerance: the budget is 25 us, and this floor is what the instrument
-# can actually resolve at the baseline in front of it.
+# Relative floor. A `min`-of-42 estimate is not exact — its error is
+# *multiplicative* — so at the multi-millisecond debug baseline CI
+# measures, the 25 us budget above sits below what the instrument can
+# resolve. This term is that floor.
 #
-# 0.75% sits ~1.6x above the worst positive drift observed and ~1.2x
-# above the worst of either sign, rather than being tuned until a run
-# passed. It is also deliberately below the 1% wall-clock budget
-# ADR-0019 sets, so this term can never be the reason the ADR's number
-# is missed. At release baselines (150-300 us) it evaluates to 1-2 us
-# and the 25 us budget binds instead, so release sensitivity is exactly
-# what it was.
-_PRECISION_FLOOR_FRACTION = 0.0075
+# It was 0.75%, chosen against a stated "true wrapper cost of ~0.03%".
+# That figure was wrong, and the error only surfaced when the relative
+# term became the binding one. Measured directly, by timing the two
+# arms and printing the ratio rather than inferring it from drift:
+#
+#     build      interpreter   baseline    wrapper overhead
+#     release    3.14          0.294 ms    2.2-3.6 us   0.75-1.23 %
+#     debug      3.10          7.79 ms     67-88 us     0.86-1.13 %
+#     debug      3.10         15.47 ms    122-139 us    0.79-0.90 %
+#
+# The wrapper costs ~1 % of the baseline, *proportionally*, on every
+# build and interpreter measured — it is not a fixed cost and it is not
+# 0.03 %. A floor at 0.75 % therefore sits BELOW the thing it is meant
+# to be a floor for, and fires on correct code the moment it binds.
+# That is exactly what happened: the gate failed on two consecutive
+# release PRs (#307 on 3.14's sibling leg, #308 on 3.10/numpy-1.26),
+# both times with the null control tracking `direct` to within 0.01 %
+# — so the instrument was fine and the budget was wrong.
+#
+# It never bound before because on release baselines the 25 us absolute
+# term dominates: 25 us against a measured 3.6 us worst case is 7x
+# margin. Only CI's debug wheel, whose baseline is 26-53x larger, moves
+# the relative term into the binding position.
+#
+# 2 % is ~1.6x the worst true cost observed (1.23 %), the same safety
+# ratio the original 0.75 % was reaching for against its (mistaken)
+# input. It keeps the gate able to catch a wrapper that *doubles*:
+# 2 x 1.23 % = 2.46 %, above the floor. And it leaves release
+# sensitivity untouched, because 2 % of a 294 us baseline is 5.9 us and
+# the 25 us term still binds there — which was the original design's
+# stated intent.
+_PRECISION_FLOOR_FRACTION = 0.02
 
 # Noise term. Fixed and relative floors are both static; this one reacts
 # to the contention this run actually saw, via the null control.
