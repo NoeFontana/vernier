@@ -196,9 +196,10 @@ intentionally **not** consulted — inheriting an unrelated library's
 deployment knob would silently change vernier's behaviour.
 
 Measured scaling on COCO val2017 (AMD EPYC Milan, 4 physical cores)
-lives in [`benchmarks.md`](../benchmarks.md). Headline: boundary
-3.25× at `num_threads=4`, segm 2.29×, panoptic 2.43×, semantic
-3.66×. The full design rationale is
+lives in [`benchmarks.md`](../benchmarks.md). Headline at
+`num_threads=4`: boundary 3.7×, segm 3.0×, bbox 2.1×, keypoints 2.3×.
+The panoptic (2.43×) and semantic (3.66×) figures are ADR-0047's, whose
+thread axis this round did not re-measure. The full design rationale is
 [ADR-0047](../adr/0047-threading-model.md).
 
 ## Across ranks

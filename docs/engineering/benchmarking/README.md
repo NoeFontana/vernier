@@ -8,8 +8,17 @@ together.
 
 ## Index
 
+* [2026-09-release-0.4.0-round.md](./2026-09-release-0.4.0-round.md)
+  — **current headline snapshot.** Full release-mode re-measurement for
+  the 0.4.0 tag, same host as the two rounds below. Objects365 8.771 s →
+  6.60 s at one CPU and 4.702 s → 3.20 s at eight, with both competitor
+  arms flat within 2 % as controls; LVIS 80.98× over lvis-api and
+  bit-equal to it; COCO bbox 354 → 305 ms. Also records the two
+  measurement failures this round caught — a contaminated thread job
+  that produced a fake segm regression, and a refresh recipe that had
+  been silently emitting `dev`-mode data.
 * [2026-09-longtail-perf-round.md](./2026-09-longtail-perf-round.md)
-  — **current headline snapshot.** Before/after for the four changes that
+  — superseded by the round above. Before/after for the four changes that
   stopped the evaluate path paying for empty cells (ADR-0050, ADR-0051).
   Objects365 at 8 threads 8.76 s → 4.70 s (from losing to hotcoco to
   1.7× ahead), LVIS −23 %, COCO flat.
@@ -118,10 +127,12 @@ just bench-run --impl all --workload lvis_v1_val_jittered_seed0 \
     --iou bbox --mode release
 
 # --- panoptic / semantic ---------------------------------------------
-just bench-run --impl all --workload coco_panoptic_val2017_perfect \
-    --iou pq --mode release
-just bench-run --impl all --workload coco_val2017_semantic_perfect \
-    --iou miou --mode release
+# No `--iou` here: `--paradigm` auto-derives from the workload, and each
+# of these paradigms has exactly one metric (`pq`, `miou`), chosen by the
+# paradigm rather than the flag. `--iou` only accepts the four *instance*
+# metrics and rejects `pq` / `miou` outright.
+just bench-run --impl all --workload coco_panoptic_val2017_perfect --mode release
+just bench-run --impl all --workload coco_val2017_semantic_perfect --mode release
 
 # --- Objects365 scale cell -------------------------------------------
 # Per-impl, and `dev` on purpose: one rep takes minutes, and a runner

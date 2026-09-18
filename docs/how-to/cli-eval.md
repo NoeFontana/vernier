@@ -102,7 +102,7 @@ are sorted by `image_id` before the f64 fold, semantic
 accumulation is u64-additive. See
 [ADR-0047](../adr/0047-threading-model.md) for the design and
 [`benchmarks.md`](../benchmarks.md) for measured scaling on
-val2017 (~3.25× at `--threads 4` for boundary on 4 physical cores).
+val2017 (~3.7× at `--threads 4` for boundary on 4 physical cores).
 
 ## Suppress stderr progress messages
 

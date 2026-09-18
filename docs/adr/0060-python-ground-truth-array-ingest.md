@@ -378,6 +378,19 @@ that merely satisfy a sequence protocol.
 
 ## Measured
 
+> **Superseded for publication by the 0.4.0 release round.** The table
+> below was captured on this ADR's branch. The numbers re-measured on
+> merged `main` — and published on the benchmarks page — are
+> 18.8× / 10.7× / 15.4× / 12.6× for the four cells, i.e. a
+> **10.7–18.8×** range; see
+> [`docs/engineering/benchmarking/2026-09-release-0.4.0-round.md`](../engineering/benchmarking/2026-09-release-0.4.0-round.md).
+> The two tables disagree in a consistent direction (bbox cells faster
+> on `main`, segm cells ~21 % slower) and that is a harness difference,
+> not a code change: building the pre-review commit `020a2df` and
+> running the release round's script against it reproduces the same
+> gap. The decision this ADR records is unaffected.
+
+
 Shipped release profile (`[profile.release]`, `lto = "thin"`, no
 `.cargo/config.toml` and therefore no `target-cpu=native`), min of 7
 runs, 8-core box. All four cells are real published ground truth, not

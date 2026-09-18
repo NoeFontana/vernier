@@ -10,7 +10,7 @@ The IQR column reports the spread (Q3 - Q1) across the 10 measurement
 reps and the same value as a percentage of the median; release mode
 gates each cell at 5% relative IQR.
 
-**Provenance** — git SHA `e361050ef582` · machine fingerprint `59aab88b17f4` · CPU AMD EPYC-Milan Processor (x86_64) · harness
+**Provenance** — git SHA `f0e39a6a8a98` · machine fingerprint `59aab88b17f4` · CPU AMD EPYC-Milan Processor (x86_64) · harness
 mode `release` · build profile = cargo release defaults
 (`opt-level=3`, `lto=thin`, `codegen-units=1`, no `target-cpu`). The
 release wheel on PyPI is built with the same profile — no
@@ -35,27 +35,27 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 354.3 ms | 4.3 ms (1.22%) | 1.00 | 255 MiB | 179 MiB | **1.00×** |
-| hotcoco | 559.5 ms | 9.1 ms (1.63%) | 1.00 | 274 MiB | 226 MiB | 1.58× |
-| faster-coco-eval | 1.647 s | 23.8 ms (1.45%) | 1.00 | 691 MiB | 642 MiB | 4.65× |
-| pycocotools | 5.667 s | 31.8 ms (0.56%) | 1.00 | 576 MiB | 529 MiB | 15.99× |
+| **vernier** | 304.6 ms | 3.3 ms (1.10%) | 1.00 | 200 MiB | 124 MiB | **1.00×** |
+| hotcoco | 571.1 ms | 43.9 ms (7.69%) * | 1.00 | 274 MiB | 226 MiB | 1.87× |
+| faster-coco-eval | 1.694 s | 16.7 ms (0.99%) | 1.00 | 691 MiB | 642 MiB | 5.56× |
+| pycocotools | 5.710 s | 82.8 ms (1.45%) | 1.00 | 576 MiB | 528 MiB | 18.74× |
 
 **`segm`**
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 967.9 ms | 3.8 ms (0.39%) | 1.00 | 255 MiB | 180 MiB | **1.00×** |
-| hotcoco | 1.351 s | 21.2 ms (1.57%) | 1.00 | 361 MiB | 313 MiB | 1.40× |
-| faster-coco-eval | 3.401 s | 21.8 ms (0.64%) | 1.00 | 744 MiB | 694 MiB | 3.51× |
-| pycocotools | 6.518 s | 101.5 ms (1.56%) | 1.00 | 569 MiB | 521 MiB | 6.73× |
+| **vernier** | 931.1 ms | 9.9 ms (1.07%) | 1.00 | 200 MiB | 125 MiB | **1.00×** |
+| hotcoco | 1.356 s | 43.5 ms (3.21%) | 1.00 | 361 MiB | 313 MiB | 1.46× |
+| faster-coco-eval | 3.438 s | 11.7 ms (0.34%) | 1.00 | 744 MiB | 694 MiB | 3.69× |
+| pycocotools | 6.671 s | 95.9 ms (1.44%) | 1.00 | 569 MiB | 521 MiB | 7.16× |
 
 **`boundary`**
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 3.191 s | 14.0 ms (0.44%) | 1.00 | 257 MiB | 182 MiB | **1.00×** |
-| faster-coco-eval | 53.129 s | 473.5 ms (0.89%) | 1.00 | 813 MiB | 764 MiB | 16.65× |
-| boundary-iou-api | 62.066 s | 643.3 ms (1.04%) | 1.00 | 666 MiB | 596 MiB | 19.45× |
+| **vernier** | 3.146 s | 158.0 ms (5.02%) * | 1.00 | 202 MiB | 127 MiB | **1.00×** |
+| faster-coco-eval | 53.101 s | 1.397 s (2.63%) | 1.00 | 813 MiB | 764 MiB | 16.88× |
+| boundary-iou-api | 62.128 s | 1.999 s (3.22%) | 1.00 | 666 MiB | 596 MiB | 19.75× |
 
 ### Workload: `coco_val2017_keypoints_jittered_seed0`
 
@@ -63,10 +63,10 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 136.0 ms | 1.9 ms (1.37%) | 1.00 | 128 MiB | 53 MiB | **1.00×** |
-| hotcoco | 211.0 ms | 5.0 ms (2.37%) | 1.00 | 123 MiB | 75 MiB | 1.55× |
-| faster-coco-eval | 776.7 ms | 8.1 ms (1.05%) | 1.00 | 164 MiB | 115 MiB | 5.71× |
-| pycocotools | 2.302 s | 17.0 ms (0.74%) | 1.00 | 163 MiB | 115 MiB | 16.92× |
+| **vernier** | 137.0 ms | 1.2 ms (0.85%) | 1.00 | 120 MiB | 45 MiB | **1.00×** |
+| hotcoco | 212.9 ms | 6.7 ms (3.13%) | 1.00 | 123 MiB | 75 MiB | 1.55× |
+| faster-coco-eval | 776.3 ms | 5.5 ms (0.71%) | 1.00 | 164 MiB | 115 MiB | 5.67× |
+| pycocotools | 2.300 s | 22.5 ms (0.98%) | 1.00 | 163 MiB | 115 MiB | 16.79× |
 
 ### Workload: `objects365_val_jittered_seed0`
 
@@ -78,9 +78,9 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 8.771 s | 0 ns | 1.00 | 4.78 GiB | 4.71 GiB | **1.00×** |
-| hotcoco | 15.041 s | 0 ns | 1.00 | 6.49 GiB | 6.45 GiB | 1.71× |
-| pycocotools | 367.433 s | 0 ns | 1.00 | 21.34 GiB | 21.30 GiB | 41.89× |
+| **vernier** | 6.604 s | 0 ns | 1.00 | 2.54 GiB | 2.47 GiB | **1.00×** |
+| hotcoco | 15.129 s | 0 ns | 1.00 | 6.49 GiB | 6.45 GiB | 2.29× |
+| pycocotools | 373.241 s | 0 ns | 1.00 | 21.34 GiB | 21.30 GiB | 56.52× |
 
 
 ## Panoptic — PQ
@@ -91,8 +91,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 10.564 s | 125.1 ms (1.18%) | 1.00 | 143 MiB | 67 MiB | **1.00×** |
-| panopticapi | 34.971 s | 409.3 ms (1.17%) | 1.00 | 148 MiB | 92 MiB | 3.31× |
+| **vernier** | 10.461 s | 169.8 ms (1.62%) | 1.00 | 146 MiB | 68 MiB | **1.00×** |
+| panopticapi | 34.444 s | 820.7 ms (2.38%) | 1.00 | 145 MiB | 95 MiB | 3.29× |
 
 
 ## Semantic — mIoU
@@ -103,8 +103,8 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 2.857 s | 16.1 ms (0.56%) | 1.00 | 97 MiB | 21 MiB | **1.00×** |
-| mmsegmentation | 40.099 s | 231.0 ms (0.58%) | 1.00 | 544 MiB | 41 MiB | 14.04× |
+| **vernier** | 2.869 s | 12.1 ms (0.42%) | 1.00 | 97 MiB | 21 MiB | **1.00×** |
+| mmsegmentation | 40.455 s | 719.6 ms (1.78%) | 1.00 | 545 MiB | 41 MiB | 14.10× |
 
 ### Workload: `synthetic_semantic_n200_c19_s0`
 
@@ -112,11 +112,21 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 66.0 ms | 209.8 μs (0.32%) | 1.00 | 78 MiB | 2 MiB | **1.00×** |
-| mmsegmentation | 524.8 ms | 8.4 ms (1.61%) | 1.00 | 509 MiB | 11 MiB | 7.95× |
+| **vernier** | 64.8 ms | 262.7 μs (0.41%) | 1.00 | 78 MiB | 2 MiB | **1.00×** |
+| mmsegmentation | 515.9 ms | 9.5 ms (1.85%) | 1.00 | 509 MiB | 10 MiB | 7.96× |
 
 
 ## Instance — LVIS federated AP
+
+### Workload: `lvis_v1_val_jittered_seed0`
+
+**`bbox`**
+
+| impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **vernier** | 2.498 s | 29.3 ms (1.17%) | 1.00 | 1.11 GiB | 1.04 GiB | **1.00×** |
+| hotcoco | 4.050 s | 61.7 ms (1.52%) | 1.00 | 1.47 GiB | 1.43 GiB | 1.62× |
+| lvis-api | 202.298 s | 13.334 s (6.59%) * | 1.00 | 15.08 GiB | 14.98 GiB | 80.98× |
 
 ### Workload: `lvis_v1_val_perfect`
 
@@ -124,9 +134,9 @@ This page is regenerated from the harness result tree by
 
 | impl | median | IQR | CPU/wall | peak RSS | eval Δ RSS | vs vernier |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **vernier** | 2.640 s | 32.6 ms (1.23%) | 1.00 | 1.45 GiB | 1.37 GiB | **1.00×** |
-| hotcoco | 3.573 s | 35.7 ms (1.00%) | 1.00 | 1.46 GiB | 1.41 GiB | 1.35× |
-| lvis-api | 193.001 s | 2.725 s (1.41%) | 1.00 | 15.01 GiB | 14.91 GiB | 73.12× |
+| **vernier** | 2.277 s | 41.3 ms (1.81%) | 1.00 | 981 MiB | 906 MiB | **1.00×** |
+| hotcoco | 3.666 s | 35.9 ms (0.98%) | 1.00 | 1.46 GiB | 1.41 GiB | 1.61× |
+| lvis-api | 206.394 s | 10.208 s (4.95%) | 1.00 | 15.01 GiB | 14.91 GiB | 90.63× |
 
 
 ## Thread scaling
@@ -135,45 +145,45 @@ This page is regenerated from the harness result tree by
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 353.7 ms | 266.7 ms | 228.9 ms | 226.3 ms |
-| hotcoco | 566.7 ms (1.60×) | 437.4 ms (1.64×) | 376.4 ms (1.64×) | 366.0 ms (1.62×) |
-| faster-coco-eval | 1.674 s (4.73×) | 1.541 s (5.78×) | 1.496 s (6.54×) | 1.467 s (6.48×) |
+| **vernier** | 306.3 ms | 220.5 ms | 145.9 ms | 131.1 ms |
+| hotcoco | 583.6 ms (1.91×) | 444.2 ms (2.02×) | 376.3 ms (2.58×) | 362.1 ms (2.76×) |
+| faster-coco-eval | 1.667 s (5.44×) | 1.552 s (7.04×) | 1.503 s (10.30×) | 1.496 s (11.41×) |
 
 **`coco_val2017_jittered_seed0` · `bbox`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 179 MiB | 182 MiB | 184 MiB | 185 MiB |
+| **vernier** | 124 MiB | 129 MiB | 130 MiB | 131 MiB |
 | hotcoco | 226 MiB | 227 MiB | 228 MiB | 229 MiB |
-| faster-coco-eval | 642 MiB | 642 MiB | 642 MiB | 641 MiB |
+| faster-coco-eval | 642 MiB | 642 MiB | 642 MiB | 642 MiB |
 
 **`coco_val2017_jittered_seed0` · `boundary`** — median total; ratio vs vernier at the same `nt`
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 3.198 s | 1.700 s | 937.3 ms | 790.3 ms |
-| faster-coco-eval | 53.208 s (16.64×) | 30.093 s (17.70×) | 18.731 s (19.98×) | 16.987 s (21.49×) |
+| **vernier** | 3.183 s | 1.680 s | 865.6 ms | 711.2 ms |
+| faster-coco-eval | 52.965 s (16.64×) | 31.777 s (18.92×) | 18.835 s (21.76×) | 16.887 s (23.75×) |
 
 **`coco_val2017_jittered_seed0` · `boundary`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 182 MiB | 189 MiB | 193 MiB | 201 MiB |
+| **vernier** | 127 MiB | 134 MiB | 141 MiB | 148 MiB |
 | faster-coco-eval | 764 MiB | 771 MiB | 771 MiB | 767 MiB |
 
 **`coco_val2017_jittered_seed0` · `segm`** — median total; ratio vs vernier at the same `nt`
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 982.6 ms | 569.1 ms | 375.3 ms | 319.1 ms |
-| hotcoco | 1.355 s (1.38×) | 850.2 ms (1.49×) | 601.9 ms (1.60×) | 546.0 ms (1.71×) |
-| faster-coco-eval | 3.444 s (3.50×) | 3.484 s (6.12×) | 3.428 s (9.13×) | 3.500 s (10.97×) |
+| **vernier** | 926.1 ms | 536.3 ms | 303.9 ms | 239.3 ms |
+| hotcoco | 1.350 s (1.46×) | 838.4 ms (1.56×) | 595.2 ms (1.96×) | 545.8 ms (2.28×) |
+| faster-coco-eval | 3.469 s (3.75×) | 3.652 s (6.81×) | 3.578 s (11.77×) | 3.488 s (14.58×) |
 
 **`coco_val2017_jittered_seed0` · `segm`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 180 MiB | 185 MiB | 186 MiB | 188 MiB |
+| **vernier** | 125 MiB | 130 MiB | 131 MiB | 134 MiB |
 | hotcoco | 313 MiB | 314 MiB | 316 MiB | 318 MiB |
 | faster-coco-eval | 694 MiB | 694 MiB | 694 MiB | 694 MiB |
 
@@ -181,32 +191,36 @@ This page is regenerated from the harness result tree by
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 135.8 ms | 117.6 ms | 109.2 ms | 103.6 ms |
-| hotcoco | 211.3 ms (1.56×) | 180.9 ms (1.54×) | 162.7 ms (1.49×) | 160.0 ms (1.54×) |
-| faster-coco-eval | 779.7 ms (5.74×) | 772.8 ms (6.57×) | 768.5 ms (7.04×) | 760.5 ms (7.34×) |
+| **vernier** | 139.0 ms | 89.8 ms | 59.7 ms | 52.1 ms |
+| hotcoco | 210.9 ms (1.52×) | 179.0 ms (1.99×) | 164.8 ms (2.76×) | 160.8 ms (3.09×) |
+| faster-coco-eval | 805.2 ms (5.79×) | 774.1 ms (8.62×) | 772.5 ms (12.95×) | 764.3 ms (14.67×) |
+| pycocotools | 2.332 s (16.78×) | 2.313 s (25.76×) | 2.321 s (38.90×) | 2.295 s (44.05×) |
 
 **`coco_val2017_keypoints_jittered_seed0` · `keypoints`** — eval Δ RSS
 
 | impl | `nt=1` | `nt=2` | `nt=4` | `nt=8` |
 | --- | ---: | ---: | ---: | ---: |
-| **vernier** | 53 MiB | 55 MiB | 55 MiB | 55 MiB |
-| hotcoco | 75 MiB | 75 MiB | 76 MiB | 77 MiB |
+| **vernier** | 45 MiB | 46 MiB | 47 MiB | 47 MiB |
+| hotcoco | 75 MiB | 75 MiB | 76 MiB | 76 MiB |
 | faster-coco-eval | 115 MiB | 115 MiB | 115 MiB | 115 MiB |
+| pycocotools | 115 MiB | 115 MiB | 115 MiB | 115 MiB |
 
 **`objects365_val_jittered_seed0` · `bbox`** — median total; ratio vs vernier at the same `nt`
 
 | impl | `nt=8` |
 | --- | ---: |
-| **vernier** | 4.705 s |
-| hotcoco | 8.124 s (1.73×) |
+| **vernier** | 3.200 s |
+| hotcoco | 8.173 s (2.55×) |
 
 **`objects365_val_jittered_seed0` · `bbox`** — eval Δ RSS
 
 | impl | `nt=8` |
 | --- | ---: |
-| **vernier** | 4.84 GiB |
-| hotcoco | 6.47 GiB |
+| **vernier** | 2.59 GiB |
+| hotcoco | 6.48 GiB |
 
+
+*Cells marked ` *` next to their IQR exceeded the release-mode 5% relative-IQR gate. Median still reported; treat the gap to the next impl as the load-bearing signal rather than the precise ratio.*
 
 ## Methodology in one paragraph
 
