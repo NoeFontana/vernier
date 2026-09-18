@@ -14,6 +14,8 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-18
+
 ### Fixed
 
 - **`evaluate_bbox_grid_with_dataset` is reachable from `vernier.instance`.**
