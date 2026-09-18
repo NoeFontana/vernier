@@ -182,7 +182,18 @@ const PAIRWISE_BLOCKSIZE: usize = 128;
 ///
 /// # One canonical reduction
 ///
-/// This is the crate's only numpy-order `f64` reduction. It absorbed
+/// This is the crate's only numpy-*order* `f64` reduction, which is
+/// not the same claim as "no sequential `f64` fold is left in the
+/// crate". Two folds remain, both in [`crate::tide`]: the per-`(t, k)`
+/// precision mean (`s += v` over the 101 recall points) and the final
+/// `ap_values.iter().sum()`. Both are left folds where the oracle does
+/// a numpy mean, and both stay that way deliberately — ADR-0021
+/// contracts TIDE to agree with its oracle within `1e-9`, not
+/// bit-exactly, so the reassociation sits inside that contract. The
+/// rule is therefore about paths, not about the crate as a whole:
+/// anything on a **bit-exact** path reduces through this function.
+///
+/// It absorbed
 /// `summarize::pairwise_sum`, which had the same three arms and served
 /// [`crate::summarize`]'s `np.mean(s[s>-1])`, [`crate::tables`]' per-row
 /// means and [`crate::calibration`]'s per-bin sums. That copy was
