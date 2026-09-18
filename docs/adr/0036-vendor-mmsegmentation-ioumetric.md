@@ -15,8 +15,9 @@ and a tripwire test enforcing the eventual flip — but no oracle has
 been vendored. The blocker is `mmsegmentation`'s install footprint:
 the package transitively pulls `mmcv`, `mmengine`, and PyTorch, ~3 GB
 on a clean install, and would be a permanent CI tax on every contributor.
-ADR-0033 cell **S3-B** (ADE20K semantic eval) sits at *aligned*-tier as
-a result.
+ADR-0033 cell **S3-B** (ADE20K semantic eval) sits at the bench
+comparator's *float-tolerance* tier as a result — the comparator's own
+tolerance vocabulary, not an ADR-0002 disposition.
 
 The semantic-quirks survey
 ([`docs/engineering/sem-seg-quirks.md`](../engineering/sem-seg-quirks.md))
@@ -142,7 +143,8 @@ vendor is to avoid pulling the full mmsegmentation transitive.
     `_verify_against_pip.py` check catches drift before merge.
 - **Neutral:**
   - The bench cell **S3-B** (ADE20K semantic) can re-grade from
-    *aligned* to *strict* once the per-quirk parity fixtures land.
+    *float-tolerance* to *bit-equal* once the per-quirk parity
+    fixtures land.
     That re-grade is a follow-up commit, not gated on this ADR.
   - PR-B7 (cityscapesScripts) and PR-B8 (Pascal/ADE references) are
     untouched. Their placeholder SHAs stay `*-pending` until those
@@ -218,7 +220,9 @@ vendor is to avoid pulling the full mmsegmentation transitive.
   - ADR-0028 (semantic-segmentation parity strategy) — sets the
     multi-oracle keying that this ADR fills the first cell of.
   - ADR-0033 (multi-paradigm bench) — cell S3-B re-grades from
-    *aligned* to *strict* on the back of this ADR.
+    *float-tolerance* to *bit-equal* on the back of this ADR.
+    (ADR-0033 spells those comparator tiers *aligned* / *strict*;
+    the bench harness renamed them after what each asserts.)
 - **External references**:
   - mmsegmentation v1.2.2 release: <https://github.com/open-mmlab/mmsegmentation/releases/tag/v1.2.2>
   - `mmseg/evaluation/metrics/iou_metric.py` at the pinned SHA:

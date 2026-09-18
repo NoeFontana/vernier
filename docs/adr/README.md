@@ -91,6 +91,7 @@ else is detail.
 | [0030](0030-buffer-protocol.md) | Accept detection arrays alongside JSON bytes in streaming update | accepted (amended 2026-05-09 — bitmask + compressed-bytes ingest readmitted) |
 | [0035](0035-api-surface-consolidation.md) | Consolidate the streaming / DDP / background public surface | proposed |
 | [0038](0038-tables-panoptic-semantic.md) | Result tables for panoptic and semantic — per-class only, sibling result types | accepted |
+| [0059](0059-remove-cli-aligned-parity-value.md) | Remove the `aligned` value from `vernier eval --parity-mode` | proposed |
 
 ### Sibling paradigms
 

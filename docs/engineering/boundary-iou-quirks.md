@@ -16,17 +16,21 @@ The boundary-specific constants live in
 `BOUNDARY_DILATION_RATIO_DEFAULT = 0.02`,
 `BOUNDARY_PARITY_EPS = 1e-9` (cross-oracle comparison budget for the
 parity harness, not a runtime mode), `ORACLE_COMMIT_SHA`,
-`ORACLE_OPENCV_PIN`. Per-row `aligned` cell-values in the survey
-below are pending re-audit against the amended ADR-0002.
+`ORACLE_OPENCV_PIN`. The five rows this survey once dispositioned
+`aligned` (M1, N4, N5, O3, P5) were re-audited against the amended
+ADR-0002 and are now **strict**: each one's own rationale already
+asserted bit-equal output, so the label was recording a structural
+difference, not a tolerance. The rationale text is unchanged; only
+the disposition word moved.
 
 Each row below was discovered by reading the oracle line-by-line. The
 disposition column is one of:
 
-- **strict** — vernier reproduces this behavior bit-exactly.
-- **aligned** — vernier matches the *semantics* but may differ in
-  incidental details (e.g., separable single-pass erosion vs iterative
-  3×3, which on integer binary input produce identical output).
-  User-visible outputs match within a documented tolerance.
+- **strict** — vernier reproduces this behavior bit-exactly. A
+  structurally different implementation still counts as strict when
+  its output is bit-equal (e.g., separable single-pass erosion vs
+  iterative 3×3, identical on integer binary input); the difference
+  belongs in the row's rationale.
 - **corrected** — vernier opts to fix this. Default behavior diverges
   from the oracle and the divergence is documented as an opinionated
   improvement.
@@ -79,7 +83,7 @@ count of the erosion that defines the boundary band.
 
 | # | Quirk | Source | Disposition |
 |---|---|---|---|
-| M1 | Erosion uses iterative `cv2.erode` with a 3×3 all-ones kernel applied `dilation` times. Mathematically equivalent to a single erosion by a `(2d+1)×(2d+1)` Chebyshev-ball structuring element. | bu:14, bu:24 | **aligned**. vernier uses single-pass van Herk / Gil-Werman separable erosion by the (2d+1)-square kernel. Bit-equal output on integer binary input; ~30× fewer passes for COCO-typical `d`. |
+| M1 | Erosion uses iterative `cv2.erode` with a 3×3 all-ones kernel applied `dilation` times. Mathematically equivalent to a single erosion by a `(2d+1)×(2d+1)` Chebyshev-ball structuring element. | bu:14, bu:24 | **strict**. vernier uses single-pass van Herk / Gil-Werman separable erosion by the (2d+1)-square kernel. Bit-equal output on integer binary input; ~30× fewer passes for COCO-typical `d`. |
 | M2 | Dilation in pixels: `dilation = int(round(dilation_ratio * sqrt(h² + w²)))`. Python's `round` is banker's rounding (half-to-even). | bu:13 | **strict**. Half-to-even rounding reproduced. The Rust `f64::round_ties_even` (stable since 1.77) is the matching primitive. |
 | M3 | Minimum dilation clamp: `if dilation < 1: dilation = 1`. The boundary band is never thinner than 1 pixel even for tiny images. | bu:15-16 | **strict**. Same clamp, same threshold. |
 | M4 | Default `dilation_ratio = 0.02` (Cheng et al. 2021 paper choice). Exposed as a constructor parameter on `LVISEval`; not exposed at the COCO call site (the COCO eval hardcodes 0.02). | bu:9, le:34 | **strict** for the value. **corrected** for the API: vernier exposes `dilation_ratio` on every entry point that uses boundary IoU, including the pycocotools-shim. |
@@ -96,8 +100,8 @@ edge pixels are treated.
 | N1 | Before erosion, the mask is zero-padded by exactly 1 pixel on all four sides via `cv2.copyMakeBorder(..., 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)`. | bu:19 | **strict**. Border-touching foreground pixels count as boundary because they are eroded against the zero pad. Dropping the pad changes the metric for any mask touching an image edge. |
 | N2 | After erosion, the result is sliced back to the original `(h, w)` via `mask_erode = new_mask_erode[1:h+1, 1:w+1]`. The pad is consumed by the erosion, not preserved. | bu:23 | **strict**. Same slice. |
 | N3 | Pad value is hard-zero (`value=0`). Not configurable in the reference. | bu:19 | **strict**. Pad value is part of the metric definition. |
-| N4 | The pad is applied **once**, before all `dilation` iterations of 3×3 erosion. With `dilation > 1`, an iterative 3×3 erosion can "eat into" the original mask through the pad — but because the pad is zero and the kernel is min-filter, the foreground only shrinks. The single-pass (2d+1)-square decomposition produces the same output. | bu:19, bu:22 | **aligned**. vernier's single-pass impl pads once before the row erosion and the result is bit-equal to the iterative form on integer binary input. |
-| N5 | Boundary band is computed as `boundary_mask = mask - mask_erode`. Subtraction on `np.uint8` underflows to wraparound on negative values — but here `mask_erode ≤ mask` everywhere because erosion is a min-filter, so subtraction is safe. | bu:25 | **aligned**. vernier computes `boundary = mask AND NOT mask_erode` (logical XOR equivalent). Output is bit-equal; the formulation avoids the latent uint8-wraparound risk. |
+| N4 | The pad is applied **once**, before all `dilation` iterations of 3×3 erosion. With `dilation > 1`, an iterative 3×3 erosion can "eat into" the original mask through the pad — but because the pad is zero and the kernel is min-filter, the foreground only shrinks. The single-pass (2d+1)-square decomposition produces the same output. | bu:19, bu:22 | **strict**. vernier's single-pass impl pads once before the row erosion and the result is bit-equal to the iterative form on integer binary input. |
+| N5 | Boundary band is computed as `boundary_mask = mask - mask_erode`. Subtraction on `np.uint8` underflows to wraparound on negative values — but here `mask_erode ≤ mask` everywhere because erosion is a min-filter, so subtraction is safe. | bu:25 | **strict**. vernier computes `boundary = mask AND NOT mask_erode` (logical XOR equivalent). Output is bit-equal; the formulation avoids the latent uint8-wraparound risk. |
 
 ## O. Composition with mask IoU
 
@@ -109,7 +113,7 @@ IoU matrix to produce the final per-pair IoU under
 |---|---|---|---|
 | O1 | `iouType="boundary"` returns the **minimum** of mask IoU and boundary IoU per pair: `ious[:, iscrowd == 0] = np.minimum(mask_ious[:, iscrowd == 0], boundary_ious[:, iscrowd == 0])`. The min is part of the metric definition, not an implementation detail. | ce:~270 | **strict**. Same min, same per-cell semantics. |
 | O2 | Crowd-column asymmetry: the `np.minimum` is applied only to columns where `iscrowd == 0`. Crowd ground-truth columns retain the pure mask IoU, with no boundary contribution. | ce:~270 | **strict**. Mirrors the spirit of the pycocotools quirk **E1** (crowd asymmetry on the mask-IoU denominator). vernier reproduces both asymmetries faithfully. |
-| O3 | The boundary IoU is computed via `pycocotools.mask.iou` on RLE-encoded boundary masks — the same kernel used for mask IoU. No separate boundary-only IoU formulation. | ce:~265 | **aligned**. vernier's `BoundaryIou::compute` uses the same RLE intersection primitive (`vernier_mask::Rle::intersect_area`) as `SegmIou`, with the bbox-IoU prefilter (quirk **I1**) reused canonically. Different control flow, same arithmetic. |
+| O3 | The boundary IoU is computed via `pycocotools.mask.iou` on RLE-encoded boundary masks — the same kernel used for mask IoU. No separate boundary-only IoU formulation. | ce:~265 | **strict**. vernier's `BoundaryIou::compute` uses the same RLE intersection primitive (`vernier_mask::Rle::intersect_area`) as `SegmIou`, with the bbox-IoU prefilter (quirk **I1**) reused canonically. Different control flow, same arithmetic. |
 | O4 | DT-side `iscrowd` is irrelevant: detections never carry crowd flags in valid input. Only GT crowd flags trigger the min/no-min branch. | ce:~270 | **strict**. Mirrors quirks **E2** / **J4** in the pycocotools survey. Enforced at the dataset boundary. |
 
 ## P. Edge cases and degenerate inputs
@@ -123,7 +127,7 @@ where vernier must define its own behaviour.
 | P2 | Empty input mask (`area == 0`): `erode(empty) == empty`, so `boundary_band == empty`. IoU of two empty boundary masks is `0 / 0`. The reference relies on `pycocotools.mask.iou` to return `0.0` for an empty pair, which it does (no division by zero — the kernel short-circuits). | (implicit) | **strict**. vernier returns `0.0` for empty-vs-empty boundary IoU, matching the reference. |
 | P3 | Mask filling the image (`area == h * w`): erosion shrinks it from the borders only (because of the 1-pixel zero pad — N1), so the boundary band is a frame of width `d`. Symmetric on both axes. | bu:19, bu:22 | **strict**. Border-as-boundary is intentional and metric-defining. |
 | P4 | Single-pixel mask: `dilation ≥ 1` clamp (M3) means erosion of a 1-pixel mask always yields zero, so `boundary == mask`. The pair `(1px, 1px)` matching has `mask_iou == boundary_iou == 1.0`, so `min == 1.0`. | bu:15, bu:22 | **strict**. Covered by a fixture. |
-| P5 | Self-intersecting polygon GT (a "bowtie"): the polygon → RLE rasterizer (pycocotools quirk **H3**) determines the input mask, then erosion proceeds normally on whatever mask resulted. Boundary IoU inherits H3's polygon-direction sensitivity transitively. | bu:19 (transitively) | **aligned**. vernier inherits its own H3 disposition for polygon rasterization; the boundary path adds nothing new. The fixture in `tests/python/parity/fixtures/self_intersecting_polygon_segm/` is reused for boundary parity by composing it with `iouType="boundary"`. |
+| P5 | Self-intersecting polygon GT (a "bowtie"): the polygon → RLE rasterizer (pycocotools quirk **H3**) determines the input mask, then erosion proceeds normally on whatever mask resulted. Boundary IoU inherits H3's polygon-direction sensitivity transitively. | bu:19 (transitively) | **strict**. vernier inherits its own H3 disposition for polygon rasterization; the boundary path adds nothing new. The fixture in `tests/python/parity/fixtures/self_intersecting_polygon_segm/` is reused for boundary parity by composing it with `iouType="boundary"`. |
 
 ## Q. Variants and dataset specialisations
 
@@ -147,10 +151,11 @@ where each row is signed off. A short cheat-sheet:
 
 - **Most rows: strict.** The bowenc0221 oracle is what every paper
   cites. Reproducing it is the only way to claim the metric.
-- **A handful of aligned:** M1 (single-pass vs iterative erosion —
-  bit-equal on integer input), N4 (single-pass pad equivalence), N5
-  (XOR vs subtract — bit-equal, safer), O3 (shared RLE intersection
-  kernel), P5 (polygon rasterisation transitive).
+- **Strict via a different implementation:** M1 (single-pass vs
+  iterative erosion — bit-equal on integer input), N4 (single-pass pad
+  equivalence), N5 (XOR vs subtract — bit-equal, safer), O3 (shared RLE
+  intersection kernel), P5 (polygon rasterisation transitive). Each
+  reproduces the oracle's output exactly by a cleaner route.
 - **Corrected:** M4 (`dilation_ratio` exposed everywhere), Q1 (LVIS-
   style parameterisation generalised to all entry points).
 - **Strict + corrected:** Q3 (panoptic boundary PQ — composition is

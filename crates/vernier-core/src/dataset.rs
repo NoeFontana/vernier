@@ -29,7 +29,7 @@
 //!   [`CocoAnnotation::effective_ignore`] computes the flag per
 //!   parity mode, instead of overwriting one with the other at load
 //!   time the way pycocotools does.
-//! - **D3** (`aligned`): annotations are not mutated mid-evaluation;
+//! - **D3** (`strict`): annotations are not mutated mid-evaluation;
 //!   the per-call `_ignore` (which combines the dataset flag with the
 //!   current area range) is computed at eval time.
 //! - **J3** (`strict`): detection-side area is derived at construction
@@ -37,7 +37,7 @@
 //!   `loadRes` surface. [`DetectionArea::Supplied`] opts into reading a
 //!   supplied `area` instead, the `COCOeval` surface, which takes
 //!   `d['area']` off an already-built `cocoDt`.
-//! - **J1** (`aligned`): user-supplied DT ids are preserved verbatim;
+//! - **J1** (`strict`): user-supplied DT ids are preserved verbatim;
 //!   absent ids are auto-assigned sequentially during construction.
 //! - **E2 / J4** (`strict`): detections never carry an `iscrowd` flag
 //!   — the type does not have the field. JSON inputs that include
@@ -1255,8 +1255,9 @@ impl CocoDataset {
 /// - `area` is derived from `bbox` at construction (`bbox.w * bbox.h`) —
 ///   quirk **J3** — unless built with [`DetectionArea::Supplied`].
 /// - `id` is honored when the user supplies one and auto-assigned
-///   otherwise — quirk **J1** (`aligned`, an opinionated improvement
-///   over pycocotools' silent overwrite).
+///   otherwise — quirk **J1** (`strict`: pycocotools-shaped outputs are
+///   bit-equal; preserving user ids is a structural difference, not a
+///   behavioral divergence).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CocoDetection {
     /// Detection id. Either user-supplied (J1) or auto-assigned by

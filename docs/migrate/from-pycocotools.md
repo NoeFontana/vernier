@@ -338,8 +338,9 @@ under the COCO terms of use and never committed to the repo;
 
 ## See also
 
-- [ADR-0002](../adr/0002-three-tier-parity-model.md) — strict / aligned /
-  corrected parity tiers.
+- [ADR-0002](../adr/0002-three-tier-parity-model.md) — strict / corrected
+  parity tiers (the `aligned` tier was folded into `strict` by the
+  2026-05-10 amendment; the filename keeps the original title).
 - [ADR-0007](../adr/0007-patch-pycocotools-policy.md) — why
   `patch_pycocotools` (verb names the mechanism), not
   `init_as_pycocotools` (faster-coco-eval's borrowed shape).

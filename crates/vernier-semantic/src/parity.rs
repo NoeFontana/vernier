@@ -89,8 +89,12 @@ pub const ORACLE_MMSEGMENTATION_COMMIT_SHA: &str = "c685fe6767c4cadf6b051983ca62
 
 /// Frozen commit SHA of the vendored `mcordts/cityscapesScripts`
 /// dataset-author oracle. The `SemanticDataset.cityscapes(...)` preset
-/// claims `aligned`-mode parity against this commit per ADR-0028
-/// §"Parity strategy".
+/// claims parity against this commit per ADR-0028 §"Parity strategy":
+/// bit-equal on every row `sem-seg-quirks.md` dispositions **strict**
+/// against the CS oracle, with the NaN-vs-`0.0` rows (**AL2**, **AL3**)
+/// and the extras-handling row (**AM2**) diverging by design as
+/// **corrected**. (ADR-0028's three-tier wording for this claim
+/// predates ADR-0002's 2026-05-10 amendment.)
 ///
 /// Placeholder until PR-B7 vendors the oracle and pins the SHA in
 /// `tests/python/parity_semantic/oracle/cityscapesscripts/VENDORING.md`.
@@ -159,7 +163,8 @@ mod tests {
     #[test]
     fn parity_eps_matches_placeholder_magnitude() {
         // Same magnitude as the panoptic, boundary-IoU, and LVIS
-        // aligned-mode tolerances. The val-measured ULP ceiling on
+        // tolerances. All four are harness-side comparison budgets,
+        // not parity modes. The val-measured ULP ceiling on
         // mmsegmentation Cityscapes val replaces this exact bit
         // pattern check once PR-B6's parity harness lands.
         assert_eq!(SEMANTIC_PARITY_EPS, 1e-9);

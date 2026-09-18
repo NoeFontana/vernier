@@ -29,7 +29,7 @@ Q6 closure procedure (multi-process tolerance pinning, ``PANOPTIC_PARITY_EPS``):
 Steps 2-4 of the procedure can be scripted later
 (``tools/panoptic_val_cache.py --measure-eps`` is a documented
 follow-up). Until then, the placeholder ``1e-9`` guards
-aligned-mode comparisons; strict mode demands bit-equality vs
+float-tolerance comparisons; strict mode demands bit-equality vs
 ``pq_compute_single_core`` regardless.
 """
 

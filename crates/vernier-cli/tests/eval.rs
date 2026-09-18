@@ -69,6 +69,40 @@ fn unknown_iou_type_exits_two() {
     assert_eq!(output.status.code(), Some(2));
 }
 
+/// ADR-0059 removed the `aligned` value from `--parity-mode`. The
+/// rejection has to be a hard argument error (exit 2, nothing
+/// evaluated), and it has to tell the operator what to type instead —
+/// a bare "invalid value" would leave a pinned CI invocation guessing.
+#[test]
+fn retired_aligned_parity_mode_is_rejected() {
+    let output = Command::cargo_bin("vernier")
+        .unwrap()
+        .args([
+            "eval",
+            "--gt",
+            "/dev/null",
+            "--dt",
+            "/dev/null",
+            "--iou-type",
+            "bbox",
+            "--parity-mode",
+            "aligned",
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("invalid value 'aligned'"), "{stderr}");
+    assert!(stderr.contains("removed (ADR-0059)"), "{stderr}");
+    assert!(stderr.contains("pass `strict`"), "{stderr}");
+    assert!(
+        stderr.contains("[possible values: strict, corrected]"),
+        "{stderr}"
+    );
+    assert!(output.stdout.is_empty(), "nothing should be evaluated");
+}
+
 #[test]
 fn dilation_ratio_rejected_for_non_boundary() {
     let mut cmd = Command::cargo_bin("vernier").unwrap();

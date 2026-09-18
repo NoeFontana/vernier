@@ -4,7 +4,7 @@
 adjacent double. That surfaced on the DETR-R50 real-prediction gate as
 ~16 % of ``eval_imgs.dtScores`` drifting by exactly 1 ULP against
 pycocotools, documented in ``docs/engineering/real-predictions-parity.md``
-and held at aligned tier. AP itself stayed bit-equal because it depends
+and held at float-tolerance gate. AP itself stayed bit-equal because it depends
 on detection *order*, and 1 ULP does not reorder.
 
 ADR-0054 turns on ``serde_json``'s ``float_roundtrip`` feature, which

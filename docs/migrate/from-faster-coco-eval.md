@@ -32,7 +32,7 @@ difference is what semantics you get afterwards.
 
 `faster-coco-eval` is faster than pycocotools and silently corrects
 several quirks. vernier takes a different stance: every quirk gets
-an explicit disposition (`strict` / `aligned` / `corrected`) in
+an explicit disposition (`strict` / `corrected`) in
 [`docs/engineering/pycocotools-quirks.md`](../engineering/pycocotools-quirks.md),
 and the disposition is auditable per row. The trade-off:
 
@@ -131,8 +131,9 @@ the CLI, diff the JSON outputs.
   rationale (why `patch_pycocotools` and not
   `init_as_pycocotools`), reentrancy contract, parity-mode
   threading.
-- [ADR-0002](../adr/0002-three-tier-parity-model.md) — strict / aligned /
-  corrected parity tiers; what each tier promises and what it
-  costs.
+- [ADR-0002](../adr/0002-three-tier-parity-model.md) — strict / corrected
+  parity tiers; what each tier promises and what it costs. (The
+  `aligned` tier was folded into `strict` by the 2026-05-10
+  amendment; the filename keeps the original title.)
 - [`docs/engineering/pycocotools-quirks.md`](../engineering/pycocotools-quirks.md)
   — the auditable disposition table for every quirk.

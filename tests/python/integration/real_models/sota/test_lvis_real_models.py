@@ -2,7 +2,7 @@
 
 Sibling to ``test_detr_real_models.py`` /
 ``test_mask2former_panoptic_real_models.py``: real DT, real GT,
-strict + aligned two-tier parity claim. The model is
+bit-equality + float-tolerance parity claim. The model is
 ``facebook/deformable-detr-box-supervised`` (Box-Supervised
 DeformDETR-R50-4x from the Detic release); predictions land at
 ``lvis_detector_cache_path()`` as one LVIS results JSON keyed on the
@@ -26,7 +26,7 @@ What this suite gates:
   drift on reduction order, so any divergence here is a real
   federated-evaluation accumulator bug. This is the load-bearing
   parity claim against ``lvis-api``'s ``LVISEval.eval_imgs``.
-- **Aligned-tier float drift, 8 ULP relative + absolute** — the
+- **Float-tolerance float drift, 8 ULP relative + absolute** — the
   ``(T, R, K, A)`` precision tensor and the 13-entry LVIS summary
   plan (AP, AP50, AP75, APs/m/l, AP_r/c/f, AR@300, ARs/m/l@300). The
   ``rtol=atol=8*eps`` band is the same gate the Mask2Former panoptic
@@ -181,7 +181,7 @@ def test_lvis_detector_parity_vs_lvis_api(
     cannot drift on reduction order; this is where the federated-
     evaluation AA3 + AA4 semantics live on real data).
 
-    Aligned tier: precision tensor + 13-entry LVIS summary plan
+    Float-tolerance gate: precision tensor + 13-entry LVIS summary plan
     (AP, AP50/75, APs/m/l, AP_r/c/f, AR@300, ARs/m/l@300) at
     8 ULP relative AND absolute. Same band as the Mask2Former
     panoptic cell — symmetric across the float-zero boundary so a
@@ -204,7 +204,7 @@ def test_lvis_detector_parity_vs_lvis_api(
     # Sequence the two snapshots — holding both peaks of the
     # cell-list materialisation simultaneously is the OOM path on
     # the sub-sampled 1000-image prefix. ``assert_snapshots_equal``
-    # is the merged strict (eval_imgs) + aligned (precision / stats)
+    # is the merged bit-equality (eval_imgs) + float-tolerance (precision / stats)
     # check; passing rtol/atol scopes the parametric band to the
     # float-surface entries only.
     ref = snapshot("lvis_api", gt_sub, dt_sub, max_dets=300, include_eval_imgs=True)

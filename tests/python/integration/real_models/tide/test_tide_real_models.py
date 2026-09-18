@@ -25,7 +25,7 @@ What the suite gates:
 - **Numpy-oracle parity on real data (DETR-R50, bbox)** — closes the
   ADR-0022 follow-up that flagged ``t_b = 0.1`` as "tentative" pending
   empirical validation on a set-prediction transformer detector. The
-  aligned-tier gate asserts agreement at ``rtol = 8 * eps`` on every
+  float-tolerance gate asserts agreement at ``rtol = 8 * eps`` on every
   float surface both sides expose (``baseline_map``, the six per-bin
   ``delta`` values, ``delta_all_fp_removed``) — the closest signal to
   "per-bucket detection counts agree" the current TIDE Python /
