@@ -9,9 +9,12 @@ use std::cell::OnceCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use pyo3::exceptions::{PyTypeError, PyUserWarning, PyValueError};
+use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::pybacked::PyBackedBytes;
-use pyo3::types::{PyAny, PyBytes, PyDict, PySequence, PyString};
+use pyo3::types::{
+    PyAny, PyByteArray, PyBytes, PyDict, PyList, PyMemoryView, PySequence, PyString, PyTuple,
+};
 
 use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
 use vernier_core::segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
@@ -37,7 +40,13 @@ pub(crate) enum DetectionsArg<'py> {
     Bytes(PyBackedBytes),
     /// One or more per-image `Detections` dicts. Single-image inputs
     /// land here as a one-element vec.
-    Dicts(Vec<Bound<'py, PyDict>>),
+    Dicts {
+        dicts: Vec<Bound<'py, PyDict>>,
+        /// `true` when the argument was a *sequence* of dicts, so a
+        /// rejection can name the offending element (`detections[3]`).
+        /// `false` for a single bare dict, where an index would be noise.
+        indexed: bool,
+    },
     /// A list of per-annotation COCO *result* dicts — the shape
     /// `loadRes` consumes and TorchMetrics-style callers build. Handled
     /// by `result_ingest::ann_dicts_to_inputs`.
@@ -59,7 +68,10 @@ impl<'py> DetectionsArg<'py> {
             return Ok(if crate::result_ingest::dict_is_result_annotation(&d)? {
                 Self::AnnList(vec![d])
             } else {
-                Self::Dicts(vec![d])
+                Self::Dicts {
+                    dicts: vec![d],
+                    indexed: false,
+                }
             });
         }
         // The `(N, 7)` matrix must be probed *before* the sequence
@@ -93,7 +105,10 @@ impl<'py> DetectionsArg<'py> {
             return Ok(if is_ann {
                 Self::AnnList(dicts)
             } else {
-                Self::Dicts(dicts)
+                Self::Dicts {
+                    dicts,
+                    indexed: true,
+                }
             });
         }
         let type_name = type_name_of(obj);
@@ -101,6 +116,65 @@ impl<'py> DetectionsArg<'py> {
             "detections must be bytes, a Detections dict, a sequence of Detections dicts, \
              a list of COCO result dicts, or an (N, 7) float64 array; got {type_name}"
         )))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Field paths -- rendered only when an error needs them
+// ---------------------------------------------------------------------------
+
+/// Where in the `detections=` argument a helper is reading, e.g.
+/// `detections.boxes`, `detections[3].segmentation`,
+/// `detections[3].rles[7]`.
+///
+/// Every ingest helper takes one of these purely to *name* the offending
+/// field in a rejection. Rendering the path eagerly costs one `String`
+/// per annotation on the **success** path -- on a 500k-detection
+/// submission that is 500k allocations nothing ever reads.
+/// [`std::fmt::Display`] defers the work to the error branch that
+/// actually formats it.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FieldPath<'a> {
+    /// Position within a *sequence* `detections=` argument. `None` when
+    /// the argument was a single bare dict or an array, where an index
+    /// would be noise rather than a locator.
+    ann: Option<usize>,
+    /// The field, written with its leading dot (`".boxes"`), or `""` for
+    /// the element itself.
+    name: &'a str,
+    /// Position within a sequence-valued field (`rles`, polygons).
+    item: Option<usize>,
+}
+
+impl<'a> FieldPath<'a> {
+    pub(crate) fn new(ann: Option<usize>, name: &'a str) -> Self {
+        Self {
+            ann,
+            name,
+            item: None,
+        }
+    }
+
+    /// The same path, narrowed to one item of a sequence-valued field.
+    pub(crate) fn item(self, item: usize) -> Self {
+        Self {
+            item: Some(item),
+            ..self
+        }
+    }
+}
+
+impl std::fmt::Display for FieldPath<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("detections")?;
+        if let Some(i) = self.ann {
+            write!(f, "[{i}]")?;
+        }
+        f.write_str(self.name)?;
+        if let Some(j) = self.item {
+            write!(f, "[{j}]")?;
+        }
+        Ok(())
     }
 }
 
@@ -210,51 +284,68 @@ impl<'py, 'a> CastCtx<'py, 'a> {
 /// Extract one `Detections` dict into a flat `Vec<DetectionInput>` ready
 /// to feed `CocoDetections::from_inputs`. `iou_type` controls which
 /// fields are required and which are silently ignored.
+///
+/// `ann` is the dict's position in a sequence `detections=` argument, so
+/// a rejection can point at the offending element rather than leaving
+/// the caller to find it in a 5000-entry list (quirk **J6**). It is
+/// `None` when a single bare dict was passed.
 fn extract_inputs_one<'py>(
     dict: &Bound<'py, PyDict>,
+    ann: Option<usize>,
     iou_type: ArrayIouType,
     ctx: &CastCtx<'py, '_>,
 ) -> PyResult<Vec<DetectionInput>> {
+    let here = FieldPath::new(ann, "");
     let image_id_obj = dict.get_item("image_id")?.ok_or_else(|| {
-        PyValueError::new_err(
-            "detections: missing required field 'image_id' \
-             (each Detections dict must carry an integer image id)",
-        )
+        PyValueError::new_err(format!(
+            "{here}: missing required field 'image_id' \
+             (each Detections dict must carry an integer image id)"
+        ))
     })?;
     let image_id_raw: i64 = image_id_obj.extract().map_err(|e| {
-        PyValueError::new_err(format!("detections.image_id: expected int, got {e}"))
+        let path = FieldPath::new(ann, ".image_id");
+        PyValueError::new_err(format!("{path}: expected int, got {e}"))
     })?;
     let image_id = ImageId(image_id_raw);
 
+    let boxes_path = FieldPath::new(ann, ".boxes").to_string();
     let boxes_obj = dict.get_item("boxes")?.ok_or_else(|| {
-        PyValueError::new_err("detections: missing required field 'boxes' (N×4 float64 xywh array)")
+        PyValueError::new_err(format!(
+            "{here}: missing required field 'boxes' (N×4 float64 xywh array)"
+        ))
     })?;
-    let boxes_obj = ctx.maybe_cast(boxes_obj, "detections.boxes", "float64")?;
-    let boxes_view = dlpack::extract_f64_2d(&boxes_obj, "detections.boxes", 4)?;
+    let boxes_obj = ctx.maybe_cast(boxes_obj, &boxes_path, "float64")?;
+    let boxes_view = dlpack::extract_f64_2d(&boxes_obj, &boxes_path, 4)?;
     let boxes = boxes_view.as_slice();
     let n = boxes.len() / 4;
 
+    let scores_path = FieldPath::new(ann, ".scores").to_string();
     let scores_obj = dict.get_item("scores")?.ok_or_else(|| {
-        PyValueError::new_err("detections: missing required field 'scores' (length-N float64)")
+        PyValueError::new_err(format!(
+            "{here}: missing required field 'scores' (length-N float64)"
+        ))
     })?;
-    let scores_obj = ctx.maybe_cast(scores_obj, "detections.scores", "float64")?;
-    let scores_view = dlpack::extract_f64_1d(&scores_obj, "detections.scores")?;
+    let scores_obj = ctx.maybe_cast(scores_obj, &scores_path, "float64")?;
+    let scores_view = dlpack::extract_f64_1d(&scores_obj, &scores_path)?;
     if scores_view.len() != n {
         return Err(PyValueError::new_err(format!(
-            "detections.scores: length {} disagrees with boxes (N={n})",
+            "{scores_path}: length {} disagrees with boxes (N={n})",
             scores_view.len()
         )));
     }
     let scores = scores_view.as_slice();
 
+    let labels_path = FieldPath::new(ann, ".labels").to_string();
     let labels_obj = dict.get_item("labels")?.ok_or_else(|| {
-        PyValueError::new_err("detections: missing required field 'labels' (length-N int64)")
+        PyValueError::new_err(format!(
+            "{here}: missing required field 'labels' (length-N int64)"
+        ))
     })?;
-    let labels_obj = ctx.maybe_cast(labels_obj, "detections.labels", "int64")?;
-    let labels_view = dlpack::extract_i64_1d(&labels_obj, "detections.labels")?;
+    let labels_obj = ctx.maybe_cast(labels_obj, &labels_path, "int64")?;
+    let labels_view = dlpack::extract_i64_1d(&labels_obj, &labels_path)?;
     if labels_view.len() != n {
         return Err(PyValueError::new_err(format!(
-            "detections.labels: length {} disagrees with boxes (N={n})",
+            "{labels_path}: length {} disagrees with boxes (N={n})",
             labels_view.len()
         )));
     }
@@ -264,12 +355,12 @@ fn extract_inputs_one<'py>(
         ArrayIouType::Segm | ArrayIouType::Boundary => {
             let rles_obj = dict.get_item("rles")?.ok_or_else(|| {
                 PyValueError::new_err(format!(
-                    "detections: iou_type={} requires a 'rles' field \
+                    "{here}: iou_type={} requires a 'rles' field \
                      (sequence of RLE dicts or 2-D bool/uint8 bitmasks)",
                     iou_type.as_str()
                 ))
             })?;
-            extract_rles(&rles_obj, n, ctx)?
+            extract_rles(&rles_obj, FieldPath::new(ann, ".rles"), n, ctx)?
                 .into_iter()
                 .map(Some)
                 .collect()
@@ -279,24 +370,24 @@ fn extract_inputs_one<'py>(
 
     let kp_data = match iou_type {
         ArrayIouType::Keypoints => {
+            let kp_path = FieldPath::new(ann, ".keypoints").to_string();
             let kp_obj = dict.get_item("keypoints")?.ok_or_else(|| {
-                PyValueError::new_err(
-                    "detections: iou_type='keypoints' requires a 'keypoints' field \
-                     ((N, K, 3) float64 array of [x, y, v] triplets)",
-                )
+                PyValueError::new_err(format!(
+                    "{here}: iou_type='keypoints' requires a 'keypoints' field \
+                     ((N, K, 3) float64 array of [x, y, v] triplets)"
+                ))
             })?;
-            let kp_obj = ctx.maybe_cast(kp_obj, "detections.keypoints", "float64")?;
-            let (view, k) = dlpack::extract_f64_3d_kp(&kp_obj, "detections.keypoints")?;
+            let kp_obj = ctx.maybe_cast(kp_obj, &kp_path, "float64")?;
+            let (view, k) = dlpack::extract_f64_3d_kp(&kp_obj, &kp_path)?;
             let stride = k * 3;
             let expected = n.checked_mul(stride).ok_or_else(|| {
                 PyValueError::new_err(format!(
-                    "detections.keypoints: shape product (N={n}, K={k}, 3) overflows usize"
+                    "{kp_path}: shape product (N={n}, K={k}, 3) overflows usize"
                 ))
             })?;
             if view.len() != expected {
                 return Err(PyValueError::new_err(format!(
-                    "detections.keypoints: flat length {} disagrees with shape \
-                     (N={n}, K={k}, 3)",
+                    "{kp_path}: flat length {} disagrees with shape (N={n}, K={k}, 3)",
                     view.len()
                 )));
             }
@@ -337,28 +428,25 @@ fn extract_inputs_one<'py>(
 /// 2-D bitmask. See `_array_types.RLEInput` for the public typing.
 fn extract_rles<'py>(
     obj: &Bound<'py, PyAny>,
+    path: FieldPath<'_>,
     n: usize,
     ctx: &CastCtx<'py, '_>,
 ) -> PyResult<Vec<Segmentation>> {
     let seq = obj.cast::<PySequence>().map_err(|e| {
         PyTypeError::new_err(format!(
-            "detections.rles: expected a sequence of RLE dicts \
+            "{path}: expected a sequence of RLE dicts \
              or 2-D bool/uint8 bitmasks: {e}"
         ))
     })?;
     let len = seq.len()?;
     if len != n {
         return Err(PyValueError::new_err(format!(
-            "detections.rles: length {len} disagrees with boxes (N={n})"
+            "{path}: length {len} disagrees with boxes (N={n})"
         )));
     }
     let mut out = Vec::with_capacity(n);
     for i in 0..n {
-        out.push(extract_one_rle(
-            &seq.get_item(i)?,
-            &format!("detections.rles[{i}]"),
-            ctx,
-        )?);
+        out.push(extract_one_rle(&seq.get_item(i)?, path.item(i), ctx)?);
     }
     Ok(out)
 }
@@ -390,7 +478,7 @@ pub(crate) enum CountsShapes {
 /// JSON routes take them — see `result_ingest::extract_segmentation`.
 pub(crate) fn extract_one_rle<'py>(
     item: &Bound<'py, PyAny>,
-    field: &str,
+    field: FieldPath<'_>,
     ctx: &CastCtx<'py, '_>,
 ) -> PyResult<Segmentation> {
     extract_one_rle_with(item, field, ctx, CountsShapes::InMemory)
@@ -400,7 +488,7 @@ pub(crate) fn extract_one_rle<'py>(
 /// caller. Shared with the result-annotation route (`result_ingest`).
 pub(crate) fn extract_one_rle_with<'py>(
     item: &Bound<'py, PyAny>,
-    field: &str,
+    field: FieldPath<'_>,
     ctx: &CastCtx<'py, '_>,
     counts_shapes: CountsShapes,
 ) -> PyResult<Segmentation> {
@@ -435,17 +523,23 @@ pub(crate) fn type_name_of(obj: &Bound<'_, PyAny>) -> String {
 /// a `str` or a sequence of ints, which is what a results *file* carries.
 fn extract_rle_dict(
     dict: &Bound<'_, PyDict>,
-    field: &str,
+    field: FieldPath<'_>,
     counts_shapes: CountsShapes,
 ) -> PyResult<Segmentation> {
-    let counts_obj = dict.get_item("counts")?.ok_or_else(|| {
+    // Interned, module-lifetime keys: a bare `&str` probe builds and
+    // hashes a fresh `PyString` per call, and this runs once per
+    // annotation on the segm list route. The other eight result-dict
+    // keys are interned in `result_ingest::ann_dicts_to_inputs`; these
+    // two were the stragglers.
+    let py = dict.py();
+    let counts_obj = dict.get_item(intern!(py, "counts"))?.ok_or_else(|| {
         PyValueError::new_err(format!(
             "{field}: missing 'counts' \
              (uint32 1-D array or bytes)"
         ))
     })?;
     let size_obj = dict
-        .get_item("size")?
+        .get_item(intern!(py, "size"))?
         .ok_or_else(|| PyValueError::new_err(format!("{field}: missing 'size' (h, w) tuple")))?;
     let (h, w) = extract_size_tuple(&size_obj, field)?;
 
@@ -463,9 +557,32 @@ fn extract_rle_dict(
         // K3 (`aligned`): a results file has no bytes type, so its
         // compressed counts arrive as `str`. Same payload, same decoder.
         SegmentationRleCounts::Compressed(counts_obj.extract::<String>()?)
-    } else if json_wire && !counts_obj.hasattr("__dlpack_device__")? {
-        // Uncompressed counts as a plain Python sequence of ints — the
+    } else if counts_obj.is_instance_of::<PyByteArray>()
+        || counts_obj.is_instance_of::<PyMemoryView>()
+    {
+        // A `bytearray`/`memoryview` over the *compressed* 6-bit string
+        // also satisfies the sequence protocol, and indexing it yields
+        // one `int` per byte — so the sequence branch below would read
+        // each character as a run length and decode a silently wrong
+        // mask. The object cannot say which reading it meant, so neither
+        // do we: refuse and name both fixes.
+        return Err(PyTypeError::new_err(format!(
+            "{field}.counts: got {}, which is ambiguous — its elements are \
+             the bytes of a compressed COCO string on one reading and \
+             uncompressed run lengths on the other. Pass `bytes(...)` (or \
+             `str`) for compressed counts, or a uint32 array / list of ints \
+             for uncompressed ones",
+            type_name_of(&counts_obj)
+        )));
+    } else if json_wire
+        && (counts_obj.is_instance_of::<PyList>() || counts_obj.is_instance_of::<PyTuple>())
+    {
+        // Uncompressed counts as a plain list of ints — the
         // `{"counts": [...], "size": [...]}` shape `serde_json` accepts.
+        // Deliberately a `list`/`tuple` allow-list rather than "any
+        // non-DLPack sequence": every other sequence that reaches here
+        // is a buffer whose element reading is ambiguous (above), and
+        // the arrays belong on the DLPack branch below.
         let seq = counts_obj.cast::<PySequence>().map_err(|e| {
             PyTypeError::new_err(format!(
                 "{field}.counts: expected bytes, str, a uint32 array, \
@@ -499,11 +616,14 @@ fn extract_rle_dict(
 /// [`Rle::from_raster_bytes`].
 fn extract_rle_bitmask<'py>(
     item: &Bound<'py, PyAny>,
-    field: &str,
+    field: FieldPath<'_>,
     ctx: &CastCtx<'py, '_>,
 ) -> PyResult<Segmentation> {
     let asfortran = ctx.asfortranarray()?;
-    let (view, h, w) = dlpack::extract_u8_or_bool_2d_fortran(item, field, &asfortran)?;
+    // A bitmask ingest copies the whole raster, so rendering the path
+    // here is free relative to the work it labels.
+    let field = field.to_string();
+    let (view, h, w) = dlpack::extract_u8_or_bool_2d_fortran(item, &field, &asfortran)?;
     let rle = Rle::from_raster_bytes(view.as_slice(), h, w)
         .map_err(|e| PyValueError::new_err(format!("{field}: {e}")))?;
     Ok(Segmentation::Rle(SegmentationRle {
@@ -512,7 +632,7 @@ fn extract_rle_bitmask<'py>(
     }))
 }
 
-fn extract_size_tuple(obj: &Bound<'_, PyAny>, field: &str) -> PyResult<(u32, u32)> {
+fn extract_size_tuple(obj: &Bound<'_, PyAny>, field: FieldPath<'_>) -> PyResult<(u32, u32)> {
     // Accept any 2-element sequence so users can pass tuples, lists, or numpy arrays.
     let seq = obj.cast::<PySequence>().map_err(|e| {
         PyTypeError::new_err(format!("{field}.size: expected (h, w) sequence: {e}"))
@@ -601,17 +721,22 @@ fn ascontig_for<'py>(
 /// the consumer (foreground evaluator, streaming/background dispatch)
 /// runs it inside its own `py.detach` block so the HashMap build runs
 /// without holding the GIL.
+///
+/// `indexed` says whether the caller passed a *sequence* of dicts; when
+/// it did, every rejection names the offending element.
 pub(crate) fn dicts_to_inputs(
     py: Python<'_>,
     dicts: &[Bound<'_, PyDict>],
+    indexed: bool,
     iou_type: ArrayIouType,
     cast_state: &CastState,
 ) -> PyResult<Vec<DetectionInput>> {
     let ascontig = ascontig_for(py, cast_state)?;
     let ctx = CastCtx::new(py, cast_state, &ascontig);
     let mut all_inputs: Vec<DetectionInput> = Vec::new();
-    for dict in dicts {
-        all_inputs.extend(extract_inputs_one(dict, iou_type, &ctx)?);
+    for (i, dict) in dicts.iter().enumerate() {
+        let ann = indexed.then_some(i);
+        all_inputs.extend(extract_inputs_one(dict, ann, iou_type, &ctx)?);
     }
     Ok(all_inputs)
 }

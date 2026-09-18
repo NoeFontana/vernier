@@ -2251,8 +2251,8 @@ pub(crate) fn build_update_payload<'py>(
 ) -> PyResult<UpdatePayload> {
     Ok(match array_ingest::DetectionsArg::extract(detections)? {
         array_ingest::DetectionsArg::Bytes(b) => UpdatePayload::Bytes(b),
-        array_ingest::DetectionsArg::Dicts(dicts) => UpdatePayload::Inputs(
-            array_ingest::dicts_to_inputs(py, &dicts, iou_type, cast_state)?,
+        array_ingest::DetectionsArg::Dicts { dicts, indexed } => UpdatePayload::Inputs(
+            array_ingest::dicts_to_inputs(py, &dicts, indexed, iou_type, cast_state)?,
         ),
         array_ingest::DetectionsArg::AnnList(dicts) => UpdatePayload::Inputs(
             array_ingest::ann_dicts_to_inputs(py, &dicts, iou_type, cast_state)?,
@@ -2280,8 +2280,13 @@ pub(crate) fn realize_dt(payload: UpdatePayload, area: DetectionArea) -> PyResul
         UpdatePayload::Bytes(b) => {
             CocoDetections::from_json_bytes_with_area(&b, area).map_err(coco_load_error_to_pyerr)
         }
-        // Array-form detections carry no area: `Supplied` falls back to
-        // the bbox-derived value (quirk J3).
+        // `Inputs` may or may not carry a per-detection `area`, and
+        // `from_inputs_with_area` reads it only under `Supplied`
+        // (quirk J3). The ADR-0030 columnar dicts and the `(N, 7)` matrix
+        // have no area column, so `Supplied` falls back to the
+        // bbox-derived value for them; the ADR-0057 result-dict route
+        // carries the `area` field a results *file* carries, so
+        // `Supplied` honours it exactly as the file route does.
         UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs_with_area(inputs, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }

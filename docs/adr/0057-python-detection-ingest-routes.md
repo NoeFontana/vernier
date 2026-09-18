@@ -83,7 +83,17 @@ the same 500 000 annotations in **271.4 ms against 162.9 ms**, a 1.67x
 difference, while the matrix route in the same two builds is unchanged
 (123.5 vs 124.6 ms). The delta is dict-lookup-specific.
 
-`area` and `iscrowd` are accepted and dropped, per J3 and E2/J4.
+`iscrowd` is accepted and dropped, per E2/J4 — `DetectionInput` has
+nowhere to put it. `area` is accepted and **carried**, because J3's
+disposition is not "derive" but "derive *by default*": the `dt_area`
+keyword selects between the derived area (`"bbox"`, the default), the
+one the payload supplied (`"supplied"`) and the mask's
+(`"mask"`). A results *file* carries `area` through to that switch, so
+dropping it on the list route would silently re-bucket every detection
+into whatever the box implies under `dt_area="supplied"` — the routes
+would disagree on AP-small/medium/large for the same payload. What the
+list route must not do is *interpret* it, and it does not: `from_inputs`
+still owns the choice.
 
 `segmentation` takes **every shape a results file can carry** — polygons
 (`[[x0, y0, x1, y1, …], …]`, unioned under **K2**), an RLE dict whose
@@ -169,8 +179,12 @@ quietly becomes a strict one.
 Two things bound it. First, the routes are disjoint by *field name*, not
 by iou_type: a mixed list does not get "whatever derivation entry 0
 chose", it gets a hard error from the route entry 0 picked, naming the
-offending index (`detections[i].bbox: missing required field`, or
-`detections[i]: expected a Detections dict`). Second, the consequence J6
+offending index in either direction — `detections[1].category_id:
+missing required field` when entry 0 was a result annotation, and
+`detections[1]: missing required field 'boxes'` when entry 0 was
+columnar. The index is threaded into `extract_inputs_one` for exactly
+that reason; a single *bare* dict has no position in a list and keeps
+the un-indexed `detections: …` form. Second, the consequence J6
 names — heterogeneous *segmentation* handling — does not arise, because
 `segmentation` is read per entry, never per list: an entry with a mask
 and an entry without are both legal in one list, and each is resolved on

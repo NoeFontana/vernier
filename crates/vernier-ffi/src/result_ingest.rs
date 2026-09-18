@@ -33,13 +33,13 @@
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PySequence, PyString};
+use pyo3::types::{PyAny, PyDict, PyList, PySequence, PyString};
 
 use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
 use vernier_core::segmentation::Segmentation;
 
 use crate::array_ingest::{
-    extract_one_rle_with, type_name_of, ArrayIouType, CastCtx, CountsShapes,
+    extract_one_rle_with, type_name_of, ArrayIouType, CastCtx, CountsShapes, FieldPath,
 };
 use crate::dlpack;
 
@@ -198,44 +198,123 @@ fn extract_segmentation<'py>(
     i: usize,
     ctx: &CastCtx<'py, '_>,
 ) -> PyResult<Segmentation> {
-    let field = format!("detections[{i}].segmentation");
+    // `FieldPath`, not `format!`: the path is only ever rendered into a
+    // rejection, and this runs once per segmentation-carrying annotation.
+    let field = FieldPath::new(Some(i), ".segmentation");
     // A dict is an RLE and an array is a bitmask; both are
     // `extract_one_rle_with`'s business. Anything else that is a
     // non-`str` sequence is the polygon shape.
     if obj.is_instance_of::<PyDict>() || obj.hasattr("__dlpack_device__")? {
-        return extract_one_rle_with(obj, &field, ctx, CountsShapes::AlsoJsonWire);
+        return extract_one_rle_with(obj, field, ctx, CountsShapes::AlsoJsonWire);
     }
     if obj.is_instance_of::<PyString>() {
         // `str` satisfies the sequence protocol, so it would otherwise
         // be read as a polygon list of one-character "polygons".
-        return Err(segmentation_type_err(&field, obj));
+        return Err(segmentation_type_err(field, obj));
     }
     let Ok(seq) = obj.cast::<PySequence>() else {
-        return Err(segmentation_type_err(&field, obj));
+        return Err(segmentation_type_err(field, obj));
     };
     let n_polys = seq.len()?;
     let mut polygons: Vec<Vec<f64>> = Vec::with_capacity(n_polys);
     for p in 0..n_polys {
         let poly_obj = seq.get_item(p)?;
-        let poly = poly_obj.cast::<PySequence>().map_err(|e| {
+        let poly = FloatSeq::of(&poly_obj).map_err(|e| {
             PyTypeError::new_err(format!(
                 "{field}[{p}]: expected a flat [x0, y0, x1, y1, …] polygon; \
                  COCO nests polygons one level ([[…], […]]): {e}"
             ))
         })?;
-        let len = poly.len()?;
-        let mut coords = Vec::with_capacity(len);
-        for j in 0..len {
-            coords.push(poly.get_item(j)?.extract::<f64>().map_err(|e| {
-                PyValueError::new_err(format!("{field}[{p}][{j}]: expected a float: {e}"))
-            })?);
-        }
-        polygons.push(coords);
+        polygons.push(poly.collect_f64(|j, e| {
+            PyValueError::new_err(format!("{field}[{p}][{j}]: expected a float: {e}"))
+        })?);
     }
     Ok(Segmentation::Polygons(polygons))
 }
 
-fn segmentation_type_err(field: &str, obj: &Bound<'_, PyAny>) -> PyErr {
+/// A flat sequence of floats, resolved once to the cheapest walk over it.
+///
+/// `PySequence_GetItem` is a generic protocol dispatch plus a refcount
+/// round-trip *per element*. One COCO keypoints annotation is 51
+/// elements and one polygon ring is often more, so on the list route
+/// that dispatch — not the arithmetic — is the per-annotation cost. A
+/// `list` (what `json.load` produces, and what a caller building result
+/// dicts by hand has) is walked directly instead; everything else
+/// (tuples, 1-D numpy arrays, …) keeps the generic path, so the set of
+/// accepted shapes is unchanged.
+enum FloatSeq<'py> {
+    List(Bound<'py, PyList>),
+    Any(Bound<'py, PySequence>),
+}
+
+impl<'py> FloatSeq<'py> {
+    /// `Err` carries the rendered cast failure so each caller can phrase
+    /// the type error in its own field vocabulary.
+    fn of(obj: &Bound<'py, PyAny>) -> Result<Self, String> {
+        if let Ok(list) = obj.cast::<PyList>() {
+            return Ok(Self::List(list.clone()));
+        }
+        match obj.cast::<PySequence>() {
+            Ok(seq) => Ok(Self::Any(seq.clone())),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    fn len(&self) -> PyResult<usize> {
+        match self {
+            Self::List(list) => Ok(list.len()),
+            Self::Any(seq) => seq.len(),
+        }
+    }
+
+    /// The first `out.len()` elements as `f64`, without allocating.
+    /// The caller has already checked the length.
+    fn fill(&self, out: &mut [f64], elem_err: impl Fn(usize, PyErr) -> PyErr) -> PyResult<()> {
+        match self {
+            Self::List(list) => {
+                for (slot, (j, item)) in out.iter_mut().zip(list.iter().enumerate()) {
+                    *slot = item.extract::<f64>().map_err(|e| elem_err(j, e))?;
+                }
+            }
+            Self::Any(seq) => {
+                for (j, slot) in out.iter_mut().enumerate() {
+                    *slot = seq
+                        .get_item(j)?
+                        .extract::<f64>()
+                        .map_err(|e| elem_err(j, e))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Every element as `f64`. `elem_err` names the offending index.
+    fn collect_f64(&self, elem_err: impl Fn(usize, PyErr) -> PyErr) -> PyResult<Vec<f64>> {
+        match self {
+            Self::List(list) => {
+                let mut out = Vec::with_capacity(list.len());
+                for (j, item) in list.iter().enumerate() {
+                    out.push(item.extract::<f64>().map_err(|e| elem_err(j, e))?);
+                }
+                Ok(out)
+            }
+            Self::Any(seq) => {
+                let len = seq.len()?;
+                let mut out = Vec::with_capacity(len);
+                for j in 0..len {
+                    out.push(
+                        seq.get_item(j)?
+                            .extract::<f64>()
+                            .map_err(|e| elem_err(j, e))?,
+                    );
+                }
+                Ok(out)
+            }
+        }
+    }
+}
+
+fn segmentation_type_err(field: FieldPath<'_>, obj: &Bound<'_, PyAny>) -> PyErr {
     PyTypeError::new_err(format!(
         "{field}: expected an RLE dict {{counts, size}}, a polygon list \
          [[x0, y0, x1, y1, …], …], or a 2-D bool/uint8 bitmask, got {}",
@@ -260,8 +339,7 @@ fn field_err(i: usize, name: &str, detail: &str) -> PyErr {
 /// `[x, y, w, h]`, accepted from any 4-element sequence so lists,
 /// tuples and 1-D numpy arrays all work.
 fn extract_bbox(obj: &Bound<'_, PyAny>, i: usize) -> PyResult<Bbox> {
-    let seq = obj
-        .cast::<PySequence>()
+    let seq = FloatSeq::of(obj)
         .map_err(|e| field_err(i, "bbox", &format!("expected a 4-element sequence: {e}")))?;
     let len = seq.len()?;
     if len != 4 {
@@ -271,13 +349,12 @@ fn extract_bbox(obj: &Bound<'_, PyAny>, i: usize) -> PyResult<Bbox> {
             &format!("expected length-4 [x, y, w, h], got length {len}"),
         ));
     }
+    // Fixed width, so it lands on the stack: a heap `Vec` per detection
+    // is exactly the per-annotation overhead this route exists to avoid.
     let mut v = [0.0f64; 4];
-    for (j, slot) in v.iter_mut().enumerate() {
-        *slot = seq
-            .get_item(j)?
-            .extract()
-            .map_err(|e| field_err(i, "bbox", &format!("element {j} is not a float: {e}")))?;
-    }
+    seq.fill(&mut v, |j, e| {
+        field_err(i, "bbox", &format!("element {j} is not a float: {e}"))
+    })?;
     Ok(Bbox {
         x: v[0],
         y: v[1],
@@ -288,7 +365,7 @@ fn extract_bbox(obj: &Bound<'_, PyAny>, i: usize) -> PyResult<Bbox> {
 
 /// Flat `[x, y, v, ...]` triplets, per ADR-0012.
 fn extract_keypoints(obj: &Bound<'_, PyAny>, i: usize) -> PyResult<Vec<f64>> {
-    let seq = obj.cast::<PySequence>().map_err(|e| {
+    let seq = FloatSeq::of(obj).map_err(|e| {
         field_err(
             i,
             "keypoints",
@@ -303,15 +380,7 @@ fn extract_keypoints(obj: &Bound<'_, PyAny>, i: usize) -> PyResult<Vec<f64>> {
             &format!("length {len} is not a multiple of 3 (x, y, v triplets)"),
         ));
     }
-    let mut out = Vec::with_capacity(len);
-    for j in 0..len {
-        out.push(
-            seq.get_item(j)?.extract().map_err(|e| {
-                field_err(i, "keypoints", &format!("element {j} is not a float: {e}"))
-            })?,
-        );
-    }
-    Ok(out)
+    seq.collect_f64(|j, e| field_err(i, "keypoints", &format!("element {j} is not a float: {e}")))
 }
 
 // ---------------------------------------------------------------------------

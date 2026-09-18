@@ -106,7 +106,6 @@ class Detections(TypedDict, total=False):
     keypoints: NDArray[np.float64]
 
 
-#: Union of legal forms for ``StreamingEvaluator.update`` / ``BackgroundEvaluator.submit``.
 class ResultAnnotation(TypedDict, total=False):
     """One COCO *result* annotation — the shape ``loadRes`` consumes.
 
@@ -126,8 +125,17 @@ class ResultAnnotation(TypedDict, total=False):
     :data:`SegmentationInput` — polygons, either RLE ``counts``
     encoding, or a 2-D bitmask.
 
-    ``area`` and ``iscrowd`` are accepted and ignored: area is derived
-    (quirk **J3**) and detections are never crowd (quirks **E2**/**J4**).
+    ``area`` is **carried**, exactly as a results *file* carries it, and
+    what it does is decided downstream by ``dt_area`` (quirk **J3**):
+    under the ``"bbox"`` default it is ignored and the area is derived
+    from the box, and under ``dt_area="supplied"`` it is the area that
+    buckets the detection into small / medium / large. Dropping it here
+    would make this route score differently from the file route for the
+    same payload, so it is not dropped.
+
+    ``iscrowd`` is accepted and ignored: a detection is never a crowd
+    (quirks **E2**/**J4**).
+
     An explicit ``id`` is preserved; an absent one is auto-assigned
     ``1..N`` by position (quirk **J1**).
     """
@@ -140,6 +148,8 @@ class ResultAnnotation(TypedDict, total=False):
     segmentation: SegmentationInput
     keypoints: Sequence[float]
     num_keypoints: int
+    area: float
+    iscrowd: int
 
 
 #: ``(N, 7)`` C-contiguous float64 detection matrix, laid out as
@@ -148,6 +158,9 @@ class ResultAnnotation(TypedDict, total=False):
 #: fractional or oversized value is rejected rather than truncated.
 DetectionMatrix: TypeAlias = NDArray[np.float64]
 
+#: Union of legal forms for ``StreamingEvaluator.update`` /
+#: ``BackgroundEvaluator.submit`` and for the ``dt=`` argument of every
+#: ``Evaluator.evaluate`` / ``evaluate_*_grid`` entry point.
 DetectionsInput: TypeAlias = (
     bytes
     | Detections

@@ -205,17 +205,53 @@ def test_supplied_ids_are_preserved_on_the_list_route() -> None:
     assert observed == [1000 + i for i in range(len(DETECTIONS))]
 
 
-def test_area_and_iscrowd_fields_are_ignored() -> None:
-    """Quirks **J3** / **E2**+**J4**: area is derived, crowd is forced 0.
+def test_iscrowd_is_ignored_on_the_list_route() -> None:
+    """Quirks **E2**/**J4**: a detection is never a crowd, whatever it says.
 
-    A detection carrying a deliberately absurd ``area`` and ``iscrowd=1``
-    must evaluate exactly as one carrying neither.
+    ``iscrowd`` is the one result-annotation field that is genuinely
+    dropped: ``DetectionInput`` has nowhere to put it, so a detection
+    carrying ``iscrowd=1`` must evaluate exactly as one carrying none.
+    """
+    poisoned = _as_dict_list()
+    for ann in poisoned:
+        ann["iscrowd"] = 1
+    assert _normalize(_grid(poisoned).eval_imgs()) == _normalize(_grid(_as_dict_list()).eval_imgs())
+
+
+def test_area_is_ignored_under_the_default_dt_area() -> None:
+    """Quirk **J3**: under ``dt_area='bbox'`` the area comes from the box.
+
+    A deliberately absurd ``area`` changes nothing, because the default
+    derives the area rather than reading it — exactly as ``loadRes`` does.
     """
     poisoned = _as_dict_list()
     for ann in poisoned:
         ann["area"] = 1e9
-        ann["iscrowd"] = 1
     assert _normalize(_grid(poisoned).eval_imgs()) == _normalize(_grid(_as_dict_list()).eval_imgs())
+
+
+def _supplied_area_grid(dt: Any) -> Any:
+    return _core.evaluate_bbox_grid(
+        GT_BYTES, dt, "strict", 100, True, dt_area="supplied", retain_meta=True
+    )
+
+
+def test_supplied_area_is_carried_on_the_list_route() -> None:
+    """Quirk **J3**: under ``dt_area='supplied'`` the list route honours ``area``.
+
+    ``area`` is therefore *carried*, not dropped. Dropping it would be
+    invisible under the default and wrong here: the same payload as a
+    results *file* buckets every detection into ``large``, and the list
+    route has to do the same or the two routes are distinguishable.
+    """
+    dicts = _as_dict_list()
+    for ann in dicts:
+        ann["area"] = 1e9
+    observed = _normalize(_supplied_area_grid(dicts).eval_imgs())
+    assert observed == _normalize(_supplied_area_grid(json.dumps(dicts).encode()).eval_imgs())
+    # ... and the supplied area is doing something, so the equality above
+    # is not two routes agreeing on having ignored it.
+    assert observed != _normalize(_grid(dicts).eval_imgs())
 
 
 # --- matrix route: validation is explicit, never silent ----------------------
@@ -286,6 +322,48 @@ def test_columnar_detections_dict_still_takes_the_array_route() -> None:
     grid = _grid(columnar)
     cells = _normalize(grid.eval_imgs())
     assert any(cell["dtIds"] for cell in cells)
+
+
+# --- a mixed list is pinpointed, whichever shape comes first -----------------
+
+
+def _columnar_one() -> dict[str, Any]:
+    return {
+        "image_id": 1,
+        "boxes": np.array([[0.0, 0.0, 10.0, 10.0]], dtype=np.float64),
+        "scores": np.array([0.9], dtype=np.float64),
+        "labels": np.array([1], dtype=np.int64),
+    }
+
+
+def _result_one() -> dict[str, Any]:
+    return {"image_id": 1, "category_id": 1, "bbox": [0.0, 0.0, 10.0, 10.0], "score": 0.9}
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        lambda: [_result_one(), _columnar_one()],
+        lambda: [_columnar_one(), _result_one()],
+    ],
+    ids=["result-first", "columnar-first"],
+)
+def test_a_mixed_list_names_the_offending_index(payload: Any) -> None:
+    """Quirk **J6**: entry 0 picks the *route*, and entry 1 is then located.
+
+    Route selection reads the first entry (ADR-0057), so a heterogeneous
+    list is a hard error either way. The error has to name the index in
+    **both** directions — telling a caller that "detections" is missing a
+    field is useless when "detections" is a 5000-entry list.
+    """
+    with pytest.raises(ValueError, match=r"detections\[1\]"):
+        _grid(payload())
+
+
+def test_a_single_dict_is_not_given_a_bogus_index() -> None:
+    """The index is a locator, not decoration: a bare dict has no position."""
+    with pytest.raises(ValueError, match=r"^detections: missing required field 'boxes'"):
+        _grid({"image_id": 1, "scores": np.array([0.9], dtype=np.float64)})
 
 
 # --- segm: the same equivalence, with masks ---------------------------------
@@ -527,6 +605,43 @@ def test_polygons_are_still_refused_on_the_columnar_rles_field() -> None:
     }
     with pytest.raises(TypeError, match=r"detections\.rles\[0\]"):
         _segm_grid(columnar)
+
+
+@pytest.mark.parametrize("wrap", [bytearray, memoryview], ids=["bytearray", "memoryview"])
+def test_buffer_counts_are_refused_instead_of_read_as_run_lengths(wrap: Any) -> None:
+    """A wrong answer would be silent, so this one has to be an error.
+
+    ``bytearray`` and ``memoryview`` over the *compressed* 6-bit string
+    satisfy the sequence protocol and yield one ``int`` per byte, so the
+    "uncompressed counts as a list of ints" branch would happily read
+    each character as a run length and decode a completely different
+    mask — with no exception anywhere. The two readings are
+    indistinguishable from the object, so neither is guessed.
+    """
+    dt = _segm_detections("counts_bytes")
+    dt[0]["segmentation"]["counts"] = wrap(dt[0]["segmentation"]["counts"])
+    with pytest.raises(TypeError, match=r"detections\[0\]\.segmentation\.counts"):
+        _segm_grid(dt)
+
+
+def test_a_bad_segmentation_is_refused_on_the_bbox_grid_too() -> None:
+    """``segmentation`` is read under ``iou_type='bbox'`` on purpose.
+
+    The parsed mask is dead for *scoring* there — ``dt_area='mask'`` is
+    refused outside the segm / boundary grids, and nothing else on the
+    bbox path reads a detection's segmentation. It is **not** dead for
+    *validation*: a results file whose ``segmentation`` is structurally
+    wrong fails to load on the bbox grid, so skipping the read on the
+    list route would make it accept payloads the file route rejects.
+    That is precisely the route divergence ADR-0057 exists to avoid, so
+    the read is not gated on ``iou_type``.
+    """
+    dicts = _as_dict_list()
+    dicts[1]["segmentation"] = {"counts": [1, 2, 3], "size": [64]}
+    with pytest.raises((TypeError, ValueError)):
+        _grid(json.dumps(dicts).encode())
+    with pytest.raises((TypeError, ValueError), match=r"detections\[1\]\.segmentation"):
+        _grid(dicts)
 
 
 # --- a route with no segmentation under segm means J2 -----------------------
