@@ -143,6 +143,65 @@ impl PyDataset {
         })
     }
 
+    /// Builds a [`Dataset`] handle from columnar ground-truth arrays,
+    /// with no JSON intermediate (ADR-0060).
+    ///
+    /// `images` and `annotations` are dicts of equal-length columns;
+    /// `categories` is a sequence of per-category dicts (`id`, `name`,
+    /// optional `supercategory`), which is not columnar because `name`
+    /// is a string and the section is O(K) with K small.
+    ///
+    /// Required annotation columns are `id`, `image_id`, `category_id`,
+    /// `bbox` `(N, 4)` float64, `area` `(N,)` float64 and `iscrowd`.
+    /// `area` is required because a GT's area is read **verbatim** —
+    /// unlike a detection's, which quirk **J3** derives — and `iscrowd`
+    /// because it drives the ignore resolution (**D1**) and the crowd
+    /// IoA denominator (**E1**). `ignore`, `segmentation`, `keypoints`
+    /// and `num_keypoints` are optional. GT ids are supplied, never
+    /// assigned: `id` is required, and it is observable downstream
+    /// through `evalImgs['gtIds']`.
+    ///
+    /// The resulting dataset is COCO-flat. LVIS federated metadata
+    /// (`neg_category_ids`, `not_exhaustive_category_ids`, per-category
+    /// `frequency`) has no columnar spelling here and is **not**
+    /// supported on this route — `is_federated` is always `False`. LVIS
+    /// callers use [`Self::from_lvis_json`]; see ADR-0060.
+    ///
+    /// Raises `TypeError` on a wrong dtype or layout and `ValueError` on
+    /// a missing column, a length disagreement, a non-finite `bbox` /
+    /// `area` / `keypoints` value, or an annotation referencing an
+    /// unknown image or category.
+    #[staticmethod]
+    #[pyo3(signature = (images, annotations, categories, *, cast_inputs = false))]
+    fn from_arrays(
+        py: Python<'_>,
+        images: &Bound<'_, PyAny>,
+        annotations: &Bound<'_, PyAny>,
+        categories: &Bound<'_, PyAny>,
+        cast_inputs: bool,
+    ) -> PyResult<Self> {
+        let cast_state = crate::array_ingest::new_cast_state(cast_inputs);
+        // Extraction reads Python objects and holds the GIL; it is one
+        // pass per column. `from_parts` — the reference-integrity scan
+        // and the three index builds — is the O(N) half, and it runs
+        // detached (ADR-0006).
+        let (images, anns, categories) = crate::array_ingest::gt_parts_from_arrays(
+            py,
+            images,
+            annotations,
+            categories,
+            &cast_state,
+        )?;
+        let gt = py
+            .detach(|| CocoDataset::from_parts(images, anns, categories))
+            .map_err(crate::coco_load_error_to_pyerr)?;
+        Ok(Self {
+            inner: Arc::new(gt),
+            boundary_cache: Arc::new(BoundaryGtCache::new()),
+            segm_cache: Arc::new(SegmGtCache::new()),
+        })
+    }
+
     /// Parses an LVIS v1 ground-truth JSON payload into a reusable
     /// [`Dataset`] handle. The handle exposes the federated metadata
     /// (`pos_category_ids`, `neg_category_ids`,
@@ -220,6 +279,26 @@ impl PyDataset {
     #[getter]
     fn is_federated(&self) -> bool {
         self.inner.is_federated()
+    }
+
+    /// 32-byte BLAKE3 fingerprint of the dataset's canonical form
+    /// (ADR-0031), as `bytes`.
+    ///
+    /// Two handles have the same hash exactly when they carry the same
+    /// images, categories, annotations and federated metadata — every
+    /// field, including each annotation's `area`, `iscrowd`, `ignore`
+    /// and `segmentation` bytes. Each section is sorted by id before
+    /// hashing, so the fingerprint is **independent of input order**:
+    /// it pins *content*, and the per-cell `evalImgs` columns pin
+    /// order. That pair is how ADR-0060 shows the JSON and array GT
+    /// routes are indistinguishable.
+    ///
+    /// Distributed evaluation carries this value in partial headers; a
+    /// receiving rank refuses to merge partials whose hash disagrees
+    /// with its live dataset's.
+    #[getter]
+    fn dataset_hash<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
+        PyBytes::new(py, &self.inner.dataset_hash())
     }
 
     /// Number of GT annotations carried by the dataset.

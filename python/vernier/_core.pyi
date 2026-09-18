@@ -13,6 +13,9 @@ from typing_extensions import Self
 from vernier._array_types import CompressedRLE as CompressedRLE
 from vernier._array_types import Detections as Detections
 from vernier._array_types import DetectionsInput as DetectionsInput
+from vernier._array_types import GtAnnotations as GtAnnotations
+from vernier._array_types import GtCategory as GtCategory
+from vernier._array_types import GtImages as GtImages
 from vernier._array_types import RLEInput as RLEInput
 from vernier._array_types import UncompressedRLE as UncompressedRLE
 
@@ -193,7 +196,17 @@ class CocoDataset:
     @staticmethod
     def from_json(gt_json: bytes) -> CocoDataset: ...
     @staticmethod
+    def from_arrays(
+        images: GtImages,
+        annotations: GtAnnotations,
+        categories: Sequence[GtCategory],
+        *,
+        cast_inputs: bool = ...,
+    ) -> CocoDataset: ...
+    @staticmethod
     def from_lvis_json(gt_json: bytes) -> CocoDataset: ...
+    @property
+    def dataset_hash(self) -> bytes: ...
     @property
     def num_annotations(self) -> int: ...
     @property

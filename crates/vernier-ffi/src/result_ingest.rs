@@ -198,14 +198,40 @@ fn extract_segmentation<'py>(
     i: usize,
     ctx: &CastCtx<'py, '_>,
 ) -> PyResult<Segmentation> {
+    extract_segmentation_with_root(
+        obj,
+        "detections",
+        i,
+        ".segmentation",
+        ctx,
+        CountsShapes::AlsoJsonWire,
+    )
+}
+
+/// [`extract_segmentation`] with the rejection path rooted at a
+/// caller-chosen argument name.
+///
+/// Shared verbatim with the ADR-0060 ground-truth column, which accepts
+/// exactly the same set of shapes — a GT *file*'s `segmentation` and a
+/// results file's are the same field, read by the same `annToRLE`, so a
+/// second implementation here would be a second place for **K2** /
+/// **K3** to drift.
+pub(crate) fn extract_segmentation_with_root<'py>(
+    obj: &Bound<'py, PyAny>,
+    root: &str,
+    i: usize,
+    name: &str,
+    ctx: &CastCtx<'py, '_>,
+    counts_shapes: CountsShapes,
+) -> PyResult<Segmentation> {
     // `FieldPath`, not `format!`: the path is only ever rendered into a
     // rejection, and this runs once per segmentation-carrying annotation.
-    let field = FieldPath::new(Some(i), ".segmentation");
+    let field = FieldPath::rooted(root, Some(i), name);
     // A dict is an RLE and an array is a bitmask; both are
     // `extract_one_rle_with`'s business. Anything else that is a
     // non-`str` sequence is the polygon shape.
     if obj.is_instance_of::<PyDict>() || obj.hasattr("__dlpack_device__")? {
-        return extract_one_rle_with(obj, field, ctx, CountsShapes::AlsoJsonWire);
+        return extract_one_rle_with(obj, field, ctx, counts_shapes);
     }
     if obj.is_instance_of::<PyString>() {
         // `str` satisfies the sequence protocol, so it would otherwise

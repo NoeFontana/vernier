@@ -135,6 +135,11 @@ impl<'py> DetectionsArg<'py> {
 /// actually formats it.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FieldPath<'a> {
+    /// The argument this path is rooted at, so a rejection names the
+    /// parameter the caller actually passed. `"detections"` for the
+    /// ADR-0030 / ADR-0057 detection routes; the ADR-0060 GT route
+    /// roots at `"annotations"` / `"images"` / `"categories"`.
+    root: &'a str,
     /// Position within a *sequence* `detections=` argument. `None` when
     /// the argument was a single bare dict or an array, where an index
     /// would be noise rather than a locator.
@@ -148,7 +153,13 @@ pub(crate) struct FieldPath<'a> {
 
 impl<'a> FieldPath<'a> {
     pub(crate) fn new(ann: Option<usize>, name: &'a str) -> Self {
+        Self::rooted("detections", ann, name)
+    }
+
+    /// [`Self::new`] with an explicit root argument name.
+    pub(crate) fn rooted(root: &'a str, ann: Option<usize>, name: &'a str) -> Self {
         Self {
+            root,
             ann,
             name,
             item: None,
@@ -166,7 +177,7 @@ impl<'a> FieldPath<'a> {
 
 impl std::fmt::Display for FieldPath<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("detections")?;
+        f.write_str(self.root)?;
         if let Some(i) = self.ann {
             write!(f, "[{i}]")?;
         }
@@ -758,6 +769,26 @@ pub(crate) fn ann_dicts_to_inputs(
     let ascontig = ascontig_for(py, cast_state)?;
     let ctx = CastCtx::new(py, cast_state, &ascontig);
     crate::result_ingest::ann_dicts_to_inputs(py, dicts, iou_type, &ctx)
+}
+
+/// Sibling of [`dicts_to_inputs`] for the ADR-0060 ground-truth route.
+/// Builds the same [`CastCtx`] (the GT `segmentation` column accepts the
+/// same shapes as `rles` and `detections[i].segmentation`) and delegates
+/// the pass itself to `gt_ingest`.
+///
+/// Returns the three parts rather than a `CocoDataset`: the caller runs
+/// `CocoDataset::from_parts` inside its own `py.detach` block, so the
+/// reference-integrity scan and the index build happen without the GIL.
+pub(crate) fn gt_parts_from_arrays(
+    py: Python<'_>,
+    images: &Bound<'_, PyAny>,
+    annotations: &Bound<'_, PyAny>,
+    categories: &Bound<'_, PyAny>,
+    cast_state: &CastState,
+) -> PyResult<crate::gt_ingest::GtParts> {
+    let ascontig = ascontig_for(py, cast_state)?;
+    let ctx = CastCtx::new(py, cast_state, &ascontig);
+    crate::gt_ingest::gt_parts_from_arrays(images, annotations, categories, &ctx)
 }
 
 /// Sibling of [`dicts_to_inputs`] for the `(N, 7)` matrix route. The

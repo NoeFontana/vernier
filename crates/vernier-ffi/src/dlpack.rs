@@ -214,6 +214,29 @@ pub(crate) fn extract_u32_1d<'py>(
     extract_1d::<u32>(obj, field, DL_DTYPE_UINT, 32)
 }
 
+/// Extract `(N,)` contiguous `bool` or `uint8` (ADR-0060 flag columns:
+/// `iscrowd`, `ignore`). NumPy 2.x emits `(BOOL, 8)` for `dtype=bool`
+/// and `(UINT, 8)` for `dtype=uint8`; both are one byte per element with
+/// identical layout, so one reader covers the pair — the same pairing
+/// [`extract_u8_or_bool_2d_fortran`] already accepts for bitmasks.
+pub(crate) fn extract_u8_or_bool_1d<'py>(
+    obj: &Bound<'py, PyAny>,
+    field: &str,
+) -> PyResult<DLPackView<'py, u8>> {
+    let (capsule, meta) = open_cpu_tensor(obj, field)?;
+    if !(meta.dtype.lanes == 1
+        && meta.dtype.bits == 8
+        && (meta.dtype.code == DL_DTYPE_BOOL || meta.dtype.code == DL_DTYPE_UINT))
+    {
+        let got = describe_dtype(meta.dtype);
+        return Err(PyTypeError::new_err(format!(
+            "{field}: expected a 1-D bool or uint8 array, got {got}"
+        )));
+    }
+    expect_ndim(&meta, field, 1)?;
+    into_view::<u8>(capsule, &meta, field)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Order {
     C,

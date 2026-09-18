@@ -152,6 +152,100 @@ class ResultAnnotation(TypedDict, total=False):
     iscrowd: int
 
 
+class GtCategory(TypedDict, total=False):
+    """One COCO ``categories`` entry (ADR-0060).
+
+    The ``categories`` section is the one part of a GT document this
+    surface does not express columnar-ly: ``name`` is a string, which has
+    no array form, and the section is O(K) with K small (80 on COCO,
+    1203 on LVIS) rather than O(N) in annotations.
+    """
+
+    id: int
+    name: str
+    supercategory: str
+
+
+class GtImages(TypedDict, total=False):
+    """The ``images`` section of a GT document, as columns (ADR-0060).
+
+    ``id``, ``width`` and ``height`` are required ``(M,)`` ``int64``
+    arrays. ``width`` and ``height`` are range-checked into ``u32``; a
+    negative or oversized dimension is rejected, never truncated.
+
+    ``file_name`` is a per-image sequence of ``str`` (or ``None``), not
+    an array — nothing in the evaluation reads it, but it participates
+    in :attr:`vernier.CocoDataset.dataset_hash`, so a caller
+    reproducing a JSON document through this route can carry it.
+    """
+
+    id: NDArray[np.int64]
+    width: NDArray[np.int64]
+    height: NDArray[np.int64]
+    file_name: Sequence[str | None]
+
+
+class GtAnnotations(TypedDict, total=False):
+    """The ``annotations`` section of a GT document, as columns (ADR-0060).
+
+    Required, all length ``N``:
+
+    - ``id``: ``int64``. Ground-truth ids are **supplied, never
+      assigned** — the mirror image of quirk **J1** on the detection
+      side — and are observable through ``evalImgs['gtIds']``.
+    - ``image_id``, ``category_id``: ``int64``.
+    - ``bbox``: ``float64`` ``(N, 4)`` C-contiguous, xywh.
+    - ``area``: ``float64`` ``(N,)``. Read **verbatim**. Unlike a
+      detection's (quirk **J3**, derived from the box by default), a
+      ground truth's area is the number COCO recorded and the number the
+      small / medium / large bucketing reads, so it is required rather
+      than derivable.
+    - ``iscrowd``: ``bool`` / ``uint8`` / ``int64`` ``(N,)``. Required,
+      because it drives the ignore resolution (quirk **D1**) and the
+      crowd IoA denominator (quirk **E1**).
+
+    Optional:
+
+    - ``ignore``: ``bool`` / ``uint8`` / ``int64`` ``(N,)``.
+    - ``segmentation``: a length-``N`` sequence whose entries are
+      ``None`` or any :data:`SegmentationInput` shape.
+    - ``keypoints``: ``float64`` ``(N, K, 3)`` C-contiguous.
+    - ``num_keypoints``: ``int64`` ``(N,)``.
+
+    **Absent versus zero.** A column has no null, but ``ignore`` and
+    ``num_keypoints`` are genuinely optional *per annotation* in COCO
+    JSON and mean something different absent than present-and-zero —
+    under quirk **D1**, an absent ``ignore`` lets ``parity_mode``
+    ``"corrected"`` fall back to ``iscrowd``, while a present ``0`` pins
+    it false. So: pass such a column as a **signed** array, in which a
+    **negative entry means the field was absent on that annotation**;
+    omitting the column means absent on every annotation. A ``bool`` or
+    ``uint8`` column has no negative and therefore means present
+    everywhere. Neither field has a meaningful negative value otherwise.
+
+    ``keypoints`` is the one field that is all-or-nothing per document
+    rather than per annotation: an ``(N, K, 3)`` array cannot say
+    "absent on row i". A GT document that carries keypoints on some
+    annotations and not others has to use the JSON route.
+
+    Non-finite values in ``bbox``, ``area`` or ``keypoints`` are
+    rejected. JSON has no ``NaN`` or ``Infinity`` literal, so a GT
+    *file* cannot carry one either; refusing them is not a divergence
+    from the file route but a refusal of input it could never produce.
+    """
+
+    id: NDArray[np.int64]
+    image_id: NDArray[np.int64]
+    category_id: NDArray[np.int64]
+    bbox: NDArray[np.float64]
+    area: NDArray[np.float64]
+    iscrowd: NDArray[np.bool_] | NDArray[np.uint8] | NDArray[np.int64]
+    ignore: NDArray[np.bool_] | NDArray[np.uint8] | NDArray[np.int64]
+    segmentation: Sequence[SegmentationInput | None]
+    keypoints: NDArray[np.float64]
+    num_keypoints: NDArray[np.int64]
+
+
 #: ``(N, 7)`` C-contiguous float64 detection matrix, laid out as
 #: ``image_id, x, y, w, h, score, category_id``. The ``image_id`` and
 #: ``category_id`` columns must hold exact integers within 2^53; a
@@ -176,6 +270,9 @@ __all__ = [
     "DetectionMatrix",
     "Detections",
     "DetectionsInput",
+    "GtAnnotations",
+    "GtCategory",
+    "GtImages",
     "JsonRLE",
     "PolygonSegmentation",
     "RLEInput",
