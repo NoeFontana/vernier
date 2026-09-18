@@ -71,6 +71,9 @@ from vernier._core import (
     cells_from_grid as _cells_from_grid,
 )
 from vernier._core import (
+    evaluate_bbox_grid_with_dataset as evaluate_bbox_grid_with_dataset,
+)
+from vernier._core import (
     evaluate_instance_to_partial as _evaluate_instance_to_partial,
 )
 from vernier._core import (

@@ -14,6 +14,23 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Fixed
+
+- **`evaluate_bbox_grid_with_dataset` is reachable from `vernier.instance`.**
+  It shipped in `_core` but was missing from the wrapper's re-export
+  list, while all four `evaluate_*_summary_with_dataset` siblings were
+  present. The effect was that ADR-0020's parsed-once dataset handle
+  served *summary* evaluation but not *grid* evaluation, so a caller
+  reading `accumulate()`'s per-class precision and recall — what a
+  training-loop metric does — had no public way to avoid re-parsing its
+  ground truth for each IoU type. Found by a downstream integration
+  hitting exactly that wall, not by this project's own suites, which
+  reach `_core` directly and so never notice. The re-export list is
+  hand-maintained, so the fix is pinned by an invariant rather than a
+  name: `test_instance_reexports_every_dataset_taking_entry_point`
+  asserts every `_with_dataset` entry point in `_core` is reachable
+  from `vernier.instance`.
+
 ## [0.4.0] - 2026-09-18
 
 ### Added
