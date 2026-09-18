@@ -753,6 +753,109 @@ def test_a_non_contiguous_column_is_refused_rather_than_copied() -> None:
         _from_arrays(_image_columns(GT), columns, GT["categories"])
 
 
+def test_cast_inputs_reaches_the_flag_columns_too() -> None:
+    """``cast_inputs`` is one switch, not one switch with two exceptions.
+
+    ``iscrowd`` and ``ignore`` read through a dtype-dispatching reader
+    rather than the single-dtype one every other column uses, so they
+    are the two columns that can quietly fall outside the opt-in. A
+    caller whose GT comes out of pandas or torch — where an ``int32``
+    flag is ordinary — would then have to special-case exactly these
+    two, on the one switch that exists so they need not.
+    """
+    for spelling in (
+        np.array([a["iscrowd"] for a in GT["annotations"]], dtype=np.int32),
+        [a["iscrowd"] for a in GT["annotations"]],
+    ):
+        columns = _ann_columns(GT)
+        columns["iscrowd"] = spelling
+        columns["ignore"] = [int(v) for v in columns["ignore"]]
+        with pytest.warns(UserWarning, match="cast_inputs"):
+            candidate = _from_arrays(
+                _image_columns(GT), columns, GT["categories"], cast_inputs=True
+            )
+        assert candidate.dataset_hash == _as_json().dataset_hash
+
+
+def test_flag_columns_hold_the_boundary_when_the_cast_is_not_requested() -> None:
+    """The other half: on these columns the opt-in is still opt-*in*."""
+    columns = _ann_columns(GT)
+    columns["iscrowd"] = columns["iscrowd"].astype(np.int32)
+    with pytest.raises(TypeError, match=r"annotations\.iscrowd: expected a 1-D bool"):
+        _from_arrays(_image_columns(GT), columns, GT["categories"])
+
+
+def test_a_flag_column_is_diagnosed_by_what_is_actually_wrong_with_it() -> None:
+    """A structural rejection must not arrive dressed as a dtype rejection.
+
+    ``iscrowd`` accepts three dtypes, which tempts the reader into
+    trying each in turn and reporting whichever failed last. It would
+    then answer a non-contiguous ``int64`` column — whose dtype is
+    already right — with "expected bool, uint8 or int64", sending the
+    caller to fix the one thing that was not broken. Dispatching from a
+    single open is what keeps the diagnosis honest.
+    """
+    n = len(GT["annotations"])
+    columns = _ann_columns(GT)
+    wide = np.zeros((n, 2), dtype=np.int64)
+    wide[:, 0] = columns["iscrowd"]
+    columns["iscrowd"] = wide[:, 0]
+    assert not columns["iscrowd"].flags["C_CONTIGUOUS"]
+    with pytest.raises(TypeError, match=r"annotations\.iscrowd: array is not C-contiguous"):
+        _from_arrays(_image_columns(GT), columns, GT["categories"])
+
+    columns = _ann_columns(GT)
+    columns["iscrowd"] = np.zeros((n, 2), dtype=np.int64)
+    with pytest.raises(ValueError, match=r"annotations\.iscrowd: expected 1-D array, got 2-D"):
+        _from_arrays(_image_columns(GT), columns, GT["categories"])
+
+
+def test_a_negative_iscrowd_is_refused_rather_than_read_as_false() -> None:
+    """ "Absent" is a meaning only an *optional* column has.
+
+    ``ignore`` is optional per annotation, so a negative entry spells
+    absent. ``iscrowd`` is required — the JSON route rejects anything
+    but 0/1 there — so a negative entry spells nothing at all, and
+    reading it as false would hand back a different crowd set: a wrong
+    **E1** IoA denominator and, under ``strict``, a wrong **D1**
+    ``_ignore``, with no diagnostic anywhere.
+    """
+    columns = _ann_columns(GT)
+    crowds = columns["iscrowd"].astype(np.int64)
+    crowds[2] = -1
+    columns["iscrowd"] = crowds
+    with pytest.raises(ValueError, match=r"annotations\[2\]\.iscrowd: -1 is not a valid flag"):
+        _from_arrays(_image_columns(GT), columns, GT["categories"])
+
+
+def test_a_negative_ignore_is_absent_where_a_zero_ignore_is_present() -> None:
+    """The asymmetry the test above implies, asserted head-on.
+
+    Under ``corrected``, **D1** lets an absent ``ignore`` fall back to
+    ``iscrowd``; a present-and-zero one pins it false. On a crowd
+    annotation the two spellings therefore disagree — which is the
+    entire reason the sentinel encoding exists, and the reason
+    ``iscrowd`` must not borrow it.
+    """
+    crowd_id = next(a["id"] for a in GT["annotations"] if a["iscrowd"] == 1)
+    index = next(i for i, a in enumerate(GT["annotations"]) if a["id"] == crowd_id)
+
+    absent = _ann_columns(GT)
+    absent["ignore"] = np.full(len(GT["annotations"]), -1, dtype=np.int64)
+    present = _ann_columns(GT)
+    present["ignore"] = np.zeros(len(GT["annotations"]), dtype=np.int64)
+    assert present["ignore"][index] == 0
+
+    flags_absent = _ignore_flags(
+        _grid(_from_arrays(_image_columns(GT), absent, GT["categories"]), "corrected")
+    )
+    flags_present = _ignore_flags(
+        _grid(_from_arrays(_image_columns(GT), present, GT["categories"]), "corrected")
+    )
+    assert flags_absent[crowd_id] == 1
+    assert flags_present[crowd_id] == 0
+
+
 def test_lvis_federated_metadata_is_not_expressible_on_this_route() -> None:
     """The array route builds a COCO-flat dataset, and says so.
 
@@ -1089,6 +1192,56 @@ def test_segmentation_column_refuses_a_stacked_array() -> None:
     }
     with pytest.raises(TypeError, match=r"annotations\.segmentation: expected a list"):
         _from_arrays(images, columns, SEGM_GT["categories"])
+
+
+def test_object_dtype_columns_are_accepted_by_the_per_entry_columns() -> None:
+    """A DataFrame column is an ``object`` array, and cannot be the mistake.
+
+    The guard above refuses arrays because iterating a stacked bitmask
+    would produce a plausible-looking wrong answer. An ``object`` array
+    cannot be that: it holds one Python object per entry, which is
+    precisely this column's shape. It is also the ordinary spelling out
+    of a DataFrame (``df["segmentation"].to_numpy()``), and turning it
+    away would send the caller back through ``.tolist()`` — a
+    per-annotation Python cost on the route that exists to remove one.
+    """
+    polygons = [_polygon(*b) for b in _MASK_BOXES]
+    boxed = np.empty(len(polygons), dtype=object)
+    for i, polygon in enumerate(polygons):
+        boxed[i] = polygon
+    names = np.empty(1, dtype=object)
+    names[0] = "one.jpg"
+
+    def build(segmentation: Any, file_name: Any) -> Any:
+        return _from_arrays(
+            {
+                "id": np.array([1], dtype=np.int64),
+                "width": np.array([32], dtype=np.int64),
+                "height": np.array([32], dtype=np.int64),
+                "file_name": file_name,
+            },
+            {
+                "id": np.array([1, 2], dtype=np.int64),
+                "image_id": np.array([1, 1], dtype=np.int64),
+                "category_id": np.array([1, 1], dtype=np.int64),
+                "bbox": np.array([list(map(float, b)) for b in _MASK_BOXES], dtype=np.float64),
+                "area": np.array([64.0, 64.0], dtype=np.float64),
+                "iscrowd": np.zeros(2, dtype=np.uint8),
+                "segmentation": segmentation,
+            },
+            SEGM_GT["categories"],
+        )
+
+    doc = {
+        **SEGM_GT,
+        "images": [{**SEGM_GT["images"][0], "file_name": "one.jpg"}],
+        "annotations": [
+            {**a, "segmentation": polygon} for a, polygon in zip(SEGM_GT["annotations"], polygons)
+        ],
+    }
+    reference = _core.CocoDataset.from_json(json.dumps(doc).encode())
+    assert build(boxed, names).dataset_hash == reference.dataset_hash
+    assert build(polygons, ["one.jpg"]).dataset_hash == reference.dataset_hash
 
 
 def test_a_bad_segmentation_names_the_gt_column_not_the_detection_one() -> None:

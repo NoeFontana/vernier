@@ -132,8 +132,8 @@ else is detail.
 | [0054](0054-split-parallel-json-ingestion.md) | Split JSON ingestion across the thread budget; round floats correctly | proposed (amended 2026-09-17) |
 | [0055](0055-drop-in-params-surface-and-coco-json-adapters.md) | Finish the `COCOeval` drop-in's mutable surface (`ious`, `catIds`); publish the COCO-JSON normalizers | proposed |
 | [0057](0057-python-detection-ingest-routes.md) | Two direct detection-ingest routes for in-process callers (list of result dicts, `(N, 7)` matrix) | proposed |
-| [0060](0060-python-ground-truth-array-ingest.md) | Columnar ground-truth ingest for in-process callers (`CocoDataset.from_arrays`) | proposed |
 | [0058](0058-keypoints-usecats-zero-disposition.md) | Dispose of keypoints-under-`useCats=0` as `corrected` (quirk F6) | proposed |
+| [0060](0060-python-ground-truth-array-ingest.md) | Columnar ground-truth ingest for in-process callers (`CocoDataset.from_arrays`) | proposed |
 
 ### TIDE design package — proposed cluster
 

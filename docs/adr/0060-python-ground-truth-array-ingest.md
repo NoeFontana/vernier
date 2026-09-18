@@ -165,6 +165,54 @@ The measured negative control below shows that this specific error moves
 five of eleven `eval_imgs` columns under `corrected` and **zero** under
 `strict` — which is to say it is exactly the class of bug that ships.
 
+The rule is scoped to the columns that are *optional per annotation*,
+and `iscrowd` is not one of them: it is required here, and the JSON
+route rejects anything but `0` / `1` for it. A negative entry on a
+required column therefore spells nothing, so it is **refused**, naming
+the annotation, rather than read as false. Reading it as false is the
+tempting shortcut — it costs one comparison and it always "works" — and
+it is how a caller who used `-1` as an upstream sentinel gets a
+different crowd set than they passed: a wrong **E1** IoA denominator
+and, under `strict`, a wrong **D1** `_ignore`, with no diagnostic
+anywhere. The check is a masked compare over the column, and it buys
+the build loop a read with no sign test in it.
+
+### `cast_inputs` covers every column, including the flag columns
+
+`iscrowd` and `ignore` accept three dtypes, so they read through a
+dispatching reader rather than the single-dtype one every other column
+uses. That made them the two columns that could quietly fall outside
+`cast_inputs=True` — leaving a caller whose GT comes out of pandas or
+torch, where an `int32` flag is ordinary, to special-case exactly the
+two columns the switch exists to spare them. They go through the same
+opt-in as the rest.
+
+The dispatch reads the dtype from **one** `__dlpack__` open rather than
+trying each reader in turn. That is not only a call saved: trying in
+turn reports every *structural* rejection — non-contiguous, wrong
+`ndim`, a GPU device — as the dtype error of whichever reader ran last,
+pointing the caller at the one thing that was already right.
+
+### An `object`-dtype array is a column, not an array
+
+`segmentation`, `file_name` and `categories` hold one Python object per
+entry. An *array* is refused there, because NumPy arrays and torch
+tensors satisfy the sequence protocol and a stacked `(N, H, W)` bitmask
+would otherwise be walked into `N` planes — a plausible-looking answer
+from a payload the column does not accept.
+
+An `object`-dtype array is **accepted**, because it cannot be that
+mistake: it already holds one Python object per entry. It is also the
+ordinary spelling out of a DataFrame, and refusing it would send the
+caller back through `.tolist()` — a per-annotation Python cost on the
+route that exists to remove one. The test that separates the two cases
+is whether `__dlpack__()` can actually export the buffer;
+`hasattr("__dlpack_device__")` cannot, because NumPy answers that for an
+object array too. `object` arrays and `Series` are then normalised with
+one `tolist()` call, which on an object array hands back the very same
+objects and on a `Series` is *positional* — which bare indexing would
+not be, since a `Series` indexes by label.
+
 ### `keypoints` is the one field this route cannot express per annotation
 
 An `(N, K, 3)` array cannot say "absent on row `i`", and the sentinel

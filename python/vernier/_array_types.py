@@ -208,7 +208,10 @@ class GtAnnotations(TypedDict, total=False):
 
     - ``ignore``: ``bool`` / ``uint8`` / ``int64`` ``(N,)``.
     - ``segmentation``: a length-``N`` sequence whose entries are
-      ``None`` or any :data:`SegmentationInput` shape.
+      ``None`` or any :data:`SegmentationInput` shape. A DataFrame
+      column (an ``object``-dtype array, or a ``Series``) is accepted;
+      a *numeric* array is not, because a stacked ``(N, H, W)`` bitmask
+      would otherwise be walked into ``N`` planes.
     - ``keypoints``: ``float64`` ``(N, K, 3)`` C-contiguous.
     - ``num_keypoints``: ``int64`` ``(N,)``.
 
@@ -222,6 +225,12 @@ class GtAnnotations(TypedDict, total=False):
     omitting the column means absent on every annotation. A ``bool`` or
     ``uint8`` column has no negative and therefore means present
     everywhere. Neither field has a meaningful negative value otherwise.
+
+    The rule is scoped to those two columns. ``iscrowd`` is *required*,
+    so there is no "absent" for a negative entry to mean, and a negative
+    one is rejected naming the annotation rather than read as false —
+    which would hand back a different crowd set than was passed, and no
+    diagnostic.
 
     ``keypoints`` is the one field that is all-or-nothing per document
     rather than per annotation: an ``(N, K, 3)`` array cannot say

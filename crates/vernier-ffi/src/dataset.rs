@@ -296,9 +296,16 @@ impl PyDataset {
     /// Distributed evaluation carries this value in partial headers; a
     /// receiving rank refuses to merge partials whose hash disagrees
     /// with its live dataset's.
+    ///
+    /// The first call walks every annotation and is memoised on the
+    /// handle (`Arc<OnceLock>`, shared by clones); it runs detached,
+    /// because on an LVIS-scale dataset that walk is comparable to the
+    /// whole ingest and would otherwise be the largest GIL-held block
+    /// this module owns.
     #[getter]
     fn dataset_hash<'py>(&self, py: Python<'py>) -> Bound<'py, PyBytes> {
-        PyBytes::new(py, &self.inner.dataset_hash())
+        let digest = py.detach(|| self.inner.dataset_hash());
+        PyBytes::new(py, &digest)
     }
 
     /// Number of GT annotations carried by the dataset.

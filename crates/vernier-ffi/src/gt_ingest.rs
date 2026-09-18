@@ -57,6 +57,10 @@
 //! the JSON route can, including one that carries `ignore` on some
 //! annotations and not others.
 //!
+//! The rule is scoped to those two columns. `iscrowd` is *required*, so
+//! there is no absent for a negative entry to mean and a negative one
+//! is refused ([`Absence::Inexpressible`]) rather than read as false.
+//!
 //! Extraction reads Python objects and therefore cannot release the GIL.
 //! It is written as one pass per column so the serial floor it imposes
 //! is as short as it can be; the caller detaches immediately after and
@@ -65,7 +69,7 @@
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyDict, PySequence, PyString};
+use pyo3::types::{PyAny, PyDict, PyList, PySequence, PyString, PyTuple};
 
 use vernier_core::dataset::{
     AnnId, Bbox, CategoryId, CategoryMeta, CocoAnnotation, ImageId, ImageMeta,
@@ -293,7 +297,13 @@ fn extract_annotations<'py>(
     // column, and defaulting it would make a crowd dataset silently
     // score as a non-crowd one.
     let crowd_obj = required_column(&dict, intern!(py, "iscrowd"), ANNOTATIONS, "iscrowd")?;
-    let crowds = FlagColumn::extract(&crowd_obj, ANNOTATIONS, ".iscrowd")?;
+    let crowds = flag_column(
+        &crowd_obj,
+        ANNOTATIONS,
+        ".iscrowd",
+        Absence::Inexpressible,
+        ctx,
+    )?;
     check_len(crowds.len(), n, ANNOTATIONS, ".iscrowd", "id")?;
 
     // `ignore` is optional *per annotation* (see the module docs on
@@ -302,7 +312,7 @@ fn extract_annotations<'py>(
     let ignores = match optional_column(&dict, intern!(py, "ignore"))? {
         None => None,
         Some(o) => {
-            let col = FlagColumn::extract(&o, ANNOTATIONS, ".ignore")?;
+            let col = flag_column(&o, ANNOTATIONS, ".ignore", Absence::Expressible, ctx)?;
             check_len(col.len(), n, ANNOTATIONS, ".ignore", "id")?;
             Some(col)
         }
@@ -342,12 +352,23 @@ fn extract_annotations<'py>(
         }
     };
 
+    // Every column is resolved to its backing slice here, once, so the
+    // loop below reads nothing but slices. Reading through the views
+    // instead — rebuilding each slice from raw parts and re-dispatching
+    // the flag variant per annotation — measures the *same*: +0.06% on
+    // 240k annotations over seven interleaved rounds, which is noise.
+    // LLVM hoists it either way. This spelling is kept because it puts
+    // every column's resolution in one place, not for a speed it does
+    // not buy.
     let ids = ids.as_slice();
     let image_ids = image_ids.as_slice();
     let cat_ids = cat_ids.as_slice();
     let bboxes = bboxes.as_slice();
     let areas = areas.as_slice();
     let kp = keypoints.as_ref().map(dlpack::DLPackView::as_slice);
+    let crowds = FlagSlice::new(&crowds);
+    let ignores = ignores.as_ref().map(FlagSlice::new);
+    let num_keypoints = num_keypoints.as_ref().map(dlpack::DLPackView::as_slice);
 
     let mut out = Vec::with_capacity(n);
     let mut segmentations = segmentations;
@@ -380,10 +401,7 @@ fn extract_annotations<'py>(
             category_id: CategoryId(cat_ids[i]),
             area: areas[i],
             is_crowd: crowds.get(i),
-            ignore_flag: match &ignores {
-                None => None,
-                Some(col) => col.get_optional(i),
-            },
+            ignore_flag: ignores.as_ref().and_then(|col| col.get_optional(i)),
             bbox: Bbox {
                 x: b[0],
                 y: b[1],
@@ -392,22 +410,16 @@ fn extract_annotations<'py>(
             },
             segmentation: segmentations.as_mut().and_then(|s| s[i].take()),
             keypoints,
-            num_keypoints: match &num_keypoints {
-                None => None,
-                Some(col) => {
-                    let v = col.as_slice()[i];
-                    if v < 0 {
-                        None
-                    } else {
-                        Some(u32::try_from(v).map_err(|_| {
-                            ann_err(
-                                i,
-                                ".num_keypoints",
-                                &format!("{v} does not fit in a u32 count"),
-                            )
-                        })?)
-                    }
-                }
+            num_keypoints: match num_keypoints.map(|col| col[i]) {
+                // Negative means absent, the same rule `ignore` follows.
+                None | Some(i64::MIN..=-1) => None,
+                Some(v) => Some(u32::try_from(v).map_err(|_| {
+                    ann_err(
+                        i,
+                        ".num_keypoints",
+                        &format!("{v} does not fit in a u32 count"),
+                    )
+                })?),
             },
         });
     }
@@ -459,62 +471,105 @@ fn extract_segmentation_column<'py>(
 // Column helpers
 // ---------------------------------------------------------------------------
 
-/// A `bool` / `uint8` / signed-int flag column, kept in whichever form
-/// it arrived so the "negative means absent" rule can be applied only
-/// where it is expressible.
-enum FlagColumn<'py> {
-    /// One byte per entry. Unsigned, so every entry is *present*;
-    /// truthiness is `!= 0`, matching pycocotools' coercion and the
-    /// JSON route's `deserialize_bool_int`.
-    Bytes(dlpack::DLPackView<'py, u8>),
-    /// Signed. A negative entry means the field was absent on that
-    /// annotation; otherwise truthiness is `!= 0`.
-    Signed(dlpack::DLPackView<'py, i64>),
+/// Whether a column is one on which "absent" is a meaning the caller
+/// can express, which decides what a negative entry is.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Absence {
+    /// `ignore`: optional per annotation, so a negative entry is the
+    /// spelling of absent (see the module docs, and **D1**).
+    Expressible,
+    /// `iscrowd`: required on every annotation, so there is no absent
+    /// to spell and a negative entry is a caller error rather than a
+    /// value. The JSON route rejects anything but 0/1 here; silently
+    /// reading a `-1` sentinel as false would hand back a different
+    /// crowd set — a wrong E1 denominator and, under `strict`, a wrong
+    /// D1 `_ignore` — with no diagnostic.
+    Inexpressible,
 }
 
-impl<'py> FlagColumn<'py> {
-    fn extract(obj: &Bound<'py, PyAny>, root: &str, name: &str) -> PyResult<Self> {
-        let path = FieldPath::rooted(root, None, name).to_string();
-        // bool / uint8 first: it is the natural spelling and the common
-        // case. int64 is the spelling that can also say "absent".
-        if let Ok(v) = dlpack::extract_u8_or_bool_1d(obj, &path) {
-            return Ok(Self::Bytes(v));
+/// Extract a flag column, applying `cast_inputs` and the absence rule.
+///
+/// The bool / uint8 spelling is tried **as it arrived** before any
+/// cast, even under `cast_inputs=True`: it is already a valid flag
+/// column, and casting it to `int64` would copy a byte per annotation
+/// into eight for nothing. Only input the reader cannot take as-is —
+/// a Python list, an `int32` column out of pandas or torch — goes
+/// through the cast, which is the whole point of the opt-in.
+fn flag_column<'py>(
+    obj: &Bound<'py, PyAny>,
+    root: &str,
+    name: &str,
+    absence: Absence,
+    ctx: &CastCtx<'py, '_>,
+) -> PyResult<dlpack::FlagView<'py>> {
+    let path = FieldPath::rooted(root, None, name).to_string();
+    let col = match dlpack::extract_flag_1d(obj, &path) {
+        Ok(v) => v,
+        // `maybe_cast` is the identity when `cast_inputs=False`, so the
+        // retry then re-raises the same rejection the first read gave.
+        Err(first) => {
+            let cast = ctx.maybe_cast(obj.clone(), &path, "int64")?;
+            if cast.is(obj) {
+                return Err(first);
+            }
+            dlpack::extract_flag_1d(&cast, &path)?
         }
-        match dlpack::extract_i64_1d(obj, &path) {
-            Ok(v) => Ok(Self::Signed(v)),
-            Err(_) => Err(PyTypeError::new_err(format!(
-                "{path}: expected a 1-D bool, uint8 or int64 array, got {}; \
-                 int64 is the spelling that can also carry \"absent\" \
-                 (a negative entry)",
-                type_name_of(obj)
-            ))),
+    };
+    if absence == Absence::Inexpressible {
+        if let dlpack::FlagView::Signed(v) = &col {
+            // A masked compare over the column; the loop below then
+            // reads it with no sign test at all.
+            if let Some(i) = v.as_slice().iter().position(|&x| x < 0) {
+                return Err(ann_err(
+                    i,
+                    name,
+                    &format!(
+                        "{} is not a valid flag; this column is required on every \
+                         annotation, so there is no \"absent\" for a negative entry \
+                         to mean (use 0 for false)",
+                        v.as_slice()[i]
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(col)
+}
+
+/// A flag column resolved to its backing slice once, before the build
+/// loop, so every column is read the same way in the same place.
+enum FlagSlice<'a> {
+    Bytes(&'a [u8]),
+    Signed(&'a [i64]),
+}
+
+impl<'a> FlagSlice<'a> {
+    fn new(view: &'a dlpack::FlagView<'_>) -> Self {
+        match view {
+            dlpack::FlagView::Bytes(v) => Self::Bytes(v.as_slice()),
+            dlpack::FlagView::Signed(v) => Self::Signed(v.as_slice()),
         }
     }
 
-    fn len(&self) -> usize {
-        match self {
-            Self::Bytes(v) => v.len(),
-            Self::Signed(v) => v.len(),
-        }
-    }
-
-    /// Truthiness, treating an absent entry as false. Used for
-    /// `iscrowd`, where absent and false are the same thing (a GT
-    /// without an `iscrowd` key deserializes to `false`).
+    /// Truthiness, for a column where absent and false are the same
+    /// thing. Negative entries have already been refused by
+    /// [`Absence::Inexpressible`], so both arms are the same test.
+    #[inline]
     fn get(&self, i: usize) -> bool {
         match self {
-            Self::Bytes(v) => v.as_slice()[i] != 0,
-            Self::Signed(v) => v.as_slice()[i] > 0,
+            Self::Bytes(v) => v[i] != 0,
+            Self::Signed(v) => v[i] != 0,
         }
     }
 
     /// Truthiness with absence preserved. Used for `ignore`, where
     /// absent and false are *not* the same thing under D1.
+    #[inline]
     fn get_optional(&self, i: usize) -> Option<bool> {
         match self {
-            Self::Bytes(v) => Some(v.as_slice()[i] != 0),
+            Self::Bytes(v) => Some(v[i] != 0),
             Self::Signed(v) => {
-                let x = v.as_slice()[i];
+                let x = v[i];
                 if x < 0 {
                     None
                 } else {
@@ -549,26 +604,48 @@ fn as_column_dict<'py>(obj: &Bound<'py, PyAny>, root: &str) -> PyResult<Bound<'p
 /// A sequence of arbitrary Python objects (`segmentation`, `file_name`,
 /// `categories`).
 ///
-/// An array is **refused** even though it satisfies the sequence
+/// A **numeric** array is refused even though it satisfies the sequence
 /// protocol. NumPy arrays and torch tensors are `Sequence`s, so a
 /// caller who passed a stacked `(N, H, W)` bitmask array here would have
 /// it silently iterated into N 2-D planes — a plausible-looking result
 /// from a payload this column does not accept. `str` is refused for the
 /// same reason: it is a sequence of one-character strings.
+///
+/// An **`object`-dtype** array is accepted, because it cannot be the
+/// mistake the guard exists to catch: it holds one Python object per
+/// entry, which is precisely this column's shape. That is the common
+/// spelling out of a DataFrame (`df["segmentation"].to_numpy()`), and
+/// refusing it would push the caller back through `.tolist()` — a
+/// per-annotation Python cost on the route that exists to remove one.
 fn as_object_sequence<'py>(
     obj: &Bound<'py, PyAny>,
     root: &str,
     name: &str,
 ) -> PyResult<Bound<'py, PySequence>> {
     let path = FieldPath::rooted(root, None, name);
-    if obj.is_instance_of::<PyString>() || obj.hasattr("__dlpack_device__")? {
+    if obj.is_instance_of::<PyString>() || dlpack::exports_dlpack_buffer(obj) {
         return Err(PyTypeError::new_err(format!(
             "{path}: expected a list, got {}; this column holds one \
              Python object per entry and is not an array column",
             type_name_of(obj)
         )));
     }
-    obj.cast::<PySequence>().cloned().map_err(|_| {
+    // An `object`-dtype array and a pandas `Series` are the two common
+    // non-`list` spellings of a per-entry object column, and neither
+    // registers as `collections.abc.Sequence`. `tolist()` normalises
+    // both in one C-level pass — on an `object` array it hands back the
+    // very same objects, converting nothing — and on a `Series` it is
+    // *positional*, which bare indexing would not be, because a Series
+    // indexes by label.
+    let normalized = if obj.is_instance_of::<PyList>()
+        || obj.is_instance_of::<PyTuple>()
+        || !obj.hasattr(intern!(obj.py(), "tolist"))?
+    {
+        obj.clone()
+    } else {
+        obj.call_method0(intern!(obj.py(), "tolist"))?
+    };
+    normalized.cast_into::<PySequence>().map_err(|_| {
         PyTypeError::new_err(format!(
             "{path}: expected a sequence, got {}",
             type_name_of(obj)

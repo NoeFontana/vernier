@@ -214,27 +214,77 @@ pub(crate) fn extract_u32_1d<'py>(
     extract_1d::<u32>(obj, field, DL_DTYPE_UINT, 32)
 }
 
-/// Extract `(N,)` contiguous `bool` or `uint8` (ADR-0060 flag columns:
-/// `iscrowd`, `ignore`). NumPy 2.x emits `(BOOL, 8)` for `dtype=bool`
-/// and `(UINT, 8)` for `dtype=uint8`; both are one byte per element with
-/// identical layout, so one reader covers the pair — the same pairing
+/// A `(N,)` flag column in whichever of the two accepted spellings it
+/// arrived (ADR-0060 flag columns: `iscrowd`, `ignore`).
+pub(crate) enum FlagView<'py> {
+    /// One byte per entry — `bool` or `uint8`. Unsigned, so every entry
+    /// is *present*.
+    Bytes(DLPackView<'py, u8>),
+    /// `int64`: the spelling that can also say "absent", as a negative
+    /// entry.
+    Signed(DLPackView<'py, i64>),
+}
+
+impl FlagView<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            Self::Bytes(v) => v.len(),
+            Self::Signed(v) => v.len(),
+        }
+    }
+}
+
+/// Extract `(N,)` contiguous `bool` / `uint8` / `int64`.
+///
+/// NumPy 2.x emits `(BOOL, 8)` for `dtype=bool` and `(UINT, 8)` for
+/// `dtype=uint8`; both are one byte per element with identical layout,
+/// so one reader covers the pair — the same pairing
 /// [`extract_u8_or_bool_2d_fortran`] already accepts for bitmasks.
-pub(crate) fn extract_u8_or_bool_1d<'py>(
+///
+/// The three dtypes are dispatched from **one** `__dlpack__` open
+/// rather than by trying each reader in turn. That is not only a call
+/// saved: trying in turn would report every structural rejection —
+/// non-contiguous, wrong ndim, a GPU device — as the dtype error of
+/// whichever reader ran last, pointing the caller at the one thing
+/// that was already right.
+pub(crate) fn extract_flag_1d<'py>(
     obj: &Bound<'py, PyAny>,
     field: &str,
-) -> PyResult<DLPackView<'py, u8>> {
+) -> PyResult<FlagView<'py>> {
     let (capsule, meta) = open_cpu_tensor(obj, field)?;
-    if !(meta.dtype.lanes == 1
-        && meta.dtype.bits == 8
-        && (meta.dtype.code == DL_DTYPE_BOOL || meta.dtype.code == DL_DTYPE_UINT))
-    {
-        let got = describe_dtype(meta.dtype);
-        return Err(PyTypeError::new_err(format!(
-            "{field}: expected a 1-D bool or uint8 array, got {got}"
-        )));
-    }
     expect_ndim(&meta, field, 1)?;
-    into_view::<u8>(capsule, &meta, field)
+    if meta.dtype.lanes == 1 {
+        if meta.dtype.bits == 8
+            && (meta.dtype.code == DL_DTYPE_BOOL || meta.dtype.code == DL_DTYPE_UINT)
+        {
+            return Ok(FlagView::Bytes(into_view::<u8>(capsule, &meta, field)?));
+        }
+        if meta.dtype.bits == 64 && meta.dtype.code == DL_DTYPE_INT {
+            return Ok(FlagView::Signed(into_view::<i64>(capsule, &meta, field)?));
+        }
+    }
+    let got = describe_dtype(meta.dtype);
+    Err(PyTypeError::new_err(format!(
+        "{field}: expected a 1-D bool, uint8 or int64 array, got {got}; \
+         int64 is the spelling that can also carry \"absent\" \
+         (a negative entry)"
+    )))
+}
+
+/// Whether `obj` is an array whose buffer DLPack can actually export.
+///
+/// `hasattr("__dlpack_device__")` alone does not answer this: NumPy
+/// answers it for an `object`-dtype array too, reporting the CPU
+/// device, and only `__dlpack__()` itself refuses with a `BufferError`.
+/// An object array is exactly what the per-entry object columns want
+/// to *accept*, so the distinction is load-bearing (ADR-0060).
+///
+/// The capsule this produces is dropped unconsumed; its destructor
+/// releases the managed tensor. A caller with no `__dlpack_device__`
+/// at all — a `list`, the common case — short-circuits and pays
+/// nothing.
+pub(crate) fn exports_dlpack_buffer(obj: &Bound<'_, PyAny>) -> bool {
+    obj.hasattr("__dlpack_device__").unwrap_or(false) && obj.call_method0("__dlpack__").is_ok()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
