@@ -16,6 +16,18 @@ additive / perf / docs".
 
 ### Performance
 
+- **`vernier.COCOeval` stops serializing detections** (ADR-0057). The
+  drop-in used to `json.dumps` the `cocoDt` annotations and hand the
+  bytes to the JSON parser, which rebuilt the objects Python was already
+  holding — and held the text and the parsed values at once. It now
+  passes the caller's own list of result dicts straight down the
+  ADR-0057 list route; a `params.catIds` subset is a list comprehension
+  over those same dicts instead of a filter-then-re-serialize. On
+  500 000 detections over 5 000 images, `evaluate()` end to end falls
+  from 1913 ms to 580 ms (**3.3x**, min of 7 interleaved samples, run-to-run
+  spread under 3 %) and the stage's peak memory (VmHWM delta) from
+  555 MiB to 468 MiB (**-16 %**). `evalImgs` / `ious` re-evaluate off the
+  held list, so widening retention costs no serialization either.
 - **Grids skip pycocotools-shaped per-cell metadata unless asked for
   it.** Every populated `(k, a, i)` cell used to carry a boxed
   `EvalImageMeta` (sorted DT / GT ids and matched-id arrays) that only

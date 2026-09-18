@@ -1160,3 +1160,153 @@ def test_ious_are_bit_exact_on_exactly_representable_boxes() -> None:
     candidate = _run_eval(COCOeval, gt, dt, "bbox")
     _assert_ious_match(reference, candidate)
     assert np.size(candidate.ious[0, 1]) == 9
+
+
+# ---------------------------------------------------------------------------
+# ADR-0057: the drop-in's detections go in as the caller's own list of
+# result dicts, not as `json.dumps` bytes. That is a route change, and a
+# route change has to be proven invisible — not on summary stats, which
+# would survive a permuted id assignment, but cell for cell on
+# `evalImgs`, which carries `dtIds`, `dtScores`, `dtMatches` and
+# `dtIgnore`. Same shape of assertion as
+# `tests/python/test_ingest_route_equivalence.py`, one level up: there
+# the routes are compared at the FFI, here through the whole shim.
+# ---------------------------------------------------------------------------
+
+
+class _BytesRouteCOCOeval(PycocotoolsCOCOeval):
+    """The drop-in as it was: DT serialized to JSON before the grid.
+
+    Overrides the one method that decides the detection payload, so
+    everything downstream — params handling, `catIds` filtering, area
+    resolution, retention widening — is the shipping code path, and the
+    ingest route is the only difference between this and `COCOeval`.
+    """
+
+    def _prepare_inputs(self) -> tuple[bytes, Any]:
+        gt_bytes, dt_anns = super()._prepare_inputs()
+        return gt_bytes, vernier_compat.to_coco_json(dt_anns)
+
+
+def _render_cells(eval_imgs: list[Any]) -> list[dict[str, Any]]:
+    """`evalImgs` as plain comparable Python, in a stable order."""
+    rendered: list[dict[str, Any]] = []
+    for cell in eval_imgs:
+        if cell is None:
+            continue
+        rendered.append(
+            {
+                key: np.asarray(value).tolist() if isinstance(value, np.ndarray) else value
+                for key, value in cell.items()
+            }
+        )
+    rendered.sort(key=lambda c: (c["image_id"], c["category_id"], str(c["aRng"]), c["maxDet"]))
+    return rendered
+
+
+def _assert_routes_agree(gt: COCO, dt: COCO, iou_type: str, **params: Any) -> PycocotoolsCOCOeval:
+    native = COCOeval(gt, dt, iouType=iou_type)
+    bytes_route = _BytesRouteCOCOeval(gt, dt, iouType=iou_type)
+    for name, value in params.items():
+        setattr(native.params, name, copy.deepcopy(value))
+        setattr(bytes_route.params, name, copy.deepcopy(value))
+    with contextlib.redirect_stdout(io.StringIO()):
+        for evaluator in (native, bytes_route):
+            evaluator.evaluate()
+            evaluator.accumulate()
+            evaluator.summarize()
+
+    assert _render_cells(native.evalImgs) == _render_cells(bytes_route.evalImgs)
+    np.testing.assert_array_equal(native.stats, bytes_route.stats)
+    np.testing.assert_array_equal(native.eval["precision"], bytes_route.eval["precision"])
+    np.testing.assert_array_equal(native.eval["recall"], bytes_route.eval["recall"])
+    np.testing.assert_array_equal(native.eval["scores"], bytes_route.eval["scores"])
+    assert native.ious.keys() == bytes_route.ious.keys()
+    for key, matrix in native.ious.items():
+        np.testing.assert_array_equal(np.asarray(matrix), np.asarray(bytes_route.ious[key]))
+    return native
+
+
+def test_native_dt_route_matches_the_bytes_route_cell_for_cell(
+    perfect_match_coco: tuple[COCO, COCO],
+) -> None:
+    gt, dt = perfect_match_coco
+    _assert_routes_agree(gt, dt, "bbox")
+
+
+@pytest.mark.parametrize("iou_type", ["segm", "boundary"])
+def test_native_dt_route_matches_the_bytes_route_on_masks(
+    perfect_match_segm_coco: tuple[COCO, COCO], iou_type: str
+) -> None:
+    # The mask paradigms are where the two routes could most plausibly
+    # diverge: the JSON round trip turns `bytes` RLE counts into an
+    # ASCII `str` on the way through, while the list route hands the
+    # `bytes` to the RLE decoder untouched.
+    gt, dt = perfect_match_segm_coco
+    _assert_routes_agree(gt, dt, iou_type)
+
+
+def test_native_dt_route_matches_the_bytes_route_on_keypoints(
+    perfect_match_kp_coco: tuple[COCO, COCO],
+) -> None:
+    gt, dt = perfect_match_kp_coco
+    _assert_routes_agree(gt, dt, "keypoints")
+
+
+@pytest.mark.parametrize("category_id", [1, 2])
+def test_native_dt_route_matches_the_bytes_route_under_cat_ids(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]], category_id: int
+) -> None:
+    # `params.catIds` subsetting used to filter the annotations and then
+    # re-serialize the survivors; it is now a list comprehension over the
+    # caller's own dicts. Same detections in, same cells out.
+    gt, dt = synthetic_bbox_datasets
+    _assert_routes_agree(_coco(gt), _coco(dt), "bbox", catIds=[category_id])
+
+
+def test_native_dt_route_holds_the_callers_list_without_copying_it(
+    perfect_match_coco: tuple[COCO, COCO],
+) -> None:
+    # Holding a reference is the point — a deep copy would give back the
+    # memory the route exists to save. Evaluating every category needs
+    # no filtering, so the shim keeps the caller's list itself.
+    gt, dt = perfect_match_coco
+    e = COCOeval(gt, dt, iouType="bbox")
+    with contextlib.redirect_stdout(io.StringIO()):
+        e.evaluate()
+    assert e._dt_anns is dt.dataset["annotations"]
+
+
+def test_cat_ids_subsetting_filters_in_memory_without_copying_annotations(
+    synthetic_bbox_datasets: tuple[dict[str, Any], dict[str, Any]],
+) -> None:
+    # A `catIds` subset is a new list of the *same* dicts — the filter
+    # `COCOeval._prepare` applies, done in memory rather than by
+    # serializing the survivors.
+    gt_dict, dt_dict = synthetic_bbox_datasets
+    gt, dt = _coco(gt_dict), _coco(dt_dict)
+    e = COCOeval(gt, dt, iouType="bbox")
+    e.params.catIds = [1]
+    with contextlib.redirect_stdout(io.StringIO()):
+        e.evaluate()
+    held = e._dt_anns
+    annotations = dt.dataset["annotations"]
+    assert held is not annotations
+    assert [id(ann) for ann in held] == [id(ann) for ann in annotations if ann["category_id"] == 1]
+
+
+def test_retention_widening_works_off_the_held_list(
+    perfect_match_coco: tuple[COCO, COCO],
+) -> None:
+    # `evalImgs` / `ious` re-evaluate the grid at a wider retention
+    # level, which means re-ingesting the detections. That has to work
+    # off the held list, since nothing serializes them any more.
+    gt, dt = perfect_match_coco
+    e = COCOeval(gt, dt, iouType="bbox")
+    with contextlib.redirect_stdout(io.StringIO()):
+        e.evaluate()
+        e.accumulate()
+        e.summarize()
+    assert e.evalImgs
+    assert e.ious
+    assert not hasattr(e, "_dt_bytes")

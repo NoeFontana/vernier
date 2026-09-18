@@ -27,6 +27,7 @@ from typing import Any, ClassVar, Final, Literal, Protocol, TypedDict
 import numpy as np
 from numpy.typing import NDArray
 
+from vernier._array_types import DetectionsInput
 from vernier._coco_json import (
     detection_image_sizes,
     to_coco_json,
@@ -275,7 +276,11 @@ class PycocotoolsCOCOeval:
         # cannot drift from what `self._grid` actually holds.
         self._grid_level: int = _RETAIN_NONE
         self._gt_bytes: bytes = b""
-        self._dt_bytes: bytes = b""
+        # The detections, held as the caller's own list of result dicts
+        # (ADR-0057's list route) rather than serialized JSON. A
+        # reference, not a copy: `params.catIds` filtering builds a new
+        # list of the *same* dicts, and nothing here mutates them.
+        self._dt_anns: Sequence[Any] = ()
         self._accumulated: Accumulated | None = None
         if cocoGt is not None:
             self.params.imgIds = sorted(cocoGt.getImgIds())
@@ -285,7 +290,7 @@ class PycocotoolsCOCOeval:
         if self.cocoGt is None or self.cocoDt is None:
             raise RuntimeError("evaluate requires both cocoGt and cocoDt")
         self._validate_supported_params()
-        self._gt_bytes, self._dt_bytes = self._serialize_inputs()
+        self._gt_bytes, self._dt_anns = self._prepare_inputs()
         # No optional retention: `accumulate` reads the matched cells,
         # not the pycocotools-shaped bookkeeping, and `evalImgs` /
         # `ious` re-evaluate on first read (see :meth:`_grid_for`).
@@ -374,7 +379,20 @@ class PycocotoolsCOCOeval:
         The level is recorded here, next to the build it describes, so
         ``self._grid_level`` cannot disagree with what ``self._grid``
         actually holds.
+
+        The detections go in as the caller's own list of result dicts —
+        ADR-0057's list route — and that is the point of this method.
+        The `json.dumps` round trip it replaces rebuilt, first as text
+        and then as Rust values, the objects Python was already holding,
+        and had to hold both at once. No shape is lost by not
+        serializing: the list route takes every segmentation form a
+        results *file* carries (polygons, either `counts` encoding, a
+        bitmask), reads the supplied `area` quirk **J3** needs, and
+        converges on the same `Vec<DetectionInput>` the JSON parser
+        produces — so there is no second parity surface and no reason
+        to keep a bytes path in reserve.
         """
+        dt: DetectionsInput = self._dt_anns
         max_det_top = max(self.params.maxDets)
         use_cats = bool(self.params.useCats)
         grid_options: _GridOptions = {
@@ -391,7 +409,7 @@ class PycocotoolsCOCOeval:
         if self.params.iouType == IOU_BBOX:
             grid = evaluate_bbox_grid(
                 self._gt_bytes,
-                self._dt_bytes,
+                dt,
                 self._parity_mode,
                 max_det_top,
                 use_cats,
@@ -400,7 +418,7 @@ class PycocotoolsCOCOeval:
         elif self.params.iouType == IOU_SEGM:
             grid = evaluate_segm_grid(
                 self._gt_bytes,
-                self._dt_bytes,
+                dt,
                 self._parity_mode,
                 max_det_top,
                 use_cats,
@@ -409,7 +427,7 @@ class PycocotoolsCOCOeval:
         elif self.params.iouType == IOU_BOUNDARY:
             grid = evaluate_boundary_grid(
                 self._gt_bytes,
-                self._dt_bytes,
+                dt,
                 self._parity_mode,
                 max_det_top,
                 use_cats,
@@ -419,7 +437,7 @@ class PycocotoolsCOCOeval:
         elif self.params.iouType == IOU_KEYPOINTS:
             grid = evaluate_keypoints_grid(
                 self._gt_bytes,
-                self._dt_bytes,
+                dt,
                 self._parity_mode,
                 max_det_top,
                 use_cats,
@@ -432,13 +450,20 @@ class PycocotoolsCOCOeval:
         self._grid_level = level
         return grid
 
-    def _serialize_inputs(self) -> tuple[bytes, bytes]:
-        """GT dataset + DT annotations as the JSON bytes the grid parses.
+    def _prepare_inputs(self) -> tuple[bytes, Sequence[Any]]:
+        """GT dataset as JSON bytes, DT annotations as the caller's list.
 
         Applies, in pycocotools' own order, the two normalizations
         ``COCOeval._prepare`` performs before any kernel runs: the
         ``params.catIds`` filter, then the image-size resolution that
         ``annToRLE`` implies.
+
+        The DT side comes back as a list of result dicts rather than
+        JSON: a ``params.catIds`` subset is a list comprehension over
+        the caller's own dicts, not a filter-then-re-serialize. The GT
+        side is still JSON — the dataset carries `images` and
+        `categories` alongside the annotations, and ADR-0057's routes
+        are detection-only.
         """
         assert self.cocoGt is not None  # evaluate() guards this
         assert self.cocoDt is not None  # evaluate() guards this
@@ -453,7 +478,7 @@ class PycocotoolsCOCOeval:
             gt_dataset = with_placeholder_image_sizes(gt_dataset)
         else:
             gt_dataset = with_mask_image_sizes(gt_dataset, detection_image_sizes(dt_dataset))
-        return to_coco_json(gt_dataset), to_coco_json(dt_anns)
+        return to_coco_json(gt_dataset), dt_anns
 
     def _requested_category_ids(self) -> list[int]:
         """``params.catIds`` deduplicated, coerced to ``int`` and sorted.
