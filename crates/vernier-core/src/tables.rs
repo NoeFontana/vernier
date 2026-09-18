@@ -15,7 +15,8 @@ use crate::accumulate::Accumulated;
 use crate::dataset::{Bbox, CocoDataset, CocoDetections, EvalDataset};
 use crate::error::EvalError;
 use crate::evaluate::{EvalGrid, COLLAPSED_CATEGORY_SENTINEL};
-use crate::summarize::{pairwise_sum, IOU_LOOKUP_TOL};
+use crate::parity::numpy_pairwise_sum;
+use crate::summarize::IOU_LOOKUP_TOL;
 use ndarray::{Array2, ArrayView2, Axis};
 use std::collections::HashMap;
 
@@ -358,7 +359,7 @@ pub fn build_per_class(
 /// Mean of precision[t_range, :, k, area_idx, m_idx], filtering -1.0
 /// (quirk C5). Returns `None` when the slice is all-sentinel.
 ///
-/// Uses [`pairwise_sum`] so the result is bit-equal to numpy's
+/// Uses [`crate::parity::numpy_pairwise_sum`] so the result is bit-equal to numpy's
 /// `np.mean(s[s > -1])` and to [`crate::summarize::Summary::stats`]
 /// for K=1 collapsed runs (quirk **C8**).
 fn mean_precision(
@@ -388,7 +389,7 @@ fn mean_precision(
     if filtered.is_empty() {
         None
     } else {
-        Some(pairwise_sum(&filtered) / filtered.len() as f64)
+        Some(numpy_pairwise_sum(&filtered) / filtered.len() as f64)
     }
 }
 
@@ -411,7 +412,7 @@ fn mean_recall(
     if filtered.is_empty() {
         None
     } else {
-        Some(pairwise_sum(&filtered) / filtered.len() as f64)
+        Some(numpy_pairwise_sum(&filtered) / filtered.len() as f64)
     }
 }
 

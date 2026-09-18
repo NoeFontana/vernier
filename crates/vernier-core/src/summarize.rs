@@ -25,7 +25,7 @@ use ndarray::Axis;
 use crate::accumulate::Accumulated;
 use crate::dataset::{CategoryId, Frequency};
 use crate::error::EvalError;
-use crate::parity::ParityMode;
+use crate::parity::{numpy_pairwise_sum, ParityMode};
 
 /// Tolerance for matching a user-supplied IoU threshold to a value in
 /// the `iou_thresholds` ladder. Rounds out the ulp-level error from the
@@ -760,7 +760,7 @@ fn resolve_category_filter(
 /// `-1`, never collapses to `0` or `nan`).
 ///
 /// The sum is computed via numpy-compatible pairwise summation
-/// ([`pairwise_sum`]) so the result is bit-identical to
+/// ([`crate::parity::numpy_pairwise_sum`]) so the result is bit-identical to
 /// `np.mean(s[s>-1])` for the same input ordering. The K-axis mask
 /// is applied **before** the sentinel drop and the mean — matching
 /// lvis-api `eval.py:444`'s `s[s>-1]` shape on a frequency-filtered
@@ -836,66 +836,8 @@ fn mean_slice(
     if filtered.is_empty() {
         -1.0
     } else {
-        pairwise_sum(&filtered) / filtered.len() as f64
+        numpy_pairwise_sum(&filtered) / filtered.len() as f64
     }
-}
-
-/// Numpy-compatible pairwise summation for `f64` slices.
-///
-/// Matches the algorithm used by `np.add.reduce` on contiguous
-/// double-precision arrays (see numpy's
-/// `numpy/core/src/umath/loops_utils.h.src::pairwise_sum_DOUBLE`):
-///
-/// - `n < 8`: naive forward sum.
-/// - `8 <= n <= PW_BLOCKSIZE` (128): 8 separately accumulated lanes
-///   combined via a balanced tree `((r0+r1)+(r2+r3)) + ((r4+r5)+(r6+r7))`,
-///   followed by a tail loop for the remainder.
-/// - `n > PW_BLOCKSIZE`: split at `n / 2` aligned down to a multiple of
-///   8 and recurse on both halves.
-///
-/// Reproducing this here is a quirk-**C8**-style alignment: the public
-/// summary stats ride on top of `np.mean(s[s > -1])`, and any other sum
-/// order drifts by ~1 ULP.
-pub(crate) fn pairwise_sum(values: &[f64]) -> f64 {
-    const PW_BLOCKSIZE: usize = 128;
-    let n = values.len();
-
-    if n < 8 {
-        let mut s = 0.0_f64;
-        for &v in values {
-            s += v;
-        }
-        return s;
-    }
-
-    if n <= PW_BLOCKSIZE {
-        let mut r = [
-            values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7],
-        ];
-        let trunc = n - (n % 8);
-        let mut i = 8;
-        while i < trunc {
-            r[0] += values[i];
-            r[1] += values[i + 1];
-            r[2] += values[i + 2];
-            r[3] += values[i + 3];
-            r[4] += values[i + 4];
-            r[5] += values[i + 5];
-            r[6] += values[i + 6];
-            r[7] += values[i + 7];
-            i += 8;
-        }
-        let mut res = ((r[0] + r[1]) + (r[2] + r[3])) + ((r[4] + r[5]) + (r[6] + r[7]));
-        while i < n {
-            res += values[i];
-            i += 1;
-        }
-        return res;
-    }
-
-    let mut n2 = n / 2;
-    n2 -= n2 % 8;
-    pairwise_sum(&values[..n2]) + pairwise_sum(&values[n2..])
 }
 
 #[cfg(test)]
@@ -1217,25 +1159,6 @@ mod tests {
     }
 
     #[test]
-    fn pairwise_sum_matches_numpy_add_reduce_bitwise() {
-        // 1010 alternating elements is large enough to drive both the
-        // 8-lane unrolled block and the recursive split (n > 128). The
-        // expected hex below is `np.add.reduce(v).hex()` for the same
-        // sequence; naive forward summation lands one ULP higher
-        // (`0x1.f900000002309p+8`).
-        let v: Vec<f64> = (0..1010)
-            .map(|i| if i % 2 == 0 { 1.0 } else { 1e-12 })
-            .collect();
-        let got = pairwise_sum(&v);
-        let expected = f64::from_bits(0x407f_9000_0000_22b4);
-        assert_eq!(
-            got.to_bits(),
-            expected.to_bits(),
-            "pairwise_sum drifts from numpy: got {got:e}, expected {expected:e}",
-        );
-    }
-
-    #[test]
     fn coco_keypoints_default_plan_pins_canonical_order() {
         // ADR-0012 / D5: pycocotools' kp summary is exactly these 10
         // lines, in this order. Pin metric, threshold, A-axis index,
@@ -1284,15 +1207,6 @@ mod tests {
         // 3-bucket kp accumulator) and no row addresses index 1 of the
         // detection-grid (which is "small" — D5 forbids).
         assert!(plan.iter().all(|r| r.area.index <= 2));
-    }
-
-    #[test]
-    fn pairwise_sum_handles_short_inputs_with_naive_fallback() {
-        // n < 8 uses the simple loop; verify a hand-checked tiny case.
-        let v = [1.0_f64, 2.0, 3.0, 4.0];
-        assert_eq!(pairwise_sum(&v), 10.0);
-        assert_eq!(pairwise_sum(&[]), 0.0);
-        assert_eq!(pairwise_sum(&[42.0]), 42.0);
     }
 
     // -- ADR-0026: lvis_default plan and CategoryFilter dispatch --------------

@@ -40,13 +40,12 @@
 //! ## Numerical policy
 //!
 //! All histogram math is `f64` end-to-end (ADR-0004). Per-bin score
-//! and accuracy sums route through `crate::summarize::pairwise_sum`
+//! and accuracy sums route through `crate::parity::numpy_pairwise_sum`
 //! for numpy-compatible reduction order.
 
 use crate::accumulate::PerImageEval;
 use crate::error::EvalError;
-use crate::parity::{quantile_linear, ParityMode};
-use crate::summarize::pairwise_sum;
+use crate::parity::{numpy_pairwise_sum, quantile_linear, ParityMode};
 
 /// 95% normal quantile, `scipy.stats.norm.ppf(0.975)` to bit-precision.
 ///
@@ -222,7 +221,7 @@ pub struct CalibrationSummary {
 ///
 /// Encoded as `(score, correct)` with `correct` in `{0.0, 1.0}` so
 /// the per-bin sum can route through the crate-private
-/// `crate::summarize::pairwise_sum` without a separate integer path.
+/// `crate::parity::numpy_pairwise_sum` without a separate integer path.
 /// Class id is carried alongside for per-class slicing.
 #[derive(Debug, Clone, Copy)]
 struct Detection {
@@ -509,8 +508,8 @@ fn build_reliability(
             continue;
         }
         any_nonempty = true;
-        let sum_s = pairwise_sum(scores_b);
-        let sum_c = pairwise_sum(correct_b);
+        let sum_s = numpy_pairwise_sum(scores_b);
+        let sum_c = numpy_pairwise_sum(correct_b);
         let n_b_f = n_b as f64;
         let mean_s = sum_s / n_b_f;
         let acc = sum_c / n_b_f;

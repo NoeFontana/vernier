@@ -39,6 +39,31 @@
 //!   again, versus one correctly-rounded divide — and the resulting
 //!   1-ULP shift can flip a match at a threshold boundary. See the
 //!   `f7_*` tests.
+//! - **F8** (`strict`): `np.sum` is not a left fold. The reduction goes
+//!   through numpy's `DOUBLE_pairwise_sum`, ported in
+//!   `crate::parity::numpy_pairwise_sum`. Left-folding the `exp(-e)`
+//!   terms moves 22.9 % of COCO-person cells and 74.6 % of
+//!   COCO-WholeBody cells by at least one ULP.
+//! - **F9** (`strict`): [`COCO_PERSON_SIGMAS`] is
+//!   `np.array([.26, .25, …]) / 10.0` — two roundings, not one. Folding
+//!   the divide into decimal literals (`0.026`, `0.035`, …) shifts five
+//!   of the seventeen sigmas by one ULP, which moves 8.2 % of cells.
+//! - **F10** (`strict`): `np.array(gt['keypoints'])` is **int64** when
+//!   the JSON holds integers, so `dx**2 + dy**2` is exact integer
+//!   arithmetic. vernier carries keypoints as `f64` and cannot see the
+//!   JSON dtype, so it reproduces that exactness by *bounding* the
+//!   input instead: see [`MAX_ABS_KEYPOINT_COORD`]. The same up-front
+//!   loop rejects non-finite keypoint coordinates and non-finite GT
+//!   `bbox` components, for a structural reason rather than a
+//!   precision one: `f64::max(NaN, 0.0)` is `0.0` while the **F3**
+//!   path's `np.max` propagates the NaN, so a NaN that reached either
+//!   would turn a `NaN` cell into a perfect `1.0`. `area` and the DT
+//!   `bbox` are deliberately not checked — see the guard's comment.
+//!
+//! Everything above is bit-exact. The one term that is **not** is
+//! `exp` itself: `np.exp`'s result depends on the numpy build's SIMD
+//! dispatch and the platform libm, so there is no single reference to
+//! port. It is deliberately out of scope here.
 //!
 //! Quirk **D2** (DT keypoint visibility flags are unconstrained at the
 //! dataset boundary) is a *dataset* concern enforced by `loadRes`-equivalent
@@ -51,6 +76,7 @@ use ndarray::ArrayViewMut2;
 
 use super::Similarity;
 use crate::error::EvalError;
+use crate::parity::numpy_pairwise_sum;
 
 /// Default `kpt_oks_sigmas` for COCO-person (already scaled by `1/10`,
 /// matching what pycocotools applies as `kpt_oks_sigmas`).
@@ -58,10 +84,62 @@ use crate::error::EvalError;
 /// Source: `pycocotools.cocoeval.Params.setKpParams` divides the raw
 /// table by 10 once at construction; users of the Rust kernel pass the
 /// post-divide values directly so we do not double-divide.
+///
+/// Quirk **F9** — strict. The `/ 10.0` is written out rather than
+/// folded into decimal literals *on purpose*, and the difference is
+/// not cosmetic. `.26 / 10.0` is `0.026000000000000002`, one ULP above
+/// the literal `0.026`; the same happens at `.35`, `.35`, `1.07` and
+/// `1.07` (one ULP below, for the two `.35`s). Five of the seventeen
+/// sigmas move, `vars` moves with them, and 8.2 % of random
+/// COCO-person cells land on a different double. Writing
+/// `0.026, 0.025, …` here is exactly the kind of "harmless" cleanup
+/// that silently breaks parity — do not make it.
 pub const COCO_PERSON_SIGMAS: [f64; 17] = [
-    0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072, 0.062, 0.062, 0.107, 0.107,
-    0.087, 0.087, 0.089, 0.089,
+    0.26 / 10.0,
+    0.25 / 10.0,
+    0.25 / 10.0,
+    0.35 / 10.0,
+    0.35 / 10.0,
+    0.79 / 10.0,
+    0.79 / 10.0,
+    0.72 / 10.0,
+    0.72 / 10.0,
+    0.62 / 10.0,
+    0.62 / 10.0,
+    1.07 / 10.0,
+    1.07 / 10.0,
+    0.87 / 10.0,
+    0.87 / 10.0,
+    0.89 / 10.0,
+    0.89 / 10.0,
 ];
+
+/// Largest keypoint coordinate magnitude the kernel accepts, `2^25`.
+/// (Quirk **F10** — strict.)
+///
+/// pycocotools reads keypoints with `np.array(ann['keypoints'])`. COCO
+/// ground truth stores them as JSON integers, so that array is
+/// **int64** and `dx**2 + dy**2` is computed in exact integer
+/// arithmetic before the first division promotes it to `float64`.
+/// vernier carries keypoints as `f64` from the parser onward and has no
+/// way to recover the JSON dtype, so it reproduces the exactness by
+/// bounding the input rather than by emulating int64.
+///
+/// The bound is derived, not guessed. With `|x| <= 2^25` for every
+/// coordinate: `dx = x_d - x_g` is an integer of magnitude `<= 2^26`
+/// and therefore exact; `dx * dx <= 2^52` is exact; and
+/// `dx * dx + dy * dy <= 2^53` is exact. Under those conditions the
+/// `f64` expression is bit-identical to numpy's int64 one. Above them
+/// it silently is not — which is why the kernel rejects rather than
+/// assumes.
+///
+/// Non-integral coordinates need no bound at all: a JSON float makes
+/// numpy's array `float64` too, so both sides already do the same `f64`
+/// arithmetic. The check is applied uniformly anyway, because the
+/// kernel cannot tell the two cases apart and `2^25` = 33 554 432 is
+/// some 300× beyond the largest pixel coordinate any real dataset
+/// carries.
+pub const MAX_ABS_KEYPOINT_COORD: f64 = 33_554_432.0;
 
 /// Annotation shape consumed by [`OksSimilarity`]. The matching engine
 /// constructs these from a [`crate::dataset::CocoAnnotation`] before
@@ -83,7 +161,10 @@ pub struct OksAnn {
     pub num_keypoints: u32,
     /// Tight bbox `[x, y, w, h]`. Used on the GT side for the **F3**
     /// surrogate path and for the **F4** asymmetric expansion; ignored
-    /// on the DT side.
+    /// on the DT side, and therefore validated only on the GT side,
+    /// where every component must be finite (quirk **F10**) or
+    /// [`Similarity::compute`] returns
+    /// [`EvalError::InvalidAnnotation`].
     pub bbox: [f64; 4],
     /// GT object area (segmentation area, per pycocotools). Drives the
     /// **F2** OKS normaliser. Ignored on the DT side.
@@ -121,6 +202,20 @@ impl OksSimilarity {
     }
 }
 
+/// pycocotools' GT-visibility predicate, `vg > 0`, written once.
+///
+/// Both the term count (`k1 = np.count_nonzero(vg > 0)`) and the term
+/// mask (`e = e[vg > 0]`) are the *same* comparison in cocoeval, so
+/// they have to be the same comparison here. Spelling the mask as its
+/// negation (`v <= 0.0`) is **not** equivalent: a NaN visibility flag
+/// satisfies neither `>` nor `<=`, so the count would drop that
+/// keypoint while the mask kept it, and the cell would be divided by
+/// the wrong term count. numpy's mask drops it on both sides.
+#[inline]
+fn is_visible(v: f64) -> bool {
+    v > 0.0
+}
+
 impl Similarity for OksSimilarity {
     type Annotation = OksAnn;
 
@@ -150,9 +245,38 @@ impl Similarity for OksSimilarity {
         // up-front. The kernel hot-loop assumes `keypoints.len() == 3 * k`
         // and `sigmas.len() == k`, so any mismatch is a typed error here
         // rather than a panic deeper in the loop.
-        for (side, anns) in [("gt", gts), ("dt", dts)] {
+        //
+        // `k` must also agree across *every* annotation in the cell, not
+        // merely within one side. `compute` fills a full (G, D) cross
+        // product, so every GT row meets every DT column, and both paths
+        // assume the two sides share one keypoint count: the **F3**
+        // surrogate indexes the GT row's `vars[i]` with `i` enumerating
+        // the *DT's* triplets (out of bounds when the DT is longer),
+        // and the standard path's `zip` truncates to the shorter side
+        // while `denom_count` still comes from the GT (a silently wrong
+        // divisor). Different-length sigmas reach one cell whenever GT
+        // and DT sit in different categories — through this public API
+        // directly, or through the engine's `use_cats = false` collapse
+        // with a sigma map that covers some categories and not others.
+        let mut first_k: Option<(usize, &str, usize, i64)> = None;
+        for (side, anns, is_gt) in [("gt", gts, true), ("dt", dts, false)] {
             for (idx, ann) in anns.iter().enumerate() {
                 let k = self.sigmas_for(ann.category_id).len();
+                match first_k {
+                    None => first_k = Some((k, side, idx, ann.category_id)),
+                    Some((k0, side0, idx0, cat0)) if k0 != k => {
+                        return Err(EvalError::DimensionMismatch {
+                            detail: format!(
+                                "OKS sigma length differs within one cell: {side0}[{idx0}] \
+                                 (cat {cat0}) has {k0} sigmas but {side}[{idx}] (cat {cat}) \
+                                 has {k}; every GT is compared against every DT, so all \
+                                 annotations in a cell must share one keypoint count",
+                                cat = ann.category_id,
+                            ),
+                        });
+                    }
+                    Some(_) => {}
+                }
                 if ann.keypoints.len() != 3 * k {
                     return Err(EvalError::DimensionMismatch {
                         detail: format!(
@@ -163,18 +287,116 @@ impl Similarity for OksSimilarity {
                         ),
                     });
                 }
+                // F10: the (x, y) pairs must stay inside the range where
+                // f64 reproduces numpy's int64 keypoint arithmetic
+                // exactly. Visibility flags are excluded — they are only
+                // ever compared against zero, and `NaN > 0` is false on
+                // both sides alike.
+                for (t, triplet) in ann.keypoints.chunks_exact(3).enumerate() {
+                    for (axis, v) in [("x", triplet[0]), ("y", triplet[1])] {
+                        if !v.is_finite() {
+                            return Err(EvalError::InvalidAnnotation {
+                                detail: format!(
+                                    "OKS {side}[{idx}] (cat {cat}): keypoint {t} {axis} = {v} \
+                                     is not finite; `f64::max(NaN, 0.0)` is `0.0` while the \
+                                     **F3** surrogate path's `np.max` propagates the NaN, so \
+                                     the cell would score instead of returning NaN (quirk \
+                                     F10)",
+                                    cat = ann.category_id,
+                                ),
+                            });
+                        }
+                        if v.abs() > MAX_ABS_KEYPOINT_COORD {
+                            return Err(EvalError::InvalidAnnotation {
+                                detail: format!(
+                                    "OKS {side}[{idx}] (cat {cat}): keypoint {t} {axis} = {v} \
+                                     exceeds the exact-arithmetic bound \
+                                     {MAX_ABS_KEYPOINT_COORD}; beyond it vernier's f64 \
+                                     `dx*dx + dy*dy` stops matching pycocotools' int64 one \
+                                     (quirk F10)",
+                                    cat = ann.category_id,
+                                ),
+                            });
+                        }
+                    }
+                }
+
+                // The GT bbox feeds the **F3** surrogate path through
+                // the same `np.max((z, x0 - xd), axis=0)` that F10
+                // rejects non-finite keypoints for, and `x0`/`x1` are
+                // derived from it (**F4**). Rust's `f64::max` returns
+                // the non-NaN operand where numpy's propagates, so a
+                // `bbox` of `[NaN, 0, 10, 10]` on a GT with no visible
+                // keypoints would score a perfect `1.0` — a spurious
+                // match at every threshold — where pycocotools returns
+                // NaN, which matches nothing. Rejecting is the same
+                // call F10 already makes for coordinates, for the same
+                // structural reason.
+                //
+                // Two deliberate non-checks. `area` needs no guard: it
+                // only ever divides, so NaN and infinity propagate
+                // identically on both sides. And the bound that F10
+                // puts on coordinates does not apply here — cocoeval's
+                // `bb = gt['bbox']` stays a Python float list, so the
+                // surrogate's arithmetic is `float64` on both sides
+                // already, with no int64 exactness to reproduce.
+                if is_gt {
+                    for (axis, v) in [
+                        ("x", ann.bbox[0]),
+                        ("y", ann.bbox[1]),
+                        ("w", ann.bbox[2]),
+                        ("h", ann.bbox[3]),
+                    ] {
+                        if !v.is_finite() {
+                            return Err(EvalError::InvalidAnnotation {
+                                detail: format!(
+                                    "OKS {side}[{idx}] (cat {cat}): bbox {axis} = {v} is not \
+                                     finite; `f64::max(NaN, 0.0)` is `0.0` while the **F3** \
+                                     surrogate path's `np.max` propagates the NaN, so the \
+                                     cell would score instead of returning NaN (quirk F10)",
+                                    cat = ann.category_id,
+                                ),
+                            });
+                        }
+                    }
+                }
             }
         }
+
+        // Scratch for the per-cell `exp(-e)` terms. numpy reduces them
+        // with `DOUBLE_pairwise_sum`, which needs the whole vector in
+        // hand rather than a running accumulator (**F8**). One
+        // allocation for the whole (G, D) cell, reused per pair.
+        let mut terms: Vec<f64> = Vec::new();
 
         for (g, gt) in gts.iter().enumerate() {
             let sigmas = self.sigmas_for(gt.category_id);
             let k = sigmas.len();
+            terms.reserve(k);
             // vars[i] = (2 * sigma_i)^2; precomputed once per GT row.
             // `k` is tiny (17 typical) and the alloc is dwarfed by
             // the per-cell exp(); no need for a SmallVec.
-            let vars: Vec<f64> = sigmas.iter().map(|s| (2.0 * s).powi(2)).collect();
+            //
+            // `(sigmas * 2)**2` never reaches the `power` ufunc:
+            // numpy's `array_power` hands an integer scalar exponent to
+            // `fast_scalar_power`, which rewrites `** 2` into a call to
+            // `np.square`. That is `in1 * in1` — one multiply, one
+            // rounding — so the whole expression is `t * t` and nothing
+            // more. Written out rather than `powi(2)` so that stays
+            // legible.
+            let vars: Vec<f64> = sigmas
+                .iter()
+                .map(|s| {
+                    let t = 2.0 * s;
+                    t * t
+                })
+                .collect();
             let area_norm = gt.area + f64::EPSILON;
-            let k1 = gt.keypoints.chunks_exact(3).filter(|t| t[2] > 0.0).count();
+            let k1 = gt
+                .keypoints
+                .chunks_exact(3)
+                .filter(|t| is_visible(t[2]))
+                .count();
 
             // F4: asymmetric bbox expansion. Lower bound subtracts one
             // width / height; upper bound adds two. Pycocotools verbatim.
@@ -197,7 +419,7 @@ impl Similarity for OksSimilarity {
             let denom = denom_count as f64;
 
             for (d, dt) in dts.iter().enumerate() {
-                let mut e_sum = 0.0_f64;
+                terms.clear();
 
                 if k1 > 0 {
                     // Standard path: only visible GT keypoints contribute.
@@ -207,13 +429,13 @@ impl Similarity for OksSimilarity {
                         .zip(dt.keypoints.chunks_exact(3))
                         .enumerate()
                     {
-                        if gt_t[2] <= 0.0 {
+                        if !is_visible(gt_t[2]) {
                             continue;
                         }
                         let dx = dt_t[0] - gt_t[0];
                         let dy = dt_t[1] - gt_t[1];
                         let e = (dx * dx + dy * dy) / vars[i] / area_norm / 2.0;
-                        e_sum += (-e).exp();
+                        terms.push((-e).exp());
                     }
                 } else {
                     // F3: bbox-surrogate path. Every keypoint contributes;
@@ -225,12 +447,22 @@ impl Similarity for OksSimilarity {
                         let dx = (x0 - xd).max(0.0) + (xd - x1).max(0.0);
                         let dy = (y0 - yd).max(0.0) + (yd - y1).max(0.0);
                         let e = (dx * dx + dy * dy) / vars[i] / area_norm / 2.0;
-                        e_sum += (-e).exp();
+                        terms.push((-e).exp());
                     }
                 }
 
-                // F7: `np.sum(np.exp(-e)) / e.shape[0]` verbatim.
-                out[[g, d]] = e_sum / denom;
+                // F8 then F7: `np.sum(np.exp(-e)) / e.shape[0]`
+                // verbatim — numpy's pairwise reduction, then one
+                // correctly-rounded divide by the term count.
+                //
+                // The term count equals `denom_count` unconditionally,
+                // because the up-front loop already rejected any cell
+                // whose GT and DT disagree on `k`. This assertion only
+                // restates that invariant for a reader; it is not what
+                // enforces it, which is why the enforcement is a typed
+                // error and not this line.
+                debug_assert_eq!(terms.len(), denom_count);
+                out[[g, d]] = numpy_pairwise_sum(&terms) / denom;
             }
         }
 
@@ -541,6 +773,440 @@ mod tests {
         // reciprocal form lands one ULP below and silently drops the match.
         assert!(m[[0, 0]] >= 0.8, "must match at the OKS=0.80 threshold");
         assert_ne!(28.0_f64 * (1.0 / K as f64), 0.8, "premise of this test");
+    }
+
+    /// Recomputes a cell's `exp(-e)` terms with the same expression the
+    /// kernel uses, so the `f8_*` tests can pin the *reduction order*
+    /// without re-deriving the exponent.
+    fn cell_terms(gt: &OksAnn, dt: &OksAnn, sigmas: &[f64]) -> Vec<f64> {
+        let vars: Vec<f64> = sigmas
+            .iter()
+            .map(|s| {
+                let t = 2.0 * s;
+                t * t
+            })
+            .collect();
+        let area_norm = gt.area + f64::EPSILON;
+        let mut out = Vec::new();
+        for (i, (g, d)) in gt
+            .keypoints
+            .chunks_exact(3)
+            .zip(dt.keypoints.chunks_exact(3))
+            .enumerate()
+        {
+            if !is_visible(g[2]) {
+                continue;
+            }
+            let dx = d[0] - g[0];
+            let dy = d[1] - g[1];
+            out.push((-((dx * dx + dy * dy) / vars[i] / area_norm / 2.0)).exp());
+        }
+        out
+    }
+
+    fn left_fold(a: &[f64]) -> f64 {
+        let mut acc = 0.0_f64;
+        for &x in a {
+            acc += x;
+        }
+        acc
+    }
+
+    /// F9: the default sigma table is `np.array([.26, …]) / 10.0`, not
+    /// the decimal literals that divide looks like it produces.
+    ///
+    /// Five of the seventeen entries disagree by exactly one ULP. This
+    /// test names them, so folding the divide back into literals fails
+    /// here with the indices in the message rather than surfacing as an
+    /// unexplained AP wobble on a keypoints run.
+    #[test]
+    fn f9_default_sigmas_keep_the_divide_by_ten_as_a_separate_rounding() {
+        const RAW: [f64; 17] = [
+            0.26, 0.25, 0.25, 0.35, 0.35, 0.79, 0.79, 0.72, 0.72, 0.62, 0.62, 1.07, 1.07, 0.87,
+            0.87, 0.89, 0.89,
+        ];
+        const FOLDED: [f64; 17] = [
+            0.026, 0.025, 0.025, 0.035, 0.035, 0.079, 0.079, 0.072, 0.072, 0.062, 0.062, 0.107,
+            0.107, 0.087, 0.087, 0.089, 0.089,
+        ];
+
+        for i in 0..17 {
+            assert_eq!(
+                COCO_PERSON_SIGMAS[i].to_bits(),
+                (RAW[i] / 10.0).to_bits(),
+                "sigma[{i}] is not `{} / 10.0`",
+                RAW[i]
+            );
+        }
+
+        let drifting: Vec<usize> = (0..17)
+            .filter(|&i| COCO_PERSON_SIGMAS[i].to_bits() != FOLDED[i].to_bits())
+            .collect();
+        assert_eq!(
+            drifting,
+            vec![0, 3, 4, 11, 12],
+            "the set of sigmas that the pre-folded literals get wrong has changed"
+        );
+        // Concretely, at index 0: `.26 / 10.0` is one ULP above `0.026`.
+        assert_eq!(
+            COCO_PERSON_SIGMAS[0].to_bits(),
+            FOLDED[0].to_bits() + 1,
+            "expected exactly one ULP of separation at index 0"
+        );
+    }
+
+    /// F8: the OKS cell reduces its terms with numpy's pairwise sum,
+    /// not a running accumulator.
+    ///
+    /// Terms are recomputed here with the kernel's own exponent
+    /// expression — `exp` is explicitly *not* what this pins — and then
+    /// reduced two ways. The kernel must agree with the pairwise one and
+    /// disagree with the left fold; the second half is what makes the
+    /// first half mean something.
+    #[test]
+    fn f8_cell_reduces_with_numpys_pairwise_sum_not_a_left_fold() {
+        // 17 visible keypoints with offsets chosen so the 17 terms are
+        // of comparable magnitude — the regime where summation order
+        // changes the result.
+        let gt_kps: Vec<(f64, f64, u32)> = (0..17).map(|i| (10.0 * i as f64, 7.0, 2)).collect();
+        let dt_kps: Vec<(f64, f64, u32)> = (0..17)
+            .map(|i| {
+                (
+                    10.0 * i as f64 + 1.0 + 0.25 * (i % 5) as f64,
+                    7.0 + (i % 3) as f64,
+                    2,
+                )
+            })
+            .collect();
+        let g = ann(1, &gt_kps, [0.0, 0.0, 10.0, 10.0], 137.0);
+        let d = ann(1, &dt_kps, [0.0, 0.0, 10.0, 10.0], 137.0);
+
+        let terms = cell_terms(&g, &d, &COCO_PERSON_SIGMAS);
+        assert_eq!(terms.len(), 17);
+        let pairwise = crate::parity::numpy_pairwise_sum(&terms) / 17.0;
+        let folded = left_fold(&terms) / 17.0;
+        assert_ne!(
+            pairwise.to_bits(),
+            folded.to_bits(),
+            "premise: this fixture must separate the two reductions"
+        );
+
+        let m = compute(&OksSimilarity::default(), &[g], &[d]);
+        assert_eq!(m[[0, 0]].to_bits(), pairwise.to_bits());
+    }
+
+    /// F8: COCO-WholeBody's 133 keypoints exceed numpy's
+    /// `NPY_PW_BLOCKSIZE` of 128, so a real keypoint workload reaches
+    /// the *recursive* arm of the pairwise sum — the one a "this is
+    /// always short, simplify it" reading would delete. The split is
+    /// 64 + 69, not 66 + 67.
+    #[test]
+    fn f8_wholebody_133_keypoints_reach_the_pairwise_recursion() {
+        const K: usize = 133;
+        let sigmas: Vec<f64> = (0..K).map(|i| (26.0 + (i % 84) as f64) / 1000.0).collect();
+        let gt_kps: Vec<(f64, f64, u32)> = (0..K).map(|i| (3.0 * i as f64, 5.0, 2)).collect();
+
+        // Whether a 66/67 halving happens to round to the same double as
+        // numpy's 64/69 one is a coin flip per fixture, so sweep a few
+        // detections: every one must equal the 64/69 split, and at least
+        // one must separate it from the 66/67 alternative.
+        let mut separates_the_split_point = 0_usize;
+        let mut separates_a_left_fold = 0_usize;
+        for phase in 0..8_usize {
+            let dt_kps: Vec<(f64, f64, u32)> = (0..K)
+                .map(|i| {
+                    (
+                        3.0 * i as f64 + 0.45 * ((i * 37 + phase * 5) % 23) as f64,
+                        5.0 + 0.3 * ((i * 11 + phase) % 17) as f64,
+                        2,
+                    )
+                })
+                .collect();
+            let g = ann(9, &gt_kps, [0.0, 0.0, 10.0, 10.0], 4096.0);
+            let d = ann(9, &dt_kps, [0.0, 0.0, 10.0, 10.0], 4096.0);
+
+            let mut map = HashMap::new();
+            map.insert(9_i64, sigmas.clone());
+            let m = compute(
+                &OksSimilarity::new(map),
+                std::slice::from_ref(&g),
+                std::slice::from_ref(&d),
+            );
+
+            let terms = cell_terms(&g, &d, &sigmas);
+            assert_eq!(terms.len(), K);
+
+            // The value the kernel produced must be the 64 + 69 split.
+            let split = crate::parity::numpy_pairwise_sum(&terms[..64])
+                + crate::parity::numpy_pairwise_sum(&terms[64..]);
+            assert_eq!(
+                m[[0, 0]].to_bits(),
+                (split / K as f64).to_bits(),
+                "phase {phase}"
+            );
+
+            if m[[0, 0]].to_bits() != (left_fold(&terms) / K as f64).to_bits() {
+                separates_a_left_fold += 1;
+            }
+            let halved = crate::parity::numpy_pairwise_sum(&terms[..66])
+                + crate::parity::numpy_pairwise_sum(&terms[66..]);
+            if m[[0, 0]].to_bits() != (halved / K as f64).to_bits() {
+                separates_the_split_point += 1;
+            }
+        }
+        assert!(
+            separates_a_left_fold > 0,
+            "no swept detection separates the pairwise sum from a left fold"
+        );
+        assert!(
+            separates_the_split_point > 0,
+            "no swept detection separates numpy's 64/69 split from a 66/67 one; \
+             the recursion arm's split point is then untested here"
+        );
+    }
+
+    /// F10: a keypoint coordinate past the exact-arithmetic bound is a
+    /// typed error, not a silently-wrong cell.
+    ///
+    /// Past `2^25` the `f64` product `dx * dx` stops being exact, so
+    /// vernier would quietly diverge from pycocotools' int64 keypoint
+    /// arithmetic. Refusing is the honest answer: the bound is ~300x
+    /// beyond any real pixel coordinate, so nothing legitimate trips it.
+    #[test]
+    fn f10_out_of_range_keypoint_coordinate_is_rejected() {
+        for (label, bad) in [
+            ("over the bound", MAX_ABS_KEYPOINT_COORD + 1.0),
+            ("negative, over the bound", -(MAX_ABS_KEYPOINT_COORD + 1.0)),
+        ] {
+            let mut kps = const_kps(0.0, 0.0, 2);
+            kps[3] = (bad, 0.0, 2);
+            let g = ann(1, &kps, [0.0, 0.0, 10.0, 10.0], 100.0);
+            let d = ann(1, &const_kps(0.0, 0.0, 2), [0.0, 0.0, 10.0, 10.0], 100.0);
+            let mut out = Array2::<f64>::zeros((1, 1));
+            let err = OksSimilarity::default()
+                .compute(&[g], &[d], &mut out.view_mut())
+                .unwrap_err();
+            match err {
+                EvalError::InvalidAnnotation { detail } => {
+                    assert!(detail.contains("F10"), "{label}: got {detail}");
+                }
+                other => panic!("{label}: expected InvalidAnnotation, got {other:?}"),
+            }
+        }
+
+        // Exactly on the bound is still exact, so it is accepted.
+        let mut kps = const_kps(0.0, 0.0, 2);
+        kps[3] = (MAX_ABS_KEYPOINT_COORD, 0.0, 2);
+        let g = ann(1, &kps, [0.0, 0.0, 10.0, 10.0], 100.0);
+        let d = ann(1, &const_kps(0.0, 0.0, 2), [0.0, 0.0, 10.0, 10.0], 100.0);
+        let mut out = Array2::<f64>::zeros((1, 1));
+        OksSimilarity::default()
+            .compute(&[g], &[d], &mut out.view_mut())
+            .unwrap();
+    }
+
+    /// F10: NaN / infinite coordinates are rejected too. They are not a
+    /// precision question — `f64::max(NaN, 0.0)` returns `0.0` while
+    /// numpy's `np.max` propagates the NaN, so the **F3** surrogate path
+    /// would diverge structurally rather than by a ULP.
+    #[test]
+    fn f10_non_finite_keypoint_coordinate_is_rejected() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut kps = const_kps(0.0, 0.0, 2);
+            kps[0] = (0.0, bad, 2);
+            let g = ann(1, &const_kps(0.0, 0.0, 2), [0.0, 0.0, 10.0, 10.0], 100.0);
+            let d = ann(1, &kps, [0.0, 0.0, 10.0, 10.0], 100.0);
+            let mut out = Array2::<f64>::zeros((1, 1));
+            let err = OksSimilarity::default()
+                .compute(&[g], &[d], &mut out.view_mut())
+                .unwrap_err();
+            match &err {
+                EvalError::InvalidAnnotation { detail } => {
+                    // The locator is the point: one NaN in a
+                    // million-annotation file has to name itself.
+                    assert!(
+                        detail.contains("dt[0]")
+                            && detail.contains("keypoint 0 y")
+                            && detail.contains("F10"),
+                        "expected a located F10 rejection for {bad:?}, got {detail}"
+                    );
+                }
+                other => panic!("expected InvalidAnnotation for {bad:?}, got {other:?}"),
+            }
+        }
+
+        // Visibility flags are *not* coordinates and are not rejected:
+        // numpy reduces them through the single mask `vg > 0`, which a
+        // NaN fails, so the keypoint is dropped from both the count and
+        // the terms. [`is_visible`] is that same comparison, so vernier
+        // drops it too — and the result is the 16-visible-keypoint cell,
+        // not a 17-term sum divided by 16.
+        let mut g = ann(1, &const_kps(3.0, 4.0, 2), [0.0, 0.0, 10.0, 10.0], 100.0);
+        g.keypoints[2] = f64::NAN;
+        let d = ann(1, &const_kps(3.0, 4.0, 2), [0.0, 0.0, 10.0, 10.0], 100.0);
+        let mut out = Array2::<f64>::zeros((1, 1));
+        OksSimilarity::default()
+            .compute(&[g], &[d], &mut out.view_mut())
+            .unwrap();
+        // 16 exact matches, 16 terms of exactly 1.0, divided by 16.
+        assert_eq!(out[[0, 0]], 1.0);
+    }
+
+    /// F10, the half the keypoint guard did not cover: a non-finite
+    /// **GT bbox**. Only the **F3** surrogate path reads it, and that
+    /// path is exactly where `f64::max` and `np.max` part company.
+    ///
+    /// Before this guard, the fixture below returned a bit-exact
+    /// `1.0` — a perfect match at every IoU threshold — where
+    /// pycocotools returns `NaN`, which matches nothing. It was a
+    /// silent wrong answer, not an error: `x0 = NaN - 10.0` is NaN,
+    /// `(NaN).max(0.0)` is `0.0` in Rust, so `dx` collapsed to zero
+    /// and every `exp(-e)` term came out `1.0`.
+    #[test]
+    fn f10_non_finite_gt_bbox_is_rejected() {
+        // The exact divergence, pinned as arithmetic so the reason
+        // survives even if the guard is ever moved: Rust's `max`
+        // swallows the NaN, numpy's `np.max((z, x0 - xd), axis=0)`
+        // propagates it.
+        assert_eq!((f64::NAN - 10.0_f64).max(0.0), 0.0);
+
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            for axis in 0..4 {
+                let mut bbox = [0.0, 0.0, 10.0, 10.0];
+                bbox[axis] = bad;
+                // Zero visible keypoints on the GT: `k1 == 0` takes the
+                // F3 surrogate path, which is the one that reads bbox.
+                let g = ann(1, &const_kps(0.0, 0.0, 0), bbox, 100.0);
+                let d = ann(1, &const_kps(0.0, 0.0, 2), [0.0, 0.0, 10.0, 10.0], 100.0);
+                let mut out = Array2::<f64>::zeros((1, 1));
+                let err = OksSimilarity::default()
+                    .compute(&[g], &[d], &mut out.view_mut())
+                    .unwrap_err();
+                match &err {
+                    EvalError::InvalidAnnotation { detail } => {
+                        assert!(
+                            detail.contains("gt[0]")
+                                && detail.contains("bbox")
+                                && detail.contains("F10"),
+                            "expected a located bbox rejection for {bad:?}, got {detail}"
+                        );
+                    }
+                    other => panic!("expected InvalidAnnotation for {bad:?}, got {other:?}"),
+                }
+            }
+        }
+
+        // The *DT* bbox is never read — neither by this kernel nor by
+        // cocoeval's `computeOks` — so it is deliberately not checked,
+        // and a garbage value there must not fail an otherwise valid
+        // cell.
+        let g = ann(1, &const_kps(0.0, 0.0, 0), [0.0, 0.0, 10.0, 10.0], 100.0);
+        let d = ann(
+            1,
+            &const_kps(0.0, 0.0, 2),
+            [f64::NAN, 0.0, 10.0, 10.0],
+            100.0,
+        );
+        let m = compute(&OksSimilarity::default(), &[g], &[d]);
+        assert_eq!(m[[0, 0]], 1.0);
+
+        // `area` is deliberately unguarded too: it only ever divides,
+        // so NaN propagates through `exp(-e)` on both sides alike and
+        // the cell comes out NaN exactly as pycocotools reports it.
+        let g = ann(1, &const_kps(0.0, 0.0, 2), [0.0, 0.0, 10.0, 10.0], f64::NAN);
+        let d = ann(1, &const_kps(0.0, 0.0, 2), [0.0, 0.0, 10.0, 10.0], 100.0);
+        let m = compute(&OksSimilarity::default(), &[g], &[d]);
+        assert!(
+            m[[0, 0]].is_nan(),
+            "NaN area must propagate, got {}",
+            m[[0, 0]]
+        );
+    }
+
+    /// A cell whose GT and DT carry different-length sigma vectors is
+    /// rejected up front, on both paths.
+    ///
+    /// Reachable through this public API directly, and through the
+    /// engine's `use_cats = false` collapse with a per-category sigma
+    /// map that covers some categories and not others (the unlisted
+    /// ones fall back to the 17-long [`COCO_PERSON_SIGMAS`]).
+    #[test]
+    fn mixed_category_sigma_lengths_within_a_cell_are_rejected() {
+        // cat 2 gets 20 sigmas; cat 1 falls back to the 17 defaults.
+        let mut override_map = HashMap::new();
+        override_map.insert(2_i64, vec![0.05_f64; 20]);
+        let sim = OksSimilarity::new(override_map);
+
+        let kps17 = |v: u32| vec![(0.0_f64, 0.0_f64, v); 17];
+        let kps20 = |v: u32| vec![(0.0_f64, 0.0_f64, v); 20];
+        let bb = [0.0, 0.0, 10.0, 10.0];
+
+        let expect_mismatch = |gts: &[OksAnn], dts: &[OksAnn], label: &str| {
+            let mut out = Array2::<f64>::zeros((gts.len(), dts.len()));
+            let err = sim.compute(gts, dts, &mut out.view_mut()).unwrap_err();
+            match err {
+                EvalError::DimensionMismatch { detail } => {
+                    assert!(
+                        detail.contains("sigma length differs"),
+                        "{label}: got {detail}"
+                    );
+                }
+                other => panic!("{label}: expected DimensionMismatch, got {other:?}"),
+            }
+        };
+
+        // F3 surrogate path (GT has no visible keypoints) with a DT
+        // longer than the GT: `vars[i]` used to index past the GT row's
+        // 17 entries and panic outright.
+        expect_mismatch(
+            &[ann(1, &kps17(0), bb, 100.0)],
+            &[ann(2, &kps20(2), bb, 100.0)],
+            "F3 path, DT longer",
+        );
+
+        // Standard path (GT keypoints visible) with a GT longer than
+        // the DT: `zip` used to truncate the terms to the DT's 17 while
+        // `denom_count` stayed at the GT's 20 — a silently wrong
+        // divisor, and the half that `debug_assert_eq!` cannot catch in
+        // a release build.
+        expect_mismatch(
+            &[ann(2, &kps20(2), bb, 100.0)],
+            &[ann(1, &kps17(2), bb, 100.0)],
+            "standard path, GT longer",
+        );
+
+        // Both orientations of both paths, for completeness.
+        expect_mismatch(
+            &[ann(2, &kps20(0), bb, 100.0)],
+            &[ann(1, &kps17(2), bb, 100.0)],
+            "F3 path, GT longer",
+        );
+        expect_mismatch(
+            &[ann(1, &kps17(2), bb, 100.0)],
+            &[ann(2, &kps20(2), bb, 100.0)],
+            "standard path, DT longer",
+        );
+
+        // A mismatch *within* one side is caught just as well — the
+        // cross product pairs every GT with every DT, so one shared `k`
+        // is the invariant, not "each side is internally consistent".
+        expect_mismatch(
+            &[ann(1, &kps17(2), bb, 100.0), ann(2, &kps20(2), bb, 100.0)],
+            &[ann(1, &kps17(2), bb, 100.0)],
+            "two GT categories",
+        );
+
+        // Same-length sigmas across different categories stay legal:
+        // the guard is on length, not on category identity.
+        let mut same_len = HashMap::new();
+        same_len.insert(2_i64, vec![0.05_f64; 17]);
+        let sim_same = OksSimilarity::new(same_len);
+        let m = compute(
+            &sim_same,
+            &[ann(1, &kps17(2), bb, 100.0)],
+            &[ann(2, &kps17(2), bb, 100.0)],
+        );
+        assert_eq!(m[[0, 0]], 1.0);
     }
 
     #[test]

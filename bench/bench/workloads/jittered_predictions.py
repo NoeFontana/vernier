@@ -78,8 +78,24 @@ MASK_TRANSLATE_SIGMA_PX = 2.0
 # across NumPy versions; treat as a one-time ABI choice.
 _MASK_RNG_SPAWN_KEY = (0x6D61736B,)  # b"mask"
 
-# COCO 17-keypoint sigmas (post-divide-by-10), mirroring
+# COCO 17-keypoint sigmas, as the rounded decimal literals — which is
+# *not* bit-identical to
 # ``crates/vernier-core/src/similarity/oks.rs::COCO_PERSON_SIGMAS``.
+# That constant writes the ``/ 10.0`` out as a second rounding (quirk
+# **F9**), so it differs from the literals below by one ULP at indices
+# 0, 3, 4, 11 and 12. The difference is deliberate on both sides and
+# the two must not be reconciled in either direction:
+#
+# * Here it does not matter. These values only scale the magnitude of
+#   the jitter this generator applies; they are never handed to the
+#   evaluator, and pinning them as literals keeps a generated workload
+#   reproducible byte-for-byte, the same one-time ABI choice as
+#   ``_MASK_RNG_SPAWN_KEY`` above. "Correcting" them to ``0.26 / 10.0``
+#   would silently regenerate every cached workload.
+# * There it is load-bearing. Do not copy these literals into the
+#   kernel, or into ``python/vernier/_compat.py`` — see the F9 row in
+#   ``docs/engineering/pycocotools-quirks.md``.
+#
 # Bench-side jitter scales the per-keypoint Gaussian by ``sigma_i *
 # sqrt(area)`` so the perturbation magnitude maps onto the OKS
 # denominator: a unit jitter at keypoint ``i`` corresponds to one
