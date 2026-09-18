@@ -2264,9 +2264,10 @@ is a perf knob, not a correctness switch). <code>RAYON_NUM_THREADS</code> is
 intentionally <strong>not</strong> consulted — inheriting an unrelated library's
 deployment knob would silently change vernier's behaviour.</p>
 <p>Measured scaling on COCO val2017 (AMD EPYC Milan, 4 physical cores)
-lives in <a href="../../benchmarks/"><code>benchmarks.md</code></a>. Headline: boundary
-3.25× at <code>num_threads=4</code>, segm 2.29×, panoptic 2.43×, semantic
-3.66×. The full design rationale is
+lives in <a href="../../benchmarks/"><code>benchmarks.md</code></a>. Headline at
+<code>num_threads=4</code>: boundary 3.7×, segm 3.0×, bbox 2.1×, keypoints 2.3×.
+The panoptic (2.43×) and semantic (3.66×) figures are ADR-0047's, whose
+thread axis this round did not re-measure. The full design rationale is
 <a href="../../adr/0047-threading-model/">ADR-0047</a>.</p>
 <h2 id="across-ranks">Across ranks</h2>
 <p><code>Evaluator.evaluate_to_partial(gt, dt, *, rank_id)</code> per rank, then

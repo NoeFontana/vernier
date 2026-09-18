@@ -2077,21 +2077,21 @@ provide. For mechanical "rewrite my imports" instructions, see the
 <td><code>pycocotools</code></td>
 <td>instance (bbox / segm / keypoints)</td>
 <td>The reference</td>
-<td>~7–17× slower</td>
+<td>~7.2–18.7× slower</td>
 <td>You need the literal pycocotools printed table for an external system that scrapes it</td>
 </tr>
 <tr>
 <td><code>faster-coco-eval</code></td>
 <td>instance (bbox / segm / keypoints / boundary)</td>
 <td>"Faster, mostly compatible" — quirks chosen silently</td>
-<td>~3.4–17× slower per CPU</td>
+<td>~3.7–16.9× slower per CPU</td>
 <td>You're already running it in production and don't need vernier's auditable parity surface</td>
 </tr>
 <tr>
 <td><code>hotcoco</code></td>
 <td>instance (bbox / segm / keypoints / OBB), LVIS, Open Images</td>
 <td>"Same numbers to double precision" — no published quirk dispositions</td>
-<td>~1.4–1.6× slower per CPU on COCO; ~1.03× on LVIS</td>
+<td>~1.5–1.9× slower per CPU on COCO; ~1.6× on LVIS; ~2.6× at Objects365 scale</td>
 <td>You want TIDE / confusion matrices / dataset browser in one package and don't need bit-exactness or panoptic / semantic</td>
 </tr>
 <tr>
@@ -2105,21 +2105,21 @@ provide. For mechanical "rewrite my imports" instructions, see the
 <td><code>lvis-api</code></td>
 <td>LVIS federated</td>
 <td>The reference</td>
-<td>~57× slower on full v1 val · 10× lower peak RSS on vernier (1.5 GiB vs 15 GiB)</td>
+<td>~81× slower on full v1 val · 13.6× lower peak RSS on vernier (1.11 GiB vs 15.08 GiB)</td>
 <td>Your tooling depends on the <code>LVISEval</code> instance attributes</td>
 </tr>
 <tr>
 <td><code>boundary-iou-api</code></td>
 <td>boundary IoU only</td>
 <td>The reference</td>
-<td>~19× slower on val2017 perfect-DT</td>
+<td>~19.8× slower on val2017 perfect-DT</td>
 <td>You're running an external evaluation script that loads <code>boundary_iou.coco_instance_api.COCOeval</code> by name</td>
 </tr>
 <tr>
 <td><code>mmsegmentation</code></td>
 <td>semantic</td>
 <td>One of three references vernier targets</td>
-<td>~7× slower on val2017 perfect-DT (<code>mmseg.IoUMetric</code> only — vernier-semantic vs vendored oracle, ADR-0036)</td>
+<td>~14.1× slower on val2017 perfect-DT (<code>mmseg.IoUMetric</code> only — vernier-semantic vs vendored oracle, ADR-0036)</td>
 <td>You need the full <code>mmseg.evaluation</code> registry surface (it's a training framework, not just an evaluator)</td>
 </tr>
 </tbody>
@@ -2140,7 +2140,7 @@ matches — is filed in
 as either <code>strict</code> (bit-equal output) or <code>corrected</code> (opt-in opinionated
 fix). The full table lives in
 <a href="https://github.com/NoeFontana/vernier/blob/main/docs/engineering/pycocotools-quirks.md"><code>docs/engineering/pycocotools-quirks.md</code></a>.</p>
-<p>vernier is ~7–17× faster on val2017 across bbox / segm / keypoints (see the
+<p>vernier is ~7.2–18.7× faster on val2017 across bbox / segm / keypoints (see the
 <a href="../benchmarks/">benchmarks</a>). The drop-in shim
 (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0007-patch-pycocotools-policy.md">ADR-0007</a>)
 keeps <code>from pycocotools.cocoeval import COCOeval</code> working in existing
@@ -2164,8 +2164,8 @@ why and where.</p>
 <p>vernier targets the same drop-in pattern but with auditable parity. Every
 quirk has a row in the disposition table; strict mode reproduces
 pycocotools bit-for-bit; corrected fixes are listed and opt-in. The
-performance gap is real on val2017 — per CPU, vernier is 3.4× (segm),
-4.6× (bbox), 5.7× (keypoints) and 16.7× (boundary) faster — but the
+performance gap is real on val2017 — per CPU, vernier is 3.7× (segm),
+5.6× (bbox), 5.7× (keypoints) and 16.9× (boundary) faster — but the
 headline benefit is "you can prove what your numbers mean".</p>
 <p>Version 1.8.0 (2026-08) made faster-coco-eval multi-threaded by default:
 RLE IoU runs on a Python thread pool and image evaluation / accumulation
@@ -2197,11 +2197,15 @@ reporting AP, but it is a different guarantee.</p>
 hotcoco's per-cell precision differs by up to 8.0e-3 and AP by 4.9e-5, on both
 GT-as-DT and jittered detections (so it is not score-tie handling), while
 vernier is bit-equal to the reference on both.</p>
-<p>On speed, per CPU, vernier is 1.37–1.62× faster on COCO bbox / segm /
-keypoints and ~1.03× on LVIS, using less memory in every cell (COCO bbox
-eval peak 179 MiB vs 226 MiB). At Objects365 scale with 8 threads the
-ranking inverts — hotcoco 7.8 s vs vernier 8.8 s — because both become
-bound by serial JSON parsing and hotcoco's is the faster path there.</p>
+<p>On speed, per CPU, vernier is 1.5–1.9× faster on COCO bbox / segm /
+keypoints and 1.6× on LVIS, using less memory in every cell (COCO bbox
+peak 200 MiB vs 274 MiB). At Objects365 scale the gap is widest:
+6.6 s vs 15.1 s on one CPU and 3.2 s vs 8.2 s at eight threads, because
+hotcoco spends 6.0 s of its 8.2 s total in serial JSON parsing while
+vernier's ingest is threaded (ADR-0054) and takes 0.33 s.</p>
+<p>An earlier round had this ranking inverted at Objects365 scale
+(hotcoco 7.8 s vs vernier 8.8 s at eight threads); ADR-0050 and
+ADR-0051 closed that gap and the current round puts vernier 2.6× ahead.</p>
 <p><strong>Pick <code>hotcoco</code> instead</strong> when you want its diagnostic and dataset tooling in
 one dependency, or need OBB / Open Images evaluation. <strong>Pick vernier</strong> when you
 need bit-exact reproduction of a pinned reference, panoptic or semantic
