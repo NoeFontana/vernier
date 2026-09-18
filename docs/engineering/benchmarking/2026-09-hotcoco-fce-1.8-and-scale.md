@@ -292,20 +292,20 @@ was broken the same way from a clean cache.
 
 ## How to refresh
 
-```bash
-just bench-sync
-# COCO headline (release, all impls, one CPU each)
-for iou in bbox segm keypoints boundary; do
-  just bench-run --impl all --workload coco_val2017_jittered_seed0 --iou $iou
-done
-# Thread scaling
-just bench-run --impl hotcoco --workload coco_val2017_jittered_seed0 \
-    --iou segm --num-threads 1,2,4,8 --no-parity
-# Objects365 (per-impl: one OOM must not abort the others)
-just bench-run --impl vernier --workload objects365_val_jittered_seed0 \
-    --iou bbox --mode dev --no-parity
-python tools/render_benchmarks.py
-```
+Moved to [the canonical command list](./README.md#refreshing-the-published-numbers).
+
+The recipe that used to sit here was wrong in two ways, and both were
+found while refreshing for the 0.4.0 release:
+
+1. It omitted `--mode release` under a comment that said "release". The
+   harness default is `dev` — **one rep, no warmup, no IQR gate** — so
+   every cell it produced was a single sample reporting `0 ns` IQR.
+2. It looped `keypoints` over `coco_val2017_jittered_seed0`, which does
+   not carry keypoint annotations and rejects that metric, so the
+   keypoints cell never ran at all.
+
+The measurements in this document were captured by hand rather than by
+that block and are unaffected; they stand as recorded.
 
 ## Follow-ups
 
