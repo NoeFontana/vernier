@@ -60,6 +60,38 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: [build, spell]
     runs-on: ubuntu-latest
+    # Every release fires this workflow twice — once for the
+    # squash-merge push to main (`main` + `latest`) and seconds later
+    # for the `v*` tag (`X.Y` + `stable`) — and both runs reach this
+    # job. `mike deploy --push` is a non-atomic fetch/commit/push
+    # against gh-pages, so whichever pushes second on a stale copy is
+    # rejected with `! [rejected] gh-pages -> gh-pages (fetch first)`.
+    # On v0.4.0 the loser was the tag run (35368231478), i.e. the one
+    # that publishes the versioned page and moves `stable`; it had to
+    # be re-run by hand.
+    #
+    # The workflow-level group can't serialize those two: it keys on
+    # github.ref, and the release pair is refs/heads/main vs
+    # refs/tags/vX.Y.Z — different groups, no mutual exclusion. This
+    # group is deliberately ref-independent, because the resource
+    # being guarded is the gh-pages branch, which is global to the
+    # repo and doesn't care which ref a deploy came from.
+    #
+    # Cancellation is off (and `queue: max` opts the group into real
+    # queueing rather than the default single pending slot) because
+    # the two deploys are not redundant: each writes content the other
+    # doesn't, so a dropped deploy is a docs version that silently
+    # never ships, not a wasted rebuild. Ordering between them is
+    # unconstrained — they touch disjoint version directories.
+    #
+    # Scoped to this job on purpose: build/spell run on every PR and
+    # touch nothing shared, so a repo-wide group there would make
+    # concurrent PRs queue (and, under the workflow-level
+    # cancel-in-progress, cancel each other).
+    concurrency:
+      group: docs-deploy-gh-pages
+      cancel-in-progress: false
+      queue: max
     permissions:
       contents: write
     steps:
