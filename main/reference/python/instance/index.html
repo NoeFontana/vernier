@@ -4299,8 +4299,9 @@ both adjacent buckets.</p>
 
 
         <p>Parsed-once COCO ground-truth dataset.</p>
-<p>Construct with [<code>PyDataset::from_json</code>]; pass to the
-<code>evaluate_*_summary_with_dataset</code> family. Reusing the same instance
+<p>Construct with [<code>PyDataset::from_json</code>]; pass as the <code>gt</code> argument
+of any <code>evaluate_*_grid</code> / <code>evaluate_*_summary</code> function, which
+accept <code>bytes</code> or this handle (ADR-0061). Reusing the same instance
 across <code>evaluate</code> calls reuses the GT-side derivations the cached
 kernels populate on first use (per ADR-0020). The handle is frozen
 — its identity <em>is</em> the cache key.</p>
