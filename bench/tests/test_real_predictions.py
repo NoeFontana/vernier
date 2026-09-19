@@ -43,7 +43,7 @@ def test_maskrcnn_dt_path_missing_points_at_fetch_script(fake_cache: Path) -> No
 def test_rfdetr_segnano_dt_path_returns_cached_file(fake_cache: Path) -> None:
     # Built from the canonical helper, not hand-assembled: the rf-detr
     # filename carries a cache-blob version alongside the package
-    # version (``-v2`` today) so a harness-side change that alters the
+    # version (``-v3`` today) so a harness-side change that alters the
     # on-disk bytes forces a re-populate. Spelling it out here once went
     # stale the first time that bumped, and silently -- bench tests do
     # not run in CI. `test_rfdetr_cache_filename_pins_the_blob_version`
@@ -58,10 +58,17 @@ def test_rfdetr_cache_filename_pins_the_blob_version() -> None:
 
     The filename IS the cache key, so a change to it must be a
     deliberate edit here rather than a silent miss somewhere downstream.
+
+    ``v3`` invalidates every ``v2`` blob: those were written through a
+    class mapping that read rfdetr's ``{category_id: name}`` dict as a
+    dense ``0..79`` list, relabelling every detection and dropping the
+    10 ids above 79. This assertion is what made that bump visible —
+    it failed the moment the constant moved, which is the whole point
+    of pinning the spelling in exactly one place.
     """
     assert (
         rfdetr_cache_filename("segnano")
-        == f"rfdetr-segnano-{real_predictions.RFDETR_VERSION}-v2-coco-val2017.json"
+        == f"rfdetr-segnano-{real_predictions.RFDETR_VERSION}-v3-coco-val2017.json"
     )
 
 
