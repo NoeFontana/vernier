@@ -77,6 +77,9 @@ else is detail.
 | ---- | ----------------------------------------------------------- | -------- |
 | [0010](0010-boundary-iou-isolated-subsystem.md) | Boundary IoU as an isolated subsystem with its own oracle + quirks | accepted |
 | [0012](0012-oks-keypoints-surface.md) | OKS keypoints public surface and kernel-coupled defaults | accepted |
+| [0043](0043-lrp-oracle-and-namespace.md) | LRP / oLRP — numpy oracle, kemaloksuz tripwire, cross-paradigm namespace | accepted |
+| [0044](0044-lrp-thresholds-and-tau-grid.md) | LRP — tau grid resolution and per-kernel TP thresholds | accepted |
+| [0045](0045-lrp-keypoints-shipped.md) | LRP for keypoints — shipped, not deferred | accepted |
 
 ### Public surfaces — dataset, results, streaming, CLI
 
@@ -91,6 +94,8 @@ else is detail.
 | [0030](0030-buffer-protocol.md) | Accept detection arrays alongside JSON bytes in streaming update | accepted (amended 2026-05-09 — bitmask + compressed-bytes ingest readmitted) |
 | [0035](0035-api-surface-consolidation.md) | Consolidate the streaming / DDP / background public surface | proposed |
 | [0038](0038-tables-panoptic-semantic.md) | Result tables for panoptic and semantic — per-class only, sibling result types | accepted |
+| [0046](0046-slice-and-aggregate.md) | Slice-and-aggregate — partition manifest, `vernier eval --manifest`, `vernier aggregate` | accepted |
+| [0047](0047-threading-model.md) | Opt-in `num_threads` parallelism — zero overhead on the default path | accepted (`_with_dataset` references superseded by 0061) |
 | [0059](0059-remove-cli-aligned-parity-value.md) | Remove the `aligned` value from `vernier eval --parity-mode` | proposed |
 
 ### Sibling paradigms
@@ -128,6 +133,7 @@ else is detail.
 | [0049](0049-bench-cpu-budget.md) | Enforce a per-cell CPU budget and measure memory exactly (and add hotcoco as a baseline) | accepted |
 | [0050](0050-parallel-accumulate.md) | Parallelize `accumulate` across the category axis (bit-identical) | proposed |
 | [0051](0051-occupied-cell-visiting.md) | Visit only occupied cells; fill the grid in parallel | proposed |
+| [0052](0052-accumulate-single-sort.md) | Derive every `accumulate` sort from one permutation per category | proposed |
 | [0053](0053-matching-dt-prefilter.md) | Skip the GT scan for detections that cannot match (per-cell column maxima) | proposed |
 | [0054](0054-split-parallel-json-ingestion.md) | Split JSON ingestion across the thread budget; round floats correctly | proposed (amended 2026-09-17) |
 | [0055](0055-drop-in-params-surface-and-coco-json-adapters.md) | Finish the `COCOeval` drop-in's mutable surface (`ious`, `catIds`); publish the COCO-JSON normalizers | proposed |
