@@ -97,7 +97,11 @@ def _segments_for_image(
     # half-encoded PNG that the per-image skip below (or a downstream
     # panopticapi consumer) would silently treat as complete.
     png_part = png_out_path.with_suffix(png_out_path.suffix + ".part")
-    PILImage.fromarray(rgb, mode="RGB").save(png_part)
+    # ``format=`` is not optional here: PIL infers the encoder from the
+    # suffix, and the atomic-write suffix is ``.part``, not ``.png``.
+    # Without it every save raises ``unknown file extension: .part``,
+    # which is why this populator could never build a cache.
+    PILImage.fromarray(rgb, mode="RGB").save(png_part, format="PNG")
     png_part.replace(png_out_path)
 
     # Build the per-image segments_info in COCO panoptic results shape:

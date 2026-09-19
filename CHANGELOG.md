@@ -14,7 +14,61 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-09-19
+
+### Documentation
+
+- **The published bbox, segm and keypoints performance numbers now come
+  from real model output**, not from jittered ground truth. A jittered
+  workload perturbs the GT to synthesise detections, so it inherits the
+  GT's per-image class distribution — which is not the distribution a
+  detector produces. The new cells run against RF-DETR `Nano`
+  (513,808 detections), `SegNano` (430,516 detections, real predicted
+  masks) and `ViTPose-base-simple` (10,777 top-down keypoint
+  detections) on COCO val2017, release mode, all four implementations
+  agreeing on AP bit-for-bit.
+
+  The ratios move in vernier's favour and the absolute times go up,
+  because a real DT is an order of magnitude denser than a jittered
+  one: bbox `18.7x -> 22.4x` against pycocotools, `5.6x -> 5.4x`
+  against faster-coco-eval, `1.9x -> 2.3x` against hotcoco; segm
+  `7.2x -> 9.4x`, `3.7x -> 4.2x`, `1.5x -> 2.0x`; keypoints
+  `16.8x -> 18.6x`, `5.7x -> 6.1x`, `1.6x -> 1.6x`.
+
+  Two things are recorded rather than smoothed over. A second real
+  detector on the same kernel and GT measures `15.4x / 4.0x / 1.9x` on
+  bbox, so a single-workload speedup is a point estimate, not a
+  property of the library. And on that cell hotcoco's evaluate stage
+  is genuinely faster than vernier's (608.5 ms vs 955.9 ms) — the cell
+  total still favours vernier, on the strength of a 12x faster load
+  stage. Full snapshot:
+  `docs/engineering/benchmarking/2026-09-rfdetr-real-predictions.md`.
+
+  Boundary, panoptic, semantic and LVIS rows still run against
+  synthetic DT and are now labelled as such in the README table
+  rather than presented as equivalent. Boundary on real masks is
+  deferred: one vernier pass over the SegNano masks costs ~470 s, so
+  a release-mode cell is an overnight job.
+
 ### Fixed
+
+- **The Mask2Former panoptic prediction cache could never be
+  populated.** The populator writes each PNG atomically (`<name>.part`
+  -> rename), but handed that path to PIL, which infers the encoder
+  from the file extension — so every save raised
+  `ValueError: unknown file extension: .part`. Present since the cell
+  landed, which is why
+  `docs/engineering/benchmarking/2026-05-mask2former-real-predictions.md`
+  still carries `<TBD>` in every panoptic table: the numbers it was
+  written to hold were never obtainable. Fixed by passing
+  `format="PNG"` explicitly. Harness-only; no shipped code path.
+
+- **The ViTPose keypoints bench workload was defined but never
+  registered.** `real_predictions.py` exported the workload id and a
+  `vitpose_dt_path()` resolver, but `bench/bench/workloads/__init__.py`
+  had no branch for it, so the cell could not be run at all. Wired in
+  alongside the other real-prediction cells; it backs the keypoints
+  row above.
 
 - **rf-detr predictions were systematically mislabelled** in the
   real-model validation harness. `rfdetr.assets.coco_classes.COCO_CLASSES`
@@ -1419,7 +1473,8 @@ crate set that ship the evaluator.
 - **Parity fixtures** — minimal per-quirk fixtures plus full COCO
   val2017 perfect-DT smoke for bbox, segm, boundary, and keypoints.
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/NoeFontana/vernier/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/NoeFontana/vernier/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/NoeFontana/vernier/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/NoeFontana/vernier/compare/v0.3.0...v0.4.0
