@@ -140,7 +140,7 @@ else is detail.
 | [0057](0057-python-detection-ingest-routes.md) | Two direct detection-ingest routes for in-process callers (list of result dicts, `(N, 7)` matrix) | proposed |
 | [0058](0058-keypoints-usecats-zero-disposition.md) | Dispose of keypoints-under-`useCats=0` as `corrected` (quirk F6) | proposed |
 | [0060](0060-python-ground-truth-array-ingest.md) | Columnar ground-truth ingest for in-process callers (`CocoDataset.from_arrays`) | proposed |
-| [0061](0061-one-ground-truth-parameter-keyword-only-options.md) | One ground-truth parameter (`bytes \| CocoDataset`) and keyword-only options on the instance evaluate surface | proposed |
+| [0061](0061-one-ground-truth-parameter-keyword-only-options.md) | One ground-truth parameter (`bytes \| CocoDataset`) and keyword-only options on the instance evaluate surface | accepted |
 
 ### TIDE design package — proposed cluster
 

@@ -1,10 +1,11 @@
 # ADR-0061: One ground-truth parameter, and keyword-only options, on the instance evaluate surface
 
-- Status: proposed
-- Date: 2026-09-18
-- Deciders: @NoeFontana
-- Supersedes: none
-- Amends: ADR-0020 (parsed-once dataset handle) — the handle stays; the
+- **Status:** accepted
+- **Date:** 2026-09-18
+- **Accepted:** 2026-09-19 (shipped in 0.5.0)
+- **Deciders:** @NoeFontana
+- **Supersedes:** none
+- **Amends:** ADR-0020 (parsed-once dataset handle) — the handle stays; the
   way it is reached changes.
 
 ## Context and problem statement

@@ -1366,7 +1366,12 @@ crate set that ship the evaluator.
 - **Parity fixtures** — minimal per-quirk fixtures plus full COCO
   val2017 perfect-DT smoke for bbox, segm, boundary, and keypoints.
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/NoeFontana/vernier/compare/v0.4.1...v0.5.0
+[0.4.1]: https://github.com/NoeFontana/vernier/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/NoeFontana/vernier/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/NoeFontana/vernier/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/NoeFontana/vernier/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/NoeFontana/vernier/compare/v0.0.4...v0.1.0
 [0.0.4]: https://github.com/NoeFontana/vernier/compare/v0.0.3...v0.0.4
 [0.0.3]: https://github.com/NoeFontana/vernier/compare/v0.0.2...v0.0.3
