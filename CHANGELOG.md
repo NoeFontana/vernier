@@ -14,6 +14,35 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Fixed
+
+- **rf-detr predictions were systematically mislabelled** in the
+  real-model validation harness. `rfdetr.assets.coco_classes.COCO_CLASSES`
+  is a `{category_id: name}` dict keyed by COCO's *sparse* ids
+  (1..90 with gaps), and rfdetr's COCO checkpoints emit that same
+  sparse id as `Detections.class_id` (`class_embed.out_features == 91`;
+  slot 0 is background). The harness read its 80 values as a dense
+  `0..79` list, so every detection was relabelled to a neighbouring
+  category and the 10 ids above 79 were dropped without a word —
+  8.5% of all detections on val2017. Measured bbox mAP was `0.0019`;
+  the correct mapping gives `0.5376`.
+
+  Nothing in the suite could see it: the TIDE cells gate structural
+  coherence and determinism, and the boundary cell gates
+  vernier ↔ oracle parity — all of which hold when both sides get the
+  same wrong labels. The one visible symptom, a near-zero headline
+  AP, was published in `docs/engineering/real-predictions-parity.md`
+  and explained away as "low by design".
+
+  `_coco_class_mapping` now validates the identity mapping by name
+  against the GT instead of assuming a layout, unmappable class ids
+  raise instead of being skipped, and the prediction-cache blob
+  version is bumped `v2` → `v3` so existing caches re-populate rather
+  than being served. Affects the local harness only — no shipped code
+  path, no wheel content. TIDE's `t_b` anchoring for segm and
+  boundary is weakened accordingly (the bbox ratification runs
+  against DETR-R50 and is unaffected).
+
 ### Changed
 
 - **`_core` accumulators summarize with their own kernel's plan by

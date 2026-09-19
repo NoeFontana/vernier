@@ -56,75 +56,108 @@ if TYPE_CHECKING:
     from supervision import Detections
 
 
-_RFDETR_VERSION = "1.6.5.post0"
-_DATASET_ID = "coco-val2017"
-
-#: Cache-blob content tag. Mirrors
-#: :data:`real_predictions_cache._RFDETR_CACHE_BLOB_VERSION` exactly —
-#: see that constant's docstring for the v1 → v2 rationale (the
-#: thread-pin landing in :func:`_instantiate_model` makes ``v1`` bytes
-#: host-dependent, ``v2`` bytes deterministic). Both filename builders
-#: must agree byte-for-byte or the TIDE populator and the bench
-#: adapter would point at different files; that's why this constant
-#: is duplicated here rather than imported (this module pre-dates the
-#: shared cache package and avoids the dep to stay light).
-_RFDETR_CACHE_BLOB_VERSION = "v2"
-
 #: rf-detr model variants the harness exercises. ``nano`` is the
 #: bbox-only RFDETRNano; ``segnano`` is the instance-seg RFDETRSegNano
 #: (which also produces masks usable by the boundary kernel).
 ModelName = Literal["nano", "segnano"]
+
+# Both helpers below delegate to ``real_predictions_cache``, which is
+# the single owner of the rfdetr pin, the cache-blob version and the
+# cache root. This module used to keep its own copy of all three and
+# rebuild the filename itself, justified by a comment about avoiding
+# the dep — stale since the package became a dev dependency that the
+# four SOTA predictors and this directory's own conftest all import.
+# The cost was concrete: the v2 → v3 bump had to be hand-applied in
+# two files, and the only assertion pinning the spelling lives in
+# ``bench/tests/``, which does not run in CI. A one-sided bump would
+# therefore keep a corrupt cache live with a green suite — the exact
+# failure the blob version exists to prevent.
+#
+# Imported inside the functions, not at module scope:
+# ``real_predictions_cache`` imports ``platformdirs``, which ships in
+# the ``real-models`` extra, and this module must stay importable
+# without it so the mapping tests collect (and skip) cleanly on a
+# host that has no extra installed.
 
 
 def cache_filename(model_name: ModelName) -> str:
     """Stable filename for cached predictions.
 
     Versioned + dataset-tagged so a pin bump or dataset swap can't
-    silently reuse stale predictions. Also embeds
-    :data:`_RFDETR_CACHE_BLOB_VERSION` (the cache-blob content tag) so
-    a harness-side change that affects on-disk bytes (e.g. the
-    thread-pin that bumped v1 → v2) forces a re-populate instead of
-    silently serving stale bytes on hosts that already have a v1
-    file.
+    silently reuse stale predictions, and blob-versioned so a
+    harness-side change that affects on-disk bytes forces a
+    re-populate rather than serving stale ones.
     """
-    return f"rfdetr-{model_name}-{_RFDETR_VERSION}-{_RFDETR_CACHE_BLOB_VERSION}-{_DATASET_ID}.json"
+    from real_predictions_cache import rfdetr_cache_filename
+
+    return rfdetr_cache_filename(model_name)
 
 
 def predictions_cache_root() -> Path:
     """Per-user cache for model predictions (machine-local).
 
-    Resolves via :func:`platformdirs.user_cache_dir` so the path is
-    XDG-correct on Linux, ``~/Library/Caches/...`` on macOS, and
-    ``%LOCALAPPDATA%\\...`` on Windows. Predictions are large and
-    slow to recompute — keying them per ``(model, version, dataset)``
-    lets a re-run of the harness skip inference entirely.
+    Honours ``$VERNIER_REAL_PREDICTIONS_CACHE`` before falling back to
+    the XDG location. The hand-rolled copy this replaces resolved
+    ``platformdirs`` directly and ignored that variable, so on a host
+    that set it the TIDE populator wrote to one root while the bench
+    adapter read from another.
     """
-    import platformdirs
+    from real_predictions_cache import cache_root
 
-    root = Path(platformdirs.user_cache_dir("vernier")) / "real-models"
+    root = cache_root()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def _coco_class_mapping(gt: dict[str, Any], dense_class_names: list[str]) -> dict[int, int]:
-    """Map rfdetr's dense ``class_id`` (0..79) to COCO's sparse
-    ``category_id`` (1..90 with gaps).
+#: Class slot rfdetr's COCO checkpoints reserve for "no object".
+#: ``class_embed.out_features`` is 91 on the COCO-pretrained
+#: RFDETRNano / RFDETRSegNano: slots 1..90 are COCO's sparse category
+#: ids and slot 0 is the only one left over. Detections carrying it
+#: are skipped; every *other* unmapped id is a hard error.
+_BACKGROUND_CLASS_ID = 0
 
-    Resolved by name match against the GT JSON's ``categories`` list,
-    not by sorted-position fallback: matching by index works on
-    canonical COCO splits but breaks silently on any subset that drops
-    a class. Name-match fails loudly, which is what we want.
+
+def _coco_class_mapping(gt: dict[str, Any], model_classes: dict[int, str]) -> dict[int, int]:
+    """Map rfdetr's ``class_id`` to COCO's ``category_id``.
+
+    The name join is :func:`_harness_common.name_based_class_mapping`,
+    the same helper the three SOTA predictors use — one discipline and
+    one error message for "model label space vs GT category space"
+    across the whole harness.
+
+    The identity assertion on top is what the name join cannot give
+    us. A name join is only as good as the *keys* it is handed, and
+    ``rfdetr.assets.coco_classes.COCO_CLASSES`` is a
+    ``{category_id: name}`` dict keyed by COCO's sparse ids (1..90
+    with gaps) while the checkpoints emit that same sparse id as
+    ``Detections.class_id`` (``class_embed.out_features == 91``: the
+    90 category ids plus :data:`_BACKGROUND_CLASS_ID`). Hand the join
+    a table re-keyed to a dense 0..79 index and it maps every label to
+    a neighbouring category and reports success. That is exactly what
+    shipped here, and what rfdetr's own ``predict()`` still does when
+    it attaches ``data["class_name"]`` — so the two wrongs agreed and
+    neither looked wrong from the outside.
+
+    This cell is pinned to canonical COCO val2017, where the model's
+    class space *is* the GT's category space, so identity is the
+    correct answer and any departure from it means the two id spaces
+    have come apart. A cell on a renumbered GT subset would need its
+    own cache key and would drop this assertion, keeping the join.
     """
-    name_to_cat_id = {cat["name"]: int(cat["id"]) for cat in gt["categories"]}
-    mapping: dict[int, int] = {}
-    for dense_idx, name in enumerate(dense_class_names):
-        if name not in name_to_cat_id:
-            raise RuntimeError(
-                f"rfdetr COCO class {dense_idx} ('{name}') has no matching "
-                f"category in the GT JSON; the harness can't map class ids. "
-                f"GT category names: {sorted(name_to_cat_id)}"
-            )
-        mapping[dense_idx] = name_to_cat_id[name]
+    mapping = _harness_common.name_based_class_mapping(
+        model_classes, gt["categories"], context="rfdetr (coco-val2017)"
+    )
+    relabelled = {k: v for k, v in mapping.items() if k != v}
+    if relabelled:
+        first_id, first_cat = next(iter(sorted(relabelled.items())))
+        raise RuntimeError(
+            f"rfdetr class ids and COCO category ids have come apart: "
+            f"{len(relabelled)} of {len(mapping)} labels resolve to a different "
+            f"id than they carry (e.g. class {first_id} -> category {first_cat}). "
+            f"On canonical COCO val2017 this mapping must be the identity; a "
+            f"non-identity result means the class table was keyed on something "
+            f"other than the model's own class-id space."
+        )
     return mapping
 
 
@@ -174,12 +207,20 @@ def _detections_to_records(
         raise RuntimeError("expected segmentation masks on a seg model output, got None")
 
     for i in range(n):
-        dense_class = int(class_ids[i])
-        if dense_class not in class_mapping:
+        class_id = int(class_ids[i])
+        if class_id == _BACKGROUND_CLASS_ID:
             continue
+        if class_id not in class_mapping:
+            # Loud, not `continue`: a partial cache under a pinned
+            # filename surfaces weeks later as a silent score shift.
+            raise RuntimeError(
+                f"rfdetr emitted class_id {class_id}, which maps to no COCO "
+                f"category (known ids: {min(class_mapping)}..{max(class_mapping)}). "
+                f"Refusing to write a partial prediction cache."
+            )
         rec: dict[str, Any] = {
             "image_id": int(image_id),
-            "category_id": int(class_mapping[dense_class]),
+            "category_id": class_mapping[class_id],
             "bbox": _xyxy_to_xywh(detections.xyxy[i]),
             "score": float(confidences[i]),
         }
@@ -248,7 +289,7 @@ def predict_coco_val(
     from rfdetr.assets.coco_classes import COCO_CLASSES
 
     model, include_masks = _instantiate_model(model_name)
-    class_mapping = _coco_class_mapping(gt, list(COCO_CLASSES.values()))
+    class_mapping = _coco_class_mapping(gt, COCO_CLASSES)
     images: Iterable[dict[str, Any]] = gt["images"]
 
     if progress:

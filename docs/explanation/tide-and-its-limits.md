@@ -125,7 +125,14 @@ questions and ideally you read both.
   The validation harness
   ([`tests/python/integration/real_models/tide/`](../../tests/python/integration/real_models/tide/))
   exercises the segm kernel against rf-detr `RFDETRSegNano` on COCO
-  val2017; this is empirical anchoring, not theoretical proof.
+  val2017; this is empirical anchoring, not theoretical proof — and
+  weaker than it reads: every rf-detr run before the `v3` prediction-
+  cache bump used systematically relabelled detections (see
+  [`real-predictions-parity.md`](../engineering/real-predictions-parity.md#boundary--rfdetr-segnano-vs-boundary_iou_api)),
+  so the segm and boundary `t_b` values have not yet been anchored on
+  a workload with a realistic true-positive population. The bbox
+  `t_b = 0.1` ratification is unaffected: it runs against DETR-R50,
+  whose predictions come from the SOTA harness.
 - **boundary** — `t_f=0.5, t_b=0.05` at `dilation_ratio=0.02`, also
   tentative, anchored geometrically: boundary IoU at small dilation
   ratios compresses the IoU distribution, so a tighter floor is

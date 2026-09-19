@@ -92,10 +92,12 @@ Five Hugging Face cells pinned to revisions captured in
 The boundary cell pins rfdetr by pip version
 (`RFDETR_VERSION = "1.6.5.post0"`) rather than hub commit — same
 ADR-level bump policy applies. The cache filename also embeds
-`_RFDETR_CACHE_BLOB_VERSION = "v2"` so a harness-side change that
-affects on-disk bytes (e.g. the `pin_inference_threads` landing in
-the rfdetr predictor) forces a re-populate rather than silently
-serving stale pre-pin bytes.
+`_RFDETR_CACHE_BLOB_VERSION = "v3"` so a harness-side change that
+affects on-disk bytes forces a re-populate rather than silently
+serving stale bytes. Two bumps so far: `v2` added
+`pin_inference_threads`, and `v3` fixed the class-id mapping (see
+the boundary cell below) — `v2` blobs are numerically worthless and
+must not be served.
 
 Bumping any of these is an ADR-level decision; the cache filename
 embeds the full SHA (or pip-version + blob-version for the boundary
@@ -357,22 +359,19 @@ calibration smoke is free on a populated cache.
 
 ## Boundary — rfdetr-segnano vs `boundary_iou_api`
 
-- **Workload**: `coco_val2017_rfdetr_segnano_v1.6.5.post0-v2` —
+- **Workload**: `coco_val2017_rfdetr_segnano_v1.6.5.post0-v3` —
   reuses the rfdetr-segnano RLE-mask cache the TIDE harness already
   populates (no new inference is run here; boundary IoU is just a
   different metric over the same masks). 5,000 images, 80
-  categories. rfdetr-segnano is a smoke-grade model — both vernier
-  and bowenc0221 oracle agree bit-exact on the low headline numbers
-  here; the parity claim is the deliverable, not the model quality.
+  categories.
 - **Pip-version pinning analog**: rfdetr ships as a pip package
   rather than a Hugging Face hub model, so ``RFDETR_VERSION``
   (the pinned pip version, currently ``1.6.5.post0``) plays the
   same role as a hub commit SHA on the other cells. A pip-side
   bump invalidates the cache by construction. The cache filename
-  also embeds ``_RFDETR_CACHE_BLOB_VERSION = "v2"`` so a harness-
-  side change that affects on-disk bytes (currently:
-  ``pin_inference_threads`` landing in the rfdetr predictor) forces
-  a re-populate instead of silently serving stale pre-pin bytes.
+  also embeds ``_RFDETR_CACHE_BLOB_VERSION = "v3"`` so a harness-
+  side change that affects on-disk bytes forces a re-populate
+  instead of silently serving stale bytes.
 - **Bit-equality gate** — bit-equality on the dense ``precision`` (T × R × K
   × A × M = 10 × 101 × 80 × 4 × 3) + ``recall`` + ``counts`` aggregates
   + the 12-stat AP/AR boundary summary (`AP, AP50, AP75, APs/m/l,
@@ -385,19 +384,41 @@ calibration smoke is free on a populated cache.
   drift the DETR cell ships against. Boundary uses the same mask
   kernels so the same parser-drift band applies. Ranking-based AP
   is unaffected.
-- **Headline snapshot** (captured on the live cache at SHA
-  `e5abafe`, machine `84edec51fd71`, 2026-06-07):
-  - boundary AP@[.5:.95]: `0.0001` &nbsp; AP@.50: `0.0002`
-    &nbsp; AP@.75: `0.0001`
-  - AP small / medium / large: `0.0005` / `0.0001` / `0.0001`
-  - AR@1 / @10 / @100: `0.0040` / `0.0073` / `0.0087`
-  - AR_s / AR_m / AR_l @100: `0.0201` / `0.0132` / `0.0082`
-  - Coverage: 5000 / 5000 val2017 images, all 80 categories. The
-    metric values are recorded here for cross-reference only — the
-    parity test gates vernier ↔ bowenc0221 equivalence, not
-    absolute-metric stability under transformers / torch upgrades.
-    Numbers are low by design (rfdetr-segnano is the lightest
-    rfdetr variant — minor model, real parity claim).
+- **Headline snapshot** — **none currently published.** The previous
+  snapshot (`e5abafe`, machine `84edec51fd71`, 2026-06-07) read
+  `boundary AP@[.5:.95] = 0.0001` and is withdrawn: it was measured on
+  `v2` blobs, which carry the class-id bug described next. A `v3`
+  re-measurement lands with the first re-populate on this host.
+
+    !!! warning "The `v2` snapshot was measuring a bug, not a model"
+
+        Until the `v3` bump, the harness read rfdetr's
+        `COCO_CLASSES` — a `{category_id: name}` dict keyed by COCO's
+        *sparse* ids — as though its 80 values were a dense `0..79`
+        list. rfdetr's COCO checkpoints emit the sparse id directly
+        (`class_embed.out_features == 91`), so every detection was
+        relabelled to a neighbouring category and the 10 ids above 79
+        (`sink`, `refrigerator`, `book`, `clock`, `vase`, `scissors`,
+        `teddy bear`, `hair drier`, `toothbrush`, `toaster`) were
+        dropped outright — 8.5% of all detections on val2017.
+        Measured bbox mAP was `0.0019` where the correct mapping
+        gives `0.5376`.
+
+        Nothing in the suite could catch it. The TIDE cells gate
+        structural coherence and determinism; this cell gates
+        vernier ↔ oracle parity. All of those hold on systematically
+        relabelled detections, because both sides of a parity test
+        see the same wrong labels. The one signal that *was* visible
+        — a near-zero headline AP — was recorded in this document and
+        explained away as "low by design". **A published absolute
+        metric that nothing asserts on is not evidence; it is a
+        rationalisation surface.**
+
+        `tests/python/integration/real_models/tide/test_rfdetr_class_mapping.py`
+        now pins the mapping, and `_coco_class_mapping` validates
+        identity by name rather than assuming it, so the dense
+        reading fails loudly at populate time instead of producing
+        plausible-looking numbers.
 
 ## Shared harness configuration
 
