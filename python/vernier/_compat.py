@@ -559,6 +559,15 @@ class PycocotoolsCOCOeval:
         # (quirk L9), and the summary plan its kernel requires
         # (ADR-0062). Re-deriving the latter from `params.iouType` was a
         # second source of truth for what the handle already knows.
+        #
+        # One deliberate divergence from the oracle: upstream
+        # `COCOeval.summarize()` re-reads `self.params.iouType` at call
+        # time, so mutating it between `accumulate()` and `summarize()`
+        # changes the plan there and follows the grid here. The grid is
+        # what was actually evaluated, so this is the more defensible
+        # answer -- but it is a divergence on a drop-in, and ADR-0055 is
+        # widening this class's mutable surface, so it is stated rather
+        # than left to be found.
         summary = self._accumulated.summarize()
         self.stats = np.asarray(summary.stats, dtype=np.float64)
         # Quirk L5 disposition: strict mirrors pycocotools' stdout side

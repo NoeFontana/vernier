@@ -40,12 +40,18 @@ sites that could not see one another:
 | `crates/vernier-ffi/src/partition_py.rs` | an `is_keypoints: bool` parameter carried *alongside* the `EvalIouType` it duplicates |
 | `crates/vernier-ffi/src/lib.rs` (`summarize_grid`) | an `is_keypoints: bool` parameter, fed from `iou_type.is_keypoints()` by both callers |
 
-One of them was wrong. The keypoints branch of `_evaluate_with_tables`
-summarized with the detection plan, so
+One of them *was* wrong, and the fix is already in. The keypoints
+branch of `_evaluate_with_tables` summarized with the detection plan, so
 `Evaluator(iou=Keypoints()).evaluate(gt, dt, calibration=True)` raised
-for *every* input — the path was unreachable rather than merely
-inaccurate, and stayed that way because keypoints rejects `tables=`,
-leaving `calibration=True` as the only route in and nothing covering it.
+for *every* input — unreachable rather than merely inaccurate, and it
+stayed that way because keypoints rejects `tables=`, leaving
+`calibration=True` as the only route in and nothing covering it. ADR-0061
+fixed that site point-wise; all four derivations agree on `main` today.
+
+This ADR is therefore not fixing a live bug. It removes the *class*: the
+arrangement in which four independent derivations of one mapping each
+have to stay right, which held for exactly as long as it took someone to
+add a fifth branch.
 
 ## Decision drivers
 
@@ -98,9 +104,22 @@ the explicit `plan=` argument stays as an override so nothing is lost.
   is the point, and it is why the override remains and is tested, but it
   does trade local legibility for a guarantee.
 - **Neutral:** no behaviour changes for any call that works today.
-  Detection grids defaulted to `"detection"` and still do; keypoints
-  grids raised and now succeed. There is no input for which a
-  previously-correct result changes.
+  Detection grids defaulted to `"detection"` and still do; canonical
+  keypoints grids raised and now succeed.
+
+  This required care, and the first draft of this change got it wrong.
+  A kernel implies a plan only while the grid keeps that kernel's
+  canonical A-axis. Deriving the plan from the kernel *alone* silently
+  re-stats a working call: a keypoints grid built on a caller's own
+  4-bucket area grid (ADR-0040) summarized to 12 detection stats before
+  this ADR, and the keypoints plan reads three of those four buckets and
+  labels them `all` / `medium` / `large`. That is the misindexing
+  ADR-0040 warns about — the same silent-renumbering defect this ADR
+  exists to remove, reintroduced at a different spot. So the plan is
+  derived from the kernel only when `area_ranges` was not overridden;
+  an overridden A-axis keeps the legacy `Detection` default and leaves
+  the choice to an explicit `plan=`. Pinned by
+  `test_summarize_default_keeps_the_legacy_plan_on_a_custom_area_grid`.
 
 ## Pros and cons of the options
 
@@ -132,6 +151,17 @@ the explicit `plan=` argument stays as an override so nothing is lost.
   on the same struct.
 - 👎 Two new struct fields, and a default whose value is not visible at
   the call site.
+
+### A note on the pycocotools drop-in
+
+`_compat.COCOeval.summarize()` no longer re-reads `params.iouType`;
+it takes the accumulator's plan. Upstream reads `params.iouType` at
+summarize time, so a caller that mutates it *between* `accumulate()` and
+`summarize()` now follows the grid rather than the params. The grid is
+the thing that was actually evaluated, so this is the more defensible
+answer — but it is a divergence from the oracle on a class whose whole
+purpose is to be a drop-in, and ADR-0055 is actively widening its
+mutable surface. Recorded here rather than left to be rediscovered.
 
 ## Links and references
 

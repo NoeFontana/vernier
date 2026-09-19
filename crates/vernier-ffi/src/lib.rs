@@ -854,9 +854,10 @@ impl EvalIouType {
         }
     }
 
-    /// True for the Keypoints kernel — drives the kp-vs-detection grid
-    /// and summarizer-plan dispatch in [`evaluate_grid_impl`] and
-    /// [`run_pipeline`].
+    /// True for the Keypoints kernel. Selects the 3-bucket kp area grid
+    /// in [`area_ranges_for`], which is now its only caller: summary-plan
+    /// dispatch moved to [`SummarizePlan::for_grid`] (ADR-0062), whose
+    /// own mapping is an exhaustive `match` rather than this predicate.
     fn is_keypoints(&self) -> bool {
         matches!(self, Self::Keypoints { .. })
     }
@@ -903,7 +904,7 @@ pub(crate) fn evaluate_grid_impl(
     }
     let parity = parse_parity_mode(parity_mode)?;
     // Bound before `iou_type` is moved into the detached closure.
-    let summary_plan = SummarizePlan::for_iou_type(&iou_type);
+    let summary_plan = SummarizePlan::for_grid(&iou_type, area_ranges_arg.is_some());
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
         &iou_type,
         iou_thresholds_arg,
@@ -1084,7 +1085,7 @@ fn evaluate_grid_with_dataset_impl(
     }
     let parity = parse_parity_mode(parity_mode)?;
     // Bound before `iou_type` is moved into the detached closure.
-    let summary_plan = SummarizePlan::for_iou_type(&iou_type);
+    let summary_plan = SummarizePlan::for_grid(&iou_type, area_ranges_arg.is_some());
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
         &iou_type,
         iou_thresholds_arg,
@@ -1943,20 +1944,47 @@ enum SummarizePlan {
 }
 
 impl SummarizePlan {
-    /// The plan a grid built by `iou_type` must be summarized with.
+    /// The plan a grid built by `iou_type` on its kernel's **canonical**
+    /// axes must be summarized with.
     ///
-    /// This is the single kernel -> plan mapping. It used to be
-    /// re-derived at four call sites that could not see one another --
-    /// twice in Rust off a redundant `is_keypoints: bool` carried
-    /// alongside the `EvalIouType` it duplicates, and twice in Python --
-    /// and one of them was wrong: the keypoints tables/calibration path
-    /// took the detection plan and raised `AreaRng index 3 is out of
-    /// range` for every input.
+    /// This is the single kernel -> plan mapping, previously re-derived
+    /// at four sites that could not see one another: twice in Rust off
+    /// a redundant `is_keypoints: bool` carried alongside the
+    /// `EvalIouType` it duplicates, and twice in Python. ADR-0061 had
+    /// just fixed the one that disagreed; this removes the class.
+    ///
+    /// Exhaustive on purpose. An `if is_keypoints()` would hand a future
+    /// kernel the detection plan silently, which is the same shape of
+    /// defect this exists to remove -- a new variant with its own area
+    /// grid should not compile until its plan is stated.
     fn for_iou_type(iou_type: &EvalIouType) -> Self {
-        if iou_type.is_keypoints() {
-            Self::Keypoints
-        } else {
+        match iou_type {
+            EvalIouType::Bbox | EvalIouType::Segm | EvalIouType::Boundary { .. } => Self::Detection,
+            EvalIouType::Keypoints { .. } => Self::Keypoints,
+        }
+    }
+
+    /// The plan for a grid, accounting for ADR-0040 axis overrides.
+    ///
+    /// A kernel implies a plan only while the grid keeps that kernel's
+    /// canonical A-axis. The keypoints plan reads three buckets and
+    /// labels them `all` / `medium` / `large` (ADR-0012, quirk **D5**);
+    /// pointed at a caller's own four-bucket grid it reads the first
+    /// three and mislabels them, which is the silent misindexing
+    /// ADR-0040 warns about and the reason `Evaluator` returns
+    /// `summary=None` for a custom grid.
+    ///
+    /// So when the caller overrode `area_ranges` the handle does not
+    /// claim to know the plan: it keeps the legacy `Detection` default,
+    /// leaving the pairing exactly as it was before this ADR and the
+    /// choice to an explicit `plan=`. Deriving from the kernel here
+    /// would silently change the stat vector of a call that works
+    /// today.
+    fn for_grid(iou_type: &EvalIouType, area_ranges_overridden: bool) -> Self {
+        if area_ranges_overridden {
             Self::Detection
+        } else {
+            Self::for_iou_type(iou_type)
         }
     }
 

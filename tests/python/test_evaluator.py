@@ -379,6 +379,45 @@ def test_summarize_defaults_to_the_plan_its_grid_requires() -> None:
     assert len(det.accumulate([1, 10, 100]).summarize([1, 10, 100]).stats) == 12
 
 
+def test_summarize_default_keeps_the_legacy_plan_on_a_custom_area_grid() -> None:
+    """ADR-0062 changes no result that was correct before it.
+
+    A kernel implies a plan only while the grid keeps that kernel's
+    canonical A-axis. Deriving from the kernel alone would silently
+    re-stat a *working* call: a keypoints grid built on a caller's own
+    4-bucket area grid (ADR-0040) summarized to 12 detection stats
+    before this ADR, and the keypoints plan would read three of those
+    four buckets and label them all/medium/large -- the misindexing
+    ADR-0040 warns about, and the reason `Evaluator` returns
+    `summary=None` for a custom grid.
+
+    So an overridden A-axis keeps the legacy default and leaves the
+    choice to an explicit `plan=`.
+    """
+    from vernier import _core
+    from vernier.instance import Breakdown
+
+    custom_axis = Breakdown.from_ranges(
+        "area",
+        [("all", 0, 1e10), ("small", 0, 1024), ("medium", 1024, 9216), ("large", 9216, 1e10)],
+    )
+    grid = _core.evaluate_keypoints_grid(
+        GT_KP,
+        DT_KP,
+        parity_mode="strict",
+        max_dets_per_image=20,
+        use_cats=True,
+        sigmas={},
+        area_ranges=custom_axis,
+    )
+    acc = grid.accumulate([1, 10, 20])
+    assert grid.n_area_ranges == 4
+    # Unchanged from before ADR-0062.
+    assert len(acc.summarize([1, 10, 20]).stats) == 12
+    # ...and the kernel's own plan is still reachable by asking.
+    assert len(acc.summarize([1, 10, 20], plan="keypoints").stats) == 10
+
+
 def test_summarize_plan_argument_still_overrides_the_grids_default() -> None:
     """The default is a default, not a lock.
 

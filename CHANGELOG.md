@@ -14,6 +14,30 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Changed
+
+- **`_core` accumulators summarize with their own kernel's plan by
+  default** (ADR-0062). `Accumulated.summarize()` took the literal
+  `"detection"` when no `plan=` was given. That is wrong for exactly one
+  kernel and not softly: keypoints evaluates over a 3-bucket area grid
+  (ADR-0012, quirk **D5**) and the detection plan indexes a fourth, so
+  the pairing raised `AreaRng index 3 is out of range`. The grid now
+  carries the plan its kernel requires and hands it to the accumulator,
+  so `summarize()` on a canonical keypoints grid returns the 10-stat
+  vector instead of raising.
+
+  `plan=` still overrides, and a grid whose `area_ranges` were
+  overridden (ADR-0040) keeps the previous `Detection` default — a
+  kernel implies a plan only while the grid keeps that kernel's
+  canonical A-axis, so no call that worked before returns different
+  numbers.
+
+  Internally this deletes four independent derivations of one mapping,
+  including two `is_keypoints: bool` parameters that Rust functions
+  carried *alongside* the `EvalIouType` they duplicate. The
+  `evaluate_*_partitioned` family's internal flag goes with them; its
+  Python signature is unchanged.
+
 ## [0.5.0] - 2026-09-19
 
 ### Changed (BREAKING - pre-1.0)
