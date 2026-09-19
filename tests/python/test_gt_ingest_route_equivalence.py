@@ -247,17 +247,13 @@ def _as_json(gt: dict[str, Any] | None = None) -> _core.CocoDataset:
 
 
 def _grid(gt: Any, parity_mode: str = "strict", dt: bytes = DT_BYTES) -> Any:
-    """One bbox grid, from GT bytes or from a parsed-once handle.
-
-    ``evaluate_bbox_grid`` takes GT JSON bytes; ``..._with_dataset`` takes
-    the ADR-0020 handle, which is what both GT routes produce. Only bbox
-    has a grid-taking ``_with_dataset`` entry point today, which is why
-    the segm and keypoints comparisons below assert on summaries plus
-    :attr:`CocoDataset.dataset_hash` rather than on cells.
+    """One bbox grid from either GT form --- ``evaluate_bbox_grid``
+    dispatches on ``gt``'s type (ADR-0061), which is why ``gt`` is
+    :class:`~typing.Any` here.
     """
-    if isinstance(gt, bytes):
-        return _core.evaluate_bbox_grid(gt, dt, parity_mode, 100, True, retain_meta=True)
-    return _core.evaluate_bbox_grid_with_dataset(gt, dt, parity_mode, 100, True, retain_meta=True)
+    return _core.evaluate_bbox_grid(
+        gt, dt, parity_mode=parity_mode, max_dets_per_image=100, use_cats=True, retain_meta=True
+    )
 
 
 #: Per-cell column names ``eval_imgs`` emits. Named here so the negative
@@ -1004,9 +1000,11 @@ def _segm_dt() -> bytes:
 
 def _segm_stats(gt: Any) -> Any:
     if isinstance(gt, bytes):
-        return _core.evaluate_segm_summary(gt, _segm_dt(), "strict", [1, 10, 100], True).stats
-    return _core.evaluate_segm_summary_with_dataset(
-        gt, _segm_dt(), "strict", [1, 10, 100], True
+        return _core.evaluate_segm_summary(
+            gt, _segm_dt(), parity_mode="strict", max_dets=[1, 10, 100], use_cats=True
+        ).stats
+    return _core.evaluate_segm_summary(
+        gt, _segm_dt(), parity_mode="strict", max_dets=[1, 10, 100], use_cats=True
     ).stats
 
 
@@ -1022,8 +1020,8 @@ def test_every_gt_segmentation_shape_is_accepted_and_agrees(shape: str) -> None:
     member of it is compared against the file route fed the same logical
     masks.
 
-    Two assertions, because only bbox has a grid-taking
-    ``_with_dataset`` entry point:
+    Two assertions. The second is bbox-only because ``_grid`` is the
+    bbox helper:
 
     1. The 12-stat segm summary equals the file route's for **every**
        spelling. This is the property that must never depend on how the
@@ -1344,10 +1342,10 @@ _KP_SIGMAS = {
 def _kp_stats(gt: Any) -> Any:
     if isinstance(gt, bytes):
         return _core.evaluate_keypoints_summary(
-            gt, _kp_dt(), "strict", [20], True, _KP_SIGMAS
+            gt, _kp_dt(), parity_mode="strict", max_dets=[20], use_cats=True, sigmas=_KP_SIGMAS
         ).stats
-    return _core.evaluate_keypoints_summary_with_dataset(
-        gt, _kp_dt(), "strict", [20], True, _KP_SIGMAS
+    return _core.evaluate_keypoints_summary(
+        gt, _kp_dt(), parity_mode="strict", max_dets=[20], use_cats=True, sigmas=_KP_SIGMAS
     ).stats
 
 

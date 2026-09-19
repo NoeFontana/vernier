@@ -97,6 +97,14 @@ select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "N", "PT"]
 include = ["bench", "tests"]
 venvPath = "."
 venv = ".venv"
+# The runners import `vernier`, but they execute in the per-impl envs
+# under `envs/` (ADR-0017 subprocess isolation) -- it is deliberately not
+# installed in this harness env, so pyright cannot resolve it from the
+# venv. Resolve it from the repo's source layout instead, exactly as the
+# root pyproject does. This is what makes `just bench-lint` able to see a
+# deleted or re-signatured FFI function: `_core.pyi` carries the
+# signatures, and `bench/` is excluded from the root pyright run.
+extraPaths = ["../python"]
 # pythonVersion governs language-feature checks; the resolver follows the
 # venv's interpreter (3.14 today) for site-packages.
 pythonVersion = "3.10"

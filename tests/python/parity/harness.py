@@ -169,10 +169,10 @@ def _run_vernier(
         grid = _vernier_core.evaluate_keypoints_grid(
             gt_bytes,
             dt_bytes,
-            _PARITY_MODE,
-            max(max_dets),
-            True,
-            sigmas_dict,
+            parity_mode=_PARITY_MODE,
+            max_dets_per_image=max(max_dets),
+            use_cats=True,
+            sigmas=sigmas_dict,
             num_threads=num_threads,
             retain_meta=True,
         )
@@ -188,8 +188,8 @@ def _run_vernier(
         grid = grid_fn(
             gt_bytes,
             dt_bytes,
-            _PARITY_MODE,
-            max(max_dets),
+            parity_mode=_PARITY_MODE,
+            max_dets_per_image=max(max_dets),
             use_cats=True,
             num_threads=num_threads,
             retain_meta=True,

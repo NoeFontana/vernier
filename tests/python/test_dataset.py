@@ -71,6 +71,92 @@ def test_keypoints_bytes_and_dataset_paths_are_bit_equal() -> None:
     assert bytes_summary.stats == ds_summary.stats
 
 
+#: COCO's 17 person keypoint sigmas, the ladder `Keypoints()` defaults to.
+_COCO_KP_SIGMAS = [
+    0.026,
+    0.025,
+    0.025,
+    0.035,
+    0.035,
+    0.079,
+    0.079,
+    0.072,
+    0.072,
+    0.062,
+    0.062,
+    0.107,
+    0.107,
+    0.087,
+    0.087,
+    0.089,
+    0.089,
+]
+
+
+# --- one `gt` parameter, both forms, every kernel (ADR-0061) -----------------
+
+
+@pytest.mark.parametrize("kernel", ["bbox", "segm", "boundary", "keypoints"])
+def test_every_grid_accepts_both_ground_truth_forms(kernel: str) -> None:
+    """The property the deleted ``_with_dataset`` family used to provide.
+
+    That family was a hand-written matrix of (kernel x output shape x
+    input form), and it shipped with holes twice: ``bbox``'s grid cell
+    was in ``_core`` but unexported in 0.4.0, and ``segm``'s did not
+    exist at all until 0.4.2. Boundary's and keypoints' were never
+    written.
+
+    ADR-0061 made the input form an argument instead of a function name,
+    so there is no per-(kernel, form) cell left to forget --- and these
+    two kernels accept a handle here without anyone having written them
+    a function. The 0.4.1 invariant test that enumerated the family is
+    retired with it; this asserts what the family was *for*.
+    """
+    from vernier import instance as vi
+
+    fixtures = {
+        "bbox": (GT_PERFECT, DT_PERFECT, {}),
+        "segm": (GT_SEGM, DT_SEGM, {}),
+        "boundary": (GT_SEGM, DT_SEGM, {"dilation_ratio": 0.02}),
+        # `sigmas` is a per-category mapping; `{}` asks for the COCO default.
+        "keypoints": (GT_KP, DT_KP, {"sigmas": {1: _COCO_KP_SIGMAS}}),
+    }
+    gt_bytes, dt, extra = fixtures[kernel]
+    grid = getattr(vi, f"evaluate_{kernel}_grid")
+    # Keypoints summarises on its own plan over a 3-bucket area grid
+    # (quirk D5); the detection kernels use the 4-bucket COCO default.
+    ladder = [20] if kernel == "keypoints" else [1, 10, 100]
+    plan = {"plan": "keypoints"} if kernel == "keypoints" else {}
+    max_dets = 20 if kernel == "keypoints" else 100
+
+    from_bytes = grid(
+        gt_bytes, dt, parity_mode="strict", max_dets_per_image=max_dets, use_cats=True, **extra
+    )
+    from_handle = grid(
+        CocoDataset.from_json(gt_bytes),
+        dt,
+        parity_mode="strict",
+        max_dets_per_image=max_dets,
+        use_cats=True,
+        **extra,
+    )
+    assert from_bytes.accumulate(ladder).summarize(*([ladder] if plan else []), **plan).stats == (
+        from_handle.accumulate(ladder).summarize(*([ladder] if plan else []), **plan).stats
+    )
+
+
+def test_a_gt_that_is_neither_bytes_nor_a_dataset_is_refused() -> None:
+    """The dispatch is total over the two accepted types, and says so on anything else."""
+    from vernier.instance import evaluate_bbox_grid
+
+    with pytest.raises(
+        TypeError, match=r"gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`"
+    ):
+        cast(Any, evaluate_bbox_grid)(
+            {"images": []}, DT_PERFECT, parity_mode="strict", max_dets_per_image=100, use_cats=True
+        )
+
+
 # --- grid entry points: bytes vs CocoDataset ---------------------------------
 #
 # The summary tests above go through `Evaluator`, which accepts either
@@ -84,7 +170,7 @@ def test_keypoints_bytes_and_dataset_paths_are_bit_equal() -> None:
 def test_segm_grid_bytes_and_dataset_paths_are_bit_equal(
     dt_area: Literal["bbox", "supplied", "mask"],
 ) -> None:
-    """``evaluate_segm_grid_with_dataset`` must be its bytes twin, on every ``dt_area``.
+    """``evaluate_segm_grid`` must be its bytes twin, on every ``dt_area``.
 
     This is the entry point that lets a ``bbox`` + ``segm`` caller parse
     its ground truth once instead of twice. Parametrizing over
@@ -100,11 +186,23 @@ def test_segm_grid_bytes_and_dataset_paths_are_bit_equal(
     asserts, and the *succeeding* mask comparison lives in
     ``test_dt_area_mask.py`` next to the RLE fixture built for it.
     """
-    from vernier.instance import evaluate_segm_grid, evaluate_segm_grid_with_dataset
+    from vernier.instance import evaluate_segm_grid
 
-    from_bytes = evaluate_segm_grid(GT_SEGM, DT_SEGM, "strict", 100, True, dt_area=dt_area)
-    from_handle = evaluate_segm_grid_with_dataset(
-        CocoDataset.from_json(GT_SEGM), DT_SEGM, "strict", 100, True, dt_area=dt_area
+    from_bytes = evaluate_segm_grid(
+        GT_SEGM,
+        DT_SEGM,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area=dt_area,
+    )
+    from_handle = evaluate_segm_grid(
+        CocoDataset.from_json(GT_SEGM),
+        DT_SEGM,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area=dt_area,
     )
     assert from_bytes.accumulate([1, 10, 100]).summarize().stats == (
         from_handle.accumulate([1, 10, 100]).summarize().stats
@@ -117,24 +215,36 @@ def test_bbox_grid_bytes_and_dataset_paths_are_bit_equal(
 ) -> None:
     """The bbox grid pair, including the ``dt_area`` the handle form used to lack.
 
-    ``evaluate_bbox_grid_with_dataset`` hard-coded "derive the area from
+    ``evaluate_bbox_grid`` hard-coded "derive the area from
     the box" and took no argument, so a caller that wanted ``supplied``
     had to fall back to the bytes form and re-parse. It now takes the
     same argument its twin does, defaulting to the behaviour it always
     had.
     """
-    from vernier.instance import evaluate_bbox_grid, evaluate_bbox_grid_with_dataset
+    from vernier.instance import evaluate_bbox_grid
 
-    from_bytes = evaluate_bbox_grid(GT_PERFECT, DT_PERFECT, "strict", 100, True, dt_area=dt_area)
-    from_handle = evaluate_bbox_grid_with_dataset(
-        CocoDataset.from_json(GT_PERFECT), DT_PERFECT, "strict", 100, True, dt_area=dt_area
+    from_bytes = evaluate_bbox_grid(
+        GT_PERFECT,
+        DT_PERFECT,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area=dt_area,
+    )
+    from_handle = evaluate_bbox_grid(
+        CocoDataset.from_json(GT_PERFECT),
+        DT_PERFECT,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area=dt_area,
     )
     assert from_bytes.accumulate([1, 10, 100]).summarize().stats == (
         from_handle.accumulate([1, 10, 100]).summarize().stats
     )
 
 
-def test_bbox_grid_with_dataset_defaults_to_deriving_area_from_the_box() -> None:
+def test_bbox_grid_defaults_to_deriving_area_from_the_box() -> None:
     """The added ``dt_area`` must not have changed what existing callers get.
 
     It is additive, and its default has to reproduce the hard-coded
@@ -142,11 +252,15 @@ def test_bbox_grid_with_dataset_defaults_to_deriving_area_from_the_box() -> None
     unconditionally -- otherwise every caller written against the old
     signature silently re-buckets.
     """
-    from vernier.instance import evaluate_bbox_grid_with_dataset
+    from vernier.instance import evaluate_bbox_grid
 
     ds = CocoDataset.from_json(GT_PERFECT)
-    implicit = evaluate_bbox_grid_with_dataset(ds, DT_PERFECT, "strict", 100, True)
-    explicit = evaluate_bbox_grid_with_dataset(ds, DT_PERFECT, "strict", 100, True, dt_area="bbox")
+    implicit = evaluate_bbox_grid(
+        ds, DT_PERFECT, parity_mode="strict", max_dets_per_image=100, use_cats=True
+    )
+    explicit = evaluate_bbox_grid(
+        ds, DT_PERFECT, parity_mode="strict", max_dets_per_image=100, use_cats=True, dt_area="bbox"
+    )
     assert implicit.accumulate([1, 10, 100]).summarize().stats == (
         explicit.accumulate([1, 10, 100]).summarize().stats
     )
@@ -161,18 +275,26 @@ def test_segm_grid_paths_refuse_a_polygon_under_mask_area_identically() -> None:
     -- because a handle-taking route that accepted input its bytes twin
     rejects would be a second, quieter contract.
     """
-    from vernier.instance import (
-        InvalidAnnotationError,
-        evaluate_segm_grid,
-        evaluate_segm_grid_with_dataset,
-    )
+    from vernier.instance import InvalidAnnotationError, evaluate_segm_grid
 
     needs_rle = r'dt_area="mask" requires an RLE'
     with pytest.raises(InvalidAnnotationError, match=needs_rle) as from_bytes:
-        evaluate_segm_grid(GT_SEGM, DT_SEGM, "strict", 100, True, dt_area="mask")
+        evaluate_segm_grid(
+            GT_SEGM,
+            DT_SEGM,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
+            dt_area="mask",
+        )
     with pytest.raises(InvalidAnnotationError, match=needs_rle) as from_handle:
-        evaluate_segm_grid_with_dataset(
-            CocoDataset.from_json(GT_SEGM), DT_SEGM, "strict", 100, True, dt_area="mask"
+        evaluate_segm_grid(
+            CocoDataset.from_json(GT_SEGM),
+            DT_SEGM,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
+            dt_area="mask",
         )
     # `raises` accepts subclasses, so the exact class is still worth pinning:
     # the two routes must refuse with the same error, not merely a related one.
@@ -180,7 +302,7 @@ def test_segm_grid_paths_refuse_a_polygon_under_mask_area_identically() -> None:
     assert str(from_bytes.value) == str(from_handle.value)
 
 
-def test_bbox_grid_with_dataset_refuses_mask_area() -> None:
+def test_bbox_grid_refuses_mask_area() -> None:
     """``dt_area='mask'`` reads an area off a detection's mask, which bbox has not got.
 
     The bytes-taking grids already refuse it; the handle-taking ones
@@ -194,12 +316,17 @@ def test_bbox_grid_with_dataset_refuses_mask_area() -> None:
     asserts the *runtime* guard behind it, which is what a caller reaching
     the FFI from untyped code actually meets.
     """
-    from vernier.instance import evaluate_bbox_grid_with_dataset
+    from vernier.instance import evaluate_bbox_grid
 
-    refuses_mask = cast(Any, evaluate_bbox_grid_with_dataset)
+    refuses_mask = cast(Any, evaluate_bbox_grid)
     with pytest.raises(ValueError, match=r"dt_area='mask'"):
         refuses_mask(
-            CocoDataset.from_json(GT_PERFECT), DT_PERFECT, "strict", 100, True, dt_area="mask"
+            CocoDataset.from_json(GT_PERFECT),
+            DT_PERFECT,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
+            dt_area="mask",
         )
 
 
@@ -210,19 +337,22 @@ def test_one_dataset_serves_both_bbox_and_segm_grids() -> None:
     each grid separately, parsing the same bytes twice. Both kernels now
     read one handle, and each still agrees with its bytes twin.
     """
-    from vernier.instance import (
-        evaluate_bbox_grid,
-        evaluate_bbox_grid_with_dataset,
-        evaluate_segm_grid,
-        evaluate_segm_grid_with_dataset,
-    )
+    from vernier.instance import evaluate_bbox_grid, evaluate_segm_grid
 
     shared = CocoDataset.from_json(GT_SEGM)
     ladder = [1, 10, 100]
-    bbox_handle = evaluate_bbox_grid_with_dataset(shared, DT_SEGM, "strict", 100, True)
-    segm_handle = evaluate_segm_grid_with_dataset(shared, DT_SEGM, "strict", 100, True)
-    bbox_bytes = evaluate_bbox_grid(GT_SEGM, DT_SEGM, "strict", 100, True)
-    segm_bytes = evaluate_segm_grid(GT_SEGM, DT_SEGM, "strict", 100, True)
+    bbox_handle = evaluate_bbox_grid(
+        shared, DT_SEGM, parity_mode="strict", max_dets_per_image=100, use_cats=True
+    )
+    segm_handle = evaluate_segm_grid(
+        shared, DT_SEGM, parity_mode="strict", max_dets_per_image=100, use_cats=True
+    )
+    bbox_bytes = evaluate_bbox_grid(
+        GT_SEGM, DT_SEGM, parity_mode="strict", max_dets_per_image=100, use_cats=True
+    )
+    segm_bytes = evaluate_segm_grid(
+        GT_SEGM, DT_SEGM, parity_mode="strict", max_dets_per_image=100, use_cats=True
+    )
 
     assert bbox_handle.accumulate(ladder).summarize().stats == (
         bbox_bytes.accumulate(ladder).summarize().stats

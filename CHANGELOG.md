@@ -14,29 +14,53 @@ additive / perf / docs".
 
 ## [Unreleased]
 
-### Added
+### Changed (BREAKING - pre-1.0)
 
-- **`evaluate_segm_grid_with_dataset`** — the segm sibling of
-  `evaluate_bbox_grid_with_dataset`, so ADR-0020's parsed-once handle
-  now serves *grid* evaluation on both instance kernels rather than
-  bbox alone. A caller evaluating `bbox` and `segm` had to hand GT JSON
-  to each grid separately and parse the same bytes twice; both kernels
-  can now read one `CocoDataset`. It takes `dt_area`, which segm needs —
-  `"mask"` reads each detection's area off its own RLE.
+- **One ground-truth parameter, and keyword-only options, on the
+  instance evaluate surface** (ADR-0061).
 
-### Changed
+  The surface was a hand-maintained matrix: four kernels x {grid,
+  summary} x {JSON bytes, parsed handle} = sixteen functions, of which
+  fourteen existed. The holes were not a backlog but the shape of the
+  problem — 0.4.0 shipped `evaluate_bbox_grid_with_dataset` present in
+  `_core` but unexported, 0.4.1 fixed that, and the segm grid cell had
+  never existed at all. Boundary's and keypoints' were still empty.
 
-- **`evaluate_bbox_grid_with_dataset` takes `dt_area`.** It previously
-  hard-coded "derive the area from the box" and exposed no argument,
-  while its bytes-taking twin `evaluate_bbox_grid` has always taken one
-  — so a caller wanting `"supplied"` had to abandon the handle and
-  re-parse. Purely additive: the default is `"bbox"`, which is exactly
-  the `DetectionArea::FromBbox` it applied unconditionally, pinned by
-  `test_bbox_grid_with_dataset_defaults_to_deriving_area_from_the_box`.
+  `gt` now accepts `bytes` **or** a `CocoDataset`, dispatching on type;
+  the six `_with_dataset` functions are removed. Sixteen cells collapse
+  to eight functions, and the two empty ones fill themselves —
+  `evaluate_boundary_grid` and `evaluate_keypoints_grid` accept a handle
+  without either being written. **A gap of this class is no longer
+  expressible.**
 
-  Both dataset-taking grids apply the same `dt_area="mask"` guard the
-  JSON-taking ones do: it reads an area off a detection's mask, which
-  the bbox kernel has not got.
+  Every option after `dt` is keyword-only. `use_cats`, `retain_iou` and
+  `cast_inputs` are three adjacent booleans, two defaulted, so a
+  miscounted positional silently set a *different* flag and produced a
+  different evaluation rather than an error — the worst failure shape on
+  a parity-critical surface. `dilation_ratio` and `sigmas` stop being
+  mid-signature positional slots, so the four kernels' signatures agree
+  up to their own options.
+
+  The ground-truth argument is named `gt` everywhere; it had been `gt`,
+  `gt_json` *and* `gt_bytes` across the FFI. 23 functions in five
+  modules. The partitioned, TIDE, confusion and LRP entry points still
+  take bytes only, but the rename means widening them later is a
+  widening rather than a rename.
+
+  `Evaluator` is unaffected for callers — it already accepted both
+  forms — and is simpler inside: the `isinstance(gt, CocoDataset)`
+  branch and the parallel `_evaluate_with_dataset` method are gone.
+
+  *Migration*: pass the handle to the base function
+  (`evaluate_segm_grid(dataset, dt, ...)` rather than
+  `evaluate_segm_grid_with_dataset(...)`), and name every argument after
+  `dt`.
+
+  Two changes from earlier in this unreleased cycle are folded into the
+  above rather than listed separately, because neither shipped:
+  `evaluate_segm_grid_with_dataset` was added and then generalized away,
+  and the `dt_area` argument added to the dataset-taking bbox grid is
+  now simply `dt_area` on `evaluate_bbox_grid`.
 
 ## [0.4.1] - 2026-09-18
 

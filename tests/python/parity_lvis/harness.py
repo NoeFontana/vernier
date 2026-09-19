@@ -24,7 +24,7 @@ from typing import Any, Literal
 import numpy as np
 from numpy.typing import NDArray
 
-from vernier._core import evaluate_bbox_grid_with_dataset
+from vernier._core import evaluate_bbox_grid
 from vernier.instance import CocoDataset
 
 # The oracle goes via the vendored tree (conftest patches `sys.path`);
@@ -92,12 +92,12 @@ def _vernier_snapshot(
     # has to thread a parsed-once `CocoDataset.from_lvis_json` through
     # so the orchestrator's AA3/AA4 branches actually fire.
     gt_dataset = CocoDataset.from_lvis_json(gt_bytes)
-    grid = evaluate_bbox_grid_with_dataset(
+    grid = evaluate_bbox_grid(
         gt_dataset,
         dt_bytes,
-        "strict",
-        max_dets,
-        True,
+        parity_mode="strict",
+        max_dets_per_image=max_dets,
+        use_cats=True,
         retain_meta=True,
     )
     accum = grid.accumulate([max_dets])

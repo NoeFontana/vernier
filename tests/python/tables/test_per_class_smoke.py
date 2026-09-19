@@ -73,7 +73,9 @@ def _build_grid_and_accum() -> tuple[EvalGrid, Accumulated, CocoDataset]:
     re-exported on ``vernier`` — callers don't construct them directly
     today, and the public API hides them behind ``EvalResult``.
     """
-    grid = evaluate_bbox_grid(_GT, _DT, "corrected", 100, True)
+    grid = evaluate_bbox_grid(
+        _GT, _DT, parity_mode="corrected", max_dets_per_image=100, use_cats=True
+    )
     accum = grid.accumulate([1, 10, 100])
     dataset = CocoDataset.from_json(_GT)
     return grid, accum, dataset

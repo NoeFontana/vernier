@@ -238,8 +238,9 @@ def _build_grid_and_cells(
     grid = _vernier_core.evaluate_bbox_grid(
         gt_bytes,
         dt_bytes,
-        "strict",  # ADR-0002: matching parity is strict at the cell level.
-        max_dets_per_image,
+        # ADR-0002: matching parity is strict at the cell level.
+        parity_mode="strict",
+        max_dets_per_image=max_dets_per_image,
         use_cats=True,
         retain_meta=True,
     )

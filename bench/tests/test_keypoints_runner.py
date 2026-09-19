@@ -26,9 +26,7 @@ from bench.harness.matrix import runner_module, uv_run_argv, uv_run_env
 from bench.harness.paths import BENCH_ROOT, REPO_ROOT
 from tests.conftest import skip_if_no_env
 
-_KP_FIXTURE = (
-    REPO_ROOT / "tests" / "python" / "parity" / "fixtures" / "keypoints_perfect_match"
-)
+_KP_FIXTURE = REPO_ROOT / "tests" / "python" / "parity" / "fixtures" / "keypoints_perfect_match"
 
 
 def _spawn_runner(
@@ -58,9 +56,7 @@ def _spawn_runner(
         "--tensor-output",
         str(tensor_output),
     )
-    proc = subprocess.run(
-        cmd, env=uv_run_env(BENCH_ROOT, impl), check=False, capture_output=True
-    )
+    proc = subprocess.run(cmd, env=uv_run_env(BENCH_ROOT, impl), check=False, capture_output=True)
     assert proc.returncode == 0, (
         f"runner {impl!r} exited {proc.returncode}\n"
         f"stdout:\n{proc.stdout.decode(errors='replace')}\n"

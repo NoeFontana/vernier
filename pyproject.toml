@@ -219,17 +219,27 @@ src = ["python", "tests/python"]
 # upstream code (BSD-2-Clause). Linting it is both pointless (we don't
 # modify it) and incorrect (we'd be enforcing our style on someone else's
 # project). See VENDORING.md alongside.
-# bench/ is the local-only benchmark harness (ADR-0017) — it has its own
-# pyproject.toml + ruff config and is linted via its own pipeline.
+# bench/ is the local-only benchmark harness (ADR-0017) with its own
+# pyproject.toml + ruff config, so it is excluded from a bare `ruff
+# check .`; `just lint-py` passes `bench/` explicitly instead, which
+# bypasses this list and picks up bench's own config.
+#
+# EVERY entry here is anchored with `./`. Ruff reads a pattern with no
+# separator as a gitignore-style BASENAME match at any depth: a bare
+# `bench` also swallowed `tests/python/bench` (the ADR-0047
+# zero-overhead gate) and left it silently unlinted for as long as it
+# existed. Note a leading `/` does NOT anchor -- it disables the match
+# entirely. Keep this list uniform so no entry's behaviour depends on
+# remembering that.
 extend-exclude = [
-    "target",
-    ".venv",
+    "./target",
+    "./.venv",
     "tests/python/parity_boundary/oracle/boundary_iou_api",
     "tests/python/parity_lvis/oracle/lvis_api",
     "tests/python/parity_panoptic/oracle/boundary_iou_api",
     "tests/python/parity_panoptic/oracle/panopticapi",
     "tests/python/parity_semantic/oracle/mmsegmentation/mmseg",
-    "bench",
+    "./bench",
 ]
 
 [tool.ruff.lint]

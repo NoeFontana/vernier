@@ -40,25 +40,41 @@ def main() -> int:
     with stages.stage("evaluate"):
         if iou == "bbox":
             grid = _vernier_core.evaluate_bbox_grid(
-                gt_bytes, dt_bytes, PARITY_STRICT, md_top, use_cats=True, num_threads=num_threads
+                gt_bytes,
+                dt_bytes,
+                parity_mode=PARITY_STRICT,
+                max_dets_per_image=md_top,
+                use_cats=True,
+                num_threads=num_threads,
             )
         elif iou == "segm":
             grid = _vernier_core.evaluate_segm_grid(
-                gt_bytes, dt_bytes, PARITY_STRICT, md_top, use_cats=True, num_threads=num_threads
+                gt_bytes,
+                dt_bytes,
+                parity_mode=PARITY_STRICT,
+                max_dets_per_image=md_top,
+                use_cats=True,
+                num_threads=num_threads,
             )
         elif iou == "boundary":
             grid = _vernier_core.evaluate_boundary_grid(
                 gt_bytes,
                 dt_bytes,
-                PARITY_STRICT,
-                md_top,
-                True,
-                DEFAULT_DILATION_RATIO,
+                parity_mode=PARITY_STRICT,
+                max_dets_per_image=md_top,
+                use_cats=True,
+                dilation_ratio=DEFAULT_DILATION_RATIO,
                 num_threads=num_threads,
             )
         elif iou == "keypoints":
             grid = _vernier_core.evaluate_keypoints_grid(
-                gt_bytes, dt_bytes, PARITY_STRICT, md_top, True, {}, num_threads=num_threads
+                gt_bytes,
+                dt_bytes,
+                parity_mode=PARITY_STRICT,
+                max_dets_per_image=md_top,
+                use_cats=True,
+                sigmas={},
+                num_threads=num_threads,
             )
         else:
             raise ValueError(f"unsupported iou_type {iou!r}")

@@ -70,9 +70,7 @@ def test_streaming_comparator_tolerates_sub_ulp_wobble() -> None:
         stream_summary=_stats_dict([0.5 + 1e-13]),
     )
     cmp = get_comparator("streaming")
-    report = cmp.compare(
-        workload_id="x", iou_type="bbox", impl_outputs={"vernier_streaming": pair}
-    )
+    report = cmp.compare(workload_id="x", iou_type="bbox", impl_outputs={"vernier_streaming": pair})
     assert report.passed
 
 
@@ -108,9 +106,7 @@ def test_streaming_comparator_rejects_wrong_artifact_type() -> None:
     snap = PanopticSnapshot(pq=0.5)
     cmp = get_comparator("streaming")
     with pytest.raises(ValueError, match="StreamingPair"):
-        cmp.compare(
-            workload_id="x", iou_type="bbox", impl_outputs={"x": snap}
-        )
+        cmp.compare(workload_id="x", iou_type="bbox", impl_outputs={"x": snap})
 
 
 def test_streaming_pair_canonical_form_includes_both_summaries() -> None:

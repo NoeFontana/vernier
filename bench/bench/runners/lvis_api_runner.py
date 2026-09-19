@@ -48,7 +48,7 @@ def main() -> int:
         raise ValueError(
             f"lvis-api runner: iou_type={iou!r} mirrors the vernier_lvis "
             f"matrix entry (bbox-only today). The oracle natively supports "
-            f"both bbox + segm; the cell waits on `evaluate_segm_grid_with_dataset`."
+            f"both bbox + segm; see `bench/harness/matrix.py`."
         )
     max_dets: int = int(args.max_dets)
     stages = StageTable()

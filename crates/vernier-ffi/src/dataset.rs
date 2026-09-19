@@ -26,8 +26,9 @@ use crate::parse_gt;
 
 /// Parsed-once COCO ground-truth dataset.
 ///
-/// Construct with [`PyDataset::from_json`]; pass to the
-/// `evaluate_*_summary_with_dataset` family. Reusing the same instance
+/// Construct with [`PyDataset::from_json`]; pass as the `gt` argument
+/// of any `evaluate_*_grid` / `evaluate_*_summary` function, which
+/// accept `bytes` or this handle (ADR-0061). Reusing the same instance
 /// across `evaluate` calls reuses the GT-side derivations the cached
 /// kernels populate on first use (per ADR-0020). The handle is frozen
 /// — its identity *is* the cache key.

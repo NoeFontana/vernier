@@ -282,4 +282,6 @@ def test_heterogeneous_dt_segm_rejects_in_corrected_mode() -> None:
     gt_bytes = (FIXTURES / "heterogeneous_dt_segm" / "gt.json").read_bytes()
     dt_bytes = (FIXTURES / "heterogeneous_dt_segm" / "dt.json").read_bytes()
     with pytest.raises(ValueError, match="J2/J6"):
-        _vernier_core.evaluate_segm_grid(gt_bytes, dt_bytes, "corrected", 100, use_cats=True)
+        _vernier_core.evaluate_segm_grid(
+            gt_bytes, dt_bytes, parity_mode="corrected", max_dets_per_image=100, use_cats=True
+        )

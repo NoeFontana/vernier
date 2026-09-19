@@ -105,6 +105,13 @@ check-features:
 lint-py:
     uv run ruff check .
     uv run ruff format --check .
+    # bench/ is excluded from the bare `.` run (own pyproject + ruff
+    # config, ADR-0017) but is a first-class consumer of the public
+    # Python surface, so lint it here rather than nowhere: an explicit
+    # path bypasses `extend-exclude`, and ruff picks up bench's own
+    # config hierarchically. Needs no bench env -- only ruff.
+    uv run ruff check bench/
+    uv run ruff format --check bench/
     uv run pyright
 
 # Validate the `Wired-by` citations in docs/engineering/pycocotools-quirks.md.
@@ -152,6 +159,23 @@ bench-sync:
 # Run the bench harness's own pytest suite. Isolated from `just test-py`.
 bench-test:
     uv run --directory bench pytest tests/
+
+# Typecheck the bench harness. Separate from `just lint` because pyright
+# needs the bench env (`just bench-sync`); bench's ruff half runs in
+# `lint-py`, which needs no env.
+#
+# This is the check that catches an FFI surface change breaking a runner:
+# `extraPaths` resolves `vernier` from `python/`, so `_core.pyi` is the
+# shared contract, and both shapes ADR-0061's break took (`unknown import
+# symbol`, `Expected 2 positional arguments`) are diagnostics here.
+#
+# It does NOT pass yet. Pre-existing debt from never having been run --
+# protocol ClassVar mismatches in the registry tests, `Metric` vs
+# `IouType` in orchestrate, optional impls that legitimately live in
+# per-impl envs. Clearing it is its own change; until then this reports
+# rather than gates.
+bench-typecheck:
+    uv run --directory bench pyright
 
 # Run the bench harness end-to-end. Forwards all args to `vernier-bench run`.
 # Example: just bench-run --impl vernier --workload smoke --iou bbox

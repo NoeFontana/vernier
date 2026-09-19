@@ -159,20 +159,23 @@ def test_vernier_streaming_summary_matches_batch(tmp_path: Path) -> None:
 
     # Batch stats are named (AP, AP50, ...); stream stats are positional
     # (stat_0, stat_1, ...). Walk in lockstep to assert pointwise equality.
-    batch_values = [batch_stats[k] for k in (
-        "AP",
-        "AP50",
-        "AP75",
-        "AP_small",
-        "AP_medium",
-        "AP_large",
-        "AR_1",
-        "AR_10",
-        "AR_100",
-        "AR_small",
-        "AR_medium",
-        "AR_large",
-    )]
+    batch_values = [
+        batch_stats[k]
+        for k in (
+            "AP",
+            "AP50",
+            "AP75",
+            "AP_small",
+            "AP_medium",
+            "AP_large",
+            "AR_1",
+            "AR_10",
+            "AR_100",
+            "AR_small",
+            "AR_medium",
+            "AR_large",
+        )
+    ]
     stream_values = [stream_stats[f"stat_{i}"] for i in range(len(batch_values))]
     for i, (b, s) in enumerate(zip(batch_values, stream_values, strict=True)):
         assert s == pytest.approx(b, rel=0, abs=1e-12), (

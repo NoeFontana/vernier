@@ -106,8 +106,7 @@ def register_report_fragment(fragment: ReportFragment) -> None:
     paradigm = fragment.paradigm
     if paradigm not in _REGISTRY:
         raise ValueError(
-            f"unknown paradigm {paradigm!r}; registered fragment must use "
-            f"one of {list(_REGISTRY)}"
+            f"unknown paradigm {paradigm!r}; registered fragment must use one of {list(_REGISTRY)}"
         )
     name = fragment.name
     fragments = _REGISTRY[paradigm]

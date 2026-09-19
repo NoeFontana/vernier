@@ -1,14 +1,16 @@
 """Vernier LVIS runner — invoked as a subprocess in ``bench/envs/vernier``.
 
 Mirrors ``tests/python/parity_lvis/harness.py:_vernier_snapshot``: the
-``CocoDataset.from_lvis_json → evaluate_bbox_grid_with_dataset →
-accumulate → summarize_lvis`` chain, with stage timers around each
-call. The parsed-once dataset path is mandatory for LVIS — the
-JSON-bytes grid path strips federated metadata at GT load (it goes
-through ``CocoDataset.from_json_bytes``), and the orchestrator's
-AA3/AA4 federated branches don't fire without the
-``not_exhaustive_category_ids`` / ``neg_category_ids`` per-image
-filters.
+``CocoDataset.from_lvis_json → evaluate_bbox_grid → accumulate →
+summarize_lvis`` chain, with stage timers around each call.
+
+Passing the *handle* is mandatory for LVIS, not an optimization. Since
+ADR-0061 there is one ``gt`` parameter taking ``bytes`` or a
+``CocoDataset``, but the two are not interchangeable here: ``bytes``
+parses through ``CocoDataset.from_json`` and strips federated metadata
+at GT load, so the orchestrator's AA3/AA4 branches don't fire without
+the ``not_exhaustive_category_ids`` / ``neg_category_ids`` per-image
+filters. Only ``from_lvis_json`` retains them.
 
 LVIS canonical ``max_dets`` is 300 (AC1); the 13-entry plan keys
 (``AP``, ``AP50``, ``AP75``, ``APs``, ``APm``, ``APl``, ``APr``,
@@ -28,7 +30,7 @@ import sys
 
 import numpy as np
 import vernier
-from vernier._core import evaluate_bbox_grid_with_dataset
+from vernier._core import evaluate_bbox_grid
 from vernier._types import PARITY_STRICT
 from vernier.instance import CocoDataset
 
@@ -45,13 +47,11 @@ def main() -> int:
     args = parse_lvis_runner_args()
     iou = args.iou_type
     if iou != "bbox":
-        # Mirrors the matrix entry in ``bench/harness/matrix.py`` —
-        # vernier_lvis is bbox-only until ``evaluate_segm_grid_with_dataset``
-        # lands. Fail loud rather than silently degrade to the JSON-bytes
-        # path that strips federated metadata.
+        # Mirrors the matrix entry in ``bench/harness/matrix.py``.
+        # Fail loud rather than silently degrade to the JSON-bytes path,
+        # which strips the federated metadata this runner exists to use.
         raise ValueError(
-            f"vernier_lvis runner: iou_type={iou!r} not supported; "
-            f"only 'bbox' is wired (segm needs evaluate_segm_grid_with_dataset)"
+            f"vernier_lvis runner: iou_type={iou!r} not supported; only 'bbox' is wired"
         )
     max_dets: int = int(args.max_dets)
     stages = StageTable()
@@ -62,12 +62,12 @@ def main() -> int:
         gt_dataset = CocoDataset.from_lvis_json(gt_bytes)
 
     with stages.stage("evaluate"):
-        grid = evaluate_bbox_grid_with_dataset(
+        grid = evaluate_bbox_grid(
             gt_dataset,
             dt_bytes,
-            PARITY_STRICT,
-            max_dets,
-            True,
+            parity_mode=PARITY_STRICT,
+            max_dets_per_image=max_dets,
+            use_cats=True,
         )
 
     with stages.stage("accumulate"):

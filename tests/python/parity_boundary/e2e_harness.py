@@ -113,8 +113,8 @@ def _run_vernier(gt_path: Path, dt_path: Path, dilation_ratio: float) -> Boundar
     grid = _vernier_core.evaluate_boundary_grid(
         gt_bytes,
         dt_bytes,
-        PARITY_STRICT,
-        max(max_dets),
+        parity_mode=PARITY_STRICT,
+        max_dets_per_image=max(max_dets),
         use_cats=True,
         dilation_ratio=dilation_ratio,
         retain_meta=True,

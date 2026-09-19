@@ -86,7 +86,7 @@ class RSSSampler:
     ) -> None:
         self._stop_event.set()
         if self._thread is not None:
-            # The interval is 100ms; a 2× timeout is generous. We don't
+            # The interval is 100ms; a 2x timeout is generous. We don't
             # propagate exceptions out of here — the work the sampler is
             # wrapping has already finished or raised; this is cleanup.
             self._thread.join(timeout=self._interval_s * 5)

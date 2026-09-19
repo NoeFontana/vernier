@@ -1059,14 +1059,12 @@ class _LvisComparator:
         iou_type: Metric,
         impl_outputs: dict[str, ComparableArtifact],
     ) -> CellParityReport:
-        # bbox-only today — the matrix entry, workload supported_iou_types,
-        # and runner argspec are all pinned to bbox until
-        # ``evaluate_segm_grid_with_dataset`` lands. Widen this set in
-        # lockstep with those.
+        # bbox-only; rationale at `bench/harness/matrix.py`
+        # IMPL_PARADIGM_SUPPORT. Widen in lockstep with the matrix entry,
+        # the workload's supported_iou_types and the runner argspec.
         if iou_type != "bbox":
             raise ValueError(
-                f"lvis comparator received unsupported metric {iou_type!r}; "
-                f"valid: {{'bbox'}} (segm waits on evaluate_segm_grid_with_dataset)"
+                f"lvis comparator received unsupported metric {iou_type!r}; valid: {{'bbox'}}"
             )
         tiers: list[TierResult] = []
         for tier, impl_a, impl_b, atol in _LVIS_TIER_PAIRS:

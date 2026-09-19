@@ -70,10 +70,13 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
     # LVIS paradigm: vernier_lvis + the vendored lvis-api oracle
     # (ADR-0026, ORACLE_LVIS_COMMIT_SHA = 031ac21f939b…). Boundary /
     # keypoints are not LVIS metrics. bbox-only at the vernier side
-    # today: the parsed-once `CocoDataset.from_lvis_json` path needs an
-    # FFI entry point per IoU kind, and only `evaluate_bbox_grid_with_dataset`
-    # exists. Adding the segm cell waits on the segm/keypoints/boundary
-    # `*_grid_with_dataset` variants. The lvis-api oracle natively
+    # today, but no longer for an FFI reason: that constraint was one
+    # entry point per (IoU kind x input form), and ADR-0061 replaced the
+    # `*_grid_with_dataset` family with a widened `gt` that every kernel
+    # accepts. What the segm cell still needs is a segm-shape perfect-DT
+    # (`lvis_v1.perfect_dt_segm_path`), the workload/argspec/comparator
+    # widenings that are pinned to bbox in lockstep with this entry, and
+    # an oracle run to validate the tier. The lvis-api oracle natively
     # supports both, so we mirror our coverage. COCO-side impls
     # (pycocotools, faster-coco-eval) are deliberately absent — they
     # would silently mis-evaluate LVIS data because the federated

@@ -1043,7 +1043,7 @@ fn evaluate_grid_with_dataset_impl(
     {
         return Err(PyValueError::new_err(
             "dt_area='mask' derives the area from each detection's mask; it applies to \
-             evaluate_segm_grid_with_dataset only",
+             evaluate_segm_grid and evaluate_boundary_grid only",
         ));
     }
     let parity = parse_parity_mode(parity_mode)?;
@@ -1148,17 +1148,157 @@ fn resolve_grid_axes(
     Ok((iou, recall, area))
 }
 
+/// Resolve the one `gt` argument to the path that serves it (ADR-0061).
+///
+/// `bytes` is COCO ground-truth JSON and takes the parsing path; a
+/// `CocoDataset` is an already-parsed handle (ADR-0020) and takes the
+/// snapshot path, reusing the parse *and* the GT-side derivation
+/// caches. The two types share no values, so the dispatch is total.
+///
+/// This is what replaced the `_with_dataset` function family. That
+/// family was a hand-written matrix of (kernel x output shape x input
+/// form), and its gaps were invisible until a caller needed one — twice
+/// in two releases. Here the input form is an argument rather than a
+/// function name, so a kernel cannot be missing one.
+///
+/// # The two forms are not interchangeable on federated GT
+///
+/// They agree bit-for-bit on ordinary COCO ground truth, which is what
+/// `test_every_grid_accepts_both_ground_truth_forms` asserts. They do
+/// **not** agree when the GT carries LVIS federated metadata
+/// (`not_exhaustive_category_ids` / `neg_category_ids`):
+///
+/// - `bytes` parses through `Dataset::from_json`, which discards that
+///   metadata. `gt.is_federated()` is then `false`, so the ADR-0026 AC2
+///   DT trim below and the orchestrator's AA3/AA4 K-axis branches never
+///   fire — the result is plain COCO AP over LVIS annotations.
+/// - A `CocoDataset` built by `CocoDataset.from_lvis_json` retains it
+///   and evaluates federated semantics.
+///
+/// So the handle is not merely the faster spelling on this input: for
+/// LVIS it is the only correct one, and the LVIS parity harness and
+/// bench runner both depend on it. This asymmetry lives in the GT
+/// parser, not in this dispatch, which is why widening `gt` did not
+/// remove it. See [`evaluate_grid_with_dataset_impl`].
+#[allow(clippy::too_many_arguments)]
+fn evaluate_grid_any_gt<'py>(
+    py: Python<'py>,
+    iou_type: EvalIouType,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    retain_iou: bool,
+    cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
+    dt_area: DetectionArea,
+    retain_meta: bool,
+) -> PyResult<PyEvalGrid> {
+    if let Ok(gt_json) = gt.cast::<PyBytes>() {
+        return evaluate_grid_impl(
+            py,
+            iou_type,
+            gt_json,
+            dt,
+            parity_mode,
+            max_dets_per_image,
+            use_cats,
+            retain_iou,
+            cast_inputs,
+            iou_thresholds,
+            recall_thresholds,
+            area_ranges,
+            num_threads,
+            dt_area,
+            retain_meta,
+        );
+    }
+    if let Ok(dataset) = gt.cast::<PyDataset>() {
+        return evaluate_grid_with_dataset_impl(
+            py,
+            iou_type,
+            &dataset.borrow(),
+            dt,
+            parity_mode,
+            max_dets_per_image,
+            use_cats,
+            retain_iou,
+            cast_inputs,
+            iou_thresholds,
+            recall_thresholds,
+            area_ranges,
+            num_threads,
+            dt_area,
+            retain_meta,
+        );
+    }
+    Err(PyTypeError::new_err(format!(
+        "gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`, got {}",
+        crate::array_ingest::type_name_of(gt)
+    )))
+}
+
+/// The summary sibling of [`evaluate_grid_any_gt`], including its
+/// federated-ground-truth caveat.
+#[allow(clippy::too_many_arguments)]
+fn evaluate_summary_any_gt<'py>(
+    py: Python<'py>,
+    iou_type: EvalIouType,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    cast_inputs: bool,
+    num_threads: Option<usize>,
+) -> PyResult<PySummary> {
+    if let Ok(gt_json) = gt.cast::<PyBytes>() {
+        return evaluate_summary_impl(
+            py,
+            iou_type,
+            gt_json,
+            dt,
+            parity_mode,
+            max_dets,
+            use_cats,
+            cast_inputs,
+            num_threads,
+        );
+    }
+    if let Ok(dataset) = gt.cast::<PyDataset>() {
+        return evaluate_summary_with_dataset_impl(
+            py,
+            iou_type,
+            &dataset.borrow(),
+            dt,
+            parity_mode,
+            max_dets,
+            use_cats,
+            cast_inputs,
+            num_threads,
+        );
+    }
+    Err(PyTypeError::new_err(format!(
+        "gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`, got {}",
+        crate::array_ingest::type_name_of(gt)
+    )))
+}
+
 /// Bbox per-image evaluation pass — see [`evaluate_grid_impl`].
 /// `retain_iou` (per ADR-0019 Week 2.3) keeps the per-`(category,
 /// image)` IoU matrix on the returned grid for later table
 /// construction; defaults to `False` so existing callers pay no extra
 /// allocation.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_grid<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -1172,103 +1312,9 @@ fn evaluate_bbox_grid<'py>(
     dt_area: &str,
     retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
-    evaluate_grid_impl(
+    evaluate_grid_any_gt(
         py,
         EvalIouType::Bbox,
-        gt_json,
-        dt,
-        parity_mode,
-        max_dets_per_image,
-        use_cats,
-        retain_iou,
-        cast_inputs,
-        iou_thresholds,
-        recall_thresholds,
-        area_ranges,
-        num_threads,
-        parse_dt_area(dt_area)?,
-        retain_meta,
-    )
-}
-
-/// Bbox per-image evaluation pass against a parsed-once
-/// [`Dataset`]. The federated form is the entry point the LVIS
-/// parity harness consumes: the JSON-bytes [`evaluate_bbox_grid`]
-/// strips ADR-0026 federated metadata at GT load, so the
-/// orchestrator's AA3/AA4 branches never fire on that path.
-#[pyfunction]
-#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
-#[allow(clippy::too_many_arguments)]
-fn evaluate_bbox_grid_with_dataset<'py>(
-    py: Python<'py>,
-    gt: &PyDataset,
-    dt: &Bound<'py, PyAny>,
-    parity_mode: &str,
-    max_dets_per_image: usize,
-    use_cats: bool,
-    retain_iou: bool,
-    cast_inputs: bool,
-    iou_thresholds: Option<Vec<f64>>,
-    recall_thresholds: Option<Vec<f64>>,
-    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
-    num_threads: Option<usize>,
-    dt_area: &str,
-    retain_meta: bool,
-) -> PyResult<PyEvalGrid> {
-    evaluate_grid_with_dataset_impl(
-        py,
-        EvalIouType::Bbox,
-        gt,
-        dt,
-        parity_mode,
-        max_dets_per_image,
-        use_cats,
-        retain_iou,
-        cast_inputs,
-        iou_thresholds,
-        recall_thresholds,
-        area_ranges,
-        num_threads,
-        parse_dt_area(dt_area)?,
-        retain_meta,
-    )
-}
-
-/// Segm per-image evaluation against a parsed [`Dataset`] handle —
-/// the ADR-0020 sibling of [`evaluate_segm_grid`].
-///
-/// This is the entry point a caller needs to evaluate several IoU
-/// types, or several parameter sets, off one parse. `evaluate_segm_grid`
-/// takes GT JSON bytes, so a `bbox` + `segm` run through it parses the
-/// same ground truth twice; both kernels can share one handle here.
-///
-/// Both GT and DT must carry a `segmentation` on every entry, exactly
-/// as the JSON-taking grid requires. `dt_area` defaults to `"bbox"` to
-/// match that grid rather than the kernel — quirk **J3** derives a
-/// detection's area from its box unless asked otherwise, and `"mask"`
-/// is the opt-in that reads it off the detection's own mask.
-#[pyfunction]
-#[pyo3(signature = (gt, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
-#[allow(clippy::too_many_arguments)]
-fn evaluate_segm_grid_with_dataset<'py>(
-    py: Python<'py>,
-    gt: &PyDataset,
-    dt: &Bound<'py, PyAny>,
-    parity_mode: &str,
-    max_dets_per_image: usize,
-    use_cats: bool,
-    retain_iou: bool,
-    cast_inputs: bool,
-    iou_thresholds: Option<Vec<f64>>,
-    recall_thresholds: Option<Vec<f64>>,
-    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
-    num_threads: Option<usize>,
-    dt_area: &str,
-    retain_meta: bool,
-) -> PyResult<PyEvalGrid> {
-    evaluate_grid_with_dataset_impl(
-        py,
-        EvalIouType::Segm,
         gt,
         dt,
         parity_mode,
@@ -1289,11 +1335,11 @@ fn evaluate_segm_grid_with_dataset<'py>(
 /// `segmentation` field on every entry; absent fields raise a typed
 /// `ValueError` instead of being silently treated as empty.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_segm_grid<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -1307,10 +1353,10 @@ fn evaluate_segm_grid<'py>(
     dt_area: &str,
     retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
-    evaluate_grid_impl(
+    evaluate_grid_any_gt(
         py,
         EvalIouType::Segm,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -1331,11 +1377,11 @@ fn evaluate_segm_grid<'py>(
 /// `dilation_ratio` is the boundary band width as a fraction of the
 /// image diagonal (`0.02` COCO default; `0.008` LVIS variant).
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets_per_image, use_cats, dilation_ratio, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_boundary_grid<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -1351,10 +1397,10 @@ fn evaluate_boundary_grid<'py>(
     retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
-    evaluate_grid_impl(
+    evaluate_grid_any_gt(
         py,
         iou_type,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -1433,11 +1479,11 @@ fn evaluate_summary_impl(
 
 /// Bbox end-to-end pipeline — see [`evaluate_summary_impl`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_bbox_summary(
     py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets: Vec<usize>,
@@ -1445,10 +1491,10 @@ fn evaluate_bbox_summary(
     cast_inputs: bool,
     num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
-    evaluate_summary_impl(
+    evaluate_summary_any_gt(
         py,
         EvalIouType::Bbox,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets,
@@ -1461,11 +1507,11 @@ fn evaluate_bbox_summary(
 /// Segm end-to-end pipeline — see [`evaluate_summary_impl`]. Both GT
 /// and DT must carry segmentation fields.
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_segm_summary(
     py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets: Vec<usize>,
@@ -1473,10 +1519,10 @@ fn evaluate_segm_summary(
     cast_inputs: bool,
     num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
-    evaluate_summary_impl(
+    evaluate_summary_any_gt(
         py,
         EvalIouType::Segm,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets,
@@ -1490,11 +1536,11 @@ fn evaluate_segm_summary(
 /// [`evaluate_summary_impl`]. Both GT and DT must carry segmentation
 /// fields. `dilation_ratio` matches [`evaluate_boundary_grid`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, dilation_ratio, cast_inputs=false, num_threads=None))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets, use_cats, dilation_ratio, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_boundary_summary(
     py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets: Vec<usize>,
@@ -1504,10 +1550,10 @@ fn evaluate_boundary_summary(
     num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
     let iou_type = boundary_iou_type(dilation_ratio)?;
-    evaluate_summary_impl(
+    evaluate_summary_any_gt(
         py,
         iou_type,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets,
@@ -1527,11 +1573,11 @@ fn evaluate_boundary_summary(
 /// `corrected`). Sigmas must be supplied already scaled (post-divide-
 /// by-10 per pycocotools' internal handling).
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets, use_cats, sigmas, cast_inputs=false, num_threads=None))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets, use_cats, sigmas, cast_inputs=false, num_threads=None))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_keypoints_summary(
     py: Python<'_>,
-    gt_json: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets: Vec<usize>,
@@ -1543,10 +1589,10 @@ fn evaluate_keypoints_summary(
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
     };
-    evaluate_summary_impl(
+    evaluate_summary_any_gt(
         py,
         iou_type,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets,
@@ -1556,132 +1602,8 @@ fn evaluate_keypoints_summary(
     )
 }
 
-/// Bbox end-to-end pipeline against a parsed-once [`PyDataset`]
-/// (ADR-0020). Reuses the dataset's parsed GT; bbox has no GT-side
-/// derivation cache today, so the only saving over
-/// [`evaluate_bbox_summary`] is the GT JSON parse.
-#[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
-#[allow(clippy::too_many_arguments)]
-fn evaluate_bbox_summary_with_dataset(
-    py: Python<'_>,
-    dataset: &PyDataset,
-    dt: &Bound<'_, PyAny>,
-    parity_mode: &str,
-    max_dets: Vec<usize>,
-    use_cats: bool,
-    cast_inputs: bool,
-    num_threads: Option<usize>,
-) -> PyResult<PySummary> {
-    evaluate_summary_with_dataset_impl(
-        py,
-        EvalIouType::Bbox,
-        dataset,
-        dt,
-        parity_mode,
-        max_dets,
-        use_cats,
-        cast_inputs,
-        num_threads,
-    )
-}
-
-/// Segm end-to-end pipeline against a parsed-once [`PyDataset`]
-/// (ADR-0020). Threads the dataset's [`SegmGtCache`] into the
-/// kernel so cross-call GT bbox+area derivation is reused.
-#[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
-#[allow(clippy::too_many_arguments)]
-fn evaluate_segm_summary_with_dataset(
-    py: Python<'_>,
-    dataset: &PyDataset,
-    dt: &Bound<'_, PyAny>,
-    parity_mode: &str,
-    max_dets: Vec<usize>,
-    use_cats: bool,
-    cast_inputs: bool,
-    num_threads: Option<usize>,
-) -> PyResult<PySummary> {
-    evaluate_summary_with_dataset_impl(
-        py,
-        EvalIouType::Segm,
-        dataset,
-        dt,
-        parity_mode,
-        max_dets,
-        use_cats,
-        cast_inputs,
-        num_threads,
-    )
-}
-
-/// Boundary end-to-end pipeline against a parsed-once [`PyDataset`]
-/// (ADR-0020). Threads the dataset's [`BoundaryGtCache`] into the
-/// kernel so cross-call GT band derivation (the dominant boundary
-/// cost) is reused. The cache is cleared if `dilation_ratio` differs
-/// from the previous call's, per ADR-0010.
-#[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, dilation_ratio, cast_inputs=false, num_threads=None))]
-#[allow(clippy::too_many_arguments)]
-fn evaluate_boundary_summary_with_dataset(
-    py: Python<'_>,
-    dataset: &PyDataset,
-    dt: &Bound<'_, PyAny>,
-    parity_mode: &str,
-    max_dets: Vec<usize>,
-    use_cats: bool,
-    dilation_ratio: f64,
-    cast_inputs: bool,
-    num_threads: Option<usize>,
-) -> PyResult<PySummary> {
-    let iou_type = boundary_iou_type(dilation_ratio)?;
-    evaluate_summary_with_dataset_impl(
-        py,
-        iou_type,
-        dataset,
-        dt,
-        parity_mode,
-        max_dets,
-        use_cats,
-        cast_inputs,
-        num_threads,
-    )
-}
-
-/// Keypoints (OKS) end-to-end pipeline against a parsed-once
-/// [`PyDataset`] (ADR-0020). No keypoints-side cache today, so the
-/// saving over [`evaluate_keypoints_summary`] is the GT JSON parse.
-#[pyfunction]
-#[pyo3(signature = (dataset, dt, parity_mode, max_dets, use_cats, sigmas, cast_inputs=false, num_threads=None))]
-#[allow(clippy::too_many_arguments)]
-fn evaluate_keypoints_summary_with_dataset(
-    py: Python<'_>,
-    dataset: &PyDataset,
-    dt: &Bound<'_, PyAny>,
-    parity_mode: &str,
-    max_dets: Vec<usize>,
-    use_cats: bool,
-    sigmas: &Bound<'_, PyDict>,
-    cast_inputs: bool,
-    num_threads: Option<usize>,
-) -> PyResult<PySummary> {
-    let iou_type = EvalIouType::Keypoints {
-        sigmas: parse_sigmas(sigmas)?,
-    };
-    evaluate_summary_with_dataset_impl(
-        py,
-        iou_type,
-        dataset,
-        dt,
-        parity_mode,
-        max_dets,
-        use_cats,
-        cast_inputs,
-        num_threads,
-    )
-}
-
-/// Shared dispatch for the `evaluate_*_summary_with_dataset` family
+/// Summary evaluation from an already-parsed [`Dataset`] handle.
+/// Reached by passing a `CocoDataset` as `gt` (ADR-0061)
 /// (ADR-0020). Mirrors [`evaluate_summary_impl`] but skips GT parse
 /// (the dataset already holds one) and threads the per-kernel cache
 /// from `dataset` through [`run_pipeline_with_dataset`].
@@ -1725,11 +1647,11 @@ fn evaluate_summary_with_dataset_impl(
 /// carry `keypoints` fields. `sigmas` matches
 /// [`evaluate_keypoints_summary`].
 #[pyfunction]
-#[pyo3(signature = (gt_json, dt, parity_mode, max_dets_per_image, use_cats, sigmas, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets_per_image, use_cats, sigmas, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="bbox", retain_meta=false))]
 #[allow(clippy::too_many_arguments)]
 fn evaluate_keypoints_grid<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -1747,10 +1669,10 @@ fn evaluate_keypoints_grid<'py>(
     let iou_type = EvalIouType::Keypoints {
         sigmas: parse_sigmas(sigmas)?,
     };
-    evaluate_grid_impl(
+    evaluate_grid_any_gt(
         py,
         iou_type,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -3093,7 +3015,7 @@ pub(crate) fn queue_full_to_pyerr(py: Python<'_>, full: background::QueueFull) -
 /// partial blob (ADR-0031, ADR-0035).
 #[pyfunction]
 #[pyo3(signature = (
-    gt_json,
+    gt,
     detections,
     iou_type,
     rank_id,
@@ -3110,7 +3032,7 @@ pub(crate) fn queue_full_to_pyerr(py: Python<'_>, full: background::QueueFull) -
 #[allow(clippy::too_many_arguments)]
 fn evaluate_instance_to_partial<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     detections: &Bound<'py, PyAny>,
     iou_type: &str,
     rank_id: u32,
@@ -3124,7 +3046,7 @@ fn evaluate_instance_to_partial<'py>(
     cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let mut ev = InstanceStreamOrchestrator::new(
-        gt_json,
+        gt,
         iou_type,
         parity_mode,
         max_dets,
@@ -3143,7 +3065,7 @@ fn evaluate_instance_to_partial<'py>(
 /// Merge per-rank partials into a final summary (ADR-0031, ADR-0035).
 #[pyfunction]
 #[pyo3(signature = (
-    gt_json,
+    gt,
     partials,
     iou_type,
     *,
@@ -3159,7 +3081,7 @@ fn evaluate_instance_to_partial<'py>(
 #[allow(clippy::too_many_arguments)]
 fn merge_instance_partials<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     partials: &Bound<'py, pyo3::types::PyList>,
     iou_type: &str,
     parity_mode: &str,
@@ -3173,7 +3095,7 @@ fn merge_instance_partials<'py>(
 ) -> PyResult<PySummary> {
     let merged = InstanceStreamOrchestrator::from_partials(
         py,
-        gt_json,
+        gt,
         partials,
         iou_type,
         parity_mode,
@@ -3731,21 +3653,12 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(read_and_reset_dataset_timings, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_bbox_grid, m)?)?;
-    m.add_function(wrap_pyfunction!(evaluate_bbox_grid_with_dataset, m)?)?;
-    m.add_function(wrap_pyfunction!(evaluate_segm_grid_with_dataset, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_segm_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_boundary_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_boundary_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_grid, m)?)?;
-    m.add_function(wrap_pyfunction!(evaluate_bbox_summary_with_dataset, m)?)?;
-    m.add_function(wrap_pyfunction!(evaluate_segm_summary_with_dataset, m)?)?;
-    m.add_function(wrap_pyfunction!(evaluate_boundary_summary_with_dataset, m)?)?;
-    m.add_function(wrap_pyfunction!(
-        evaluate_keypoints_summary_with_dataset,
-        m
-    )?)?;
     m.add_function(wrap_pyfunction!(calibration::cells_from_grid, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_class_to_arrow_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_image_to_arrow_pycapsule, m)?)?;

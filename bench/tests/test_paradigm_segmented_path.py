@@ -26,9 +26,7 @@ def test_result_dir_emits_paradigm_segment_for_instance() -> None:
         iou_type="bbox",
     )
     # v2 layout: <root>/<sha>/<fp>/<paradigm>/<workload>/<metric>/
-    expected = (
-        root / "abcdef123456" / "dev-unfp-m1" / "instance" / "smoke_perfect_match" / "bbox"
-    )
+    expected = root / "abcdef123456" / "dev-unfp-m1" / "instance" / "smoke_perfect_match" / "bbox"
     assert out == expected
 
 
@@ -128,15 +126,7 @@ def test_loader_walks_v1_tree_and_lifts_paradigm_to_instance(tmp_path: Path) -> 
 def test_loader_walks_v2_tree_under_paradigm_segment(tmp_path: Path) -> None:
     """A v2-shaped result file at the paradigm-segmented path reads
     back with the right paradigm column."""
-    v2_path = (
-        tmp_path
-        / "v2abcdef0002"
-        / "fp_v2"
-        / "instance"
-        / "smoke"
-        / "bbox"
-        / "vernier.json"
-    )
+    v2_path = tmp_path / "v2abcdef0002" / "fp_v2" / "instance" / "smoke" / "bbox" / "vernier.json"
     v2_path.parent.mkdir(parents=True, exist_ok=True)
     v2_path.write_text(
         json.dumps(
@@ -157,15 +147,7 @@ def test_loader_walks_mixed_v1_and_v2_trees(tmp_path: Path) -> None:
     v1_path.parent.mkdir(parents=True, exist_ok=True)
     v1_path.write_text(json.dumps(_v1_result_dict(workload="smoke", iou="bbox", impl="vernier")))
 
-    v2_path = (
-        tmp_path
-        / "v2abcdef0002"
-        / "fp_v2"
-        / "instance"
-        / "smoke"
-        / "bbox"
-        / "vernier.json"
-    )
+    v2_path = tmp_path / "v2abcdef0002" / "fp_v2" / "instance" / "smoke" / "bbox" / "vernier.json"
     v2_path.parent.mkdir(parents=True, exist_ok=True)
     v2_path.write_text(
         json.dumps(

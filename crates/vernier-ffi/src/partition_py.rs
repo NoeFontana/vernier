@@ -139,7 +139,7 @@ pub(crate) fn warn_about_manifest(
 fn evaluate_instance_partitioned_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
-    gt_json: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyBytes>,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -157,7 +157,7 @@ fn evaluate_instance_partitioned_impl(
     let grid = evaluate_grid_impl(
         py,
         iou_type,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -221,8 +221,9 @@ fn evaluate_instance_partitioned_impl(
 /// identical to the un-partitioned summary.
 #[pyfunction]
 #[pyo3(signature = (
-    gt_json,
+    gt,
     dt,
+    *,
     parity_mode,
     max_dets_per_image,
     use_cats,
@@ -238,7 +239,7 @@ fn evaluate_instance_partitioned_impl(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_bbox_partitioned<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -255,7 +256,7 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
     evaluate_instance_partitioned_impl(
         py,
         EvalIouType::Bbox,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -276,8 +277,9 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
 /// the segmentation kernel.
 #[pyfunction]
 #[pyo3(signature = (
-    gt_json,
+    gt,
     dt,
+    *,
     parity_mode,
     max_dets_per_image,
     use_cats,
@@ -293,7 +295,7 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_segm_partitioned<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -310,7 +312,7 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
     evaluate_instance_partitioned_impl(
         py,
         EvalIouType::Segm,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -331,8 +333,9 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
 /// for the boundary-IoU kernel (ADR-0010).
 #[pyfunction]
 #[pyo3(signature = (
-    gt_json,
+    gt,
     dt,
+    *,
     parity_mode,
     max_dets_per_image,
     use_cats,
@@ -349,7 +352,7 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_boundary_partitioned<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -368,7 +371,7 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
     evaluate_instance_partitioned_impl(
         py,
         iou_type,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -390,8 +393,9 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
 /// 10-stat plan.
 #[pyfunction]
 #[pyo3(signature = (
-    gt_json,
+    gt,
     dt,
+    *,
     parity_mode,
     max_dets_per_image,
     use_cats,
@@ -408,7 +412,7 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_keypoints_partitioned<'py>(
     py: Python<'py>,
-    gt_json: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -429,7 +433,7 @@ pub(crate) fn evaluate_keypoints_partitioned<'py>(
     evaluate_instance_partitioned_impl(
         py,
         iou_type,
-        gt_json,
+        gt,
         dt,
         parity_mode,
         max_dets_per_image,
@@ -532,7 +536,7 @@ type LrpKernelDispatch = Box<
 #[allow(clippy::too_many_arguments)]
 fn evaluate_instance_partitioned_lrp_impl(
     py: Python<'_>,
-    gt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyBytes>,
     dt_bytes: &Bound<'_, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -545,7 +549,7 @@ fn evaluate_instance_partitioned_lrp_impl(
     dispatch: LrpKernelDispatch,
 ) -> PyResult<PyPartitionedLrpReport> {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt_vec = gt_bytes.as_bytes().to_vec();
+    let gt_vec = gt.as_bytes().to_vec();
     let dt_vec = dt_bytes.as_bytes().to_vec();
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
     let cross = cross_axes.unwrap_or_default();
@@ -600,8 +604,9 @@ fn evaluate_instance_partitioned_lrp_impl(
 /// once per slice with an I-axis filter (C3).
 #[pyfunction]
 #[pyo3(signature = (
-    gt_bytes,
+    gt,
     dt_bytes,
+    *,
     parity_mode,
     tp_threshold,
     tau_grid,
@@ -614,7 +619,7 @@ fn evaluate_instance_partitioned_lrp_impl(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_bbox_partitioned_lrp(
     py: Python<'_>,
-    gt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyBytes>,
     dt_bytes: &Bound<'_, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -627,7 +632,7 @@ pub(crate) fn evaluate_bbox_partitioned_lrp(
 ) -> PyResult<PyPartitionedLrpReport> {
     evaluate_instance_partitioned_lrp_impl(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,
@@ -655,8 +660,9 @@ pub(crate) fn evaluate_bbox_partitioned_lrp(
 /// for the segmentation-mask IoU kernel.
 #[pyfunction]
 #[pyo3(signature = (
-    gt_bytes,
+    gt,
     dt_bytes,
+    *,
     parity_mode,
     tp_threshold,
     tau_grid,
@@ -669,7 +675,7 @@ pub(crate) fn evaluate_bbox_partitioned_lrp(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_segm_partitioned_lrp(
     py: Python<'_>,
-    gt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyBytes>,
     dt_bytes: &Bound<'_, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -682,7 +688,7 @@ pub(crate) fn evaluate_segm_partitioned_lrp(
 ) -> PyResult<PyPartitionedLrpReport> {
     evaluate_instance_partitioned_lrp_impl(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,
@@ -709,8 +715,9 @@ pub(crate) fn evaluate_segm_partitioned_lrp(
 /// Boundary LRP partitioned eval (ADR-0010 + ADR-0046).
 #[pyfunction]
 #[pyo3(signature = (
-    gt_bytes,
+    gt,
     dt_bytes,
+    *,
     parity_mode,
     tp_threshold,
     tau_grid,
@@ -724,7 +731,7 @@ pub(crate) fn evaluate_segm_partitioned_lrp(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_boundary_partitioned_lrp(
     py: Python<'_>,
-    gt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyBytes>,
     dt_bytes: &Bound<'_, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -739,7 +746,7 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
     validate_dilation_ratio(dilation_ratio)?;
     evaluate_instance_partitioned_lrp_impl(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,
@@ -767,8 +774,9 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
 /// Keypoints (OKS) LRP partitioned eval (ADR-0045 + ADR-0046).
 #[pyfunction]
 #[pyo3(signature = (
-    gt_bytes,
+    gt,
     dt_bytes,
+    *,
     parity_mode,
     tp_threshold,
     tau_grid,
@@ -782,7 +790,7 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_keypoints_partitioned_lrp(
     py: Python<'_>,
-    gt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyBytes>,
     dt_bytes: &Bound<'_, PyBytes>,
     parity_mode: &str,
     tp_threshold: f64,
@@ -797,7 +805,7 @@ pub(crate) fn evaluate_keypoints_partitioned_lrp(
     let sigmas_map = parse_sigmas(sigmas)?;
     evaluate_instance_partitioned_lrp_impl(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         tp_threshold,

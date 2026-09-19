@@ -96,7 +96,7 @@ def _write_cell(
 
 @pytest.fixture
 def four_paradigm_tree(tmp_path: Path) -> Path:
-    """One workload per paradigm × two SHAs × one impl = 8 cells."""
+    """One workload per paradigm x two SHAs x one impl = 8 cells."""
     base = "base000000aa"
     head = "head000000bb"
     plan: list[tuple[Paradigm, str, IouType, str]] = [

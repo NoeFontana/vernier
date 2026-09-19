@@ -253,8 +253,9 @@ class EvalCells:
 def cells_from_grid(grid: EvalGrid) -> EvalCells: ...
 def version() -> str: ...
 def evaluate_bbox_summary(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
@@ -262,7 +263,7 @@ def evaluate_bbox_summary(
     num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_instance_to_partial(
-    gt_json: bytes,
+    gt: bytes,
     detections: DetectionsInput,
     iou_type: Literal["bbox", "segm", "boundary", "keypoints"],
     rank_id: int,
@@ -277,7 +278,7 @@ def evaluate_instance_to_partial(
     cast_inputs: bool = ...,
 ) -> bytes: ...
 def merge_instance_partials(
-    gt_json: bytes,
+    gt: bytes,
     partials: Sequence[bytes],
     iou_type: Literal["bbox", "segm", "boundary", "keypoints"],
     *,
@@ -290,18 +291,10 @@ def merge_instance_partials(
     retain_iou: bool = ...,
     cast_inputs: bool = ...,
 ) -> Summary: ...
-def evaluate_bbox_summary_with_dataset(
-    dataset: CocoDataset,
-    dt: DetectionsInput,
-    parity_mode: str,
-    max_dets: list[int],
-    use_cats: bool,
-    cast_inputs: bool = ...,
-    num_threads: int | None = ...,
-) -> Summary: ...
 def evaluate_bbox_grid(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -312,50 +305,12 @@ def evaluate_bbox_grid(
     area_ranges: Breakdown | None = ...,
     num_threads: int | None = ...,
     dt_area: Literal["bbox", "supplied"] = ...,
-    retain_meta: bool = ...,
-) -> EvalGrid: ...
-def evaluate_bbox_grid_with_dataset(
-    gt: CocoDataset,
-    dt: DetectionsInput,
-    parity_mode: str,
-    max_dets_per_image: int,
-    use_cats: bool,
-    retain_iou: bool = ...,
-    cast_inputs: bool = ...,
-    iou_thresholds: list[float] | None = ...,
-    recall_thresholds: list[float] | None = ...,
-    area_ranges: Breakdown | None = ...,
-    num_threads: int | None = ...,
-    dt_area: Literal["bbox", "supplied"] = ...,
-    retain_meta: bool = ...,
-) -> EvalGrid: ...
-def evaluate_segm_grid_with_dataset(
-    gt: CocoDataset,
-    dt: DetectionsInput,
-    parity_mode: str,
-    max_dets_per_image: int,
-    use_cats: bool,
-    retain_iou: bool = ...,
-    cast_inputs: bool = ...,
-    iou_thresholds: list[float] | None = ...,
-    recall_thresholds: list[float] | None = ...,
-    area_ranges: Breakdown | None = ...,
-    num_threads: int | None = ...,
-    dt_area: Literal["bbox", "supplied", "mask"] = ...,
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_segm_summary(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
-    parity_mode: str,
-    max_dets: list[int],
-    use_cats: bool,
-    cast_inputs: bool = ...,
-    num_threads: int | None = ...,
-) -> Summary: ...
-def evaluate_segm_summary_with_dataset(
-    dataset: CocoDataset,
-    dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
@@ -363,8 +318,9 @@ def evaluate_segm_summary_with_dataset(
     num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_segm_grid(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -378,18 +334,9 @@ def evaluate_segm_grid(
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_boundary_summary(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
-    parity_mode: str,
-    max_dets: list[int],
-    use_cats: bool,
-    dilation_ratio: float,
-    cast_inputs: bool = ...,
-    num_threads: int | None = ...,
-) -> Summary: ...
-def evaluate_boundary_summary_with_dataset(
-    dataset: CocoDataset,
-    dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
@@ -398,8 +345,9 @@ def evaluate_boundary_summary_with_dataset(
     num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_boundary_grid(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -414,18 +362,9 @@ def evaluate_boundary_grid(
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
 def evaluate_keypoints_summary(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
-    parity_mode: str,
-    max_dets: list[int],
-    use_cats: bool,
-    sigmas: dict[int, list[float]],
-    cast_inputs: bool = ...,
-    num_threads: int | None = ...,
-) -> Summary: ...
-def evaluate_keypoints_summary_with_dataset(
-    dataset: CocoDataset,
-    dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets: list[int],
     use_cats: bool,
@@ -434,8 +373,9 @@ def evaluate_keypoints_summary_with_dataset(
     num_threads: int | None = ...,
 ) -> Summary: ...
 def evaluate_keypoints_grid(
-    gt_json: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -464,8 +404,9 @@ class PartitionedSummary:
     def slices_capsule(self) -> ArrowRecordBatch: ...
 
 def evaluate_bbox_partitioned(
-    gt_json: bytes,
+    gt: bytes,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -479,8 +420,9 @@ def evaluate_bbox_partitioned(
     num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_segm_partitioned(
-    gt_json: bytes,
+    gt: bytes,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -494,8 +436,9 @@ def evaluate_segm_partitioned(
     num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_boundary_partitioned(
-    gt_json: bytes,
+    gt: bytes,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -510,8 +453,9 @@ def evaluate_boundary_partitioned(
     num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_keypoints_partitioned(
-    gt_json: bytes,
+    gt: bytes,
     dt: DetectionsInput,
+    *,
     parity_mode: str,
     max_dets_per_image: int,
     use_cats: bool,
@@ -538,8 +482,9 @@ class PartitionedLrpReport:
     def slices_capsule(self) -> ArrowRecordBatch: ...
 
 def evaluate_bbox_partitioned_lrp(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
+    *,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
@@ -550,8 +495,9 @@ def evaluate_bbox_partitioned_lrp(
     key_kind: str = ...,
 ) -> PartitionedLrpReport: ...
 def evaluate_segm_partitioned_lrp(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
+    *,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
@@ -562,8 +508,9 @@ def evaluate_segm_partitioned_lrp(
     key_kind: str = ...,
 ) -> PartitionedLrpReport: ...
 def evaluate_boundary_partitioned_lrp(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
+    *,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
@@ -575,8 +522,9 @@ def evaluate_boundary_partitioned_lrp(
     key_kind: str = ...,
 ) -> PartitionedLrpReport: ...
 def evaluate_keypoints_partitioned_lrp(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
+    *,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
@@ -615,7 +563,7 @@ class _TideReportDict(TypedDict):
     config: _TideConfigDict
 
 def error_decomposition_bbox(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     t_f: float,
@@ -624,7 +572,7 @@ def error_decomposition_bbox(
     use_cats: bool,
 ) -> _TideReportDict: ...
 def error_decomposition_segm(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     t_f: float,
@@ -633,7 +581,7 @@ def error_decomposition_segm(
     use_cats: bool,
 ) -> _TideReportDict: ...
 def error_decomposition_boundary(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     t_f: float,
@@ -652,7 +600,7 @@ class _FpIouHistogramDict(TypedDict):
     n_fps: int
 
 def fp_iou_histogram_bbox(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     t_f: float,
@@ -660,7 +608,7 @@ def fp_iou_histogram_bbox(
     use_cats: bool,
 ) -> _FpIouHistogramDict: ...
 def fp_iou_histogram_segm(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     t_f: float,
@@ -668,7 +616,7 @@ def fp_iou_histogram_segm(
     use_cats: bool,
 ) -> _FpIouHistogramDict: ...
 def fp_iou_histogram_boundary(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     t_f: float,
@@ -700,7 +648,7 @@ class _LrpReportDict(TypedDict):
     config: _LrpConfigDict
 
 def optimal_lrp_bbox(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     tp_threshold: float,
@@ -709,7 +657,7 @@ def optimal_lrp_bbox(
     use_cats: bool,
 ) -> _LrpReportDict: ...
 def optimal_lrp_segm(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     tp_threshold: float,
@@ -718,7 +666,7 @@ def optimal_lrp_segm(
     use_cats: bool,
 ) -> _LrpReportDict: ...
 def optimal_lrp_boundary(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     tp_threshold: float,
@@ -728,7 +676,7 @@ def optimal_lrp_boundary(
     dilation_ratio: float,
 ) -> _LrpReportDict: ...
 def optimal_lrp_keypoints(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     tp_threshold: float,
@@ -747,7 +695,7 @@ class _ConfusionMatrixDict(TypedDict):
     kernel: str
 
 def confusion_matrix_bbox(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     iou_threshold: float,
@@ -755,7 +703,7 @@ def confusion_matrix_bbox(
     use_cats: bool,
 ) -> _ConfusionMatrixDict: ...
 def confusion_matrix_segm(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     iou_threshold: float,
@@ -763,7 +711,7 @@ def confusion_matrix_segm(
     use_cats: bool,
 ) -> _ConfusionMatrixDict: ...
 def confusion_matrix_boundary(
-    gt_bytes: bytes,
+    gt: bytes,
     dt_bytes: bytes,
     parity_mode: str,
     iou_threshold: float,

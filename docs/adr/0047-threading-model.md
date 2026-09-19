@@ -1,6 +1,6 @@
 # ADR-NNNN: Opt-in `num_threads` parallelism for `Evaluator` and `BackgroundEvaluator` — zero overhead on the default path
 
-- **Status:** accepted
+- **Status:** accepted (`_with_dataset` references superseded by ADR-0061)
 - **Date:** 2026-05-16
 - **Deciders:** @NoeFontana
 - **Consulted:** —

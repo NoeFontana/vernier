@@ -118,7 +118,9 @@ def _as_matrix() -> np.ndarray:
 
 
 def _grid(dt: Any) -> Any:
-    return _core.evaluate_bbox_grid(GT_BYTES, dt, "strict", 100, True, retain_meta=True)
+    return _core.evaluate_bbox_grid(
+        GT_BYTES, dt, parity_mode="strict", max_dets_per_image=100, use_cats=True, retain_meta=True
+    )
 
 
 def _normalize(eval_imgs: list[Any]) -> list[dict[str, Any]]:
@@ -232,7 +234,13 @@ def test_area_is_ignored_under_the_default_dt_area() -> None:
 
 def _supplied_area_grid(dt: Any) -> Any:
     return _core.evaluate_bbox_grid(
-        GT_BYTES, dt, "strict", 100, True, dt_area="supplied", retain_meta=True
+        GT_BYTES,
+        dt,
+        parity_mode="strict",
+        max_dets_per_image=100,
+        use_cats=True,
+        dt_area="supplied",
+        retain_meta=True,
     )
 
 
@@ -517,7 +525,14 @@ def _compressed_counts(mask: np.ndarray) -> bytes:
 
 
 def _segm_grid(dt: Any, parity_mode: str = "strict") -> Any:
-    return _core.evaluate_segm_grid(SEGM_GT_BYTES, dt, parity_mode, 100, True, retain_meta=True)
+    return _core.evaluate_segm_grid(
+        SEGM_GT_BYTES,
+        dt,
+        parity_mode=parity_mode,
+        max_dets_per_image=100,
+        use_cats=True,
+        retain_meta=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -579,7 +594,13 @@ def test_boundary_list_route_matches_file_route_cell_for_cell() -> None:
 
     def grid(dt: Any) -> Any:
         return _core.evaluate_boundary_grid(
-            SEGM_GT_BYTES, dt, "strict", 100, True, 0.02, retain_meta=True
+            SEGM_GT_BYTES,
+            dt,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
+            dilation_ratio=0.02,
+            retain_meta=True,
         )
 
     reference = _normalize(grid(json.dumps(_segm_detections("polygons")).encode()).eval_imgs())
@@ -706,7 +727,14 @@ def test_matrix_under_keypoints_is_refused() -> None:
     """A matrix carries no keypoints, and core says so rather than guessing."""
     _, _, as_matrix = _bbox_only_under_segm()
     with pytest.raises(ValueError, match=r"keypoints"):
-        _core.evaluate_keypoints_grid(SEGM_GT_BYTES, as_matrix, "strict", 20, True, {})
+        _core.evaluate_keypoints_grid(
+            SEGM_GT_BYTES,
+            as_matrix,
+            parity_mode="strict",
+            max_dets_per_image=20,
+            use_cats=True,
+            sigmas={},
+        )
 
 
 # --- keypoints ---------------------------------------------------------------
@@ -757,7 +785,13 @@ def test_keypoints_list_route_matches_file_route_cell_for_cell() -> None:
 
     def grid(dt: Any) -> Any:
         return _core.evaluate_keypoints_grid(
-            KP_GT_BYTES, dt, "strict", 20, True, {}, retain_meta=True
+            KP_GT_BYTES,
+            dt,
+            parity_mode="strict",
+            max_dets_per_image=20,
+            use_cats=True,
+            sigmas={},
+            retain_meta=True,
         )
 
     reference = _normalize(grid(json.dumps(KP_DETECTIONS).encode()).eval_imgs())
@@ -810,10 +844,20 @@ def test_matrix_route_honours_cast_inputs() -> None:
     # this test is about what happens when a caller violates it anyway.
     as_f32: Any = _as_matrix().astype(np.float32)
     with pytest.raises(TypeError, match="float64"):
-        _core.evaluate_bbox_grid(GT_BYTES, as_f32, "strict", 100, True)
+        _core.evaluate_bbox_grid(
+            GT_BYTES, as_f32, parity_mode="strict", max_dets_per_image=100, use_cats=True
+        )
 
     with pytest.warns(UserWarning, match="cast_inputs=True"):
-        cast = _core.evaluate_bbox_grid(GT_BYTES, as_f32, "strict", 100, True, False, True)
+        cast = _core.evaluate_bbox_grid(
+            GT_BYTES,
+            as_f32,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
+            retain_iou=False,
+            cast_inputs=True,
+        )
     reference = _grid(_as_bytes()).accumulate([1, 10, 100]).summarize().stats
     assert cast.accumulate([1, 10, 100]).summarize().stats == reference
 

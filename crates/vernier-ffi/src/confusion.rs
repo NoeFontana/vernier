@@ -62,7 +62,7 @@ type CountRow = ((Option<usize>, Option<usize>), u64);
 #[allow(clippy::too_many_arguments)]
 fn run_confusion_pass<'py, F>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     iou_threshold: f64,
@@ -105,7 +105,7 @@ where
 
     // Copy the JSON bytes off the GIL-tied PyBytes borrow so the parse
     // and the side pass can run inside `py.detach`.
-    let gt_bytes = gt_bytes.as_bytes().to_vec();
+    let gt_bytes = gt.as_bytes().to_vec();
     let dt_bytes = dt_bytes.as_bytes().to_vec();
 
     let cm = py.detach(move || -> PyResult<ConfusionMatrixCounts> {
@@ -131,11 +131,11 @@ where
 ///
 /// Returns the long-format dict described in the module docstring.
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn confusion_matrix_bbox<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     iou_threshold: f64,
@@ -144,7 +144,7 @@ pub(crate) fn confusion_matrix_bbox<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_confusion_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         iou_threshold,
@@ -162,11 +162,11 @@ pub(crate) fn confusion_matrix_bbox<'py>(
 /// Same signature as [`confusion_matrix_bbox`]; `gt_bytes` /
 /// `dt_bytes` must carry COCO `segmentation` fields (polygon or RLE).
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn confusion_matrix_segm<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     iou_threshold: f64,
@@ -175,7 +175,7 @@ pub(crate) fn confusion_matrix_segm<'py>(
 ) -> PyResult<Bound<'py, PyDict>> {
     run_confusion_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         iou_threshold,
@@ -193,11 +193,11 @@ pub(crate) fn confusion_matrix_segm<'py>(
 /// `dilation_ratio` pins the boundary band thickness (ADR-0010
 /// default `0.02` for COCO, `0.008` for LVIS).
 #[pyfunction]
-#[pyo3(signature = (gt_bytes, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats, dilation_ratio))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn confusion_matrix_boundary<'py>(
     py: Python<'py>,
-    gt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyBytes>,
     dt_bytes: &Bound<'py, PyBytes>,
     parity_mode: &str,
     iou_threshold: f64,
@@ -209,7 +209,7 @@ pub(crate) fn confusion_matrix_boundary<'py>(
     let kernel = BoundaryIou { dilation_ratio };
     run_confusion_pass(
         py,
-        gt_bytes,
+        gt,
         dt_bytes,
         parity_mode,
         iou_threshold,

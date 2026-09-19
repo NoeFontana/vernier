@@ -146,9 +146,7 @@ def test_comparable_artifact_variants_round_trip_canonical_form() -> None:
     tensor = TensorArtifact(sha256="a" * 64, shape=(10, 101, 1, 4, 3))
     snapshot = PanopticSnapshot(pq=0.5, sq=0.6, rq=0.7)
     confusion = ConfusionMatrix(n_classes=19, counts_sha256="c" * 64)
-    streaming = StreamingPair(
-        batch_summary={"stat_0": 0.3}, stream_summary={"stat_0": 0.3}
-    )
+    streaming = StreamingPair(batch_summary={"stat_0": 0.3}, stream_summary={"stat_0": 0.3})
 
     for art in (tensor, snapshot, confusion, streaming):
         canon = art.to_canonical_form()

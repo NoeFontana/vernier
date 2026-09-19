@@ -113,7 +113,7 @@ def iter_result_files(results_root: Path, *, shas: set[str] | None = None) -> It
             p
             for sha in shas
             for pat in patterns
-            for p in results_root.glob(f"{sha}/{pat[len('*/'):]}")
+            for p in results_root.glob(f"{sha}/{pat[len('*/') :]}")
         )
     return (p for p in candidates if p.name != "divergence_report.json")
 
