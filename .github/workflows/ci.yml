@@ -253,3 +253,51 @@ jobs:
         run: >
           uv run --no-sync --python ${{ matrix.python-version }}
           pyright --verifytypes vernier --ignoreexternal
+
+  # Single required status check for branch protection.
+  #
+  # This workflow is `paths-ignore`d for docs and Markdown, which is
+  # right — a typo fix should not run the whole matrix. But a required
+  # check that never runs is not "passed", it is *pending forever*, so a
+  # docs-only PR could not be merged at all: #315 was the repo's first
+  # one and deadlocked on exactly this.
+  #
+  # `if: always()` makes this job run even when every job it needs was
+  # skipped, so protection has something that always reports. Require
+  # THIS check on main instead of the individual jobs.
+  ci-complete:
+    name: CI complete
+    if: always()
+    needs:
+      - lint-rust
+      - test-rust
+      - test-rust-cross-arch
+      - docs-rust
+      - build-wheel
+      - lint-py
+      - test-py
+    runs-on: ubuntu-latest
+    steps:
+      # A skipped dependency is a pass (the paths filter excluded it);
+      # only `failure` and `cancelled` are not. Checking the results
+      # explicitly rather than relying on the default `success()` gate,
+      # which treats a skipped need as a non-success and would reinstate
+      # the deadlock it is here to remove.
+      # The results arrive via `env` rather than interpolated into the
+      # script. GitHub expressions accept ONLY single-quoted string
+      # literals, so `join(needs.*.result, " ")` is a parse error that
+      # invalidates the entire workflow file -- it does not fail the job,
+      # it stops every job in the file from loading. Passing through
+      # `env` keeps the separator quoting out of the shell's way, and
+      # keeps the expression out of the script body.
+      - name: Verify no job failed
+        env:
+          NEEDS_RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "needs results: $NEEDS_RESULTS"
+          for r in $NEEDS_RESULTS; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a required job reported '$r'"; exit 1 ;;
+            esac
+          done
