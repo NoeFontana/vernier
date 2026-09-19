@@ -97,6 +97,7 @@ else is detail.
 | [0046](0046-slice-and-aggregate.md) | Slice-and-aggregate — partition manifest, `vernier eval --manifest`, `vernier aggregate` | accepted |
 | [0047](0047-threading-model.md) | Opt-in `num_threads` parallelism — zero overhead on the default path | accepted (`_with_dataset` references superseded by 0061) |
 | [0059](0059-remove-cli-aligned-parity-value.md) | Remove the `aligned` value from `vernier eval --parity-mode` | proposed |
+| [0062](0062-summary-plan-on-the-grid-handle.md) | Carry the summary plan on the grid handle; `summarize()` defaults to its kernel's | proposed |
 
 ### Sibling paradigms
 
