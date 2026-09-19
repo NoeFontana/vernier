@@ -14,6 +14,8 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-19
+
 ### Changed (BREAKING - pre-1.0)
 
 - **One ground-truth parameter, and keyword-only options, on the
@@ -61,6 +63,34 @@ additive / perf / docs".
   `evaluate_segm_grid_with_dataset` was added and then generalized away,
   and the `dt_area` argument added to the dataset-taking bbox grid is
   now simply `dt_area` on `evaluate_bbox_grid`.
+
+### Fixed
+
+- **`Evaluator(iou=Keypoints()).evaluate(..., calibration=True)` works
+  at all.** It raised `ValueError: AreaRng index 3 is out of range` for
+  every input. The batch path reaches its summary through
+  `evaluate_keypoints_summary`, which picks the summary plan from the
+  kernel; the tables/calibration path summarizes the grid directly and
+  was taking the detection plan, which indexes a fourth area bucket
+  against the 3-bucket keypoints grid (ADR-0012). The path was
+  unreachable rather than merely wrong. The plan is now bound per arm of
+  the kernel `match`, so there is one kernel -> plan table and a future
+  kernel cannot inherit the detection plan by omission.
+- **`cast_inputs` is honoured on the keypoints tables/calibration
+  path.** The flag was bound to the wrong parameter — `retain_iou=
+  self.cast_inputs`, with `cast_inputs` never passed — so
+  `cast_inputs=True` still raised the `float64` `TypeError` it exists to
+  suppress, while the evaluator retained every per-`(category, image)`
+  IoU matrix, the per-cell metadata and a full detections copy that
+  nothing on that path can read. The three sibling kernels were correct,
+  which is why it stayed dark: keypoints rejects `tables=`, leaving
+  `calibration=True` as the only way in.
+- **`merge_instance_partials`'s type stub matches its runtime.** The
+  stub advertised `gt: bytes | CocoDataset` while the function takes
+  bytes only, so a type-checked call passing a handle was accepted
+  statically and raised `TypeError` at run time. Narrowed to `bytes`;
+  per ADR-0061 the un-widened entry points keep the bytes annotation and
+  take only the `gt` *name*, so widening them later stays a widening.
 
 ## [0.4.1] - 2026-09-18
 
