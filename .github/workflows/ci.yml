@@ -283,11 +283,19 @@ jobs:
       # explicitly rather than relying on the default `success()` gate,
       # which treats a skipped need as a non-success and would reinstate
       # the deadlock it is here to remove.
+      # The results arrive via `env` rather than interpolated into the
+      # script. GitHub expressions accept ONLY single-quoted string
+      # literals, so `join(needs.*.result, " ")` is a parse error that
+      # invalidates the entire workflow file -- it does not fail the job,
+      # it stops every job in the file from loading. Passing through
+      # `env` keeps the separator quoting out of the shell's way, and
+      # keeps the expression out of the script body.
       - name: Verify no job failed
+        env:
+          NEEDS_RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          results='${{ join(needs.*.result, " ") }}'
-          echo "needs results: $results"
-          for r in $results; do
+          echo "needs results: $NEEDS_RESULTS"
+          for r in $NEEDS_RESULTS; do
             case "$r" in
               success|skipped) ;;
               *) echo "::error::a required job reported '$r'"; exit 1 ;;
