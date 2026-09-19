@@ -57,7 +57,9 @@ def _write_v1_cell(
     cell_dir = root / sha / fp / workload / iou
     cell_dir.mkdir(parents=True, exist_ok=True)
     json_path = cell_dir / f"{impl}.json"
-    json_path.write_text(json.dumps(_v1_result_dict(workload=workload, iou=iou, impl=impl, sha=sha)))
+    json_path.write_text(
+        json.dumps(_v1_result_dict(workload=workload, iou=iou, impl=impl, sha=sha))
+    )
     # 4 placeholder bytes — enough to round-trip a copy but cheap.
     (cell_dir / f"{impl}.npy").write_bytes(b"\x00\x00\x00\x00")
     return cell_dir
@@ -65,7 +67,7 @@ def _write_v1_cell(
 
 @pytest.fixture
 def v1_tree(tmp_path: Path) -> Path:
-    """3 sha × 1 fp × 2 workloads × 2 iou types — 12 cells total."""
+    """3 sha x 1 fp x 2 workloads x 2 iou types - 12 cells total."""
     root = tmp_path / "results"
     for sha_idx in range(3):
         sha = f"sha{sha_idx:09d}aa"  # 12-char sha

@@ -38,8 +38,8 @@ def test_lvis_perfect_resolves_via_env_overrides(
     assert w.paradigm == "lvis"
     assert w.gt_path == gt
     assert w.dt_path == dt
-    # bbox-only at the vernier side until ``evaluate_segm_grid_with_dataset``
-    # lands; the matrix entry pins this too.
+    # bbox-only at the vernier side until the segm LVIS cell is wired;
+    # the matrix entry pins this too.
     assert w.supported_iou_types == frozenset({"bbox"})
 
 

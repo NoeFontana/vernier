@@ -144,8 +144,9 @@ def test_vernier_runner_lvis_inline_smoke(tmp_path: Path) -> None:
 
 def test_vernier_lvis_runner_inline_smoke(tmp_path: Path) -> None:
     """The vernier_lvis runner consumes the LVIS surface via
-    ``CocoDataset.from_lvis_json`` + ``evaluate_bbox_grid_with_dataset``
-    and emits a paradigm=lvis result. AP=1.0 on perfect-DT is a smoke
+    ``CocoDataset.from_lvis_json`` + ``evaluate_bbox_grid`` (the handle
+    form, which is the only one that keeps federated metadata) and
+    emits a paradigm=lvis result. AP=1.0 on perfect-DT is a smoke
     on the wiring; the federated AA3/AA4 branches are exercised under
     the val parity test (gated behind ``VERNIER_BENCH_DOWNLOAD_TESTS``)
     rather than the inline fixture."""

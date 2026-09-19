@@ -148,7 +148,7 @@ def summarize_paradigm(
 
     Uses ``statistics.median`` rather than NumPy to avoid pulling
     NumPy into the report-only path; the input is small (one int per
-    series×point) so the pure-Python version is fast enough.
+    series x point) so the pure-Python version is fast enough.
     """
     points = [p for plist in series.values() for p in plist]
     if not points:

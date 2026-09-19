@@ -502,10 +502,10 @@ def parse_lvis_runner_args() -> argparse.Namespace:
       of detection's ``100``. The flag is per-rep argv so future cells
       can sweep.
 
-    ``--iou-type`` is restricted to ``"bbox"`` until the
-    ``evaluate_segm_grid_with_dataset`` FFI lands; both runners reject
-    other choices loudly so a misrouted cell fails at the runner rather
-    than silently mis-evaluating.
+    ``--iou-type`` is restricted to ``"bbox"`` (rationale at
+    ``bench/harness/matrix.py`` ``IMPL_PARADIGM_SUPPORT``); both runners
+    reject other choices loudly so a misrouted cell fails at the runner
+    rather than silently mis-evaluating.
     """
     p = argparse.ArgumentParser(add_help=True)
     p.add_argument("--gt", type=Path, required=True)

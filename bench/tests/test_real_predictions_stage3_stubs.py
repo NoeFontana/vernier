@@ -13,7 +13,6 @@ deps so the imports resolve here.
 from __future__ import annotations
 
 import pytest
-
 from real_predictions_cache import panoptic, semantic
 
 

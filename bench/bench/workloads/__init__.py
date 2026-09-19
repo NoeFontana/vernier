@@ -358,12 +358,11 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
 
     if workload_name == lvis_v1.PERFECT_WORKLOAD_ID:
         gt = lvis_v1.gt_path()
-        # The bench is bbox-only on the LVIS paradigm today (the
-        # parsed-once-dataset FFI only ships ``evaluate_bbox_grid_with_dataset``);
-        # take the bbox-shape perfect-DT so the strict-tier parity gate
-        # against lvis-api stays bit-equal. Once the segm FFI lands
-        # this resolver flips to ``perfect_dt_segm_path`` for segm
-        # cells (per-iou DT picked at CellSpec time).
+        # The bench is bbox-only on the LVIS paradigm today (rationale
+        # at ``bench/harness/matrix.py``); take the bbox-shape perfect-DT
+        # so the strict-tier parity gate against lvis-api stays
+        # bit-equal. Once the segm cell is wired this resolver flips to
+        # ``perfect_dt_segm_path`` (per-iou DT picked at CellSpec time).
         dt = lvis_v1.perfect_dt_bbox_path()
         return LvisWorkload(
             workload_id=lvis_v1.PERFECT_WORKLOAD_ID,

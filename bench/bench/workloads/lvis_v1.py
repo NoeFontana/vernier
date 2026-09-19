@@ -76,8 +76,8 @@ def perfect_dt_bbox_path() -> Path:
     assignment (small / medium / large) while vernier_lvis computes
     the area from the bbox; the bbox cell takes the bbox-shape file
     so the strict-tier parity gate stays bit-equal. The segm cell will
-    use ``perfect_dt_segm_path`` once
-    ``evaluate_segm_grid_with_dataset`` lands.
+    use ``perfect_dt_segm_path`` once the segm LVIS cell is wired (the
+    FFI no longer blocks it — see ``harness/matrix.py``).
     """
     env_override = os.environ.get("VERNIER_LVIS_DT_PATH")
     if env_override:
