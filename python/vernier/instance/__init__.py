@@ -811,17 +811,8 @@ class Evaluator:
         custom_recall = None if self.recall_thresholds is None else list(self.recall_thresholds)
         custom_areas = self.area_ranges
 
-        # The `match` below is the one kernel -> (grid builder, summary
-        # plan) table. `plan` is bound per arm rather than re-derived
-        # afterwards, so a fifth kernel cannot pick up the detection
-        # plan by default -- which is exactly how keypoints, whose area
-        # grid has 3 buckets and not 4, came to raise `AreaRng index 3
-        # is out of range` on every `calibration=True` call.
-        plan: Literal["detection", "keypoints"]
-
         match self.iou:
             case Bbox():
-                plan = "detection"
                 grid = evaluate_bbox_grid(
                     gt,
                     dt,
@@ -836,7 +827,6 @@ class Evaluator:
                     num_threads=num_threads,
                 )
             case Segm():
-                plan = "detection"
                 grid = evaluate_segm_grid(
                     gt,
                     dt,
@@ -851,7 +841,6 @@ class Evaluator:
                     num_threads=num_threads,
                 )
             case Boundary(dilation_ratio=r):
-                plan = "detection"
                 grid = evaluate_boundary_grid(
                     gt,
                     dt,
@@ -872,7 +861,6 @@ class Evaluator:
                         "tables= is detection-only in v0.5; keypoints uses a 3-bucket "
                         "area grid that per_image/per_class do not target"
                     )
-                plan = "keypoints"
                 grid = evaluate_keypoints_grid(
                     gt,
                     dt,
@@ -896,7 +884,10 @@ class Evaluator:
         # assume the canonical grid; pairing it with a user-defined
         # grid would silently misindex. evaluate_tables() with a
         # custom grid emits per-axis tables and `summary=None`.
-        summary = None if self._has_custom_grid() else accum.summarize(max_dets_list, plan=plan)
+        # No `plan=`: the accumulator carries the plan its grid's kernel
+        # requires (ADR-0062), so naming it here would be a second
+        # source of truth for a fact the handle already holds.
+        summary = None if self._has_custom_grid() else accum.summarize(max_dets_list)
         # `evaluate_*_grid` parsed `gt` once and retained the dataset on
         # the grid; reuse instead of paying a second JSON parse.
         dataset = grid.dataset()

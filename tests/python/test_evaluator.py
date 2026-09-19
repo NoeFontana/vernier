@@ -354,6 +354,52 @@ def test_accumulated_summarize_keypoints_plan_yields_10_stats() -> None:
     assert len(summary.stats) == 10
 
 
+def test_summarize_defaults_to_the_plan_its_grid_requires() -> None:
+    """ADR-0062: the grid carries its kernel's summary plan.
+
+    `summarize()` with no `plan=` used to mean the literal
+    `"detection"`, so a keypoints accumulator's *correct* summary was
+    reachable only by a caller who knew to ask for it -- and the
+    detection plan indexes a fourth area bucket against the keypoints
+    3-bucket A-axis (quirk D5), so the default did not merely give the
+    wrong stats, it raised. Four call sites re-derived the mapping, one
+    of them wrongly.
+    """
+    from vernier import _core
+
+    kp = _core.evaluate_keypoints_grid(
+        GT_KP, DT_KP, parity_mode="strict", max_dets_per_image=20, use_cats=True, sigmas={}
+    )
+    # 10-stat keypoints vector, without naming the plan.
+    assert len(kp.accumulate([20]).summarize([20]).stats) == 10
+
+    det = _core.evaluate_bbox_grid(
+        GT_PERFECT, DT_PERFECT, parity_mode="strict", max_dets_per_image=100, use_cats=True
+    )
+    assert len(det.accumulate([1, 10, 100]).summarize([1, 10, 100]).stats) == 12
+
+
+def test_summarize_plan_argument_still_overrides_the_grids_default() -> None:
+    """The default is a default, not a lock.
+
+    LVIS and user-defined summaries need to name a plan against a grid
+    whose kernel implies another, so the explicit argument still wins.
+    Asserted on the keypoints grid, where default and override differ in
+    a way that is visible: passing `plan="detection"` reaches the
+    A-axis bucket the kp grid does not have and errors, which is the
+    old default's behaviour preserved as an opt-in.
+    """
+    from vernier import _core
+
+    kp = _core.evaluate_keypoints_grid(
+        GT_KP, DT_KP, parity_mode="strict", max_dets_per_image=20, use_cats=True, sigmas={}
+    )
+    acc = kp.accumulate([20])
+    assert len(acc.summarize([20], plan="keypoints").stats) == 10
+    with pytest.raises(ValueError, match="AreaRng index 3"):
+        acc.summarize([20], plan="detection")
+
+
 def test_accumulated_summarize_invalid_plan_raises() -> None:
     from vernier import _core
 

@@ -554,12 +554,12 @@ class PycocotoolsCOCOeval:
     def summarize(self) -> None:
         if not self.eval or self._accumulated is None:
             raise RuntimeError("Please run accumulate() first")
-        plan: Literal["detection", "keypoints"] = (
-            "keypoints" if self.params.iouType == IOU_KEYPOINTS else "detection"
-        )
-        # The accumulator carries the grid's parity mode, which picks the
-        # aggregate-AP cap on a ladder without 100 (quirk L9).
-        summary = self._accumulated.summarize(plan=plan)
+        # No `plan=`: the accumulator carries both the grid's parity
+        # mode, which picks the aggregate-AP cap on a ladder without 100
+        # (quirk L9), and the summary plan its kernel requires
+        # (ADR-0062). Re-deriving the latter from `params.iouType` was a
+        # second source of truth for what the handle already knows.
+        summary = self._accumulated.summarize()
         self.stats = np.asarray(summary.stats, dtype=np.float64)
         # Quirk L5 disposition: strict mirrors pycocotools' stdout side
         # effect; corrected stays silent.

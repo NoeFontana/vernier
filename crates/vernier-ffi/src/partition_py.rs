@@ -30,7 +30,7 @@ use vernier_core::lrp::{LrpKernelMarker, LrpParams, LrpPerClass, LrpReport};
 use vernier_core::manifest::partition_spec_from_manifest;
 use vernier_core::partition::{
     evaluate_partitioned, evaluate_partitioned_lrp, image_id_to_idx, GridDims,
-    PartitionedLrpReport, PartitionedSummary, SummaryPlan,
+    PartitionedLrpReport, PartitionedSummary,
 };
 use vernier_core::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
 use vernier_core::{CocoDataset, CocoDetections, EvalError};
@@ -151,7 +151,6 @@ fn evaluate_instance_partitioned_impl(
     manifest: &Bound<'_, PyAny>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
-    is_keypoints: bool,
     num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
     let grid = evaluate_grid_impl(
@@ -196,11 +195,11 @@ fn evaluate_instance_partitioned_impl(
         n_area_ranges: grid_inner.n_area_ranges,
         n_images: grid_inner.n_images,
     };
-    let plan = if is_keypoints {
-        SummaryPlan::KeypointsDefault
-    } else {
-        SummaryPlan::DetectionDefault
-    };
+    // Read off the grid rather than taken as a parameter: this function
+    // already receives the `EvalIouType` that built it, so a separate
+    // flag was a second source of truth that could disagree with the
+    // first.
+    let plan = grid.summary_plan().to_core();
     let eval_imgs = grid_inner.eval_imgs.as_slice();
     let summary = py
         .detach(
@@ -268,7 +267,6 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
         manifest,
         cross_axes,
         key_kind,
-        false,
         num_threads,
     )
 }
@@ -324,7 +322,6 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
         manifest,
         cross_axes,
         key_kind,
-        false,
         num_threads,
     )
 }
@@ -383,7 +380,6 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
         manifest,
         cross_axes,
         key_kind,
-        false,
         num_threads,
     )
 }
@@ -445,7 +441,6 @@ pub(crate) fn evaluate_keypoints_partitioned<'py>(
         manifest,
         cross_axes,
         key_kind,
-        true,
         num_threads,
     )
 }

@@ -55,6 +55,7 @@ use vernier_core::evaluate::{
     OwnedEvaluateParams, SegmIouCached,
 };
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
+use vernier_core::partition::SummaryPlan;
 use vernier_core::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
 use vernier_core::stream::{MemoryBudget, ParsedDetections, StreamingEvaluator, UpdateReport};
 use vernier_core::summarize::{
@@ -287,6 +288,15 @@ struct PyEvalGrid {
     /// Resolved recall ladder, threaded into
     /// [`AccumulateParams::recall_thresholds`] by [`Self::accumulate`].
     recall_thresholds: Vec<f64>,
+    /// Summary plan the kernel that built this grid requires, carried
+    /// for the same reason as `parity` and the two ladders above:
+    /// summarize must match the grid it came from. Keypoints builds a
+    /// 3-bucket A-axis (ADR-0012) and the detection plan indexes a
+    /// fourth, so the pairing is not a preference but a correctness
+    /// constraint -- and one the grid already knows. Propagated to
+    /// [`PyAccumulated`] by [`Self::accumulate`] and used as the
+    /// default by [`PyAccumulated::summarize`].
+    summary_plan: SummarizePlan,
 }
 
 #[pymethods]
@@ -423,6 +433,7 @@ impl PyEvalGrid {
             max_dets,
             iou_thresholds: iou_thr,
             parity,
+            summary_plan: self.summary_plan,
         })
     }
 
@@ -476,6 +487,13 @@ impl PyEvalGrid {
     pub(crate) fn parity_mode(&self) -> ParityMode {
         self.parity
     }
+
+    /// Summary plan the kernel that built this grid requires. Read by
+    /// the partition orchestrator instead of taking a separate
+    /// `is_keypoints` flag alongside the `EvalIouType` it duplicates.
+    pub(crate) fn summary_plan(&self) -> SummarizePlan {
+        self.summary_plan
+    }
 }
 
 /// Frozen wrapper around [`vernier_core::Accumulated`]. Carries the
@@ -493,6 +511,10 @@ struct PyAccumulated {
     /// Parity mode propagated from the source [`PyEvalGrid`]; selects
     /// the detection summary plan's aggregate-AP cap (quirk **L9**).
     parity: ParityMode,
+    /// Summary plan propagated from the source [`PyEvalGrid`]; the
+    /// default for [`Self::summarize`]. See the field of the same name
+    /// on [`PyEvalGrid`].
+    summary_plan: SummarizePlan,
 }
 
 #[pymethods]
@@ -524,15 +546,23 @@ impl PyAccumulated {
         self.inner.precision.shape().to_vec()
     }
 
-    /// Summarize this accumulator. `plan` selects the stat plan:
-    /// `"detection"` (default) yields the canonical 12-stat detection
-    /// vector via [`vernier_core::summarize_detection`] under the source
-    /// grid's parity mode (quirk **L9**); `"keypoints"`
-    /// yields the 10-stat keypoints vector via
+    /// Summarize this accumulator.
+    ///
+    /// `plan` defaults to **the plan the kernel that built the source
+    /// grid requires**, propagated here from [`PyEvalGrid`]. Passing it
+    /// explicitly overrides that: `"detection"` yields the canonical
+    /// 12-stat vector via [`vernier_core::summarize_detection`] under
+    /// the source grid's parity mode (quirk **L9**), `"keypoints"` the
+    /// 10-stat vector via
     /// [`vernier_core::StatRequest::coco_keypoints_default`] (ADR-0012).
-    /// Pairing the kp plan with a detection-grid accumulator (4-bucket
-    /// A-axis) reads the kp re-indexed buckets, and vice-versa indexes
-    /// off the end — match the plan to the kernel that built the grid.
+    ///
+    /// The default used to be the literal `"detection"`, which made a
+    /// keypoints accumulator's correct summary reachable only by a
+    /// caller that knew to ask: the detection plan indexes a fourth area
+    /// bucket against the kp 3-bucket A-axis (**D5**) and errors, and
+    /// the reverse silently reads re-indexed buckets. The grid knows
+    /// which kernel built it, so it no longer asks.
+    ///
     /// `max_dets` defaults to the ladder this accumulator was built
     /// with; pass an explicit value to override.
     #[pyo3(signature = (max_dets=None, *, plan=None))]
@@ -542,7 +572,10 @@ impl PyAccumulated {
         max_dets: Option<Vec<usize>>,
         plan: Option<&str>,
     ) -> PyResult<PySummary> {
-        let plan = parse_summarize_plan(plan.unwrap_or("detection"))?;
+        let plan = match plan {
+            Some(name) => parse_summarize_plan(name)?,
+            None => self.summary_plan,
+        };
         let mut dets = max_dets.unwrap_or_else(|| self.max_dets.clone());
         require_nonempty_max_dets(&dets)?;
         // Quirk A2 (strict): the accumulator was built with a sorted
@@ -869,6 +902,8 @@ pub(crate) fn evaluate_grid_impl(
         ));
     }
     let parity = parse_parity_mode(parity_mode)?;
+    // Bound before `iou_type` is moved into the detached closure.
+    let summary_plan = SummarizePlan::for_iou_type(&iou_type);
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
         &iou_type,
         iou_thresholds_arg,
@@ -913,6 +948,7 @@ pub(crate) fn evaluate_grid_impl(
         retained_dataset,
         iou_thresholds: iou_thr,
         recall_thresholds: recall_thr,
+        summary_plan,
     })
 }
 
@@ -1047,6 +1083,8 @@ fn evaluate_grid_with_dataset_impl(
         ));
     }
     let parity = parse_parity_mode(parity_mode)?;
+    // Bound before `iou_type` is moved into the detached closure.
+    let summary_plan = SummarizePlan::for_iou_type(&iou_type);
     let (iou_thr, recall_thr, area) = resolve_grid_axes(
         &iou_type,
         iou_thresholds_arg,
@@ -1102,6 +1140,7 @@ fn evaluate_grid_with_dataset_impl(
         retained_dataset,
         iou_thresholds: iou_thr,
         recall_thresholds: recall_thr,
+        summary_plan,
     })
 }
 
@@ -1723,7 +1762,7 @@ fn run_pipeline(
     let grid = run_grid_with_policy(iou_type, gt, dt, eval_params, parity, thread_policy)?;
     summarize_grid(
         &grid,
-        iou_type.is_keypoints(),
+        SummarizePlan::for_iou_type(iou_type),
         parity,
         max_dets,
         thread_policy,
@@ -1760,7 +1799,7 @@ fn run_pipeline_with_dataset(
         run_grid_cached_with_policy(iou_type, gt, dt, eval_params, parity, caches, thread_policy)?;
     summarize_grid(
         &grid,
-        iou_type.is_keypoints(),
+        SummarizePlan::for_iou_type(iou_type),
         parity,
         max_dets,
         thread_policy,
@@ -1790,7 +1829,7 @@ fn accumulate_with_policy(
 /// Shared accumulate + summarize tail for both pipeline shapes.
 fn summarize_grid(
     grid: &EvalGrid,
-    is_keypoints: bool,
+    summary_plan: SummarizePlan,
     parity: ParityMode,
     max_dets: &[usize],
     thread_policy: threads::ThreadPolicy,
@@ -1805,18 +1844,17 @@ fn summarize_grid(
         n_images: grid.n_images,
     };
     let acc = accumulate_with_policy(&grid.eval_imgs, acc_params, parity, thread_policy)?;
-    if is_keypoints {
+    match summary_plan {
         // ADR-0012 / D5: kp summary is the 10-stat plan over the
         // 3-bucket area grid. Detection's 12-stat plan would index
         // off the end of the kp accumulator's A-axis.
-        summarize_with(
+        SummarizePlan::Keypoints => summarize_with(
             &acc,
             &StatRequest::coco_keypoints_default(),
             iou_thr,
             max_dets,
-        )
-    } else {
-        summarize_detection(&acc, iou_thr, max_dets, parity)
+        ),
+        SummarizePlan::Detection => summarize_detection(&acc, iou_thr, max_dets, parity),
     }
 }
 
@@ -1898,9 +1936,39 @@ pub(crate) fn parse_parity_mode(s: &str) -> PyResult<ParityMode> {
 /// [`vernier_core::summarize_detection`] (12 stats); the keypoints
 /// plan resolves to [`vernier_core::StatRequest::coco_keypoints_default`]
 /// (10 stats, ADR-0012).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SummarizePlan {
     Detection,
     Keypoints,
+}
+
+impl SummarizePlan {
+    /// The plan a grid built by `iou_type` must be summarized with.
+    ///
+    /// This is the single kernel -> plan mapping. It used to be
+    /// re-derived at four call sites that could not see one another --
+    /// twice in Rust off a redundant `is_keypoints: bool` carried
+    /// alongside the `EvalIouType` it duplicates, and twice in Python --
+    /// and one of them was wrong: the keypoints tables/calibration path
+    /// took the detection plan and raised `AreaRng index 3 is out of
+    /// range` for every input.
+    fn for_iou_type(iou_type: &EvalIouType) -> Self {
+        if iou_type.is_keypoints() {
+            Self::Keypoints
+        } else {
+            Self::Detection
+        }
+    }
+
+    /// The `vernier_core` spelling, for the partitioned summarizer.
+    /// Core's [`SummaryPlan`] carries a lifetime for its `Custom`
+    /// variant, so it cannot be the `Copy` field these handles store.
+    fn to_core(self) -> SummaryPlan<'static> {
+        match self {
+            Self::Detection => SummaryPlan::DetectionDefault,
+            Self::Keypoints => SummaryPlan::KeypointsDefault,
+        }
+    }
 }
 
 fn parse_summarize_plan(s: &str) -> PyResult<SummarizePlan> {
