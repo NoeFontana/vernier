@@ -253,3 +253,43 @@ jobs:
         run: >
           uv run --no-sync --python ${{ matrix.python-version }}
           pyright --verifytypes vernier --ignoreexternal
+
+  # Single required status check for branch protection.
+  #
+  # This workflow is `paths-ignore`d for docs and Markdown, which is
+  # right — a typo fix should not run the whole matrix. But a required
+  # check that never runs is not "passed", it is *pending forever*, so a
+  # docs-only PR could not be merged at all: #315 was the repo's first
+  # one and deadlocked on exactly this.
+  #
+  # `if: always()` makes this job run even when every job it needs was
+  # skipped, so protection has something that always reports. Require
+  # THIS check on main instead of the individual jobs.
+  ci-complete:
+    name: CI complete
+    if: always()
+    needs:
+      - lint-rust
+      - test-rust
+      - test-rust-cross-arch
+      - docs-rust
+      - build-wheel
+      - lint-py
+      - test-py
+    runs-on: ubuntu-latest
+    steps:
+      # A skipped dependency is a pass (the paths filter excluded it);
+      # only `failure` and `cancelled` are not. Checking the results
+      # explicitly rather than relying on the default `success()` gate,
+      # which treats a skipped need as a non-success and would reinstate
+      # the deadlock it is here to remove.
+      - name: Verify no job failed
+        run: |
+          results='${{ join(needs.*.result, " ") }}'
+          echo "needs results: $results"
+          for r in $results; do
+            case "$r" in
+              success|skipped) ;;
+              *) echo "::error::a required job reported '$r'"; exit 1 ;;
+            esac
+          done
