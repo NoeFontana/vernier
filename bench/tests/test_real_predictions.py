@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from real_predictions_cache import rfdetr_cache_filename
 
 from bench.harness.paths import REPO_ROOT
 from bench.workloads import (
@@ -40,9 +41,28 @@ def test_maskrcnn_dt_path_missing_points_at_fetch_script(fake_cache: Path) -> No
 
 
 def test_rfdetr_segnano_dt_path_returns_cached_file(fake_cache: Path) -> None:
-    blob = fake_cache / f"rfdetr-segnano-{real_predictions.RFDETR_VERSION}-coco-val2017.json"
+    # Built from the canonical helper, not hand-assembled: the rf-detr
+    # filename carries a cache-blob version alongside the package
+    # version (``-v2`` today) so a harness-side change that alters the
+    # on-disk bytes forces a re-populate. Spelling it out here once went
+    # stale the first time that bumped, and silently -- bench tests do
+    # not run in CI. `test_rfdetr_cache_filename_pins_the_blob_version`
+    # below keeps the spelling pinned in one place.
+    blob = fake_cache / rfdetr_cache_filename("segnano")
     blob.write_bytes(b"[]")
     assert real_predictions.rfdetr_dt_path("segnano") == blob
+
+
+def test_rfdetr_cache_filename_pins_the_blob_version() -> None:
+    """The one place the rf-detr on-disk spelling is asserted literally.
+
+    The filename IS the cache key, so a change to it must be a
+    deliberate edit here rather than a silent miss somewhere downstream.
+    """
+    assert (
+        rfdetr_cache_filename("segnano")
+        == f"rfdetr-segnano-{real_predictions.RFDETR_VERSION}-v2-coco-val2017.json"
+    )
 
 
 def test_rfdetr_dt_path_missing_points_at_real_models_extra(fake_cache: Path) -> None:
@@ -109,12 +129,12 @@ def test_mask2former_ade_dt_path_missing_points_at_real_models_extra(fake_cache:
         ),
         (
             real_predictions.RFDETR_SEGNANO_WORKLOAD_ID,
-            f"rfdetr-segnano-{real_predictions.RFDETR_VERSION}-coco-val2017.json",
+            rfdetr_cache_filename("segnano"),
             frozenset({"bbox", "segm", "boundary"}),
         ),
         (
             real_predictions.RFDETR_NANO_WORKLOAD_ID,
-            f"rfdetr-nano-{real_predictions.RFDETR_VERSION}-coco-val2017.json",
+            rfdetr_cache_filename("nano"),
             frozenset({"bbox"}),
         ),
         (
