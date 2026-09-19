@@ -63,16 +63,24 @@ MASKRCNN_SHA256: str | None = None
 
 RFDETR_VERSION = "1.6.5.post0"
 
-#: Content tag for the on-disk rf-detr cache shape. Bumped from
-#: implicit ``v1`` to ``v2`` when the SOTA boundary cell added
-#: ``pin_inference_threads`` to the rfdetr predictor — multi-core
-#: hosts produce non-deterministic byte sequences without the pin, so
-#: ``v1`` and ``v2`` blobs can disagree on the same
-#: ``(model, version, dataset)`` tuple. Embedding the blob version
-#: in the filename invalidates by construction: a host with a
-#: pre-thread-pin ``v1`` cache is forced to re-populate as ``v2``.
-#: Mirrors :data:`MASKRCNN_BLOB_VERSION` exactly.
-_RFDETR_CACHE_BLOB_VERSION = "v2"
+#: Content tag for the on-disk rf-detr cache shape. Embedding it in
+#: the filename invalidates by construction: a host holding an older
+#: blob is forced to re-populate rather than silently serving it.
+#: Mirrors :data:`MASKRCNN_BLOB_VERSION` exactly, and must stay
+#: byte-identical to ``_rfdetr_predict._RFDETR_CACHE_BLOB_VERSION``.
+#:
+#: - ``v1`` → ``v2``: the SOTA boundary cell added
+#:   ``pin_inference_threads`` to the rfdetr predictor; without the
+#:   pin, multi-core hosts produce non-deterministic byte sequences,
+#:   so two ``v1`` blobs could disagree on the same
+#:   ``(model, version, dataset)`` tuple.
+#: - ``v2`` → ``v3``: ``v2`` blobs were written through a class
+#:   mapping that read rfdetr's ``{category_id: name}`` dict as a
+#:   dense 0..79 list. Every detection was relabelled and the 10 ids
+#:   above 79 were dropped outright — measured bbox mAP 0.0019 where
+#:   the correct mapping gives 0.5376. ``v2`` blobs are numerically
+#:   worthless; see ``_rfdetr_predict._coco_class_mapping``.
+_RFDETR_CACHE_BLOB_VERSION = "v3"
 
 #: rf-detr model variants the cache contract recognises. Mirrors the
 #: TIDE harness's ``_rfdetr_predict.ModelName``; bench's

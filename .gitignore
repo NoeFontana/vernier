@@ -60,4 +60,10 @@ perf.data*
 /bench/.venv/
 /bench/envs/*/.venv/
 /bench/uv.lock.bak
-rf-detr-seg-nano.pt
+# rfdetr downloads its pretrained weights into the process CWD, which
+# is the repo root when the TIDE populator runs (see
+# tests/python/integration/real_models/tide/_populate_cache.py). Both
+# extensions appear across rfdetr versions; anchored so a fixture
+# named this deeper in the tree is not swallowed silently.
+/rf-detr-*.pt
+/rf-detr-*.pth

@@ -61,14 +61,16 @@ _DATASET_ID = "coco-val2017"
 
 #: Cache-blob content tag. Mirrors
 #: :data:`real_predictions_cache._RFDETR_CACHE_BLOB_VERSION` exactly —
-#: see that constant's docstring for the v1 → v2 rationale (the
-#: thread-pin landing in :func:`_instantiate_model` makes ``v1`` bytes
-#: host-dependent, ``v2`` bytes deterministic). Both filename builders
-#: must agree byte-for-byte or the TIDE populator and the bench
-#: adapter would point at different files; that's why this constant
-#: is duplicated here rather than imported (this module pre-dates the
-#: shared cache package and avoids the dep to stay light).
-_RFDETR_CACHE_BLOB_VERSION = "v2"
+#: see that constant's docstring for the full history (v1 → v2: the
+#: thread-pin in :func:`_instantiate_model` makes ``v1`` bytes
+#: host-dependent; v2 → v3: ``v2`` blobs carry the dense/sparse
+#: class-space mix-up documented in :func:`_coco_class_mapping` and
+#: are numerically worthless). Both filename builders must agree
+#: byte-for-byte or the TIDE populator and the bench adapter would
+#: point at different files; that's why this constant is duplicated
+#: here rather than imported (this module pre-dates the shared cache
+#: package and avoids the dep to stay light).
+_RFDETR_CACHE_BLOB_VERSION = "v3"
 
 #: rf-detr model variants the harness exercises. ``nano`` is the
 #: bbox-only RFDETRNano; ``segnano`` is the instance-seg RFDETRSegNano
@@ -106,25 +108,50 @@ def predictions_cache_root() -> Path:
     return root
 
 
-def _coco_class_mapping(gt: dict[str, Any], dense_class_names: list[str]) -> dict[int, int]:
-    """Map rfdetr's dense ``class_id`` (0..79) to COCO's sparse
-    ``category_id`` (1..90 with gaps).
+#: Class slot rfdetr's COCO checkpoints reserve for "no object".
+#: ``class_embed.out_features`` is 91 on the COCO-pretrained
+#: RFDETRNano / RFDETRSegNano: slots 1..90 are COCO's sparse category
+#: ids and slot 0 is the only one left over. Detections carrying it
+#: are skipped; every *other* unmapped id is a hard error.
+_BACKGROUND_CLASS_ID = 0
 
-    Resolved by name match against the GT JSON's ``categories`` list,
-    not by sorted-position fallback: matching by index works on
-    canonical COCO splits but breaks silently on any subset that drops
-    a class. Name-match fails loudly, which is what we want.
+
+def _coco_class_mapping(gt: dict[str, Any], model_classes: dict[int, str]) -> dict[int, int]:
+    """Map rfdetr's ``class_id`` to COCO's ``category_id``.
+
+    The mapping is the **identity**, and this function exists to prove
+    that rather than assume it. ``rfdetr.assets.coco_classes.COCO_CLASSES``
+    is a ``{category_id: name}`` dict keyed by COCO's *sparse* ids
+    (1..90 with gaps), and the COCO-pretrained checkpoints emit that
+    same sparse id as ``Detections.class_id`` —
+    ``class_embed.out_features == 91`` leaves room for exactly the 90
+    category ids plus :data:`_BACKGROUND_CLASS_ID`.
+
+    Treating those 80 dict *values* as a dense 0..79 list is the trap
+    this signature is shaped to prevent: it type-checks, it maps most
+    ids to a plausible-looking category, and it silently relabels every
+    detection (measured: mAP 0.0019 instead of 0.5376) while dropping
+    the 10 ids above 79 outright. rfdetr's own ``predict()`` attaches
+    ``data["class_name"]`` under the same dense assumption, so the two
+    wrongs agree and neither is self-evidently wrong from the outside.
+
+    Verified by name against the GT JSON, so a checkpoint whose class
+    space is genuinely dense, or a GT subset that renumbers its
+    categories, fails loudly instead of quietly relabelling.
     """
-    name_to_cat_id = {cat["name"]: int(cat["id"]) for cat in gt["categories"]}
+    gt_names = {int(cat["id"]): cat["name"] for cat in gt["categories"]}
     mapping: dict[int, int] = {}
-    for dense_idx, name in enumerate(dense_class_names):
-        if name not in name_to_cat_id:
+    for class_id, name in model_classes.items():
+        gt_name = gt_names.get(int(class_id))
+        if gt_name != name:
             raise RuntimeError(
-                f"rfdetr COCO class {dense_idx} ('{name}') has no matching "
-                f"category in the GT JSON; the harness can't map class ids. "
-                f"GT category names: {sorted(name_to_cat_id)}"
+                f"rfdetr class id {class_id} is named {name!r}, but the GT JSON "
+                f"names category {class_id} {gt_name!r}. The harness maps "
+                f"class_id -> category_id by identity and cannot do so here; "
+                f"see _coco_class_mapping for why identity is the right mapping "
+                f"for a COCO-pretrained rfdetr checkpoint."
             )
-        mapping[dense_idx] = name_to_cat_id[name]
+        mapping[int(class_id)] = int(class_id)
     return mapping
 
 
@@ -174,12 +201,24 @@ def _detections_to_records(
         raise RuntimeError("expected segmentation masks on a seg model output, got None")
 
     for i in range(n):
-        dense_class = int(class_ids[i])
-        if dense_class not in class_mapping:
+        class_id = int(class_ids[i])
+        if class_id == _BACKGROUND_CLASS_ID:
             continue
+        if class_id not in class_mapping:
+            # Loud, not `continue`: the cache filename embeds a pinned
+            # version and is the integrity surface, so a partial cache
+            # is the kind of bug that only surfaces weeks later as
+            # "scores look a bit off". Skipping here is what hid the
+            # dense/sparse class-space mix-up — 8.5% of detections
+            # vanished and the remainder were relabelled.
+            raise RuntimeError(
+                f"rfdetr emitted class_id {class_id}, which maps to no COCO "
+                f"category (known ids: {min(class_mapping)}..{max(class_mapping)}). "
+                f"Refusing to write a partial prediction cache."
+            )
         rec: dict[str, Any] = {
             "image_id": int(image_id),
-            "category_id": int(class_mapping[dense_class]),
+            "category_id": int(class_mapping[class_id]),
             "bbox": _xyxy_to_xywh(detections.xyxy[i]),
             "score": float(confidences[i]),
         }
@@ -248,7 +287,7 @@ def predict_coco_val(
     from rfdetr.assets.coco_classes import COCO_CLASSES
 
     model, include_masks = _instantiate_model(model_name)
-    class_mapping = _coco_class_mapping(gt, list(COCO_CLASSES.values()))
+    class_mapping = _coco_class_mapping(gt, COCO_CLASSES)
     images: Iterable[dict[str, Any]] = gt["images"]
 
     if progress:
