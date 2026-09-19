@@ -2,8 +2,8 @@
 
 Three sub-modes gated by ``--mode-flag``:
 
-- ``throughput`` — measures per-image ``StreamingEvaluator.update()``
-  + ``finalize()`` over the GT/DT pair; emits the bit-equal
+- ``throughput`` — measures per-image ``Evaluator.evaluate_to_partial()``
+  + ``Evaluator.from_partials()`` over the GT/DT pair; emits the bit-equal
   ``Summary.stats`` (asserted against batch by the comparator) and
   per-stage timings. The hot stage is ``update_per_image``.
 - ``vs_naive`` — emits the same artifact bundle as ``throughput``;
@@ -19,8 +19,9 @@ Every run wraps work in an ``RSSSampler`` and emits ``rss_curve.json``
 alongside ``stats.json``. The B-stream design pins multi-artifact
 emission as the per-paradigm shape (per ADR-0033 §"artifact_paths").
 
-Stages: ``load``, ``init_streaming``, ``update_per_image`` (sums of all
-per-image updates), ``finalize``, ``total``. ``dlpack`` mode adds
+Stages: ``load``, ``init_streaming``, ``update_per_image`` (sum over all
+per-image ``evaluate_to_partial`` calls), ``finalize`` (the merge),
+``total``. ``dlpack`` mode adds
 ``update_array_path`` + ``finalize_array_path`` (the second-pass timings).
 """
 
@@ -37,8 +38,8 @@ from typing import Any, Literal
 
 import numpy as np
 import vernier
-from vernier._array_types import RLE, Detections
-from vernier.instance import StreamingEvaluator
+from vernier._array_types import Detections, UncompressedRLE
+from vernier.instance import Bbox, Boundary, Evaluator, Keypoints, Segm
 
 from bench.harness.rss import RSSSampler
 from bench.harness.schema import BenchWarning, RunnerRepOutput, StageTimings
@@ -130,7 +131,7 @@ def _records_to_array_detections(
     return out
 
 
-def _segmentation_to_rle(seg: object, h: int, w: int) -> RLE:
+def _segmentation_to_rle(seg: object, h: int, w: int) -> UncompressedRLE:
     # Used only on segm/boundary cells. The bbox cells (today) skip this
     # branch; the runner imports ``pycocotools.mask`` lazily so the
     # bbox-only path doesn't pay the import cost.
@@ -166,6 +167,14 @@ def _segmentation_to_rle(seg: object, h: int, w: int) -> RLE:
     }
 
 
+_IOU_KINDS = {
+    "bbox": Bbox,
+    "segm": Segm,
+    "boundary": Boundary,
+    "keypoints": Keypoints,
+}
+
+
 def _stream_per_image(
     gt_bytes: bytes,
     iou_type: str,
@@ -176,25 +185,37 @@ def _stream_per_image(
     finalize_stage: str,
     init_stage: str,
 ) -> list[float]:
-    """Per-image ``update()`` + ``finalize()`` loop with stage timing.
+    """Per-shard incremental evaluation + merge, with stage timing.
 
-    Returns the resulting ``Summary.stats`` list. Splits ``update``
+    ADR-0035 removed ``StreamingEvaluator`` from the Python module
+    entirely. The surviving synchronous incremental path is
+    ``Evaluator.evaluate_to_partial`` per shard plus
+    ``Evaluator.from_partials`` to merge, which is what this measures --
+    one partial per image, merged at the end. ``BackgroundEvaluator`` is
+    deliberately *not* used here: its ``submit`` hands work to a worker
+    thread, so timing it would measure enqueue cost rather than
+    evaluation, and the ``vernier_bg`` cell already covers that shape
+    (queue-depth p99 latency).
+
+    Returns the resulting ``Summary.stats`` list. Splits the per-shard
     timing into one ``StageTimings`` entry whose ``wall_ns`` is the sum
-    across all per-image updates — keeps the schema's stage dict shape
-    while still exposing the hot loop's aggregate cost.
+    across all shards — keeps the schema's stage dict shape while still
+    exposing the hot loop's aggregate cost.
     """
+    iou = _IOU_KINDS[iou_type]()
     with stages.stage(init_stage):
-        ev = StreamingEvaluator(gt_bytes, iou_type=iou_type, parity_mode="strict")  # type: ignore[arg-type]
+        ev = Evaluator(iou=iou, parity_mode="strict")
 
+    partials: list[bytes] = []
     update_total_ns = 0
-    for shard in shards:
+    for rank_id, shard in enumerate(shards):
         t0 = time.perf_counter_ns()
-        ev.update(shard)
+        partials.append(ev.evaluate_to_partial(gt_bytes, shard, rank_id=rank_id))
         update_total_ns += time.perf_counter_ns() - t0
     stages.record(update_stage, update_total_ns)
 
     with stages.stage(finalize_stage):
-        summary = ev.finalize()
+        summary = Evaluator.from_partials(gt_bytes, partials, iou=iou, parity_mode="strict")
     return [float(s) for s in summary.stats]
 
 
