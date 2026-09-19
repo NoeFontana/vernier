@@ -384,11 +384,26 @@ calibration smoke is free on a populated cache.
   drift the DETR cell ships against. Boundary uses the same mask
   kernels so the same parser-drift band applies. Ranking-based AP
   is unaffected.
-- **Headline snapshot** — **none currently published.** The previous
-  snapshot (`e5abafe`, machine `84edec51fd71`, 2026-06-07) read
-  `boundary AP@[.5:.95] = 0.0001` and is withdrawn: it was measured on
-  `v2` blobs, which carry the class-id bug described next. A `v3`
-  re-measurement lands with the first re-populate on this host.
+- **Headline snapshot** (vernier side, captured on the live `v3` cache
+  at SHA `952daa42015e`, machine `59aab88b17f4`, 2026-09-19):
+  - `boundary AP@[.5:.95]`: `0.2574`, `AP@.50`: `0.5776`
+  - For context on the same cache and the same masks:
+    `segm AP@[.5:.95]` `0.4037`, `bbox AP@[.5:.95]` `0.4926` — the
+    latter reproduces the RF-DETR Seg-Nano model card.
+  - Coverage: 4,996 / 5,000 val2017 images (4 produced no detection
+    above the 0.05 score floor), 80 / 80 categories, 430,516
+    detections.
+  - **The `boundary_iou_api` arm has not yet been re-run on `v3`.**
+    One vernier boundary pass over these masks costs ~470 s and the
+    oracle is slower still, so the parity re-measurement is an
+    overnight job; until it lands this row records vernier's own
+    numbers only and the bit-equality gate above is unverified on
+    `v3`. The values are recorded for cross-reference, not asserted.
+
+  This replaces a withdrawn snapshot (`e5abafe`, machine
+  `84edec51fd71`, 2026-06-07) that read `boundary AP@[.5:.95] = 0.0001`
+  — measured on `v2` blobs, which carry the class-id bug described
+  next.
 
     !!! warning "The `v2` snapshot was measuring a bug, not a model"
 

@@ -8,8 +8,19 @@ together.
 
 ## Index
 
+* [2026-09-rfdetr-real-predictions.md](./2026-09-rfdetr-real-predictions.md)
+  — **current headline snapshot for bbox / segm.** Release-mode cells
+  against real RF-DETR `Nano` and `SegNano` predictions on COCO
+  val2017 (513,808 and 430,516 detections) — the first segm cell
+  measured on real predicted masks, and the first rf-detr round after
+  the `v3` prediction-cache fix. 22.4× / 5.4× / 2.3× on bbox and
+  9.4× / 4.2× / 2.0× on segm against pycocotools / faster-coco-eval /
+  hotcoco, with AP bit-identical across all four. Records the one cell
+  where hotcoco's evaluate kernel beats vernier's, and does not cover
+  boundary (a release-mode cell is a multi-hour job) or thread
+  scaling.
 * [2026-09-release-0.4.0-round.md](./2026-09-release-0.4.0-round.md)
-  — **current headline snapshot.** Full release-mode re-measurement for
+  — **current headline snapshot for the remaining paradigms.** Full release-mode re-measurement for
   the 0.4.0 tag, same host as the two rounds below. Objects365 8.771 s →
   6.60 s at one CPU and 4.702 s → 3.20 s at eight, with both competitor
   arms flat within 2 % as controls; LVIS 80.98× over lvis-api and
@@ -122,6 +133,19 @@ done
 just bench-run --impl vernier --workload coco_val2017_keypoints_jittered_seed0 \
     --iou keypoints --num-threads 1,2,4,8 --mode release --no-parity
 
+# --- real predictions: the headline bbox / segm rows ------------------
+# These back README's bbox and segm rows. The caches are populated by
+# the TIDE harness (`real-models` extra) and keyed by pip version +
+# blob version; see docs/engineering/real-predictions-parity.md.
+# Boundary is deliberately absent: one vernier pass over the segnano
+# masks costs ~470 s, so a release-mode cell is an overnight job.
+just bench-run --impl all --workload coco_val2017_rfdetr_nano_v1.6.5.post0 \
+    --iou bbox --mode release
+for iou in bbox segm; do
+  just bench-run --impl all --workload coco_val2017_rfdetr_segnano_v1.6.5.post0 \
+      --iou "$iou" --mode release
+done
+
 # --- LVIS v1 val ------------------------------------------------------
 just bench-run --impl all --workload lvis_v1_val_jittered_seed0 \
     --iou bbox --mode release
@@ -151,9 +175,14 @@ files hand-mirror numbers from it and have to be updated in the same
 commit, or they drift — which is how `docs/comparison.md` came to claim
 `~57×` against lvis-api while `README.md` claimed `73.1×`:
 
+`render_benchmarks.py` renders one SHA at a time, and the
+real-prediction cells above are **not** in it — the rf-detr rows in
+README and `docs/comparison.md` are mirrored from the dated snapshot
+instead. Keep both sources straight when refreshing.
+
 | file | what it mirrors |
 | --- | --- |
-| `README.md` (tagline, headline table, thread table, host footer) | instance + panoptic + semantic + LVIS cells, version pins |
+| `README.md` (tagline, headline table, thread table, host footer) | instance + panoptic + semantic + LVIS cells, version pins; bbox / segm rows from the rf-detr snapshot |
 | `docs/comparison.md` ("At a glance", per-library sections) | per-library ratios and peak-RSS figures |
 | `docs/index.md` | the thread-scaling headline |
 | `docs/migrate/from-faster-coco-eval.md` | boundary and segm ratios at 1 and 8 CPUs |

@@ -437,6 +437,17 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             supported_iou_types=frozenset({"bbox", "segm", "boundary"}),
         )
 
+    if workload_name == real_predictions.VITPOSE_WORKLOAD_ID:
+        # Top-down keypoints: ViTPose runs on GT person boxes, so the
+        # DT covers the single `person` category and pairs with the
+        # keypoints GT rather than `instances_val2017`.
+        return InstanceWorkload(
+            workload_id=workload_name,
+            gt_path=coco_val2017.kp_gt_path(),
+            dt_path=real_predictions.vitpose_dt_path(),
+            supported_iou_types=frozenset({"keypoints"}),
+        )
+
     if workload_name == real_predictions.DETR_R50_WORKLOAD_ID:
         return InstanceWorkload(
             workload_id=workload_name,
@@ -577,6 +588,7 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
         f"'{real_predictions.MASKRCNN_R50FPN_WORKLOAD_ID}', "
         f"'{real_predictions.RFDETR_NANO_WORKLOAD_ID}', "
         f"'{real_predictions.RFDETR_SEGNANO_WORKLOAD_ID}', "
+        f"'{real_predictions.VITPOSE_WORKLOAD_ID}', "
         f"'{real_predictions.DETR_R50_WORKLOAD_ID}', "
         f"'{real_predictions.MASK2FORMER_PANOPTIC_WORKLOAD_ID}', "
         f"'{real_predictions.MASK2FORMER_ADE_WORKLOAD_ID}', "
