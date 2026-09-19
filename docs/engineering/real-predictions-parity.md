@@ -384,11 +384,11 @@ calibration smoke is free on a populated cache.
   drift the DETR cell ships against. Boundary uses the same mask
   kernels so the same parser-drift band applies. Ranking-based AP
   is unaffected.
-- **Headline snapshot** — see the `v3` re-measurement below. The
-  previous snapshot (`e5abafe`, machine `84edec51fd71`, 2026-06-07)
-  read `boundary AP@[.5:.95] = 0.0001` and is withdrawn: it was
-  measured on `v2` blobs, which carry the class-id bug described
-  next.
+- **Headline snapshot** — **none currently published.** The previous
+  snapshot (`e5abafe`, machine `84edec51fd71`, 2026-06-07) read
+  `boundary AP@[.5:.95] = 0.0001` and is withdrawn: it was measured on
+  `v2` blobs, which carry the class-id bug described next. A `v3`
+  re-measurement lands with the first re-populate on this host.
 
     !!! warning "The `v2` snapshot was measuring a bug, not a model"
 
