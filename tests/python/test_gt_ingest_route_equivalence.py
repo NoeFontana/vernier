@@ -247,18 +247,10 @@ def _as_json(gt: dict[str, Any] | None = None) -> _core.CocoDataset:
 
 
 def _grid(gt: Any, parity_mode: str = "strict", dt: bytes = DT_BYTES) -> Any:
-    """One bbox grid, from GT bytes or from a parsed-once handle.
-
-    ``evaluate_bbox_grid`` takes GT JSON bytes; ``..._with_dataset`` takes
-    the ADR-0020 handle, which is what both GT routes produce. Only bbox
-    has a grid-taking ``_with_dataset`` entry point today, which is why
-    the segm and keypoints comparisons below assert on summaries plus
-    :attr:`CocoDataset.dataset_hash` rather than on cells.
+    """One bbox grid from either GT form --- ``evaluate_bbox_grid``
+    dispatches on ``gt``'s type (ADR-0061), which is why ``gt`` is
+    :class:`~typing.Any` here.
     """
-    if isinstance(gt, bytes):
-        return _core.evaluate_bbox_grid(
-            gt, dt, parity_mode=parity_mode, max_dets_per_image=100, use_cats=True, retain_meta=True
-        )
     return _core.evaluate_bbox_grid(
         gt, dt, parity_mode=parity_mode, max_dets_per_image=100, use_cats=True, retain_meta=True
     )
@@ -1028,8 +1020,8 @@ def test_every_gt_segmentation_shape_is_accepted_and_agrees(shape: str) -> None:
     member of it is compared against the file route fed the same logical
     masks.
 
-    Two assertions, because only bbox has a grid-taking
-    ``_with_dataset`` entry point:
+    Two assertions. The second is bbox-only because ``_grid`` is the
+    bbox helper:
 
     1. The 12-stat segm summary equals the file route's for **every**
        spelling. This is the property that must never depend on how the

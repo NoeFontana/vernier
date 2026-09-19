@@ -278,7 +278,7 @@ def evaluate_instance_to_partial(
     cast_inputs: bool = ...,
 ) -> bytes: ...
 def merge_instance_partials(
-    gt: bytes | CocoDataset,
+    gt: bytes,
     partials: Sequence[bytes],
     iou_type: Literal["bbox", "segm", "boundary", "keypoints"],
     *,

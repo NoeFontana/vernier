@@ -119,7 +119,7 @@ def test_every_grid_accepts_both_ground_truth_forms(kernel: str) -> None:
         "segm": (GT_SEGM, DT_SEGM, {}),
         "boundary": (GT_SEGM, DT_SEGM, {"dilation_ratio": 0.02}),
         # `sigmas` is a per-category mapping; `{}` asks for the COCO default.
-        "keypoints": (GT_KP, DT_KP, {"sigmas": {}}),
+        "keypoints": (GT_KP, DT_KP, {"sigmas": {1: _COCO_KP_SIGMAS}}),
     }
     gt_bytes, dt, extra = fixtures[kernel]
     grid = getattr(vi, f"evaluate_{kernel}_grid")

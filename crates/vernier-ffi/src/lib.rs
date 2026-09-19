@@ -1160,6 +1160,26 @@ fn resolve_grid_axes(
 /// form), and its gaps were invisible until a caller needed one — twice
 /// in two releases. Here the input form is an argument rather than a
 /// function name, so a kernel cannot be missing one.
+///
+/// # The two forms are not interchangeable on federated GT
+///
+/// They agree bit-for-bit on ordinary COCO ground truth, which is what
+/// `test_every_grid_accepts_both_ground_truth_forms` asserts. They do
+/// **not** agree when the GT carries LVIS federated metadata
+/// (`not_exhaustive_category_ids` / `neg_category_ids`):
+///
+/// - `bytes` parses through `Dataset::from_json`, which discards that
+///   metadata. `gt.is_federated()` is then `false`, so the ADR-0026 AC2
+///   DT trim below and the orchestrator's AA3/AA4 K-axis branches never
+///   fire — the result is plain COCO AP over LVIS annotations.
+/// - A `CocoDataset` built by `CocoDataset.from_lvis_json` retains it
+///   and evaluates federated semantics.
+///
+/// So the handle is not merely the faster spelling on this input: for
+/// LVIS it is the only correct one, and the LVIS parity harness and
+/// bench runner both depend on it. This asymmetry lives in the GT
+/// parser, not in this dispatch, which is why widening `gt` did not
+/// remove it. See [`evaluate_grid_with_dataset_impl`].
 #[allow(clippy::too_many_arguments)]
 fn evaluate_grid_any_gt<'py>(
     py: Python<'py>,
@@ -1222,7 +1242,8 @@ fn evaluate_grid_any_gt<'py>(
     )))
 }
 
-/// The summary sibling of [`evaluate_grid_any_gt`].
+/// The summary sibling of [`evaluate_grid_any_gt`], including its
+/// federated-ground-truth caveat.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_summary_any_gt<'py>(
     py: Python<'py>,

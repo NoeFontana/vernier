@@ -204,3 +204,8 @@ not evidence of correctness on a mechanical migration.
   `area_ranges`) that become keyword-only here.
 - `docs/engineering/python-type-stubs.md` — `_core.pyi` is hand-written;
   the overloads for `bytes | CocoDataset` are added there by hand.
+- ADR-0047 — supersedes it *only* on the spelling of the ground-truth
+  argument. Its `evaluate_*_with_dataset` references describe the surface
+  as it stood in 0.3.x; the threading decision it records is untouched.
+  Its body is `accepted` and therefore immutable (ADR-0001), so the
+  pointer lives in its Status line and here, not in its prose.
