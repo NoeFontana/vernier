@@ -24,7 +24,6 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
-use vernier_core::dataset::DetectionArea;
 use vernier_core::evaluate::AreaRange;
 use vernier_core::lrp::{LrpKernelMarker, LrpParams, LrpPerClass, LrpReport};
 use vernier_core::manifest::partition_spec_from_manifest;
@@ -153,6 +152,10 @@ fn evaluate_instance_partitioned_impl(
     key_kind: &str,
     num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
+    // Bind before the move: the partitioned surface exposes no
+    // `dt_area` knob, so the rule comes from the kernel (quirk
+    // **OB13**).
+    let dt_area = crate::default_dt_area(&iou_type);
     let grid = evaluate_grid_impl(
         py,
         iou_type,
@@ -167,7 +170,7 @@ fn evaluate_instance_partitioned_impl(
         recall_thresholds,
         area_ranges,
         num_threads,
-        DetectionArea::FromBbox,
+        dt_area,
         false, // retain_meta
     )?;
 
@@ -956,4 +959,121 @@ pub(crate) fn manifest_to_json_bytes<'py>(
 ) -> PyResult<Bound<'py, PyBytes>> {
     let bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
     Ok(PyBytes::new(py, &bytes))
+}
+
+/// Oriented-box partitioned eval (ADR-0063). Mirrors
+/// [`evaluate_bbox_partitioned`] for the rotated-box kernel; `unit` and
+/// `rotation` are required, as everywhere else the convention appears.
+#[pyfunction]
+#[pyo3(signature = (
+    gt,
+    dt,
+    *,
+    parity_mode,
+    max_dets_per_image,
+    use_cats,
+    unit,
+    rotation,
+    manifest,
+    cast_inputs = false,
+    iou_thresholds = None,
+    recall_thresholds = None,
+    area_ranges = None,
+    cross_axes = None,
+    key_kind = "image_id",
+    num_threads = None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_rotated_box_partitioned<'py>(
+    py: Python<'py>,
+    gt: &Bound<'py, PyBytes>,
+    dt: &Bound<'py, PyAny>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    unit: &str,
+    rotation: &str,
+    manifest: &Bound<'py, PyAny>,
+    cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    cross_axes: Option<Vec<Vec<String>>>,
+    key_kind: &str,
+    num_threads: Option<usize>,
+) -> PyResult<PyPartitionedSummary> {
+    evaluate_instance_partitioned_impl(
+        py,
+        EvalIouType::RotatedBox {
+            conv: crate::parse_convention(unit, rotation)?,
+        },
+        gt,
+        dt,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+        cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
+        manifest,
+        cross_axes,
+        key_kind,
+        num_threads,
+    )
+}
+
+/// Quad partitioned eval (ADR-0063). Mirrors
+/// [`evaluate_bbox_partitioned`] for the quad kernel.
+#[pyfunction]
+#[pyo3(signature = (
+    gt,
+    dt,
+    *,
+    parity_mode,
+    max_dets_per_image,
+    use_cats,
+    manifest,
+    cast_inputs = false,
+    iou_thresholds = None,
+    recall_thresholds = None,
+    area_ranges = None,
+    cross_axes = None,
+    key_kind = "image_id",
+    num_threads = None,
+))]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_quad_partitioned<'py>(
+    py: Python<'py>,
+    gt: &Bound<'py, PyBytes>,
+    dt: &Bound<'py, PyAny>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    manifest: &Bound<'py, PyAny>,
+    cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    cross_axes: Option<Vec<Vec<String>>>,
+    key_kind: &str,
+    num_threads: Option<usize>,
+) -> PyResult<PyPartitionedSummary> {
+    evaluate_instance_partitioned_impl(
+        py,
+        EvalIouType::Quad,
+        gt,
+        dt,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+        cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
+        manifest,
+        cross_axes,
+        key_kind,
+        num_threads,
+    )
 }

@@ -136,6 +136,13 @@ class ResultAnnotation(TypedDict, total=False):
     ``iscrowd`` is accepted and ignored: a detection is never a crowd
     (quirks **E2**/**J4**).
 
+    ``rbox`` is required under ``iou_type='rotated_box'`` and ``quad``
+    under ``'quad'`` (ADR-0063). They are deliberately separate keys
+    rather than a longer ``bbox``: detectron2 overloads ``bbox`` with a
+    fifth angle value, and a length-5 ``bbox`` read as ``[x, y, w, h]``
+    evaluates a box at the wrong place with nothing raised. ``bbox``
+    stays the axis-aligned envelope.
+
     An explicit ``id`` is preserved; an absent one is auto-assigned
     ``1..N`` by position (quirk **J1**).
     """
@@ -150,6 +157,8 @@ class ResultAnnotation(TypedDict, total=False):
     num_keypoints: int
     area: float
     iscrowd: int
+    rbox: Sequence[float]
+    quad: Sequence[float]
 
 
 class GtCategory(TypedDict, total=False):

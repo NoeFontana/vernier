@@ -55,6 +55,12 @@ from vernier._core import (
     evaluate_keypoints_grid,
     evaluate_keypoints_partitioned,
     evaluate_keypoints_summary,
+    evaluate_quad_grid,
+    evaluate_quad_partitioned,
+    evaluate_quad_summary,
+    evaluate_rotated_box_grid,
+    evaluate_rotated_box_partitioned,
+    evaluate_rotated_box_summary,
     evaluate_segm_grid,
     evaluate_segm_partitioned,
     evaluate_segm_summary,
@@ -103,6 +109,7 @@ from vernier._types import (
     TablesConfig,
     normalize_tables_arg,
 )
+from vernier.instance import obb
 
 __all__ = [
     "BackgroundEvaluator",
@@ -148,9 +155,11 @@ __all__ = [
     "PartialRankCollision",
     "PartitionedLrpReport",
     "PolygonSegmentation",
+    "Quad",
     "QueueFullError",
     "RLEInput",
     "ResultAnnotation",
+    "RotatedBox",
     "Segm",
     "SegmentationInput",
     "Summary",
@@ -162,6 +171,7 @@ __all__ = [
     "confusion_matrix",
     "error_decomposition",
     "fp_iou_histogram",
+    "obb",
     "optimal_lrp",
 ]
 
@@ -205,10 +215,73 @@ class Keypoints:
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RotatedBox:
+    """Oriented-box IoU kernel selector (ADR-0063).
+
+    A detection is ``[cx, cy, w, h, theta]`` on an ``rbox`` key — a
+    *separate* key from ``bbox``, never a length-5 ``bbox``. detectron2
+    overloads ``bbox`` that way, and a length-5 ``bbox`` misread as
+    ``[x, y, w, h]`` is silent and catastrophic, so vernier refuses it.
+
+    Both fields are **required and have no default**. Angle unit and
+    rotation direction are the most common real-world OBB bug, and
+    getting either wrong produces plausible numbers rather than an
+    error:
+
+    ``unit``
+        ``"deg"`` or ``"rad"``. Degrees make every multiple of 90
+        exact, which is why quadrant-aligned pairs reduce to an
+        axis-aligned IoU to the last bit.
+    ``rotation``
+        ``"screen_cw"`` or ``"screen_ccw"`` — what a *viewer* sees. The
+        pixel frame has ``y`` pointing down, so the algebraic sign and
+        the visual direction are opposites; naming the variants after
+        the view removes that trap. detectron2 is ``"screen_ccw"``.
+
+    The strict oracle is detectron2's ``RotatedCOCOeval``. Its geometry
+    runs in f32 and its threshold comparison runs in f32 too, both of
+    which ``parity_mode="strict"`` reproduces bit for bit.
+    ``parity_mode="corrected"`` runs vernier's own f64 kernel, for which
+    ``IoU(a, a)`` is exactly ``1.0``.
+
+    ``le90`` / ``le135`` / ``oc`` are *not* a parameter. They are
+    parameterizations of one quotient — the box is invariant under
+    ``theta + 180`` and under swapping ``w``/``h`` with ``theta + 90`` —
+    so the IoU cannot depend on which one a producer used.
+    """
+
+    unit: Literal["deg", "rad"]
+    rotation: Literal["screen_cw", "screen_ccw"]
+
+
+@dataclass(frozen=True, slots=True)
+class Quad:
+    """Four-vertex polygon IoU kernel selector (ADR-0063). No parameters.
+
+    A detection is ``[x0, y0, x1, y1, x2, y2, x3, y3]`` on a ``quad``
+    key. Vertex order and winding are preserved verbatim: the strict
+    oracle is DOTA_devkit's ``iou_poly`` composed with the task-1
+    evaluator's horizontal-box gate, and it consumes the quad exactly as
+    submitted.
+
+    Quads need not be rectangles or convex — DOTA ground truth is
+    frequently neither. A zero-area quad is a typed error in both parity
+    modes (the oracle evaluates ``0/0`` there); a self-intersecting one
+    is an error under ``"corrected"`` and accepted under ``"strict"``,
+    because reproducing the oracle is what ``"strict"`` is for.
+
+    To evaluate rotated boxes against quad ground truth, convert with
+    :func:`vernier.instance.obb.to_quad` — and note that the conversion
+    uses the corrected kernel's bits, so for a DK-strict claim you
+    should submit the quads you would actually submit to DOTA_devkit.
+    """
+
+
 #: Discriminated union of the kernels :class:`Evaluator` accepts (ADR-0011).
 #: Per-kernel parameters live on each variant; pattern-match on
 #: :attr:`Evaluator.iou` to dispatch.
-IouKind = Bbox | Segm | Boundary | Keypoints
+IouKind = Bbox | Segm | Boundary | Keypoints | RotatedBox | Quad
 
 
 #: Acceptable shapes for the ``manifest=`` keyword on
@@ -244,6 +317,13 @@ _KERNEL_MAX_DETS: Final[dict[type[IouKind], tuple[int, ...]]] = {
     Segm: (1, 10, 100),
     Boundary: (1, 10, 100),
     Keypoints: (20,),
+    # ADR-0063: oriented boxes evaluate under the COCO protocol, so they
+    # inherit its ladder unchanged. DOTA's own protocol reports at a
+    # single operating point, but that is a *matching* and *summarizer*
+    # difference, not a geometry one, and it lands with the assignment
+    # ADR rather than here.
+    RotatedBox: (1, 10, 100),
+    Quad: (1, 10, 100),
 }
 
 
@@ -373,7 +453,7 @@ class Evaluator:
     ``max_dets`` defaults to ``None``, meaning "use the canonical ladder
     for the selected ``iou`` kernel" (ADR-0012). Resolution happens at
     dispatch via :data:`_KERNEL_MAX_DETS`; explicit values always win.
-    The current three kernels all resolve to ``(1, 10, 100)``.
+    Every kernel but keypoints resolves to ``(1, 10, 100)``.
 
     ``cast_inputs`` (ADR-0030) gates one-shot ``f32→f64`` / ``i32→i64``
     promotion when array-form ``Detections`` are passed to
@@ -667,6 +747,28 @@ class Evaluator:
                     cast_inputs=self.cast_inputs,
                     num_threads=num_threads,
                 )
+            case RotatedBox(unit=u, rotation=rot):
+                return evaluate_rotated_box_summary(
+                    gt,
+                    dt,
+                    parity_mode=self.parity_mode,
+                    max_dets=max_dets_list,
+                    use_cats=self.use_cats,
+                    unit=u,
+                    rotation=rot,
+                    cast_inputs=self.cast_inputs,
+                    num_threads=num_threads,
+                )
+            case Quad():
+                return evaluate_quad_summary(
+                    gt,
+                    dt,
+                    parity_mode=self.parity_mode,
+                    max_dets=max_dets_list,
+                    use_cats=self.use_cats,
+                    cast_inputs=self.cast_inputs,
+                    num_threads=num_threads,
+                )
             case _:
                 _reject_unknown_iou(self.iou)
 
@@ -718,6 +820,32 @@ class Evaluator:
                     max_dets_per_image=max_dets_list[-1],
                     use_cats=self.use_cats,
                     dilation_ratio=r,
+                    manifest=manifest,
+                    cast_inputs=self.cast_inputs,
+                    cross_axes=cross,
+                    num_threads=num_threads,
+                )
+            case RotatedBox(unit=u, rotation=rot):
+                psum = evaluate_rotated_box_partitioned(
+                    gt,
+                    dt,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    unit=u,
+                    rotation=rot,
+                    manifest=manifest,
+                    cast_inputs=self.cast_inputs,
+                    cross_axes=cross,
+                    num_threads=num_threads,
+                )
+            case Quad():
+                psum = evaluate_quad_partitioned(
+                    gt,
+                    dt,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
                     manifest=manifest,
                     cast_inputs=self.cast_inputs,
                     cross_axes=cross,
@@ -848,6 +976,36 @@ class Evaluator:
                     max_dets_per_image=max_dets_list[-1],
                     use_cats=self.use_cats,
                     dilation_ratio=r,
+                    retain_iou=need_retention,
+                    cast_inputs=self.cast_inputs,
+                    iou_thresholds=custom_iou,
+                    recall_thresholds=custom_recall,
+                    area_ranges=custom_areas,
+                    num_threads=num_threads,
+                )
+            case RotatedBox(unit=u, rotation=rot):
+                grid = evaluate_rotated_box_grid(
+                    gt,
+                    dt,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
+                    unit=u,
+                    rotation=rot,
+                    retain_iou=need_retention,
+                    cast_inputs=self.cast_inputs,
+                    iou_thresholds=custom_iou,
+                    recall_thresholds=custom_recall,
+                    area_ranges=custom_areas,
+                    num_threads=num_threads,
+                )
+            case Quad():
+                grid = evaluate_quad_grid(
+                    gt,
+                    dt,
+                    parity_mode=self.parity_mode,
+                    max_dets_per_image=max_dets_list[-1],
+                    use_cats=self.use_cats,
                     retain_iou=need_retention,
                     cast_inputs=self.cast_inputs,
                     iou_thresholds=custom_iou,
@@ -1024,6 +1182,20 @@ class Evaluator:
             case Keypoints(sigmas=s):
                 kwargs["iou_type"] = "keypoints"
                 kwargs["sigmas"] = _normalize_sigmas(s)
+            case RotatedBox() | Quad():
+                # ADR-0063 wires the oriented kernels through the batch
+                # and partitioned paths. The streaming evaluator keeps a
+                # per-kernel state machine on the Rust side that they are
+                # not part of yet, so say which paths do work rather than
+                # failing later with a kernel-dispatch error that names
+                # none of them.
+                raise NotImplementedError(
+                    "streaming and background evaluation do not support the "
+                    f"{type(self.iou).__name__} kernel yet (ADR-0063). Use "
+                    "Evaluator.evaluate(...) for batch evaluation, or "
+                    "Evaluator.evaluate(..., manifest=...) for partitioned "
+                    "evaluation; both support oriented boxes."
+                )
             case _:
                 _reject_unknown_iou(self.iou)
         return kwargs

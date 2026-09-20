@@ -28,7 +28,10 @@ REFERENCE_DIR = Path(__file__).resolve().parents[2] / "docs" / "reference" / "py
 # canonical pages, and aliases that mkdocstrings would otherwise duplicate.
 _IGNORE: dict[str, frozenset[str]] = {
     "vernier": frozenset({"instance", "panoptic", "semantic", "patch_pycocotools", "__version__"}),
-    "vernier.instance": frozenset(),
+    # `obb` is a submodule with its own canonical reference page
+    # (reference/python/instance-obb.md), like the paradigm submodules
+    # on `vernier` itself.
+    "vernier.instance": frozenset({"obb"}),
     "vernier.panoptic": frozenset(),
     "vernier.semantic": frozenset(),
     "vernier.adapters": frozenset(),

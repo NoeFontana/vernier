@@ -81,6 +81,7 @@ mod gt_ingest;
 mod lrp;
 mod manifest_py;
 mod numpy_utils;
+mod obb;
 mod panoptic;
 mod panoptic_tables;
 mod partition_py;
@@ -741,8 +742,21 @@ fn eval_img_dict<'py>(
 pub(crate) enum EvalIouType {
     Bbox,
     Segm,
-    Boundary { dilation_ratio: f64 },
-    Keypoints { sigmas: HashMap<i64, Vec<f64>> },
+    Boundary {
+        dilation_ratio: f64,
+    },
+    Keypoints {
+        sigmas: HashMap<i64, Vec<f64>>,
+    },
+    /// Oriented box, `[cx, cy, w, h, theta]` (ADR-0063). The convention
+    /// is required and carried here rather than defaulted, because an
+    /// angle without a unit and a rotation direction is not a box.
+    RotatedBox {
+        conv: vernier_geom::Convention,
+    },
+    /// Four-vertex polygon (ADR-0063). No parameters: the geometry is
+    /// fully described by the eight coordinates.
+    Quad,
 }
 
 impl EvalIouType {
@@ -762,6 +776,10 @@ impl EvalIouType {
             Self::Keypoints { sigmas } => {
                 evaluate_keypoints(gt, dt, params, parity, sigmas.clone())
             }
+            Self::RotatedBox { conv } => {
+                vernier_core::evaluate_rotated_box(gt, dt, params, parity, *conv)
+            }
+            Self::Quad => vernier_core::evaluate_quad(gt, dt, params, parity),
         }
     }
 
@@ -785,6 +803,14 @@ impl EvalIouType {
             Self::Keypoints { sigmas } => {
                 evaluate_keypoints(gt, dt, params, parity, sigmas.clone())
             }
+            // No GT-side derivation cache: oriented preparation is O(G)
+            // trigonometry, not mask rasterization, so there is nothing
+            // worth hoisting across cells yet (ADR-0063 leaves an
+            // `ObbGtCache` to M5 if a profile asks for one).
+            Self::RotatedBox { conv } => {
+                vernier_core::evaluate_rotated_box(gt, dt, params, parity, *conv)
+            }
+            Self::Quad => vernier_core::evaluate_quad(gt, dt, params, parity),
         }
     }
 
@@ -816,6 +842,10 @@ impl EvalIouType {
             Self::Keypoints { sigmas } => {
                 evaluate_keypoints_parallel(gt, dt, params, parity, sigmas.clone())
             }
+            Self::RotatedBox { conv } => {
+                vernier_core::evaluate_rotated_box_parallel(gt, dt, params, parity, *conv)
+            }
+            Self::Quad => vernier_core::evaluate_quad_parallel(gt, dt, params, parity),
         }
     }
 
@@ -851,6 +881,10 @@ impl EvalIouType {
             Self::Keypoints { sigmas } => {
                 evaluate_keypoints_parallel(gt, dt, params, parity, sigmas.clone())
             }
+            Self::RotatedBox { conv } => {
+                vernier_core::evaluate_rotated_box_parallel(gt, dt, params, parity, *conv)
+            }
+            Self::Quad => vernier_core::evaluate_quad_parallel(gt, dt, params, parity),
         }
     }
 
@@ -900,6 +934,14 @@ pub(crate) fn evaluate_grid_impl(
         return Err(PyValueError::new_err(
             "dt_area='mask' derives the area from each detection's mask; it applies to \
              evaluate_segm_grid and evaluate_boundary_grid only",
+        ));
+    }
+    if dt_area == DetectionArea::Oriented
+        && !matches!(iou_type, EvalIouType::RotatedBox { .. } | EvalIouType::Quad)
+    {
+        return Err(PyValueError::new_err(
+            "dt_area='oriented' derives the area from each detection's `rbox` / `quad`; \
+             it applies to evaluate_rotated_box_grid and evaluate_quad_grid only",
         ));
     }
     let parity = parse_parity_mode(parity_mode)?;
@@ -1081,6 +1123,14 @@ fn evaluate_grid_with_dataset_impl(
         return Err(PyValueError::new_err(
             "dt_area='mask' derives the area from each detection's mask; it applies to \
              evaluate_segm_grid and evaluate_boundary_grid only",
+        ));
+    }
+    if dt_area == DetectionArea::Oriented
+        && !matches!(iou_type, EvalIouType::RotatedBox { .. } | EvalIouType::Quad)
+    {
+        return Err(PyValueError::new_err(
+            "dt_area='oriented' derives the area from each detection's `rbox` / `quad`; \
+             it applies to evaluate_rotated_box_grid and evaluate_quad_grid only",
         ));
     }
     let parity = parse_parity_mode(parity_mode)?;
@@ -1494,14 +1544,10 @@ fn evaluate_summary_impl(
     // window for multi-threaded callers.
     let gt_bytes = gt_json.as_bytes().to_vec();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
+    let dt_area = default_dt_area(&iou_type);
 
     let summary = py.detach(move || -> PyResult<Summary> {
-        let (gt, dt) = parse_gt_dt_with_policy(
-            &gt_bytes,
-            dt_payload,
-            DetectionArea::FromBbox,
-            thread_policy,
-        )?;
+        let (gt, dt) = parse_gt_dt_with_policy(&gt_bytes, dt_payload, dt_area, thread_policy)?;
         run_pipeline(
             &iou_type,
             &gt,
@@ -1541,6 +1587,194 @@ fn evaluate_bbox_summary(
         use_cats,
         cast_inputs,
         num_threads,
+    )
+}
+
+/// Resolve the `(unit, rotation)` pair into a [`vernier_geom::Convention`].
+///
+/// Both are required strings with no default. ADR-0063 is explicit about
+/// why: angle unit and rotation direction are the most common
+/// real-world OBB bug, and guessing either produces plausible numbers
+/// rather than an error. A defaulted convention would be a silent wrong
+/// answer on half the datasets in the wild.
+pub(crate) fn parse_convention(unit: &str, rotation: &str) -> PyResult<vernier_geom::Convention> {
+    let unit = match unit {
+        "deg" => vernier_geom::AngleUnit::Deg,
+        "rad" => vernier_geom::AngleUnit::Rad,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "unit: expected 'deg' or 'rad', got {other:?}"
+            )))
+        }
+    };
+    let rotation = match rotation {
+        "screen_cw" => vernier_geom::Rotation::ScreenCw,
+        "screen_ccw" => vernier_geom::Rotation::ScreenCcw,
+        other => {
+            return Err(PyValueError::new_err(format!(
+                "rotation: expected 'screen_cw' or 'screen_ccw', got {other:?}. \
+                 The pixel frame has y pointing down, so these name what a \
+                 viewer sees: 'screen_ccw' is detectron2's convention."
+            )))
+        }
+    };
+    Ok(vernier_geom::Convention::new(unit, rotation))
+}
+
+/// Oriented-box end-to-end pipeline (ADR-0063) — see
+/// [`evaluate_summary_impl`].
+///
+/// Every GT and DT must carry an `rbox` field of five values,
+/// `[cx, cy, w, h, theta]`. A length-5 `bbox` is *not* accepted: that is
+/// detectron2's overloading, and a length-5 `bbox` misread as
+/// `[x, y, w, h]` is the worst failure this surface could have.
+///
+/// Under `parity_mode="strict"` the kernel is an op-exact replica of
+/// detectron2's f32 rotated IoU and the threshold ladder is projected
+/// onto the f32 lattice to match `RotatedCOCOeval`'s comparison dtype.
+#[pyfunction]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets, use_cats, unit, rotation, cast_inputs=false, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
+fn evaluate_rotated_box_summary(
+    py: Python<'_>,
+    gt: &Bound<'_, PyAny>,
+    dt: &Bound<'_, PyAny>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    unit: &str,
+    rotation: &str,
+    cast_inputs: bool,
+    num_threads: Option<usize>,
+) -> PyResult<PySummary> {
+    evaluate_summary_any_gt(
+        py,
+        EvalIouType::RotatedBox {
+            conv: parse_convention(unit, rotation)?,
+        },
+        gt,
+        dt,
+        parity_mode,
+        max_dets,
+        use_cats,
+        cast_inputs,
+        num_threads,
+    )
+}
+
+/// Quad end-to-end pipeline (ADR-0063) — see [`evaluate_summary_impl`].
+///
+/// Every GT and DT must carry a `quad` field of eight values,
+/// `[x0, y0, x1, y1, x2, y2, x3, y3]`. Vertex order is preserved: under
+/// `parity_mode="strict"` the DOTA_devkit replica consumes it exactly as
+/// submitted.
+#[pyfunction]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets, use_cats, cast_inputs=false, num_threads=None))]
+#[allow(clippy::too_many_arguments)]
+fn evaluate_quad_summary(
+    py: Python<'_>,
+    gt: &Bound<'_, PyAny>,
+    dt: &Bound<'_, PyAny>,
+    parity_mode: &str,
+    max_dets: Vec<usize>,
+    use_cats: bool,
+    cast_inputs: bool,
+    num_threads: Option<usize>,
+) -> PyResult<PySummary> {
+    evaluate_summary_any_gt(
+        py,
+        EvalIouType::Quad,
+        gt,
+        dt,
+        parity_mode,
+        max_dets,
+        use_cats,
+        cast_inputs,
+        num_threads,
+    )
+}
+
+/// Oriented-box per-image evaluation pass (ADR-0063) — see
+/// [`evaluate_rotated_box_summary`] for the field requirements.
+#[pyfunction]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets_per_image, use_cats, unit, rotation, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="oriented", retain_meta=false))]
+#[allow(clippy::too_many_arguments)]
+fn evaluate_rotated_box_grid<'py>(
+    py: Python<'py>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    unit: &str,
+    rotation: &str,
+    retain_iou: bool,
+    cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
+    dt_area: &str,
+    retain_meta: bool,
+) -> PyResult<PyEvalGrid> {
+    evaluate_grid_any_gt(
+        py,
+        EvalIouType::RotatedBox {
+            conv: parse_convention(unit, rotation)?,
+        },
+        gt,
+        dt,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+        retain_iou,
+        cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
+        num_threads,
+        parse_dt_area(dt_area)?,
+        retain_meta,
+    )
+}
+
+/// Quad per-image evaluation pass (ADR-0063) — see
+/// [`evaluate_quad_summary`] for the field requirements.
+#[pyfunction]
+#[pyo3(signature = (gt, dt, *, parity_mode, max_dets_per_image, use_cats, retain_iou=false, cast_inputs=false, iou_thresholds=None, recall_thresholds=None, area_ranges=None, num_threads=None, dt_area="oriented", retain_meta=false))]
+#[allow(clippy::too_many_arguments)]
+fn evaluate_quad_grid<'py>(
+    py: Python<'py>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    parity_mode: &str,
+    max_dets_per_image: usize,
+    use_cats: bool,
+    retain_iou: bool,
+    cast_inputs: bool,
+    iou_thresholds: Option<Vec<f64>>,
+    recall_thresholds: Option<Vec<f64>>,
+    area_ranges: Option<&Bound<'py, breakdown::PyBreakdown>>,
+    num_threads: Option<usize>,
+    dt_area: &str,
+    retain_meta: bool,
+) -> PyResult<PyEvalGrid> {
+    evaluate_grid_any_gt(
+        py,
+        EvalIouType::Quad,
+        gt,
+        dt,
+        parity_mode,
+        max_dets_per_image,
+        use_cats,
+        retain_iou,
+        cast_inputs,
+        iou_thresholds,
+        recall_thresholds,
+        area_ranges,
+        num_threads,
+        parse_dt_area(dt_area)?,
+        retain_meta,
     )
 }
 
@@ -1665,9 +1899,10 @@ fn evaluate_summary_with_dataset_impl(
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
+    let dt_area = default_dt_area(&iou_type);
     let snapshot = dataset.snapshot();
     let summary = py.detach(move || -> PyResult<Summary> {
-        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
+        let dt = realize_dt(dt_payload, dt_area)?;
         run_pipeline_with_dataset(
             &iou_type,
             &snapshot.gt,
@@ -1916,9 +2151,29 @@ pub(crate) fn parse_dt_area(s: &str) -> PyResult<DetectionArea> {
         "bbox" => Ok(DetectionArea::FromBbox),
         "supplied" => Ok(DetectionArea::Supplied),
         "mask" => Ok(DetectionArea::Mask),
+        "oriented" => Ok(DetectionArea::Oriented),
         other => Err(PyValueError::new_err(format!(
-            "invalid dt_area {other:?}; expected 'bbox', 'supplied' or 'mask'"
+            "invalid dt_area {other:?}; expected 'bbox', 'supplied', 'mask' or 'oriented'"
         ))),
+    }
+}
+
+/// The DT-area rule an `iou_type` implies when the caller does not pick
+/// one.
+///
+/// The summary and partitioned entry points expose no `dt_area` knob —
+/// they mirror `pycocotools`' `loadRes`, which derives the area rather
+/// than asking. For the oriented kernels `loadRes` derives it from the
+/// *oriented* geometry, because detectron2 puts `[cx, cy, w, h, theta]`
+/// in the `bbox` slot and `bb[2] * bb[3]` is then the oriented `w * h`
+/// (quirk **OB13**). Returning `FromBbox` there would bucket a rotated
+/// object by its axis-aligned envelope and put `AP_small` /
+/// `AP_medium` / `AP_large` at odds with the kernel that produced the
+/// IoUs.
+pub(crate) fn default_dt_area(iou_type: &EvalIouType) -> DetectionArea {
+    match iou_type {
+        EvalIouType::RotatedBox { .. } | EvalIouType::Quad => DetectionArea::Oriented,
+        _ => DetectionArea::FromBbox,
     }
 }
 
@@ -1959,7 +2214,14 @@ impl SummarizePlan {
     /// grid should not compile until its plan is stated.
     fn for_iou_type(iou_type: &EvalIouType) -> Self {
         match iou_type {
-            EvalIouType::Bbox | EvalIouType::Segm | EvalIouType::Boundary { .. } => Self::Detection,
+            EvalIouType::Bbox
+            | EvalIouType::Segm
+            | EvalIouType::Boundary { .. }
+            // Oriented boxes evaluate over the four-bucket detection
+            // area grid, so they take the 12-stat detection plan
+            // unchanged (ADR-0063).
+            | EvalIouType::RotatedBox { .. }
+            | EvalIouType::Quad => Self::Detection,
             EvalIouType::Keypoints { .. } => Self::Keypoints,
         }
     }
@@ -2398,6 +2660,8 @@ impl From<&EvalIouType> for array_ingest::ArrayIouType {
             EvalIouType::Segm => Self::Segm,
             EvalIouType::Boundary { .. } => Self::Boundary,
             EvalIouType::Keypoints { .. } => Self::Keypoints,
+            EvalIouType::RotatedBox { .. } => Self::RotatedBox,
+            EvalIouType::Quad => Self::Quad,
         }
     }
 }
@@ -3755,6 +4019,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_boundary_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_rotated_box_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_rotated_box_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_quad_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(evaluate_quad_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(obb::obb_rbox_to_quad, m)?)?;
+    m.add_function(wrap_pyfunction!(obb::obb_min_area_rect, m)?)?;
+    m.add_function(wrap_pyfunction!(obb::obb_label_ceiling, m)?)?;
+    m.add_function(wrap_pyfunction!(obb::obb_angle_error_deg, m)?)?;
     m.add_function(wrap_pyfunction!(calibration::cells_from_grid, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_class_to_arrow_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_image_to_arrow_pycapsule, m)?)?;
@@ -3804,6 +4076,14 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     )?)?;
     m.add_function(wrap_pyfunction!(
         partition_py::evaluate_keypoints_partitioned,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_rotated_box_partitioned,
+        m
+    )?)?;
+    m.add_function(wrap_pyfunction!(
+        partition_py::evaluate_quad_partitioned,
         m
     )?)?;
     m.add_function(wrap_pyfunction!(

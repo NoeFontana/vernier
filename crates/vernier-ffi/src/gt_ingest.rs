@@ -256,6 +256,28 @@ fn extract_annotations<'py>(
     let dict = as_column_dict(obj, ANNOTATIONS)?;
     let py = dict.py();
 
+    // ADR-0063 scopes the columnar routes out of oriented-box eval, so
+    // this builder has no `rbox` / `quad` column and every annotation
+    // it produces carries `None` for both. Refuse *here* when the
+    // caller supplied one, rather than drop it: the oriented kernels
+    // would otherwise fail much later with "GT id=N has no `rbox`
+    // field", which blames the caller for a field they did in fact
+    // pass. Mirrors the DT-side refusal in `array_ingest`.
+    let oriented = [
+        ("rbox", optional_column(&dict, intern!(py, "rbox"))?),
+        ("quad", optional_column(&dict, intern!(py, "quad"))?),
+    ];
+    for (key, column) in oriented {
+        if column.is_some() {
+            return Err(PyValueError::new_err(format!(
+                "{ANNOTATIONS}: the columnar `Dataset.from_arrays` route does not carry \
+                 oriented geometry, so the {key:?} column would be silently dropped. \
+                 Build the ground truth from COCO JSON `bytes` (`Dataset.from_json`), \
+                 which reads `rbox` and `quad` as ordinary annotation fields."
+            )));
+        }
+    }
+
     // `id` is required: GT ids are supplied, never assigned. This is the
     // mirror image of quirk J1, and it is observable through
     // `evalImgs['gtIds']`.
