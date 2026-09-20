@@ -213,6 +213,8 @@ pub fn apply_fix(
                     segmentation: det.segmentation.clone(),
                     keypoints: det.keypoints.clone(),
                     num_keypoints: det.num_keypoints,
+                    rbox: det.rbox,
+                    quad: det.quad,
                 });
             }
             // LOC: snap Loc-binned DT's geometry (bbox AND segmentation)
@@ -233,6 +235,8 @@ pub fn apply_fix(
                     segmentation: target.segmentation.clone(),
                     keypoints: det.keypoints.clone(),
                     num_keypoints: det.num_keypoints,
+                    rbox: target.rbox,
+                    quad: target.quad,
                 });
             }
             // BOTH / DUPE / BKG: drop the DT.
@@ -274,5 +278,7 @@ fn passthrough_input(det: &CocoDetection) -> DetectionInput {
         segmentation: det.segmentation.clone(),
         keypoints: det.keypoints.clone(),
         num_keypoints: det.num_keypoints,
+        rbox: det.rbox,
+        quad: det.quad,
     }
 }

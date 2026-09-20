@@ -21,12 +21,14 @@ use crate::error::EvalError;
 
 pub mod bbox;
 pub mod boundary;
+pub mod obb;
 pub mod oks;
 pub mod segm;
 
 pub use bbox::{BboxAnn, BboxIou};
 pub(crate) use boundary::{boundary_iou_compute, BoundaryComputeScratch};
 pub use boundary::{BoundaryGtCache, BoundaryIou};
+pub use obb::{ObbFlavor, QuadAnn, QuadIou, RotatedBoxAnn, RotatedBoxIou};
 pub use oks::{OksAnn, OksSimilarity, COCO_PERSON_SIGMAS};
 pub(crate) use segm::{segm_iou_compute, SegmComputeScratch};
 pub use segm::{SegmAnn, SegmGtCache, SegmIou};

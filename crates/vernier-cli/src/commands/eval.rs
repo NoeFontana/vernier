@@ -18,6 +18,7 @@ use std::process;
 
 use vernier_core::accumulate::{accumulate, sort_max_dets, AccumulateParams};
 use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
+use vernier_core::dataset::DetectionArea;
 use vernier_core::lrp::{self, LrpParams, LrpReport};
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::summarize::{summarize_detection, summarize_with, StatRequest};
@@ -80,7 +81,16 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
     let gt_bytes = read_input(&args.gt)?;
     let dt_bytes = read_input(&args.dt)?;
     let gt = CocoDataset::from_json_bytes(&gt_bytes)?;
-    let dt = CocoDetections::from_json_bytes(&dt_bytes)?;
+    // Quirk **OB13**: the oriented kernels derive each detection's
+    // area from its `rbox` / `quad`, the way `loadRes` does on a
+    // length-5 `bbox`. Deriving it from the axis-aligned envelope
+    // instead would bucket a rotated object into the wrong
+    // `AP_small` / `AP_medium` / `AP_large` row.
+    let dt_area = match args.iou_type {
+        IouTypeArg::RotatedBox | IouTypeArg::Quad => DetectionArea::Oriented,
+        _ => DetectionArea::FromBbox,
+    };
+    let dt = CocoDetections::from_json_bytes_with_area(&dt_bytes, dt_area)?;
 
     let sigmas = match (&args.sigmas, args.iou_type) {
         (Some(path), IouTypeArg::Keypoints) => Some(load_sigmas(path)?),
@@ -94,6 +104,8 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         }
         (None, _) => None,
     };
+
+    let conv = args.convention();
 
     let dilation_ratio = match (args.dilation_ratio, args.iou_type) {
         (Some(d), IouTypeArg::Boundary) => d,
@@ -116,6 +128,7 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         MetricArg::Ap => {
             let summary = run_pipeline(
                 args.iou_type,
+                conv,
                 &gt,
                 &dt,
                 parity_mode,
@@ -135,6 +148,7 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
             let top_max = max_dets.iter().copied().max().unwrap_or(100);
             let report = run_lrp_pipeline(
                 args.iou_type,
+                conv,
                 &gt,
                 &dt,
                 parity_mode,
@@ -173,6 +187,7 @@ pub(crate) fn run_or_exit(args: &EvalArgs) -> ! {
 #[allow(clippy::too_many_arguments)]
 fn run_pipeline(
     iou_type: IouTypeArg,
+    conv: vernier_geom::Convention,
     gt: &CocoDataset,
     dt: &CocoDetections,
     parity: ParityMode,
@@ -196,6 +211,7 @@ fn run_pipeline(
 
     let grid = run_grid_for_threads(
         iou_type,
+        conv,
         gt,
         dt,
         eval_params,
@@ -260,6 +276,7 @@ fn dispatch_emits(
 #[allow(clippy::too_many_arguments)]
 fn run_lrp_pipeline(
     iou_type: IouTypeArg,
+    conv: vernier_geom::Convention,
     gt: &CocoDataset,
     dt: &CocoDetections,
     parity: ParityMode,
@@ -290,6 +307,8 @@ fn run_lrp_pipeline(
         IouTypeArg::Keypoints => {
             lrp::optimal_lrp_keypoints(gt, dt, params, parity, sigmas.unwrap_or_default())
         }
+        IouTypeArg::RotatedBox => lrp::optimal_lrp_rotated_box(gt, dt, params, parity, conv),
+        IouTypeArg::Quad => lrp::optimal_lrp_quad(gt, dt, params, parity),
     }
     .map_err(CliError::from)?;
     Ok(report)
@@ -309,6 +328,7 @@ fn lookup_formatter(name: crate::format::FormatName) -> Option<&'static dyn Form
 #[allow(clippy::too_many_arguments)]
 fn run_grid_for_threads(
     iou_type: IouTypeArg,
+    conv: vernier_geom::Convention,
     gt: &CocoDataset,
     dt: &CocoDetections,
     eval_params: EvaluateParams<'_>,
@@ -331,6 +351,10 @@ fn run_grid_for_threads(
             IouTypeArg::Keypoints => {
                 evaluate_keypoints(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
             }
+            IouTypeArg::RotatedBox => {
+                vernier_core::evaluate_rotated_box(gt, dt, eval_params, parity, conv)
+            }
+            IouTypeArg::Quad => vernier_core::evaluate_quad(gt, dt, eval_params, parity),
         };
     }
     let pool = rayon::ThreadPoolBuilder::new()
@@ -349,6 +373,10 @@ fn run_grid_for_threads(
         IouTypeArg::Keypoints => {
             evaluate_keypoints_parallel(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
         }
+        IouTypeArg::RotatedBox => {
+            vernier_core::evaluate_rotated_box_parallel(gt, dt, eval_params, parity, conv)
+        }
+        IouTypeArg::Quad => vernier_core::evaluate_quad_parallel(gt, dt, eval_params, parity),
     })
 }
 

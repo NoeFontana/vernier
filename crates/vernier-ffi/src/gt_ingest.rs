@@ -421,6 +421,8 @@ fn extract_annotations<'py>(
                     )
                 })?),
             },
+            rbox: None,
+            quad: None,
         });
     }
     Ok(out)

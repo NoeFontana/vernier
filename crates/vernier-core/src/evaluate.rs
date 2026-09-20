@@ -97,8 +97,8 @@ use crate::parity::ParityMode;
 use crate::segmentation::Segmentation;
 use crate::similarity::{
     boundary_iou_compute, segm_iou_compute, BboxAnn, BboxIou, BoundaryComputeScratch,
-    BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, SegmAnn, SegmComputeScratch, SegmGtCache,
-    SegmIou, Similarity,
+    BoundaryGtCache, BoundaryIou, OksAnn, OksSimilarity, QuadAnn, QuadIou, RotatedBoxAnn,
+    RotatedBoxIou, SegmAnn, SegmComputeScratch, SegmGtCache, SegmIou, Similarity,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -356,19 +356,30 @@ pub enum KernelKind {
     Boundary,
     /// `OksSimilarity` — OKS-based keypoints similarity (ADR-0012).
     Keypoints,
+    /// `RotatedBoxIou` — center-based oriented box (ADR-0063).
+    RotatedBox,
+    /// `QuadIou` — four-vertex polygon (ADR-0063).
+    Quad,
 }
 
 impl KernelKind {
     /// `u32` discriminator carried in the wire envelope header
     /// (ADR-0032). Stable values: `Bbox=0, Segm=1, Boundary=2,
-    /// Keypoints=3` — the same values ADR-0031 wrote as a `u8`.
-    /// Adding new kernels appends; never reorder.
+    /// Keypoints=3` — the same values ADR-0031 wrote as a `u8` —
+    /// plus `RotatedBox=4, Quad=5` (ADR-0063). Adding new kernels
+    /// appends; never reorder.
+    ///
+    /// A reader built before ADR-0063 rejects 4 and 5 through `rkyv`'s
+    /// checked archive access rather than misreading them as a known
+    /// kernel, which is what makes appending safe.
     pub const fn discriminator(self) -> u32 {
         match self {
             Self::Bbox => 0,
             Self::Segm => 1,
             Self::Boundary => 2,
             Self::Keypoints => 3,
+            Self::RotatedBox => 4,
+            Self::Quad => 5,
         }
     }
 }
@@ -405,6 +416,33 @@ pub trait EvalKernel: Similarity {
     /// (ADR-0031) so heterogeneous partials are refused at merge time.
     /// Required (no default): every kernel must declare its kind.
     fn kind(&self) -> KernelKind;
+
+    /// The ladder this kernel's matrix must actually be compared
+    /// against, when that differs from the one the caller asked for.
+    ///
+    /// Returns `None` for every kernel but one: they produce an f64
+    /// matrix and compare it in f64, which is what `pycocotools` itself
+    /// does. [`crate::similarity::RotatedBoxIou`] under
+    /// [`ParityMode::Strict`] is the exception — its matrix is an
+    /// op-exact replica of detectron2's **f32** IoU, and
+    /// `RotatedCOCOeval` compares that matrix in f32 too, because
+    /// `computeIoU` returns a torch tensor and torch weak-types the
+    /// `np.float64` threshold. Projecting `t' = f64(f32(t))` makes the
+    /// f64 comparison select exactly the same pairs (ADR-0063 axis T1).
+    ///
+    /// The hook lives on the trait, and the projection is applied in
+    /// [`evaluate_with`] / `evaluate_with_parallel` and the LRP entry
+    /// points, because doing it per entry point is how three of the
+    /// paths that run the replica came to miss it. Implementations must
+    /// be **idempotent**: a funnel may project a ladder a caller
+    /// already projected.
+    ///
+    /// `match_image` never sees this hook. Labels and `params_hash`
+    /// keep the original `t` — the substitution implements the
+    /// comparison, it does not change what was asked for.
+    fn project_thresholds(&self, _thresholds: &[f64]) -> Option<Vec<f64>> {
+        None
+    }
 
     /// Build the kernel's GT annotation slice for one `(image, category)`
     /// cell. `indices` selects from `gt_anns` in the order the cell
@@ -951,6 +989,35 @@ impl EvalGrid {
 /// [`EvalKernel::build_gt_anns`] / [`EvalKernel::build_dt_anns`], and
 /// [`crate::matching`] calls.
 pub fn evaluate_with<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+) -> Result<EvalGrid, EvalError> {
+    // The one place the threshold ladder can be rewritten. See
+    // [`EvalKernel::project_thresholds`]: `None` for every kernel but
+    // the strict rotated-box replica, and free when it is `None`.
+    match kernel.project_thresholds(params.iou_thresholds) {
+        Some(projected) => evaluate_with_inner(
+            gt,
+            dt,
+            EvaluateParams {
+                iou_thresholds: &projected,
+                ..params
+            },
+            parity_mode,
+            kernel,
+        ),
+        None => evaluate_with_inner(gt, dt, params, parity_mode, kernel),
+    }
+}
+
+/// [`evaluate_with`] with the ladder already resolved. Split out so the
+/// projection happens exactly once: projecting inside the body would
+/// have to recurse, and the projection is idempotent, so it would not
+/// terminate.
+fn evaluate_with_inner<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
     params: EvaluateParams<'_>,
@@ -1955,6 +2022,217 @@ pub(crate) fn evaluate_cell(
     Ok((cell, Some(meta)))
 }
 
+// ---------------------------------------------------------------------------
+// Oriented boxes (ADR-0063)
+// ---------------------------------------------------------------------------
+
+/// Name the offending record when an oriented-geometry field is
+/// required and absent.
+///
+/// There is deliberately no parity-mode escape hatch of the **J2** kind.
+/// `pycocotools` synthesizes a rectangle polygon for a DT with no
+/// `segmentation` because `loadRes` does; no oriented-box oracle
+/// synthesizes anything, so there is nothing for `strict` to reproduce.
+fn missing_oriented_err(kind: &str, field: &str, ann_id: i64, image_id: i64) -> EvalError {
+    EvalError::InvalidAnnotation {
+        detail: format!(
+            "{kind} id={ann_id} on image {image_id} has no `{field}` field; \
+             oriented-box eval requires one on every entry. Note that a \
+             length-5 `bbox` is *not* accepted as a substitute — detectron2 \
+             overloads `bbox` that way, and a length-5 `bbox` misread as \
+             [x, y, w, h] is silent and catastrophic, so vernier requires the \
+             separate `{field}` key (ADR-0063)."
+        ),
+    }
+}
+
+/// Wrap a geometry-validation failure with the record it came from.
+fn oriented_geometry_err(
+    kind: &str,
+    ann_id: i64,
+    image_id: i64,
+    err: vernier_geom::GeomError,
+) -> EvalError {
+    EvalError::InvalidAnnotation {
+        detail: format!("{kind} id={ann_id} on image {image_id}: {err}"),
+    }
+}
+
+impl EvalKernel for RotatedBoxIou {
+    fn kind(&self) -> KernelKind {
+        KernelKind::RotatedBox
+    }
+
+    /// ADR-0063 axis T1. Idempotent, as the trait requires: `f32` is a
+    /// subset of `f64`, so re-narrowing an already-narrowed value is
+    /// the identity (`parity::obb_ladder_tests` asserts it).
+    fn project_thresholds(&self, thresholds: &[f64]) -> Option<Vec<f64>> {
+        self.flavor
+            .needs_f32_threshold_ladder()
+            .then(|| crate::parity::f32_projected_thresholds(thresholds))
+    }
+
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        _image: &ImageMeta,
+    ) -> Result<Vec<RotatedBoxAnn>, EvalError> {
+        indices
+            .iter()
+            .map(|&j| {
+                let ann = &gt_anns[j];
+                let raw = ann
+                    .rbox
+                    .as_ref()
+                    .ok_or_else(|| missing_oriented_err("GT", "rbox", ann.id.0, ann.image_id.0))?;
+                RotatedBoxAnn::new(raw, self.conv, ann.is_crowd)
+                    .map_err(|e| oriented_geometry_err("GT", ann.id.0, ann.image_id.0, e))
+            })
+            .collect()
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        _image: &ImageMeta,
+        _parity_mode: ParityMode,
+    ) -> Result<Vec<RotatedBoxAnn>, EvalError> {
+        // E2 / J4: a detection never carries a crowd flag.
+        indices
+            .iter()
+            .map(|&j| {
+                let dt = &dt_anns[j];
+                let raw = dt
+                    .rbox
+                    .as_ref()
+                    .ok_or_else(|| missing_oriented_err("DT", "rbox", dt.id.0, dt.image_id.0))?;
+                RotatedBoxAnn::new(raw, self.conv, false)
+                    .map_err(|e| oriented_geometry_err("DT", dt.id.0, dt.image_id.0, e))
+            })
+            .collect()
+    }
+}
+
+impl EvalKernel for QuadIou {
+    fn kind(&self) -> KernelKind {
+        KernelKind::Quad
+    }
+
+    fn build_gt_anns(
+        &self,
+        gt_anns: &[CocoAnnotation],
+        indices: &[usize],
+        _image: &ImageMeta,
+    ) -> Result<Vec<QuadAnn>, EvalError> {
+        indices
+            .iter()
+            .map(|&j| {
+                let ann = &gt_anns[j];
+                let raw = ann
+                    .quad
+                    .as_ref()
+                    .ok_or_else(|| missing_oriented_err("GT", "quad", ann.id.0, ann.image_id.0))?;
+                QuadAnn::new(raw, self.flavor, ann.is_crowd)
+                    .map_err(|e| oriented_geometry_err("GT", ann.id.0, ann.image_id.0, e))
+            })
+            .collect()
+    }
+
+    fn build_dt_anns(
+        &self,
+        dt_anns: &[CocoDetection],
+        indices: &[usize],
+        _image: &ImageMeta,
+        _parity_mode: ParityMode,
+    ) -> Result<Vec<QuadAnn>, EvalError> {
+        indices
+            .iter()
+            .map(|&j| {
+                let dt = &dt_anns[j];
+                let raw = dt
+                    .quad
+                    .as_ref()
+                    .ok_or_else(|| missing_oriented_err("DT", "quad", dt.id.0, dt.image_id.0))?;
+                QuadAnn::new(raw, self.flavor, false)
+                    .map_err(|e| oriented_geometry_err("DT", dt.id.0, dt.image_id.0, e))
+            })
+            .collect()
+    }
+}
+
+/// Run the per-image oriented-box evaluation pass (ADR-0063).
+///
+/// `conv` is required and has no default: an oriented box means nothing
+/// without an angle unit and a rotation direction, and a wrong guess at
+/// either produces plausible numbers rather than an error. Every GT and
+/// DT must carry an `rbox` field; a length-5 `bbox` is rejected.
+///
+/// # The threshold ladder under `strict`
+///
+/// Under [`ParityMode::Strict`] the kernel is an op-exact replica of
+/// detectron2's f32 rotated IoU, and `RotatedCOCOeval` compares that f32
+/// matrix against the ladder **in f32** — because `computeIoU` returns a
+/// torch tensor and torch treats the `np.float64` threshold as a weak
+/// scalar. The projected ladder `t' = f64(f32(t))` makes the f64
+/// comparison select exactly the same pairs (ADR-0063 axis T1).
+///
+/// The substitution is *not* made here. It is made in
+/// [`evaluate_with`], off [`EvalKernel::project_thresholds`], so that
+/// every path reaching the replica gets it — the parallel pass, the LRP
+/// decompose pass and the partitioned entry points included.
+/// `match_image` is untouched, and the labels and `params_hash` the
+/// caller sees keep the original `t` — the substitution implements the
+/// comparison, it does not change what was asked for.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the kernel and matching calls, and
+/// raises [`EvalError::InvalidAnnotation`] for a record with no `rbox`,
+/// with non-finite geometry, or — under `strict` — with `iscrowd=1`,
+/// which no oriented-box oracle defines.
+pub fn evaluate_rotated_box(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    conv: vernier_geom::Convention,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with(
+        gt,
+        dt,
+        params,
+        parity_mode,
+        &RotatedBoxIou::new(conv, parity_mode),
+    )
+}
+
+/// Run the per-image quad evaluation pass (ADR-0063).
+///
+/// Every GT and DT must carry a `quad` field of eight coordinates.
+/// Vertex order is preserved verbatim: under [`ParityMode::Strict`] the
+/// DOTA_devkit replica consumes it as submitted, including its winding,
+/// and only [`ParityMode::Corrected`] reorients. The DK oracle is f64
+/// throughout, so there is no threshold-ladder projection here — the
+/// matrix and the comparison are both f64, as `pycocotools` itself does
+/// it.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the kernel and matching calls, and
+/// raises [`EvalError::InvalidAnnotation`] for a record with no `quad`,
+/// with non-finite or zero-area geometry, with a self-intersecting quad
+/// under `corrected`, or with `iscrowd=1` under `strict`.
+pub fn evaluate_quad(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with(gt, dt, params, parity_mode, &QuadIou::new(parity_mode))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1997,6 +2275,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -2016,6 +2296,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -2557,6 +2839,8 @@ mod tests {
             segmentation: Some(segm),
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -2582,6 +2866,8 @@ mod tests {
             segmentation: Some(segm),
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -3372,6 +3658,8 @@ mod tests {
             segmentation: None,
             keypoints: Some(keypoints),
             num_keypoints,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -3397,6 +3685,8 @@ mod tests {
             segmentation: None,
             keypoints: Some(keypoints),
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 

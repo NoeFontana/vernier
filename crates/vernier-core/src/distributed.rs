@@ -356,6 +356,8 @@ fn unpack_coco_detection(
         segmentation,
         keypoints,
         num_keypoints,
+        rbox: None,
+        quad: None,
     })
 }
 

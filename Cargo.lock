@@ -1672,6 +1672,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "vernier-core",
+ "vernier-geom",
 ]
 
 [[package]]
@@ -1693,6 +1694,7 @@ dependencies = [
  "serde_json",
  "thiserror",
  "thread_local",
+ "vernier-geom",
  "vernier-mask",
  "vernier-partial",
 ]

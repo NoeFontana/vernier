@@ -66,6 +66,10 @@ pub enum LrpKernelMarker {
     Boundary,
     /// OKS (Object Keypoint Similarity, ADR-0012).
     Keypoints,
+    /// Oriented box (ADR-0063).
+    RotatedBox,
+    /// Four-vertex polygon (ADR-0063).
+    Quad,
 }
 
 impl LrpKernelMarker {
@@ -78,6 +82,8 @@ impl LrpKernelMarker {
             Self::Segm => "segm",
             Self::Boundary => "boundary",
             Self::Keypoints => "keypoints",
+            Self::RotatedBox => "rotated_box",
+            Self::Quad => "quad",
         }
     }
 }
@@ -169,6 +175,37 @@ pub struct LrpReport {
     pub config: LrpConfig,
 }
 
+/// Apply the kernel's threshold projection to `tp_threshold`.
+///
+/// ADR-0063 axis T1. LRP compares the *retained* IoU matrices against
+/// `tp_threshold` directly (the tau search is over confidence, not over
+/// IoU), so projecting only `iou_thresholds` — which
+/// `crate::evaluate::evaluate_with` does for the upstream matching pass
+/// — would leave the decompose walk comparing an f32-valued matrix
+/// against an unprojected f64 threshold. `vernier eval --metric olrp
+/// --iou-type rotated-box --parity-mode strict` with any threshold
+/// whose f32 image rounds down would then call the exact-boundary pairs
+/// FP where detectron2 calls them TP.
+///
+/// The normalizer `1 / (1 - tp_threshold)` moves with the comparison
+/// rather than staying on the declared value: using one threshold to
+/// select TPs and a larger one to normalize their IoU deficit would let
+/// `oLRP_Loc` exceed 1. Only the *label* on the report keeps the
+/// declared threshold — the same rule the AP path follows for its
+/// ladder.
+fn project_tp_threshold<'a, K: crate::evaluate::EvalKernel>(
+    kernel: &K,
+    params: LrpParams<'a>,
+) -> LrpParams<'a> {
+    match kernel.project_thresholds(&[params.tp_threshold]) {
+        Some(projected) if projected.len() == 1 => LrpParams {
+            tp_threshold: projected[0],
+            ..params
+        },
+        _ => params,
+    }
+}
+
 /// End-to-end LRP over an arbitrary [`crate::evaluate::EvalKernel`].
 ///
 /// Per ADR-0043, this is the kernel-generic entry point: bbox / segm
@@ -206,13 +243,15 @@ pub fn optimal_lrp_with<K: crate::evaluate::EvalKernel>(
     parity_mode: ParityMode,
 ) -> Result<LrpReport, EvalError> {
     validate_params(&params)?;
+    let declared_tp = params.tp_threshold;
+    let params = project_tp_threshold(kernel, params);
     let ctx = decompose::prepare_lrp_pass(gt, dt, kernel, &params, parity_mode)?;
     let decompositions = decompose::decompose_all_classes(&ctx, parity_mode, &params, None)?;
     Ok(build_report(
         gt,
         &decompositions,
         params.use_cats,
-        params.tp_threshold,
+        declared_tp,
         params.tau_grid.len(),
         kernel_marker,
     ))
@@ -246,6 +285,8 @@ pub fn optimal_lrp_with_partitioned<K: crate::evaluate::EvalKernel>(
     image_filters: &[HashSet<usize>],
 ) -> Result<Vec<LrpReport>, EvalError> {
     validate_params(&params)?;
+    let declared_tp = params.tp_threshold;
+    let params = project_tp_threshold(kernel, params);
     let ctx = decompose::prepare_lrp_pass(gt, dt, kernel, &params, parity_mode)?;
     let mut reports: Vec<LrpReport> = Vec::with_capacity(image_filters.len() + 1);
 
@@ -254,7 +295,7 @@ pub fn optimal_lrp_with_partitioned<K: crate::evaluate::EvalKernel>(
         gt,
         &overall,
         params.use_cats,
-        params.tp_threshold,
+        declared_tp,
         params.tau_grid.len(),
         kernel_marker,
     ));
@@ -265,7 +306,7 @@ pub fn optimal_lrp_with_partitioned<K: crate::evaluate::EvalKernel>(
             gt,
             &sliced,
             params.use_cats,
-            params.tp_threshold,
+            declared_tp,
             params.tau_grid.len(),
             kernel_marker,
         ));
@@ -599,6 +640,56 @@ fn aggregate(per_class: &[LrpPerClass]) -> (f64, f64, f64, f64, u32) {
     )
 }
 
+/// End-to-end LRP for the oriented-box kernel (ADR-0063).
+///
+/// The TP threshold is `0.5`, inherited from the other kernels by
+/// extrapolation rather than measurement: LRP has no published
+/// oriented-box operating point, and `0.5` is what both the COCO and
+/// DOTA protocols already use. ADR-0044's tentative-default discipline
+/// applies — the number is revisited when there is evidence.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation pass.
+pub fn optimal_lrp_rotated_box(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+    conv: vernier_geom::Convention,
+) -> Result<LrpReport, EvalError> {
+    optimal_lrp_with(
+        gt,
+        dt,
+        &crate::similarity::RotatedBoxIou::new(conv, parity_mode),
+        LrpKernelMarker::RotatedBox,
+        params,
+        parity_mode,
+    )
+}
+
+/// End-to-end LRP for the quad kernel (ADR-0063). See
+/// [`optimal_lrp_rotated_box`] for the threshold rationale.
+///
+/// # Errors
+///
+/// Propagates [`EvalError`] from the underlying evaluation pass.
+pub fn optimal_lrp_quad(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: LrpParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<LrpReport, EvalError> {
+    optimal_lrp_with(
+        gt,
+        dt,
+        &crate::similarity::QuadIou::new(parity_mode),
+        LrpKernelMarker::Quad,
+        params,
+        parity_mode,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -635,6 +726,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -649,6 +742,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 

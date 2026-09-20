@@ -203,6 +203,29 @@ pub struct CocoAnnotation {
     /// and is derived from `keypoints` when needed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_keypoints: Option<u32>,
+    /// Oriented bounding box, `[cx, cy, w, h, theta]` (ADR-0063).
+    ///
+    /// Required under `iouType="rotated_box"`, ignored otherwise.
+    /// `theta` is read under the convention the evaluator was built
+    /// with — there is no default unit and no default rotation
+    /// direction, because a wrong guess at either produces plausible
+    /// numbers rather than an error.
+    ///
+    /// Deliberately a separate key from `bbox` rather than a length-5
+    /// `bbox`: detectron2 overloads `bbox` that way, and a length-5
+    /// `bbox` silently read as `[x, y, w, h]` is the worst failure this
+    /// surface could have. The JSON path rejects it outright — see
+    /// `dataset::tests::len_five_bbox_is_rejected`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rbox: Option<[f64; 5]>,
+    /// Four-vertex polygon, `[x0, y0, x1, y1, x2, y2, x3, y3]`
+    /// (ADR-0063).
+    ///
+    /// Required under `iouType="quad"`, ignored otherwise. Vertex order
+    /// is preserved verbatim: the DK strict oracle consumes it as
+    /// submitted, and only the canonical kernel reorients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quad: Option<[f64; 8]>,
 }
 
 impl CocoAnnotation {
@@ -1124,6 +1147,8 @@ fn hash_coco_annotation(h: &mut blake3::Hasher, a: &CocoAnnotation) {
         segmentation,
         keypoints,
         num_keypoints,
+        rbox,
+        quad,
     } = a;
     hash_i64(h, id.0);
     hash_i64(h, image_id.0);
@@ -1140,6 +1165,21 @@ fn hash_coco_annotation(h: &mut blake3::Hasher, a: &CocoAnnotation) {
         }
     });
     hash_option(h, *num_keypoints, hash_u32);
+    // ADR-0063: oriented geometry participates in the dataset
+    // fingerprint. Two datasets that differ only in their `rbox` field
+    // are different datasets, and `from_partials` must refuse to merge
+    // partials computed over them.
+    hash_option(h, rbox.as_ref().map(|v| &v[..]), hash_f64_slice);
+    hash_option(h, quad.as_ref().map(|v| &v[..]), hash_f64_slice);
+}
+
+/// Hash a fixed-width run of f64s, length-prefixed so `[1.0]` and
+/// `[1.0, 0.0]` cannot collide.
+fn hash_f64_slice(h: &mut blake3::Hasher, v: &[f64]) {
+    hash_u64(h, v.len() as u64);
+    for &x in v {
+        hash_f64(h, x);
+    }
 }
 
 fn hash_federated(h: &mut blake3::Hasher, fed: &FederatedMetadata) {
@@ -1288,6 +1328,12 @@ pub struct CocoDetection {
     /// pipeline derives it from `keypoints` when needed. Tracked here
     /// for shape-parity with [`CocoAnnotation::num_keypoints`].
     pub num_keypoints: Option<u32>,
+    /// Oriented bounding box, `[cx, cy, w, h, theta]` (ADR-0063).
+    /// Dispositions match [`CocoAnnotation::rbox`].
+    pub rbox: Option<[f64; 5]>,
+    /// Four-vertex polygon (ADR-0063). Dispositions match
+    /// [`CocoAnnotation::quad`].
+    pub quad: Option<[f64; 8]>,
 }
 
 impl Annotation for CocoDetection {
@@ -1340,6 +1386,14 @@ pub struct DetectionInput {
     /// `keypoints` when absent (DT side does not require it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub num_keypoints: Option<u32>,
+    /// Oriented bounding box, `[cx, cy, w, h, theta]` (ADR-0063).
+    /// Dispositions match [`CocoAnnotation::rbox`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rbox: Option<[f64; 5]>,
+    /// Four-vertex polygon (ADR-0063). Dispositions match
+    /// [`CocoAnnotation::quad`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quad: Option<[f64; 8]>,
 }
 
 /// Where [`CocoDetection::area`] comes from (quirk **J3**).
@@ -1357,6 +1411,24 @@ pub enum DetectionArea {
     /// pycocotools' `maskUtils.area`, which `loadRes` derives for segm
     /// results. A detection without an RLE segmentation is an error.
     Mask,
+    /// The area of the detection's *oriented* geometry: `w * h` of an
+    /// `rbox`, or the enclosed area of a `quad` (quirk **OB13**).
+    ///
+    /// This is what the oriented oracles do, not a vernier refinement.
+    /// detectron2 puts `[cx, cy, w, h, theta]` in the `bbox` slot, so
+    /// `loadRes`'s `area = bb[2] * bb[3]` (quirk **J3**) is the
+    /// *oriented* `w * h` — the axis-aligned envelope never enters it.
+    /// Deriving from the envelope instead would move a rotated object
+    /// across the COCO area-bucket boundaries: a 60x20 box at 45 deg
+    /// has oriented area 1200 and envelope area 3200, which straddles
+    /// `32^2 = 1024`, so `AP_small` / `AP_medium` / `AP_large` would
+    /// disagree with the kernel that produced the IoUs.
+    ///
+    /// Falls back to `bbox.w * bbox.h` when the record carries no
+    /// oriented geometry — not a silent default but a deferral: the
+    /// oriented kernels reject such a record a moment later, with a
+    /// message that says which field is missing.
+    Oriented,
 }
 
 /// [`DetectionArea::Mask`]: the RLE foreground area of a detection.
@@ -1381,6 +1453,32 @@ fn mask_area(input: &DetectionInput, id: AnnId) -> Result<f64, EvalError> {
                 }
             ),
         })
+}
+
+/// [`DetectionArea::Oriented`]: the area of a detection's oriented
+/// geometry, falling back to the envelope when it carries none.
+///
+/// The `rbox` arm is deliberately the raw product `w * h` rather than
+/// [`vernier_geom::RotatedBox::area`]'s clamped one: `loadRes` computes
+/// `bb[2] * bb[3]` with no guard, and this is a `strict` row (quirks
+/// **OB13** / **J3**). The `quad` arm goes through
+/// [`vernier_geom::PreparedQuad`] so the number the area bucket sees is
+/// bit-identical to the one the IoU denominator sees — a separate
+/// shoelace here could differ in the last place, and the two
+/// disagreeing is exactly the class of bug this variant exists to
+/// remove. Self-intersection is tolerated at this stage because
+/// rejecting it is the kernel's decision and depends on the parity mode
+/// (quirk **OB16**).
+fn oriented_area(input: &DetectionInput) -> f64 {
+    if let Some(rbox) = input.rbox.as_ref() {
+        return rbox[2] * rbox[3];
+    }
+    if let Some(quad) = input.quad.as_ref() {
+        if let Ok(prepared) = vernier_geom::PreparedQuad::new(quad, true) {
+            return prepared.area;
+        }
+    }
+    input.bbox.w * input.bbox.h
 }
 
 /// COCO detections collection — flat storage plus `(image, category)`-
@@ -1531,11 +1629,14 @@ impl CocoDetections {
                 area: match (area, input.area) {
                     (DetectionArea::Supplied, Some(supplied)) => supplied,
                     (DetectionArea::Mask, _) => mask_area(&input, id)?,
+                    (DetectionArea::Oriented, _) => oriented_area(&input),
                     _ => input.bbox.w * input.bbox.h,
                 },
                 segmentation: input.segmentation,
                 keypoints: input.keypoints,
                 num_keypoints: input.num_keypoints,
+                rbox: input.rbox,
+                quad: input.quad,
             });
         }
 
@@ -1937,6 +2038,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -2553,6 +2656,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -2606,6 +2711,8 @@ mod tests {
                     segmentation: None,
                     keypoints: None,
                     num_keypoints: None,
+                    rbox: None,
+                    quad: None,
                 });
             }
 

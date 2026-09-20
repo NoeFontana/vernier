@@ -173,6 +173,8 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             segmentation,
             keypoints,
             num_keypoints,
+            rbox: None,
+            quad: None,
         });
     }
     Ok(inputs)
@@ -476,6 +478,8 @@ pub(crate) fn matrix_to_inputs<'py>(
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         });
     }
     Ok(inputs)

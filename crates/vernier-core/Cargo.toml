@@ -44,6 +44,10 @@ pulp.workspace = true
 # Pure-Rust mask kernels per ADR-0009. One-way dependency: core consumes
 # the codec/rasterizer/ops surface; mask never depends on core.
 vernier-mask = { path = "../vernier-mask", version = "0.5.1" }
+# Oriented-box and polygon geometry per ADR-0063. Same one-way shape as
+# vernier-mask: core consumes the conventions, the canonical kernel and
+# the two op-exact oracle replicas; geom never depends on core.
+vernier-geom = { path = "../vernier-geom", version = "0.5.1" }
 # Shared partial wire envelope and merge policy (ADR-0032). Carries
 # magic + version + framing + the five typed errors used by all three
 # paradigms. Each crate that consumes partials depends on this leaf;
