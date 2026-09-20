@@ -1,0 +1,25 @@
+[package]
+name = "vernier-geom"
+description = "Oriented-box and polygon geometry kernels for the vernier evaluation library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords = ["evaluation", "oriented-bounding-box", "iou", "polygon", "dota"]
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+thiserror.workspace = true
+pulp.workspace = true
+
+[dev-dependencies]
+proptest = { workspace = true }
