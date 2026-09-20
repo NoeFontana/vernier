@@ -200,15 +200,14 @@ impl PreparedQuad {
         }
 
         let mut pieces = [Poly::new(); MAX_PIECES];
-        let n_pieces;
-        match reflex {
+        let n_pieces = match reflex {
             None => {
                 let mut p = Poly::new();
                 for &(x, y) in &local {
                     p.push(x, y);
                 }
                 pieces[0] = p;
-                n_pieces = 1;
+                1
             }
             Some(r) => {
                 let mut t0 = Poly::new();
@@ -223,9 +222,9 @@ impl PreparedQuad {
                 }
                 pieces[0] = t0;
                 pieces[1] = t1;
-                n_pieces = 2;
+                2
             }
-        }
+        };
 
         let mut area = 0.0;
         for piece in pieces.iter().take(n_pieces) {
