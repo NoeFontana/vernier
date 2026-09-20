@@ -1,10 +1,11 @@
 # vernier
 
 A parity-preserving COCO-style evaluator for instance segmentation, panoptic
-segmentation, boundary IoU, OKS keypoints, semantic segmentation, LVIS
-federated evaluation, LRP / oLRP error decomposition, and detection-family
-calibration (ECE / MCE / reliability). Bit-exact against
-`pycocotools==2.0.11`, `panopticapi`, and `lvis-api` in strict parity mode;
+segmentation, boundary IoU, OKS keypoints, oriented boxes and quads, semantic
+segmentation, LVIS federated evaluation, LRP / oLRP error decomposition, and
+detection-family calibration (ECE / MCE / reliability). Bit-exact against
+`pycocotools==2.0.11`, `panopticapi`, `lvis-api`, detectron2's
+`RotatedCOCOeval` and DOTA_devkit's `polyiou` in strict parity mode;
 semantic mIoU is calibrated against a vendored `mmsegmentation` `IoUMetric`.
 See the per-paradigm matrix in the
 [README §Status & validation](https://github.com/NoeFontana/vernier/#status--validation)
@@ -26,7 +27,8 @@ empirically. vernier takes a third path:
   is structurally different) or `corrected` (opt-in opinionated fix). The
   default is strict; corrected fixes are itemized so you know exactly when
   your numbers diverge from a reference run.
-- **A unified evaluation toolkit.** bbox / segm / keypoints AP, boundary IoU,
+- **A unified evaluation toolkit.** bbox / segm / keypoints AP, oriented-box
+  and quad AP, boundary IoU,
   panoptic PQ, semantic mIoU, and LVIS federated evaluation all live in one
   package, behind one Python API and one CLI. No more wrestling with
   fragmented `pycocotools`, `boundary-iou-api`, `panopticapi`, `lvis-api`,

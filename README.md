@@ -5,9 +5,10 @@
 [![Crates.io](https://img.shields.io/crates/v/vernier.svg)](https://crates.io/crates/vernier)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
-**Fast, auditable evaluation for 2D vision models.** Detection, instance and
-panoptic segmentation, semantic segmentation, keypoints, and LVIS, all in one
-package with a Rust core, a Python API, and a standalone CLI.
+**Fast, auditable evaluation for 2D vision models.** Detection, oriented
+detection, instance and panoptic segmentation, semantic segmentation,
+keypoints, and LVIS, all in one package with a Rust core, a Python API, and a
+standalone CLI.
 
 - **Bit-exact** with `pycocotools==2.0.11`, `panopticapi`, `lvis-api` and
   `boundary-iou-api` in strict mode. Every upstream quirk has a documented
@@ -128,7 +129,7 @@ one class with a mode switch ([why](docs/explanation/three-paradigms.md)).
 
 | Submodule | Input | Metrics |
 | --- | --- | --- |
-| `vernier.instance` | Scored detections: boxes, masks, keypoints | AP / AR (bbox, segm, boundary, OKS), LVIS federated AP |
+| `vernier.instance` | Scored detections: boxes, oriented boxes, quads, masks, keypoints | AP / AR (bbox, rotated-box, quad, segm, boundary, OKS), LVIS federated AP |
 | `vernier.panoptic` | Panoptic PNGs + `segments_info` | PQ / SQ / RQ, boundary PQ |
 | `vernier.semantic` | Class-id label maps | mIoU, FWIoU, pixel accuracy, mean accuracy |
 
@@ -171,6 +172,8 @@ and the [migration guide](docs/migrate/from-pycocotools.md#bit-for-bit-and-again
 | --- | --- | --- | --- |
 | bbox / segm / keypoints AP | `pycocotools==2.0.11` | bit-exact | |
 | Boundary AP | `boundary-iou-api` | bit-exact | |
+| Rotated-box AP | detectron2 `RotatedCOCOeval` | bit-exact | [ADR-0063](docs/adr/0063-oriented-box-evaluation.md) proposed; f32 kernel and threshold dtype reproduced |
+| Quad AP | DOTA_devkit `polyiou` + task-1 gate | bit-exact | kernel layer only — DOTA's VOC protocol is a separate axis |
 | LVIS federated AP | `lvis-api` 0.5.3 | bit-exact | full v1 val, bbox |
 | Panoptic PQ, boundary PQ | `panopticapi` (single-core path) | bit-exact | Cityscapes panoptic deferred |
 | Semantic mIoU / FWIoU / pAcc / mAcc | `mmseg.IoUMetric` v1.2.2 (vendored) | bit-exact on class marginals | [ADR-0036](docs/adr/0036-vendor-mmsegmentation-ioumetric.md) proposed; ADE20K-scale check pending |

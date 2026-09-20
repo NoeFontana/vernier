@@ -12,3 +12,8 @@ sentinel/quirk traps most likely to affect real workloads.
 - [From `panopticapi`](from-panopticapi.md) — panoptic-quality (PQ).
 - [From `lvis-api`](from-lvis-api.md) — long-tail / federated detection.
 - [From `mmsegmentation`](from-mmsegmentation.md) — semantic segmentation.
+- [From detectron2's `RotatedCOCOeval`](detectron2-rotated.md) — oriented
+  boxes; covers the length-5 `bbox` trap and the f32 threshold
+  comparison.
+- [From `DOTA_devkit`](dota-devkit.md) — oriented quads; kernel parity
+  today, the VOC protocol still to come.

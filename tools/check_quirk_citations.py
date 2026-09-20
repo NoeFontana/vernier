@@ -29,7 +29,10 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-DEFAULT_SURVEYS = ("docs/engineering/pycocotools-quirks.md",)
+DEFAULT_SURVEYS = (
+    "docs/engineering/pycocotools-quirks.md",
+    "docs/engineering/obb-quirks.md",
+)
 
 #: Header of the column whose backticked spans are checked.
 CITATION_COLUMN = "wired-by"

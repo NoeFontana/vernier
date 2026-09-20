@@ -82,6 +82,8 @@ nav:
       - From lvis-api: migrate/from-lvis-api.md
       - From mmsegmentation: migrate/from-mmsegmentation.md
       - From panopticapi: migrate/from-panopticapi.md
+      - From detectron2 (rotated boxes): migrate/detectron2-rotated.md
+      - From DOTA_devkit: migrate/dota-devkit.md
   - How-to:
       - how-to/README.md
       - Configure the evaluator: how-to/configure-evaluator.md
@@ -99,6 +101,7 @@ nav:
       - Python API:
           - vernier: reference/python/vernier.md
           - vernier.instance: reference/python/instance.md
+          - vernier.instance.obb: reference/python/instance-obb.md
           - vernier.panoptic: reference/python/panoptic.md
           - vernier.semantic: reference/python/semantic.md
           - vernier.adapters: reference/python/adapters.md
@@ -113,3 +116,4 @@ nav:
       - TIDE and its limits: explanation/tide-and-its-limits.md
       - LRP and its limits: explanation/lrp-and-its-limits.md
       - Why no per-image AP: explanation/why-no-per-image-ap.md
+      - Oriented-box conventions: explanation/obb-conventions.md
