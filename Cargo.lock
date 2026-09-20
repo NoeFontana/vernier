@@ -1652,6 +1652,7 @@ name = "vernier"
 version = "0.5.1"
 dependencies = [
  "vernier-core",
+ "vernier-geom",
  "vernier-mask",
  "vernier-panoptic",
  "vernier-partial",

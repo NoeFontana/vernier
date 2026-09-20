@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 83a20c9ac39041f247b35f4f437f2372a9f6660ce233bfbd9bdc06328a1001d5 # shrinks to (gx, gy, gw, gh, gt) = (0.0, 0.0, 0.25, 0.25, 290.6794381287295), (dx, dy, dw, dh) = (0.0, 0.0, 0.25, 0.25), quadrant = 3
+cc 3e18918617298f17dee958a7b6564347bf1617bc0fab1090fb16af38ed818284 # shrinks to (gx, gy, gw, gh, gt) = (-248.744593123945, -261.16213184171437, 108.00755035801166, 0.25, 262.4361610746037), (dx, dy, dw, dh, dt) = (-255.74232468515177, -189.26471658725578, 111.64322407925884, 73.76668144746755, 132.3175890427947)
+cc fc33c85c4751972fa3ba1ec4fb6a4e06e2ba44144c85b336ebdb42f1f282df72 # shrinks to (gx, gy, gw, gh, gt) = (282.1060448354765, 321.14092706003066, 85.90794958399123, 94.94750017931761, -290.37423097170625), (dx, dy, dw, dh, dt) = (248.59745209075095, 356.7983339430899, 0.25, 52.44708136426072, 235.53753697356134)

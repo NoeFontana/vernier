@@ -30,11 +30,12 @@ rustdoc-args = ["--cfg", "docsrs"]
 # enforces the placement; `cargo hack --feature-powerset check -p
 # vernier` in CI enforces that all eight combinations compile.
 #
-# `instance` and `mask` are deliberately NOT features: vernier-core
-# already depends on vernier-mask (ADR-0009), so gating `mask` would
-# save no compilation, and making `instance` optional would let
-# `default-features = false` yield a crate with no public items — the
-# empty crate ADR-0048 exists to eliminate, rebuilt as a build config.
+# `instance`, `mask` and `geom` are deliberately NOT features:
+# vernier-core already depends on both leaves (ADR-0009, ADR-0063), so
+# gating them would save no compilation, and making `instance` optional
+# would let `default-features = false` yield a crate with no public
+# items — the empty crate ADR-0048 exists to eliminate, rebuilt as a
+# build config.
 # ---------------------------------------------------------------------------
 [features]
 default = ["panoptic", "semantic", "partial"]
@@ -53,6 +54,7 @@ partial = ["dep:vernier-partial"]
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.5.1" }
 vernier-mask = { path = "../vernier-mask", version = "0.5.1" }
+vernier-geom = { path = "../vernier-geom", version = "0.5.1" }
 vernier-panoptic = { path = "../vernier-panoptic", version = "0.5.1", optional = true }
 vernier-semantic = { path = "../vernier-semantic", version = "0.5.1", optional = true }
 vernier-partial = { path = "../vernier-partial", version = "0.5.1", optional = true }

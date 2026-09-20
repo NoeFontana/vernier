@@ -3,17 +3,16 @@
 //! Per ADR-0063 this is a pure-Rust leaf crate: no Python dependency, no
 //! dependency on `vernier-core`, and nothing here knows what a detection
 //! or a category is. It answers one question — *how much do these two
-//! shapes overlap* — and ADR-0063 has it answer that question in more
-//! than one voice.
+//! shapes overlap* — in three different voices:
 //!
-//! This is the first of them: [`kernel`], the **canonical** f64 kernel
-//! that backs `parity_mode="corrected"`. The two op-exact oracle
-//! replicas that back `parity_mode="strict"` — detectron2's f32
-//! rotated-box IoU and DOTA_devkit's f64 polygon IoU — land in the
-//! follow-up as `replica::d2` and `replica::dk`.
+//! | Module | Voice |
+//! |---|---|
+//! | [`kernel`] | the **canonical** f64 kernel, used by `parity_mode="corrected"` |
+//! | [`replica::d2`] | detectron2's f32 rotated-box IoU, op for op |
+//! | [`replica::dk`] | DOTA_devkit's f64 polygon IoU, op for op, plus its prefilter |
 //!
-//! The split exists because the two oracles disagree with each other
-//! and with exact geometry, and both disagreements are load-bearing.
+//! The split exists because the two oracles disagree with each other and
+//! with exact geometry, and both disagreements are load-bearing.
 //! `strict` reproduces an oracle bit for bit; `corrected` computes the
 //! answer. ADR-0008 rejected exactly this kind of parity-mode branch for
 //! the bbox kernel, where the alternative only bought throughput — here
@@ -58,8 +57,8 @@
 //! - The canonical kernel is f64 end-to-end and clips in the ground
 //!   truth's own frame, so its error is bounded by the pair's aspect
 //!   ratio rather than by the image coordinate magnitude.
-//! - No FMA anywhere. Rust does not contract implicitly, and nothing
-//!   here asks for a fused multiply-add.
+//! - No FMA anywhere. Rust does not contract implicitly, and the
+//!   replicas are additionally source-scanned for `mul_add`.
 //! - Results are bit-identical across dispatch targets and thread
 //!   counts (ADR-0047, "one wheel, one behavior"): the only SIMD in the
 //!   crate is the broad phase, which vectorizes *across* pairs and never
@@ -79,8 +78,10 @@ pub mod clip;
 pub mod convention;
 pub mod error;
 pub mod kernel;
+pub mod pinned;
 pub mod prepared;
 pub mod quad;
+pub mod replica;
 
 pub use angle::{angle_error_deg, NEAR_SQUARE_TAU};
 pub use calipers::min_area_rect;
@@ -100,5 +101,49 @@ mod tests {
     #[test]
     fn version_is_set() {
         assert!(!VERSION.is_empty());
+    }
+
+    /// The two strict flavors and the canonical kernel agree on the
+    /// *shape* of the answer even though they disagree on its bits.
+    ///
+    /// This is the sanity check that the three voices are talking about
+    /// the same geometry at all. Tight agreement is asserted elsewhere,
+    /// against `shapely`, in the Python parity suite.
+    #[test]
+    fn three_kernels_agree_to_f32_resolution() {
+        let conv = Convention::D2;
+        let cases = [
+            ([0.0, 0.0, 4.0, 2.0, 0.0], [1.0, 0.0, 4.0, 2.0, 0.0]),
+            ([10.0, 10.0, 8.0, 3.0, 30.0], [11.0, 9.0, 6.0, 4.0, -20.0]),
+            ([0.0, 0.0, 5.0, 5.0, 45.0], [0.0, 0.0, 5.0, 5.0, 0.0]),
+            (
+                [100.0, 40.0, 30.0, 6.0, 12.5],
+                [102.0, 41.0, 28.0, 7.0, 15.0],
+            ),
+        ];
+        for (g, d) in cases {
+            let gb = RotatedBox::from_slice(&g).unwrap();
+            let db = RotatedBox::from_slice(&d).unwrap();
+            let canonical = rbox_iou(
+                &PreparedRBox::new(gb, conv),
+                &PreparedRBox::new(db, conv),
+                conv,
+                Denominator::Union,
+            );
+            // D2 takes (detection, ground truth).
+            let d2 = replica::d2::iou(&d, &g);
+            let gq = PreparedQuad::new(&gb.corners(conv), false).unwrap();
+            let dq = PreparedQuad::new(&db.corners(conv), false).unwrap();
+            let dk = replica::dk::iou(&gq.raw, &dq.raw);
+
+            assert!(
+                (canonical - d2).abs() < 1e-5,
+                "{g:?}/{d:?}: {canonical} vs d2 {d2}"
+            );
+            assert!(
+                (canonical - dk).abs() < 1e-9,
+                "{g:?}/{d:?}: {canonical} vs dk {dk}"
+            );
+        }
     }
 }

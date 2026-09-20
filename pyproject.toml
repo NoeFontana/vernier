@@ -236,6 +236,7 @@ extend-exclude = [
     "./.venv",
     "tests/python/parity_boundary/oracle/boundary_iou_api",
     "tests/python/parity_lvis/oracle/lvis_api",
+    "tests/python/parity_obb/oracle/detectron2",
     "tests/python/parity_panoptic/oracle/boundary_iou_api",
     "tests/python/parity_panoptic/oracle/panopticapi",
     "tests/python/parity_semantic/oracle/mmsegmentation/mmseg",
@@ -279,6 +280,7 @@ exclude = [
     # Verbatim vendored upstream — see VENDORING.md alongside.
     "tests/python/parity_boundary/oracle/boundary_iou_api",
     "tests/python/parity_lvis/oracle/lvis_api",
+    "tests/python/parity_obb/oracle/detectron2",
     "tests/python/parity_panoptic/oracle/boundary_iou_api",
     "tests/python/parity_panoptic/oracle/panopticapi",
     "tests/python/parity_semantic/oracle/mmsegmentation/mmseg",
@@ -311,6 +313,7 @@ norecursedirs = [
     "target",
     "tests/python/parity_boundary/oracle/boundary_iou_api",
     "tests/python/parity_lvis/oracle/lvis_api",
+    "tests/python/parity_obb/oracle/detectron2",
     "tests/python/parity_panoptic/oracle/boundary_iou_api",
     "tests/python/parity_panoptic/oracle/panopticapi",
     "tests/python/parity_semantic/oracle/mmsegmentation/mmseg",

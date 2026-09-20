@@ -15,6 +15,11 @@ Vendoring takes two flavors here, both covered by the policy in
   versions in `pyproject.toml` + `uv.lock`, where the pin itself is
   the parity / comparator claim (e.g. `pycocotools`,
   `faster-coco-eval`).
+- **Hash-pinned, not redistributed** — an upstream we read and
+  reproduce but do not copy, because it carries no license grant. The
+  SHA-256 of each file is pinned and a fetch script provisions it into
+  a git-ignored dev cache (`DOTA_devkit`). This flavor exists because
+  the alternative — quietly vendoring unlicensed source — is not one.
 
 For each entry, see the linked `VENDORING.md` (in-tree flavor) or
 the linked pin sites (pinned-package flavor) for provenance and
@@ -178,3 +183,53 @@ licensing implications first.
   carries the canonical sparse 1..90 ids), not hard-coded.
 
 <!-- Future vendored references append here, same shape. -->
+
+
+## detectron2 (`box_iou_rotated`)
+
+- **Role:** bit-exact parity oracle for oriented-box (`RotatedBox`)
+  evaluation (ADR-0063). Consumed only by
+  `tests/python/parity_obb/` and the Rust bridge test
+  [`crates/vernier-geom/tests/d2_bridge.rs`](crates/vernier-geom/tests/d2_bridge.rs);
+  not imported by `python/vernier/` or any code that ships in the
+  wheel. Two files are vendored: the C++ kernel header and the
+  `RotatedCOCOeval` evaluator that instantiates it.
+- **Path:** [`tests/python/parity_obb/oracle/detectron2/`](tests/python/parity_obb/oracle/detectron2/)
+- **Upstream:** <https://github.com/facebookresearch/detectron2>
+- **Pinned commit:** `a25898a09d6ee232767647e92c6177fb1c642369` (2026-03-16)
+- **Primary license:** Apache-2.0. Copyright (c) Facebook, Inc. and its
+  affiliates.
+- **License text:** [`tests/python/parity_obb/oracle/detectron2/LICENSE`](tests/python/parity_obb/oracle/detectron2/LICENSE)
+- **Vendoring details:** [`tests/python/parity_obb/oracle/VENDORING.md`](tests/python/parity_obb/oracle/VENDORING.md)
+- **Build note:** the claim is keyed to a `linux-x86_64` build. The
+  kernel is a `float` template, and baseline `x86-64` has no FMA for
+  the compiler to contract `a*b + c` into, while GCC on `aarch64`
+  fuses by default and would move the last bits of every cross
+  product. `build.sh` beside the header pins the flags.
+- **Runtime dep:** `torch` (test-only, for the `RotatedCOCOeval` bridge
+  and the threshold-dtype probe behind quirk **OB10**). Shared with the
+  mmsegmentation vendor.
+
+## DOTA_devkit (`polyiou`)
+
+- **Role:** bit-exact parity oracle for quad (`Quad`) evaluation
+  (ADR-0063). Consumed only by `tests/python/parity_obb/` and
+  [`crates/vernier-geom/tests/dk_bridge.rs`](crates/vernier-geom/tests/dk_bridge.rs).
+- **Path:** **none — no bytes of this upstream are in this
+  repository.**
+- **Upstream:** <https://github.com/CAPTAIN-WHU/DOTA_devkit>
+- **Pinned commit:** `d3f8da45d4091b1dab37d9fbe4d6e6a50928e410` (2019-04-26)
+- **License:** **none stated.** There is no `LICENSE` file in the
+  repository, no license header in any source file, no license
+  statement in `readme.md` or `setup.py`, and the GitHub API reports
+  `"license": null`. With no grant there is no right to redistribute,
+  so vernier pins the SHA-256 of each file instead of copying it.
+  Reading a public source to reproduce its observable behavior is not
+  redistribution;
+  [`crates/vernier-geom/src/replica/dk.rs`](crates/vernier-geom/src/replica/dk.rs)
+  carries no upstream text.
+- **Provisioning:** `uv run python tests/python/parity_obb/oracle/dota_devkit/fetch.py`
+  downloads the three pinned files into `.cache/dota-devkit/`, verifies
+  each SHA-256, and builds the bridge harness. Tests that need it skip
+  cleanly when it is absent.
+- **Vendoring details:** [`tests/python/parity_obb/oracle/VENDORING.md`](tests/python/parity_obb/oracle/VENDORING.md)
