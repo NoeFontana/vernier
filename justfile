@@ -92,7 +92,7 @@ test-coco-val:
 # Run all linters (CI-equivalent, read-only).
 lint: lint-rust lint-py lint-citations
 
-lint-rust: check-features
+lint-rust: check-features check-wasm
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
 
@@ -101,6 +101,12 @@ lint-rust: check-features
 # compile and none may be empty. Mirrors CI's lint-rust step.
 check-features:
     cargo hack --feature-powerset check -p vernier
+
+# Check that all workspace library crates compile cleanly for wasm32.
+# vernier-cli (clap binary) and vernier-ffi (PyO3 cdylib) are excluded.
+# Mirrors CI's lint-rust step.
+check-wasm:
+    cargo check --target wasm32-unknown-unknown --workspace --exclude vernier-cli --exclude vernier-ffi
 
 lint-py:
     uv run ruff check .

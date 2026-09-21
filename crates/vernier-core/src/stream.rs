@@ -31,8 +31,11 @@ use crate::parity::{recall_thresholds, ParityMode};
 use crate::summarize::{summarize_detection, summarize_with, StatRequest, Summary};
 
 /// Default fallback when [`MemoryBudget::system_total_bytes`] returns
-/// `None`. 8 GiB.
+/// `None`. 8 GiB on 64-bit systems, 1 GiB on 32-bit systems (e.g. wasm32).
+#[cfg(target_pointer_width = "64")]
 const DEFAULT_BUDGET_BYTES: usize = 8 * 1024 * 1024 * 1024;
+#[cfg(target_pointer_width = "32")]
+const DEFAULT_BUDGET_BYTES: usize = 1024 * 1024 * 1024;
 
 /// Soft-warn fraction of the budget. Once `total_used >= soft_warn *
 /// budget`, the next [`UpdateReport`] sets `soft_warn_triggered = true`
