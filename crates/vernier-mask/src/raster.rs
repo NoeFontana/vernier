@@ -70,6 +70,61 @@ impl Rle {
         Ok(Rle::from_counts(h, w, counts))
     }
 
+    /// Encodes a row-major (C-order: `y * w + x`) byte mask of shape `(h, w)` into
+    /// a column-major COCO RLE.
+    ///
+    /// Useful for browser canvases, image buffers, and graphics pipelines that
+    /// store rasters in row-major order.
+    ///
+    /// `mask` must have length `h * w`; mismatch returns
+    /// [`MaskError::RasterLengthMismatch`]. Per quirk **G6**, every
+    /// non-zero byte is foreground.
+    ///
+    /// Returns the empty `0x0` RLE for `h == 0 || w == 0`.
+    pub fn from_row_major_raster_bytes(mask: &[u8], h: u32, w: u32) -> Result<Self, MaskError> {
+        let expected = (h as u64) * (w as u64);
+        if mask.len() as u64 != expected {
+            return Err(MaskError::RasterLengthMismatch {
+                h,
+                w,
+                expected,
+                got: mask.len(),
+            });
+        }
+        if expected == 0 {
+            return Ok(Rle::empty(h, w));
+        }
+        let (h_usize, w_usize) = (h as usize, w as usize);
+
+        let mut counts: Vec<u32> =
+            Vec::with_capacity((mask.len() + 1).min(ENCODE_COUNTS_CAPACITY_HINT));
+        let mut phase: u8 = 0;
+        let mut run: u64 = 0;
+        for x in 0..w_usize {
+            let mut offset = x;
+            for _ in 0..h_usize {
+                let byte = mask[offset];
+                offset += w_usize;
+                let bit = u8::from(byte != 0);
+                if bit != phase {
+                    counts.push(
+                        u32::try_from(run).map_err(|_| {
+                            MaskError::MalformedRle(MalformedRleReason::U32Overflow)
+                        })?,
+                    );
+                    run = 0;
+                    phase = bit;
+                }
+                run += 1;
+            }
+        }
+        counts.push(
+            u32::try_from(run)
+                .map_err(|_| MaskError::MalformedRle(MalformedRleReason::U32Overflow))?,
+        );
+        Ok(Rle::from_counts(h, w, counts))
+    }
+
     /// Decodes the RLE into a freshly allocated column-major byte
     /// mask of length `h * w`. Foreground pixels are `1`, background
     /// `0`.
@@ -173,6 +228,152 @@ impl Rle {
                 idx = chunk_end;
             }
             cum = run_end;
+            is_fg = !is_fg;
+        }
+    }
+
+    /// Decodes the RLE into a freshly allocated row-major (C-order:
+    /// `y * w + x`) byte mask of length `h * w`. Foreground pixels are
+    /// `1`, background `0`.
+    ///
+    /// Useful for HTML5 Canvas `ImageData`, WebGL textures, and image
+    /// processing libraries that operate on row-major buffers.
+    pub fn to_row_major_raster_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity((self.h as usize).saturating_mul(self.w as usize));
+        self.to_row_major_raster_bytes_into(&mut out);
+        out
+    }
+
+    /// Decodes the RLE into a caller-owned byte buffer in row-major
+    /// order, reusing its capacity. The buffer is `clear()`-ed first,
+    /// then resized to `h * w` (zero-filled), and foreground pixels are
+    /// set to `1`.
+    pub fn to_row_major_raster_bytes_into(&self, buf: &mut Vec<u8>) {
+        let h = self.h as usize;
+        let w = self.w as usize;
+        let total = h.saturating_mul(w);
+        buf.clear();
+        buf.resize(total, 0);
+        if total == 0 {
+            return;
+        }
+        let mut is_fg = false;
+        let mut curr_x = 0usize;
+        let mut curr_y = 0usize;
+
+        for &len in self.counts.iter() {
+            let mut run_len = len as usize;
+            if !is_fg || run_len == 0 {
+                if run_len > 0 {
+                    let total_y = curr_y + run_len;
+                    curr_x += total_y / h;
+                    curr_y = total_y % h;
+                    if curr_x >= w {
+                        break;
+                    }
+                }
+                is_fg = !is_fg;
+                continue;
+            }
+
+            while run_len > 0 && curr_x < w {
+                let rem_in_col = h - curr_y;
+                let col = curr_x;
+                let (y_lo, y_hi) = if run_len < rem_in_col {
+                    let s = curr_y;
+                    curr_y += run_len;
+                    (s, curr_y)
+                } else {
+                    let s = curr_y;
+                    run_len -= rem_in_col;
+                    curr_x += 1;
+                    curr_y = 0;
+                    (s, h)
+                };
+                for y in y_lo..y_hi {
+                    buf[y * w + col] = 1;
+                }
+                if y_hi < h {
+                    break;
+                }
+            }
+
+            if curr_x >= w {
+                break;
+            }
+            is_fg = !is_fg;
+        }
+    }
+
+    /// Decodes only the bbox region of the RLE into a contiguous
+    /// `bw * bh` row-major byte buffer (`row * bw + col`).
+    ///
+    /// `buf` is `clear()`-ed and grown to `bw * bh` (zero-filled), then
+    /// foreground pixels inside the bbox are overwritten with `1`.
+    pub fn decode_bbox_row_major_into(&self, buf: &mut Vec<u8>, bbox: [u32; 4]) {
+        let h = self.h as usize;
+        let w = self.w as usize;
+        let bx = bbox[0] as usize;
+        let by = bbox[1] as usize;
+        let bw = bbox[2] as usize;
+        let bh = bbox[3] as usize;
+        buf.clear();
+        buf.resize(bw * bh, 0);
+        if bw == 0 || bh == 0 || h == 0 || w == 0 {
+            return;
+        }
+        let mut is_fg = false;
+        let mut curr_x = 0usize;
+        let mut curr_y = 0usize;
+
+        for &len in self.counts.iter() {
+            let mut run_len = len as usize;
+            if !is_fg || run_len == 0 {
+                if run_len > 0 {
+                    let total_y = curr_y + run_len;
+                    curr_x += total_y / h;
+                    curr_y = total_y % h;
+                    if curr_x >= w {
+                        break;
+                    }
+                }
+                is_fg = !is_fg;
+                continue;
+            }
+
+            while run_len > 0 && curr_x < w {
+                let rem_in_col = h - curr_y;
+                let col = curr_x;
+                let (y_lo, y_hi) = if run_len < rem_in_col {
+                    let s = curr_y;
+                    curr_y += run_len;
+                    (s, curr_y)
+                } else {
+                    let s = curr_y;
+                    run_len -= rem_in_col;
+                    curr_x += 1;
+                    curr_y = 0;
+                    (s, h)
+                };
+
+                if col >= bx && col < bx + bw {
+                    let dst_col = col - bx;
+                    let yb_lo = y_lo.max(by);
+                    let yb_hi = y_hi.min(by + bh);
+                    for y in yb_lo..yb_hi {
+                        let dst_row = y - by;
+                        buf[dst_row * bw + dst_col] = 1;
+                    }
+                }
+
+                if y_hi < h {
+                    break;
+                }
+            }
+
+            if curr_x >= w {
+                break;
+            }
             is_fg = !is_fg;
         }
     }
@@ -396,6 +597,58 @@ mod tests {
             }
         }
 
+        // Row-major decode must be the exact transpose of column-major decode,
+        // and from_row_major_raster_bytes must round-trip.
+        #[test]
+        fn row_major_raster_round_trip(
+            (h, w, row_major) in (1usize..=10, 1usize..=10).prop_flat_map(|(h, w)| {
+                let len = h * w;
+                (Just(h), Just(w), proptest::collection::vec(0u8..=1, len..=len))
+            }),
+        ) {
+            let r = Rle::from_row_major_raster_bytes(&row_major, h as u32, w as u32)?;
+            let decoded_row_major = r.to_row_major_raster_bytes();
+            prop_assert_eq!(&decoded_row_major, &row_major);
+
+            let col_major = r.to_raster_bytes();
+            for x in 0..w {
+                for y in 0..h {
+                    let col_idx = x * h + y;
+                    let row_idx = y * w + x;
+                    prop_assert_eq!(
+                        col_major[col_idx],
+                        row_major[row_idx],
+                        "mismatch at (x={}, y={}): col_idx={}, row_idx={}",
+                        x, y, col_idx, row_idx
+                    );
+                }
+            }
+
+            // Also test bbox-cropped row-major decode
+            let bbox = r.bbox();
+            let bx = bbox[0] as usize;
+            let by = bbox[1] as usize;
+            let bw = bbox[2] as usize;
+            let bh = bbox[3] as usize;
+
+            let mut bbox_buf = Vec::new();
+            r.decode_bbox_row_major_into(&mut bbox_buf, bbox);
+            prop_assert_eq!(bbox_buf.len(), bw * bh);
+
+            for col in 0..bw {
+                for row in 0..bh {
+                    let full_idx = (by + row) * w + (bx + col);
+                    let bbox_idx = row * bw + col;
+                    prop_assert_eq!(
+                        bbox_buf[bbox_idx],
+                        row_major[full_idx],
+                        "row-major bbox mismatch at relative ({}, {}) -> full ({}, {})",
+                        col, row, bx + col, by + row
+                    );
+                }
+            }
+        }
+
         #[test]
         fn for_each_fg_span_matches_raster(
             (h, w, raster) in (1usize..=10, 1usize..=10).prop_flat_map(|(h, w)| {
@@ -429,6 +682,25 @@ mod tests {
             });
             prop_assert_eq!(&pixel_reconstructed, &raster);
         }
+    }
+
+    #[test]
+    fn row_major_empty_zero_zero_round_trips() {
+        let r = Rle::from_row_major_raster_bytes(&[], 0, 0).unwrap();
+        assert_eq!(r, Rle::from_counts(0, 0, vec![]));
+        assert_eq!(r.to_row_major_raster_bytes(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn row_major_pixel_layout() {
+        // 2x3 (h=2, w=3) with one fg pixel at (x=1, y=1).
+        // Column-major flat idx = x*h + y = 1*2 + 1 = 3.
+        // Row-major flat idx = y*w + x = 1*3 + 1 = 4.
+        let mut row_major = vec![0u8; 6];
+        row_major[4] = 1;
+        let r = Rle::from_row_major_raster_bytes(&row_major, 2, 3).unwrap();
+        assert_eq!(r, Rle::from_counts(2, 3, vec![3, 1, 2]));
+        assert_eq!(r.to_row_major_raster_bytes(), row_major);
     }
 
     #[test]
