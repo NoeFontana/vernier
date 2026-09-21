@@ -33,6 +33,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@cargo-hack
       - name: cargo fmt
@@ -47,6 +48,10 @@ jobs:
       # decaying into a comment.
       - name: cargo hack (facade feature powerset)
         run: cargo hack --feature-powerset check -p vernier
+      # Check that all library crates compile cleanly for wasm32-unknown-unknown.
+      # vernier-cli (clap binary) and vernier-ffi (PyO3 cdylib) are excluded.
+      - name: cargo check (wasm32-unknown-unknown)
+        run: cargo check --target wasm32-unknown-unknown --workspace --exclude vernier-cli --exclude vernier-ffi
       # cargo-deny piggy-backs on the Rust toolchain + checkout already
       # set up here, so it runs as a final lint step rather than as its
       # own job (saves a runner cold-start per PR).
