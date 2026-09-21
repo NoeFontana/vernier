@@ -45,6 +45,41 @@ test-py:
 test-parity:
     uv run pytest -m parity
 
+# Oriented-box bridge tests: the replicas against the real oracles
+# (ADR-0063 M3's exit gate). Not part of `test` — building the harness
+# needs a C++ toolchain and pins a flag set, which is a decision rather
+# than a side effect.
+#
+# The detectron2 harness builds from vendored Apache-2.0 sources, so it
+# always runs. DOTA_devkit carries no license and is never vendored, so
+# its harness runs only when the developer has provisioned the cache
+# with `oracle/dota_devkit/fetch.py`; when absent, that half is reported
+# and skipped.
+#
+# `VERNIER_OBB_REQUIRE_BRIDGE` makes a missing harness a failure, so the
+# recipe cannot silently degrade into a no-op.
+test-obb-parity n="200000":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    harness="$(mktemp -d)/d2harness"
+    ./tests/python/parity_obb/oracle/detectron2/build.sh "$harness"
+    VERNIER_OBB_REQUIRE_BRIDGE=1 \
+    VERNIER_OBB_D2_HARNESS="$harness" \
+    VERNIER_OBB_BRIDGE_N={{n}} \
+      cargo test -p vernier-geom --release --test d2_bridge -- --nocapture
+    # Absolute: `cargo test` runs with the crate root as cwd, not the
+    # workspace root, so a relative harness path resolves to nothing.
+    dk="$(pwd)/.cache/dota-devkit/dk_harness"
+    if [ -x "$dk" ]; then
+      VERNIER_OBB_REQUIRE_BRIDGE=1 \
+      VERNIER_OBB_DK_HARNESS="$dk" \
+      VERNIER_OBB_BRIDGE_N={{n}} \
+        cargo test -p vernier-geom --release --test dk_bridge -- --nocapture
+    else
+      echo "dk bridge: skipped, .cache/dota-devkit/dk_harness not provisioned"
+      echo "  run: uv run python tests/python/parity_obb/oracle/dota_devkit/fetch.py"
+    fi
+
 # Run ADR-0047 cross-thread bit-equality parity tests. Each existing
 # fixture is replayed under `num_threads ∈ {None, 1, 2, 4, 8}` and
 # asserted bit-equal to the sequential baseline.

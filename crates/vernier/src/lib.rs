@@ -18,6 +18,7 @@
 //! |---|---|---|
 //! | [`instance`] | [`vernier_core`] | Detection / instance-segmentation AP — bbox, segm, boundary, OKS keypoints, LVIS federated, LRP, TIDE, calibration |
 //! | [`mask`] | [`vernier_mask`] | COCO RLE codec, polygon rasterizer, mask ops |
+//! | [`geom`] | [`vernier_geom`] | Oriented-box and polygon geometry — conventions, canonical IoU, oracle replicas |
 //! | `panoptic` | `vernier_panoptic` | Panoptic quality (PQ / SQ / RQ) — needs the `panoptic` feature |
 //! | `semantic` | `vernier_semantic` | Semantic segmentation (mIoU / FWIoU / pixel accuracy) — needs the `semantic` feature |
 //! | `partial` | `vernier_partial` | Distributed-eval wire envelope shared by the three paradigms — needs the `partial` feature |
@@ -43,6 +44,7 @@
 //! // The facade's own version, lockstep with every crate it re-exports.
 //! assert_eq!(vernier::VERSION, vernier::instance::VERSION);
 //! assert_eq!(vernier::VERSION, vernier::mask::VERSION);
+//! assert_eq!(vernier::VERSION, vernier::geom::VERSION);
 //! ```
 //!
 //! Each module below carries a worked example. For anything deeper —
@@ -173,6 +175,37 @@ pub use vernier_core as instance;
 /// # Ok::<(), vernier::mask::MaskError>(())
 /// ```
 pub use vernier_mask as mask;
+
+/// Oriented-box and polygon geometry — conventions, the canonical IoU
+/// kernel, and the two op-exact oracle replicas.
+///
+/// Whole-crate alias for [`vernier_geom`]. Unconditional, like
+/// [`mask`], and for the same reason: a feature here changes what is
+/// *nameable*, never what is *computed*, so gating a leaf crate whose
+/// output the evaluator already depends on would buy nothing but a
+/// combination to test (ADR-0048, amended by ADR-0063).
+///
+/// Useful on its own wherever oriented geometry needs answering
+/// outside an evaluation — annotation tooling, format conversion, the
+/// planned BEV work — since none of it knows what a detection is.
+///
+/// ```
+/// use vernier::geom::{Convention, Denominator, PreparedRBox, RotatedBox};
+///
+/// // detectron2's convention: degrees, counter-clockwise on screen.
+/// let conv = Convention::D2;
+/// let b = |cx, cy, w, h, theta| {
+///     PreparedRBox::new(RotatedBox { cx, cy, w, h, theta }, conv)
+/// };
+///
+/// let gt = b(0.0, 0.0, 4.0, 2.0, 0.0);
+/// let dt = b(1.0, 0.0, 4.0, 2.0, 0.0);
+/// assert_eq!(vernier::geom::rbox_iou(&gt, &dt, conv, Denominator::Union), 0.6);
+///
+/// // A box against itself is exactly 1.0 — not 0.9999999999999999.
+/// assert_eq!(vernier::geom::rbox_iou(&gt, &gt, conv, Denominator::Union), 1.0);
+/// ```
+pub use vernier_geom as geom;
 
 /// Panoptic-quality evaluation — PQ, SQ, RQ, things / stuff split.
 ///

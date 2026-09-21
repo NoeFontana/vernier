@@ -126,6 +126,43 @@ jobs:
   # under `-D warnings` so broken intra-doc links and feature-gate
   # breakage fail the PR rather than slipping through to docs.rs at
   # release time.
+  # ADR-0063 M3's exit gate: the op-exact detectron2 replica against
+  # detectron2's own C++ kernel, bit for bit.
+  #
+  # This job exists because the bridge test is opt-in. It reports a skip
+  # and passes without `VERNIER_OBB_D2_HARNESS`, which keeps a clean
+  # `cargo test` green but also means the strict rotated-box claim can
+  # stop being checked without anything turning red. Hence
+  # `VERNIER_OBB_REQUIRE_BRIDGE=1`: with the harness missing, the test
+  # fails instead of shrugging, so this lane cannot go vacuously green.
+  #
+  # The harness compiles the *vendored* Apache-2.0 header at its pinned
+  # commit, with the flag set `build.sh` fixes (`-march=x86-64`,
+  # `-ffp-contract=off`) — the flags are part of the claim, since an FMA
+  # would move the f32 geometry off the oracle's bits.
+  #
+  # The Quad half of the gate (`dk_bridge`) is deliberately not here:
+  # DOTA_devkit carries no license, so it is never vendored, and running
+  # it would mean fetching unlicensed source on every CI run. It stays a
+  # developer-provisioned check via `just test-obb-parity`, and
+  # docs/engineering/obb-quirks.md records that asymmetry.
+  test-obb-parity:
+    name: obb parity (detectron2 bridge)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the pinned detectron2 harness
+        run: ./tests/python/parity_obb/oracle/detectron2/build.sh "${RUNNER_TEMP}/d2harness"
+      - name: D2 replica bit-equality
+        env:
+          VERNIER_OBB_REQUIRE_BRIDGE: "1"
+          VERNIER_OBB_BRIDGE_N: "2000000"
+        run: |
+          VERNIER_OBB_D2_HARNESS="${RUNNER_TEMP}/d2harness" \
+            cargo test -p vernier-geom --release --test d2_bridge -- --nocapture
+
   docs-rust:
     name: docs (rust)
     runs-on: ubuntu-latest
@@ -277,6 +314,7 @@ jobs:
       - lint-rust
       - test-rust
       - test-rust-cross-arch
+      - test-obb-parity
       - docs-rust
       - build-wheel
       - lint-py
