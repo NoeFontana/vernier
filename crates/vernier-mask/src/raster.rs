@@ -196,31 +196,42 @@ impl Rle {
         if h == 0 || w == 0 {
             return;
         }
-        let total_pixels = h.saturating_mul(w);
         let mut is_fg = false;
-        let mut cum = 0usize;
+        let mut curr_x = 0usize;
+        let mut curr_y = 0usize;
+
         for &len in self.counts.iter() {
-            let run_len = len as usize;
+            let mut run_len = len as usize;
             if !is_fg || run_len == 0 {
-                cum += run_len;
+                if run_len > 0 {
+                    let total_y = curr_y + run_len;
+                    curr_x += total_y / h;
+                    curr_y = total_y % h;
+                    if curr_x >= w {
+                        break;
+                    }
+                }
                 is_fg = !is_fg;
                 continue;
             }
-            let run_start = cum.min(total_pixels);
-            let run_end = (cum + run_len).min(total_pixels);
-            let mut idx = run_start;
-            while idx < run_end {
-                let x = idx / h;
-                let col_end_flat = (x + 1) * h;
-                let chunk_end = run_end.min(col_end_flat);
-                let y_lo = (idx - x * h) as u32;
-                let y_hi = (chunk_end - x * h) as u32;
-                if y_lo < y_hi {
-                    f(x as u32, y_lo..y_hi);
+
+            while run_len > 0 && curr_x < w {
+                let rem_in_col = h - curr_y;
+                if run_len < rem_in_col {
+                    f(curr_x as u32, (curr_y as u32)..((curr_y + run_len) as u32));
+                    curr_y += run_len;
+                    break;
+                } else {
+                    f(curr_x as u32, (curr_y as u32)..(h as u32));
+                    run_len -= rem_in_col;
+                    curr_x += 1;
+                    curr_y = 0;
                 }
-                idx = chunk_end;
             }
-            cum += run_len;
+
+            if curr_x >= w {
+                break;
+            }
             is_fg = !is_fg;
         }
     }
