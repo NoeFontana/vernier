@@ -201,6 +201,10 @@ pub(crate) enum ArrayIouType {
     Segm,
     Boundary,
     Keypoints,
+    /// Oriented box (ADR-0063). Every record must carry `rbox`.
+    RotatedBox,
+    /// Four-vertex polygon (ADR-0063). Every record must carry `quad`.
+    Quad,
 }
 
 impl ArrayIouType {
@@ -210,6 +214,8 @@ impl ArrayIouType {
             Self::Segm => "segm",
             Self::Boundary => "boundary",
             Self::Keypoints => "keypoints",
+            Self::RotatedBox => "rotated_box",
+            Self::Quad => "quad",
         }
     }
 }
@@ -377,6 +383,21 @@ fn extract_inputs_one<'py>(
                 .collect()
         }
         ArrayIouType::Bbox | ArrayIouType::Keypoints => Vec::new(),
+        // ADR-0063: the columnar route's `boxes` column is `(N, 4)`, so
+        // there is nowhere for five or eight oriented coordinates to
+        // live. Rather than accept the payload and fail later with a
+        // "missing rbox" that does not say what to do, refuse here and
+        // name the two routes that do carry oriented geometry.
+        ArrayIouType::RotatedBox | ArrayIouType::Quad => {
+            return Err(PyValueError::new_err(format!(
+                "{here}: iou_type={} is not supported by the columnar \
+                 `Detections(boxes=..., scores=..., labels=...)` route — its \
+                 `boxes` column is (N, 4) and has no room for oriented \
+                 geometry. Pass detections as COCO results JSON `bytes`, or as \
+                 a list of result dicts carrying an `rbox` / `quad` key.",
+                iou_type.as_str()
+            )));
+        }
     };
 
     let kp_data = match iou_type {

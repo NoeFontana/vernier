@@ -56,6 +56,7 @@ bench-timings = ["vernier-core/bench-timings"]
 mimalloc-global = ["dep:mimalloc"]
 
 [dependencies]
+vernier-geom = { path = "../vernier-geom", version = "0.5.1" }
 vernier-core = { path = "../vernier-core", version = "0.5.1" }
 # Mask kernels (ADR-0009): bitmask ingest calls `Rle::from_raster_bytes`.
 vernier-mask = { path = "../vernier-mask", version = "0.5.1" }

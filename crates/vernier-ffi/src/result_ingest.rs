@@ -95,6 +95,8 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
     let k_keypoints = intern!(py, "keypoints");
     let k_num_keypoints = intern!(py, "num_keypoints");
     let k_area = intern!(py, "area");
+    let k_rbox = intern!(py, "rbox");
+    let k_quad = intern!(py, "quad");
 
     let mut inputs = Vec::with_capacity(dicts.len());
     for (i, dict) in dicts.iter().enumerate() {
@@ -163,6 +165,28 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             _ => None,
         };
 
+        // ADR-0063. Required under the kernel that reads them, and
+        // *not* required otherwise: a bbox-only payload must keep
+        // evaluating under a bbox kernel exactly as the file route does.
+        // The fixed widths are checked here rather than downstream so
+        // the error names the offending detection index.
+        let rbox = match iou_type {
+            ArrayIouType::RotatedBox => Some(extract_fixed::<5>(
+                &required_oriented(dict, k_rbox, i, "rbox")?,
+                i,
+                "rbox",
+            )?),
+            _ => None,
+        };
+        let quad = match iou_type {
+            ArrayIouType::Quad => Some(extract_fixed::<8>(
+                &required_oriented(dict, k_quad, i, "quad")?,
+                i,
+                "quad",
+            )?),
+            _ => None,
+        };
+
         inputs.push(DetectionInput {
             id,
             image_id: ImageId(image_id),
@@ -173,8 +197,8 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             segmentation,
             keypoints,
             num_keypoints,
-            rbox: None,
-            quad: None,
+            rbox,
+            quad,
         });
     }
     Ok(inputs)
@@ -362,6 +386,34 @@ fn required<'py>(
         .ok_or_else(|| field_err(i, name, "missing required field"))
 }
 
+/// [`required`] for the oriented-geometry keys, whose absence has a
+/// specific and dangerous wrong answer.
+///
+/// The message names the length-5 `bbox` trap because that is what a
+/// user arriving from detectron2 has in hand: their records *do* carry
+/// the rotated box, spelled as five numbers in `bbox`, and the terse
+/// "missing required field" would send them looking for a field they
+/// believe they already supplied.
+fn required_oriented<'py>(
+    dict: &Bound<'py, PyDict>,
+    key: &Bound<'py, pyo3::types::PyString>,
+    i: usize,
+    name: &str,
+) -> PyResult<Bound<'py, PyAny>> {
+    dict.get_item(key)?.ok_or_else(|| {
+        field_err(
+            i,
+            name,
+            &format!(
+                "missing required field. Oriented geometry goes on its own `{name}` key, \
+                 never as a length-5 `bbox` — detectron2 overloads `bbox` that way, and a \
+                 length-5 `bbox` read as [x, y, w, h] silently evaluates a box at the wrong \
+                 place. Keep `bbox` as the axis-aligned envelope (ADR-0063)."
+            ),
+        )
+    })
+}
+
 fn field_err(i: usize, name: &str, detail: &str) -> PyErr {
     PyValueError::new_err(format!("detections[{i}].{name}: {detail}"))
 }
@@ -516,6 +568,25 @@ fn exact_int(v: f64, col: usize, row: usize) -> PyResult<i64> {
 /// row and rejected as "not a dict".
 pub(crate) fn looks_like_matrix(obj: &Bound<'_, PyAny>) -> PyResult<bool> {
     obj.hasattr("__dlpack_device__")
+}
+
+/// Read a fixed-width float sequence (`rbox` is 5 wide, `quad` is 8).
+///
+/// The width is part of the type, so a length mismatch is caught here
+/// with the detection index in the message rather than surfacing later
+/// as a shape error with no provenance. ADR-0063's worst failure mode is
+/// a length-5 `bbox` silently read as `[x, y, w, h]`; requiring an exact
+/// width on a separate key is what makes that unrepresentable.
+fn extract_fixed<const N: usize>(
+    obj: &Bound<'_, PyAny>,
+    i: usize,
+    field: &str,
+) -> PyResult<[f64; N]> {
+    let v: Vec<f64> = obj
+        .extract()
+        .map_err(|e| field_err(i, field, &format!("expected a sequence of {N} floats: {e}")))?;
+    <[f64; N]>::try_from(v.as_slice())
+        .map_err(|_| field_err(i, field, &format!("expected {N} values, got {}", v.len())))
 }
 
 #[cfg(test)]

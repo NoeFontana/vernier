@@ -307,6 +307,85 @@ def evaluate_bbox_grid(
     dt_area: Literal["bbox", "supplied"] = ...,
     retain_meta: bool = ...,
 ) -> EvalGrid: ...
+def evaluate_rotated_box_summary(
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
+    *,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+    unit: Literal["deg", "rad"],
+    rotation: Literal["screen_cw", "screen_ccw"],
+    cast_inputs: bool = ...,
+    num_threads: int | None = ...,
+) -> Summary: ...
+def evaluate_rotated_box_grid(
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
+    *,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    unit: Literal["deg", "rad"],
+    rotation: Literal["screen_cw", "screen_ccw"],
+    retain_iou: bool = ...,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied", "oriented"] = ...,
+    retain_meta: bool = ...,
+) -> EvalGrid: ...
+def evaluate_quad_summary(
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
+    *,
+    parity_mode: str,
+    max_dets: list[int],
+    use_cats: bool,
+    cast_inputs: bool = ...,
+    num_threads: int | None = ...,
+) -> Summary: ...
+def evaluate_quad_grid(
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
+    *,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    retain_iou: bool = ...,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    num_threads: int | None = ...,
+    dt_area: Literal["bbox", "supplied", "oriented"] = ...,
+    retain_meta: bool = ...,
+) -> EvalGrid: ...
+def obb_rbox_to_quad(
+    rbox: list[float],
+    unit: Literal["deg", "rad"],
+    rotation: Literal["screen_cw", "screen_ccw"],
+) -> list[float]: ...
+def obb_min_area_rect(
+    quad: list[float],
+    unit: Literal["deg", "rad"],
+    rotation: Literal["screen_cw", "screen_ccw"],
+) -> list[float] | None: ...
+def obb_label_ceiling(
+    quads: list[list[float]],
+    category_ids: list[int],
+    unit: Literal["deg", "rad"],
+    rotation: Literal["screen_cw", "screen_ccw"],
+) -> dict[int, tuple[float, int]]: ...
+def obb_angle_error_deg(
+    gt: list[float],
+    dt: list[float],
+    unit: Literal["deg", "rad"],
+    rotation: Literal["screen_cw", "screen_ccw"],
+    tau: float = ...,
+) -> float: ...
 def evaluate_segm_summary(
     gt: bytes | CocoDataset,
     dt: DetectionsInput,
@@ -404,6 +483,40 @@ class PartitionedSummary:
     def slices_capsule(self) -> ArrowRecordBatch: ...
 
 def evaluate_bbox_partitioned(
+    gt: bytes,
+    dt: DetectionsInput,
+    *,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    manifest: object,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+    num_threads: int | None = ...,
+) -> PartitionedSummary: ...
+def evaluate_rotated_box_partitioned(
+    gt: bytes,
+    dt: DetectionsInput,
+    *,
+    parity_mode: str,
+    max_dets_per_image: int,
+    use_cats: bool,
+    unit: Literal["deg", "rad"],
+    rotation: Literal["screen_cw", "screen_ccw"],
+    manifest: object,
+    cast_inputs: bool = ...,
+    iou_thresholds: list[float] | None = ...,
+    recall_thresholds: list[float] | None = ...,
+    area_ranges: Breakdown | None = ...,
+    cross_axes: list[list[str]] | None = ...,
+    key_kind: str = ...,
+    num_threads: int | None = ...,
+) -> PartitionedSummary: ...
+def evaluate_quad_partitioned(
     gt: bytes,
     dt: DetectionsInput,
     *,
