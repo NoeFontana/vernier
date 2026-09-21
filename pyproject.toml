@@ -209,6 +209,16 @@ vernier-ade20k-val-cache = { path = "tools/ade20k_val_cache", editable = true }
 vernier-real-predictions-cache = { path = "tools/real_predictions_cache", editable = true }
 
 # ---------------------------------------------------------------------------
+# codespell (`just lint-docs`). `docs/adr` and `docs/engineering` are
+# skipped on the command line; this section is for words that are
+# correct in the built docs.
+# ---------------------------------------------------------------------------
+[tool.codespell]
+# DOTA is the aerial-imagery detection benchmark (ADR-0063), not a typo
+# for "data".
+ignore-words-list = "DOTA,dota"
+
+# ---------------------------------------------------------------------------
 # Ruff: lint + format
 # ---------------------------------------------------------------------------
 [tool.ruff]

@@ -13,6 +13,8 @@ provide. For mechanical "rewrite my imports" instructions, see the
 | `pycocotools` | instance (bbox / segm / keypoints) | The reference | ~9.4–22.4× slower on real detector output | You need the literal pycocotools printed table for an external system that scrapes it |
 | `faster-coco-eval` | instance (bbox / segm / keypoints / boundary) | "Faster, mostly compatible" — quirks chosen silently | ~4.2–5.4× slower per CPU on real bbox / segm; 16.9× on boundary | You're already running it in production and don't need vernier's auditable parity surface |
 | `hotcoco` | instance (bbox / segm / keypoints / OBB), LVIS, Open Images | "Same numbers to double precision" — no published quirk dispositions | ~2.0–2.3× slower per CPU on real COCO bbox / segm; ~1.6× on LVIS; ~2.6× at Objects365 scale | You want TIDE / confusion matrices / dataset browser in one package and don't need bit-exactness or panoptic / semantic |
+| `detectron2` (`RotatedCOCOeval`) | oriented boxes only | The reference vernier's `RotatedBox` strict mode targets | not benchmarked (it is a `pycocotools` subclass; the f32 kernel is a C++ extension) | You need the rest of detectron2 in the same process anyway |
+| `DOTA_devkit` | oriented quads, VOC protocol | The reference vernier's `Quad` strict mode targets, at the kernel layer | not benchmarked | You need DOTA's own VOC-protocol mAP@0.50, which vernier does not ship yet |
 | `panopticapi` | panoptic | The reference | ~3.3× slower on val2017 perfect-DT | You explicitly need the `pq_compute_*` script outputs unchanged |
 | `lvis-api` | LVIS federated | The reference | ~81× slower on full v1 val · 13.6× lower peak RSS on vernier (1.11 GiB vs 15.08 GiB) | Your tooling depends on the `LVISEval` instance attributes |
 | `boundary-iou-api` | boundary IoU only | The reference | ~19.8× slower on val2017 perfect-DT | You're running an external evaluation script that loads `boundary_iou.coco_instance_api.COCOeval` by name |
@@ -90,9 +92,19 @@ migration. The migration cost is small (one-line shim) but real.
 vernier in shape: a Rust core with PyO3 bindings, a pycocotools-compatible
 `COCO` / `COCOeval` surface, and an `init_as_pycocotools()` shim. It covers
 more *analysis* surface than vernier does — TIDE error analysis, confusion
-matrices, calibration, a dataset browser, format conversion — and adds
-oriented-box and Open Images evaluation, which vernier does not have. It does
-not do panoptic or semantic segmentation.
+matrices, calibration, a dataset browser, format conversion — and adds Open
+Images evaluation, which vernier does not have. It does not do panoptic or
+semantic segmentation.
+
+Oriented boxes used to be on that list too. As of ADR-0063 vernier ships
+both oriented kernels, and applies the same contract to them that it
+applies everywhere else: `RotatedBox` is bit-exact against detectron2's
+`RotatedCOCOeval` (verified on 2 x 10^7 fuzzed pairs against the pinned
+C++ kernel) and `Quad` is bit-exact against DOTA_devkit's `iou_poly`
+plus its horizontal-box gate (5 x 10^6 pairs). Each behavior either
+matches an oracle or is a documented `corrected` row in
+`docs/engineering/obb-quirks.md`. The DOTA/VOC *protocol* — argmax
+matching and 11-point AP — is a separate axis and is not shipped yet.
 
 The difference that matters for a parity-first project is the contract.
 hotcoco states its metrics match pycocotools "to the limit of double
@@ -120,9 +132,11 @@ An earlier round had this ranking inverted at Objects365 scale
 ADR-0051 closed that gap and the current round puts vernier 2.6× ahead.
 
 **Pick `hotcoco` instead** when you want its diagnostic and dataset tooling in
-one dependency, or need OBB / Open Images evaluation. **Pick vernier** when you
-need bit-exact reproduction of a pinned reference, panoptic or semantic
-paradigms, or the lowest single-CPU latency and memory.
+one dependency, or need Open Images evaluation, or need DOTA's own
+VOC-protocol mAP today. **Pick vernier** when you need bit-exact
+reproduction of a pinned reference — including for oriented boxes —
+panoptic or semantic paradigms, or the lowest single-CPU latency and
+memory.
 
 ## `panopticapi`
 

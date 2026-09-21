@@ -14,6 +14,114 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Added
+
+- **Oriented-box evaluation: two new kernels, `RotatedBox` and `Quad`**
+  (ADR-0063). Oriented boxes are the standard output for aerial imagery
+  (DOTA), scene text and industrial picking, and they were the one
+  detection geometry vernier could not evaluate.
+
+  Both arrive with the contract that distinguishes this project from
+  every other fast evaluator: a named, pinned oracle and a bit-equality
+  claim against it.
+
+  - `RotatedBox(unit=..., rotation=...)` — center-based
+    `[cx, cy, w, h, theta]` on an `rbox` key.
+    `parity_mode="strict"` is an op-exact replica of detectron2's
+    `single_box_iou_rotated<float>`, **verified bit-for-bit on
+    2 x 10^7 fuzzed pairs** against the pinned C++ kernel compiled with
+    release-equivalent flags.
+  - `Quad()` — four vertices on a `quad` key.
+    `parity_mode="strict"` is an op-exact replica of DOTA_devkit's
+    `iou_poly` composed with its Pascal-VOC `+1` horizontal-box gate,
+    **verified bit-for-bit on 5 x 10^6 pairs**.
+  - `parity_mode="corrected"` runs one canonical f64 kernel for both
+    geometries. Unlike the bbox kernel, the parity-mode branch here is
+    a correctness decision, not a throughput one: detectron2 computes
+    in f32 and can return IoU outside `[0, 1]`, and DOTA_devkit returns
+    non-zero residues on disjoint pairs. The canonical kernel clips in
+    the ground truth's own frame, so `IoU(a, a)` is exactly `1.0` and
+    the error bound is independent of image size.
+
+  The angle unit and the rotation direction are **required** and have no
+  defaults. They are the most common real-world OBB bug and getting
+  either wrong produces plausible numbers rather than an error.
+  `vernier.instance.obb.convention_check` scores a sample under all four
+  hypotheses and warns — never switches — when an undeclared one wins.
+
+  A **length-5 `bbox` is rejected on every native path**. detectron2
+  overloads `bbox` that way; read as `[x, y, w, h]` it silently
+  evaluates a box at the wrong place, which is this feature's worst
+  possible failure. The oriented geometry lives on its own key.
+
+  Also shipped: `vernier.instance.obb` diagnostics (`to_quad`,
+  `min_area_rect`, `label_ceiling`, `angle_error_deg`,
+  `convention_check`); `vernier eval --iou-type rotated-box
+  --angle-unit deg --rotation screen-ccw` and `--iou-type quad`;
+  oLRP and partitioned evaluation for both kernels; `KernelKind`
+  discriminants 4 and 5 in the distributed-partial wire format.
+
+- **`vernier-geom`** — a new pure-Rust leaf crate holding the oriented
+  geometry: conventions, the canonical clipping kernel, the two oracle
+  replicas, and a rotating-calipers minimum-area rectangle. Same
+  one-way shape as `vernier-mask`, and the substrate for the planned
+  3D BEV work. Re-exported unconditionally from the `vernier` facade as
+  `vernier::geom`.
+
+### Documentation
+
+- `docs/engineering/obb-quirks.md` — the `(quirk, oracle) -> mode`
+  disposition table for both oriented oracles, with `file:line`
+  citations into the pinned sources. The M0 audit settled three of
+  ADR-0063's open questions and found a fourth issue the draft did not
+  anticipate: DOTA_devkit reads an uninitialized scratch slot on one
+  branch (quirk **OB19**), which is undefined behavior and therefore
+  has no bits for `strict` to reproduce.
+- `docs/explanation/obb-conventions.md`,
+  `docs/migrate/detectron2-rotated.md`,
+  `docs/migrate/dota-devkit.md`.
+- `docs/comparison.md` — oriented-box evaluation moves out of the
+  "reasons to pick hotcoco" column.
+
+### Notes
+
+- Detection areas for the oriented kernels are derived from the
+  *oriented* geometry (`rbox`'s `w * h`, or the quad's enclosed area),
+  not from the axis-aligned `bbox` envelope — quirk **OB13**, matching
+  `loadRes`'s `bb[2] * bb[3]` on detectron2's length-5 `bbox`. This is
+  what keeps `AP_small` / `AP_medium` / `AP_large` in step with the
+  kernel: a 60x15 box at 45 deg has oriented area 900 (`small`) and an
+  envelope of 2812 (`medium`). The grid entry points expose it as
+  `dt_area="oriented"`, which is their default; `dt_area="bbox"` keeps
+  the old envelope rule.
+
+### Known limitations
+
+- **DOTA's headline VOC-protocol mAP@0.50 is not reproducible yet.**
+  VOC matching takes the argmax over all ground truths and scores a
+  false positive if that one is claimed, where COCO falls back to the
+  best unclaimed one; the AP integration differs too. That is an
+  assignment policy plus a summarizer, orthogonal to geometry, and it
+  lands with the assignment-axis ADR rather than inside a kernel ADR.
+  The DK kernel is already at parity, so the move will cost nothing.
+- Streaming and background evaluation raise `NotImplementedError` for
+  the oriented kernels; batch and partitioned evaluation support them.
+- The columnar `Detections(boxes=...)` ingest route rejects them: its
+  `boxes` column is `(N, 4)`. Use results JSON or a list of result
+  dicts. The columnar ground-truth route (`Dataset.from_arrays`)
+  likewise has no `rbox` / `quad` column and refuses one rather than
+  dropping it.
+- `patch_pycocotools()` does not yet route a `RotatedCOCOeval` subclass
+  to the Rust kernel (ADR-0063 M4 PR-4.5).
+- `angle_error_deg` ships as a standalone diagnostic; the
+  `angle_err_deg` column on the `per_pair` table (ADR-0063 PR-4.6) is
+  not built.
+- The `Quad` strict claim is verified on demand, not continuously:
+  DOTA_devkit carries no license, so its bridge harness cannot be
+  vendored or fetched in CI. Run `just test-obb-parity` after
+  provisioning `.cache/dota-devkit/`. The detectron2 bridge *is* a
+  required CI check.
+
 ## [0.5.1] - 2026-09-19
 
 ### Documentation

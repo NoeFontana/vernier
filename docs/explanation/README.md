@@ -16,3 +16,6 @@ vernier thinks*.
   oLRP.
 - [Why `per_image` does not ship an AP column](why-no-per-image-ap.md) —
   why per-image AP is structurally ill-defined under the COCO fold.
+- [Oriented boxes: the two numbers that decide everything](obb-conventions.md) —
+  angle unit and rotation direction, why `le90` / `le135` / `oc` are not
+  a parameter, and what a label format costs you.
