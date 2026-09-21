@@ -16,16 +16,30 @@ use crate::evaluate::KernelKind;
 /// | segm      | `0.5`     |
 /// | boundary  | `0.5`     |
 /// | keypoints | `0.5`     |
+/// | rotated_box | `0.5`   |
+/// | quad      | `0.5`     |
 ///
 /// The single value across kernels is intentional and defended on the
 /// ADR's grounds: `0.5` is the operating point Oksuz TPAMI 2021 anchors
 /// LRP on, and the reading transfers across every kernel's similarity
 /// scale at the operating-point level. Tighter thresholds (`0.7` etc.)
 /// do not transfer — users override per call when they need them.
+///
+/// The two oriented-box kernels (ADR-0063) inherit the same value by
+/// extrapolation rather than by measurement: LRP has no published
+/// oriented-box operating point, and `0.5` is what both the COCO and
+/// DOTA protocols already use as their primary threshold. ADR-0044's
+/// tentative-default discipline applies — the row is revisited when
+/// there is evidence, not before.
 #[must_use]
 pub fn tp_threshold_for(kernel: KernelKind) -> f64 {
     match kernel {
-        KernelKind::Bbox | KernelKind::Segm | KernelKind::Boundary | KernelKind::Keypoints => 0.5,
+        KernelKind::Bbox
+        | KernelKind::Segm
+        | KernelKind::Boundary
+        | KernelKind::Keypoints
+        | KernelKind::RotatedBox
+        | KernelKind::Quad => 0.5,
     }
 }
 
@@ -61,6 +75,8 @@ mod tests {
             KernelKind::Segm,
             KernelKind::Boundary,
             KernelKind::Keypoints,
+            KernelKind::RotatedBox,
+            KernelKind::Quad,
         ] {
             assert!(
                 (tp_threshold_for(kind) - 0.5).abs() < 1e-12,

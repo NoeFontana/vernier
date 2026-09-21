@@ -49,13 +49,13 @@ pub use accumulate::Accumulated;
 pub use dataset::{CocoDataset, CocoDetections, EvalDataset};
 pub use error::EvalError;
 pub use evaluate::{
-    evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_segm, evaluate_with, AreaRange,
-    EvalGrid, EvaluateParams,
+    evaluate_bbox, evaluate_boundary, evaluate_keypoints, evaluate_quad, evaluate_rotated_box,
+    evaluate_segm, evaluate_with, AreaRange, EvalGrid, EvaluateParams,
 };
 pub use evaluate_parallel::{
     evaluate_bbox_parallel, evaluate_boundary_cached_parallel, evaluate_boundary_parallel,
-    evaluate_keypoints_parallel, evaluate_segm_cached_parallel, evaluate_segm_parallel,
-    evaluate_with_parallel,
+    evaluate_keypoints_parallel, evaluate_quad_parallel, evaluate_rotated_box_parallel,
+    evaluate_segm_cached_parallel, evaluate_segm_parallel, evaluate_with_parallel,
 };
 pub use parity::ParityMode;
 pub use summarize::Summary;

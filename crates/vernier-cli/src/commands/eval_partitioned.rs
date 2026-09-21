@@ -18,7 +18,7 @@ use std::path::Path;
 
 use vernier_core::accumulate::sort_max_dets;
 use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
-use vernier_core::dataset::ImageId;
+use vernier_core::dataset::{DetectionArea, ImageId};
 use vernier_core::lrp::{self, LrpKernelMarker, LrpParams};
 use vernier_core::manifest;
 use vernier_core::manifest_csv;
@@ -58,9 +58,11 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
     }
 
     let inputs = load_partitioned_inputs(args)?;
+    let conv = args.convention();
 
     let grid = run_kernel(
         args.iou_type,
+        conv,
         &inputs.gt,
         &inputs.dt,
         parity_mode,
@@ -132,7 +134,16 @@ fn load_partitioned_inputs(args: &EvalArgs) -> Result<PartitionedInputs, CliErro
         source,
     })?;
     let gt = CocoDataset::from_json_bytes(&gt_bytes)?;
-    let dt = CocoDetections::from_json_bytes(&dt_bytes)?;
+    // Quirk **OB13**: the oriented kernels derive each detection's
+    // area from its `rbox` / `quad`, the way `loadRes` does on a
+    // length-5 `bbox`. Deriving it from the axis-aligned envelope
+    // instead would bucket a rotated object into the wrong
+    // `AP_small` / `AP_medium` / `AP_large` row.
+    let dt_area = match args.iou_type {
+        IouTypeArg::RotatedBox | IouTypeArg::Quad => DetectionArea::Oriented,
+        _ => DetectionArea::FromBbox,
+    };
+    let dt = CocoDetections::from_json_bytes_with_area(&dt_bytes, dt_area)?;
 
     let sigmas = match (&args.sigmas, args.iou_type) {
         (Some(path), IouTypeArg::Keypoints) => Some(load_sigmas(path)?),
@@ -217,6 +228,7 @@ fn emit_artifact(
 #[allow(clippy::too_many_arguments)]
 fn run_kernel(
     iou_type: IouTypeArg,
+    conv: vernier_geom::Convention,
     gt: &CocoDataset,
     dt: &CocoDetections,
     parity: ParityMode,
@@ -243,6 +255,10 @@ fn run_kernel(
         IouTypeArg::Keypoints => {
             evaluate_keypoints(gt, dt, eval_params, parity, sigmas.unwrap_or_default())?
         }
+        IouTypeArg::RotatedBox => {
+            vernier_core::evaluate_rotated_box(gt, dt, eval_params, parity, conv)?
+        }
+        IouTypeArg::Quad => vernier_core::evaluate_quad(gt, dt, eval_params, parity)?,
     };
     Ok(grid)
 }
@@ -348,8 +364,10 @@ fn run_lrp(
         area_ranges: &area,
     };
 
+    let conv = args.convention();
     let partitioned = run_lrp_kernel(
         args.iou_type,
+        conv,
         &inputs.gt,
         &inputs.dt,
         params,
@@ -375,6 +393,7 @@ fn run_lrp(
 #[allow(clippy::too_many_arguments)]
 fn run_lrp_kernel(
     iou_type: IouTypeArg,
+    conv: vernier_geom::Convention,
     gt: &CocoDataset,
     dt: &CocoDetections,
     params: LrpParams<'_>,
@@ -426,6 +445,24 @@ fn run_lrp_kernel(
                 spec,
             )
         }
+        IouTypeArg::RotatedBox => evaluate_partitioned_lrp(
+            gt,
+            dt,
+            &vernier_core::similarity::RotatedBoxIou::new(conv, parity),
+            LrpKernelMarker::RotatedBox,
+            params,
+            parity,
+            spec,
+        ),
+        IouTypeArg::Quad => evaluate_partitioned_lrp(
+            gt,
+            dt,
+            &vernier_core::similarity::QuadIou::new(parity),
+            LrpKernelMarker::Quad,
+            params,
+            parity,
+            spec,
+        ),
     }
     .map_err(CliError::from)?;
     Ok(report)

@@ -1428,6 +1428,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
             CocoAnnotation {
                 id: crate::dataset::AnnId(2),
@@ -1445,6 +1447,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
         ];
         let dataset = CocoDataset::from_parts(images, anns, categories).unwrap();
@@ -1465,6 +1469,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
             DetectionInput {
                 id: None,
@@ -1482,6 +1488,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
         ];
         let detections = crate::dataset::CocoDetections::from_inputs(dt_inputs).unwrap();
@@ -1560,6 +1568,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }];
         let dataset = CocoDataset::from_parts(images, anns, categories).unwrap();
         let dt_inputs = vec![DetectionInput {
@@ -1577,6 +1587,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }];
         let detections = crate::dataset::CocoDetections::from_inputs(dt_inputs).unwrap();
         let area = AreaRange::coco_default();
@@ -1687,6 +1699,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }];
         let dataset = CocoDataset::from_parts(images, anns, categories).unwrap();
         let dt_inputs = vec![DetectionInput {
@@ -1704,6 +1718,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }];
         let detections = crate::dataset::CocoDetections::from_inputs(dt_inputs).unwrap();
         let area = AreaRange::coco_default();
@@ -1959,6 +1975,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
             crate::dataset::DetectionInput {
                 id: None,
@@ -1975,6 +1993,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
         ];
         let detections = crate::dataset::CocoDetections::from_inputs(dt_inputs).unwrap();

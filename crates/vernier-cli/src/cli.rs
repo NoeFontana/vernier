@@ -209,6 +209,19 @@ pub(crate) struct EvalArgs {
     #[arg(long = "dilation-ratio", value_name = "FLOAT")]
     pub(crate) dilation_ratio: Option<f64>,
 
+    /// Angle unit for `--iou-type rotated-box`. Required for that
+    /// kernel and rejected for every other, because an angle without a
+    /// unit is not a box and a default would be a silent wrong answer.
+    #[arg(long = "angle-unit", value_name = "UNIT")]
+    pub(crate) angle_unit: Option<AngleUnitArg>,
+
+    /// Rotation direction for `--iou-type rotated-box`, named after
+    /// what a viewer sees: the pixel frame has y pointing down, so the
+    /// algebraic sign and the visual direction are opposites.
+    /// detectron2 is `screen-ccw`. Required for that kernel.
+    #[arg(long = "rotation", value_name = "DIRECTION")]
+    pub(crate) rotation: Option<RotationArg>,
+
     /// Path to a JSON file mapping `category_id` → per-keypoint
     /// sigmas (ADR-0012). Only valid with `--iou-type keypoints`.
     #[arg(long, value_name = "FILE")]
@@ -289,10 +302,49 @@ pub(crate) enum MetricArg {
     Olrp,
 }
 
+/// Angle unit for the oriented-box kernel (ADR-0063).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lower")]
+pub(crate) enum AngleUnitArg {
+    /// Degrees. Every multiple of 90 is exact.
+    Deg,
+    /// Radians.
+    Rad,
+}
+
+impl AngleUnitArg {
+    pub(crate) fn to_geom(self) -> vernier_geom::AngleUnit {
+        match self {
+            Self::Deg => vernier_geom::AngleUnit::Deg,
+            Self::Rad => vernier_geom::AngleUnit::Rad,
+        }
+    }
+}
+
+/// Rotation direction, as a viewer sees it (ADR-0063).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub(crate) enum RotationArg {
+    /// Positive theta turns clockwise on screen.
+    ScreenCw,
+    /// Positive theta turns counter-clockwise on screen — detectron2's
+    /// convention.
+    ScreenCcw,
+}
+
+impl RotationArg {
+    pub(crate) fn to_geom(self) -> vernier_geom::Rotation {
+        match self {
+            Self::ScreenCw => vernier_geom::Rotation::ScreenCw,
+            Self::ScreenCcw => vernier_geom::Rotation::ScreenCcw,
+        }
+    }
+}
+
 /// IoU kind selector. Maps onto `vernier_core` kernels; see
 /// `crate::commands::eval` for the dispatch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-#[value(rename_all = "lower")]
+#[value(rename_all = "kebab-case")]
 pub(crate) enum IouTypeArg {
     /// Bounding-box IoU.
     Bbox,
@@ -302,6 +354,12 @@ pub(crate) enum IouTypeArg {
     Boundary,
     /// Object Keypoint Similarity (ADR-0012).
     Keypoints,
+    /// Oriented-box IoU (ADR-0063). Requires `--angle-unit` and
+    /// `--rotation`; every annotation needs an `rbox` field.
+    RotatedBox,
+    /// Four-vertex polygon IoU (ADR-0063). Every annotation needs a
+    /// `quad` field.
+    Quad,
 }
 
 impl IouTypeArg {
@@ -313,6 +371,8 @@ impl IouTypeArg {
             Self::Segm => "segm",
             Self::Boundary => "boundary",
             Self::Keypoints => "keypoints",
+            Self::RotatedBox => "rotated-box",
+            Self::Quad => "quad",
         }
     }
 
@@ -325,6 +385,8 @@ impl IouTypeArg {
             Self::Segm => KernelKind::Segm,
             Self::Boundary => KernelKind::Boundary,
             Self::Keypoints => KernelKind::Keypoints,
+            Self::RotatedBox => KernelKind::RotatedBox,
+            Self::Quad => KernelKind::Quad,
         }
     }
 
@@ -499,6 +561,35 @@ impl EvalArgs {
     /// - Each `--emit` must name a registered formatter.
     pub(crate) fn validate(&self) -> Result<Vec<EmitSpec>, CliError> {
         // Kind-coupling for boundary / keypoints flags.
+        // ADR-0063: the convention is required for `rotated-box` and
+        // meaningless elsewhere. Both halves are enforced, because a
+        // silently-ignored `--rotation` is as misleading as a missing
+        // one.
+        if self.iou_type == IouTypeArg::RotatedBox {
+            if self.angle_unit.is_none() {
+                return Err(CliError::Validation(
+                    "--iou-type rotated-box requires --angle-unit (deg|rad). There is \
+                     no default: an angle without a unit is not a box, and guessing \
+                     produces plausible numbers rather than an error."
+                        .into(),
+                ));
+            }
+            if self.rotation.is_none() {
+                return Err(CliError::Validation(
+                    "--iou-type rotated-box requires --rotation (screen-cw|screen-ccw). \
+                     The pixel frame has y pointing down, so the algebraic sign and the \
+                     visual direction are opposites; detectron2 is screen-ccw."
+                        .into(),
+                ));
+            }
+        } else if self.angle_unit.is_some() || self.rotation.is_some() {
+            return Err(CliError::Validation(format!(
+                "--angle-unit / --rotation are only valid with --iou-type rotated-box; \
+                 got --iou-type {}",
+                self.iou_type.as_str()
+            )));
+        }
+
         if self.dilation_ratio.is_some() && self.iou_type != IouTypeArg::Boundary {
             return Err(CliError::Validation(format!(
                 "--dilation-ratio is only valid with --iou-type boundary; got --iou-type {}",
@@ -589,6 +680,20 @@ fn parse_max_dets(raw: &str) -> Result<Vec<usize>, String> {
         out.push(v);
     }
     Ok(out)
+}
+
+impl EvalArgs {
+    /// The oriented-box convention, when one applies.
+    ///
+    /// `validate` has already established that both flags are present
+    /// for `rotated-box` and absent otherwise, so this is total: the
+    /// fallback is only reached by kernels that never read it.
+    pub(crate) fn convention(&self) -> vernier_geom::Convention {
+        match (self.angle_unit, self.rotation) {
+            (Some(u), Some(r)) => vernier_geom::Convention::new(u.to_geom(), r.to_geom()),
+            _ => vernier_geom::Convention::D2,
+        }
+    }
 }
 
 #[cfg(test)]

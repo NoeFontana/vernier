@@ -430,6 +430,8 @@ fn extract_inputs_one<'py>(
             segmentation,
             keypoints,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         });
     }
     Ok(inputs)
@@ -835,6 +837,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
             DetectionInput {
                 id: None,
@@ -851,6 +855,8 @@ mod tests {
                 segmentation: None,
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             },
         ];
 

@@ -129,6 +129,8 @@ fn build_dataset(s: Scenario) -> (CocoDataset, CocoDetections) {
                 segmentation: Some(rect_polygon(x, y, w, h)),
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             });
             next_gt += 1;
         }
@@ -153,6 +155,8 @@ fn build_dataset(s: Scenario) -> (CocoDataset, CocoDetections) {
                 segmentation: Some(rect_polygon(x, y, w, h)),
                 keypoints: None,
                 num_keypoints: None,
+                rbox: None,
+                quad: None,
             });
         }
     }

@@ -751,6 +751,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }];
         CocoDataset::from_parts(images, anns, cats).unwrap()
     }

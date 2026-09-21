@@ -60,6 +60,34 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     parity_mode: ParityMode,
     kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
+    // Same hook, same place in the call graph as the sequential funnel
+    // — the ladder belongs to the *comparison*, not to the schedule, so
+    // the two paths must resolve it identically or ADR-0047's
+    // bit-identity claim across thread counts would not hold.
+    match kernel.project_thresholds(params.iou_thresholds) {
+        Some(projected) => evaluate_with_parallel_inner(
+            gt,
+            dt,
+            EvaluateParams {
+                iou_thresholds: &projected,
+                ..params
+            },
+            parity_mode,
+            kernel,
+        ),
+        None => evaluate_with_parallel_inner(gt, dt, params, parity_mode, kernel),
+    }
+}
+
+/// [`evaluate_with_parallel`] with the ladder already resolved. See
+/// `crate::evaluate::evaluate_with` for why the split exists.
+fn evaluate_with_parallel_inner<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+) -> Result<EvalGrid, EvalError> {
     let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
     images.sort_unstable_by_key(|im| im.id.0);
     let n_i = images.len();
@@ -573,6 +601,56 @@ pub fn evaluate_keypoints_parallel(
     evaluate_with_parallel(gt, dt, params, parity_mode, &OksSimilarity::new(sigmas))
 }
 
+/// Parallel sibling of [`crate::evaluate::evaluate_rotated_box`]
+/// (ADR-0063).
+///
+/// The ADR-0047 invariant holds unchanged: results are bit-identical to
+/// the sequential path at every thread count, because each matrix entry
+/// is a pure function of its `(gt, dt)` pair and the fold order is
+/// fixed by the grid layout, not by completion order. The T1 threshold
+/// projection is applied by [`evaluate_with_parallel`], off
+/// [`EvalKernel::project_thresholds`], exactly as the sequential funnel
+/// applies it — it belongs to the *comparison*, not to the schedule.
+///
+/// # Errors
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_rotated_box_parallel(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    conv: vernier_geom::Convention,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with_parallel(
+        gt,
+        dt,
+        params,
+        parity_mode,
+        &crate::similarity::RotatedBoxIou::new(conv, parity_mode),
+    )
+}
+
+/// Parallel sibling of [`crate::evaluate::evaluate_quad`] (ADR-0063).
+///
+/// # Errors
+/// Propagates [`EvalError`] from the underlying kernel and matching
+/// calls.
+pub fn evaluate_quad_parallel(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_with_parallel(
+        gt,
+        dt,
+        params,
+        parity_mode,
+        &crate::similarity::QuadIou::new(parity_mode),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     //! Rust-side smoke: bit-equal output to `evaluate_with` on a
@@ -622,6 +700,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 
@@ -641,6 +721,8 @@ mod tests {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+            rbox: None,
+            quad: None,
         }
     }
 

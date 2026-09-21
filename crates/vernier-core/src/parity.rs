@@ -724,3 +724,86 @@ mod tests {
         assert_eq!(got, vec![0.1, 0.9]);
     }
 }
+
+/// Project an IoU threshold ladder onto the f32 lattice (ADR-0063 T1).
+///
+/// # Why this exists
+///
+/// detectron2's `RotatedCOCOeval.computeIoU` returns a **torch f32
+/// tensor**, and `pycocotools`' `evaluateImg` then tests
+/// `ious[dind, gind] < iou` with `iou = min(t, 1 - 1e-10)` an
+/// `np.float64`. PyTorch treats that scalar as weakly typed, so the
+/// comparison runs in f32 against `f32(t)` — not in f64 against `t`.
+///
+/// The two disagree on exactly one IoU value per threshold: `f32(t_k)`
+/// itself, whenever `f32(t_k) < t_k`. At `t = 0.7` that is
+/// `0.699999988...`, where detectron2 matches and a faithful f64
+/// comparison does not. The density is around `2^-24` per threshold,
+/// which sounds ignorable until DOTA-v2 puts millions of candidate
+/// pairs through ten thresholds.
+///
+/// Rather than teach the matching engine about dtypes — ADR-0005 locks
+/// that spine, and the per-pair IoUs must stay the oracle's own values —
+/// the evaluator entry substitutes the ladder. Widening is exact and
+/// monotone, so
+///
+/// ```text
+/// x <f32 fl32(t)   <=>   w(x) <f64 w(fl32(t)) = t'
+/// ```
+///
+/// and `match_image` is untouched, in signature and in code. Labels and
+/// `params_hash` keep the original `t`: the ladder substitution is an
+/// implementation of the comparison, not a change to what was asked for.
+///
+/// # The `1 - 1e-10` guard
+///
+/// `match_image` applies `min(t', 1 - IOU_BOUNDARY_EPS)` internally
+/// (quirk **B1**) while the oracle applies `f32(min(t, 1 - 1e-10))`.
+/// These differ only for `t >= 1`, where the oracle compares against
+/// `f32(1 - 1e-10) = 1.0` and vernier against `1 - 1e-10`. No f32 value
+/// lies in `[1 - 1e-10, 1.0)` — the largest f32 below 1 is
+/// `0.99999994` — so the set on which they disagree is empty, and the
+/// composition is exact without a special case.
+///
+/// Only applied under `RotatedBox` + [`ParityMode::Strict`]. Every other
+/// kernel produces an f64 matrix and compares in f64, which is what
+/// `pycocotools` itself does.
+#[must_use]
+pub fn f32_projected_thresholds(thresholds: &[f64]) -> Vec<f64> {
+    #[allow(clippy::cast_possible_truncation)]
+    thresholds.iter().map(|&t| f64::from(t as f32)).collect()
+}
+
+#[cfg(test)]
+mod obb_ladder_tests {
+    use super::*;
+
+    #[test]
+    fn projection_lowers_the_coco_ladder_where_f32_rounds_down() {
+        let projected = f32_projected_thresholds(iou_thresholds());
+        assert_eq!(projected.len(), 10);
+        for (&t, &p) in iou_thresholds().iter().zip(&projected) {
+            assert_eq!(p, f64::from(t as f32));
+        }
+        // 0.7 is the canonical example from ADR-0063.
+        let seven = projected[4];
+        assert!(seven < 0.7, "{seven}");
+        assert_eq!(seven, 0.699_999_988_079_071);
+    }
+
+    #[test]
+    fn projection_is_idempotent() {
+        let once = f32_projected_thresholds(iou_thresholds());
+        let twice = f32_projected_thresholds(&once);
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn no_f32_value_falls_in_the_boundary_guard_gap() {
+        // The reason the `min(t, 1 - IOU_BOUNDARY_EPS)` composition
+        // needs no special case: the interval is empty in f32.
+        let below_one = 1.0_f32.to_bits() - 1;
+        let largest = f64::from(f32::from_bits(below_one));
+        assert!(largest < 1.0 - IOU_BOUNDARY_EPS, "{largest}");
+    }
+}
