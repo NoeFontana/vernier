@@ -15,6 +15,8 @@
 //! `{0, 2}` thus encodes identically to `{0, 1}`, bit-for-bit with
 //! the reference.
 
+use std::ops::Range;
+
 use crate::error::{MalformedRleReason, MaskError};
 use crate::rle::Rle;
 
@@ -174,6 +176,69 @@ impl Rle {
             is_fg = !is_fg;
         }
     }
+
+    /// Calls `f(x, y_start..y_end)` for every contiguous vertical foreground
+    /// span in column `x`.
+    ///
+    /// `x` is in `0..w`, and `ys` is a half-open range `y_start..y_end`
+    /// satisfying `0 <= ys.start < ys.end <= h`.
+    ///
+    /// Traverses `counts` in a single pass with zero heap allocations.
+    /// Used by renderers, RGBA blitters, WebGL texture loaders, and
+    /// contour generators to visit foreground pixels directly without
+    /// materializing an intermediate binary mask.
+    pub fn for_each_fg_span<F>(&self, mut f: F)
+    where
+        F: FnMut(u32, Range<u32>),
+    {
+        let h = self.h as usize;
+        let w = self.w as usize;
+        if h == 0 || w == 0 {
+            return;
+        }
+        let total_pixels = h.saturating_mul(w);
+        let mut is_fg = false;
+        let mut cum = 0usize;
+        for &len in self.counts.iter() {
+            let run_len = len as usize;
+            if !is_fg || run_len == 0 {
+                cum += run_len;
+                is_fg = !is_fg;
+                continue;
+            }
+            let run_start = cum.min(total_pixels);
+            let run_end = (cum + run_len).min(total_pixels);
+            let mut idx = run_start;
+            while idx < run_end {
+                let x = idx / h;
+                let col_end_flat = (x + 1) * h;
+                let chunk_end = run_end.min(col_end_flat);
+                let y_lo = (idx - x * h) as u32;
+                let y_hi = (chunk_end - x * h) as u32;
+                if y_lo < y_hi {
+                    f(x as u32, y_lo..y_hi);
+                }
+                idx = chunk_end;
+            }
+            cum += run_len;
+            is_fg = !is_fg;
+        }
+    }
+
+    /// Calls `f(x, y)` for every foreground pixel in the mask.
+    ///
+    /// Pixels are visited column-by-column, top-to-bottom within each
+    /// column, matching COCO RLE's native column-major layout.
+    pub fn for_each_fg_pixel<F>(&self, mut f: F)
+    where
+        F: FnMut(u32, u32),
+    {
+        self.for_each_fg_span(|x, ys| {
+            for y in ys {
+                f(x, y);
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -319,5 +384,73 @@ mod tests {
                 }
             }
         }
+
+        #[test]
+        fn for_each_fg_span_matches_raster(
+            (h, w, raster) in (1usize..=10, 1usize..=10).prop_flat_map(|(h, w)| {
+                let len = h * w;
+                (Just(h), Just(w), proptest::collection::vec(0u8..=1, len..=len))
+            }),
+        ) {
+            let r = Rle::from_raster_bytes(&raster, h as u32, w as u32)?;
+            let mut visited_count = 0u64;
+            let mut reconstructed = vec![0u8; h * w];
+
+            r.for_each_fg_span(|x, ys| {
+                assert!(ys.start < ys.end);
+                assert!(ys.end <= h as u32);
+                assert!(x < w as u32);
+                visited_count += (ys.end - ys.start) as u64;
+                for y in ys {
+                    let idx = (x as usize) * h + (y as usize);
+                    reconstructed[idx] = 1;
+                }
+            });
+
+            prop_assert_eq!(visited_count, r.area());
+            prop_assert_eq!(&reconstructed, &raster);
+
+            // Also verify for_each_fg_pixel visits exactly the same set.
+            let mut pixel_reconstructed = vec![0u8; h * w];
+            r.for_each_fg_pixel(|x, y| {
+                let idx = (x as usize) * h + (y as usize);
+                pixel_reconstructed[idx] = 1;
+            });
+            prop_assert_eq!(&pixel_reconstructed, &raster);
+        }
+    }
+
+    #[test]
+    fn for_each_fg_span_empty_mask() {
+        let r0 = Rle::empty(0, 0);
+        let mut count = 0;
+        r0.for_each_fg_span(|_, _| count += 1);
+        assert_eq!(count, 0);
+
+        let r_bg = Rle::from_counts(4, 4, vec![16]);
+        let mut count_bg = 0;
+        r_bg.for_each_fg_span(|_, _| count_bg += 1);
+        assert_eq!(count_bg, 0);
+    }
+
+    #[test]
+    fn for_each_fg_span_single_pixel() {
+        // 2x3 with pixel at (x=1, y=1) -> flat idx 3.
+        let mut mask = vec![0u8; 6];
+        mask[3] = 1;
+        let r = Rle::from_raster_bytes(&mask, 2, 3).unwrap();
+        let mut spans = Vec::new();
+        r.for_each_fg_span(|x, ys| spans.push((x, ys)));
+        assert_eq!(spans, vec![(1, 1..2)]);
+    }
+
+    #[test]
+    fn for_each_fg_span_spanning_columns() {
+        // 2x3 mask with fg from flat idx 1 to 4: [0, 1, 1, 1, 1, 0]
+        let mask = vec![0, 1, 1, 1, 1, 0];
+        let r = Rle::from_raster_bytes(&mask, 2, 3).unwrap();
+        let mut spans = Vec::new();
+        r.for_each_fg_span(|x, ys| spans.push((x, ys)));
+        assert_eq!(spans, vec![(0, 1..2), (1, 0..2), (2, 0..1)]);
     }
 }
