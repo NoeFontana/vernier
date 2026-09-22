@@ -92,6 +92,7 @@ nav:
       - Evaluate keypoints with OKS: how-to/keypoints-oks.md
       - Evaluate on a background thread: how-to/background-evaluator.md
       - Ingest detection arrays: how-to/array-ingest.md
+      - Metrics inside a training loop: how-to/training-loop-metrics.md
       - Distributed evaluation: how-to/distributed-eval.md
       - Per-class metrics by manifest slice: how-to/per-class-by-slice.md
   - Reference:

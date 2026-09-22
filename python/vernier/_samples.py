@@ -477,17 +477,24 @@ def coco_inputs(
     would select is within 0.3% of the alternative on a real grid. One
     set of inputs therefore serves both passes of a two-IoU-type run.
 
-    The pair is returned rather than a metric, because the same inputs
-    drive every vernier surface — :class:`vernier.instance.Evaluator`,
-    TIDE, LRP, result tables, calibration, custom grids (ADR-0040) and
-    the partitioned/DDP path. :func:`coco_metrics` is the convenience
-    wrapper for the AP case.
+    The pair is returned rather than a metric, because it is what every
+    surface that takes a parsed ground truth reads:
+    :class:`vernier.instance.Evaluator`, the ``evaluate_*_grid`` and
+    ``evaluate_*_summary`` entry points, custom grids (ADR-0040),
+    calibration through ``cells_from_grid``, and the partitioned/DDP
+    path. :func:`coco_metrics` is the convenience wrapper for the AP
+    case.
 
-    Three of this function's decisions need both sides, which is why it
-    is one call and not two: a class seen only in predictions must still
-    become a category; image sizes fall back from the ground truth's
-    masks to the detections'; and the detection route is chosen per IoU
-    type.
+    TIDE, LRP, the confusion matrix and the ``tables=`` path do **not**
+    take it yet — each refuses a :class:`CocoDataset` handle and asks
+    for GT JSON bytes, a limitation that predates this route and is
+    theirs to lift. When they lift it these inputs work unchanged, which
+    is the point of returning them rather than a metric.
+
+    Two of this function's decisions need both sides, which is why it is
+    one call and not two: a class seen only in predictions must still
+    become a category, and image sizes fall back from the ground truth's
+    masks to the detections'.
 
     Args:
         predictions: One record per image. See :class:`Prediction`.
@@ -1118,8 +1125,8 @@ def coco_metrics(
     """Evaluate per-image records and return the COCO metrics (ADR-0063).
 
     The convenience wrapper over :func:`coco_inputs` for the AP case.
-    Anything else — TIDE, LRP, result tables, calibration, a custom grid
-    — takes :func:`coco_inputs`' pair directly.
+    Anything else — a custom grid, calibration, the partitioned path —
+    takes :func:`coco_inputs`' pair directly.
 
     Values are Python floats and numpy arrays. Converting them to a
     framework tensor is the caller's one line (``torch.as_tensor(...)``,

@@ -1,6 +1,6 @@
 # ADR-0063: An ingest route for training loops
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-09-21
 - **Deciders:** @NoeFontana
 - **Consulted:** —
@@ -112,10 +112,20 @@ it.
 Option 3 is the honest description of the change: it is a fourth way to
 construct the inputs the other three routes construct, which is a route,
 not a subsystem. It also composes. Returning the
-`(CocoDataset, DetectionsInput)` pair means TIDE, LRP, result tables,
-calibration, custom grids (ADR-0040) and the partitioned/DDP path all
-work against per-image records for free, whereas option 2 would serve AP
-and leave every other surface needing its own adapter.
+`(CocoDataset, DetectionsInput)` pair means `Evaluator`, every
+`evaluate_*_grid` / `evaluate_*_summary` entry point, custom grids
+(ADR-0040), calibration through `cells_from_grid` and the
+partitioned/DDP path all work against in-memory records for free,
+whereas option 2 would serve AP and leave every one of them needing its
+own adapter.
+
+To be exact about the rest: TIDE, LRP, the confusion matrix, the FP-IoU
+histogram and the `tables=` / `manifest=` paths each refuse a
+`CocoDataset` handle today and ask for GT JSON bytes. That limitation
+predates this route and is theirs to lift — but it is the reason the
+pair is worth returning: when they lift it, these inputs work unchanged,
+whereas a metric-returning route would still need a second entry point
+per surface.
 
 ### Surface
 
@@ -309,9 +319,10 @@ reason no framework import is needed.
 ### Option 2 — route returning metrics
 
 - 👍 Smallest possible call site for the AP case.
-- 👎 Serves AP only. TIDE, LRP, tables, calibration and custom grids
-  would each need their own per-sample entry point, or callers fall back
-  to writing the conversion anyway.
+- 👎 Serves AP only. Custom grids, calibration and the partitioned path
+  would each need their own per-sample entry point — as would TIDE, LRP
+  and tables once those accept a `CocoDataset` — or callers fall back to
+  writing the conversion anyway.
 - 👎 Makes the metric vocabulary the route's contract rather than a
   detail of one wrapper.
 

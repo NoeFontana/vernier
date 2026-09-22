@@ -840,3 +840,35 @@ def test_a_mask_error_names_the_callers_index() -> None:
 
     with pytest.raises(ValueError, match=r"^masks\[1\]\.counts: "):
         _mask_areas([np.zeros((4, 4), np.uint8), {"size": (4, 4), "counts": b"\xff\xff"}])
+
+
+def test_the_pair_drives_the_surfaces_the_docs_promise() -> None:
+    """ADR-0063's case for returning inputs instead of a metric.
+
+    The claim is only worth making if it is true, and it is narrower
+    than "everything": TIDE, LRP, the confusion matrix and the
+    ``tables=`` path each refuse a :class:`CocoDataset` handle today. So
+    this pins the ones that do take it — the evaluator, the grid, the
+    summary entry point and calibration — and pins the refusals too, so
+    the docs stop being right silently rather than loudly.
+    """
+    from vernier import _core
+    from vernier.instance import Bbox, Evaluator, error_decomposition, evaluate_bbox_grid
+
+    predictions, targets = _box_records()
+    ground_truth, detections = coco_inputs(predictions, targets)
+
+    summary = Evaluator(iou=Bbox()).evaluate(ground_truth, detections)
+    assert summary.stats[0] > 0
+
+    grid = evaluate_bbox_grid(
+        ground_truth, detections, parity_mode="corrected", max_dets_per_image=100, use_cats=True
+    )
+    accumulated = grid.accumulate([1, 10, 100])
+    assert accumulated.summarize([1, 10, 100]).stats[0] == summary.stats[0]
+    assert _core.cells_from_grid(grid) is not None
+
+    with pytest.raises(NotImplementedError, match="CocoDataset"):
+        error_decomposition(ground_truth, cast("Any", detections))
+    with pytest.raises(NotImplementedError, match="CocoDataset"):
+        Evaluator(iou=Bbox()).evaluate(ground_truth, detections, tables="all")
