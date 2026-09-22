@@ -341,7 +341,6 @@ def test_categories_are_sorted_by_id_whatever_the_caller_passed(order: list[int]
     ("kwargs", "match"),
     [
         ({"box_format": "XYXY"}, "box_format"),
-        ({"iou_type": "segm2"}, "iou_type"),
         ({"area": "bogus"}, "area"),
     ],
 )
@@ -513,26 +512,23 @@ def test_segm_metrics_do_not_depend_on_the_boxes() -> None:
         assert float(omitted[key]) == float(truthful[key]) == float(nonsense[key])
 
 
-def test_bbox_still_requires_boxes() -> None:
-    """The column is load-bearing under ``bbox``, so it stays required there."""
-    predicted, actual = _discs()
-    targets: list[Target] = [{"labels": np.array([0]), "masks": masks} for masks in actual]
-    predictions: list[Prediction] = [
-        {"labels": np.array([0]), "scores": np.array([0.9]), "masks": masks} for masks in predicted
-    ]
+def test_boxes_are_required_without_masks() -> None:
+    """A record with no mask must carry boxes: nothing else can size the annotation."""
+    targets: list[Target] = [{"labels": np.array([0])}]
+    predictions: list[Prediction] = [{"labels": np.array([0]), "scores": np.array([0.9])}]
     with pytest.raises(KeyError, match="boxes is required"):
-        coco_inputs(predictions, targets, iou_type="bbox")
+        coco_inputs(predictions, targets)
 
 
-def test_auto_area_reads_the_mask_even_under_bbox() -> None:
-    """A COCO ground truth's ``area`` is the segmentation's, under either IoU type.
+def test_auto_area_reads_the_mask_not_the_box() -> None:
+    """A COCO ground truth's ``area`` is the segmentation's whenever it has one.
 
-    ``COCOeval`` with ``iouType="bbox"`` buckets by the annotation's
-    ``area`` field, which in a COCO file is the segmentation's area — it
-    never recomputes ``w * h``. Deriving the box area for a bbox pass
-    would disagree with every pycocotools-shaped evaluator for any
-    object whose two areas straddle ``32**2`` or ``96**2``, visible only
-    as AP moving between the small and medium buckets.
+    ``COCOeval`` buckets by the annotation's ``area`` field under either
+    IoU type, and in a COCO file that field is the segmentation's area --
+    it never recomputes ``w * h``. Deriving the box area would disagree
+    with every pycocotools-shaped evaluator for any object whose two
+    areas straddle ``32**2`` or ``96**2``, visible only as AP moving
+    between the small and medium buckets.
 
     A disc of radius 17 straddles it: box ``34 x 34 = 1156`` (medium),
     mask ``~901`` (small).
@@ -542,33 +538,27 @@ def test_auto_area_reads_the_mask_even_under_bbox() -> None:
     assert 34 * 34 > 32**2  # the box is medium
     assert int(mask.sum()) < 32**2  # the mask is small
 
-    targets: list[Target] = [
-        {
+    def built(area: Any = None) -> bytes:
+        target: Target = {
             "boxes": np.array([[47.0, 47.0, 34.0, 34.0]]),
             "labels": np.array([1]),
             "masks": np.asfortranarray(mask.astype(bool))[None],
         }
-    ]
-    predictions: list[Prediction] = [
-        {"boxes": np.zeros((0, 4)), "scores": np.zeros(0), "labels": np.zeros(0, dtype=np.int64)}
-    ]
-    dataset, _ = coco_inputs(predictions, targets, iou_type="bbox", categories=[1])
-
-    expected = _dataset_from_json(
-        [{"id": 0, "height": 0, "width": 0}],
-        [
+        if area is not None:
+            target["area"] = area
+        predictions: list[Prediction] = [
             {
-                "id": 1,
-                "image_id": 0,
-                "category_id": 1,
-                "bbox": [47.0, 47.0, 34.0, 34.0],
-                "area": float(mask.sum()),
-                "iscrowd": 0,
+                "boxes": np.zeros((0, 4)),
+                "scores": np.zeros(0),
+                "labels": np.zeros(0, dtype=np.int64),
             }
-        ],
-        [{"id": 1, "name": "1"}],
-    )
-    assert dataset.dataset_hash == expected.dataset_hash
+        ]
+        return coco_inputs(predictions, [target], categories=[1])[0].dataset_hash
+
+    # `auto` lands on the mask's area, which is what supplying it gives...
+    assert built() == built(np.array([float(mask.sum())]))
+    # ... and not on the box's.
+    assert built() != built(np.array([34.0 * 34.0]))
 
 
 @pytest.mark.parametrize("iou_type", ["bbox", "segm"])
@@ -637,10 +627,8 @@ def test_columnar_and_per_sample_agree(iou_type: Any) -> None:
         target_columns["rles"] = [m for record in targets for m in record.get("masks", [])]
         detection_columns["rles"] = [m for record in predictions for m in record.get("masks", [])]
 
-    by_record, record_detections = coco_inputs(predictions, targets, iou_type=iou_type)  # type: ignore[arg-type]
-    by_column, column_detections = coco_inputs_from_columns(
-        detection_columns, target_columns, iou_type=iou_type
-    )
+    by_record, record_detections = coco_inputs(predictions, targets)  # type: ignore[arg-type]
+    by_column, column_detections = coco_inputs_from_columns(detection_columns, target_columns)
 
     assert by_record.dataset_hash == by_column.dataset_hash
     assert by_record.num_annotations == by_column.num_annotations > 0

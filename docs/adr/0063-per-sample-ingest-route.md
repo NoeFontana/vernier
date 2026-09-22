@@ -210,6 +210,22 @@ indistinguishable between `xywh` and `xyxy` in general, and a wrong
 guess produces plausible, wrong AP rather than an error. The default is
 `"xywh"` because that is vernier-native and COCO-native.
 
+**There is no `iou_type`.** Neither builder takes one; the masks decide.
+Records that carry masks produce inputs a `segm` grid can read, records
+that do not produce bbox-only inputs, and the caller names the IoU type
+exactly once — at the grid it calls, or at `coco_metrics`. Naming it
+here as well would be two places to say one thing, with nothing to stop
+them disagreeing, and it bought nothing: attaching segmentation costs
+~2% of the conversion (29.4 ms vs 30.1 ms on 80k detections), and the
+`(N, 7)` matrix route it would have selected is within 0.3% of the
+columnar one on a real bbox grid (995.0 ms vs 997.7 ms). ADR-0057's
+case for the matrix route stands for a caller who has only boxes; it is
+not a reason to make the *builder* ask which kernel comes next.
+
+The consequence is that one set of inputs serves every pass of a
+multi-IoU-type run, so `coco_metrics` converts once rather than once
+per type.
+
 ### `cast_inputs=True` on this route only
 
 ADR-0004 pins `f64` at the boundary and ADR-0030 refuses `f32` rather

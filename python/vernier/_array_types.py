@@ -309,9 +309,9 @@ class Prediction(TypedDict, total=False):
     :func:`vernier.adapters.coco_inputs` was told to read; an empty
     image may pass ``(0, 4)`` or the ``(1, 0)`` shape TorchMetrics'
     ``_fix_empty_tensors`` produces, and both are normalized. It is
-    **required under** ``bbox`` and **optional under** ``segm``, where
-    no kernel reads it — a mask-only pipeline need not materialize
-    boxes it does not have.
+    **optional when the record carries masks**, where no kernel reads it
+    — a mask-only pipeline need not materialize boxes it does not have —
+    and required otherwise.
 
     Masks arrive either already encoded (``rles``) or as bitmasks
     (``masks``) — the two populations differ, and both are accepted so

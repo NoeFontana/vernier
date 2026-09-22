@@ -163,7 +163,6 @@ def _record_boxes(
     labels: NDArray[np.int64],
     box_format: BoxFormat,
     *,
-    masked: bool,
     cast_inputs: bool,
 ) -> NDArray[np.float64]:
     """One record's boxes, which a mask-only pipeline need not carry.
@@ -185,7 +184,7 @@ def _record_boxes(
     includes each pass of a two-IoU-type run, since the bbox pass builds
     its own inputs.
     """
-    if "boxes" not in record and masked:
+    if "boxes" not in record and _has_masks(record):
         return np.zeros((len(labels), 4), dtype=np.float64)
     return _boxes(
         _required(record, "boxes", field), box_format, f"{field}.boxes", cast_inputs=cast_inputs
@@ -424,7 +423,6 @@ def coco_inputs(
     predictions: Sequence[Prediction],
     targets: Sequence[Target],
     *,
-    iou_type: SampleIouType = "bbox",
     box_format: BoxFormat = "xywh",
     categories: Sequence[int] | Sequence[GtCategory] | None = None,
     area: AreaPolicy = "auto",
@@ -434,6 +432,15 @@ def coco_inputs(
 
     ``predictions[i]`` and ``targets[i]`` describe the same image; the
     two sequences must be the same length and aligned.
+
+    **There is no ``iou_type``.** The masks decide: records that carry
+    them produce inputs a ``segm`` grid can read, and records that do
+    not produce bbox-only inputs. Naming the IoU type here as well as at
+    the grid would be two places to say one thing and a chance for them
+    to disagree — and it bought nothing measurable, since attaching
+    segmentation costs ~2% of the conversion and the detection route it
+    would select is within 0.3% of the alternative on a real grid. One
+    set of inputs therefore serves both passes of a two-IoU-type run.
 
     The pair is returned rather than a metric, because the same inputs
     drive every vernier surface — :class:`vernier.instance.Evaluator`,
@@ -450,9 +457,6 @@ def coco_inputs(
     Args:
         predictions: One record per image. See :class:`Prediction`.
         targets: One record per image. See :class:`Target`.
-        iou_type: ``"bbox"`` or ``"segm"``. Under ``"segm"`` every
-            record needs masks; ``boxes`` become optional there, since
-            nothing reads them (see :func:`_record_boxes`).
         box_format: Layout ``boxes`` is read as. Never auto-detected: a
             ``(N, 4)`` array is ambiguous between ``xywh`` and ``xyxy``,
             and a wrong guess yields plausible, wrong AP rather than an
@@ -485,8 +489,7 @@ def coco_inputs(
             f"predictions and targets must describe the same images: "
             f"got {len(predictions)} and {len(targets)}"
         )
-    _validate_literals(iou_type=iou_type, area=area, box_format=box_format)
-    masked = iou_type == "segm"
+    _validate_literals(area=area, box_format=box_format)
     image_ids = _image_ids(predictions, targets)
 
     gt_boxes: list[NDArray[np.float64]] = []
@@ -499,9 +502,7 @@ def coco_inputs(
         # Labels first: they define the annotation count, which is what an
         # omitted box column is sized against.
         labels = _labels(_required(target, "labels", field), f"{field}.labels")
-        boxes = _record_boxes(
-            target, field, labels, box_format, masked=masked, cast_inputs=cast_inputs
-        )
+        boxes = _record_boxes(target, field, labels, box_format, cast_inputs=cast_inputs)
         if len(boxes) != len(labels):
             raise ValueError(f"{field}: {len(boxes)} boxes for {len(labels)} labels")
         crowds = (
@@ -524,7 +525,7 @@ def coco_inputs(
         crowd_column: NDArray[np.int64] = np.asarray(crowds, dtype=np.int64)
         gt_crowds.append(np.reshape(crowd_column, (-1,)))
         gt_supplied.append(supplied)
-        gt_rles.append(_rles(target, field, len(labels)) if masked or _has_masks(target) else [])
+        gt_rles.append(_rles(target, field, len(labels)) if _has_masks(target) else [])
 
     dt_boxes: list[NDArray[np.float64]] = []
     dt_labels: list[NDArray[np.int64]] = []
@@ -533,9 +534,7 @@ def coco_inputs(
     for i, prediction in enumerate(predictions):
         field = f"predictions[{i}]"
         labels = _labels(_required(prediction, "labels", field), f"{field}.labels")
-        boxes = _record_boxes(
-            prediction, field, labels, box_format, masked=masked, cast_inputs=cast_inputs
-        )
+        boxes = _record_boxes(prediction, field, labels, box_format, cast_inputs=cast_inputs)
         scores = _column(prediction, "scores", field, cast_inputs=cast_inputs)
         if not (len(boxes) == len(labels) == len(scores)):
             raise ValueError(
@@ -545,9 +544,7 @@ def coco_inputs(
         dt_boxes.append(boxes)
         dt_labels.append(labels)
         dt_scores.append(scores)
-        dt_rles.append(
-            _rles(prediction, field, len(labels)) if masked or _has_masks(prediction) else []
-        )
+        dt_rles.append(_rles(prediction, field, len(labels)) if _has_masks(prediction) else [])
 
     flat_gt_rles = [rle for image in gt_rles for rle in image]
     flat_dt_rles = [rle for image in dt_rles for rle in image]
@@ -567,7 +564,6 @@ def coco_inputs(
         dt_rles=flat_dt_rles,
         image_ids=image_ids,
         sizes=[target.get("size") for target in targets],
-        iou_type=iou_type,
         categories=categories,
         area=area,
     )
@@ -577,7 +573,6 @@ def coco_inputs_from_columns(
     detections: DetectionColumns,
     targets: TargetColumns,
     *,
-    iou_type: SampleIouType = "bbox",
     box_format: BoxFormat = "xywh",
     categories: Sequence[int] | Sequence[GtCategory] | None = None,
     area: AreaPolicy = "auto",
@@ -610,7 +605,6 @@ def coco_inputs_from_columns(
             :class:`DetectionColumns`.
         targets: Every ground-truth annotation, as columns. See
             :class:`TargetColumns`.
-        iou_type: ``"bbox"`` or ``"segm"``.
         box_format: Layout ``boxes`` is read as; never auto-detected.
         categories: The COCO ``categories`` section, as ids or entries.
             ``None`` takes the union of every label on both sides.
@@ -630,7 +624,7 @@ def coco_inputs_from_columns(
         TypeError: If a value cannot be read as an array, or its dtype is
             wrong under ``cast_inputs=False``.
     """
-    _validate_literals(iou_type=iou_type, area=area, box_format=box_format)
+    _validate_literals(area=area, box_format=box_format)
     gt_counts = _counts(targets, "targets")
     dt_counts = _counts(detections, "detections")
     if len(gt_counts) != len(dt_counts):
@@ -690,15 +684,14 @@ def coco_inputs_from_columns(
         gt_crowds=crowds,
         gt_area=supplied,
         gt_counts=gt_counts,
-        gt_rles=_flat_rles(targets, "targets", len(gt_labels), required=iou_type == "segm"),
+        gt_rles=_flat_rles(targets, "targets", len(gt_labels)),
         dt_boxes=dt_boxes,
         dt_scores=dt_scores,
         dt_labels=dt_labels,
         dt_counts=dt_counts,
-        dt_rles=_flat_rles(detections, "detections", len(dt_labels), required=iou_type == "segm"),
+        dt_rles=_flat_rles(detections, "detections", len(dt_labels)),
         image_ids=ids,
         sizes=sizes,
-        iou_type=iou_type,
         categories=categories,
         area=area,
     )
@@ -727,27 +720,19 @@ def _columns_boxes(
     return boxes
 
 
-def _flat_rles(
-    columns: DetectionColumns | TargetColumns, field: str, count: int, *, required: bool
-) -> list[RLEInput]:
-    """The flat mask column, or empty when the caller carries none.
-
-    ``required`` under ``segm``, where an absent or short column is an
-    error rather than a bbox-only run.
-    """
-    if not required and not _has_masks(columns):
+def _flat_rles(columns: DetectionColumns | TargetColumns, field: str, count: int) -> list[RLEInput]:
+    """The flat mask column, or empty when the caller carries none."""
+    if not _has_masks(columns):
         return []
     return _rles(columns, field, count)
 
 
-def _validate_literals(*, iou_type: str, area: str, box_format: str) -> None:
+def _validate_literals(*, area: str, box_format: str) -> None:
     """Refuse an unrecognised option rather than falling through to a default.
 
     Every one of these selects a behaviour that is silently wrong if
     mis-selected, so a typo must raise instead of picking an arm.
     """
-    if iou_type not in ("bbox", "segm"):
-        raise ValueError(f"unknown iou_type {iou_type!r}; expected 'bbox' or 'segm'")
     if area not in ("auto", "supplied", "box", "mask"):
         raise ValueError(f"unknown area {area!r}; expected 'auto', 'supplied', 'box' or 'mask'")
     if box_format not in ("xywh", "xyxy", "cxcywh"):
@@ -779,7 +764,6 @@ def _build(
     dt_rles: Sequence[RLEInput],
     image_ids: NDArray[np.int64],
     sizes: Sequence[tuple[int, int] | None] | None,
-    iou_type: SampleIouType,
     categories: Sequence[int] | Sequence[GtCategory] | None,
     area: AreaPolicy,
 ) -> tuple[_core.CocoDataset, DetectionsInput]:
@@ -790,7 +774,9 @@ def _build(
     a way of producing these arrays, and everything the evaluator sees
     is decided here.
     """
-    masked = iou_type == "segm"
+    # Masks decide, not a parameter: carrying them means the inputs support
+    # `segm`, and the caller picks the grid. See `coco_inputs`.
+    masked = len(gt_rles) > 0 or len(dt_rles) > 0
     total = int(gt_counts.sum())
     heights, widths = (
         _flat_image_sizes(gt_rles, gt_counts, dt_rles, dt_counts, sizes)
@@ -1043,7 +1029,10 @@ def coco_metrics(
         predictions: One record per image. See :class:`Prediction`.
         targets: One record per image. See :class:`Target`.
         iou_type: One IoU type, or several. With more than one, each
-            metric key is prefixed (``bbox_map``, ``segm_map``).
+            metric key is prefixed (``bbox_map``, ``segm_map``). This is
+            the one place the IoU type is named, because it is the one
+            that calls a kernel; :func:`coco_inputs` builds inputs that
+            serve whichever grid the masks allow.
         box_format: Layout ``boxes`` is read as.
         categories: See :func:`coco_inputs`.
         area: See :func:`coco_inputs`.
@@ -1078,18 +1067,21 @@ def coco_metrics(
     # Resolved once: `_categories` is order-defining (it sorts by id), and
     # recomputing it per IoU type would re-read every label column.
     resolved = _categories(categories, _label_columns(predictions, targets))
+    # Built once for every IoU type: the inputs do not depend on which grid
+    # reads them, so a two-IoU-type run converts the state once.
+    dataset, detections = coco_inputs(
+        predictions,
+        targets,
+        box_format=box_format,
+        categories=resolved,
+        area=area,
+        cast_inputs=cast_inputs,
+    )
+    if "segm" in iou_types and not isinstance(detections, list):
+        raise ValueError("iou_type='segm' needs masks on the records; none were passed")
     results: dict[str, float | NDArray[Any]] = {}
     for kind in iou_types:
         prefix = "" if len(iou_types) == 1 else f"{kind}_"
-        dataset, detections = coco_inputs(
-            predictions,
-            targets,
-            iou_type=kind,
-            box_format=box_format,
-            categories=resolved,
-            area=area,
-            cast_inputs=cast_inputs,
-        )
         shared: dict[str, Any] = {
             "parity_mode": parity_mode,
             "max_dets_per_image": ladder[-1],
