@@ -304,3 +304,70 @@ def test_coco_metrics_matches_pycocotools_on_segm() -> None:
     # and the large one must not — which is the mask-area fallback's doing.
     assert float(candidate["map_small"]) > 0
     assert float(candidate["map_large"]) == -1
+
+
+def test_coco_metrics_matches_pycocotools_on_both_iou_types() -> None:
+    """A two-IoU-type run prefixes its keys and emits the full set.
+
+    Each IoU type builds its own inputs — a segm ground truth carries
+    segmentation and image sizes a bbox one does not — so this is not
+    the single-type cases run twice. It is also the shape a training
+    run that logs both actually uses.
+    """
+    from vernier.adapters import coco_metrics
+
+    rows, columns = np.ogrid[:40, :50]
+
+    def disc(center_x: int, center_y: int, radius: int) -> Any:
+        return ((rows - center_y) ** 2 + (columns - center_x) ** 2 <= radius**2).astype(np.uint8)
+
+    def boxes_of(masks: Any) -> Any:
+        corners = []
+        for mask in masks:
+            ys, xs = np.nonzero(mask)
+            corners.append([xs.min(), ys.min(), xs.max() + 1, ys.max() + 1])
+        return torch.tensor(np.asarray(corners, dtype=np.float64))
+
+    predicted = [np.stack([disc(12, 12, 7), disc(35, 25, 6)]), np.stack([disc(20, 20, 9)])]
+    actual = [np.stack([disc(13, 12, 7), disc(34, 25, 6)]), np.stack([disc(21, 20, 9)])]
+    predictions = [
+        {
+            "boxes": boxes_of(masks),
+            "scores": torch.tensor([0.9, 0.6][: len(masks)]),
+            "labels": torch.tensor([0, 1][: len(masks)]),
+            "masks": torch.tensor(masks.astype(bool)),
+        }
+        for masks in predicted
+    ]
+    targets = [
+        {
+            "boxes": boxes_of(masks),
+            "labels": torch.tensor([0, 1][: len(masks)]),
+            "masks": torch.tensor(masks.astype(bool)),
+        }
+        for masks in actual
+    ]
+
+    metric = MeanAveragePrecision(
+        box_format="xyxy", iou_type=("bbox", "segm"), backend="pycocotools"
+    )
+    metric.update(predictions, targets)
+    reference = dict(metric.compute())
+
+    candidate = coco_metrics(
+        predictions,  # type: ignore[arg-type]
+        targets,  # type: ignore[arg-type]
+        iou_type=("bbox", "segm"),
+        box_format="xyxy",
+        parity_mode="strict",
+    )
+    for iou_type in ("bbox", "segm"):
+        _assert_stats_equal(
+            {key: reference[f"{iou_type}_{key}"] for key in _STAT_KEYS},
+            {key: candidate[f"{iou_type}_{key}"] for key in _STAT_KEYS},
+        )
+    # Emits every aggregate key the oracle does — a prefix typo would
+    # otherwise pass the loop above by comparing a key to itself.
+    expected = {f"{iou_type}_{key}" for iou_type in ("bbox", "segm") for key in _STAT_KEYS}
+    assert expected <= set(candidate)
+    assert expected <= set(reference)
