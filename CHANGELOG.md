@@ -43,8 +43,13 @@ additive / perf / docs".
 
 ### Changed
 
-- The `gt` bytes path of the diagnostics no longer copies the payload
-  before releasing the GIL (`PyBackedBytes` borrows it instead).
+- The `gt` bytes path no longer copies the payload before releasing the
+  GIL — `PyBackedBytes` borrows it instead. ADR-0064 made
+  `GtPayload::extract` the single classifier of the
+  `bytes | CocoDataset` union, so this reaches `evaluate_*_summary` as
+  well as the diagnostics: the plain `Evaluator.evaluate` path was still
+  paying a `to_vec()` of the whole ground truth per call (~20 MB on
+  val2017).
 
 ## [0.5.2] - 2026-09-22
 

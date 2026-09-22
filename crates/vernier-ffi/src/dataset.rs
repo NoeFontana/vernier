@@ -34,16 +34,29 @@ use crate::parse_gt;
 /// parse — runs inside `py.detach`. Both variants are `Send`, which is
 /// what lets the whole thing cross that boundary.
 ///
-/// Used by the surfaces that take the union but drive `vernier_core`
-/// directly rather than through `evaluate_grid_any_gt`: TIDE, the
-/// FP-IoU histogram, LRP and the confusion matrix.
+/// This is the **only** place the `bytes | CocoDataset` union is
+/// classified. `evaluate_grid_any_gt` and `evaluate_summary_any_gt`
+/// match on it and hand each arm's payload straight to their
+/// per-spelling implementation; the diagnostics realize it themselves
+/// through [`crate::DiagnosticInputs`]. One classifier means one
+/// accepted-type list and one error message, which is what ADR-0064
+/// §"Option 2" claims.
 pub(crate) enum GtPayload {
     /// COCO GT JSON. `PyBackedBytes` keeps the `Py<PyBytes>` alive
     /// across the GIL release while exposing `&[u8]`, so the payload is
     /// borrowed rather than copied.
     Bytes(PyBackedBytes),
-    /// An already-parsed [`PyDataset`]'s dataset, shared by `Arc`.
-    Parsed(Arc<CocoDataset>),
+    /// An already-parsed [`PyDataset`]'s snapshot — the dataset **and**
+    /// its per-kernel caches.
+    ///
+    /// [`DatasetSnapshot`] rather than a bare `Arc<CocoDataset>`
+    /// because it is already the repo's `Send`-able GT hand-off, and
+    /// its contract ("adding a future cache slot means one extra field
+    /// here") is what keeps the grid path and the diagnostics on one
+    /// type. The diagnostics read only [`DatasetSnapshot::gt`] today —
+    /// see ADR-0064 §"What this deliberately does not do" — but they do
+    /// not *discard* the caches to do it.
+    Parsed(DatasetSnapshot),
 }
 
 impl GtPayload {
@@ -53,7 +66,7 @@ impl GtPayload {
             return Ok(Self::Bytes(PyBackedBytes::from(gt_json.clone())));
         }
         if let Ok(dataset) = gt.cast::<PyDataset>() {
-            return Ok(Self::Parsed(dataset.borrow().dataset_ref()));
+            return Ok(Self::Parsed(dataset.borrow().snapshot()));
         }
         Err(PyTypeError::new_err(format!(
             "gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`, got {}",
@@ -74,7 +87,7 @@ impl GtPayload {
     /// The `Bytes` arm can never be federated: `CocoDataset::from_json`
     /// discards the metadata.
     pub(crate) fn reject_federated(&self, surface: &str) -> PyResult<()> {
-        if matches!(self, Self::Parsed(gt) if gt.is_federated()) {
+        if matches!(self, Self::Parsed(snapshot) if snapshot.gt.is_federated()) {
             return Err(PyNotImplementedError::new_err(format!(
                 "{surface} does not support LVIS federated ground truth: a dataset built \
                  by CocoDataset.from_lvis_json carries the ADR-0026 federated metadata, \
@@ -88,12 +101,12 @@ impl GtPayload {
         Ok(())
     }
 
-    /// Realize into the parsed dataset. Call inside `py.detach` — the
-    /// `Bytes` arm parses here.
-    pub(crate) fn realize(self) -> PyResult<Arc<CocoDataset>> {
+    /// Realize into the parsed dataset and its caches. Call inside
+    /// `py.detach` — the `Bytes` arm parses here.
+    pub(crate) fn realize(self) -> PyResult<DatasetSnapshot> {
         match self {
-            Self::Bytes(bytes) => Ok(Arc::new(parse_gt(&bytes)?)),
-            Self::Parsed(gt) => Ok(gt),
+            Self::Bytes(bytes) => Ok(DatasetSnapshot::from_parsed(parse_gt(&bytes)?)),
+            Self::Parsed(snapshot) => Ok(snapshot),
         }
     }
 }

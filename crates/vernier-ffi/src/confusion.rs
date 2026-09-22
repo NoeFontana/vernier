@@ -35,14 +35,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use vernier_core::dataset::DetectionArea;
 use vernier_core::similarity::{BboxIou, BoundaryIou, SegmIou};
 use vernier_core::tide::{compute_confusion_matrix, ConfusionMatrixCounts};
 use vernier_core::{CocoDataset, CocoDetections, EvalError, ParityMode};
 
 use crate::array_ingest::ArrayIouType;
-use crate::dataset::GtPayload;
-use crate::{parse_parity_mode, prepare_dt_payload_for, realize_dt, validate_dilation_ratio};
+use crate::{parse_parity_mode, validate_dilation_ratio, DiagnosticInputs};
 
 /// Sentinel string surfaced in the `gt_class` / `dt_class` columns
 /// when the row is a false positive (`gt_class == "__none__"`) or a
@@ -77,7 +75,6 @@ fn run_confusion_pass<'py, F>(
     max_dets_per_image: usize,
     use_cats: bool,
     cast_inputs: bool,
-    kernel_name: &'static str,
     kernel_call: F,
 ) -> PyResult<Bound<'py, PyDict>>
 where
@@ -112,21 +109,16 @@ where
         ));
     }
 
-    // Classify both arguments under the GIL; the parse itself runs in
-    // `realize`, inside `py.detach` below.
-    let gt_payload = GtPayload::extract(gt)?;
-    gt_payload.reject_federated("confusion_matrix")?;
-    let dt_payload = prepare_dt_payload_for(py, dt, kernel, cast_inputs)?;
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "confusion_matrix")?;
 
     let cm = py.detach(move || -> PyResult<ConfusionMatrixCounts> {
-        let gt = gt_payload.realize()?;
-        // `FromBbox` is what the results-file route applies (quirk
-        // **J3**), so the array routes read detection areas identically.
-        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
+        let (gt, dt) = inputs.realize()?;
         kernel_call(&gt, &dt, parity).map_err(|e| PyValueError::new_err(format!("{e}")))
     })?;
 
-    counts_to_dict(py, &cm, iou_threshold, kernel_name)
+    // The dict's `kernel` field is the marker we were handed, not a
+    // second literal that could drift from it.
+    counts_to_dict(py, &cm, iou_threshold, kernel.as_str())
 }
 
 /// Confusion matrix for the bbox kernel (per ADR-0023, sibling
@@ -168,7 +160,6 @@ pub(crate) fn confusion_matrix_bbox<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        "bbox",
         move |gt, dt, parity| {
             compute_confusion_matrix(gt, dt, &BboxIou, iou_threshold, max_dets_per_image, parity)
         },
@@ -202,7 +193,6 @@ pub(crate) fn confusion_matrix_segm<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        "segm",
         move |gt, dt, parity| {
             compute_confusion_matrix(gt, dt, &SegmIou, iou_threshold, max_dets_per_image, parity)
         },
@@ -239,7 +229,6 @@ pub(crate) fn confusion_matrix_boundary<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        "boundary",
         move |gt, dt, parity| {
             compute_confusion_matrix(
                 gt,

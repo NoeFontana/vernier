@@ -34,6 +34,7 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -877,10 +878,10 @@ impl EvalIouType {
 /// builds a scoped per-call `rayon::ThreadPool` of exactly the
 /// requested thread count.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn evaluate_grid_impl(
+fn evaluate_grid_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
-    gt_json: &Bound<'_, PyBytes>,
+    gt_bytes: pyo3::pybacked::PyBackedBytes,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -914,12 +915,12 @@ pub(crate) fn evaluate_grid_impl(
     // Resolve threading policy under the GIL so the env-var / re-entry
     // `UserWarning` can fire to Python before we detach.
     let thread_policy = threads::resolve_threads(py, num_threads);
-    // Zero-copy borrow over the GT bytes — `PyBackedBytes` keeps the
-    // underlying `Py<PyBytes>` alive across `py.detach` while exposing
-    // `&[u8]` via `Deref`. Saves a 20 MB `to_vec()` per call on val2017
-    // and is `Send + Sync` so the buffer crosses the GIL release safely
-    // (the underlying object is Python-immutable and refcount-pinned).
-    let gt_bytes = pyo3::pybacked::PyBackedBytes::from(gt_json.clone());
+    // `gt_bytes` arrives as a zero-copy `PyBackedBytes` borrow from
+    // `GtPayload::extract`: it keeps the underlying `Py<PyBytes>` alive
+    // across `py.detach` while exposing `&[u8]` via `Deref`, which
+    // saves a 20 MB `to_vec()` per call on val2017 and is `Send + Sync`
+    // so the buffer crosses the GIL release safely (the underlying
+    // object is Python-immutable and refcount-pinned).
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
     let iou_for_run = iou_thr.clone();
@@ -1059,7 +1060,7 @@ fn run_grid_cached_with_policy(
 fn evaluate_grid_with_dataset_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
-    gt: &PyDataset,
+    snapshot: dataset::DatasetSnapshot,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -1093,7 +1094,6 @@ fn evaluate_grid_with_dataset_impl(
         area_ranges_arg,
     )?;
     let thread_policy = threads::resolve_threads(py, num_threads);
-    let snapshot = gt.snapshot();
     let retained_dataset = snapshot.clone();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let iou_for_run = iou_thr.clone();
@@ -1238,11 +1238,11 @@ fn evaluate_grid_any_gt<'py>(
     dt_area: DetectionArea,
     retain_meta: bool,
 ) -> PyResult<PyEvalGrid> {
-    if let Ok(gt_json) = gt.cast::<PyBytes>() {
-        return evaluate_grid_impl(
+    match dataset::GtPayload::extract(gt)? {
+        dataset::GtPayload::Bytes(gt_bytes) => evaluate_grid_impl(
             py,
             iou_type,
-            gt_json,
+            gt_bytes,
             dt,
             parity_mode,
             max_dets_per_image,
@@ -1255,13 +1255,11 @@ fn evaluate_grid_any_gt<'py>(
             num_threads,
             dt_area,
             retain_meta,
-        );
-    }
-    if let Ok(dataset) = gt.cast::<PyDataset>() {
-        return evaluate_grid_with_dataset_impl(
+        ),
+        dataset::GtPayload::Parsed(snapshot) => evaluate_grid_with_dataset_impl(
             py,
             iou_type,
-            &dataset.borrow(),
+            snapshot,
             dt,
             parity_mode,
             max_dets_per_image,
@@ -1274,12 +1272,8 @@ fn evaluate_grid_any_gt<'py>(
             num_threads,
             dt_area,
             retain_meta,
-        );
+        ),
     }
-    Err(PyTypeError::new_err(format!(
-        "gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`, got {}",
-        crate::array_ingest::type_name_of(gt)
-    )))
 }
 
 /// The summary sibling of [`evaluate_grid_any_gt`], including its
@@ -1296,36 +1290,30 @@ fn evaluate_summary_any_gt<'py>(
     cast_inputs: bool,
     num_threads: Option<usize>,
 ) -> PyResult<PySummary> {
-    if let Ok(gt_json) = gt.cast::<PyBytes>() {
-        return evaluate_summary_impl(
+    match dataset::GtPayload::extract(gt)? {
+        dataset::GtPayload::Bytes(gt_bytes) => evaluate_summary_impl(
             py,
             iou_type,
-            gt_json,
+            gt_bytes,
             dt,
             parity_mode,
             max_dets,
             use_cats,
             cast_inputs,
             num_threads,
-        );
-    }
-    if let Ok(dataset) = gt.cast::<PyDataset>() {
-        return evaluate_summary_with_dataset_impl(
+        ),
+        dataset::GtPayload::Parsed(snapshot) => evaluate_summary_with_dataset_impl(
             py,
             iou_type,
-            &dataset.borrow(),
+            snapshot,
             dt,
             parity_mode,
             max_dets,
             use_cats,
             cast_inputs,
             num_threads,
-        );
+        ),
     }
-    Err(PyTypeError::new_err(format!(
-        "gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`, got {}",
-        crate::array_ingest::type_name_of(gt)
-    )))
 }
 
 /// Bbox per-image evaluation pass — see [`evaluate_grid_impl`].
@@ -1471,7 +1459,7 @@ fn evaluate_boundary_grid<'py>(
 fn evaluate_summary_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
-    gt_json: &Bound<'_, PyBytes>,
+    gt_bytes: pyo3::pybacked::PyBackedBytes,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets: Vec<usize>,
@@ -1489,10 +1477,10 @@ fn evaluate_summary_impl(
     // ascending ladder.
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
-    // The `PyBytes` borrow is GIL-tied; copy so the JSON parse can run
-    // inside `py.detach`. One memcpy per call buys a wider GIL-drop
-    // window for multi-threaded callers.
-    let gt_bytes = gt_json.as_bytes().to_vec();
+    // `gt_bytes` is the same zero-copy `PyBackedBytes` borrow
+    // `evaluate_grid_impl` takes — GIL-crossable without the memcpy the
+    // GIL-tied `PyBytes` borrow used to force (ADR-0064 unified the two
+    // `gt=` classifiers, and this path inherited the grid's).
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
 
     let summary = py.detach(move || -> PyResult<Summary> {
@@ -1651,7 +1639,7 @@ fn evaluate_keypoints_summary(
 fn evaluate_summary_with_dataset_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
-    dataset: &PyDataset,
+    snapshot: dataset::DatasetSnapshot,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets: Vec<usize>,
@@ -1665,7 +1653,6 @@ fn evaluate_summary_with_dataset_impl(
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
-    let snapshot = dataset.snapshot();
     let summary = py.detach(move || -> PyResult<Summary> {
         let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
         run_pipeline_with_dataset(
@@ -2406,31 +2393,86 @@ impl From<&EvalIouType> for array_ingest::ArrayIouType {
 /// Bundles cast-state construction with the shared
 /// [`build_update_payload`] dispatch so each `*_impl` doesn't repeat the
 /// two-line preamble.
-fn prepare_dt_payload<'py>(
+/// `iou_type` is `impl Into<ArrayIouType>` so both spellings of "which
+/// kernel" reach one function: the evaluators thread an
+/// [`EvalIouType`] (converted by the `From` impl above), while the
+/// diagnostics hold the [`array_ingest::ArrayIouType`] marker their
+/// per-kernel entry point already names.
+pub(crate) fn prepare_dt_payload<'py>(
     py: Python<'py>,
     dt: &Bound<'py, PyAny>,
-    iou_type: &EvalIouType,
-    cast_inputs: bool,
-) -> PyResult<UpdatePayload> {
-    prepare_dt_payload_for(py, dt, iou_type.into(), cast_inputs)
-}
-
-/// [`prepare_dt_payload`] for a caller that knows its kernel as an
-/// [`array_ingest::ArrayIouType`] marker rather than an
-/// [`EvalIouType`] (ADR-0064).
-///
-/// The diagnostics — TIDE, the FP-IoU histogram, LRP, the confusion
-/// matrix — dispatch on a `"bbox"` / `"segm"` / `"boundary"` /
-/// `"keypoints"` entry point rather than on the enum the evaluator
-/// threads through, so they reach the shared `dt=` ingest here.
-pub(crate) fn prepare_dt_payload_for<'py>(
-    py: Python<'py>,
-    dt: &Bound<'py, PyAny>,
-    iou_type: array_ingest::ArrayIouType,
+    iou_type: impl Into<array_ingest::ArrayIouType>,
     cast_inputs: bool,
 ) -> PyResult<UpdatePayload> {
     let cast_state = array_ingest::new_cast_state(cast_inputs);
-    build_update_payload(py, dt, iou_type, &cast_state)
+    build_update_payload(py, dt, iou_type.into(), &cast_state)
+}
+
+/// The `(gt, dt)` pair a diagnostic takes, classified under the GIL
+/// and realized off it (ADR-0064).
+///
+/// TIDE, the FP-IoU histogram, LRP and the confusion matrix drive
+/// [`vernier_core`] directly rather than through
+/// [`evaluate_grid_any_gt`], and all four resolve their two arguments
+/// identically. Bundling that here is what keeps the three decisions in
+/// this plumbing stated exactly once:
+///
+/// - the accepted `gt=` spellings, via the single [`dataset::GtPayload`]
+///   classifier;
+/// - the LVIS-federated refusal, which is folded into
+///   [`Self::extract`] rather than left as a call each surface must
+///   remember — a sixth diagnostic cannot obtain one of these without
+///   naming itself and being checked;
+/// - the [`DetectionArea`] a detection's area is derived from, which is
+///   parity-relevant (quirk **J3**) and stated in [`Self::realize`].
+pub(crate) struct DiagnosticInputs {
+    gt: dataset::GtPayload,
+    dt: UpdatePayload,
+}
+
+impl DiagnosticInputs {
+    /// Classify a diagnostic's `gt=` and `dt=` arguments. Must run
+    /// under the GIL; the parse happens in [`Self::realize`].
+    ///
+    /// `surface` names the caller in the federated refusal, which runs
+    /// here — before the detections are converted — so a ground truth
+    /// this surface cannot evaluate is rejected without paying for the
+    /// `dt` ingest first.
+    pub(crate) fn extract<'py>(
+        py: Python<'py>,
+        gt: &Bound<'py, PyAny>,
+        dt: &Bound<'py, PyAny>,
+        kernel: array_ingest::ArrayIouType,
+        cast_inputs: bool,
+        surface: &str,
+    ) -> PyResult<Self> {
+        let gt_payload = dataset::GtPayload::extract(gt)?;
+        gt_payload.reject_federated(surface)?;
+        let dt_payload = prepare_dt_payload(py, dt, kernel, cast_inputs)?;
+        Ok(Self {
+            gt: gt_payload,
+            dt: dt_payload,
+        })
+    }
+
+    /// Realize into the pair [`vernier_core`] takes. Call inside
+    /// `py.detach` — the GT JSON parse happens here.
+    ///
+    /// [`DetectionArea::FromBbox`] is what
+    /// `CocoDetections::from_json_bytes` applies (quirk **J3** derives a
+    /// detection's area from its box), so the array `dt` routes read
+    /// areas exactly as the results-file route these surfaces have
+    /// always taken does. It is the one semantic choice in this
+    /// plumbing, and it is made here rather than once per entry point.
+    ///
+    /// The returned dataset is the snapshot's `gt` alone: the
+    /// diagnostics' core entry points take no cache argument, so the
+    /// per-kernel derivations stay unused (ADR-0064).
+    pub(crate) fn realize(self) -> PyResult<(Arc<CocoDataset>, CocoDetections)> {
+        let gt = self.gt.realize()?;
+        let dt = realize_dt(self.dt, DetectionArea::FromBbox)?;
+        Ok((gt.gt, dt))
+    }
 }
 
 /// Internal Rust orchestrator for the per-rank distributed-eval flow

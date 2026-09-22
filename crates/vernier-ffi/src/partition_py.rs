@@ -20,8 +20,6 @@
 //! eval N+1 times (a C1 fallback, acceptable for those paradigms'
 //! smaller K + cheaper re-matching).
 
-use std::sync::Arc;
-
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
@@ -40,7 +38,6 @@ use vernier_core::{CocoDataset, CocoDetections, EvalError};
 use crate::array_ingest::ArrayIouType;
 use crate::arrow_helpers::{wrap_batch, ArrowRecordBatchPy};
 use crate::breakdown;
-use crate::dataset::GtPayload;
 use crate::manifest_py::manifest_to_canonical_json;
 use crate::tables::{
     slices_instance_ap_to_arrow, slices_instance_lrp_to_arrow, slices_record_batch_panoptic,
@@ -48,7 +45,7 @@ use crate::tables::{
 };
 use crate::{
     boundary_iou_type, evaluate_grid_any_gt, parse_parity_mode, parse_sigmas,
-    prepare_dt_payload_for, realize_dt, validate_dilation_ratio, EvalIouType, PySummary,
+    validate_dilation_ratio, DiagnosticInputs, EvalIouType, PySummary,
 };
 
 /// Result of an instance-AP partitioned evaluate. The `overall`
@@ -555,18 +552,11 @@ fn evaluate_instance_partitioned_lrp_impl(
     dispatch: LrpKernelDispatch,
 ) -> PyResult<PyPartitionedLrpReport> {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt_payload = GtPayload::extract(gt)?;
-    gt_payload.reject_federated("optimal_lrp")?;
-    let dt_payload = prepare_dt_payload_for(py, dt, kernel, cast_inputs)?;
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "optimal_lrp")?;
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
     let cross = cross_axes.unwrap_or_default();
 
-    type ParseResult = (Arc<CocoDataset>, CocoDetections);
-    let (gt, dt) = py.detach(move || -> PyResult<ParseResult> {
-        let gt = gt_payload.realize()?;
-        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
-        Ok((gt, dt))
-    })?;
+    let (gt, dt) = py.detach(move || inputs.realize())?;
 
     // Resolve manifest under the GIL so warnings surface to Python's
     // warnings module before the heavy work runs off-GIL.

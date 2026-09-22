@@ -134,30 +134,65 @@ Concretely:
   (ADR-0057).
 - The five Python `NotImplementedError` guards are deleted.
 
-One new piece of FFI plumbing, and it is a *narrowing* of what exists
-rather than an addition:
+One new piece of FFI plumbing, and it *replaces* code rather than
+sitting beside it:
 
 ```rust
 pub(crate) enum GtPayload {
     Bytes(PyBackedBytes),
-    Parsed(Arc<CocoDataset>),
+    Parsed(DatasetSnapshot),
 }
 ```
 
 `GtPayload::extract` classifies the Python argument under the GIL;
-`GtPayload::realize` produces an `Arc<CocoDataset>` inside `py.detach`,
-parsing in the `Bytes` arm and cloning an `Arc` in the `Parsed` one. It
-is the ground-truth mirror of `UpdatePayload`, which has done the same
-job for `dt` since ADR-0030, and it replaces the `gt.as_bytes().to_vec()`
-each diagnostic did — so the bytes path loses a full copy of the GT
-payload per call as a side effect.
+`GtPayload::realize` produces a `DatasetSnapshot` inside `py.detach`,
+parsing in the `Bytes` arm and moving the snapshot in the `Parsed` one.
+It is the ground-truth mirror of `UpdatePayload`, which has done the
+same job for `dt` since ADR-0030.
 
-The `dt` side adds no new machinery at all: `build_update_payload` is
-called through a new two-line `prepare_dt_payload_for`, which differs
-from the existing `prepare_dt_payload` only in taking the
-`ArrayIouType` marker directly, because a diagnostic knows its kernel
-as `"bbox"` / `"segm"` / `"boundary"` / `"keypoints"` and not as an
-`EvalIouType`.
+**It is the only classifier of the `gt=` union.** `evaluate_grid_any_gt`
+and `evaluate_summary_any_gt` carried the same `cast::<PyBytes>()` →
+`cast::<PyDataset>()` → `PyTypeError` ladder inline; they now `match` on
+`GtPayload` and hand each arm's payload to their per-spelling
+implementation, which had been re-deriving exactly that payload on entry
+(`PyBackedBytes::from(gt_json.clone())` in one, `gt.snapshot()` in the
+other). So the accepted-type list and its error message exist once, the
+four implementations get shorter, and `evaluate_summary_impl` — the
+plain `Evaluator.evaluate` path, not one of the five — loses the
+`gt_json.as_bytes().to_vec()` it was still paying, the same ~20 MB per
+val2017 call the diagnostics lose.
+
+`Parsed` carries a `DatasetSnapshot` rather than a bare
+`Arc<CocoDataset>` because that is already the repo's `Send`-able GT
+hand-off, and its contract — "adding a future cache slot means one
+extra field here" — is what lets the grid path and the diagnostics share
+one enum. The diagnostics read only its `gt` today (see §"What this
+deliberately does not do"), but they do not *discard* the caches to do
+it.
+
+The `dt` side adds no new machinery: `prepare_dt_payload` is widened to
+`iou_type: impl Into<ArrayIouType>`, so the evaluators keep passing an
+`EvalIouType` and the diagnostics pass the `"bbox"` / `"segm"` /
+`"boundary"` / `"keypoints"` marker their per-kernel entry point already
+names — one function, both spellings.
+
+The two halves meet in `DiagnosticInputs`, which is what the four
+standalone diagnostics actually call:
+
+```rust
+impl DiagnosticInputs {
+    fn extract(py, gt, dt, kernel, cast_inputs, surface) -> PyResult<Self>;
+    fn realize(self) -> PyResult<(Arc<CocoDataset>, CocoDetections)>;
+}
+```
+
+Bundling matters for one reason beyond brevity: the federated refusal
+below is folded into `extract`, so it is not a separate call a sixth
+diagnostic could forget — there is no way to obtain the inputs without
+naming your surface and being checked. The `DetectionArea::FromBbox`
+choice — the one parity-relevant decision in this plumbing (quirk
+**J3**) — likewise lives in `realize`, stated once rather than at each
+entry point.
 
 `tables=` and `manifest=` need no FFI work beyond a call-site swap:
 deleting the guard, and pointing `evaluate_instance_partitioned_impl`
@@ -177,6 +212,12 @@ The default stays `False` here. ADR-0063's `cast_inputs=True` was
 justified by *that* function's population — callers handing over tensors
 straight from a forward pass — and was recorded as "a deliberate,
 recorded divergence, confined to one function". It stays confined.
+
+One cadence difference is worth naming: `Evaluator` holds `cast_inputs`
+as a dataclass field, so the one-shot promotion `UserWarning` fires once
+per evaluator. These are standalone functions, so the latch is built per
+call and the warning is effectively per call. Same mechanism, noisier
+rhythm — which is an argument for passing `f64`, not for suppressing it.
 
 ### Federated ground truth is refused, loudly
 
@@ -233,6 +274,16 @@ since TIDE parsed once per call already) and leaves
 `dataset.boundary_cache_len` untouched. Worth having, and worth naming
 as partial rather than implying the handle is fully exploited.
 
+**The `gt` union gets no type alias.** `dt` has one —
+`DetectionsInput` in `python/vernier/_array_types.py` — so widening it
+was a one-token edit per signature, while `bytes | CocoDataset` is
+spelled out across the wrappers, the overloads and the stub. A
+`GroundTruthInput` alias would restore the symmetry, and the stub's
+conformance test checks shape rather than types so it could not break
+one; but it is a new name on the public surface, which ADR-0001 makes
+an ADR-level decision rather than a drive-by inside this one. Recorded
+as the obvious follow-up.
+
 **No surface gains a kernel it did not have.** Keypoints stays refused
 on TIDE and on the confusion matrix (ADR-0024); `use_cats=False` stays
 refused on the confusion matrix. Widening `gt` and `dt` is orthogonal to
@@ -252,8 +303,12 @@ capability change inside a plumbing change.
   `error_decomposition` on the same run.
 - **Positive.** The `to_vec()` per call on the GT bytes path disappears
   — `PyBackedBytes` borrows instead. On a val2017-shaped payload that is
-  ~20 MB of copy per diagnostic call, and TIDE was paying it once, not
-  eight times, so it is a real but modest win.
+  ~20 MB of copy per call. Unifying the classifier extends that to
+  `evaluate_summary_impl`, which is the plain `Evaluator.evaluate` path
+  and the most-used surface in the library; its in-line justification
+  for the memcpy ("buys a wider GIL-drop window") had been stale since
+  `evaluate_grid_impl` switched to `PyBackedBytes`, which gives the same
+  window without the copy.
 - **Negative.** Five surfaces gain a `cast_inputs` keyword, which is
   five more places the dtype question can be asked. The answer is
   uniform (`False`, as everywhere but ADR-0063's route), which is the
@@ -290,8 +345,9 @@ capability change inside a plumbing change.
   the code that runs is byte-for-byte the code that ran before.
 - 👎 Five `#[pyfunction]` signatures widen from `PyBytes` to `PyAny`,
   which moves a type error from compile time in Rust to runtime in
-  Python. Mitigated by the shared extractor emitting one message, and
-  by `_core.pyi` carrying the precise union.
+  Python. Mitigated by `GtPayload::extract` being the single classifier
+  — one accepted-type list and one message for every `gt=` on the
+  instance surface — and by `_core.pyi` carrying the precise union.
 - 👎 The handle is accepted but not fully exploited (caches), so
   "`CocoDataset` works here" is true with a performance footnote.
 

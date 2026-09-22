@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 import numpy as np
 
 from vernier._core import (
-    CocoDataset,
     error_decomposition_bbox,
     error_decomposition_boundary,
     error_decomposition_segm,
@@ -37,6 +36,11 @@ if TYPE_CHECKING:
     import numpy as np
 
     from vernier._array_types import DetectionsInput
+
+    # Referenced only by annotations and docstrings since ADR-0064
+    # deleted the `isinstance(gt, CocoDataset)` guards, and
+    # `from __future__ import annotations` keeps those lazy.
+    from vernier._core import CocoDataset
 
     # `_TideReportDict` is a TypedDict declared in the `.pyi` stub for
     # the FFI's return shape; the runtime extension does not actually
@@ -357,41 +361,19 @@ def _dispatch(
     """Call the right ``vernier._core.error_decomposition_*`` entry."""
     from vernier.instance import Bbox, Boundary, Segm
 
+    # The leading arguments are identical across kernels; only the entry
+    # point and the trailing per-kernel knob differ. Splatting a
+    # fixed-length tuple keeps pyright's positional arity check (a short
+    # tuple is an "argument missing" error) without repeating seven
+    # names per arm.
+    common = (gt, dt, parity_mode, t_f, t_b, max_dets_per_image, use_cats)
     match iou_kind:
         case Bbox():
-            return error_decomposition_bbox(
-                gt,
-                dt,
-                parity_mode,
-                t_f,
-                t_b,
-                max_dets_per_image,
-                use_cats,
-                cast_inputs=cast_inputs,
-            )
+            return error_decomposition_bbox(*common, cast_inputs=cast_inputs)
         case Segm():
-            return error_decomposition_segm(
-                gt,
-                dt,
-                parity_mode,
-                t_f,
-                t_b,
-                max_dets_per_image,
-                use_cats,
-                cast_inputs=cast_inputs,
-            )
+            return error_decomposition_segm(*common, cast_inputs=cast_inputs)
         case Boundary(dilation_ratio=r):
-            return error_decomposition_boundary(
-                gt,
-                dt,
-                parity_mode,
-                t_f,
-                t_b,
-                max_dets_per_image,
-                use_cats,
-                r,
-                cast_inputs=cast_inputs,
-            )
+            return error_decomposition_boundary(*common, r, cast_inputs=cast_inputs)
         case _:
             # _kernel_for rejected this already; keeping the arm for
             # exhaustiveness so adding a kernel later is a clean delta.

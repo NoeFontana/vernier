@@ -32,7 +32,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, overload
 
 from vernier._core import (
-    CocoDataset,
     evaluate_bbox_partitioned_lrp,
     evaluate_boundary_partitioned_lrp,
     evaluate_keypoints_partitioned_lrp,
@@ -50,6 +49,10 @@ if TYPE_CHECKING:
     import polars as pl
 
     from vernier._array_types import DetectionsInput
+
+    # Referenced only by annotations and docstrings since ADR-0064
+    # deleted the `isinstance(gt, CocoDataset)` guard.
+    from vernier._core import CocoDataset
     from vernier._core import (
         _LrpReportDict as _FFILrpReportDict,  # pyright: ignore[reportPrivateUsage]
     )
@@ -461,57 +464,24 @@ def _dispatch(
     """Call the right ``vernier._core.optimal_lrp_*`` entry."""
     from vernier.instance import Bbox, Boundary, Keypoints, Segm
 
+    # The leading arguments are identical across kernels; only the entry
+    # point and the trailing per-kernel knob differ. Splatting a
+    # fixed-length tuple keeps pyright's positional arity check without
+    # repeating seven names per arm.
+    common = (gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats)
     match iou_kind:
         case Bbox():
-            return optimal_lrp_bbox(
-                gt,
-                dt,
-                parity_mode,
-                tp_threshold,
-                tau_grid,
-                max_dets_per_image,
-                use_cats,
-                cast_inputs=cast_inputs,
-            )
+            return optimal_lrp_bbox(*common, cast_inputs=cast_inputs)
         case Segm():
-            return optimal_lrp_segm(
-                gt,
-                dt,
-                parity_mode,
-                tp_threshold,
-                tau_grid,
-                max_dets_per_image,
-                use_cats,
-                cast_inputs=cast_inputs,
-            )
+            return optimal_lrp_segm(*common, cast_inputs=cast_inputs)
         case Boundary(dilation_ratio=r):
-            return optimal_lrp_boundary(
-                gt,
-                dt,
-                parity_mode,
-                tp_threshold,
-                tau_grid,
-                max_dets_per_image,
-                use_cats,
-                r,
-                cast_inputs=cast_inputs,
-            )
+            return optimal_lrp_boundary(*common, r, cast_inputs=cast_inputs)
         case Keypoints(sigmas=sigmas):
             # Keypoints carries `sigmas: Mapping[int, tuple[float, ...]]`
             # at the public surface. The FFI wants a plain dict of
             # lists; translate.
             sigma_map: dict[int, list[float]] = {int(k): list(v) for k, v in sigmas.items()}
-            return optimal_lrp_keypoints(
-                gt,
-                dt,
-                parity_mode,
-                tp_threshold,
-                tau_grid,
-                max_dets_per_image,
-                use_cats,
-                sigma_map,
-                cast_inputs=cast_inputs,
-            )
+            return optimal_lrp_keypoints(*common, sigma_map, cast_inputs=cast_inputs)
         case _:
             _reject_unknown_iou(iou_kind)
 

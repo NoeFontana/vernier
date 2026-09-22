@@ -25,6 +25,7 @@ grid and are correspondingly *not* restricted.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any, cast
@@ -35,13 +36,17 @@ from numpy.typing import NDArray
 
 from vernier.instance import (
     Bbox,
+    Boundary,
     CocoDataset,
     Evaluator,
+    Segm,
     confusion_matrix,
     error_decomposition,
     fp_iou_histogram,
     optimal_lrp,
 )
+
+from .parity.conftest import loadres_to_detections
 
 _TIDE_FIXTURES = Path(__file__).parent / "oracle" / "tide" / "fixtures"
 _PARTITION_FIXTURE = Path(__file__).parent / "parity" / "fixtures" / "partition_tiny"
@@ -51,9 +56,22 @@ _LVIS_FIXTURE = Path(__file__).parent / "parity_lvis" / "fixtures" / "federated_
 #: clean diagonal, a class swap, a localization miss and a duplicate.
 _CASES = ["all_perfect", "all_cls", "all_loc", "all_dupe"]
 
+#: The mask-kernel fixture, for the segm / boundary entry points.
+_SEGM_FIXTURE = "segm_all_cls"
+
 
 def _load(root: Path) -> tuple[bytes, bytes]:
     return (root / "gt.json").read_bytes(), (root / "dt.json").read_bytes()
+
+
+def _case(root: Path) -> tuple[bytes, bytes, CocoDataset, NDArray[np.float64]]:
+    """One fixture read once, in both spellings.
+
+    The bytes and the `(handle, matrix)` pair describe the same
+    document, which is the whole point of every assertion below.
+    """
+    gt_bytes, dt_bytes = _load(root)
+    return gt_bytes, dt_bytes, CocoDataset.from_json(gt_bytes), _dt_matrix(dt_bytes)
 
 
 def _dt_matrix(dt_bytes: bytes) -> NDArray[np.float64]:
@@ -77,45 +95,38 @@ def _dt_matrix(dt_bytes: bytes) -> NDArray[np.float64]:
     return np.asarray(rows, dtype=np.float64).reshape(len(rows), 7)
 
 
-def _pair(root: Path) -> tuple[CocoDataset, NDArray[np.float64]]:
-    gt_bytes, dt_bytes = _load(root)
-    return CocoDataset.from_json(gt_bytes), _dt_matrix(dt_bytes)
-
-
 def _counts(df: object) -> dict[tuple[str, str], int]:
     rows = df.iter_rows(named=True)  # type: ignore[attr-defined]
     return {(r["gt_class"], r["dt_class"]): int(r["count"]) for r in rows}
 
 
-def _nan_safe(value: float) -> object:
-    """``NaN`` is LRP's "undefined" sentinel (a class with no TP has no
-    deployable ``tau``), and ``nan != nan``, so a plain dataclass
+def _nan_safe(value: object) -> object:
+    """Normalize LRP's ``NaN`` "undefined" sentinel.
+
+    A class with no TP at any tau has no deployable ``tau``, which the
+    report spells ``NaN`` — and ``nan != nan``, so a plain dataclass
     comparison reports a difference where the two reports agree. Map it
-    to a token that compares equal to itself."""
-    return "undefined" if np.isnan(value) else value
+    to a token that compares equal to itself, recursively, so the
+    normalizer covers whatever fields the dataclass holds.
+    """
+    if isinstance(value, float) and np.isnan(value):
+        return "undefined"
+    if isinstance(value, dict):
+        return {k: _nan_safe(v) for k, v in cast("dict[str, object]", value).items()}
+    if isinstance(value, list):
+        return [_nan_safe(v) for v in cast("list[object]", value)]
+    return value
 
 
-def _lrp_shape(report: Any) -> tuple[object, ...]:
-    """Every field of an :class:`LrpReport`, NaN-normalized."""
-    return (
-        _nan_safe(report.olrp),
-        _nan_safe(report.loc),
-        _nan_safe(report.fp),
-        _nan_safe(report.fn),
-        report.n_empty_classes,
-        report.config,
-        tuple(
-            (
-                row.category_id,
-                _nan_safe(row.olrp),
-                _nan_safe(row.olrp_loc),
-                _nan_safe(row.olrp_fp),
-                _nan_safe(row.olrp_fn),
-                _nan_safe(row.tau),
-            )
-            for row in report.per_class
-        ),
-    )
+def _lrp_shape(report: Any) -> object:
+    """An :class:`LrpReport` as a NaN-normalized plain structure.
+
+    Via :func:`dataclasses.asdict` rather than a hand-written field
+    list: a field added to ``LrpReport`` or ``LrpPerClass`` must not be
+    able to drop silently out of this comparison, which is the one
+    failure an equality test exists to catch.
+    """
+    return _nan_safe(dataclasses.asdict(report))
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +136,7 @@ def _lrp_shape(report: Any) -> tuple[object, ...]:
 
 @pytest.mark.parametrize("fixture", _CASES)
 def test_error_decomposition_reads_the_pair(fixture: str) -> None:
-    gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / fixture)
-    handle, matrix = _pair(_TIDE_FIXTURES / fixture)
+    gt_bytes, dt_bytes, handle, matrix = _case(_TIDE_FIXTURES / fixture)
 
     from_bytes = error_decomposition(gt_bytes, dt_bytes, iou=Bbox())
     from_pair = error_decomposition(handle, matrix, iou=Bbox())
@@ -136,8 +146,7 @@ def test_error_decomposition_reads_the_pair(fixture: str) -> None:
 
 @pytest.mark.parametrize("fixture", _CASES)
 def test_fp_iou_histogram_reads_the_pair(fixture: str) -> None:
-    gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / fixture)
-    handle, matrix = _pair(_TIDE_FIXTURES / fixture)
+    gt_bytes, dt_bytes, handle, matrix = _case(_TIDE_FIXTURES / fixture)
 
     from_bytes = fp_iou_histogram(gt_bytes, dt_bytes, iou=Bbox())
     from_pair = fp_iou_histogram(handle, matrix, iou=Bbox())
@@ -154,8 +163,7 @@ def test_fp_iou_histogram_reads_the_pair(fixture: str) -> None:
 
 @pytest.mark.parametrize("fixture", _CASES)
 def test_optimal_lrp_reads_the_pair(fixture: str) -> None:
-    gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / fixture)
-    handle, matrix = _pair(_TIDE_FIXTURES / fixture)
+    gt_bytes, dt_bytes, handle, matrix = _case(_TIDE_FIXTURES / fixture)
 
     from_bytes = optimal_lrp(gt_bytes, dt_bytes, iou=Bbox())
     from_pair = optimal_lrp(handle, matrix, iou=Bbox())
@@ -166,8 +174,7 @@ def test_optimal_lrp_reads_the_pair(fixture: str) -> None:
 @pytest.mark.parametrize("fixture", _CASES)
 def test_confusion_matrix_reads_the_pair(fixture: str) -> None:
     pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
-    gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / fixture)
-    handle, matrix = _pair(_TIDE_FIXTURES / fixture)
+    gt_bytes, dt_bytes, handle, matrix = _case(_TIDE_FIXTURES / fixture)
 
     from_bytes = _counts(confusion_matrix(gt_bytes, dt_bytes, iou=Bbox()))
     from_pair = _counts(confusion_matrix(handle, matrix, iou=Bbox()))
@@ -183,8 +190,7 @@ def test_confusion_matrix_reads_the_pair(fixture: str) -> None:
 
 def test_evaluate_tables_reads_the_pair() -> None:
     pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
-    gt_bytes, dt_bytes = _load(_PARTITION_FIXTURE)
-    handle, matrix = _pair(_PARTITION_FIXTURE)
+    gt_bytes, dt_bytes, handle, matrix = _case(_PARTITION_FIXTURE)
     ev = Evaluator(iou=Bbox())
 
     from_bytes = ev.evaluate(gt_bytes, dt_bytes, tables=("per_class", "per_image"))
@@ -199,8 +205,7 @@ def test_evaluate_tables_reads_the_pair() -> None:
 
 def test_evaluate_manifest_reads_the_pair() -> None:
     pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
-    gt_bytes, dt_bytes = _load(_PARTITION_FIXTURE)
-    handle, matrix = _pair(_PARTITION_FIXTURE)
+    gt_bytes, dt_bytes, handle, matrix = _case(_PARTITION_FIXTURE)
     manifest = json.loads((_PARTITION_FIXTURE / "weather_x_tod.json").read_bytes())
     ev = Evaluator(iou=Bbox())
 
@@ -217,8 +222,7 @@ def test_optimal_lrp_manifest_reads_the_pair() -> None:
     """The ``manifest=`` form of LRP has its own FFI family; widening
     ``optimal_lrp`` without it would leave half the surface behind."""
     pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
-    gt_bytes, dt_bytes = _load(_PARTITION_FIXTURE)
-    handle, matrix = _pair(_PARTITION_FIXTURE)
+    gt_bytes, dt_bytes, handle, matrix = _case(_PARTITION_FIXTURE)
     manifest = json.loads((_PARTITION_FIXTURE / "weather_x_tod.json").read_bytes())
 
     from_bytes = optimal_lrp(gt_bytes, dt_bytes, iou=Bbox(), manifest=manifest)
@@ -239,23 +243,10 @@ def test_columnar_detections_reach_the_diagnostics() -> None:
     those. Both must land on the same report."""
     gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / "all_cls")
     handle = CocoDataset.from_json(gt_bytes)
-
-    records: list[dict[str, Any]] = json.loads(dt_bytes)
-    by_image: dict[int, list[dict[str, Any]]] = {}
-    for record in records:
-        by_image.setdefault(int(record["image_id"]), []).append(record)
-    columnar = [
-        {
-            "image_id": image_id,
-            "boxes": np.asarray([r["bbox"] for r in dets], dtype=np.float64),
-            "scores": np.asarray([r["score"] for r in dets], dtype=np.float64),
-            "labels": np.asarray([r["category_id"] for r in dets], dtype=np.int64),
-        }
-        for image_id, dets in sorted(by_image.items())
-    ]
+    columnar = loadres_to_detections(json.loads(gt_bytes), json.loads(dt_bytes), "bbox")
 
     from_bytes = error_decomposition(gt_bytes, dt_bytes, iou=Bbox())
-    from_columns = error_decomposition(handle, columnar, iou=Bbox())  # type: ignore[arg-type]
+    from_columns = error_decomposition(handle, columnar, iou=Bbox())
 
     assert from_columns == from_bytes
 
@@ -275,6 +266,42 @@ def test_cast_inputs_gates_a_float32_matrix() -> None:
 
     widened = error_decomposition(handle, narrow, iou=Bbox(), cast_inputs=True)
     assert widened == error_decomposition(gt_bytes, dt_bytes, iou=Bbox())
+
+
+# ---------------------------------------------------------------------------
+# The other kernels, and the limitation the ADR records
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("iou", [Segm(), Boundary()], ids=["segm", "boundary"])
+def test_the_mask_kernels_read_the_handle_too(iou: object) -> None:
+    """Widening ``gt`` is per-entry-point, and each kernel has its own
+    entry point — so bbox passing proves nothing about segm."""
+    gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / _SEGM_FIXTURE)
+    handle = CocoDataset.from_json(gt_bytes)
+
+    assert error_decomposition(handle, dt_bytes, iou=iou) == error_decomposition(
+        gt_bytes, dt_bytes, iou=iou
+    )
+
+
+def test_the_handle_saves_the_parse_and_not_the_derivations() -> None:
+    """ADR-0064 §"What this deliberately does not do", pinned.
+
+    `vernier_core`'s TIDE entry points take a dataset and no cache, so a
+    segm pass through a handle leaves ``segm_cache_len`` at zero where
+    the same handle through :meth:`Evaluator.evaluate` populates it. The
+    claim is a limitation, and a limitation nobody checks is how a
+    docstring drifts into fiction.
+    """
+    gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / _SEGM_FIXTURE)
+    handle = CocoDataset.from_json(gt_bytes)
+
+    error_decomposition(handle, dt_bytes, iou=Segm())
+    assert handle.segm_cache_len == 0
+
+    Evaluator(iou=Segm()).evaluate(handle, dt_bytes)
+    assert handle.segm_cache_len > 0
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,6 @@ from collections.abc import Mapping
 from typing import TYPE_CHECKING, NoReturn
 
 from vernier._core import (
-    CocoDataset,
     confusion_matrix_bbox,
     confusion_matrix_boundary,
     confusion_matrix_segm,
@@ -23,6 +22,10 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker only
     import polars as pl
 
     from vernier._array_types import DetectionsInput
+
+    # Referenced only by annotations and docstrings since ADR-0064
+    # deleted the `isinstance(gt, CocoDataset)` guard.
+    from vernier._core import CocoDataset
     from vernier.instance import IouKind
 
 

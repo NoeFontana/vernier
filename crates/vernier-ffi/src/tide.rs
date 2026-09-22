@@ -38,14 +38,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
-use vernier_core::dataset::DetectionArea;
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::tide::{self, FpIouHistogram, TideErrorBin, TideParams, TideReport};
 use vernier_core::{AreaRange, CocoDataset, CocoDetections, EvalError, ParityMode};
 
 use crate::array_ingest::ArrayIouType;
-use crate::dataset::GtPayload;
-use crate::{parse_parity_mode, prepare_dt_payload_for, realize_dt, validate_dilation_ratio};
+use crate::{parse_parity_mode, validate_dilation_ratio, DiagnosticInputs};
 
 /// Common per-call plumbing for the three TIDE kernel entry points:
 /// parse parity mode, resolve the `gt=` / `dt=` unions off the GIL, run
@@ -82,21 +80,10 @@ where
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
-    // Classify both arguments under the GIL; the parse itself happens
-    // in `realize`, inside `py.detach` below. The GT bytes are borrowed
-    // rather than copied (`PyBackedBytes`), which the pre-ADR-0064
-    // `to_vec()` was not.
-    let gt_payload = GtPayload::extract(gt)?;
-    gt_payload.reject_federated("error_decomposition")?;
-    let dt_payload = prepare_dt_payload_for(py, dt, kernel, cast_inputs)?;
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "error_decomposition")?;
 
     let report = py.detach(move || -> PyResult<TideReport> {
-        let gt = gt_payload.realize()?;
-        // `FromBbox` is what `CocoDetections::from_json_bytes` applies
-        // (quirk **J3** derives a detection's area from its box), so
-        // the array routes read areas exactly as the results-file route
-        // this path has always taken does.
-        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
+        let (gt, dt) = inputs.realize()?;
         let area_ranges = AreaRange::coco_default();
         let params = TideParams {
             t_f,
@@ -275,13 +262,10 @@ where
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt_payload = GtPayload::extract(gt)?;
-    gt_payload.reject_federated("fp_iou_histogram")?;
-    let dt_payload = prepare_dt_payload_for(py, dt, kernel, cast_inputs)?;
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "fp_iou_histogram")?;
 
     let mut histogram = py.detach(move || -> PyResult<FpIouHistogram> {
-        let gt = gt_payload.realize()?;
-        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
+        let (gt, dt) = inputs.realize()?;
         let area_ranges = AreaRange::coco_default();
         // `t_b` rides along on TideParams but the histogram extractor
         // ignores it (Bkg cutoff is decided Python-side from the

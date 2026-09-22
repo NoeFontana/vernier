@@ -43,14 +43,12 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use vernier_core::dataset::DetectionArea;
 use vernier_core::evaluate::AreaRange;
 use vernier_core::lrp::{self, LrpKernelMarker, LrpParams, LrpPerClass, LrpReport};
 use vernier_core::{CocoDataset, CocoDetections, EvalError, ParityMode};
 
 use crate::array_ingest::ArrayIouType;
-use crate::dataset::GtPayload;
-use crate::{parse_parity_mode, prepare_dt_payload_for, realize_dt, validate_dilation_ratio};
+use crate::{parse_parity_mode, validate_dilation_ratio, DiagnosticInputs};
 
 /// Common per-call plumbing for the four LRP kernel entry points:
 /// parse parity mode, resolve the `gt=` / `dt=` unions off the GIL, run
@@ -86,17 +84,10 @@ where
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
-    // Classify both arguments under the GIL; the parse itself runs in
-    // `realize`, inside `py.detach` below.
-    let gt_payload = GtPayload::extract(gt)?;
-    gt_payload.reject_federated("optimal_lrp")?;
-    let dt_payload = prepare_dt_payload_for(py, dt, kernel, cast_inputs)?;
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "optimal_lrp")?;
 
     let report = py.detach(move || -> PyResult<LrpReport> {
-        let gt = gt_payload.realize()?;
-        // `FromBbox` is what the results-file route applies (quirk
-        // **J3**), so the array routes read detection areas identically.
-        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
+        let (gt, dt) = inputs.realize()?;
         let area_ranges = AreaRange::coco_default();
         // The LRP pass only consumes the retained IoU matrices; the
         // matching engine's IoU-threshold ladder is irrelevant. Use
