@@ -642,3 +642,201 @@ def test_columnar_and_per_sample_agree(iou_type: Any) -> None:
             for key in ("boxes", "scores", "labels"):
                 assert np.array_equal(np.asarray(left[key]), np.asarray(right[key]))
             assert len(left["rles"]) == len(right["rles"])
+
+
+def _box_records() -> tuple[list[Prediction], list[Target]]:
+    """One image, one box each side, overlapping exactly."""
+    box = np.array([[10.0, 10.0, 20.0, 30.0]])
+    targets: list[Target] = [{"boxes": box, "labels": np.array([1])}]
+    predictions: list[Prediction] = [
+        {"boxes": box, "scores": np.array([0.9]), "labels": np.array([1])}
+    ]
+    return predictions, targets
+
+
+def _mask_records() -> tuple[list[Prediction], list[Target]]:
+    """The same, carrying masks and no boxes at all."""
+    predicted, actual = _discs()
+    targets: list[Target] = [{"labels": np.array([0]), "masks": masks} for masks in actual]
+    predictions: list[Prediction] = [
+        {"labels": np.array([0]), "scores": np.array([0.9]), "masks": masks} for masks in predicted
+    ]
+    return predictions, targets
+
+
+def test_a_mask_column_is_all_or_nothing() -> None:
+    """Masking only some records misreads every image after the first.
+
+    The flat mask list is indexed through ``counts``, so a column
+    covering part of a side hands image ``i`` another image's mask, and
+    the area column broadcasts instead of refusing. The columnar
+    spelling already rejected this shape; both must, since they are one
+    conversion.
+    """
+    predicted, actual = _discs()
+    box = np.zeros((1, 4))
+    targets: list[Target] = [
+        {"boxes": box, "labels": np.array([0]), "masks": actual[0]},
+        {"boxes": box, "labels": np.array([0])},
+    ]
+    predictions: list[Prediction] = [
+        {"boxes": box, "scores": np.array([0.9]), "labels": np.array([0]), "masks": predicted[0]},
+        {"boxes": box, "scores": np.array([0.9]), "labels": np.array([0])},
+    ]
+    with pytest.raises(ValueError, match="all-or-nothing"):
+        coco_inputs(predictions, targets)
+
+
+def test_bbox_metrics_refuse_records_without_boxes() -> None:
+    """The zero box column a mask-only record gets scores 0 under ``bbox``.
+
+    :func:`coco_inputs` fills it so a segm pipeline need not carry boxes
+    no segm kernel reads. A bbox grid does read it, and reports ``0`` —
+    a plausible number with no error — so the one function that names
+    the grid refuses the combination rather than returning it.
+    """
+    predictions, targets = _mask_records()
+    assert float(coco_metrics(predictions, targets, iou_type="segm")["map"]) > 0
+    with pytest.raises(KeyError, match="boxes is required"):
+        coco_metrics(predictions, targets, iou_type="bbox")
+    with pytest.raises(KeyError, match="boxes is required"):
+        coco_metrics(predictions, targets, iou_type=("bbox", "segm"))
+
+
+def test_unknown_iou_type_is_refused() -> None:
+    """A typo would fall through to the segm grid.
+
+    The run then reports one IoU type's metrics under the other's keys —
+    the silent mis-selection ``_validate_literals`` exists to prevent,
+    and the reason ``iou_type`` is checked beside ``area`` and
+    ``box_format``.
+    """
+    predictions, targets = _mask_records()
+    with pytest.raises(ValueError, match="unknown iou_type"):
+        coco_metrics(predictions, targets, iou_type=cast("Any", "boundary"))
+
+
+@pytest.mark.parametrize("max_dets", [(100, 10, 1), (1, 1, 1), (0, 10, 100), (1, 10)])
+def test_max_dets_must_be_three_increasing_caps(max_dets: tuple[int, ...]) -> None:
+    """Every image is capped at the last entry, whatever the keys read.
+
+    A descending ladder truncates the run to the smallest cap while the
+    keys still say ``mar_100``; a repeated one collapses two ``mar_{n}``
+    keys into one, so the dict quietly holds eleven statistics instead
+    of twelve.
+    """
+    predictions, targets = _box_records()
+    with pytest.raises(ValueError, match="max_dets"):
+        coco_metrics(predictions, targets, max_dets=max_dets)
+
+
+def test_fractional_iscrowd_is_refused() -> None:
+    """``0.5`` truncates to ``0`` and un-crowds the annotation.
+
+    The same silent outcome as a ``uint8`` column wrapping 256 to 0
+    (quirks **D1**, **E1**), reached from the other side of the cast.
+    """
+    box = np.array([[10.0, 10.0, 20.0, 30.0]])
+    predictions, targets = _box_records()
+    with pytest.raises(ValueError, match="integral"):
+        coco_inputs(predictions, [{**targets[0], "iscrowd": np.array([0.5])}])
+    detection_columns: DetectionColumns = {
+        "boxes": box,
+        "scores": np.array([0.9]),
+        "labels": np.array([1]),
+        "counts": np.array([1]),
+    }
+    target_columns: TargetColumns = {
+        "boxes": box,
+        "labels": np.array([1]),
+        "iscrowd": np.array([0.5]),
+        "counts": np.array([1]),
+    }
+    with pytest.raises(ValueError, match="integral"):
+        coco_inputs_from_columns(detection_columns, target_columns)
+
+
+def test_columnar_image_ids_must_be_unique() -> None:
+    """Duplicates point two images' annotations at one id.
+
+    ``_image_ids`` already refuses the identical mistake in the
+    per-sample spelling, and the two spellings must accept exactly the
+    same inputs.
+    """
+    columns: Any = {
+        "boxes": np.zeros((2, 4)),
+        "scores": np.ones(2),
+        "labels": np.ones(2, np.int64),
+        "counts": np.array([1, 1]),
+    }
+    with pytest.raises(ValueError, match="unique"):
+        coco_inputs_from_columns(columns, columns, image_ids=np.array([5, 5]))
+
+
+def test_an_empty_rles_column_does_not_hide_the_masks() -> None:
+    """A caller that sets both mask keys unconditionally still gets its masks.
+
+    ``_has_masks`` reads whichever column is non-empty, so keying the
+    read on mere presence made ``rles: []`` beside a real ``masks``
+    array look like zero masks for N annotations.
+    """
+    predictions, targets = _mask_records()
+    both: list[Prediction] = [{**predictions[0], "rles": []}]
+    assert float(coco_metrics(both, targets, iou_type="segm")["map"]) > 0
+
+
+def test_a_supplied_size_survives_a_bbox_only_run() -> None:
+    """``Target.size`` is the caller's, whether or not masks are present.
+
+    Resolving sizes only for a masked build silently returned ``0x0``
+    for an image whose size the caller had pinned.
+    """
+    predictions, targets = _box_records()
+    sized, bare = (
+        coco_inputs(predictions, [{**targets[0], "size": (480, 640)}])[0],
+        (coco_inputs(predictions, targets)[0]),
+    )
+    assert sized.dataset_hash != bare.dataset_hash
+
+
+def test_a_sizes_column_must_cover_every_image() -> None:
+    """A short column is refused, not read as "no size for the rest"."""
+    columns: Any = {
+        "boxes": np.zeros((2, 4)),
+        "scores": np.ones(2),
+        "labels": np.ones(2, np.int64),
+        "counts": np.array([1, 1]),
+    }
+    sized = cast("Any", {**columns, "sizes": np.array([[4, 5]])})
+    with pytest.raises(ValueError, match="sizes"):
+        coco_inputs_from_columns(columns, sized)
+    with pytest.raises(ValueError, match="sizes"):
+        gt_image_sizes([[{"size": (7, 9), "counts": b"x"}], None], None, [(11, 13)])
+
+
+def test_masked_ground_truth_beside_box_only_detections() -> None:
+    """A real COCO ground truth carries segmentation even for a box model.
+
+    The masked build must not demand a mask the detector never
+    produced — only that each side is internally whole.
+    """
+    _, actual = _discs()
+    box = np.array([[6.0, 6.0, 13.0, 13.0]])
+    targets: list[Target] = [{"boxes": box, "labels": np.array([0]), "masks": actual[0]}]
+    predictions: list[Prediction] = [
+        {"boxes": box, "scores": np.array([0.9]), "labels": np.array([0])}
+    ]
+    assert float(coco_metrics(predictions, targets, iou_type="bbox")["map"]) > 0
+
+
+def test_a_mask_error_names_the_callers_index() -> None:
+    """The rewritten prefix keeps the field the extractor appended to it.
+
+    ``rle_area`` numbers the compacted list it was handed, so the index
+    is remapped; consuming the separator as well spliced the prefix back
+    together as ``masks[1]: .counts:``.
+    """
+    from vernier._samples import _mask_areas
+
+    with pytest.raises(ValueError, match=r"^masks\[1\]\.counts: "):
+        _mask_areas([np.zeros((4, 4), np.uint8), {"size": (4, 4), "counts": b"\xff\xff"}])

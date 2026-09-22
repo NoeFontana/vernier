@@ -921,8 +921,16 @@ mod tests {
 /// not reach here at all: summing them in NumPy is ~19x faster than a
 /// round trip through the RLE codec and bit-identical, so the Python
 /// side reserves this for pre-encoded RLEs.
+///
+/// Returns the areas as native-endian `f64` bytes, which the caller
+/// wraps with `numpy.frombuffer`. A `Vec<f64>` would cross the boundary
+/// as one `PyFloat` per mask — at validation scale 10^5–10^6 transient
+/// objects — for a value NumPy re-packs into a buffer immediately.
 #[pyfunction]
-pub(crate) fn rle_area<'py>(py: Python<'py>, rles: &Bound<'py, PyAny>) -> PyResult<Vec<f64>> {
+pub(crate) fn rle_area<'py>(
+    py: Python<'py>,
+    rles: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyBytes>> {
     // No `cast_inputs`: neither accepted form has a dtype this could
     // widen — a dict's `counts` is `bytes` or `uint32` and a bitmask is
     // `bool` or `uint8`, all exact. A parameter here would promise
@@ -931,8 +939,11 @@ pub(crate) fn rle_area<'py>(py: Python<'py>, rles: &Bound<'py, PyAny>) -> PyResu
     let ascontig = ascontig_for(py, &cast_state)?;
     let ctx = CastCtx::new(py, &cast_state, &ascontig);
 
+    // A `PyIterator`'s `size_hint` is `(0, None)`, so reserve off the
+    // sequence's own length; `len()` fails only for a true generator.
+    let hint = rles.len().unwrap_or(0);
     let items = rles.try_iter()?;
-    let mut segmentations: Vec<Segmentation> = Vec::with_capacity(items.size_hint().0);
+    let mut segmentations: Vec<Segmentation> = Vec::with_capacity(hint);
     for (i, item) in items.enumerate() {
         let item = item?;
         segmentations.push(extract_one_rle(
@@ -942,29 +953,31 @@ pub(crate) fn rle_area<'py>(py: Python<'py>, rles: &Bound<'py, PyAny>) -> PyResu
         )?);
     }
 
-    py.detach(|| {
-        let mut areas: Vec<f64> = Vec::with_capacity(segmentations.len());
-        for (i, segmentation) in segmentations.iter().enumerate() {
-            // `rle_area` is `None` only for polygons, which
-            // `extract_one_rle` has already refused, so the `None` arm is
-            // unreachable through this entry point.
-            let area = segmentation
-                .rle_area()
-                .map_err(|e| (i, e))?
-                .ok_or_else(|| {
-                    (
-                        i,
-                        EvalError::InvalidConfig {
-                            detail: "polygons have no RLE area".to_string(),
-                        },
-                    )
-                })?;
-            areas.push(area as f64);
-        }
-        Ok(areas)
-    })
-    .map_err(|(i, e): (usize, EvalError)| {
-        let inner = eval_error_to_pyerr(py, e);
-        PyValueError::new_err(format!("rles[{i}]: {inner}"))
-    })
+    let bytes = py
+        .detach(|| {
+            let mut areas: Vec<u8> = Vec::with_capacity(segmentations.len() * 8);
+            for (i, segmentation) in segmentations.iter().enumerate() {
+                // `rle_area` is `None` only for polygons, which
+                // `extract_one_rle` has already refused, so the `None` arm is
+                // unreachable through this entry point.
+                let area = segmentation
+                    .rle_area()
+                    .map_err(|e| (i, e))?
+                    .ok_or_else(|| {
+                        (
+                            i,
+                            EvalError::InvalidConfig {
+                                detail: "polygons have no RLE area".to_string(),
+                            },
+                        )
+                    })?;
+                areas.extend_from_slice(&(area as f64).to_ne_bytes());
+            }
+            Ok(areas)
+        })
+        .map_err(|(i, e): (usize, EvalError)| {
+            let inner = eval_error_to_pyerr(py, e);
+            PyValueError::new_err(format!("rles[{i}]: {inner}"))
+        })?;
+    Ok(PyBytes::new(py, &bytes))
 }

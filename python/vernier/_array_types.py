@@ -266,7 +266,9 @@ class DetectionColumns(TypedDict, total=False):
     ``boxes`` is ``(D, 4)``, ``scores`` and ``labels`` are ``(D,)``, and
     ``counts`` is ``(M,)`` giving each image's detection count in image
     order. ``counts`` is what assigns detections to images, so it must
-    sum to ``D``. ``rles`` is a flat length-``D`` sequence.
+    sum to ``D``. ``rles`` is a flat length-``D`` sequence, or absent —
+    never partial, since it is indexed through ``counts``. ``boxes``
+    follows :class:`Prediction`: optional when ``rles`` is given.
     """
 
     boxes: Any
@@ -283,7 +285,7 @@ class TargetColumns(TypedDict, total=False):
     :class:`DetectionColumns` for the shape rules. ``iscrowd`` and
     ``area`` are optional ``(G,)`` columns with the same meaning they
     carry per record, and ``sizes`` is an optional ``(M, 2)`` array of
-    ``(height, width)`` per image.
+    ``(height, width)`` — one row per image, refused if it is short.
     """
 
     boxes: Any
@@ -311,13 +313,17 @@ class Prediction(TypedDict, total=False):
     ``_fix_empty_tensors`` produces, and both are normalized. It is
     **optional when the record carries masks**, where no kernel reads it
     — a mask-only pipeline need not materialize boxes it does not have —
-    and required otherwise.
+    and required otherwise. A *bbox* evaluation does read it, so
+    :func:`vernier.adapters.coco_metrics` refuses ``iou_type="bbox"``
+    when a record omits it rather than scoring the zero column.
 
     Masks arrive either already encoded (``rles``) or as bitmasks
     (``masks``) — the two populations differ, and both are accepted so
-    neither has to convert. ``rles[i]`` takes any
-    :data:`RLEInput` shape plus the ``(size, counts)`` pair a
-    TorchMetrics metric state carries.
+    neither has to convert. ``rles[i]`` takes any :data:`RLEInput`
+    shape plus the ``(size, counts)`` pair a TorchMetrics metric state
+    carries; whichever column is non-empty is the one read. Masks are
+    all-or-nothing across a side: every annotation carries one, or none
+    does.
 
     ``image_id`` defaults to the record's position in the sequence, which
     is what a trainer that never assigns one gets. When both sides carry
@@ -336,7 +342,7 @@ class Target(TypedDict, total=False):
     """One image's ground truth, as a training loop holds it (ADR-0063).
 
     Shares :class:`Prediction`'s duck-typing and box/mask conventions,
-    including ``boxes`` being optional under ``segm``, and adds the two
+    including ``boxes`` being optional when masks are present, and adds the two
     fields a ground truth carries that a detection does not:
 
     - ``iscrowd``: optional, defaulting to all-zero. Widened to
@@ -352,9 +358,9 @@ class Target(TypedDict, total=False):
       and to the box's otherwise — which is what COCO records and what
       ``COCOeval`` buckets by, under either IoU type.
 
-    ``size`` is the image's ``(height, width)``. It is only read under
-    ``segm``, where vernier checks every RLE against it; when absent it
-    is resolved from the masks themselves (see
+    ``size`` is the image's ``(height, width)``, and wins wherever it is
+    given — under ``segm`` vernier checks every RLE against it. When
+    absent it is resolved from the masks themselves (see
     :func:`vernier.adapters.gt_image_sizes`).
 
     Masks are worth passing even for a ``bbox`` evaluation: they are not

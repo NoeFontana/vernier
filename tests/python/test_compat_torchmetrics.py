@@ -309,10 +309,10 @@ def test_coco_metrics_matches_pycocotools_on_segm() -> None:
 def test_coco_metrics_matches_pycocotools_on_both_iou_types() -> None:
     """A two-IoU-type run prefixes its keys and emits the full set.
 
-    Each IoU type builds its own inputs — a segm ground truth carries
-    segmentation and image sizes a bbox one does not — so this is not
-    the single-type cases run twice. It is also the shape a training
-    run that logs both actually uses.
+    One conversion serves both passes — the inputs do not depend on
+    which grid reads them — so this pins that the shared ground truth
+    still scores each IoU type exactly as a single-type run does. It is
+    also the shape a training run that logs both actually uses.
     """
     from vernier.adapters import coco_metrics
 

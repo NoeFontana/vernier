@@ -144,14 +144,15 @@ def coco_inputs(
     predictions: Sequence[Prediction],
     targets: Sequence[Target],
     *,
-    iou_type: Literal["bbox", "segm"] = "bbox",
     box_format: Literal["xywh", "xyxy", "cxcywh"] = "xywh",
     categories: Sequence[int] | Sequence[GtCategory] | None = None,
     area: Literal["auto", "supplied", "box", "mask"] = "auto",
     cast_inputs: bool = True,
 ) -> tuple[CocoDataset, DetectionsInput]: ...
 
-def coco_metrics(predictions, targets, *, ...) -> dict[str, float | NDArray[np.float64]]: ...
+def coco_metrics(
+    predictions, targets, *, iou_type="bbox", ...,
+) -> dict[str, float | NDArray[np.float64]]: ...
 
 def gt_image_sizes(gt_rles, dt_rles=None, supplied=None) -> tuple[NDArray[np.int64], ...]: ...
 
@@ -159,7 +160,7 @@ def coco_inputs_from_columns(
     detections: DetectionColumns,
     targets: TargetColumns,
     *,
-    iou_type=..., box_format=..., categories=..., area=..., image_ids=None, cast_inputs=True,
+    box_format=..., categories=..., area=..., image_ids=None, cast_inputs=True,
 ) -> tuple[CocoDataset, DetectionsInput]: ...
 ```
 
@@ -177,8 +178,7 @@ alone:
   so `categories=None` resolves to the union of both sides;
 - image sizes are `with_mask_image_sizes(gt, detection_image_sizes(dt))`,
   which reads both;
-- the detection route choice depends on the IoU type the ground truth
-  was built for.
+- the detection route depends on whether *either* side carries masks.
 
 `gt_image_sizes` is the columnar mirror of the already-published
 `detection_image_sizes`. ADR-0055 explicitly left this to the caller —
@@ -225,6 +225,24 @@ not a reason to make the *builder* ask which kernel comes next.
 The consequence is that one set of inputs serves every pass of a
 multi-IoU-type run, so `coco_metrics` converts once rather than once
 per type.
+
+It also moves one check. A mask-only pipeline may omit `boxes`, and the
+builder fills a zero column no segm kernel reads — but a *bbox* kernel
+reads it, and reports `0`. With no `iou_type` on the builder, the first
+place that knows which grid will run is `coco_metrics`, so that is
+where the combination is refused. vernier does **not** derive the box
+from the mask: ADR-0057 refuses to repair an input the caller did not
+supply, and a caller who wants that conversion can write it (`vernier.mask`
+will make it a one-liner). A caller driving a grid directly owns the
+same check — the price of a builder that does not name the kernel.
+
+**A mask column is all-or-nothing, per side.** The flat mask list is
+indexed through `counts`, so a column covering only some of a side's
+rows hands image `i` another image's mask, and the area column
+broadcasts rather than refusing. Both spellings pass through one
+builder, so the rule is checked once, there. The two sides are
+independent: a COCO ground truth carrying segmentation beside a
+box-only detector is an ordinary bbox run, not an error.
 
 ### `cast_inputs=True` on this route only
 
