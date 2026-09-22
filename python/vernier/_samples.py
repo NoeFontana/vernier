@@ -152,6 +152,41 @@ def _boxes(
     return converted
 
 
+def _record_boxes(
+    record: Prediction | Target,
+    field: str,
+    labels: NDArray[np.int64],
+    box_format: BoxFormat,
+    *,
+    masked: bool,
+    cast_inputs: bool,
+) -> NDArray[np.float64]:
+    """One record's boxes, which a mask-only pipeline need not carry.
+
+    Under ``segm`` the box column is required by the ground-truth schema
+    (ADR-0060) but **no kernel reads it**: matching is on mask IoU, the
+    area bucketing reads the ``area`` column, and detection areas come
+    from the mask (``dt_area="mask"``). Verified by construction — true,
+    zeroed and deliberately wrong boxes all produce identical ``segm``
+    metrics. So an instance-segmentation pipeline that never materializes
+    boxes, which TorchMetrics also permits under ``iou_type="segm"``, can
+    omit them and gets a zero column it cannot observe.
+
+    This is the same move :func:`vernier.adapters.with_mask_image_sizes`
+    already makes for an unsized image (ADR-0055): fill where nothing
+    looks, rather than demand a value the caller does not have.
+
+    Under ``bbox`` the column is load-bearing and stays required — which
+    includes each pass of a two-IoU-type run, since the bbox pass builds
+    its own inputs.
+    """
+    if "boxes" not in record and masked:
+        return np.zeros((len(labels), 4), dtype=np.float64)
+    return _boxes(
+        _required(record, "boxes", field), box_format, f"{field}.boxes", cast_inputs=cast_inputs
+    )
+
+
 def _labels(value: Any, field: str) -> NDArray[np.int64]:
     """Return one image's class labels as int64, refusing fractional ones.
 
@@ -380,8 +415,8 @@ def coco_inputs(
         predictions: One record per image. See :class:`Prediction`.
         targets: One record per image. See :class:`Target`.
         iou_type: ``"bbox"`` or ``"segm"``. Under ``"segm"`` every
-            record needs masks *and* boxes — vernier requires a box on
-            every annotation.
+            record needs masks; ``boxes`` become optional there, since
+            nothing reads them (see :func:`_record_boxes`).
         box_format: Layout ``boxes`` is read as. Never auto-detected: a
             ``(N, 4)`` array is ambiguous between ``xywh`` and ``xyxy``,
             and a wrong guess yields plausible, wrong AP rather than an
@@ -432,10 +467,12 @@ def coco_inputs(
     gt_rles: list[list[RLEInput]] = []
     for i, target in enumerate(targets):
         field = f"targets[{i}]"
-        boxes = _boxes(
-            _required(target, "boxes", field), box_format, f"{field}.boxes", cast_inputs=cast_inputs
-        )
+        # Labels first: they define the annotation count, which is what an
+        # omitted box column is sized against.
         labels = _labels(_required(target, "labels", field), f"{field}.labels")
+        boxes = _record_boxes(
+            target, field, labels, box_format, masked=masked, cast_inputs=cast_inputs
+        )
         if len(boxes) != len(labels):
             raise ValueError(f"{field}: {len(boxes)} boxes for {len(labels)} labels")
         crowds = (
@@ -466,13 +503,10 @@ def coco_inputs(
     dt_rles: list[list[RLEInput]] = []
     for i, prediction in enumerate(predictions):
         field = f"predictions[{i}]"
-        boxes = _boxes(
-            _required(prediction, "boxes", field),
-            box_format,
-            f"{field}.boxes",
-            cast_inputs=cast_inputs,
-        )
         labels = _labels(_required(prediction, "labels", field), f"{field}.labels")
+        boxes = _record_boxes(
+            prediction, field, labels, box_format, masked=masked, cast_inputs=cast_inputs
+        )
         scores = _column(prediction, "scores", field, cast_inputs=cast_inputs)
         if not (len(boxes) == len(labels) == len(scores)):
             raise ValueError(

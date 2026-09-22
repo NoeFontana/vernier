@@ -447,3 +447,75 @@ def test_bitmask_and_encoded_areas_agree() -> None:
     # position, so an off-by-one in the index bookkeeping would show here.
     mixed = _mask_areas([[np.asfortranarray(bitmasks[0].astype(bool))], [encoded[1]], [encoded[2]]])
     assert np.array_equal(mixed, oracle)
+
+
+def _discs() -> tuple[list[Any], list[Any]]:
+    """One predicted and one ground-truth mask, overlapping but not equal."""
+    rows, columns = np.ogrid[:40, :50]
+
+    def disc(center_x: int, center_y: int, radius: int) -> Any:
+        return ((rows - center_y) ** 2 + (columns - center_x) ** 2 <= radius**2).astype(np.uint8)
+
+    return [np.stack([disc(12, 12, 7)])], [np.stack([disc(13, 12, 7)])]
+
+
+def test_segm_accepts_records_without_boxes() -> None:
+    """A mask-only pipeline need not materialize boxes it does not have.
+
+    Under ``segm`` the box column is required by the ground-truth schema
+    but no kernel reads it, so demanding it would reject a legitimate
+    instance-segmentation pipeline — one TorchMetrics itself permits
+    under ``iou_type="segm"``.
+    """
+    predicted, actual = _discs()
+    targets: list[Target] = [{"labels": np.array([0]), "masks": masks} for masks in actual]
+    predictions: list[Prediction] = [
+        {"labels": np.array([0]), "scores": np.array([0.9]), "masks": masks} for masks in predicted
+    ]
+    result = coco_metrics(predictions, targets, iou_type="segm", parity_mode="strict")
+    assert float(result["map"]) > 0
+
+
+def test_segm_metrics_do_not_depend_on_the_boxes() -> None:
+    """The zero-fill is inert, which is what makes omitting boxes safe.
+
+    Pins the property the optionality rests on: under ``segm``, true,
+    zeroed and deliberately wrong boxes all evaluate identically. If a
+    future change starts reading the box column on this path, this
+    fails rather than silently changing everyone's numbers.
+    """
+    predicted, actual = _discs()
+
+    def run(boxes: Any | None) -> dict[str, Any]:
+        targets: list[Target] = []
+        predictions: list[Prediction] = []
+        for gt_masks, dt_masks in zip(actual, predicted, strict=True):
+            target: Target = {"labels": np.array([0]), "masks": gt_masks}
+            prediction: Prediction = {
+                "labels": np.array([0]),
+                "scores": np.array([0.9]),
+                "masks": dt_masks,
+            }
+            if boxes is not None:
+                target["boxes"] = boxes
+                prediction["boxes"] = boxes
+            targets.append(target)
+            predictions.append(prediction)
+        return coco_metrics(predictions, targets, iou_type="segm", parity_mode="strict")
+
+    omitted = run(None)
+    truthful = run(np.array([[6.0, 5.0, 15.0, 15.0]]))
+    nonsense = run(np.array([[999.0, 999.0, 3.0, 3.0]]))
+    for key in ("map", "map_50", "map_small", "mar_100"):
+        assert float(omitted[key]) == float(truthful[key]) == float(nonsense[key])
+
+
+def test_bbox_still_requires_boxes() -> None:
+    """The column is load-bearing under ``bbox``, so it stays required there."""
+    predicted, actual = _discs()
+    targets: list[Target] = [{"labels": np.array([0]), "masks": masks} for masks in actual]
+    predictions: list[Prediction] = [
+        {"labels": np.array([0]), "scores": np.array([0.9]), "masks": masks} for masks in predicted
+    ]
+    with pytest.raises(KeyError, match="boxes is required"):
+        coco_inputs(predictions, targets, iou_type="bbox")

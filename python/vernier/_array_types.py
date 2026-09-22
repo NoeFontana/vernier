@@ -268,7 +268,10 @@ class Prediction(TypedDict, total=False):
     ``boxes`` is ``(N, 4)`` in whichever ``box_format``
     :func:`vernier.adapters.coco_inputs` was told to read; an empty
     image may pass ``(0, 4)`` or the ``(1, 0)`` shape TorchMetrics'
-    ``_fix_empty_tensors`` produces, and both are normalized.
+    ``_fix_empty_tensors`` produces, and both are normalized. It is
+    **required under** ``bbox`` and **optional under** ``segm``, where
+    no kernel reads it — a mask-only pipeline need not materialize
+    boxes it does not have.
 
     Masks arrive either already encoded (``rles``) or as bitmasks
     (``masks``) — the two populations differ, and both are accepted so
@@ -293,8 +296,8 @@ class Target(TypedDict, total=False):
     """One image's ground truth, as a training loop holds it (ADR-0063).
 
     Shares :class:`Prediction`'s duck-typing and box/mask conventions,
-    and adds the two fields a ground truth carries that a detection does
-    not:
+    including ``boxes`` being optional under ``segm``, and adds the two
+    fields a ground truth carries that a detection does not:
 
     - ``iscrowd``: optional, defaulting to all-zero. Widened to
       ``int64`` on the way in — vernier reads any non-zero value as a
