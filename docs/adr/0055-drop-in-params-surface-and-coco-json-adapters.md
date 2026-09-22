@@ -1,6 +1,6 @@
 # ADR-0055: Finish the `COCOeval` drop-in's mutable surface, and publish the COCO-JSON normalizers
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-09-17
 - **Deciders:** @NoeFontana
 - **Consulted:** —
