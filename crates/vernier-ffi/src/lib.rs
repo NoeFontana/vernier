@@ -675,13 +675,13 @@ fn parse_gt_parallel(bytes: &[u8], threads: usize) -> PyResult<CocoDataset> {
     CocoDataset::from_json_bytes_parallel(bytes, threads).map_err(coco_load_error_to_pyerr)
 }
 
-/// Parse a COCO detections payload (sibling of [`parse_gt`]).
-pub(crate) fn parse_dt(bytes: &[u8]) -> PyResult<CocoDetections> {
-    CocoDetections::from_json_bytes(bytes).map_err(coco_load_error_to_pyerr)
-}
-
-/// [`parse_dt`] across a thread budget (ADR-0054). Must run inside a
-/// rayon pool.
+/// Parse a COCO detections payload across a thread budget (ADR-0054).
+/// Must run inside a rayon pool.
+///
+/// There is no sequential `parse_dt` sibling of [`parse_gt`] any more:
+/// since ADR-0064 every `dt=` argument — JSON bytes included — goes
+/// through [`build_update_payload`] and [`realize_dt`], so the
+/// detections side has exactly one entry point per thread policy.
 fn parse_dt_parallel(
     bytes: &[u8],
     threads: usize,
@@ -2412,8 +2412,25 @@ fn prepare_dt_payload<'py>(
     iou_type: &EvalIouType,
     cast_inputs: bool,
 ) -> PyResult<UpdatePayload> {
+    prepare_dt_payload_for(py, dt, iou_type.into(), cast_inputs)
+}
+
+/// [`prepare_dt_payload`] for a caller that knows its kernel as an
+/// [`array_ingest::ArrayIouType`] marker rather than an
+/// [`EvalIouType`] (ADR-0064).
+///
+/// The diagnostics — TIDE, the FP-IoU histogram, LRP, the confusion
+/// matrix — dispatch on a `"bbox"` / `"segm"` / `"boundary"` /
+/// `"keypoints"` entry point rather than on the enum the evaluator
+/// threads through, so they reach the shared `dt=` ingest here.
+pub(crate) fn prepare_dt_payload_for<'py>(
+    py: Python<'py>,
+    dt: &Bound<'py, PyAny>,
+    iou_type: array_ingest::ArrayIouType,
+    cast_inputs: bool,
+) -> PyResult<UpdatePayload> {
     let cast_state = array_ingest::new_cast_state(cast_inputs);
-    build_update_payload(py, dt, iou_type.into(), &cast_state)
+    build_update_payload(py, dt, iou_type, &cast_state)
 }
 
 /// Internal Rust orchestrator for the per-rank distributed-eval flow

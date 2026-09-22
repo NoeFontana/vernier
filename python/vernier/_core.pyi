@@ -412,7 +412,7 @@ class PartitionedSummary:
     def slices_capsule(self) -> ArrowRecordBatch: ...
 
 def evaluate_bbox_partitioned(
-    gt: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
     *,
     parity_mode: str,
@@ -428,7 +428,7 @@ def evaluate_bbox_partitioned(
     num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_segm_partitioned(
-    gt: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
     *,
     parity_mode: str,
@@ -444,7 +444,7 @@ def evaluate_segm_partitioned(
     num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_boundary_partitioned(
-    gt: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
     *,
     parity_mode: str,
@@ -461,7 +461,7 @@ def evaluate_boundary_partitioned(
     num_threads: int | None = ...,
 ) -> PartitionedSummary: ...
 def evaluate_keypoints_partitioned(
-    gt: bytes,
+    gt: bytes | CocoDataset,
     dt: DetectionsInput,
     *,
     parity_mode: str,
@@ -490,8 +490,8 @@ class PartitionedLrpReport:
     def slices_capsule(self) -> ArrowRecordBatch: ...
 
 def evaluate_bbox_partitioned_lrp(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     *,
     parity_mode: str,
     tp_threshold: float,
@@ -499,12 +499,13 @@ def evaluate_bbox_partitioned_lrp(
     max_dets_per_image: int,
     use_cats: bool,
     manifest: object,
+    cast_inputs: bool = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
 ) -> PartitionedLrpReport: ...
 def evaluate_segm_partitioned_lrp(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     *,
     parity_mode: str,
     tp_threshold: float,
@@ -512,12 +513,13 @@ def evaluate_segm_partitioned_lrp(
     max_dets_per_image: int,
     use_cats: bool,
     manifest: object,
+    cast_inputs: bool = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
 ) -> PartitionedLrpReport: ...
 def evaluate_boundary_partitioned_lrp(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     *,
     parity_mode: str,
     tp_threshold: float,
@@ -526,12 +528,13 @@ def evaluate_boundary_partitioned_lrp(
     use_cats: bool,
     dilation_ratio: float,
     manifest: object,
+    cast_inputs: bool = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
 ) -> PartitionedLrpReport: ...
 def evaluate_keypoints_partitioned_lrp(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     *,
     parity_mode: str,
     tp_threshold: float,
@@ -540,6 +543,7 @@ def evaluate_keypoints_partitioned_lrp(
     use_cats: bool,
     sigmas: dict[int, list[float]],
     manifest: object,
+    cast_inputs: bool = ...,
     cross_axes: list[list[str]] | None = ...,
     key_kind: str = ...,
 ) -> PartitionedLrpReport: ...
@@ -571,32 +575,38 @@ class _TideReportDict(TypedDict):
     config: _TideConfigDict
 
 def error_decomposition_bbox(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     t_f: float,
     t_b: float,
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _TideReportDict: ...
 def error_decomposition_segm(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     t_f: float,
     t_b: float,
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _TideReportDict: ...
 def error_decomposition_boundary(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     t_f: float,
     t_b: float,
     max_dets_per_image: int,
     use_cats: bool,
     dilation_ratio: float,
+    *,
+    cast_inputs: bool = ...,
 ) -> _TideReportDict: ...
 
 class _FpIouHistogramDict(TypedDict):
@@ -608,29 +618,35 @@ class _FpIouHistogramDict(TypedDict):
     n_fps: int
 
 def fp_iou_histogram_bbox(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     t_f: float,
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _FpIouHistogramDict: ...
 def fp_iou_histogram_segm(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     t_f: float,
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _FpIouHistogramDict: ...
 def fp_iou_histogram_boundary(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     t_f: float,
     max_dets_per_image: int,
     use_cats: bool,
     dilation_ratio: float,
+    *,
+    cast_inputs: bool = ...,
 ) -> _FpIouHistogramDict: ...
 
 class _LrpPerClassDict(TypedDict):
@@ -656,42 +672,50 @@ class _LrpReportDict(TypedDict):
     config: _LrpConfigDict
 
 def optimal_lrp_bbox(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _LrpReportDict: ...
 def optimal_lrp_segm(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _LrpReportDict: ...
 def optimal_lrp_boundary(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
     max_dets_per_image: int,
     use_cats: bool,
     dilation_ratio: float,
+    *,
+    cast_inputs: bool = ...,
 ) -> _LrpReportDict: ...
 def optimal_lrp_keypoints(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     tp_threshold: float,
     tau_grid: list[float],
     max_dets_per_image: int,
     use_cats: bool,
     sigmas: dict[int, list[float]],
+    *,
+    cast_inputs: bool = ...,
 ) -> _LrpReportDict: ...
 def lrp_default_tau_grid() -> list[float]: ...
 
@@ -703,29 +727,35 @@ class _ConfusionMatrixDict(TypedDict):
     kernel: str
 
 def confusion_matrix_bbox(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     iou_threshold: float,
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _ConfusionMatrixDict: ...
 def confusion_matrix_segm(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     iou_threshold: float,
     max_dets_per_image: int,
     use_cats: bool,
+    *,
+    cast_inputs: bool = ...,
 ) -> _ConfusionMatrixDict: ...
 def confusion_matrix_boundary(
-    gt: bytes,
-    dt_bytes: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: str,
     iou_threshold: float,
     max_dets_per_image: int,
     use_cats: bool,
     dilation_ratio: float,
+    *,
+    cast_inputs: bool = ...,
 ) -> _ConfusionMatrixDict: ...
 def per_class_to_arrow_pycapsule(
     grid: EvalGrid,

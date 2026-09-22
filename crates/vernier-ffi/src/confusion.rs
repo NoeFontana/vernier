@@ -33,13 +33,16 @@
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::PyDict;
 
+use vernier_core::dataset::DetectionArea;
 use vernier_core::similarity::{BboxIou, BoundaryIou, SegmIou};
 use vernier_core::tide::{compute_confusion_matrix, ConfusionMatrixCounts};
 use vernier_core::{CocoDataset, CocoDetections, EvalError, ParityMode};
 
-use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
+use crate::array_ingest::ArrayIouType;
+use crate::dataset::GtPayload;
+use crate::{parse_parity_mode, prepare_dt_payload_for, realize_dt, validate_dilation_ratio};
 
 /// Sentinel string surfaced in the `gt_class` / `dt_class` columns
 /// when the row is a false positive (`gt_class == "__none__"`) or a
@@ -54,20 +57,26 @@ const NONE_SENTINEL: &str = "__none__";
 type CountRow = ((Option<usize>, Option<usize>), u64);
 
 /// Common per-call plumbing for the three confusion-matrix kernel
-/// entry points: parse parity, copy JSON bytes off the GIL, run the
-/// kernel-specific orchestrator inside `py.detach`, and materialize
-/// the dict. `kernel_call` carries the kernel-specific dispatch
-/// (and any extra knobs like `dilation_ratio`) closed over by the
-/// per-kernel wrappers below.
+/// entry points: parse parity, resolve the `gt=` / `dt=` unions off the
+/// GIL, run the kernel-specific orchestrator inside `py.detach`, and
+/// materialize the dict. `kernel_call` carries the kernel-specific
+/// dispatch (and any extra knobs like `dilation_ratio`) closed over by
+/// the per-kernel wrappers below.
+///
+/// Per ADR-0064 `gt` takes `bytes` or a `CocoDataset` and `dt` takes
+/// the whole `DetectionsInput` union, through the same two resolvers
+/// `Evaluator.evaluate` uses.
 #[allow(clippy::too_many_arguments)]
 fn run_confusion_pass<'py, F>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    kernel: ArrayIouType,
     parity_mode: &str,
     iou_threshold: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
     kernel_name: &'static str,
     kernel_call: F,
 ) -> PyResult<Bound<'py, PyDict>>
@@ -103,14 +112,17 @@ where
         ));
     }
 
-    // Copy the JSON bytes off the GIL-tied PyBytes borrow so the parse
-    // and the side pass can run inside `py.detach`.
-    let gt_bytes = gt.as_bytes().to_vec();
-    let dt_bytes = dt_bytes.as_bytes().to_vec();
+    // Classify both arguments under the GIL; the parse itself runs in
+    // `realize`, inside `py.detach` below.
+    let gt_payload = GtPayload::extract(gt)?;
+    gt_payload.reject_federated("confusion_matrix")?;
+    let dt_payload = prepare_dt_payload_for(py, dt, kernel, cast_inputs)?;
 
     let cm = py.detach(move || -> PyResult<ConfusionMatrixCounts> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = parse_dt(&dt_bytes)?;
+        let gt = gt_payload.realize()?;
+        // `FromBbox` is what the results-file route applies (quirk
+        // **J3**), so the array routes read detection areas identically.
+        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
         kernel_call(&gt, &dt, parity).map_err(|e| PyValueError::new_err(format!("{e}")))
     })?;
 
@@ -120,9 +132,12 @@ where
 /// Confusion matrix for the bbox kernel (per ADR-0023, sibling
 /// capability of TIDE error decomposition).
 ///
-/// `gt_bytes` and `dt_bytes` are the COCO ground-truth and detection
-/// JSON payloads as bytes (the same shapes pycocotools' `COCO(...)` /
-/// `loadRes(...)` consume). `parity_mode` is `"strict"` or
+/// `gt` is the COCO ground-truth JSON payload as `bytes` or a parsed
+/// `CocoDataset` handle; `dt` is any of the detection forms the
+/// evaluator accepts — results JSON `bytes`, columnar `Detections`,
+/// result dicts, or an `(N, 7)` matrix (ADR-0030, ADR-0057, ADR-0064).
+/// `cast_inputs` converts array dtypes rather than refusing them, as on
+/// `Evaluator`. `parity_mode` is `"strict"` or
 /// `"corrected"` per ADR-0002. `iou_threshold` is the foreground
 /// threshold for declaring a `(gt, dt)` pair matched (0.5 is the COCO
 /// canonical default). `max_dets_per_image` matches the matching
@@ -131,25 +146,28 @@ where
 ///
 /// Returns the long-format dict described in the module docstring.
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, iou_threshold, max_dets_per_image, use_cats, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn confusion_matrix_bbox<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     iou_threshold: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_confusion_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Bbox,
         parity_mode,
         iou_threshold,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         "bbox",
         move |gt, dt, parity| {
             compute_confusion_matrix(gt, dt, &BboxIou, iou_threshold, max_dets_per_image, parity)
@@ -159,28 +177,31 @@ pub(crate) fn confusion_matrix_bbox<'py>(
 
 /// Confusion matrix for the segm kernel.
 ///
-/// Same signature as [`confusion_matrix_bbox`]; `gt_bytes` /
-/// `dt_bytes` must carry COCO `segmentation` fields (polygon or RLE).
+/// Same signature as [`confusion_matrix_bbox`]; `gt` /
+/// `dt` must carry COCO `segmentation` fields (polygon or RLE).
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, iou_threshold, max_dets_per_image, use_cats, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn confusion_matrix_segm<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     iou_threshold: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_confusion_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Segm,
         parity_mode,
         iou_threshold,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         "segm",
         move |gt, dt, parity| {
             compute_confusion_matrix(gt, dt, &SegmIou, iou_threshold, max_dets_per_image, parity)
@@ -193,31 +214,41 @@ pub(crate) fn confusion_matrix_segm<'py>(
 /// `dilation_ratio` pins the boundary band thickness (ADR-0010
 /// default `0.02` for COCO, `0.008` for LVIS).
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, iou_threshold, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt, parity_mode, iou_threshold, max_dets_per_image, use_cats, dilation_ratio, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn confusion_matrix_boundary<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     iou_threshold: f64,
     max_dets_per_image: usize,
     use_cats: bool,
     dilation_ratio: f64,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     validate_dilation_ratio(dilation_ratio)?;
-    let kernel = BoundaryIou { dilation_ratio };
+    let iou_kernel = BoundaryIou { dilation_ratio };
     run_confusion_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Boundary,
         parity_mode,
         iou_threshold,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         "boundary",
         move |gt, dt, parity| {
-            compute_confusion_matrix(gt, dt, &kernel, iou_threshold, max_dets_per_image, parity)
+            compute_confusion_matrix(
+                gt,
+                dt,
+                &iou_kernel,
+                iou_threshold,
+                max_dets_per_image,
+                parity,
+            )
         },
     )
 }

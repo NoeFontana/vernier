@@ -14,6 +14,38 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Added
+
+- **The parsed pair on every instance surface** (ADR-0064). TIDE
+  (`error_decomposition`), LRP (`optimal_lrp`, including its
+  `manifest=` form), `confusion_matrix`, `fp_iou_histogram` and
+  `Evaluator.evaluate`'s `tables=` / `manifest=` paths now take a
+  `CocoDataset` handle for `gt` and the whole `DetectionsInput` union
+  for `dt` — the same two arguments `Evaluator.evaluate` and
+  `evaluate_*_grid` have taken since ADR-0061 and ADR-0030. The five
+  `NotImplementedError` guards are gone.
+
+  This completes ADR-0063's case for returning inputs rather than a
+  metric: the `(CocoDataset, DetectionsInput)` pair from `coco_inputs`
+  / `coco_inputs_from_columns` now reaches every instance surface, so a
+  training loop can go from "AP dropped" to a TIDE decomposition of why
+  without serializing a COCO file. Nothing below the argument
+  resolution changed, and no evaluated number moves.
+
+  Each of the four standalone diagnostics also gains `cast_inputs`,
+  matching `Evaluator`'s field and its `False` default.
+
+  LVIS federated ground truth — a handle from
+  `CocoDataset.from_lvis_json` — is refused on those four, since they
+  would apply the AA3/AA4 branches without the ADR-0026 detection trim
+  and there is no oracle for the result. `tables=` / `manifest=` route
+  through the grid and are unrestricted.
+
+### Changed
+
+- The `gt` bytes path of the diagnostics no longer copies the payload
+  before releasing the GIL (`PyBackedBytes` borrows it instead).
+
 ## [0.5.2] - 2026-09-22
 
 ### Added

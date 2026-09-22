@@ -162,16 +162,20 @@ def test_polars_imported_lazily_only_after_first_access() -> None:
     assert "polars" in sys.modules
 
 
-def test_evaluate_tables_with_dataset_handle_is_not_yet_supported() -> None:
-    """Passing a Dataset handle on the tables path is reserved for
-    Week 2.5 (when streaming/background integration also lands).
-    Document the limitation as a typed error so callers don't get a
-    misleading low-level message."""
+def test_evaluate_tables_with_dataset_handle_matches_the_bytes_path() -> None:
+    """ADR-0064: the guard that used to sit here was vestigial.
+
+    `evaluate_*_grid` has taken `bytes | CocoDataset` since ADR-0061 and
+    `grid.dataset()` hands the table builders the handle the grid
+    retained either way — so the tables are the same tables."""
+    pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
     from vernier.instance import CocoDataset
 
     ds = CocoDataset.from_json(_GT)
-    with pytest.raises(NotImplementedError, match="bytes"):
-        Evaluator().evaluate(ds, _DT, tables=("per_class",))
+    from_bytes = Evaluator().evaluate(_GT, _DT, tables=("per_class",))
+    from_handle = Evaluator().evaluate(ds, _DT, tables=("per_class",))
+
+    assert from_handle.per_class.equals(from_bytes.per_class)
 
 
 def test_per_class_table_alignes_with_summary_ap() -> None:

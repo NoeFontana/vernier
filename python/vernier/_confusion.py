@@ -22,18 +22,20 @@ from vernier._types import ParityMode
 if TYPE_CHECKING:  # pragma: no cover - type-checker only
     import polars as pl
 
+    from vernier._array_types import DetectionsInput
     from vernier.instance import IouKind
 
 
 def confusion_matrix(
     gt: bytes | CocoDataset,
-    dt: bytes,
+    dt: DetectionsInput,
     *,
     iou: IouKind | None = None,
     t_f: float = 0.5,
     max_dets_per_image: int = 100,
     use_cats: bool = True,
     parity_mode: ParityMode = "corrected",
+    cast_inputs: bool = False,
 ) -> pl.DataFrame:
     """Confusion matrix counts in long format (ADR-0023).
 
@@ -74,10 +76,16 @@ def confusion_matrix(
 
     Args:
         gt: Ground-truth COCO JSON payload as bytes (the same shape
-            ``pycocotools.COCO(...)`` consumes). The :class:`CocoDataset`
-            handle from ADR-0020 is not yet wired through this path —
-            passing one raises :class:`NotImplementedError`.
-        dt: Detection COCO JSON payload as bytes.
+            ``pycocotools.COCO(...)`` consumes) or a
+            :class:`CocoDataset` handle (ADR-0020, ADR-0060). A handle
+            carrying LVIS federated metadata is refused — the confusion
+            matrix has no federated disposition (ADR-0064).
+        dt: Any detection form the evaluator accepts — the detection
+            COCO JSON payload as bytes, columnar
+            :class:`vernier.Detections`, result dicts, or an ``(N, 7)``
+            matrix (ADR-0030, ADR-0057, ADR-0064). The pair
+            :func:`vernier.adapters.coco_inputs` returns is read here
+            unchanged.
         iou: Kernel selector. Pass :class:`Bbox()` (default),
             :class:`Segm()`, or :class:`Boundary(dilation_ratio=...)`.
             :class:`Keypoints` is rejected per ADR-0024 (OKS is
@@ -91,15 +99,18 @@ def confusion_matrix(
             collapses to a single virtual class).
         parity_mode: ``"strict"`` or ``"corrected"`` per ADR-0002.
             Defaults to ``"corrected"``.
+        cast_inputs: Convert array dtypes rather than refusing them, as
+            on :class:`vernier.instance.Evaluator`. Defaults to
+            ``False``; no effect on the bytes route.
 
     Returns:
         A :class:`polars.DataFrame` with columns ``gt_class``,
         ``dt_class``, ``count``.
 
     Raises:
-        NotImplementedError: ``iou=Keypoints(...)`` (ADR-0024) or
-            ``gt`` is a :class:`CocoDataset` handle (ADR-0020 forward-compat
-            marker not yet wired through).
+        NotImplementedError: ``iou=Keypoints(...)`` (ADR-0024), or
+            ``gt`` is a federated :class:`CocoDataset` handle
+            (ADR-0026 / ADR-0064).
         ValueError: ``t_f`` outside ``[0, 1]``, ``max_dets_per_image
             < 1``, or ``use_cats=False``.
         ImportError: ``polars`` not installed (install via
@@ -111,15 +122,6 @@ def confusion_matrix(
         >>> df.filter(pl.col("gt_class") != pl.col("dt_class"))  # only mistakes
         >>> df.pivot(values="count", index="gt_class", on="dt_class")  # wide
     """
-    # Lazy: a CocoDataset handle on the gt= path needs FFI threading we
-    # haven't done yet. Match the same forward-compat marker the
-    # tables= path emits.
-    if isinstance(gt, CocoDataset):
-        raise NotImplementedError(
-            "confusion_matrix requires GT JSON bytes; CocoDataset handles are not "
-            "yet wired through the cross-class side pass"
-        )
-
     # Lazy import: `vernier/__init__.py` imports this module, so
     # reaching back up at module-import time would spin a cycle.
     # Calling :func:`confusion_matrix` is what triggers the lookup; by
@@ -131,12 +133,16 @@ def confusion_matrix(
 
     match iou:
         case Bbox():
-            result = confusion_matrix_bbox(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
+            result = confusion_matrix_bbox(
+                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, cast_inputs=cast_inputs
+            )
         case Segm():
-            result = confusion_matrix_segm(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
+            result = confusion_matrix_segm(
+                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, cast_inputs=cast_inputs
+            )
         case Boundary(dilation_ratio=r):
             result = confusion_matrix_boundary(
-                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, r
+                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, r, cast_inputs=cast_inputs
             )
         case Keypoints():
             raise NotImplementedError(

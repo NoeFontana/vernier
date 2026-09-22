@@ -602,11 +602,6 @@ class Evaluator:
                     "the ADR-0046 partitioned path. Run un-partitioned with "
                     "calibration=True to fold the full-dataset cells."
                 )
-            if isinstance(gt, CocoDataset):
-                raise NotImplementedError(
-                    "manifest= currently requires GT JSON bytes; CocoDataset handles "
-                    "on the partitioned path are a follow-up."
-                )
             return self._evaluate_partitioned(
                 gt, dt, max_dets_list, manifest, cross_axes, num_threads=num_threads
             )
@@ -672,7 +667,7 @@ class Evaluator:
 
     def _evaluate_partitioned(
         self,
-        gt: bytes,
+        gt: bytes | CocoDataset,
         dt: DetectionsInput,
         max_dets_list: list[int],
         manifest: Manifest,
@@ -793,14 +788,11 @@ class Evaluator:
             normalize_tables_arg(tables, SUPPORTED_TABLES) if tables is not None else set()
         )
 
-        # The tables= path needs JSON bytes today; pre-parsed CocoDataset
-        # handles aren't threaded through yet.
-        if isinstance(gt, CocoDataset):
-            raise NotImplementedError(
-                "tables= path requires GT JSON bytes; CocoDataset handles are not "
-                "yet supported on this path"
-            )
-
+        # `gt` needs no branch here (ADR-0064): every `evaluate_*_grid`
+        # below takes `bytes | CocoDataset` (ADR-0061), and `grid.dataset()`
+        # hands back the handle the grid retained either way — which is
+        # exactly what the per-table builders take.
+        #
         # per_detection (best_iou) and per_pair require the spine to
         # retain its IoU matrices.
         need_retention = bool(requested & {"per_detection", "per_pair"})

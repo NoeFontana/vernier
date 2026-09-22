@@ -14,8 +14,9 @@
 
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyNotImplementedError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBytes, PyDict, PyFrozenSet, PyTuple};
 
 use vernier_core::dataset::{CategoryId, ImageId};
@@ -23,6 +24,79 @@ use vernier_core::similarity::{BoundaryGtCache, SegmGtCache};
 use vernier_core::{CocoDataset, EvalDataset, EvalError};
 
 use crate::parse_gt;
+
+/// A `gt=` argument in either of its two spellings, classified under
+/// the GIL and realized off it (ADR-0064).
+///
+/// The ground-truth mirror of [`crate::UpdatePayload`], which has done
+/// the same job for `dt` since ADR-0030: the Python-object inspection
+/// happens while the GIL is held, and the expensive half — the JSON
+/// parse — runs inside `py.detach`. Both variants are `Send`, which is
+/// what lets the whole thing cross that boundary.
+///
+/// Used by the surfaces that take the union but drive `vernier_core`
+/// directly rather than through `evaluate_grid_any_gt`: TIDE, the
+/// FP-IoU histogram, LRP and the confusion matrix.
+pub(crate) enum GtPayload {
+    /// COCO GT JSON. `PyBackedBytes` keeps the `Py<PyBytes>` alive
+    /// across the GIL release while exposing `&[u8]`, so the payload is
+    /// borrowed rather than copied.
+    Bytes(PyBackedBytes),
+    /// An already-parsed [`PyDataset`]'s dataset, shared by `Arc`.
+    Parsed(Arc<CocoDataset>),
+}
+
+impl GtPayload {
+    /// Classify the Python `gt=` argument. Must run under the GIL.
+    pub(crate) fn extract(gt: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(gt_json) = gt.cast::<PyBytes>() {
+            return Ok(Self::Bytes(PyBackedBytes::from(gt_json.clone())));
+        }
+        if let Ok(dataset) = gt.cast::<PyDataset>() {
+            return Ok(Self::Parsed(dataset.borrow().dataset_ref()));
+        }
+        Err(PyTypeError::new_err(format!(
+            "gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`, got {}",
+            crate::array_ingest::type_name_of(gt)
+        )))
+    }
+
+    /// Refuse an LVIS federated handle on a surface that has no
+    /// federated disposition (ADR-0064).
+    ///
+    /// The matching pass reads `gt.federated()` directly, so the
+    /// AA3/AA4 K-axis branches would fire — but the ADR-0026 AC2
+    /// detection trim, which lives on the grid path, would not. Half of
+    /// the LVIS semantics with no oracle for the other half is exactly
+    /// the plausible-but-wrong number ADR-0057 rules out, so these
+    /// surfaces refuse rather than guess.
+    ///
+    /// The `Bytes` arm can never be federated: `CocoDataset::from_json`
+    /// discards the metadata.
+    pub(crate) fn reject_federated(&self, surface: &str) -> PyResult<()> {
+        if matches!(self, Self::Parsed(gt) if gt.is_federated()) {
+            return Err(PyNotImplementedError::new_err(format!(
+                "{surface} does not support LVIS federated ground truth: a dataset built \
+                 by CocoDataset.from_lvis_json carries the ADR-0026 federated metadata, \
+                 and this surface applies only part of the semantics that metadata \
+                 implies (the per-image detection cap is applied on the evaluate path, \
+                 not here). Evaluate LVIS ground truth through Evaluator / \
+                 evaluate_*_grid, or load the same annotations with \
+                 CocoDataset.from_json for flat-COCO {surface}."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Realize into the parsed dataset. Call inside `py.detach` — the
+    /// `Bytes` arm parses here.
+    pub(crate) fn realize(self) -> PyResult<Arc<CocoDataset>> {
+        match self {
+            Self::Bytes(bytes) => Ok(Arc::new(parse_gt(&bytes)?)),
+            Self::Parsed(gt) => Ok(gt),
+        }
+    }
+}
 
 /// Parsed-once COCO ground-truth dataset.
 ///

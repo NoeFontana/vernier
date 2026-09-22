@@ -142,7 +142,8 @@ else is detail.
 | [0058](0058-keypoints-usecats-zero-disposition.md) | Dispose of keypoints-under-`useCats=0` as `corrected` (quirk F6) | proposed |
 | [0060](0060-python-ground-truth-array-ingest.md) | Columnar ground-truth ingest for in-process callers (`CocoDataset.from_arrays`) | proposed |
 | [0061](0061-one-ground-truth-parameter-keyword-only-options.md) | One ground-truth parameter (`bytes \| CocoDataset`) and keyword-only options on the instance evaluate surface | accepted |
-| [0063](0063-per-sample-ingest-route.md) | A per-sample ingest route for training loops (`coco_inputs`, `coco_metrics`) | proposed |
+| [0063](0063-per-sample-ingest-route.md) | A per-sample ingest route for training loops (`coco_inputs`, `coco_metrics`) | accepted (erratum 2026-09-22) |
+| [0064](0064-dataset-handle-on-diagnostic-surfaces.md) | The parsed pair (`CocoDataset` + `DetectionsInput`) on every instance surface — TIDE, LRP, confusion matrix, FP-IoU histogram, `tables=` / `manifest=` | proposed |
 
 ### TIDE design package — proposed cluster
 

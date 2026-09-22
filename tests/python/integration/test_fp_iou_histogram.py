@@ -83,11 +83,19 @@ def test_iou_arrays_are_numpy_float64() -> None:
     assert h.iou_cross.shape == (h.n_fps,)
 
 
-def test_dataset_handle_rejected() -> None:
-    gt, dt = _load("all_perfect")
+def test_dataset_handle_matches_the_bytes_it_came_from() -> None:
+    """ADR-0064 wired the handle through; the equality is the contract.
+    Deeper coverage (every surface, both `dt` routes) lives in
+    ``tests/python/test_diagnostic_surfaces_take_the_pair.py``."""
+    gt, dt = _load("all_loc")
     ds = vernier.instance.CocoDataset.from_json(gt)
-    with pytest.raises(NotImplementedError, match="Dataset handle"):
-        fp_iou_histogram(ds, dt, iou=Bbox())
+
+    from_bytes = fp_iou_histogram(gt, dt, iou=Bbox())
+    from_handle = fp_iou_histogram(ds, dt, iou=Bbox())
+
+    assert np.array_equal(from_handle.iou_same, from_bytes.iou_same)
+    assert np.array_equal(from_handle.iou_cross, from_bytes.iou_cross)
+    assert from_handle.n_fps == from_bytes.n_fps
 
 
 def test_public_symbols_exported() -> None:

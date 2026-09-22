@@ -845,15 +845,27 @@ def test_a_mask_error_names_the_callers_index() -> None:
 def test_the_pair_drives_the_surfaces_the_docs_promise() -> None:
     """ADR-0063's case for returning inputs instead of a metric.
 
-    The claim is only worth making if it is true, and it is narrower
-    than "everything": TIDE, LRP, the confusion matrix and the
-    ``tables=`` path each refuse a :class:`CocoDataset` handle today. So
-    this pins the ones that do take it — the evaluator, the grid, the
-    summary entry point and calibration — and pins the refusals too, so
-    the docs stop being right silently rather than loudly.
+    The claim is only worth making if it is true, and when this test was
+    written it was narrower than "everything": TIDE, LRP, the confusion
+    matrix, the FP-IoU histogram and the ``tables=`` / ``manifest=``
+    paths each refused a :class:`CocoDataset` handle and asked for GT
+    JSON bytes. ADR-0064 lifted that, so the refusal half of this test
+    became a works half — every instance surface now reads the pair.
+
+    This stays the *breadth* check (one conversion reaching each
+    surface). The per-surface equality against the JSON route lives in
+    ``tests/python/test_diagnostic_surfaces_take_the_pair.py``.
     """
     from vernier import _core
-    from vernier.instance import Bbox, Evaluator, error_decomposition, evaluate_bbox_grid
+    from vernier.instance import (
+        Bbox,
+        Evaluator,
+        confusion_matrix,
+        error_decomposition,
+        evaluate_bbox_grid,
+        fp_iou_histogram,
+        optimal_lrp,
+    )
 
     predictions, targets = _box_records()
     ground_truth, detections = coco_inputs(predictions, targets)
@@ -868,7 +880,24 @@ def test_the_pair_drives_the_surfaces_the_docs_promise() -> None:
     assert accumulated.summarize([1, 10, 100]).stats[0] == summary.stats[0]
     assert _core.cells_from_grid(grid) is not None
 
-    with pytest.raises(NotImplementedError, match="CocoDataset"):
-        error_decomposition(ground_truth, cast("Any", detections))
-    with pytest.raises(NotImplementedError, match="CocoDataset"):
-        Evaluator(iou=Bbox()).evaluate(ground_truth, detections, tables="all")
+    report = error_decomposition(ground_truth, detections)
+    assert report.baseline_map == pytest.approx(summary.stats[0])
+    assert fp_iou_histogram(ground_truth, detections).n_total_dts == 1
+    assert optimal_lrp(ground_truth, detections).per_class
+
+    pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
+    assert confusion_matrix(ground_truth, detections).height > 0
+
+    tabled = Evaluator(iou=Bbox()).evaluate(ground_truth, detections, tables="all")
+    assert tabled.summary is not None
+    assert tabled.summary.stats == summary.stats
+    assert tabled.per_class.height > 0
+
+    # `coco_inputs` numbers images from 0, so the manifest keys it —
+    # a mismatched key warns and skips rather than raising, which would
+    # make this an assertion about nothing.
+    manifest = {"manifest_version": "1", "key_kind": "image_id", "rows": [{"key": 0, "split": "a"}]}
+    partitioned = Evaluator(iou=Bbox()).evaluate(ground_truth, detections, manifest=manifest)
+    assert partitioned.summary is not None
+    assert partitioned.summary.stats == summary.stats
+    assert partitioned.slices.height > 0
