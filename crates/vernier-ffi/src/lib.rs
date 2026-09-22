@@ -3755,6 +3755,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(evaluate_boundary_grid, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_summary, m)?)?;
     m.add_function(wrap_pyfunction!(evaluate_keypoints_grid, m)?)?;
+    m.add_function(wrap_pyfunction!(array_ingest::rle_area, m)?)?;
     m.add_function(wrap_pyfunction!(calibration::cells_from_grid, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_class_to_arrow_pycapsule, m)?)?;
     m.add_function(wrap_pyfunction!(tables::per_image_to_arrow_pycapsule, m)?)?;
