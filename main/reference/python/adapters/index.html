@@ -1562,6 +1562,50 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
+  <a href="#vernier.adapters.DetectionColumns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;DetectionColumns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.adapters.Prediction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;Prediction
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.adapters.Target" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;Target
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.adapters.TargetColumns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;TargetColumns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#vernier.adapters.coco_json_default" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -1610,6 +1654,50 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;with_placeholder_image_sizes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.adapters.coco_inputs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;coco_inputs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.adapters.coco_inputs_from_columns" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;coco_inputs_from_columns
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.adapters.coco_metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;coco_metrics
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.adapters.gt_image_sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-function"></code>&nbsp;gt_image_sizes
       
     </span>
   </a>
@@ -2022,9 +2110,10 @@
 
 
 <h1 id="vernieradapters"><code>vernier.adapters</code></h1>
-<p>Drop-in shims for migrating from competing tools without rewriting the
-call sites. Today: a pycocotools <code>COCOeval</code> adapter; future shims slot
-in here.</p>
+<p>The ingest route, which turns a training loop's per-image or columnar
+state into vernier's evaluation inputs without importing its framework
+(ADR-0063), plus the migration shims: a pycocotools <code>COCOeval</code> drop-in
+and the COCO-JSON normalizers (ADR-0007, ADR-0055).</p>
 
 
 <div class="doc doc-object doc-module">
@@ -2043,6 +2132,15 @@ framework-specific imports behind <code>try</code>/<code>except ImportError</cod
 sanctioned entry point for swapping
 <code>pycocotools.cocoeval.COCOeval</code> with vernier's drop-in. Policy and
 rationale are in ADR-0007.</p>
+<p>The ingest route turns a training loop's state into vernier's
+evaluation inputs, reading any array type through DLPack without
+importing its framework. It has two spellings of one conversion:
+:func:<code>coco_inputs</code> for per-image records and
+:func:<code>coco_inputs_from_columns</code> for state that is already
+concatenated, which is what a TorchMetrics-shaped metric holds. Both
+land on one builder, so they cannot drift. :func:<code>coco_metrics</code> is the
+convenience wrapper for the AP case and :func:<code>gt_image_sizes</code> resolves
+the image sizes a columnar ground truth needs. ADR-0063 is the record.</p>
 <p>The COCO-JSON normalizers (:func:<code>with_placeholder_image_sizes</code>,
 :func:<code>with_mask_image_sizes</code>, :func:<code>detection_image_sizes</code>,
 :func:<code>coco_json_default</code>, :func:<code>to_coco_json</code>) are the same
@@ -2068,6 +2166,262 @@ ADR-0055 is the record. This module is their canonical import path.</p>
 
 
 
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.adapters.DetectionColumns" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">DetectionColumns</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>Every detection in one set of columns, plus per-image counts (ADR-0063).</p>
+<p>The columnar spelling of :class:<code>Prediction</code>, for a caller that
+already holds its state concatenated -- a TorchMetrics-shaped metric
+does, and re-splitting it into per-image records only to have vernier
+concatenate it again is pure overhead.</p>
+<p><code>boxes</code> is <code>(D, 4)</code>, <code>scores</code> and <code>labels</code> are <code>(D,)</code>, and
+<code>counts</code> is <code>(M,)</code> giving each image's detection count in image
+order. <code>counts</code> is what assigns detections to images, so it must
+sum to <code>D</code>. <code>rles</code> is a flat length-<code>D</code> sequence, or absent —
+never partial, since it is indexed through <code>counts</code>. <code>boxes</code>
+follows :class:<code>Prediction</code>: optional when <code>rles</code> is given.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.adapters.Prediction" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">Prediction</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>One image's detections, as a training loop holds them (ADR-0063).</p>
+<p>Every array-valued field is duck-typed: anything exporting
+<code>__dlpack__</code> (numpy, torch CPU, jax CPU) or convertible by
+:func:<code>numpy.asarray</code>. A device tensor is moved with <code>.detach()</code> /
+<code>.cpu()</code> when it offers them, so a caller never writes the
+conversion. vernier names no framework and imports none — see
+<code>tests/python/test_no_framework_imports.py</code>.</p>
+<p><code>boxes</code> is <code>(N, 4)</code> in whichever <code>box_format</code>
+:func:<code>vernier.adapters.coco_inputs</code> was told to read; an empty
+image may pass <code>(0, 4)</code> or the <code>(1, 0)</code> shape TorchMetrics'
+<code>_fix_empty_tensors</code> produces, and both are normalized. It is
+<strong>optional when the record carries masks</strong>, where no kernel reads it
+— a mask-only pipeline need not materialize boxes it does not have —
+and required otherwise. A <em>bbox</em> evaluation does read it, so
+:func:<code>vernier.adapters.coco_metrics</code> refuses <code>iou_type="bbox"</code>
+when a record omits it rather than scoring the zero column.</p>
+<p>Masks arrive either already encoded (<code>rles</code>) or as bitmasks
+(<code>masks</code>) — the two populations differ, and both are accepted so
+neither has to convert. <code>rles[i]</code> takes any :data:<code>RLEInput</code>
+shape plus the <code>(size, counts)</code> pair a TorchMetrics metric state
+carries; whichever column is non-empty is the one read. Masks are
+all-or-nothing across a side: every annotation carries one, or none
+does.</p>
+<p><code>image_id</code> defaults to the record's position in the sequence, which
+is what a trainer that never assigns one gets. When both sides carry
+it, they must agree.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.adapters.Target" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">Target</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>One image's ground truth, as a training loop holds it (ADR-0063).</p>
+<p>Shares :class:<code>Prediction</code>'s duck-typing and box/mask conventions,
+including <code>boxes</code> being optional when masks are present, and adds the two
+fields a ground truth carries that a detection does not:</p>
+<ul>
+<li><code>iscrowd</code>: optional, defaulting to all-zero. Widened to
+  <code>int64</code> on the way in — vernier reads any non-zero value as a
+  crowd, so a <code>uint8</code> column wraps 256 to 0 and would quietly
+  evaluate a crowd annotation as a normal one (quirks <strong>D1</strong>,
+  <strong>E1</strong>).</li>
+<li><code>area</code>: optional. A ground truth's area is read verbatim by
+  vernier (ADR-0060) because it is what the small / medium / large
+  bucketing reads, but a framework that never recorded one stores
+  zeros. Under <code>area="auto"</code> a non-positive entry falls back
+  <strong>per element</strong> to the mask's area when the record carries a mask
+  and to the box's otherwise — which is what COCO records and what
+  <code>COCOeval</code> buckets by, under either IoU type.</li>
+</ul>
+<p><code>size</code> is the image's <code>(height, width)</code>, and wins wherever it is
+given — under <code>segm</code> vernier checks every RLE against it. When
+absent it is resolved from the masks themselves (see
+:func:<code>vernier.adapters.gt_image_sizes</code>).</p>
+<p>Masks are worth passing even for a <code>bbox</code> evaluation: they are not
+evaluated, but <code>area="auto"</code> reads them, which is what keeps the
+area buckets agreeing with a pycocotools-shaped evaluator.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.adapters.TargetColumns" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">TargetColumns</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>Every ground-truth annotation in one set of columns (ADR-0063).</p>
+<p>The columnar spelling of :class:<code>Target</code>; see
+:class:<code>DetectionColumns</code> for the shape rules. <code>iscrowd</code> and
+<code>area</code> are optional <code>(G,)</code> columns with the same meaning they
+carry per record, and <code>sizes</code> is an optional <code>(M, 2)</code> array of
+<code>(height, width)</code> — one row per image, refused if it is short.</p>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
 
 
 <div class="doc doc-object doc-function">
@@ -2248,6 +2602,1012 @@ rasterizes a polygon to nothing and would score silently. Use
 <p>Returns <code>dataset</code> unchanged when every image is already sized;
 otherwise a shallow copy. The caller's dictionaries are never
 mutated.</p>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="vernier.adapters.coco_inputs" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <span class="doc doc-object-name doc-function-name">coco_inputs</span>
+
+
+</h2>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">coco_inputs</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">predictions</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            Prediction (vernier._array_types.Prediction)" href="#vernier.adapters.Prediction">Prediction</a></span><span class="p">],</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">targets</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            Target (vernier._array_types.Target)" href="#vernier.adapters.Target">Target</a></span><span class="p">],</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">box_format</span><span class="p">:</span> <span class="n"><span title="vernier._samples.BoxFormat">BoxFormat</span></span> <span class="o">=</span> <span class="s2">&quot;xywh&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">categories</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">]</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="o">|</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            GtCategory (vernier._array_types.GtCategory)" href="../instance/#vernier.instance.GtCategory">GtCategory</a></span><span class="p">]</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">area</span><span class="p">:</span> <span class="n"><span title="vernier._samples.AreaPolicy">AreaPolicy</span></span> <span class="o">=</span> <span class="s2">&quot;auto&quot;</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="../instance/#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="../instance/#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Build vernier's evaluation inputs from per-image records (ADR-0063).</p>
+<p><code>predictions[i]</code> and <code>targets[i]</code> describe the same image; the
+two sequences must be the same length and aligned.</p>
+<p><strong>There is no <code>iou_type</code>.</strong> The masks decide: records that carry
+them produce inputs a <code>segm</code> grid can read, and records that do
+not produce bbox-only inputs. Naming the IoU type here as well as at
+the grid would be two places to say one thing and a chance for them
+to disagree — and it bought nothing measurable, since attaching
+segmentation costs ~2% of the conversion and the detection route it
+would select is within 0.3% of the alternative on a real grid. One
+set of inputs therefore serves both passes of a two-IoU-type run.</p>
+<p>The pair is returned rather than a metric, because the same inputs
+drive every vernier surface — :class:<code>vernier.instance.Evaluator</code>,
+TIDE, LRP, result tables, calibration, custom grids (ADR-0040) and
+the partitioned/DDP path. :func:<code>coco_metrics</code> is the convenience
+wrapper for the AP case.</p>
+<p>Three of this function's decisions need both sides, which is why it
+is one call and not two: a class seen only in predictions must still
+become a category; image sizes fall back from the ground truth's
+masks to the detections'; and the detection route is chosen per IoU
+type.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>predictions</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="            Prediction (vernier._array_types.Prediction)" href="#vernier.adapters.Prediction">Prediction</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One record per image. See :class:<code>Prediction</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>targets</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="            Target (vernier._array_types.Target)" href="#vernier.adapters.Target">Target</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One record per image. See :class:<code>Target</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>box_format</code>
+            </td>
+            <td>
+                  <code><span title="vernier._samples.BoxFormat">BoxFormat</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Layout <code>boxes</code> is read as. Never auto-detected: a
+<code>(N, 4)</code> array is ambiguous between <code>xywh</code> and <code>xyxy</code>,
+and a wrong guess yields plausible, wrong AP rather than an
+error.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;xywh&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>categories</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="int">int</span>] | <span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="            GtCategory (vernier._array_types.GtCategory)" href="../instance/#vernier.instance.GtCategory">GtCategory</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The COCO <code>categories</code> section, as ids or as
+entries. <code>None</code> takes the union of every label on both
+sides.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>area</code>
+            </td>
+            <td>
+                  <code><span title="vernier._samples.AreaPolicy">AreaPolicy</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>How the ground truth's <code>area</code> column is filled.
+<code>"auto"</code> reads a supplied positive area and otherwise
+falls back per element — to the mask's area under <code>segm</code>,
+the box's under <code>bbox</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;auto&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cast_inputs</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Convert array dtypes rather than refusing them.
+On by default here, unlike the rest of vernier's array
+surface; see :func:<code>_cast</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="../instance/#vernier.instance.CocoDataset">CocoDataset</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The parsed ground truth and the detections, ready for any</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="../instance/#vernier.instance.DetectionsInput">DetectionsInput</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>evaluate_*</code> entry point.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If the sequences differ in length or are misaligned,
+if a record's columns disagree in length, or if a label is
+fractional.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="KeyError">KeyError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a required field is absent.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a value cannot be read as an array, or its dtype
+is wrong under <code>cast_inputs=False</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="vernier.adapters.coco_inputs_from_columns" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <span class="doc doc-object-name doc-function-name">coco_inputs_from_columns</span>
+
+
+</h2>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">coco_inputs_from_columns</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">detections</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            DetectionColumns (vernier._array_types.DetectionColumns)" href="#vernier.adapters.DetectionColumns">DetectionColumns</a></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">targets</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            TargetColumns (vernier._array_types.TargetColumns)" href="#vernier.adapters.TargetColumns">TargetColumns</a></span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">box_format</span><span class="p">:</span> <span class="n"><span title="vernier._samples.BoxFormat">BoxFormat</span></span> <span class="o">=</span> <span class="s2">&quot;xywh&quot;</span><span class="p">,</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">categories</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">]</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="o">|</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            GtCategory (vernier._array_types.GtCategory)" href="../instance/#vernier.instance.GtCategory">GtCategory</a></span><span class="p">]</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">area</span><span class="p">:</span> <span class="n"><span title="vernier._samples.AreaPolicy">AreaPolicy</span></span> <span class="o">=</span> <span class="s2">&quot;auto&quot;</span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">image_ids</span><span class="p">:</span> <span class="n"><span title="typing.Any">Any</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="../instance/#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="../instance/#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Build vernier's evaluation inputs from whole columns (ADR-0063).</p>
+<p>The columnar spelling of :func:<code>coco_inputs</code>. Same rules, same
+result -- both land on one builder, and
+<code>test_columnar_and_per_sample_agree</code> pins the two to the identical
+<code>dataset_hash</code>. What differs is only how the caller already holds
+its state.</p>
+<p>Prefer this when the state is <em>already</em> concatenated, which is the
+case for a TorchMetrics-shaped metric: splitting it into per-image
+records for :func:<code>coco_inputs</code> only to have vernier concatenate it
+again costs a Python-level pass per image per field, and at
+validation scale that is the most expensive thing on the path. A
+caller with genuine per-image records should use :func:<code>coco_inputs</code>
+and not synthesize columns.</p>
+<p><code>counts</code> carries the image structure -- entry <code>i</code> is image
+<code>i</code>'s row count -- so the columns themselves need no image
+grouping. Ground truth and detections have independent counts, both
+of length <code>M</code>.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>detections</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            DetectionColumns (vernier._array_types.DetectionColumns)" href="#vernier.adapters.DetectionColumns">DetectionColumns</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Every detection, as columns. See
+:class:<code>DetectionColumns</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>targets</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            TargetColumns (vernier._array_types.TargetColumns)" href="#vernier.adapters.TargetColumns">TargetColumns</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Every ground-truth annotation, as columns. See
+:class:<code>TargetColumns</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>box_format</code>
+            </td>
+            <td>
+                  <code><span title="vernier._samples.BoxFormat">BoxFormat</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Layout <code>boxes</code> is read as; never auto-detected.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;xywh&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>categories</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="int">int</span>] | <span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="            GtCategory (vernier._array_types.GtCategory)" href="../instance/#vernier.instance.GtCategory">GtCategory</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The COCO <code>categories</code> section, as ids or entries.
+<code>None</code> takes the union of every label on both sides.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>area</code>
+            </td>
+            <td>
+                  <code><span title="vernier._samples.AreaPolicy">AreaPolicy</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>How the ground truth's <code>area</code> column is filled.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;auto&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>image_ids</code>
+            </td>
+            <td>
+                  <code><span title="typing.Any">Any</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(M,)</code> image ids, defaulting to <code>0..M-1</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cast_inputs</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Convert array dtypes rather than refusing them.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="../instance/#vernier.instance.CocoDataset">CocoDataset</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The parsed ground truth and the detections, ready for any</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="../instance/#vernier.instance.DetectionsInput">DetectionsInput</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>evaluate_*</code> entry point.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a <code>counts</code> column does not sum to its columns'
+length, if the two <code>counts</code> differ in length, or for any
+reason :func:<code>coco_inputs</code> raises.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="KeyError">KeyError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a required column is absent.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="TypeError">TypeError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If a value cannot be read as an array, or its dtype is
+wrong under <code>cast_inputs=False</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="vernier.adapters.coco_metrics" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <span class="doc doc-object-name doc-function-name">coco_metrics</span>
+
+
+</h2>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">coco_metrics</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">predictions</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            Prediction (vernier._array_types.Prediction)" href="#vernier.adapters.Prediction">Prediction</a></span><span class="p">],</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">targets</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            Target (vernier._array_types.Target)" href="#vernier.adapters.Target">Target</a></span><span class="p">],</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">iou_type</span><span class="p">:</span> <span class="n"><span title="vernier._samples.SampleIouType">SampleIouType</span></span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">|</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="vernier._samples.SampleIouType">SampleIouType</span></span><span class="p">]</span> <span class="o">=</span> <span class="s2">&quot;bbox&quot;</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">box_format</span><span class="p">:</span> <span class="n"><span title="vernier._samples.BoxFormat">BoxFormat</span></span> <span class="o">=</span> <span class="s2">&quot;xywh&quot;</span><span class="p">,</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">categories</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">]</span>
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="o">|</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="            GtCategory (vernier._array_types.GtCategory)" href="../instance/#vernier.instance.GtCategory">GtCategory</a></span><span class="p">]</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">area</span><span class="p">:</span> <span class="n"><span title="vernier._samples.AreaPolicy">AreaPolicy</span></span> <span class="o">=</span> <span class="s2">&quot;auto&quot;</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">class_metrics</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">max_dets</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">]</span> <span class="o">=</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">10</span><span class="p">,</span> <span class="mi">100</span><span class="p">),</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="n">iou_thresholds</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="float">float</span></span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>    <span class="n">recall_thresholds</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="float">float</span></span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>    <span class="n">num_threads</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-18"><a id="__codelineno-0-18" name="__codelineno-0-18" href="#__codelineno-0-18"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+</span><span id="__span-0-19"><a id="__codelineno-0-19" name="__codelineno-0-19" href="#__codelineno-0-19"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="dict">dict</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">,</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="n"><span title="numpy.typing.NDArray">NDArray</span></span><span class="p">[</span><span class="n"><span title="typing.Any">Any</span></span><span class="p">]]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Evaluate per-image records and return the COCO metrics (ADR-0063).</p>
+<p>The convenience wrapper over :func:<code>coco_inputs</code> for the AP case.
+Anything else — TIDE, LRP, result tables, calibration, a custom grid
+— takes :func:<code>coco_inputs</code>' pair directly.</p>
+<p>Values are Python floats and numpy arrays. Converting them to a
+framework tensor is the caller's one line (<code>torch.as_tensor(...)</code>,
+zero-copy off numpy); vernier returns no framework type and imports
+no framework.</p>
+<p><code>parity_mode</code> defaults to <code>"corrected"</code>, matching
+:class:<code>vernier.instance.Evaluator</code>. Under <code>"strict"</code>, <code>map</code>
+reports pycocotools' <code>-1</code> whenever 100 is not among <code>max_dets</code>,
+which is a genuine pycocotools behaviour and rarely what a training
+run wants to log.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>predictions</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="            Prediction (vernier._array_types.Prediction)" href="#vernier.adapters.Prediction">Prediction</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One record per image. See :class:<code>Prediction</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>targets</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="            Target (vernier._array_types.Target)" href="#vernier.adapters.Target">Target</a>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One record per image. See :class:<code>Target</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>iou_type</code>
+            </td>
+            <td>
+                  <code><span title="vernier._samples.SampleIouType">SampleIouType</span> | <span title="collections.abc.Sequence">Sequence</span>[<span title="vernier._samples.SampleIouType">SampleIouType</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One IoU type, or several. With more than one, each
+metric key is prefixed (<code>bbox_map</code>, <code>segm_map</code>). This is
+the one place the IoU type is named, because it is the one
+that calls a kernel; :func:<code>coco_inputs</code> builds inputs that
+serve whichever grid the masks allow.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;bbox&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>box_format</code>
+            </td>
+            <td>
+                  <code><span title="vernier._samples.BoxFormat">BoxFormat</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Layout <code>boxes</code> is read as.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;xywh&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>categories</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="int">int</span>] | <span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="            GtCategory (vernier._array_types.GtCategory)" href="../instance/#vernier.instance.GtCategory">GtCategory</a>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>See :func:<code>coco_inputs</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>area</code>
+            </td>
+            <td>
+                  <code><span title="vernier._samples.AreaPolicy">AreaPolicy</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>See :func:<code>coco_inputs</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;auto&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>class_metrics</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Also return per-class AP and AR vectors, aligned
+with the resolved category ids. Off by default: each vector
+materializes a fresh array across the FFI.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>max_dets</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="int">int</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The COCO detection-count ladder — three increasing
+positive caps, since the summary reports <code>mar</code> at each and
+caps every image at the last.</p>
+              </div>
+            </td>
+            <td>
+                  <code>(1, 10, 100)</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>iou_thresholds</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="float">float</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>IoU grid, defaulting to COCO's <code>.50:.05:.95</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>recall_thresholds</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="float">float</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Recall grid, defaulting to COCO's 101 points.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>parity_mode</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>"strict"</code> or <code>"corrected"</code> (ADR-0002).</p>
+              </div>
+            </td>
+            <td>
+                  <code>&#39;corrected&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>num_threads</code>
+            </td>
+            <td>
+                  <code><span title="int">int</span> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Thread budget. <code>None</code> evaluates sequentially
+(ADR-0047), which is the DDP-safe default — a rank sharing a
+node should not claim every core.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cast_inputs</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>See :func:<code>coco_inputs</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span> | <span title="numpy.typing.NDArray">NDArray</span>[<span title="typing.Any">Any</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The twelve COCO statistics under the conventional metric names,</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span> | <span title="numpy.typing.NDArray">NDArray</span>[<span title="typing.Any">Any</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>plus <code>classes</code> and, under <code>class_metrics</code>, the per-class</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="dict">dict</span>[<span title="str">str</span>, <span title="float">float</span> | <span title="numpy.typing.NDArray">NDArray</span>[<span title="typing.Any">Any</span>]]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>vectors.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="ValueError">ValueError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>iou_type</code> or <code>max_dets</code> is not one of the
+accepted values, or for any reason :func:<code>coco_inputs</code>
+raises.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="KeyError">KeyError</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>iou_type</code> includes <code>"bbox"</code> and a record omits
+its boxes.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="vernier.adapters.gt_image_sizes" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-function"></code>            <span class="doc doc-object-name doc-function-name">gt_image_sizes</span>
+
+
+</h2>
+<div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">gt_image_sizes</span><span class="p">(</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt_rles</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.RLEInput" href="../instance/#vernier.instance.RLEInput">RLEInput</a></span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">],</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt_rles</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.RLEInput" href="../instance/#vernier.instance.RLEInput">RLEInput</a></span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">supplied</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">,</span> <span class="n"><span title="int">int</span></span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="numpy.typing.NDArray">NDArray</span></span><span class="p">[</span><span class="n"><span title="numpy.int64">int64</span></span><span class="p">],</span> <span class="n"><span title="numpy.typing.NDArray">NDArray</span></span><span class="p">[</span><span class="n"><span title="numpy.int64">int64</span></span><span class="p">]]</span>
+</span></code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>The <code>height</code> / <code>width</code> columns a columnar ground truth needs.</p>
+<p>The columnar mirror of :func:<code>vernier.adapters.detection_image_sizes</code>.
+ADR-0055 published the dict-shaped resolver and explicitly left this
+case to the caller — "the <code>cocoDt</code>-less array-grid caller still
+builds the mapping itself, from the first detection mask's <code>size</code>
+per image" — which made it the one rule every columnar consumer
+reimplements.</p>
+<p>Resolution order per image: a caller-supplied size wins, else the
+image's own first mask, else the size its detections carry, else
+<code>0x0</code> — the last of which nothing reads, because no annotation
+points at that image. The mask-derived part matches
+:func:<code>vernier.adapters.with_mask_image_sizes</code>. Both optional
+sequences must cover every image; a short one is refused rather than
+read as "no size for the rest".</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>gt_rles</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="vernier._array_types.RLEInput" href="../instance/#vernier.instance.RLEInput">RLEInput</a>] | None]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One entry per image — that image's ground-truth masks,
+or <code>None</code> / empty when it has none.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>dt_rles</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="collections.abc.Sequence">Sequence</span>[<a class="autorefs autorefs-internal" title="vernier._array_types.RLEInput" href="../instance/#vernier.instance.RLEInput">RLEInput</a>] | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The same for the detection side, when known.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>supplied</code>
+            </td>
+            <td>
+                  <code><span title="collections.abc.Sequence">Sequence</span>[<span title="tuple">tuple</span>[<span title="int">int</span>, <span title="int">int</span>] | None] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>One entry per image — the size the caller pinned for
+it (<code>Target.size</code>), or <code>None</code>. Takes precedence over
+both mask sources.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="numpy.typing.NDArray">NDArray</span>[<span title="numpy.int64">int64</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(height, width)</code>, each an <code>(M,)</code> int64 array aligned with</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="numpy.typing.NDArray">NDArray</span>[<span title="numpy.int64">int64</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>gt_rles</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
 
 
     </div>
