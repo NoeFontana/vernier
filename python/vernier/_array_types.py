@@ -9,7 +9,7 @@ bytes. The stubs in :mod:`vernier._core` import the same names so the
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TypeAlias, TypedDict
+from typing import Any, TypeAlias, TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -255,6 +255,75 @@ class GtAnnotations(TypedDict, total=False):
     num_keypoints: NDArray[np.int64]
 
 
+class Prediction(TypedDict, total=False):
+    """One image's detections, as a training loop holds them (ADR-0063).
+
+    Every array-valued field is duck-typed: anything exporting
+    ``__dlpack__`` (numpy, torch CPU, jax CPU) or convertible by
+    :func:`numpy.asarray`. A device tensor is moved with ``.detach()`` /
+    ``.cpu()`` when it offers them, so a caller never writes the
+    conversion. vernier names no framework and imports none — see
+    ``tests/python/test_no_framework_imports.py``.
+
+    ``boxes`` is ``(N, 4)`` in whichever ``box_format``
+    :func:`vernier.adapters.coco_inputs` was told to read; an empty
+    image may pass ``(0, 4)`` or the ``(1, 0)`` shape TorchMetrics'
+    ``_fix_empty_tensors`` produces, and both are normalized.
+
+    Masks arrive either already encoded (``rles``) or as bitmasks
+    (``masks``) — the two populations differ, and both are accepted so
+    neither has to convert. ``rles[i]`` takes any
+    :data:`RLEInput` shape plus the ``(size, counts)`` pair a
+    TorchMetrics metric state carries.
+
+    ``image_id`` defaults to the record's position in the sequence, which
+    is what a trainer that never assigns one gets. When both sides carry
+    it, they must agree.
+    """
+
+    boxes: Any
+    scores: Any
+    labels: Any
+    masks: Any
+    rles: Sequence[RLEInput | tuple[Sequence[int], bytes]]
+    image_id: int
+
+
+class Target(TypedDict, total=False):
+    """One image's ground truth, as a training loop holds it (ADR-0063).
+
+    Shares :class:`Prediction`'s duck-typing and box/mask conventions,
+    and adds the two fields a ground truth carries that a detection does
+    not:
+
+    - ``iscrowd``: optional, defaulting to all-zero. Widened to
+      ``int64`` on the way in — vernier reads any non-zero value as a
+      crowd, so a ``uint8`` column wraps 256 to 0 and would quietly
+      evaluate a crowd annotation as a normal one (quirks **D1**,
+      **E1**).
+    - ``area``: optional. A ground truth's area is read verbatim by
+      vernier (ADR-0060) because it is what the small / medium / large
+      bucketing reads, but a framework that never recorded one stores
+      zeros. Under ``area="auto"`` a non-positive entry falls back
+      **per element** to the mask's area or the box's, matching what
+      COCOeval derives.
+
+    ``size`` is the image's ``(height, width)``. It is only read under
+    ``segm``, where vernier checks every RLE against it; when absent it
+    is resolved from the masks themselves (see
+    :func:`vernier.adapters.gt_image_sizes`).
+    """
+
+    boxes: Any
+    labels: Any
+    masks: Any
+    rles: Sequence[RLEInput | tuple[Sequence[int], bytes]]
+    iscrowd: Any
+    area: Any
+    image_id: int
+    size: tuple[int, int]
+
+
 #: ``(N, 7)`` C-contiguous float64 detection matrix, laid out as
 #: ``image_id, x, y, w, h, score, category_id``. The ``image_id`` and
 #: ``category_id`` columns must hold exact integers within 2^53; a
@@ -284,8 +353,10 @@ __all__ = [
     "GtImages",
     "JsonRLE",
     "PolygonSegmentation",
+    "Prediction",
     "RLEInput",
     "ResultAnnotation",
     "SegmentationInput",
+    "Target",
     "UncompressedRLE",
 ]

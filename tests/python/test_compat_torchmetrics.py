@@ -26,6 +26,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -162,3 +163,144 @@ def test_class_metrics_reports_one_entry_per_class() -> None:
     assert classes.numel() == 2
     assert result["map_per_class"].numel() == classes.numel()
     assert result["mar_100_per_class"].numel() == classes.numel()
+
+
+# ---------------------------------------------------------------------------
+# The per-sample ingest route (ADR-0063)
+# ---------------------------------------------------------------------------
+#
+# The drop-in above proves vernier agrees with pycocotools when it stands in
+# for `COCOeval`. This section proves the *other* route agrees too: the same
+# metric state, handed to `vernier.adapters.coco_metrics` as per-image records
+# instead of through the shim. That route bypasses the COCO dictionaries
+# entirely, so nothing above covers it.
+#
+# Comparison is at `float32`. TorchMetrics reports `float32` tensors
+# (`CocoBackend._coco_stats_to_tensor_dict`) while vernier returns `float64`;
+# rounding both to the narrower type is the only honest common precision, and
+# it still pins every bit TorchMetrics' own consumers can observe.
+
+_STAT_KEYS: tuple[str, ...] = (
+    "map",
+    "map_50",
+    "map_75",
+    "map_small",
+    "map_medium",
+    "map_large",
+    "mar_1",
+    "mar_10",
+    "mar_100",
+    "mar_small",
+    "mar_medium",
+    "mar_large",
+)
+
+
+def _assert_stats_equal(reference: dict[str, Any], candidate: dict[str, Any]) -> None:
+    for key in _STAT_KEYS:
+        expected = np.float32(float(reference[key]))
+        actual = np.float32(float(candidate[key]))
+        assert expected == actual, f"{key}: {expected!r} != {actual!r}"
+
+
+@pytest.mark.parametrize("box_format", ["xyxy", "xywh", "cxcywh"])
+def test_coco_metrics_matches_pycocotools_on_bbox(box_format: str) -> None:
+    """The route agrees with pycocotools for the state TorchMetrics holds."""
+    from vernier.adapters import coco_metrics
+
+    predictions, targets = _predictions(), _targets()
+    metric = MeanAveragePrecision(box_format="xyxy", iou_type="bbox", backend="pycocotools")
+    metric.update(predictions, targets)
+    reference = dict(metric.compute())
+
+    converted_predictions = [
+        {**record, "boxes": _convert_boxes(record["boxes"], box_format)} for record in predictions
+    ]
+    converted_targets = [
+        {**record, "boxes": _convert_boxes(record["boxes"], box_format)} for record in targets
+    ]
+    candidate = coco_metrics(
+        converted_predictions,  # type: ignore[arg-type]
+        converted_targets,  # type: ignore[arg-type]
+        iou_type="bbox",
+        box_format=box_format,  # type: ignore[arg-type]
+        parity_mode="strict",
+    )
+    _assert_stats_equal(reference, candidate)
+    assert list(np.asarray(candidate["classes"])) == list(reference["classes"].numpy())
+
+
+def _convert_boxes(boxes: Any, box_format: str) -> Any:
+    """Re-express ``xyxy`` boxes in ``box_format``, so all three describe one box."""
+    if box_format == "xyxy":
+        return boxes
+    widths = boxes[:, 2] - boxes[:, 0]
+    heights = boxes[:, 3] - boxes[:, 1]
+    if box_format == "xywh":
+        return torch.stack([boxes[:, 0], boxes[:, 1], widths, heights], dim=1)
+    return torch.stack(
+        [boxes[:, 0] + widths / 2, boxes[:, 1] + heights / 2, widths, heights], dim=1
+    )
+
+
+def test_coco_metrics_matches_pycocotools_on_segm() -> None:
+    """Same, under ``segm``.
+
+    Exercises the columnar detection route and the mask-area fallback:
+    TorchMetrics stores no ground-truth area, so every annotation's area
+    is derived from its mask. That the small / medium / large split
+    agrees is what proves the fallback ran and ran correctly.
+    """
+    from vernier.adapters import coco_metrics
+
+    height, width = 40, 50
+    rows, columns = np.ogrid[:height, :width]
+
+    def disc(center_x: int, center_y: int, radius: int) -> Any:
+        return ((rows - center_y) ** 2 + (columns - center_x) ** 2 <= radius**2).astype(np.uint8)
+
+    def boxes_of(masks: Any) -> Any:
+        corners = []
+        for mask in masks:
+            ys, xs = np.nonzero(mask)
+            corners.append([xs.min(), ys.min(), xs.max() + 1, ys.max() + 1])
+        return torch.tensor(np.asarray(corners, dtype=np.float64))
+
+    predicted = [np.stack([disc(12, 12, 7), disc(35, 25, 6)]), np.stack([disc(20, 20, 9)])]
+    actual = [np.stack([disc(13, 12, 7), disc(34, 25, 6)]), np.stack([disc(21, 20, 9)])]
+
+    predictions = [
+        {
+            "boxes": boxes_of(masks),
+            "scores": torch.tensor([0.9, 0.6][: len(masks)]),
+            "labels": torch.tensor([0, 1][: len(masks)]),
+            "masks": torch.tensor(masks.astype(bool)),
+        }
+        for masks in predicted
+    ]
+    targets = [
+        {
+            "boxes": boxes_of(masks),
+            "labels": torch.tensor([0, 1][: len(masks)]),
+            "masks": torch.tensor(masks.astype(bool)),
+        }
+        for masks in actual
+    ]
+
+    metric = MeanAveragePrecision(box_format="xyxy", iou_type="segm", backend="pycocotools")
+    metric.update(predictions, targets)
+    reference = dict(metric.compute())
+
+    candidate = coco_metrics(
+        predictions,  # type: ignore[arg-type]
+        targets,  # type: ignore[arg-type]
+        iou_type="segm",
+        box_format="xyxy",
+        parity_mode="strict",
+    )
+    _assert_stats_equal(reference, candidate)
+    # Anti-vacuity: every statistic being -1 would compare equal just as
+    # happily. The discs are small, so the small bucket must be populated
+    # and the large one must not — which is the mask-area fallback's doing.
+    assert float(candidate["map_small"]) > 0
+    assert float(candidate["map_large"]) == -1
