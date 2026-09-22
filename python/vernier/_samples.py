@@ -204,6 +204,11 @@ def _labels(value: Any, field: str) -> NDArray[np.int64]:
     return np.reshape(labels, (-1,))
 
 
+def _has_masks(record: Prediction | Target) -> bool:
+    """Whether a record carries masks, in either accepted spelling."""
+    return "rles" in record or "masks" in record
+
+
 def _rles(record: Prediction | Target, field: str, count: int) -> list[RLEInput]:
     """Return one image's masks in a shape vernier's RLE ingest accepts.
 
@@ -495,7 +500,7 @@ def coco_inputs(
         crowd_column: NDArray[np.int64] = np.asarray(crowds, dtype=np.int64)
         gt_crowds.append(np.reshape(crowd_column, (-1,)))
         gt_supplied.append(supplied)
-        gt_rles.append(_rles(target, field, len(labels)) if masked else [])
+        gt_rles.append(_rles(target, field, len(labels)) if _has_masks(target) else [])
 
     dt_boxes: list[NDArray[np.float64]] = []
     dt_labels: list[NDArray[np.int64]] = []
@@ -516,7 +521,7 @@ def coco_inputs(
         dt_boxes.append(boxes)
         dt_labels.append(labels)
         dt_scores.append(scores)
-        dt_rles.append(_rles(prediction, field, len(labels)) if masked else [])
+        dt_rles.append(_rles(prediction, field, len(labels)) if _has_masks(prediction) else [])
 
     counts = np.asarray([len(labels) for labels in gt_labels], dtype=np.int64)
     total = int(counts.sum())
@@ -536,7 +541,7 @@ def coco_inputs(
         "image_id": np.repeat(image_ids, counts),
         "category_id": all_labels,
         "bbox": np.ascontiguousarray(all_boxes),
-        "area": _gt_area(all_boxes, gt_supplied, gt_rles, area=area, masked=masked, total=total),
+        "area": _gt_area(all_boxes, gt_supplied, gt_rles, area=area, total=total),
         "iscrowd": np.concatenate(gt_crowds) if total else np.zeros((0,), np.int64),
     }
     if masked:
@@ -556,7 +561,6 @@ def _gt_area(
     gt_rles: Sequence[Sequence[RLEInput]],
     *,
     area: AreaPolicy,
-    masked: bool,
     total: int,
 ) -> NDArray[np.float64]:
     """Fill the ground truth's ``area`` column.
@@ -566,24 +570,35 @@ def _gt_area(
     it, since "silently substituting ``w * h`` would re-bucket every
     polygon GT". So the choice is made here, explicitly.
 
-    ``"auto"`` mirrors COCOeval: a positive supplied area wins, and
-    anything else falls back **per element**. The per-element part
-    matters — a framework that records areas for some annotations and
-    zeros for the rest is the common case, not a corner one.
+    ``"auto"`` mirrors COCO: a positive supplied area wins, and anything
+    else falls back **per element** to the *mask's* area when the record
+    carries a mask, and to the box's only when it does not. The
+    per-element part matters — a framework that records areas for some
+    annotations and zeros for the rest is the common case, not a corner
+    one.
+
+    The mask takes precedence **regardless of ``iou_type``**, because a
+    COCO ground truth has one ``area`` per annotation and it is the
+    segmentation's: ``COCOeval`` under ``iouType="bbox"`` buckets by
+    that same field rather than recomputing ``w * h``. Deriving the box
+    area for a bbox pass would silently disagree with every
+    pycocotools-shaped evaluator for any object whose two areas straddle
+    ``32**2`` or ``96**2`` — visible only as AP moving between the
+    small and medium buckets, with no error anywhere.
     """
     supplied = np.concatenate(supplied_columns) if total else np.zeros((0,), np.float64)
     if area == "supplied":
         return supplied
-    if area in ("box", "mask") and (area == "mask") != masked:
-        raise ValueError(
-            f"area={area!r} is not available under iou_type={'segm' if masked else 'bbox'!r}"
-        )
+    has_masks = any(image for image in gt_rles)
+    if area == "mask" and not has_masks:
+        raise ValueError("area='mask' needs masks on the ground-truth records")
     # `auto` with every area already positive never reads the fallback, and
     # deriving it is the single most expensive step of a masked ingest — so
     # do not derive it. `np.where` would evaluate both arms regardless.
     if area == "auto" and bool(np.all(supplied > 0)):
         return supplied
-    computed = _mask_areas(gt_rles) if masked else all_boxes[:, 2] * all_boxes[:, 3]
+    from_mask = has_masks and area != "box"
+    computed = _mask_areas(gt_rles) if from_mask else all_boxes[:, 2] * all_boxes[:, 3]
     if area in ("box", "mask"):
         return computed
     return np.where(supplied > 0, supplied, computed)

@@ -22,8 +22,10 @@ mostly silent when violated rather than loud:
 - an `images` entry is needed for *every* image, including ones with no
   annotations;
 - annotation ids must start at 1 — COCOeval's results are wrong from 0;
-- `area` falls back to the mask's or the box's **per element**, and
-  which one depends on the IoU type;
+- `area` falls back **per element** to the mask's area when the
+  annotation has a mask and to the box's only when it does not —
+  independent of the IoU type, because a COCO ground truth has one
+  `area` per annotation and it is the segmentation's;
 - `iscrowd` must be widened to `int64`: vernier reads any non-zero value
   as a crowd, so a `uint8` column wraps 256 to 0 and quietly evaluates a
   crowd annotation as a normal one;
@@ -168,6 +170,17 @@ a way to be silently wrong. `area` is the sole exception and it is a
 parameter only because `"supplied"` is a legitimate choice for a caller
 whose areas are authoritative; `"auto"` is the per-element fallback that
 matches what COCOeval does.
+
+**`"auto"` reads the mask under `bbox` too.** `COCOeval` with
+`iouType="bbox"` buckets by the annotation's `area` field, which in a
+COCO file is the segmentation's area — it never recomputes `w * h`. So
+a mask, when the record carries one, decides the area whatever IoU type
+is being evaluated. Deriving the box area per pass instead is invisible
+until an object's two areas straddle `32**2` or `96**2`, and then it
+moves AP between the small and medium buckets against every
+pycocotools-shaped evaluator, with no error anywhere. This is why masks
+are worth passing even for a bbox-only run: they are not evaluated, but
+they are read.
 
 `box_format` **must not auto-detect.** A `(N, 4)` array is
 indistinguishable between `xywh` and `xyxy` in general, and a wrong

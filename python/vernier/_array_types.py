@@ -308,13 +308,18 @@ class Target(TypedDict, total=False):
       vernier (ADR-0060) because it is what the small / medium / large
       bucketing reads, but a framework that never recorded one stores
       zeros. Under ``area="auto"`` a non-positive entry falls back
-      **per element** to the mask's area or the box's, matching what
-      COCOeval derives.
+      **per element** to the mask's area when the record carries a mask
+      and to the box's otherwise — which is what COCO records and what
+      ``COCOeval`` buckets by, under either IoU type.
 
     ``size`` is the image's ``(height, width)``. It is only read under
     ``segm``, where vernier checks every RLE against it; when absent it
     is resolved from the masks themselves (see
     :func:`vernier.adapters.gt_image_sizes`).
+
+    Masks are worth passing even for a ``bbox`` evaluation: they are not
+    evaluated, but ``area="auto"`` reads them, which is what keeps the
+    area buckets agreeing with a pycocotools-shaped evaluator.
     """
 
     boxes: Any

@@ -519,3 +519,50 @@ def test_bbox_still_requires_boxes() -> None:
     ]
     with pytest.raises(KeyError, match="boxes is required"):
         coco_inputs(predictions, targets, iou_type="bbox")
+
+
+def test_auto_area_reads_the_mask_even_under_bbox() -> None:
+    """A COCO ground truth's ``area`` is the segmentation's, under either IoU type.
+
+    ``COCOeval`` with ``iouType="bbox"`` buckets by the annotation's
+    ``area`` field, which in a COCO file is the segmentation's area — it
+    never recomputes ``w * h``. Deriving the box area for a bbox pass
+    would disagree with every pycocotools-shaped evaluator for any
+    object whose two areas straddle ``32**2`` or ``96**2``, visible only
+    as AP moving between the small and medium buckets.
+
+    A disc of radius 17 straddles it: box ``34 x 34 = 1156`` (medium),
+    mask ``~901`` (small).
+    """
+    rows, columns = np.ogrid[:128, :128]
+    mask = ((rows - 64) ** 2 + (columns - 64) ** 2 <= 17**2).astype(np.uint8)
+    assert 34 * 34 > 32**2  # the box is medium
+    assert int(mask.sum()) < 32**2  # the mask is small
+
+    targets: list[Target] = [
+        {
+            "boxes": np.array([[47.0, 47.0, 34.0, 34.0]]),
+            "labels": np.array([1]),
+            "masks": np.asfortranarray(mask.astype(bool))[None],
+        }
+    ]
+    predictions: list[Prediction] = [
+        {"boxes": np.zeros((0, 4)), "scores": np.zeros(0), "labels": np.zeros(0, dtype=np.int64)}
+    ]
+    dataset, _ = coco_inputs(predictions, targets, iou_type="bbox", categories=[1])
+
+    expected = _dataset_from_json(
+        [{"id": 0, "height": 0, "width": 0}],
+        [
+            {
+                "id": 1,
+                "image_id": 0,
+                "category_id": 1,
+                "bbox": [47.0, 47.0, 34.0, 34.0],
+                "area": float(mask.sum()),
+                "iscrowd": 0,
+            }
+        ],
+        [{"id": 1, "name": "1"}],
+    )
+    assert dataset.dataset_hash == expected.dataset_hash
