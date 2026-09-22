@@ -82,7 +82,7 @@ def confusion_matrix(
             matrix has no federated disposition (ADR-0064).
         dt: Any detection form the evaluator accepts — the detection
             COCO JSON payload as bytes, columnar
-            :class:`vernier.Detections`, result dicts, or an ``(N, 7)``
+            :class:`vernier.instance.Detections`, result dicts, or an ``(N, 7)``
             matrix (ADR-0030, ADR-0057, ADR-0064). The pair
             :func:`vernier.adapters.coco_inputs` returns is read here
             unchanged.

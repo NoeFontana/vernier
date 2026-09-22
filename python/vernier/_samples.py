@@ -483,10 +483,11 @@ def coco_inputs(
     ``evaluate_*_summary`` entry points, custom grids (ADR-0040),
     calibration through ``cells_from_grid``, the partitioned/DDP path,
     and — since ADR-0064 — every instance diagnostic:
-    :func:`vernier.error_decomposition` (TIDE),
+    :func:`vernier.instance.error_decomposition` (TIDE),
     :func:`vernier.instance.optimal_lrp`,
-    :func:`vernier.confusion_matrix`, :func:`vernier.fp_iou_histogram`
-    and the ``tables=`` / ``manifest=`` paths of
+    :func:`vernier.instance.confusion_matrix`,
+    :func:`vernier.instance.fp_iou_histogram` and the ``tables=`` /
+    ``manifest=`` paths of
     :meth:`vernier.instance.Evaluator.evaluate`. One conversion reaches
     all of them; :func:`coco_metrics` is the convenience wrapper for the
     AP case.

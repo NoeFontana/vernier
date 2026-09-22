@@ -150,8 +150,12 @@ to "here is which error moved it" costs no second conversion and no
 COCO file:
 
 ```python
-from vernier import error_decomposition, confusion_matrix, fp_iou_histogram
-from vernier.instance import optimal_lrp
+from vernier.instance import (
+    confusion_matrix,
+    error_decomposition,
+    fp_iou_histogram,
+    optimal_lrp,
+)
 
 report = error_decomposition(ground_truth, dt)       # TIDE's six bins
 print(report.delta)
