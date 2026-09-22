@@ -10,6 +10,16 @@ sanctioned entry point for swapping
 ``pycocotools.cocoeval.COCOeval`` with vernier's drop-in. Policy and
 rationale are in ADR-0007.
 
+The ingest route turns a training loop's state into vernier's
+evaluation inputs, reading any array type through DLPack without
+importing its framework. It has two spellings of one conversion:
+:func:`coco_inputs` for per-image records and
+:func:`coco_inputs_from_columns` for state that is already
+concatenated, which is what a TorchMetrics-shaped metric holds. Both
+land on one builder, so they cannot drift. :func:`coco_metrics` is the
+convenience wrapper for the AP case and :func:`gt_image_sizes` resolves
+the image sizes a columnar ground truth needs. ADR-0063 is the record.
+
 The COCO-JSON normalizers (:func:`with_placeholder_image_sizes`,
 :func:`with_mask_image_sizes`, :func:`detection_image_sizes`,
 :func:`coco_json_default`, :func:`to_coco_json`) are the same
@@ -23,6 +33,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Callable, Generator
 
+from vernier._array_types import DetectionColumns, Prediction, Target, TargetColumns
 from vernier._coco_json import (
     coco_json_default,
     detection_image_sizes,
@@ -31,6 +42,12 @@ from vernier._coco_json import (
     with_placeholder_image_sizes,
 )
 from vernier._compat import PycocotoolsCOCOeval
+from vernier._samples import (
+    coco_inputs,
+    coco_inputs_from_columns,
+    coco_metrics,
+    gt_image_sizes,
+)
 from vernier._types import ParityMode
 
 # The original pycocotools class, captured on the first patch and
@@ -121,8 +138,16 @@ def patched_pycocotools(parity_mode: ParityMode = "strict") -> Generator[None, N
 
 
 __all__ = [
+    "DetectionColumns",
+    "Prediction",
+    "Target",
+    "TargetColumns",
+    "coco_inputs",
+    "coco_inputs_from_columns",
     "coco_json_default",
+    "coco_metrics",
     "detection_image_sizes",
+    "gt_image_sizes",
     "patch_pycocotools",
     "patched_pycocotools",
     "to_coco_json",

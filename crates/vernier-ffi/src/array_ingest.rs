@@ -18,10 +18,12 @@ use pyo3::types::{
 
 use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
 use vernier_core::segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
+use vernier_core::EvalError;
 use vernier_mask::Rle;
 
 use crate::dlpack;
 use crate::emit_warning;
+use crate::eval_error_to_pyerr;
 
 // ---------------------------------------------------------------------------
 // Top-level dispatch types
@@ -887,4 +889,95 @@ mod tests {
         assert_eq!(ArrayIouType::Boundary.as_str(), "boundary");
         assert_eq!(ArrayIouType::Keypoints.as_str(), "keypoints");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mask area (ADR-0063)
+// ---------------------------------------------------------------------------
+
+/// Foreground pixel count for each segmentation in `rles`.
+///
+/// ADR-0060 makes a ground truth's `area` **required and read verbatim**
+/// — "silently substituting `w * h` would re-bucket every polygon GT
+/// between AP-small / medium / large" (`gt_ingest.rs`). A caller
+/// assembling columnar ground truth from a training loop therefore needs
+/// the mask's area, and under ADR-0063's `area="auto"` that is the
+/// number to fall back to when the framework supplied none.
+///
+/// This is `pycocotools.mask.area` (quirk **G5**: the sum of the
+/// odd-indexed runs), reached through
+/// [`Segmentation::rle_area`][vernier_core::segmentation::Segmentation::rle_area]
+/// so this route and the evaluator agree by construction rather than by
+/// inspection. It is deliberately *internal*: the public `vernier.mask`
+/// surface is a separate decision, and this is the subset ADR-0063 needs.
+///
+/// Accepts everything [`extract_one_rle`] accepts. Polygons are rejected
+/// here exactly as they are on the columnar `rles` field, and for the
+/// same reason `maskUtils.area` rejects them.
+///
+/// Extraction and summation are split so the decode — which for a
+/// compressed RLE is the whole cost and touches no Python object — runs
+/// with the GIL released, per ADR-0006. A caller with *bitmasks* should
+/// not reach here at all: summing them in NumPy is ~19x faster than a
+/// round trip through the RLE codec and bit-identical, so the Python
+/// side reserves this for pre-encoded RLEs.
+///
+/// Returns the areas as native-endian `f64` bytes, which the caller
+/// wraps with `numpy.frombuffer`. A `Vec<f64>` would cross the boundary
+/// as one `PyFloat` per mask — at validation scale 10^5–10^6 transient
+/// objects — for a value NumPy re-packs into a buffer immediately.
+#[pyfunction]
+pub(crate) fn rle_area<'py>(
+    py: Python<'py>,
+    rles: &Bound<'py, PyAny>,
+) -> PyResult<Bound<'py, PyBytes>> {
+    // No `cast_inputs`: neither accepted form has a dtype this could
+    // widen — a dict's `counts` is `bytes` or `uint32` and a bitmask is
+    // `bool` or `uint8`, all exact. A parameter here would promise
+    // tolerance the extractor cannot deliver.
+    let cast_state = new_cast_state(false);
+    let ascontig = ascontig_for(py, &cast_state)?;
+    let ctx = CastCtx::new(py, &cast_state, &ascontig);
+
+    // A `PyIterator`'s `size_hint` is `(0, None)`, so reserve off the
+    // sequence's own length; `len()` fails only for a true generator.
+    let hint = rles.len().unwrap_or(0);
+    let items = rles.try_iter()?;
+    let mut segmentations: Vec<Segmentation> = Vec::with_capacity(hint);
+    for (i, item) in items.enumerate() {
+        let item = item?;
+        segmentations.push(extract_one_rle(
+            &item,
+            FieldPath::rooted("rles", Some(i), ""),
+            &ctx,
+        )?);
+    }
+
+    let bytes = py
+        .detach(|| {
+            let mut areas: Vec<u8> = Vec::with_capacity(segmentations.len() * 8);
+            for (i, segmentation) in segmentations.iter().enumerate() {
+                // `rle_area` is `None` only for polygons, which
+                // `extract_one_rle` has already refused, so the `None` arm is
+                // unreachable through this entry point.
+                let area = segmentation
+                    .rle_area()
+                    .map_err(|e| (i, e))?
+                    .ok_or_else(|| {
+                        (
+                            i,
+                            EvalError::InvalidConfig {
+                                detail: "polygons have no RLE area".to_string(),
+                            },
+                        )
+                    })?;
+                areas.extend_from_slice(&(area as f64).to_ne_bytes());
+            }
+            Ok(areas)
+        })
+        .map_err(|(i, e): (usize, EvalError)| {
+            let inner = eval_error_to_pyerr(py, e);
+            PyValueError::new_err(format!("rles[{i}]: {inner}"))
+        })?;
+    Ok(PyBytes::new(py, &bytes))
 }

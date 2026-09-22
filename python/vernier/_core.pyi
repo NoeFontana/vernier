@@ -252,6 +252,14 @@ class EvalCells:
 
 def cells_from_grid(grid: EvalGrid) -> EvalCells: ...
 def version() -> str: ...
+
+# ADR-0063: foreground pixel count per segmentation — `pycocotools.mask.area`
+# (quirk G5). Internal: the public `vernier.mask` surface is a separate
+# decision; this is the subset the per-sample ingest route needs, because a
+# ground truth's `area` is required and read verbatim (ADR-0060) and a
+# compressed COCO RLE cannot be summed in NumPy. No `cast_inputs`: every
+# accepted form already has an exact dtype (bytes / uint32 / bool / uint8).
+def rle_area(rles: Sequence[RLEInput]) -> bytes: ...
 def evaluate_bbox_summary(
     gt: bytes | CocoDataset,
     dt: DetectionsInput,
