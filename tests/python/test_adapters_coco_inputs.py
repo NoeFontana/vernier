@@ -29,9 +29,12 @@ import pytest
 from vernier import _core
 from vernier._array_types import CompressedRLE
 from vernier.adapters import (
+    DetectionColumns,
     Prediction,
     Target,
+    TargetColumns,
     coco_inputs,
+    coco_inputs_from_columns,
     coco_metrics,
     gt_image_sizes,
     to_coco_json,
@@ -438,14 +441,14 @@ def test_bitmask_and_encoded_areas_agree() -> None:
         for item in raw
     ]
 
-    from_bitmasks = _mask_areas([[np.asfortranarray(m.astype(bool))] for m in bitmasks])
-    from_encoded = _mask_areas([[item] for item in encoded])
+    from_bitmasks = _mask_areas([np.asfortranarray(m.astype(bool)) for m in bitmasks])
+    from_encoded = _mask_areas(encoded)
 
     assert np.array_equal(from_bitmasks, oracle)
     assert np.array_equal(from_encoded, oracle)
     # Mixed within one call: the encoded entries are scattered back into
     # position, so an off-by-one in the index bookkeeping would show here.
-    mixed = _mask_areas([[np.asfortranarray(bitmasks[0].astype(bool))], [encoded[1]], [encoded[2]]])
+    mixed = _mask_areas([np.asfortranarray(bitmasks[0].astype(bool)), encoded[1], encoded[2]])
     assert np.array_equal(mixed, oracle)
 
 
@@ -566,3 +569,88 @@ def test_auto_area_reads_the_mask_even_under_bbox() -> None:
         [{"id": 1, "name": "1"}],
     )
     assert dataset.dataset_hash == expected.dataset_hash
+
+
+@pytest.mark.parametrize("iou_type", ["bbox", "segm"])
+def test_columnar_and_per_sample_agree(iou_type: Any) -> None:
+    """The two spellings are one conversion, so they must produce one document.
+
+    ``coco_inputs`` and ``coco_inputs_from_columns`` differ only in how
+    the caller already holds its state; both land on the same builder.
+    ``dataset_hash`` proves the ground truth is identical rather than
+    equivalent, and the detections are compared route-for-route.
+    """
+    rng = np.random.default_rng(31)
+    rows, columns_ = np.ogrid[:32, :32]
+    per_image = [3, 0, 2, 1]
+
+    def masks_for(count: int) -> list[Any]:
+        return [
+            np.asfortranarray(
+                (rows - rng.integers(8, 24)) ** 2 + (columns_ - rng.integers(8, 24)) ** 2 <= 36
+            )
+            for _ in range(count)
+        ]
+
+    predictions: list[Prediction] = []
+    targets: list[Target] = []
+    for count in per_image:
+        boxes = np.column_stack(
+            [
+                rng.uniform(0, 20, count),
+                rng.uniform(0, 20, count),
+                rng.uniform(1, 9, count),
+                rng.uniform(1, 9, count),
+            ]
+        )
+        labels = rng.integers(0, 3, count)
+        target: Target = {"boxes": boxes, "labels": labels, "iscrowd": rng.integers(0, 2, count)}
+        prediction: Prediction = {
+            "boxes": boxes + 0.5,
+            "labels": labels,
+            "scores": rng.uniform(0.1, 0.9, count),
+        }
+        if iou_type == "segm":
+            target["masks"] = masks_for(count)
+            prediction["masks"] = masks_for(count)
+        targets.append(target)
+        predictions.append(prediction)
+
+    def joined(key: str, records: list[Any], empty: Any) -> Any:
+        parts = [np.asarray(r[key]) for r in records if len(np.asarray(r[key]))]
+        return np.concatenate(parts) if parts else empty
+
+    counts = np.asarray(per_image, dtype=np.int64)
+    target_columns: TargetColumns = {
+        "boxes": joined("boxes", targets, np.zeros((0, 4))),
+        "labels": joined("labels", targets, np.zeros(0, np.int64)),
+        "iscrowd": joined("iscrowd", targets, np.zeros(0, np.int64)),
+        "counts": counts,
+    }
+    detection_columns: DetectionColumns = {
+        "boxes": joined("boxes", predictions, np.zeros((0, 4))),
+        "labels": joined("labels", predictions, np.zeros(0, np.int64)),
+        "scores": joined("scores", predictions, np.zeros(0)),
+        "counts": counts,
+    }
+    if iou_type == "segm":
+        target_columns["rles"] = [m for record in targets for m in record.get("masks", [])]
+        detection_columns["rles"] = [m for record in predictions for m in record.get("masks", [])]
+
+    by_record, record_detections = coco_inputs(predictions, targets, iou_type=iou_type)  # type: ignore[arg-type]
+    by_column, column_detections = coco_inputs_from_columns(
+        detection_columns, target_columns, iou_type=iou_type
+    )
+
+    assert by_record.dataset_hash == by_column.dataset_hash
+    assert by_record.num_annotations == by_column.num_annotations > 0
+    if iou_type == "bbox":
+        assert np.array_equal(np.asarray(record_detections), np.asarray(column_detections))
+    else:
+        assert len(record_detections) == len(column_detections) == len(per_image)  # type: ignore[arg-type]
+        for a, b in zip(record_detections, column_detections, strict=True):  # type: ignore[arg-type]
+            left, right = cast("dict[str, Any]", a), cast("dict[str, Any]", b)
+            assert left["image_id"] == right["image_id"]
+            for key in ("boxes", "scores", "labels"):
+                assert np.array_equal(np.asarray(left[key]), np.asarray(right[key]))
+            assert len(left["rles"]) == len(right["rles"])

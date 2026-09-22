@@ -41,19 +41,21 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, cast
+from typing import Any, Literal, TypeAlias, cast
 
 import numpy as np
 from numpy.typing import NDArray
 
 from vernier import _core
 from vernier._array_types import (
+    DetectionColumns,
     Detections,
     DetectionsInput,
     GtCategory,
     Prediction,
     RLEInput,
     Target,
+    TargetColumns,
 )
 from vernier._types import ParityMode
 
@@ -65,6 +67,9 @@ AreaPolicy = Literal["auto", "supplied", "box", "mask"]
 
 #: IoU types this route builds inputs for.
 SampleIouType = Literal["bbox", "segm"]
+
+#: Any of the four input shapes, for the helpers that only read a key.
+_Columnish: TypeAlias = "Prediction | Target | DetectionColumns | TargetColumns"
 
 
 def _as_array(value: Any, field: str) -> NDArray[Any]:
@@ -204,12 +209,23 @@ def _labels(value: Any, field: str) -> NDArray[np.int64]:
     return np.reshape(labels, (-1,))
 
 
-def _has_masks(record: Prediction | Target) -> bool:
-    """Whether a record carries masks, in either accepted spelling."""
-    return "rles" in record or "masks" in record
+def _has_masks(record: _Columnish) -> bool:
+    """Whether a record carries any mask, in either accepted spelling.
+
+    A present-but-empty column counts as *no* masks. A caller assembling
+    columns generically sets the key unconditionally, and reading that as
+    "zero masks for N annotations" would reject a perfectly good
+    bbox-only run.
+    """
+    entry = cast("Mapping[str, Any]", record)
+    for key in ("rles", "masks"):
+        value = entry.get(key)
+        if value is not None and len(value):
+            return True
+    return False
 
 
-def _rles(record: Prediction | Target, field: str, count: int) -> list[RLEInput]:
+def _rles(record: _Columnish, field: str, count: int) -> list[RLEInput]:
     """Return one image's masks in a shape vernier's RLE ingest accepts.
 
     Takes either ``rles`` (already encoded) or ``masks`` (bitmasks).
@@ -217,6 +233,7 @@ def _rles(record: Prediction | Target, field: str, count: int) -> list[RLEInput]
     is how a TorchMetrics metric state carries a mask, and it is not one
     of the shapes :data:`RLEInput` names.
     """
+    items: list[Any]
     if "rles" in record:
         items = list(record["rles"])
     elif "masks" in record:
@@ -225,17 +242,29 @@ def _rles(record: Prediction | Target, field: str, count: int) -> list[RLEInput]
     else:
         raise KeyError(f"{field}: iou_type='segm' needs either 'rles' or 'masks'")
 
-    normalized: list[RLEInput] = []
-    for item in items:
-        pair = cast("tuple[Sequence[int], Any] | None", item if isinstance(item, tuple) else None)
-        if pair is not None and len(pair) == 2:
-            # A TorchMetrics metric state carries a mask as this pair,
-            # which is not one of the shapes `RLEInput` names.
-            normalized.append(
-                cast("RLEInput", {"size": (int(pair[0][0]), int(pair[0][1])), "counts": pair[1]})
+    # Hot: this runs once per mask, and at validation scale that is hundreds
+    # of thousands of iterations. The common case is a list that is already in
+    # an accepted shape, so it is recognised in one scan and handed over
+    # untouched -- no per-item work, and one `cast` for the list rather than
+    # one per element (`typing.cast` is a real call at runtime).
+    normalized: list[RLEInput]
+    if not any(isinstance(item, tuple) for item in items):
+        normalized = cast("list[RLEInput]", items)
+    else:
+        # A TorchMetrics metric state carries a mask as a `(size, counts)`
+        # pair, which is not one of the shapes `RLEInput` names.
+        normalized = []
+        for item in items:
+            pair = cast(
+                "tuple[Sequence[int], Any] | None", item if isinstance(item, tuple) else None
             )
-        else:
-            normalized.append(cast("RLEInput", item))
+            if pair is None:
+                normalized.append(cast("RLEInput", item))
+            else:
+                size, counts = pair
+                normalized.append(
+                    cast("RLEInput", {"size": (int(size[0]), int(size[1])), "counts": counts})
+                )
     if len(normalized) != count:
         raise ValueError(
             f"{field}: {len(normalized)} masks for {count} labels; every annotation needs one"
@@ -317,7 +346,11 @@ def _first_size(rles: Sequence[RLEInput] | None) -> tuple[int, int] | None:
     """``(height, width)`` of the first mask, or ``None`` when there is none."""
     if not rles:
         return None
-    first = rles[0]
+    return _size_of(rles[0])
+
+
+def _size_of(first: RLEInput) -> tuple[int, int] | None:
+    """``(height, width)`` a single mask declares, or ``None`` if it declares none."""
     if isinstance(first, dict):
         size = cast("Mapping[str, Any]", first).get("size")
         if size is None:
@@ -364,7 +397,7 @@ def _categories(
     return [entry for _, entry in sorted(_with_ids(entries), key=lambda pair: pair[0])]
 
 
-def _required(record: Prediction | Target, key: str, field: str) -> Any:
+def _required(record: _Columnish, key: str, field: str) -> Any:
     """One required field off a record, or a ``KeyError`` naming it.
 
     Defaulting a missing field to an empty array would turn a misspelled
@@ -380,9 +413,7 @@ def _required(record: Prediction | Target, key: str, field: str) -> Any:
     return record[key]  # type: ignore[literal-required]
 
 
-def _column(
-    record: Prediction | Target, key: str, field: str, *, cast_inputs: bool
-) -> NDArray[Any]:
+def _column(record: _Columnish, key: str, field: str, *, cast_inputs: bool) -> NDArray[Any]:
     """One required float64 column off a record."""
     array = _as_array(_required(record, key, field), f"{field}.{key}")
     column = _cast_f64(array, f"{field}.{key}", cast_inputs=cast_inputs)
@@ -454,14 +485,7 @@ def coco_inputs(
             f"predictions and targets must describe the same images: "
             f"got {len(predictions)} and {len(targets)}"
         )
-    # Validated rather than pattern-matched with a fall-through default: an
-    # unrecognised spelling must not quietly select one of the behaviours.
-    if iou_type not in ("bbox", "segm"):
-        raise ValueError(f"unknown iou_type {iou_type!r}; expected 'bbox' or 'segm'")
-    if area not in ("auto", "supplied", "box", "mask"):
-        raise ValueError(f"unknown area {area!r}; expected 'auto', 'supplied', 'box' or 'mask'")
-    if box_format not in ("xywh", "xyxy", "cxcywh"):
-        raise ValueError(f"unknown box_format {box_format!r}; expected 'xywh', 'xyxy' or 'cxcywh'")
+    _validate_literals(iou_type=iou_type, area=area, box_format=box_format)
     masked = iou_type == "segm"
     image_ids = _image_ids(predictions, targets)
 
@@ -500,7 +524,7 @@ def coco_inputs(
         crowd_column: NDArray[np.int64] = np.asarray(crowds, dtype=np.int64)
         gt_crowds.append(np.reshape(crowd_column, (-1,)))
         gt_supplied.append(supplied)
-        gt_rles.append(_rles(target, field, len(labels)) if _has_masks(target) else [])
+        gt_rles.append(_rles(target, field, len(labels)) if masked or _has_masks(target) else [])
 
     dt_boxes: list[NDArray[np.float64]] = []
     dt_labels: list[NDArray[np.int64]] = []
@@ -521,47 +545,317 @@ def coco_inputs(
         dt_boxes.append(boxes)
         dt_labels.append(labels)
         dt_scores.append(scores)
-        dt_rles.append(_rles(prediction, field, len(labels)) if _has_masks(prediction) else [])
+        dt_rles.append(
+            _rles(prediction, field, len(labels)) if masked or _has_masks(prediction) else []
+        )
 
-    counts = np.asarray([len(labels) for labels in gt_labels], dtype=np.int64)
-    total = int(counts.sum())
-    all_boxes = np.concatenate(gt_boxes) if total else np.zeros((0, 4), dtype=np.float64)
-    all_labels = np.concatenate(gt_labels) if total else np.zeros((0,), dtype=np.int64)
-
-    heights, widths = (
-        gt_image_sizes(gt_rles, dt_rles, [target.get("size") for target in targets])
-        if masked
-        else (np.zeros(len(targets), np.int64), np.zeros(len(targets), np.int64))
+    flat_gt_rles = [rle for image in gt_rles for rle in image]
+    flat_dt_rles = [rle for image in dt_rles for rle in image]
+    gt_counts = np.asarray([len(labels) for labels in gt_labels], dtype=np.int64)
+    dt_counts = np.asarray([len(labels) for labels in dt_labels], dtype=np.int64)
+    return _build(
+        gt_boxes=_join(gt_boxes, (0, 4), np.float64),
+        gt_labels=_join(gt_labels, (0,), np.int64),
+        gt_crowds=_join(gt_crowds, (0,), np.int64),
+        gt_area=_join(gt_supplied, (0,), np.float64),
+        gt_counts=gt_counts,
+        gt_rles=flat_gt_rles,
+        dt_boxes=_join(dt_boxes, (0, 4), np.float64),
+        dt_scores=_join(dt_scores, (0,), np.float64),
+        dt_labels=_join(dt_labels, (0,), np.int64),
+        dt_counts=dt_counts,
+        dt_rles=flat_dt_rles,
+        image_ids=image_ids,
+        sizes=[target.get("size") for target in targets],
+        iou_type=iou_type,
+        categories=categories,
+        area=area,
     )
 
-    images = {"id": image_ids, "height": heights, "width": widths}
+
+def coco_inputs_from_columns(
+    detections: DetectionColumns,
+    targets: TargetColumns,
+    *,
+    iou_type: SampleIouType = "bbox",
+    box_format: BoxFormat = "xywh",
+    categories: Sequence[int] | Sequence[GtCategory] | None = None,
+    area: AreaPolicy = "auto",
+    image_ids: Any | None = None,
+    cast_inputs: bool = True,
+) -> tuple[_core.CocoDataset, DetectionsInput]:
+    """Build vernier's evaluation inputs from whole columns (ADR-0063).
+
+    The columnar spelling of :func:`coco_inputs`. Same rules, same
+    result -- both land on one builder, and
+    ``test_columnar_and_per_sample_agree`` pins the two to the identical
+    ``dataset_hash``. What differs is only how the caller already holds
+    its state.
+
+    Prefer this when the state is *already* concatenated, which is the
+    case for a TorchMetrics-shaped metric: splitting it into per-image
+    records for :func:`coco_inputs` only to have vernier concatenate it
+    again costs a Python-level pass per image per field, and at
+    validation scale that is the most expensive thing on the path. A
+    caller with genuine per-image records should use :func:`coco_inputs`
+    and not synthesize columns.
+
+    ``counts`` carries the image structure -- entry ``i`` is image
+    ``i``'s row count -- so the columns themselves need no image
+    grouping. Ground truth and detections have independent counts, both
+    of length ``M``.
+
+    Args:
+        detections: Every detection, as columns. See
+            :class:`DetectionColumns`.
+        targets: Every ground-truth annotation, as columns. See
+            :class:`TargetColumns`.
+        iou_type: ``"bbox"`` or ``"segm"``.
+        box_format: Layout ``boxes`` is read as; never auto-detected.
+        categories: The COCO ``categories`` section, as ids or entries.
+            ``None`` takes the union of every label on both sides.
+        area: How the ground truth's ``area`` column is filled.
+        image_ids: ``(M,)`` image ids, defaulting to ``0..M-1``.
+        cast_inputs: Convert array dtypes rather than refusing them.
+
+    Returns:
+        The parsed ground truth and the detections, ready for any
+        ``evaluate_*`` entry point.
+
+    Raises:
+        ValueError: If a ``counts`` column does not sum to its columns'
+            length, if the two ``counts`` differ in length, or for any
+            reason :func:`coco_inputs` raises.
+        KeyError: If a required column is absent.
+        TypeError: If a value cannot be read as an array, or its dtype is
+            wrong under ``cast_inputs=False``.
+    """
+    _validate_literals(iou_type=iou_type, area=area, box_format=box_format)
+    gt_counts = _counts(targets, "targets")
+    dt_counts = _counts(detections, "detections")
+    if len(gt_counts) != len(dt_counts):
+        raise ValueError(
+            f"targets.counts and detections.counts must describe the same images: "
+            f"got {len(gt_counts)} and {len(dt_counts)}"
+        )
+    n_images = len(gt_counts)
+    ids = (
+        np.arange(n_images, dtype=np.int64)
+        if image_ids is None
+        else np.reshape(np.asarray(_as_array(image_ids, "image_ids"), dtype=np.int64), (-1,))
+    )
+    if len(ids) != n_images:
+        raise ValueError(f"image_ids: {len(ids)} entries for {n_images} images")
+
+    gt_labels = _labels(_required(targets, "labels", "targets"), "targets.labels")
+    gt_boxes = _columns_boxes(targets, "targets", gt_labels, box_format, cast_inputs=cast_inputs)
+    dt_labels = _labels(_required(detections, "labels", "detections"), "detections.labels")
+    dt_boxes = _columns_boxes(
+        detections, "detections", dt_labels, box_format, cast_inputs=cast_inputs
+    )
+    dt_scores = _column(detections, "scores", "detections", cast_inputs=cast_inputs)
+
+    for name, counts, rows in (
+        ("targets", gt_counts, len(gt_labels)),
+        ("detections", dt_counts, len(dt_labels)),
+    ):
+        if int(counts.sum()) != rows:
+            raise ValueError(f"{name}.counts sums to {int(counts.sum())} but there are {rows} rows")
+    if len(dt_scores) != len(dt_labels):
+        raise ValueError(f"detections: labels/scores disagree ({len(dt_labels)}, {len(dt_scores)})")
+
+    crowds = (
+        np.reshape(np.asarray(_as_array(targets["iscrowd"], "targets.iscrowd"), np.int64), (-1,))
+        if "iscrowd" in targets
+        else np.zeros(len(gt_labels), np.int64)
+    )
+    supplied = (
+        _column(targets, "area", "targets", cast_inputs=cast_inputs)
+        if "area" in targets
+        else np.zeros(len(gt_labels), np.float64)
+    )
+    for name, column in (("iscrowd", crowds), ("area", supplied)):
+        if len(column) != len(gt_labels):
+            raise ValueError(f"targets.{name}: {len(column)} entries for {len(gt_labels)} labels")
+
+    sizes: Sequence[tuple[int, int] | None] | None = None
+    if "sizes" in targets:
+        declared = np.reshape(
+            np.asarray(_as_array(targets["sizes"], "targets.sizes"), np.int64), (-1, 2)
+        )
+        sizes = [(int(h), int(w)) for h, w in declared]
+    return _build(
+        gt_boxes=gt_boxes,
+        gt_labels=gt_labels,
+        gt_crowds=crowds,
+        gt_area=supplied,
+        gt_counts=gt_counts,
+        gt_rles=_flat_rles(targets, "targets", len(gt_labels), required=iou_type == "segm"),
+        dt_boxes=dt_boxes,
+        dt_scores=dt_scores,
+        dt_labels=dt_labels,
+        dt_counts=dt_counts,
+        dt_rles=_flat_rles(detections, "detections", len(dt_labels), required=iou_type == "segm"),
+        image_ids=ids,
+        sizes=sizes,
+        iou_type=iou_type,
+        categories=categories,
+        area=area,
+    )
+
+
+def _counts(columns: DetectionColumns | TargetColumns, field: str) -> NDArray[np.int64]:
+    """The per-image row counts, which is what assigns rows to images."""
+    raw = _as_array(_required(columns, "counts", field), f"{field}.counts")
+    return np.reshape(np.asarray(raw, dtype=np.int64), (-1,))
+
+
+def _columns_boxes(
+    columns: DetectionColumns | TargetColumns,
+    field: str,
+    labels: NDArray[np.int64],
+    box_format: BoxFormat,
+    *,
+    cast_inputs: bool,
+) -> NDArray[np.float64]:
+    """The box column, zero-filled when absent (see :func:`_record_boxes`)."""
+    if "boxes" not in columns:
+        return np.zeros((len(labels), 4), dtype=np.float64)
+    boxes = _boxes(columns["boxes"], box_format, f"{field}.boxes", cast_inputs=cast_inputs)
+    if len(boxes) != len(labels):
+        raise ValueError(f"{field}: {len(boxes)} boxes for {len(labels)} labels")
+    return boxes
+
+
+def _flat_rles(
+    columns: DetectionColumns | TargetColumns, field: str, count: int, *, required: bool
+) -> list[RLEInput]:
+    """The flat mask column, or empty when the caller carries none.
+
+    ``required`` under ``segm``, where an absent or short column is an
+    error rather than a bbox-only run.
+    """
+    if not required and not _has_masks(columns):
+        return []
+    return _rles(columns, field, count)
+
+
+def _validate_literals(*, iou_type: str, area: str, box_format: str) -> None:
+    """Refuse an unrecognised option rather than falling through to a default.
+
+    Every one of these selects a behaviour that is silently wrong if
+    mis-selected, so a typo must raise instead of picking an arm.
+    """
+    if iou_type not in ("bbox", "segm"):
+        raise ValueError(f"unknown iou_type {iou_type!r}; expected 'bbox' or 'segm'")
+    if area not in ("auto", "supplied", "box", "mask"):
+        raise ValueError(f"unknown area {area!r}; expected 'auto', 'supplied', 'box' or 'mask'")
+    if box_format not in ("xywh", "xyxy", "cxcywh"):
+        raise ValueError(f"unknown box_format {box_format!r}; expected 'xywh', 'xyxy' or 'cxcywh'")
+
+
+def _join(
+    columns: Sequence[NDArray[Any]], empty_shape: tuple[int, ...], dtype: type[Any]
+) -> NDArray[Any]:
+    """Concatenate per-image columns, with a correctly-shaped empty for no rows."""
+    for column in columns:
+        if len(column):
+            return np.concatenate(columns)
+    return np.zeros(empty_shape, dtype=dtype)
+
+
+def _build(
+    *,
+    gt_boxes: NDArray[np.float64],
+    gt_labels: NDArray[np.int64],
+    gt_crowds: NDArray[np.int64],
+    gt_area: NDArray[np.float64],
+    gt_counts: NDArray[np.int64],
+    gt_rles: Sequence[RLEInput],
+    dt_boxes: NDArray[np.float64],
+    dt_scores: NDArray[np.float64],
+    dt_labels: NDArray[np.int64],
+    dt_counts: NDArray[np.int64],
+    dt_rles: Sequence[RLEInput],
+    image_ids: NDArray[np.int64],
+    sizes: Sequence[tuple[int, int] | None] | None,
+    iou_type: SampleIouType,
+    categories: Sequence[int] | Sequence[GtCategory] | None,
+    area: AreaPolicy,
+) -> tuple[_core.CocoDataset, DetectionsInput]:
+    """Assemble vernier's inputs from whole columns.
+
+    The single builder both public spellings land on, so a per-sample
+    call and a columnar one cannot drift: everything above this point is
+    a way of producing these arrays, and everything the evaluator sees
+    is decided here.
+    """
+    masked = iou_type == "segm"
+    total = int(gt_counts.sum())
+    heights, widths = (
+        _flat_image_sizes(gt_rles, gt_counts, dt_rles, dt_counts, sizes)
+        if masked
+        else (np.zeros(len(gt_counts), np.int64), np.zeros(len(gt_counts), np.int64))
+    )
     annotations: dict[str, Any] = {
         # From 1, never 0: COCOeval's results are wrong for a zero id.
         "id": np.arange(1, total + 1, dtype=np.int64),
-        "image_id": np.repeat(image_ids, counts),
-        "category_id": all_labels,
-        "bbox": np.ascontiguousarray(all_boxes),
-        "area": _gt_area(all_boxes, gt_supplied, gt_rles, area=area, total=total),
-        "iscrowd": np.concatenate(gt_crowds) if total else np.zeros((0,), np.int64),
+        "image_id": np.repeat(image_ids, gt_counts),
+        "category_id": gt_labels,
+        "bbox": np.ascontiguousarray(gt_boxes),
+        "area": _gt_area(gt_boxes, gt_area, gt_rles, area=area),
+        "iscrowd": gt_crowds,
     }
     if masked:
-        annotations["segmentation"] = [rle for image in gt_rles for rle in image]
-
+        annotations["segmentation"] = list(gt_rles)
     dataset = _core.CocoDataset.from_arrays(
-        images,  # type: ignore[arg-type]
+        {"id": image_ids, "height": heights, "width": widths},
         annotations,  # type: ignore[arg-type]
-        _categories(categories, [all_labels, *(labels for labels in dt_labels if len(labels))]),
+        _categories(categories, [gt_labels, dt_labels]),
     )
-    return dataset, _detections(image_ids, dt_boxes, dt_scores, dt_labels, dt_rles, masked=masked)
+    detections = _detections(
+        image_ids, dt_boxes, dt_scores, dt_labels, dt_counts, dt_rles, masked=masked
+    )
+    return dataset, detections
+
+
+def _offsets(counts: NDArray[np.int64]) -> NDArray[np.int64]:
+    """Row bounds per image: ``offsets[i]:offsets[i + 1]`` is image ``i``."""
+    bounds: NDArray[np.int64] = np.zeros(len(counts) + 1, dtype=np.int64)
+    np.cumsum(counts, out=bounds[1:])
+    return bounds
+
+
+def _flat_image_sizes(
+    gt_rles: Sequence[RLEInput],
+    gt_counts: NDArray[np.int64],
+    dt_rles: Sequence[RLEInput],
+    dt_counts: NDArray[np.int64],
+    supplied: Sequence[tuple[int, int] | None] | None,
+) -> tuple[NDArray[np.int64], NDArray[np.int64]]:
+    """:func:`gt_image_sizes`, reading flat mask lists through per-image bounds."""
+    gt_at, dt_at = _offsets(gt_counts), _offsets(dt_counts)
+    gt_masks = cast("list[Any]", gt_rles)
+    dt_masks = cast("list[Any]", dt_rles)
+    heights: NDArray[np.int64] = np.zeros(len(gt_counts), dtype=np.int64)
+    widths: NDArray[np.int64] = np.zeros(len(gt_counts), dtype=np.int64)
+    for i in range(len(gt_counts)):
+        size = supplied[i] if supplied is not None and i < len(supplied) else None
+        if size is None and gt_counts[i]:
+            size = _size_of(gt_masks[gt_at[i]])
+        if size is None and i < len(dt_counts) and dt_counts[i]:
+            size = _size_of(dt_masks[dt_at[i]])
+        if size is not None:
+            heights[i], widths[i] = size
+    return heights, widths
 
 
 def _gt_area(
-    all_boxes: NDArray[np.float64],
-    supplied_columns: Sequence[NDArray[np.float64]],
-    gt_rles: Sequence[Sequence[RLEInput]],
+    boxes: NDArray[np.float64],
+    supplied: NDArray[np.float64],
+    gt_rles: Sequence[RLEInput],
     *,
     area: AreaPolicy,
-    total: int,
 ) -> NDArray[np.float64]:
     """Fill the ground truth's ``area`` column.
 
@@ -586,10 +880,9 @@ def _gt_area(
     ``32**2`` or ``96**2`` — visible only as AP moving between the
     small and medium buckets, with no error anywhere.
     """
-    supplied = np.concatenate(supplied_columns) if total else np.zeros((0,), np.float64)
     if area == "supplied":
         return supplied
-    has_masks = any(image for image in gt_rles)
+    has_masks = len(gt_rles) > 0
     if area == "mask" and not has_masks:
         raise ValueError("area='mask' needs masks on the ground-truth records")
     # `auto` with every area already positive never reads the fallback, and
@@ -598,13 +891,13 @@ def _gt_area(
     if area == "auto" and bool(np.all(supplied > 0)):
         return supplied
     from_mask = has_masks and area != "box"
-    computed = _mask_areas(gt_rles) if from_mask else all_boxes[:, 2] * all_boxes[:, 3]
+    computed = _mask_areas(gt_rles) if from_mask else boxes[:, 2] * boxes[:, 3]
     if area in ("box", "mask"):
         return computed
     return np.where(supplied > 0, supplied, computed)
 
 
-def _mask_areas(gt_rles: Sequence[Sequence[RLEInput]]) -> NDArray[np.float64]:
+def _mask_areas(gt_rles: Sequence[RLEInput]) -> NDArray[np.float64]:
     """Foreground pixel count per ground-truth mask.
 
     A bitmask is summed in NumPy and a pre-encoded RLE goes to the FFI.
@@ -612,110 +905,83 @@ def _mask_areas(gt_rles: Sequence[Sequence[RLEInput]]) -> NDArray[np.float64]:
     is exact in f64 — but the round trip through the RLE codec costs
     ~19x more than the sum, and it re-rasterizes masks that
     ``CocoDataset.from_arrays`` rasterizes again a moment later.
-    Splitting by form keeps the codec for the payloads that need
-    decoding and leaves the common training-loop case to NumPy.
     """
-    areas = np.empty(sum(len(image) for image in gt_rles), dtype=np.float64)
+    areas: NDArray[np.float64] = np.empty(len(gt_rles), dtype=np.float64)
     encoded: list[RLEInput] = []
     encoded_at: list[int] = []
-    position = 0
-    for i, image in enumerate(gt_rles):
-        for item in image:
-            if isinstance(item, dict):
-                encoded.append(item)
-                encoded_at.append(position)
-            else:
-                bitmask = np.asarray(item)
-                if bitmask.ndim != 2:
-                    raise ValueError(
-                        f"targets[{i}]: expected a 2-D bitmask, got shape {bitmask.shape}"
-                    )
-                areas[position] = float(np.count_nonzero(bitmask))
-            position += 1
+    for position, item in enumerate(gt_rles):
+        if isinstance(item, dict):
+            encoded.append(item)
+            encoded_at.append(position)
+        else:
+            bitmask = np.asarray(item)
+            if bitmask.ndim != 2:
+                raise ValueError(
+                    f"masks[{position}]: expected a 2-D bitmask, got shape {bitmask.shape}"
+                )
+            areas[position] = float(np.count_nonzero(bitmask))
     if encoded:
         try:
             decoded = _core.rle_area(encoded)
         except (TypeError, ValueError) as exc:
             # `rle_area` indexes the compacted list it was handed, which is
-            # not the caller's numbering. Re-raise against the image the
-            # mask belongs to, matching the field paths the rest of the
-            # module builds.
-            raise type(exc)(f"{_attribute(exc, gt_rles, encoded_at)}") from exc
+            # not the caller's numbering.
+            raise type(exc)(_attribute(exc, encoded_at)) from exc
         areas[encoded_at] = np.asarray(decoded, dtype=np.float64)
     return areas
 
 
-def _attribute(
-    exc: Exception, gt_rles: Sequence[Sequence[RLEInput]], encoded_at: Sequence[int]
-) -> str:
-    """Rewrite an ``rles[j]`` message to name the image the mask is on."""
+def _attribute(exc: Exception, encoded_at: Sequence[int]) -> str:
+    """Rewrite an ``rles[j]`` message to the caller's own mask numbering."""
     message = str(exc)
     match = re.match(r"rles\[(\d+)\]:?\s*(.*)", message, re.DOTALL)
     if match is None:
         return message
-    flat = encoded_at[int(match.group(1))]
-    consumed = 0
-    for image, masks in enumerate(gt_rles):
-        if flat < consumed + len(masks):
-            return f"targets[{image}].masks[{flat - consumed}]: {match.group(2)}"
-        consumed += len(masks)
-    return message
+    return f"masks[{encoded_at[int(match.group(1))]}]: {match.group(2)}"
 
 
 def _detections(
     image_ids: NDArray[np.int64],
-    boxes: Sequence[NDArray[np.float64]],
-    scores: Sequence[NDArray[np.float64]],
-    labels: Sequence[NDArray[np.int64]],
-    rles: Sequence[Sequence[RLEInput]],
+    boxes: NDArray[np.float64],
+    scores: NDArray[np.float64],
+    labels: NDArray[np.int64],
+    counts: NDArray[np.int64],
+    rles: Sequence[RLEInput],
     *,
     masked: bool,
 ) -> DetectionsInput:
     """Pick the fastest detection route that can express these detections.
 
-    ``bbox`` takes the ``(N, 7)`` matrix — the only route that hands the
+    ``bbox`` takes the ``(N, 7)`` matrix -- the only route that hands the
     whole state over with no Python object per detection. What it cannot
     carry is exactly what a bbox pass does not use: a segmentation, an
     explicit id, a supplied area.
 
     ``segm`` takes the columnar route, the only one that carries a mask
-    *and* keeps the arrays whole. The third route, a list of COCO result
+    *and* keeps the arrays whole; its per-image entries are **views**
+    into the columns, not copies. The third route, a list of COCO result
     dicts, costs more per-detection Python than the rest of the ingest
     put together.
     """
-    if masked:
-        return [
-            Detections(
-                image_id=int(image_id),
-                boxes=np.ascontiguousarray(image_boxes),
-                scores=image_scores,
-                labels=image_labels,
-                rles=image_rles,
-            )
-            for image_id, image_boxes, image_scores, image_labels, image_rles in zip(
-                image_ids, boxes, scores, labels, rles, strict=True
-            )
-        ]
-    counts = np.asarray([len(image_scores) for image_scores in scores], dtype=np.int64)
-    if not int(counts.sum()):
-        return np.zeros((0, 7), dtype=np.float64)
-    # One fresh C-contiguous float64 buffer laid out as
-    # image_id, x, y, w, h, score, category_id — the layout the matrix
-    # route requires of the caller rather than copying silently.
-    # `column_stack` promotes the int64 id columns against the float64
-    # boxes and scores, so the result is already float64 and C-contiguous;
-    # a further `astype` would memcpy N*56 bytes for nothing.
-    matrix = np.column_stack(
-        [
-            np.repeat(image_ids, counts),
-            np.concatenate(list(boxes)),
-            np.concatenate(list(scores)),
-            np.concatenate(list(labels)),
-        ]
-    )
-    # int64 id columns against float64 boxes and scores promote to float64;
-    # pyright only sees the union of the inputs' dtypes.
-    return cast("NDArray[np.float64]", matrix)
+    if not masked:
+        if not len(scores):
+            return np.zeros((0, 7), dtype=np.float64)
+        # `column_stack` promotes the int64 id columns against the float64
+        # boxes and scores, so the result is already float64 and
+        # C-contiguous; a further `astype` would memcpy N*56 bytes for nothing.
+        matrix = np.column_stack([np.repeat(image_ids, counts), boxes, scores, labels])
+        return cast("NDArray[np.float64]", matrix)
+    at = _offsets(counts)
+    return [
+        Detections(
+            image_id=int(image_id),
+            boxes=np.ascontiguousarray(boxes[start:stop]),
+            scores=scores[start:stop],
+            labels=labels[start:stop],
+            rles=rles[start:stop],
+        )
+        for image_id, start, stop in zip(image_ids, at[:-1], at[1:], strict=True)
+    ]
 
 
 #: The twelve COCO summary statistics, in the canonical order

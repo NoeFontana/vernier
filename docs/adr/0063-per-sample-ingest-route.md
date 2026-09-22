@@ -1,4 +1,4 @@
-# ADR-0063: A per-sample ingest route for training loops
+# ADR-0063: An ingest route for training loops
 
 - **Status:** proposed
 - **Date:** 2026-09-21
@@ -95,9 +95,9 @@ per-image records on them.
    each trainer write it.
 2. **A per-sample ingest route returning metrics** — one function taking
    per-image records and returning the twelve COCO stats.
-3. **A per-sample ingest route returning vernier's inputs** — one
-   function taking per-image records and returning
-   `(CocoDataset, DetectionsInput)`, with a thin metric wrapper over it.
+3. **An ingest route returning vernier's inputs** — functions taking
+   the caller's state and returning `(CocoDataset, DetectionsInput)`,
+   with a thin metric wrapper over them.
 4. **A stateful `update()` / `compute()` accumulator** — mirror the
    metric protocol trainers already speak.
 5. **A `vernier.adapters.torchmetrics` module** that imports
@@ -119,9 +119,25 @@ and leave every other surface needing its own adapter.
 
 ### Surface
 
-Three functions, published through `vernier.adapters` — the canonical
-path ADR-0055 established for exactly this kind of helper — plus two
+Published through `vernier.adapters` — the canonical path ADR-0055
+established for exactly this kind of helper — with the input shapes as
 `TypedDict`s in `vernier._array_types` beside the existing `Detections`.
+
+**Two spellings, one conversion.** `coco_inputs` takes per-image
+records; `coco_inputs_from_columns` takes the same state already
+concatenated, plus a `counts` column carrying the image structure. Both
+land on one internal builder, so they cannot drift — a test pins the two
+to the identical `dataset_hash`.
+
+The second spelling is not sugar. A caller whose state is already
+columnar — which a TorchMetrics-shaped metric's is — would otherwise
+split it into per-image records only to have vernier concatenate it
+again, paying a Python-level pass per image per field. Measured on a
+COCO-val-shaped run (5000 images x 300 detections), the per-record
+spelling costs 0.414 s of conversion against 0.051 s for the columnar
+one, and 765k Python calls against 61k. That is the difference between
+this route being a regression against hand-rolled glue and being
+slightly faster than it.
 
 ```python
 def coco_inputs(
@@ -137,7 +153,14 @@ def coco_inputs(
 
 def coco_metrics(predictions, targets, *, ...) -> dict[str, float | NDArray[np.float64]]: ...
 
-def gt_image_sizes(gt_rles, dt_rles=None) -> tuple[NDArray[np.int64], NDArray[np.int64]]: ...
+def gt_image_sizes(gt_rles, dt_rles=None, supplied=None) -> tuple[NDArray[np.int64], ...]: ...
+
+def coco_inputs_from_columns(
+    detections: DetectionColumns,
+    targets: TargetColumns,
+    *,
+    iou_type=..., box_format=..., categories=..., area=..., image_ids=None, cast_inputs=True,
+) -> tuple[CocoDataset, DetectionsInput]: ...
 ```
 
 `Prediction` and `Target` accept **both** `masks` (a bitmask array) and
@@ -225,10 +248,10 @@ reason no framework import is needed.
   per-image predictions and targets — named or not, existing or not —
   reaches every vernier surface through one call. rf-detr's ~250 lines
   collapse to roughly 35.
-- **Negative.** Two `TypedDict`s and three functions of new public
-  surface that must be kept working, on a route whose only known
-  consumer already has equivalent code. The bet is on the second
-  consumer. `cast_inputs=True` is also a second dtype policy in the
+- **Negative.** Four `TypedDict`s and four functions of new public
+  surface that must be kept working. The bet is on the second consumer;
+  the first one already had equivalent code, and adopting this is worth
+  it to that consumer only because the columnar spelling makes it free. `cast_inputs=True` is also a second dtype policy in the
   codebase, and "which route silently casts?" is now a question a reader
   can ask.
 - **Negative.** `Prediction`/`Target` accept two mask spellings, so the
@@ -266,6 +289,10 @@ reason no framework import is needed.
   its inputs.
 - 👍 `coco_metrics` still gives the short call site option 2 wanted.
 - 👎 Two-step for the common case (though the wrapper hides it).
+- 👎 Two input spellings to document and keep in step, where one would
+  be simpler to explain. The shared builder and its equivalence test are
+  what make that safe; without them this would be the fork ADR-0030
+  warned about.
 - 👎 Exposes `CocoDataset` and `DetectionsInput` in a signature aimed at
   users who may not have met either.
 

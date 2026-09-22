@@ -255,6 +255,46 @@ class GtAnnotations(TypedDict, total=False):
     num_keypoints: NDArray[np.int64]
 
 
+class DetectionColumns(TypedDict, total=False):
+    """Every detection in one set of columns, plus per-image counts (ADR-0063).
+
+    The columnar spelling of :class:`Prediction`, for a caller that
+    already holds its state concatenated -- a TorchMetrics-shaped metric
+    does, and re-splitting it into per-image records only to have vernier
+    concatenate it again is pure overhead.
+
+    ``boxes`` is ``(D, 4)``, ``scores`` and ``labels`` are ``(D,)``, and
+    ``counts`` is ``(M,)`` giving each image's detection count in image
+    order. ``counts`` is what assigns detections to images, so it must
+    sum to ``D``. ``rles`` is a flat length-``D`` sequence.
+    """
+
+    boxes: Any
+    scores: Any
+    labels: Any
+    counts: Any
+    rles: Sequence[RLEInput | tuple[Sequence[int], bytes]]
+
+
+class TargetColumns(TypedDict, total=False):
+    """Every ground-truth annotation in one set of columns (ADR-0063).
+
+    The columnar spelling of :class:`Target`; see
+    :class:`DetectionColumns` for the shape rules. ``iscrowd`` and
+    ``area`` are optional ``(G,)`` columns with the same meaning they
+    carry per record, and ``sizes`` is an optional ``(M, 2)`` array of
+    ``(height, width)`` per image.
+    """
+
+    boxes: Any
+    labels: Any
+    counts: Any
+    iscrowd: Any
+    area: Any
+    rles: Sequence[RLEInput | tuple[Sequence[int], bytes]]
+    sizes: Any
+
+
 class Prediction(TypedDict, total=False):
     """One image's detections, as a training loop holds them (ADR-0063).
 
@@ -353,6 +393,7 @@ DetectionsInput: TypeAlias = (
 
 __all__ = [
     "CompressedRLE",
+    "DetectionColumns",
     "DetectionMatrix",
     "Detections",
     "DetectionsInput",
@@ -366,5 +407,6 @@ __all__ = [
     "ResultAnnotation",
     "SegmentationInput",
     "Target",
+    "TargetColumns",
     "UncompressedRLE",
 ]
