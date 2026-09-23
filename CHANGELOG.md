@@ -55,6 +55,20 @@ additive / perf / docs".
 - `manifest=` (partitioned AP and LRP) validates the manifest before
   running the evaluation or reading the detections.
 
+## [0.5.3] - 2026-09-23
+
+### Fixed
+
+- `vernier.adapters.coco_inputs` / `coco_inputs_from_columns`: a tensor
+  whose dtype numpy has no equivalent for — `bfloat16`, which every
+  autocast training loop holds — was refused by `numpy.asarray` before
+  reaching the `cast_inputs` gate, so the caller saw a dtype complaint
+  naming a framework vernier never mentions. Such a value is now
+  converted through its own `.double()`, probed by attribute like the
+  existing `.detach()` / `.cpu()` and exact for `bfloat16`. Converting
+  is what `cast_inputs` gates, so `cast_inputs=False` refuses it as it
+  already refuses `float32`.
+
 ## [0.5.2] - 2026-09-22
 
 ### Added
@@ -1583,7 +1597,8 @@ crate set that ship the evaluator.
 - **Parity fixtures** — minimal per-quirk fixtures plus full COCO
   val2017 perfect-DT smoke for bbox, segm, boundary, and keypoints.
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.3...HEAD
+[0.5.3]: https://github.com/NoeFontana/vernier/compare/v0.5.2...v0.5.3
 [0.5.2]: https://github.com/NoeFontana/vernier/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/NoeFontana/vernier/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/NoeFontana/vernier/compare/v0.4.1...v0.5.0
