@@ -230,8 +230,9 @@ That was true of the grid path only. The plain summary path —
 `Evaluator.evaluate` with neither `tables=` nor `manifest=` — matched a
 federated handle without trimming, so lifting the `tables=` / `manifest=`
 guards would have let one handle score differently depending on which
-keyword was passed. Both handle paths now call one `trim_federated`
-helper, capping at the ladder's largest `max_dets` as the grid does. The
+keyword was passed. Both handle paths now apply the trim, capping at
+the ladder's largest `max_dets` as the grid does (the streaming
+evaluators follow in ADR-0065). The
 fix moves a number only when an image carries more detections than that
 cap, and moves it toward lvis-api.
 

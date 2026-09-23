@@ -463,7 +463,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         self.update_parsed(parsed)
     }
 
-    /// Update with a pre-parsed batch.
+    /// Update with a pre-parsed batch. A federated dataset caps each
+    /// image at `max_dets_per_image` detections first (ADR-0065).
     ///
     /// # Errors
     ///
@@ -477,26 +478,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         &mut self,
         parsed: ParsedDetections<K>,
     ) -> Result<UpdateReport, EvalError> {
-        let detections = parsed.detections;
-
-        // Reject any detection whose image_id was already seen in a
-        // prior batch. This keeps update() additive: each cell is built
-        // exactly once and never mutated, which is what makes
-        // finalize() bit-identical to a batch run.
-        let mut batch_image_ids: HashSet<i64> = HashSet::new();
-        for dt in detections.detections() {
-            let id = dt.image_id.0;
-            if self.seen_images.contains(&id) {
-                return Err(EvalError::InvalidAnnotation {
-                    detail: format!(
-                        "image_id={id} was already submitted in a prior update(); \
-                         StreamingEvaluator does not silently merge — submit all \
-                         detections for an image in a single batch"
-                    ),
-                });
-            }
-            batch_image_ids.insert(id);
-        }
+        let (detections, batch_image_ids) = self.admit(parsed.detections)?;
 
         // Run the unchanged batch orchestrator over just this batch's
         // detections. The grid it returns has the same `(K, A, I)`
@@ -529,8 +511,31 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         &mut self,
         parsed: ParsedDetections<K>,
     ) -> Result<UpdateReport, EvalError> {
-        let detections = parsed.detections;
+        let (detections, batch_image_ids) = self.admit(parsed.detections)?;
 
+        let mut grid = evaluate_with_parallel(
+            &self.dataset,
+            &detections,
+            self.params.borrow(),
+            self.parity_mode,
+            &self.kernel,
+        )?;
+        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
+    }
+
+    /// Admit one batch: reject an `image_id` seen in a prior batch, then
+    /// apply the federated per-image cap (ADR-0065).
+    ///
+    /// Rejecting repeats keeps `update()` additive — each cell is built
+    /// once and never mutated, so `finalize()` is bit-identical to a batch
+    /// run. It also makes the per-batch trim exact: the cap is per image,
+    /// and every image's detections arrive in exactly one batch. The ids
+    /// are taken before the trim so an image capped to nothing is still
+    /// marked seen.
+    fn admit(
+        &self,
+        detections: CocoDetections,
+    ) -> Result<(CocoDetections, HashSet<i64>), EvalError> {
         let mut batch_image_ids: HashSet<i64> = HashSet::new();
         for dt in detections.detections() {
             let id = dt.image_id.0;
@@ -545,15 +550,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             }
             batch_image_ids.insert(id);
         }
-
-        let mut grid = evaluate_with_parallel(
-            &self.dataset,
-            &detections,
-            self.params.borrow(),
-            self.parity_mode,
-            &self.kernel,
-        )?;
-        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
+        let detections = detections.trim_for(&self.dataset, self.params.max_dets_per_image);
+        Ok((detections, batch_image_ids))
     }
 
     /// Shared post-matching bookkeeping for [`Self::update_parsed`] and
@@ -1392,6 +1390,86 @@ mod tests {
         assert_eq!(bundle.eval_imgs.len(), expected_len);
         // At least one populated cell from the single submitted batch.
         assert!(bundle.eval_imgs.iter().any(|c| c.is_some()));
+    }
+
+    /// Two images, two categories; per image a category-1 GT at the
+    /// origin and a category-2 GT at (50, 50).
+    const FEDERATED_GT: &str = r#"{
+        "images": [
+            {"id": 1, "width": 100, "height": 100, "neg_category_ids": [], "not_exhaustive_category_ids": []},
+            {"id": 2, "width": 100, "height": 100, "neg_category_ids": [], "not_exhaustive_category_ids": []}
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 10, 10], "area": 100, "iscrowd": 0},
+            {"id": 2, "image_id": 1, "category_id": 2, "bbox": [50, 50, 10, 10], "area": 100, "iscrowd": 0},
+            {"id": 3, "image_id": 2, "category_id": 1, "bbox": [0, 0, 10, 10], "area": 100, "iscrowd": 0},
+            {"id": 4, "image_id": 2, "category_id": 2, "bbox": [50, 50, 10, 10], "area": 100, "iscrowd": 0}
+        ],
+        "categories": [
+            {"id": 1, "name": "a", "frequency": "f"},
+            {"id": 2, "name": "b", "frequency": "f"}
+        ]
+    }"#;
+
+    /// Two high-scoring category-1 false positives, then the image's only
+    /// category-2 true positive — which a cap of 2 drops.
+    fn crowded(image_id: i64, keep_tp: bool) -> Vec<u8> {
+        let fp = |score: f64| {
+            format!(
+                r#"{{"image_id":{image_id},"category_id":1,"score":{score},"bbox":[80,80,5,5]}}"#
+            )
+        };
+        let mut dets = vec![fp(0.9), fp(0.8)];
+        if keep_tp {
+            dets.push(format!(
+                r#"{{"image_id":{image_id},"category_id":2,"score":0.1,"bbox":[50,50,10,10]}}"#
+            ));
+        }
+        format!("[{}]", dets.join(",")).into_bytes()
+    }
+
+    fn stream_stats(gt: CocoDataset, batches: &[Vec<u8>]) -> (Vec<u64>, usize) {
+        let params = OwnedEvaluateParams {
+            max_dets_per_image: 2,
+            ..default_params()
+        };
+        let mut ev = StreamingEvaluator::new(
+            gt,
+            BboxIou,
+            params,
+            ParityMode::Strict,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        for batch in batches {
+            ev.update(batch).unwrap();
+        }
+        let seen = ev.detections_seen();
+        let stats = ev
+            .finalize()
+            .unwrap()
+            .lines
+            .iter()
+            .map(|l| l.value.to_bits())
+            .collect();
+        (stats, seen)
+    }
+
+    #[test]
+    fn federated_updates_cap_each_image_like_the_batch_trim() {
+        // ADR-0065: every image arrives in one batch, so trimming per
+        // update is the whole-dataset AC2 trim.
+        let federated = || CocoDataset::from_lvis_json_bytes(FEDERATED_GT.as_bytes()).unwrap();
+        let (streamed, seen) = stream_stats(federated(), &[crowded(1, true), crowded(2, true)]);
+        let (pre_trimmed, _) = stream_stats(federated(), &[crowded(1, false), crowded(2, false)]);
+        assert_eq!(streamed, pre_trimmed);
+        assert_eq!(seen, 4);
+
+        // Flat ground truth is not capped: the true positives still score.
+        let flat = CocoDataset::from_json_bytes(FEDERATED_GT.as_bytes()).unwrap();
+        let (untrimmed, seen) = stream_stats(flat, &[crowded(1, true), crowded(2, true)]);
+        assert_eq!(seen, 6);
+        assert_ne!(untrimmed, streamed);
     }
 
     #[test]

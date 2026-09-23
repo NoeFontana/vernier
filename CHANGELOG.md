@@ -32,6 +32,12 @@ additive / perf / docs".
 
 ### Fixed
 
+- `BackgroundEvaluator` / `Evaluator.background` (and the core
+  `StreamingEvaluator`) now apply the ADR-0026 AC2 per-image detection
+  cap to a federated `CocoDataset`, per `submit()` (ADR-0065). This is
+  exact because an image's detections must arrive in one batch. A
+  streamed LVIS evaluation previously matched uncapped and could
+  disagree with the batch evaluator and lvis-api.
 - `Evaluator.evaluate(lvis_handle, dt)` — neither `tables=` nor
   `manifest=` — now applies the ADR-0026 AC2 per-image detection cap, as
   the grid path always has. It matched a federated handle untrimmed, so
