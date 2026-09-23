@@ -1,10 +1,19 @@
 # ADR-0063: An ingest route for training loops
 
-- **Status:** accepted
+- **Status:** accepted (erratum 2026-09-22)
 - **Date:** 2026-09-21
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
+
+## Erratum (2026-09-22)
+
+No decision here changes. Two passages describe other surfaces as they
+stood when this was written — §"Decision outcome" ("TIDE, LRP, the
+confusion matrix, the FP-IoU histogram and the `tables=` / `manifest=`
+paths each refuse a `CocoDataset` handle") and Option 2's second 👎.
+[ADR-0064](0064-dataset-handle-on-diagnostic-surfaces.md) lifts that
+limitation; those surfaces now take this route's pair unchanged.
 
 ## Context and problem statement
 

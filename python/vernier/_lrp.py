@@ -32,7 +32,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Any, Literal, NoReturn, TypeAlias, overload
 
 from vernier._core import (
-    CocoDataset,
     evaluate_bbox_partitioned_lrp,
     evaluate_boundary_partitioned_lrp,
     evaluate_keypoints_partitioned_lrp,
@@ -49,6 +48,8 @@ from vernier._types import ParityMode
 if TYPE_CHECKING:
     import polars as pl
 
+    from vernier._array_types import DetectionsInput
+    from vernier._core import CocoDataset
     from vernier._core import (
         _LrpReportDict as _FFILrpReportDict,  # pyright: ignore[reportPrivateUsage]
     )
@@ -238,7 +239,7 @@ class PartitionedLrpReport:
 @overload
 def optimal_lrp(
     gt: bytes | CocoDataset,
-    dt: bytes,
+    dt: DetectionsInput,
     *,
     iou: object = None,
     tp_threshold: float | None = None,
@@ -246,6 +247,7 @@ def optimal_lrp(
     max_dets_per_image: int = 100,
     use_cats: bool = True,
     parity_mode: ParityMode = "corrected",
+    cast_inputs: bool = False,
     manifest: None = None,
     cross_axes: None = None,
 ) -> LrpReport: ...
@@ -254,7 +256,7 @@ def optimal_lrp(
 @overload
 def optimal_lrp(
     gt: bytes | CocoDataset,
-    dt: bytes,
+    dt: DetectionsInput,
     *,
     iou: object = None,
     tp_threshold: float | None = None,
@@ -262,6 +264,7 @@ def optimal_lrp(
     max_dets_per_image: int = 100,
     use_cats: bool = True,
     parity_mode: ParityMode = "corrected",
+    cast_inputs: bool = False,
     manifest: LrpManifest,
     cross_axes: Sequence[Sequence[str]] | None = None,
 ) -> PartitionedLrpReport: ...
@@ -269,7 +272,7 @@ def optimal_lrp(
 
 def optimal_lrp(
     gt: bytes | CocoDataset,
-    dt: bytes,
+    dt: DetectionsInput,
     *,
     iou: object = None,
     tp_threshold: float | None = None,
@@ -277,6 +280,7 @@ def optimal_lrp(
     max_dets_per_image: int = 100,
     use_cats: bool = True,
     parity_mode: ParityMode = "corrected",
+    cast_inputs: bool = False,
     manifest: LrpManifest | None = None,
     cross_axes: Sequence[Sequence[str]] | None = None,
 ) -> LrpReport | PartitionedLrpReport:
@@ -290,10 +294,23 @@ def optimal_lrp(
     model to get the reported behaviour.
 
     ``gt`` is the GT JSON bytes (the same shape pycocotools' ``COCO``
-    constructor consumes). ``dt`` is the detections JSON bytes (the
-    shape ``COCO.loadRes`` consumes). The :class:`vernier.CocoDataset`
-    parsed-once handle is accepted in the type signature for
-    forward-compat but raises :class:`NotImplementedError` today.
+    constructor consumes) or a :class:`vernier.CocoDataset` handle
+    (ADR-0020, ADR-0060). ``dt`` is anything
+    :meth:`vernier.instance.Evaluator.evaluate` accepts: the detections
+    JSON bytes (the shape ``COCO.loadRes`` consumes), columnar
+    :class:`vernier.instance.Detections`, result dicts, or an ``(N, 7)`` matrix
+    (ADR-0030, ADR-0057). The pair
+    :func:`vernier.adapters.coco_inputs` returns is therefore read here
+    unchanged (ADR-0064).
+
+    A handle saves the GT JSON parse, and the mask kernels reuse and
+    fill its per-annotation caches. A handle built by
+    :meth:`vernier.CocoDataset.from_lvis_json` is refused: LRP has no
+    LVIS federated disposition.
+
+    ``cast_inputs`` converts array dtypes rather than refusing them,
+    exactly as on :class:`vernier.instance.Evaluator`; it defaults to
+    ``False`` and has no effect on the bytes route.
 
     ``iou`` selects the kernel: ``Bbox()`` (default), ``Segm()``,
     ``Boundary(dilation_ratio=...)``, or ``Keypoints(sigmas=...)``.
@@ -341,15 +358,6 @@ def optimal_lrp(
     resolved_tp = tp_threshold if tp_threshold is not None else _DEFAULT_TP_THRESHOLD[kernel]
     resolved_grid: list[float] = list(tau_grid) if tau_grid is not None else default_tau_grid()
 
-    if isinstance(gt, CocoDataset):
-        # Mirror error_decomposition's NotImplementedError shape —
-        # the LRP FFI is bytes-only today and the CocoDataset
-        # pass-through is a 0.5.x follow-up.
-        raise NotImplementedError(
-            "vernier.instance.optimal_lrp does not yet accept a CocoDataset handle; "
-            "pass GT JSON bytes for now. CocoDataset support is a 0.5.x follow-up."
-        )
-
     if manifest is not None:
         return _dispatch_partitioned(
             iou_kind,
@@ -360,6 +368,7 @@ def optimal_lrp(
             resolved_grid,
             max_dets_per_image,
             use_cats,
+            cast_inputs,
             manifest,
             cross_axes,
         )
@@ -373,6 +382,7 @@ def optimal_lrp(
         resolved_grid,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
     )
     return LrpReport._from_dict(raw)  # pyright: ignore[reportPrivateUsage]
 
@@ -438,65 +448,50 @@ def _kernel_for(iou_kind: object) -> KernelName:
 
 def _dispatch(
     iou_kind: object,
-    gt: bytes,
-    dt: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: ParityMode,
     tp_threshold: float,
     tau_grid: list[float],
     max_dets_per_image: int,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> _FFILrpReportDict:
     """Call the right ``vernier._core.optimal_lrp_*`` entry."""
     from vernier.instance import Bbox, Boundary, Keypoints, Segm
 
+    # The leading arguments are identical across kernels; only the entry
+    # point and the trailing per-kernel knob differ. Splatting a
+    # fixed-length tuple keeps pyright's positional arity check without
+    # repeating seven names per arm.
+    common = (gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats)
     match iou_kind:
         case Bbox():
-            return optimal_lrp_bbox(
-                gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats
-            )
+            return optimal_lrp_bbox(*common, cast_inputs=cast_inputs)
         case Segm():
-            return optimal_lrp_segm(
-                gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats
-            )
+            return optimal_lrp_segm(*common, cast_inputs=cast_inputs)
         case Boundary(dilation_ratio=r):
-            return optimal_lrp_boundary(
-                gt,
-                dt,
-                parity_mode,
-                tp_threshold,
-                tau_grid,
-                max_dets_per_image,
-                use_cats,
-                r,
-            )
+            return optimal_lrp_boundary(*common, r, cast_inputs=cast_inputs)
         case Keypoints(sigmas=sigmas):
             # Keypoints carries `sigmas: Mapping[int, tuple[float, ...]]`
             # at the public surface. The FFI wants a plain dict of
             # lists; translate.
             sigma_map: dict[int, list[float]] = {int(k): list(v) for k, v in sigmas.items()}
-            return optimal_lrp_keypoints(
-                gt,
-                dt,
-                parity_mode,
-                tp_threshold,
-                tau_grid,
-                max_dets_per_image,
-                use_cats,
-                sigma_map,
-            )
+            return optimal_lrp_keypoints(*common, sigma_map, cast_inputs=cast_inputs)
         case _:
             _reject_unknown_iou(iou_kind)
 
 
 def _dispatch_partitioned(
     iou_kind: object,
-    gt: bytes,
-    dt: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: ParityMode,
     tp_threshold: float,
     tau_grid: list[float],
     max_dets_per_image: int,
     use_cats: bool,
+    cast_inputs: bool,
     manifest: LrpManifest,
     cross_axes: Sequence[Sequence[str]] | None,
 ) -> PartitionedLrpReport:
@@ -516,6 +511,7 @@ def _dispatch_partitioned(
                 tau_grid=tau_grid,
                 max_dets_per_image=max_dets_per_image,
                 use_cats=use_cats,
+                cast_inputs=cast_inputs,
                 manifest=manifest,
                 cross_axes=cross,
             )
@@ -528,6 +524,7 @@ def _dispatch_partitioned(
                 tau_grid=tau_grid,
                 max_dets_per_image=max_dets_per_image,
                 use_cats=use_cats,
+                cast_inputs=cast_inputs,
                 manifest=manifest,
                 cross_axes=cross,
             )
@@ -541,6 +538,7 @@ def _dispatch_partitioned(
                 max_dets_per_image=max_dets_per_image,
                 use_cats=use_cats,
                 dilation_ratio=r,
+                cast_inputs=cast_inputs,
                 manifest=manifest,
                 cross_axes=cross,
             )
@@ -555,6 +553,7 @@ def _dispatch_partitioned(
                 max_dets_per_image=max_dets_per_image,
                 use_cats=use_cats,
                 sigmas=sigma_map,
+                cast_inputs=cast_inputs,
                 manifest=manifest,
                 cross_axes=cross,
             )

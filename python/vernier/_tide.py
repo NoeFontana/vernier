@@ -23,7 +23,6 @@ from typing import TYPE_CHECKING, Any, Literal, NoReturn
 import numpy as np
 
 from vernier._core import (
-    CocoDataset,
     error_decomposition_bbox,
     error_decomposition_boundary,
     error_decomposition_segm,
@@ -35,6 +34,9 @@ from vernier._types import ParityMode
 
 if TYPE_CHECKING:
     import numpy as np
+
+    from vernier._array_types import DetectionsInput
+    from vernier._core import CocoDataset
 
     # `_TideReportDict` is a TypedDict declared in the `.pyi` stub for
     # the FFI's return shape; the runtime extension does not actually
@@ -168,7 +170,7 @@ class TideReport:
 
 def error_decomposition(
     gt: bytes | CocoDataset,
-    dt: bytes,
+    dt: DetectionsInput,
     *,
     iou: object = None,
     t_f: float | None = None,
@@ -176,6 +178,7 @@ def error_decomposition(
     max_dets_per_image: int = 100,
     use_cats: bool = True,
     parity_mode: ParityMode = "corrected",
+    cast_inputs: bool = False,
 ) -> TideReport:
     """TIDE error decomposition (Bolya et al. 2020).
 
@@ -188,12 +191,27 @@ def error_decomposition(
     call.
 
     ``gt`` is the GT JSON bytes (the same shape pycocotools'
-    ``COCO`` constructor consumes). ``dt`` is the detections JSON
-    bytes (the shape ``COCO.loadRes`` consumes). The
-    :class:`vernier.CocoDataset` parsed-once handle (ADR-0020) is accepted
-    in the type signature for forward-compat but raises
-    :class:`NotImplementedError` today — the TIDE FFI is not yet wired
-    through the CocoDataset cache. Tracked as a 0.5.x follow-up.
+    ``COCO`` constructor consumes) or a :class:`vernier.CocoDataset`
+    handle (ADR-0020, ADR-0060). ``dt`` is anything
+    :meth:`vernier.instance.Evaluator.evaluate` accepts: the detections
+    JSON bytes (the shape ``COCO.loadRes`` consumes), columnar
+    :class:`vernier.instance.Detections`, result dicts, or an ``(N, 7)`` matrix
+    (ADR-0030, ADR-0057). The pair
+    :func:`vernier.adapters.coco_inputs` returns is therefore read here
+    unchanged (ADR-0064).
+
+    A handle saves the GT JSON parse, and the mask kernels reuse and
+    fill its per-annotation caches, as
+    :meth:`vernier.instance.Evaluator.evaluate` does.
+
+    A handle built by :meth:`vernier.CocoDataset.from_lvis_json` is
+    refused — TIDE has no LVIS federated disposition, and applying half
+    the semantics silently is the failure ADR-0057 rules out.
+
+    ``cast_inputs`` converts array dtypes rather than refusing them,
+    exactly as on :class:`vernier.instance.Evaluator`; it defaults to
+    ``False`` (ADR-0004's f64 boundary) and has no effect on the bytes
+    route.
 
     ``iou`` selects the kernel: ``Bbox()`` (default), ``Segm()``, or
     ``Boundary(dilation_ratio=...)``. ``Keypoints(...)`` raises
@@ -259,17 +277,6 @@ def error_decomposition(
     if t_b is not None:
         resolved_t_b = t_b
 
-    if isinstance(gt, CocoDataset):
-        # ADR-0020 wired CocoDataset through Evaluator.evaluate but not yet
-        # through TIDE; the FFI surface is bytes-only today. Mirror the
-        # NotImplementedError shape Evaluator._evaluate_with_tables
-        # uses (__init__.py:296-300) so the boundary is consistent.
-        raise NotImplementedError(
-            "vernier.error_decomposition does not yet accept a CocoDataset handle; "
-            "pass GT JSON bytes for now. CocoDataset support is a 0.5.x follow-up "
-            "(the TIDE FFI is not yet wired through the parsed-once cache)."
-        )
-
     raw = _dispatch(
         iou_kind,
         gt,
@@ -279,6 +286,7 @@ def error_decomposition(
         resolved_t_b,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
     )
     # `_from_dict` is documented as an internal classmethod (the supported
     # construction path is this function); the leading underscore on the
@@ -336,49 +344,31 @@ def _kernel_for(iou_kind: object) -> KernelName:
 
 def _dispatch(
     iou_kind: object,
-    gt: bytes,
-    dt: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: ParityMode,
     t_f: float,
     t_b: float,
     max_dets_per_image: int,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> _FFITideReportDict:
     """Call the right ``vernier._core.error_decomposition_*`` entry."""
     from vernier.instance import Bbox, Boundary, Segm
 
+    # The leading arguments are identical across kernels; only the entry
+    # point and the trailing per-kernel knob differ. Splatting a
+    # fixed-length tuple keeps pyright's positional arity check (a short
+    # tuple is an "argument missing" error) without repeating seven
+    # names per arm.
+    common = (gt, dt, parity_mode, t_f, t_b, max_dets_per_image, use_cats)
     match iou_kind:
         case Bbox():
-            return error_decomposition_bbox(
-                gt,
-                dt,
-                parity_mode,
-                t_f,
-                t_b,
-                max_dets_per_image,
-                use_cats,
-            )
+            return error_decomposition_bbox(*common, cast_inputs=cast_inputs)
         case Segm():
-            return error_decomposition_segm(
-                gt,
-                dt,
-                parity_mode,
-                t_f,
-                t_b,
-                max_dets_per_image,
-                use_cats,
-            )
+            return error_decomposition_segm(*common, cast_inputs=cast_inputs)
         case Boundary(dilation_ratio=r):
-            return error_decomposition_boundary(
-                gt,
-                dt,
-                parity_mode,
-                t_f,
-                t_b,
-                max_dets_per_image,
-                use_cats,
-                r,
-            )
+            return error_decomposition_boundary(*common, r, cast_inputs=cast_inputs)
         case _:
             # _kernel_for rejected this already; keeping the arm for
             # exhaustiveness so adding a kernel later is a clean delta.
@@ -460,13 +450,14 @@ class FpIouHistogram:
 
 def fp_iou_histogram(
     gt: bytes | CocoDataset,
-    dt: bytes,
+    dt: DetectionsInput,
     *,
     iou: object = None,
     t_f: float | None = None,
     max_dets_per_image: int = 100,
     use_cats: bool = True,
     parity_mode: ParityMode = "corrected",
+    cast_inputs: bool = False,
 ) -> FpIouHistogram:
     """Extract per-FP `(iou_same, iou_cross)` for ADR-0022 ratification.
 
@@ -476,9 +467,11 @@ def fp_iou_histogram(
     Python-side to compute the bin-as-Bkg fraction at candidate `t_b`.
 
     Args:
-        gt: GT JSON bytes (CocoDataset handle deferred, same as
-            :func:`error_decomposition`).
-        dt: Detection JSON bytes.
+        gt: GT JSON bytes or a :class:`vernier.CocoDataset` handle,
+            same as :func:`error_decomposition`.
+        dt: Any detection form the evaluator accepts — results JSON
+            bytes, columnar :class:`vernier.instance.Detections`, result dicts,
+            or an ``(N, 7)`` matrix (ADR-0064).
         iou: Kernel selector — :class:`vernier.Bbox` (default),
             :class:`vernier.Segm`, or :class:`vernier.Boundary`.
             :class:`vernier.Keypoints` raises per ADR-0024.
@@ -489,6 +482,7 @@ def fp_iou_histogram(
             :func:`error_decomposition`.
         use_cats: Per-class evaluation; same default.
         parity_mode: Same as :func:`error_decomposition`.
+        cast_inputs: Same as :func:`error_decomposition`.
 
     Returns:
         :class:`FpIouHistogram` carrying parallel `iou_same` /
@@ -501,13 +495,6 @@ def fp_iou_histogram(
     if t_f is not None:
         resolved_t_f = t_f
 
-    if isinstance(gt, CocoDataset):
-        raise NotImplementedError(
-            "vernier.fp_iou_histogram does not yet accept a CocoDataset handle; "
-            "pass GT JSON bytes for now. Mirrors error_decomposition's "
-            "0.5.x follow-up."
-        )
-
     raw = _dispatch_histogram(
         iou_kind,
         gt,
@@ -516,30 +503,36 @@ def fp_iou_histogram(
         resolved_t_f,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
     )
     return FpIouHistogram._from_dict(raw)  # pyright: ignore[reportPrivateUsage]
 
 
 def _dispatch_histogram(
     iou_kind: object,
-    gt: bytes,
-    dt: bytes,
+    gt: bytes | CocoDataset,
+    dt: DetectionsInput,
     parity_mode: ParityMode,
     t_f: float,
     max_dets_per_image: int,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> _FFIFpIouHistogramDict:
     """Call the right ``vernier._core.fp_iou_histogram_*`` entry."""
     from vernier.instance import Bbox, Boundary, Segm
 
     match iou_kind:
         case Bbox():
-            return fp_iou_histogram_bbox(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
+            return fp_iou_histogram_bbox(
+                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, cast_inputs=cast_inputs
+            )
         case Segm():
-            return fp_iou_histogram_segm(gt, dt, parity_mode, t_f, max_dets_per_image, use_cats)
+            return fp_iou_histogram_segm(
+                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, cast_inputs=cast_inputs
+            )
         case Boundary(dilation_ratio=r):
             return fp_iou_histogram_boundary(
-                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, r
+                gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, r, cast_inputs=cast_inputs
             )
         case _:
             _reject_unknown_iou(iou_kind)

@@ -145,9 +145,38 @@ print(summary.stats[0])
 
 `coco_metrics` is just the convenience wrapper over this pair.
 
-TIDE, LRP, the confusion matrix and the `tables=` / `manifest=` paths do
-**not** accept these inputs yet — each asks for GT JSON bytes, a
-limitation that predates this route. For those, keep using a COCO file.
+The diagnostics take the same pair (ADR-0064), so going from "AP moved"
+to "here is which error moved it" costs no second conversion and no
+COCO file:
+
+```python
+from vernier.instance import (
+    confusion_matrix,
+    error_decomposition,
+    fp_iou_histogram,
+    optimal_lrp,
+)
+
+report = error_decomposition(ground_truth, dt)       # TIDE's six bins
+print(report.delta)
+print(optimal_lrp(ground_truth, dt).per_class[0].tau)  # deployable cutoff
+confusion_matrix(ground_truth, dt)                   # which classes swap
+fp_iou_histogram(ground_truth, dt)                   # per-FP IoU pairs
+```
+
+`Evaluator.evaluate(..., tables=...)` and `(..., manifest=...)` read it
+too, so per-class tables and per-slice breakdowns run off the same
+conversion.
+
+`ground_truth` is a parsed handle, so its JSON parse — and, for the mask
+kernels, its per-annotation derivations — happen once across every
+surface you call. `dt` is re-read per call: no JSON and no Python object
+per detection, but not free on a masked run, so call the diagnostics you
+need rather than all four.
+
+The four diagnostics refuse an LVIS federated handle (one built by
+`CocoDataset.from_lvis_json`): they have no LVIS disposition. This route
+builds COCO-flat ground truth, so it never produces one.
 
 ## What it decides for you
 

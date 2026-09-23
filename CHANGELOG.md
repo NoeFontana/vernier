@@ -14,6 +14,47 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Added
+
+- **The parsed pair on every instance surface** (ADR-0064). TIDE
+  (`error_decomposition`), LRP (`optimal_lrp`, including its
+  `manifest=` form), `confusion_matrix`, `fp_iou_histogram` and
+  `Evaluator.evaluate`'s `tables=` / `manifest=` paths now take a
+  `CocoDataset` handle for `gt` and the whole `DetectionsInput` union
+  for `dt`, like `Evaluator.evaluate` and `evaluate_*_grid`. So the
+  `(CocoDataset, DetectionsInput)` pair from `coco_inputs` reaches every
+  instance surface without a COCO file. The four standalone diagnostics
+  gain `cast_inputs` (default `False`, as on `Evaluator`).
+
+  Those four refuse LVIS federated ground truth (a
+  `CocoDataset.from_lvis_json` handle) with `NotImplementedError`: they
+  have no federated disposition.
+
+### Fixed
+
+- `Evaluator.evaluate(lvis_handle, dt)` — neither `tables=` nor
+  `manifest=` — now applies the ADR-0026 AC2 per-image detection cap, as
+  the grid path always has. It matched a federated handle untrimmed, so
+  an image carrying more detections than the largest `max_dets` scored
+  differently from `tables=`, `manifest=`, `evaluate_*_grid` and
+  lvis-api.
+
+### Performance
+
+- The segm / boundary diagnostics reuse a `CocoDataset` handle's GT
+  caches, shared with `Evaluator.evaluate`, and TIDE shares one cache
+  across its eight passes on either `gt` spelling. On 500 val2017
+  images, boundary TIDE runs ~27% faster, and boundary LRP / confusion
+  matrix / FP-IoU histogram ~33% faster on a warm handle. Results are
+  bit-identical. The `vernier-core` per-kernel diagnostic wrappers
+  switch to the scratch-reusing mask kernels too.
+- The `gt` bytes path borrows the payload across the GIL release rather
+  than copying it (~20 MB per call on val2017), on `evaluate_*_summary`
+  as well as the diagnostics. `BackgroundEvaluator` now parses bytes GT
+  off the GIL.
+- `manifest=` (partitioned AP and LRP) validates the manifest before
+  running the evaluation or reading the detections.
+
 ## [0.5.3] - 2026-09-23
 
 ### Fixed

@@ -17,9 +17,9 @@
 
 use crate::dataset::{CocoDataset, CocoDetections};
 use crate::error::EvalError;
-use crate::evaluate::EvalKernel;
+use crate::evaluate::{boundary_kernel, segm_kernel, EvalKernel};
 use crate::parity::ParityMode;
-use crate::similarity::{BboxIou, BoundaryIou, SegmIou};
+use crate::similarity::BboxIou;
 
 use super::assignment::{assign_bins, DtBin};
 use super::cross_class::compute_cross_class_ious;
@@ -135,7 +135,8 @@ pub fn compute_fp_iou_histogram_segm(
     params: TideParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<FpIouHistogram, EvalError> {
-    compute_fp_iou_histogram_with(gt, dt, &SegmIou, KernelMarker::Segm, params, parity_mode)
+    let kernel = segm_kernel(None);
+    compute_fp_iou_histogram_with(gt, dt, &kernel, KernelMarker::Segm, params, parity_mode)
 }
 
 /// Boundary-kernel FP-IoU histogram. `dilation_ratio` configures the
@@ -152,6 +153,6 @@ pub fn compute_fp_iou_histogram_boundary(
     parity_mode: ParityMode,
     dilation_ratio: f64,
 ) -> Result<FpIouHistogram, EvalError> {
-    let kernel = BoundaryIou { dilation_ratio };
+    let kernel = boundary_kernel(dilation_ratio, None);
     compute_fp_iou_histogram_with(gt, dt, &kernel, KernelMarker::Boundary, params, parity_mode)
 }

@@ -602,11 +602,6 @@ class Evaluator:
                     "the ADR-0046 partitioned path. Run un-partitioned with "
                     "calibration=True to fold the full-dataset cells."
                 )
-            if isinstance(gt, CocoDataset):
-                raise NotImplementedError(
-                    "manifest= currently requires GT JSON bytes; CocoDataset handles "
-                    "on the partitioned path are a follow-up."
-                )
             return self._evaluate_partitioned(
                 gt, dt, max_dets_list, manifest, cross_axes, num_threads=num_threads
             )
@@ -672,7 +667,7 @@ class Evaluator:
 
     def _evaluate_partitioned(
         self,
-        gt: bytes,
+        gt: bytes | CocoDataset,
         dt: DetectionsInput,
         max_dets_list: list[int],
         manifest: Manifest,
@@ -792,14 +787,6 @@ class Evaluator:
         requested: set[TableName] = (
             normalize_tables_arg(tables, SUPPORTED_TABLES) if tables is not None else set()
         )
-
-        # The tables= path needs JSON bytes today; pre-parsed CocoDataset
-        # handles aren't threaded through yet.
-        if isinstance(gt, CocoDataset):
-            raise NotImplementedError(
-                "tables= path requires GT JSON bytes; CocoDataset handles are not "
-                "yet supported on this path"
-            )
 
         # per_detection (best_iou) and per_pair require the spine to
         # retain its IoU matrices.

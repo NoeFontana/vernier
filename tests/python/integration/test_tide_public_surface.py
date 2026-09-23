@@ -5,8 +5,9 @@ The Rust ↔ numpy-oracle parity contract is exercised in
 This file's job is narrower: prove the Python wrapper in
 :mod:`vernier._tide` carries the FFI's numbers through verbatim, dispatches
 to the right kernel, resolves per-kernel ADR-0022 default thresholds, and
-rejects the deferred surfaces (Keypoints per ADR-0024 and ``CocoDataset``
-handles per the 0.5.x follow-up note in the docstring).
+rejects the one deferred kernel (Keypoints, per ADR-0024). Since ADR-0064
+a ``CocoDataset`` handle is accepted rather than refused, so the test
+that pinned that refusal now pins the equality instead.
 """
 
 from __future__ import annotations
@@ -205,18 +206,21 @@ def test_keypoints_iou_raises_not_implemented_per_adr_0024() -> None:
         error_decomposition(gt_bytes, dt_bytes, iou=Keypoints())
 
 
-def test_dataset_handle_raises_not_implemented_forward_compat() -> None:
-    """Passing a :class:`CocoDataset` handle raises with a clear follow-up note.
+def test_dataset_handle_decomposes_to_the_same_report() -> None:
+    """ADR-0064 wired the parsed-once handle (ADR-0020) through TIDE.
 
-    The type signature accepts ``CocoDataset`` for forward-compat (mirrors
-    :meth:`vernier.instance.Evaluator.evaluate`'s overload), but the TIDE FFI is
-    not yet wired through the parsed-once cache (ADR-0020). 0.5.x
-    follow-up.
+    The handle is a spelling of the ground truth, not a variant of it,
+    so the report must be identical to the one the bytes it was parsed
+    from produce. The wider matrix — every surface, and the array
+    detection routes — is in
+    ``tests/python/test_diagnostic_surfaces_take_the_pair.py``.
     """
-    gt_bytes, dt_bytes = _load("all_perfect")
+    gt_bytes, dt_bytes = _load("all_cls")
     handle = CocoDataset.from_json(gt_bytes)
-    with pytest.raises(NotImplementedError, match="CocoDataset"):
-        error_decomposition(handle, dt_bytes, iou=Bbox())
+
+    assert error_decomposition(handle, dt_bytes, iou=Bbox()) == error_decomposition(
+        gt_bytes, dt_bytes, iou=Bbox()
+    )
 
 
 def test_unknown_iou_kind_raises_type_error() -> None:

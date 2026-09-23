@@ -40,7 +40,7 @@ def arrow_to_dataframe(batch: object | None, name: str) -> pl.DataFrame:
     # under pyright strict mode, surfacing reportUnknownMemberType. The call
     # itself is sound (batch is an Arrow PyCapsule from the FFI layer); the
     # ignore is scoped to this single call site.
-    df = pl.from_arrow(batch)  # pyright: ignore[reportUnknownMemberType]
+    df = pl.from_arrow(batch)
     if isinstance(df, pl.Series):
         df = df.to_frame()
     return df

@@ -75,9 +75,11 @@ use std::collections::HashMap;
 use crate::accumulate::{accumulate, sort_max_dets, AccumulateParams};
 use crate::dataset::{CocoDataset, CocoDetections};
 use crate::error::EvalError;
-use crate::evaluate::{evaluate_with_retention, EvalKernel, EvaluateParams};
+use crate::evaluate::{
+    boundary_kernel, evaluate_with_retention, segm_kernel, EvalKernel, EvaluateParams,
+};
 use crate::parity::ParityMode;
-use crate::similarity::{BboxIou, BoundaryIou, SegmIou};
+use crate::similarity::{BboxIou, BoundaryGtCache, SegmGtCache};
 
 /// End-to-end TIDE error decomposition over an arbitrary
 /// [`EvalKernel`].
@@ -219,9 +221,10 @@ pub fn error_decomposition_bbox(
 
 /// End-to-end segm TIDE error decomposition.
 ///
-/// Thin wrapper over [`error_decomposition_with`] that pins the
-/// [`SegmIou`] kernel and the canonical `"segm"` kernel-name string.
-/// See the generic entry point's doc for the full algorithm.
+/// Thin wrapper over [`error_decomposition_with`] that pins the segm
+/// kernel and the canonical `"segm"` kernel-name string. One call-local
+/// GT cache serves all eight passes: the rewrites keep GT ids and
+/// geometry. See the generic entry point's doc for the full algorithm.
 ///
 /// # Errors
 ///
@@ -233,29 +236,24 @@ pub fn error_decomposition_segm(
     params: TideParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<TideReport, EvalError> {
-    error_decomposition_with(gt, dt, &SegmIou, KernelMarker::Segm, params, parity_mode)
+    let cache = SegmGtCache::new();
+    let kernel = segm_kernel(Some(&cache));
+    error_decomposition_with(gt, dt, &kernel, KernelMarker::Segm, params, parity_mode)
 }
 
 /// End-to-end boundary-segm TIDE error decomposition.
 ///
 /// Thin wrapper over [`error_decomposition_with`] that pins the
-/// [`BoundaryIou`] kernel (configured with the caller-supplied
+/// boundary kernel (configured with the caller-supplied
 /// `dilation_ratio`) and the canonical `"boundary"` kernel-name
 /// string. See the generic entry point's doc for the full algorithm;
 /// ADR-0010 for the boundary kernel's geometry; ADR-0022 for the
 /// per-kernel `(t_f, t_b)` defaults (the boundary row carries the
 /// tentative `t_b = 0.05` default at `dilation_ratio = 0.02`).
 ///
-/// `dilation_ratio` is taken as a direct argument rather than a knob
-/// on [`TideParams`] so the kernel-name → kernel-config coupling lives
-/// in this wrapper instead of leaking into the kernel-generic
-/// `TideParams`. The cached-eval path
-/// ([`crate::evaluate::evaluate_boundary_cached`]) is intentionally not used
-/// here: TIDE re-evaluates the same dataset eight times under one
-/// process; the un-cached kernel re-derives bands per call but avoids
-/// threading a [`crate::similarity::BoundaryGtCache`] through the
-/// per-bin rewrite passes. A cached variant is a Week-5 perf
-/// follow-up.
+/// `dilation_ratio` is a direct argument rather than a [`TideParams`]
+/// knob so the kernel config stays out of the kernel-generic params.
+/// As for segm, one call-local GT band cache serves all eight passes.
 ///
 /// # Errors
 ///
@@ -268,7 +266,9 @@ pub fn error_decomposition_boundary(
     parity_mode: ParityMode,
     dilation_ratio: f64,
 ) -> Result<TideReport, EvalError> {
-    let kernel = BoundaryIou { dilation_ratio };
+    let cache = BoundaryGtCache::new();
+    cache.align_ratio(dilation_ratio);
+    let kernel = boundary_kernel(dilation_ratio, Some(&cache));
     error_decomposition_with(gt, dt, &kernel, KernelMarker::Boundary, params, parity_mode)
 }
 

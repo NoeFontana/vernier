@@ -32,19 +32,21 @@ use vernier_core::partition::{
     evaluate_partitioned, evaluate_partitioned_lrp, image_id_to_idx, GridDims,
     PartitionedLrpReport, PartitionedSummary,
 };
-use vernier_core::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
-use vernier_core::{CocoDataset, CocoDetections, EvalError};
+use vernier_core::similarity::{BboxIou, OksSimilarity};
+use vernier_core::{CocoDetections, EvalError};
 
+use crate::array_ingest::ArrayIouType;
 use crate::arrow_helpers::{wrap_batch, ArrowRecordBatchPy};
 use crate::breakdown;
+use crate::dataset::DatasetSnapshot;
 use crate::manifest_py::manifest_to_canonical_json;
 use crate::tables::{
     slices_instance_ap_to_arrow, slices_instance_lrp_to_arrow, slices_record_batch_panoptic,
     slices_record_batch_semantic, PanopticSliceRow, SemanticSliceRow,
 };
 use crate::{
-    boundary_iou_type, evaluate_grid_impl, parse_dt, parse_gt, parse_parity_mode, parse_sigmas,
-    validate_dilation_ratio, EvalIouType, PySummary,
+    boundary_iou_type, evaluate_grid_any_gt, parse_parity_mode, parse_sigmas,
+    validate_dilation_ratio, DiagnosticInputs, EvalIouType, PySummary,
 };
 
 /// Result of an instance-AP partitioned evaluate. The `overall`
@@ -133,13 +135,13 @@ pub(crate) fn warn_about_manifest(
     Ok(())
 }
 
-/// Shared per-paradigm orchestration: run the grid pass, resolve the
-/// manifest, dispatch into `evaluate_partitioned`.
+/// Shared per-paradigm orchestration: canonicalize the manifest, run the
+/// grid pass, resolve the manifest, dispatch into `evaluate_partitioned`.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_instance_partitioned_impl(
     py: Python<'_>,
     iou_type: EvalIouType,
-    gt: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
     dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -153,7 +155,9 @@ fn evaluate_instance_partitioned_impl(
     key_kind: &str,
     num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
-    let grid = evaluate_grid_impl(
+    // A malformed manifest fails before the evaluation it would discard.
+    let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
+    let grid = evaluate_grid_any_gt(
         py,
         iou_type,
         gt,
@@ -175,8 +179,6 @@ fn evaluate_instance_partitioned_impl(
     // (id-ascending sort).
     let snapshot = grid.dataset_snapshot();
     let image_id_to_idx = image_id_to_idx(&*snapshot.gt);
-
-    let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
 
     let cross = parse_cross_axes(cross_axes);
     let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &image_id_to_idx, &cross)
@@ -238,7 +240,7 @@ fn evaluate_instance_partitioned_impl(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_bbox_partitioned<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -293,7 +295,7 @@ pub(crate) fn evaluate_bbox_partitioned<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_segm_partitioned<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -349,7 +351,7 @@ pub(crate) fn evaluate_segm_partitioned<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_boundary_partitioned<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -408,7 +410,7 @@ pub(crate) fn evaluate_boundary_partitioned<'py>(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_keypoints_partitioned<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
     dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     max_dets_per_image: usize,
@@ -511,7 +513,7 @@ impl PyPartitionedLrpReport {
 /// place.
 type LrpKernelDispatch = Box<
     dyn FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             LrpParams<'_>,
             vernier_core::ParityMode,
@@ -522,8 +524,9 @@ type LrpKernelDispatch = Box<
 
 /// Shared per-kernel orchestration for partitioned LRP.
 ///
-/// 1. Parse `gt` and `dt` off the GIL via `py.detach`.
-/// 2. Build `image_id_to_idx` from the parsed GT, resolve the
+/// 1. Canonicalize the manifest, then resolve `gt` and `dt` (ADR-0064),
+///    converting off the GIL.
+/// 2. Build `image_id_to_idx` from the resolved GT, resolve the
 ///    manifest into a partition spec, emit warnings.
 /// 3. Run [`evaluate_partitioned_lrp`] (1× matching pass; N+1 cheap
 ///    decompose passes) off the GIL.
@@ -531,40 +534,31 @@ type LrpKernelDispatch = Box<
 #[allow(clippy::too_many_arguments)]
 fn evaluate_instance_partitioned_lrp_impl(
     py: Python<'_>,
-    gt: &Bound<'_, PyBytes>,
-    dt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
+    dt: &Bound<'_, PyAny>,
+    kernel: ArrayIouType,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
     manifest: &Bound<'_, PyAny>,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
     dispatch: LrpKernelDispatch,
 ) -> PyResult<PyPartitionedLrpReport> {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt_vec = gt.as_bytes().to_vec();
-    let dt_vec = dt_bytes.as_bytes().to_vec();
+    // Cheap validation first: a bad manifest fails before the `dt` ingest.
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "optimal_lrp")?;
     let cross = cross_axes.unwrap_or_default();
 
-    type ParseResult = (CocoDataset, CocoDetections);
-    let (gt, dt) = py
-        .detach(move || -> Result<ParseResult, EvalError> {
-            let gt = parse_gt(&gt_vec).map_err(|e| EvalError::InvalidConfig {
-                detail: format!("{e}"),
-            })?;
-            let dt = parse_dt(&dt_vec).map_err(|e| EvalError::InvalidConfig {
-                detail: format!("{e}"),
-            })?;
-            Ok((gt, dt))
-        })
-        .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+    let (gt, dt) = py.detach(move || inputs.realize())?;
 
     // Resolve manifest under the GIL so warnings surface to Python's
     // warnings module before the heavy work runs off-GIL.
-    let id_map = image_id_to_idx(&gt);
+    let id_map = image_id_to_idx(&*gt.gt);
     let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &id_map, &cross)
         .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
     warn_about_manifest(py, &warnings)?;
@@ -600,7 +594,7 @@ fn evaluate_instance_partitioned_lrp_impl(
 #[pyfunction]
 #[pyo3(signature = (
     gt,
-    dt_bytes,
+    dt,
     *,
     parity_mode,
     tp_threshold,
@@ -608,38 +602,42 @@ fn evaluate_instance_partitioned_lrp_impl(
     max_dets_per_image,
     use_cats,
     manifest,
+    cast_inputs = false,
     cross_axes = None,
     key_kind = "image_id",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_bbox_partitioned_lrp(
     py: Python<'_>,
-    gt: &Bound<'_, PyBytes>,
-    dt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
+    dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
     manifest: &Bound<'_, PyAny>,
+    cast_inputs: bool,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
 ) -> PyResult<PyPartitionedLrpReport> {
     evaluate_instance_partitioned_lrp_impl(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Bbox,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         manifest,
         cross_axes,
         key_kind,
         Box::new(|gt, dt, params, parity, spec| {
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
                 &BboxIou,
                 LrpKernelMarker::Bbox,
@@ -656,7 +654,7 @@ pub(crate) fn evaluate_bbox_partitioned_lrp(
 #[pyfunction]
 #[pyo3(signature = (
     gt,
-    dt_bytes,
+    dt,
     *,
     parity_mode,
     tp_threshold,
@@ -664,40 +662,44 @@ pub(crate) fn evaluate_bbox_partitioned_lrp(
     max_dets_per_image,
     use_cats,
     manifest,
+    cast_inputs = false,
     cross_axes = None,
     key_kind = "image_id",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_segm_partitioned_lrp(
     py: Python<'_>,
-    gt: &Bound<'_, PyBytes>,
-    dt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
+    dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
     manifest: &Bound<'_, PyAny>,
+    cast_inputs: bool,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
 ) -> PyResult<PyPartitionedLrpReport> {
     evaluate_instance_partitioned_lrp_impl(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Segm,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         manifest,
         cross_axes,
         key_kind,
         Box::new(|gt, dt, params, parity, spec| {
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
-                &SegmIou,
+                &gt.segm_kernel(),
                 LrpKernelMarker::Segm,
                 params,
                 parity,
@@ -711,7 +713,7 @@ pub(crate) fn evaluate_segm_partitioned_lrp(
 #[pyfunction]
 #[pyo3(signature = (
     gt,
-    dt_bytes,
+    dt,
     *,
     parity_mode,
     tp_threshold,
@@ -720,14 +722,15 @@ pub(crate) fn evaluate_segm_partitioned_lrp(
     use_cats,
     dilation_ratio,
     manifest,
+    cast_inputs = false,
     cross_axes = None,
     key_kind = "image_id",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_boundary_partitioned_lrp(
     py: Python<'_>,
-    gt: &Bound<'_, PyBytes>,
-    dt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
+    dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
@@ -735,6 +738,7 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
     use_cats: bool,
     dilation_ratio: f64,
     manifest: &Bound<'_, PyAny>,
+    cast_inputs: bool,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
 ) -> PyResult<PyPartitionedLrpReport> {
@@ -742,21 +746,22 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
     evaluate_instance_partitioned_lrp_impl(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Boundary,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         manifest,
         cross_axes,
         key_kind,
         Box::new(move |gt, dt, params, parity, spec| {
-            let kernel = BoundaryIou { dilation_ratio };
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
-                &kernel,
+                &gt.boundary_kernel(dilation_ratio),
                 LrpKernelMarker::Boundary,
                 params,
                 parity,
@@ -770,7 +775,7 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
 #[pyfunction]
 #[pyo3(signature = (
     gt,
-    dt_bytes,
+    dt,
     *,
     parity_mode,
     tp_threshold,
@@ -779,14 +784,15 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
     use_cats,
     sigmas,
     manifest,
+    cast_inputs = false,
     cross_axes = None,
     key_kind = "image_id",
 ))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn evaluate_keypoints_partitioned_lrp(
     py: Python<'_>,
-    gt: &Bound<'_, PyBytes>,
-    dt_bytes: &Bound<'_, PyBytes>,
+    gt: &Bound<'_, PyAny>,
+    dt: &Bound<'_, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
@@ -794,6 +800,7 @@ pub(crate) fn evaluate_keypoints_partitioned_lrp(
     use_cats: bool,
     sigmas: &Bound<'_, PyDict>,
     manifest: &Bound<'_, PyAny>,
+    cast_inputs: bool,
     cross_axes: Option<Vec<Vec<String>>>,
     key_kind: &str,
 ) -> PyResult<PyPartitionedLrpReport> {
@@ -801,19 +808,21 @@ pub(crate) fn evaluate_keypoints_partitioned_lrp(
     evaluate_instance_partitioned_lrp_impl(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Keypoints,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         manifest,
         cross_axes,
         key_kind,
         Box::new(move |gt, dt, params, parity, spec| {
             let kernel = OksSimilarity::new(sigmas_map);
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
                 &kernel,
                 LrpKernelMarker::Keypoints,

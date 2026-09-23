@@ -14,15 +14,68 @@
 
 use std::sync::Arc;
 
-use pyo3::exceptions::PyValueError;
+use pyo3::exceptions::{PyNotImplementedError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::pybacked::PyBackedBytes;
 use pyo3::types::{PyBytes, PyDict, PyFrozenSet, PyTuple};
 
 use vernier_core::dataset::{CategoryId, ImageId};
+use vernier_core::evaluate::{BoundaryIouCached, SegmIouCached};
 use vernier_core::similarity::{BoundaryGtCache, SegmGtCache};
 use vernier_core::{CocoDataset, EvalDataset, EvalError};
 
 use crate::parse_gt;
+
+/// A `gt=` argument — COCO JSON `bytes` or a [`PyDataset`] — classified
+/// under the GIL and realized off it (ADR-0064). The only classifier of
+/// that union; the ground-truth mirror of [`crate::UpdatePayload`].
+pub(crate) enum GtPayload {
+    /// Zero-copy borrow that stays valid across `py.detach`.
+    Bytes(PyBackedBytes),
+    /// A handle's dataset and its per-kernel caches.
+    Parsed(DatasetSnapshot),
+}
+
+impl GtPayload {
+    /// Classify the Python `gt=` argument. Must run under the GIL.
+    pub(crate) fn extract(gt: &Bound<'_, PyAny>) -> PyResult<Self> {
+        if let Ok(gt_json) = gt.cast::<PyBytes>() {
+            return Ok(Self::Bytes(PyBackedBytes::from(gt_json.clone())));
+        }
+        if let Ok(dataset) = gt.cast::<PyDataset>() {
+            return Ok(Self::Parsed(dataset.borrow().snapshot()));
+        }
+        Err(PyTypeError::new_err(format!(
+            "gt: expected COCO ground-truth JSON `bytes` or a `CocoDataset`, got {}",
+            crate::array_ingest::type_name_of(gt)
+        )))
+    }
+
+    /// Refuse LVIS federated ground truth on a surface with no federated
+    /// disposition (ADR-0064). The `Bytes` arm is never federated:
+    /// `CocoDataset::from_json` drops the metadata.
+    pub(crate) fn reject_federated(&self, surface: &str) -> PyResult<()> {
+        if matches!(self, Self::Parsed(snapshot) if snapshot.gt.is_federated()) {
+            return Err(PyNotImplementedError::new_err(format!(
+                "{surface} does not support LVIS federated ground truth (ADR-0026): it has \
+                 no disposition for the federated matching rules or the per-image \
+                 detection cap. Evaluate LVIS through Evaluator.evaluate or \
+                 evaluate_*_grid, or load the annotations with CocoDataset.from_json \
+                 for a flat-COCO {surface}."
+            )));
+        }
+        Ok(())
+    }
+
+    /// Realize the dataset and its caches. Call inside `py.detach`: the
+    /// `Bytes` arm parses here and starts with empty, per-call caches.
+    pub(crate) fn realize(self) -> PyResult<DatasetSnapshot> {
+        match self {
+            Self::Bytes(bytes) => Ok(DatasetSnapshot::from_parsed(parse_gt(&bytes)?)),
+            Self::Parsed(snapshot) => Ok(snapshot),
+        }
+    }
+}
 
 /// Parsed-once COCO ground-truth dataset.
 ///
@@ -84,6 +137,19 @@ impl DatasetSnapshot {
             boundary: &self.boundary_cache,
             segm: &self.segm_cache,
         }
+    }
+
+    /// Segm kernel reading and filling this snapshot's GT cache. Same
+    /// IoUs as [`vernier_core::similarity::SegmIou`], bit for bit.
+    pub(crate) fn segm_kernel(&self) -> SegmIouCached<'static> {
+        SegmIouCached::with_arc_cache(Arc::clone(&self.segm_cache))
+    }
+
+    /// Boundary kernel reading and filling this snapshot's GT cache
+    /// (re-keyed to `dilation_ratio`). Same IoUs as
+    /// [`vernier_core::similarity::BoundaryIou`], bit for bit.
+    pub(crate) fn boundary_kernel(&self, dilation_ratio: f64) -> BoundaryIouCached<'static> {
+        BoundaryIouCached::with_arc_cache(dilation_ratio, Arc::clone(&self.boundary_cache))
     }
 }
 

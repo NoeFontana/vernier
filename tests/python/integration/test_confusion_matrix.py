@@ -1,9 +1,13 @@
 """End-to-end smoke tests for :func:`vernier.instance.confusion_matrix` (ADR-0023).
 
 Hand-computed expected counts on the existing TIDE fixtures cover the
-three kernels (bbox / segm / boundary) plus the two unsupported kernel
-selectors (`Keypoints` and the `CocoDataset` handle, both rejected with
-:class:`NotImplementedError`).
+three kernels (bbox / segm / boundary) plus `Keypoints`, still rejected
+with :class:`NotImplementedError` per ADR-0024.
+
+Since ADR-0064 a `CocoDataset` handle is *accepted* here, so the
+rejection test became an equality test: the handle must produce the
+same counts the bytes it was parsed from produce. An LVIS federated
+handle is the one that still refuses.
 
 The Rust integration test (`crates/vernier-core/tests/confusion_matrix.rs`)
 covers the algorithmic correctness against the four canonical TIDE
@@ -111,11 +115,17 @@ def test_confusion_matrix_keypoints_rejected_per_adr_0024():
         vernier.instance.confusion_matrix(gt, dt, iou=Keypoints())
 
 
-def test_confusion_matrix_dataset_handle_rejected():
-    gt, dt = _load("all_perfect")
+def test_confusion_matrix_dataset_handle_matches_the_bytes_it_came_from():
+    """ADR-0064: the handle is a spelling of the ground truth, not a
+    variant of it. Same document in, same counts out."""
+    gt, dt = _load("all_cls")
     handle = CocoDataset.from_json(gt)
-    with pytest.raises(NotImplementedError, match="CocoDataset handles"):
-        vernier.instance.confusion_matrix(handle, dt, iou=Bbox())
+
+    from_bytes = _to_dict(vernier.instance.confusion_matrix(gt, dt, iou=Bbox()))
+    from_handle = _to_dict(vernier.instance.confusion_matrix(handle, dt, iou=Bbox()))
+
+    assert from_handle == from_bytes
+    assert from_bytes  # the fixture has off-diagonal cells to compare
 
 
 def test_confusion_matrix_use_cats_false_rejected():

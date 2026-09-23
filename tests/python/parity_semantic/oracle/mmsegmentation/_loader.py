@@ -35,7 +35,7 @@ def install_stubs() -> None:
 
     # The stub itself lives at oracle/_mmengine_stub.py; importing
     # works once ORACLE_PATH is on sys.path.
-    import _mmengine_stub  # pyright: ignore[reportMissingImports]
+    import _mmengine_stub
 
     _install_stub_module("mmengine", {})
     _install_stub_module("mmengine.dist", {"is_main_process": _mmengine_stub.is_main_process})

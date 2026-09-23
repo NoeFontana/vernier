@@ -511,15 +511,16 @@ def coco_inputs(
     surface that takes a parsed ground truth reads:
     :class:`vernier.instance.Evaluator`, the ``evaluate_*_grid`` and
     ``evaluate_*_summary`` entry points, custom grids (ADR-0040),
-    calibration through ``cells_from_grid``, and the partitioned/DDP
-    path. :func:`coco_metrics` is the convenience wrapper for the AP
-    case.
-
-    TIDE, LRP, the confusion matrix and the ``tables=`` path do **not**
-    take it yet — each refuses a :class:`CocoDataset` handle and asks
-    for GT JSON bytes, a limitation that predates this route and is
-    theirs to lift. When they lift it these inputs work unchanged, which
-    is the point of returning them rather than a metric.
+    calibration through ``cells_from_grid``, the partitioned/DDP path,
+    and — since ADR-0064 — every instance diagnostic:
+    :func:`vernier.instance.error_decomposition` (TIDE),
+    :func:`vernier.instance.optimal_lrp`,
+    :func:`vernier.instance.confusion_matrix`,
+    :func:`vernier.instance.fp_iou_histogram` and the ``tables=`` /
+    ``manifest=`` paths of
+    :meth:`vernier.instance.Evaluator.evaluate`. One conversion reaches
+    all of them; :func:`coco_metrics` is the convenience wrapper for the
+    AP case.
 
     Two of this function's decisions need both sides, which is why it is
     one call and not two: a class seen only in predictions must still
@@ -1155,8 +1156,10 @@ def coco_metrics(
     """Evaluate per-image records and return the COCO metrics (ADR-0063).
 
     The convenience wrapper over :func:`coco_inputs` for the AP case.
-    Anything else — a custom grid, calibration, the partitioned path —
-    takes :func:`coco_inputs`' pair directly.
+    Anything else — a custom grid, calibration, the partitioned path, or
+    any of the diagnostics (TIDE, LRP, the confusion matrix, the FP-IoU
+    histogram, result tables) — takes :func:`coco_inputs`' pair
+    directly; every one of them reads it (ADR-0064).
 
     Values are Python floats and numpy arrays. Converting them to a
     framework tensor is the caller's one line (``torch.as_tensor(...)``,

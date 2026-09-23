@@ -36,35 +36,39 @@ use numpy::ndarray::Array1;
 use numpy::IntoPyArray;
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict};
+use pyo3::types::PyDict;
 
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
-use vernier_core::tide::{self, FpIouHistogram, TideErrorBin, TideParams, TideReport};
-use vernier_core::{AreaRange, CocoDataset, CocoDetections, EvalError, ParityMode};
+use vernier_core::tide::{
+    self, FpIouHistogram, KernelMarker, TideErrorBin, TideParams, TideReport,
+};
+use vernier_core::{AreaRange, CocoDetections, EvalError, ParityMode};
 
-use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
+use crate::array_ingest::ArrayIouType;
+use crate::dataset::DatasetSnapshot;
+use crate::{parse_parity_mode, validate_dilation_ratio, DiagnosticInputs};
 
-/// Common per-call plumbing for the three TIDE kernel entry points:
-/// parse parity mode, copy JSON bytes off the GIL, run the kernel-
-/// specific orchestrator inside `py.detach`, and materialize the
-/// report dict. `kernel_call` carries the kernel-specific dispatch
-/// (and any extra knobs like `dilation_ratio`) closed over by the
-/// per-kernel wrappers below.
+/// Shared plumbing for the TIDE entry points: resolve `gt` / `dt`
+/// (ADR-0064), run `kernel_call` off the GIL, build the report dict.
+/// `kernel_call` picks the kernel; the mask kernels reuse the snapshot's
+/// GT caches across TIDE's eight evaluation passes.
 #[allow(clippy::too_many_arguments)]
 fn run_tide_pass<'py, F>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    kernel: ArrayIouType,
     parity_mode: &str,
     t_f: f64,
     t_b: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
     kernel_call: F,
 ) -> PyResult<Bound<'py, PyDict>>
 where
     F: FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             TideParams<'_>,
             ParityMode,
@@ -72,14 +76,10 @@ where
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
-    // Copy the JSON bytes off the GIL-tied PyBytes borrow so the parse
-    // and the eight-pass orchestration can run inside `py.detach`.
-    let gt_bytes = gt.as_bytes().to_vec();
-    let dt_bytes = dt_bytes.as_bytes().to_vec();
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "error_decomposition")?;
 
     let report = py.detach(move || -> PyResult<TideReport> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = parse_dt(&dt_bytes)?;
+        let (gt, dt) = inputs.realize()?;
         let area_ranges = AreaRange::coco_default();
         let params = TideParams {
             t_f,
@@ -98,9 +98,12 @@ where
 
 /// TIDE error decomposition for the bbox kernel (ADR-0021).
 ///
-/// `gt_bytes` and `dt_bytes` are the COCO ground-truth and detection JSON
-/// payloads as bytes (the same shapes pycocotools' `COCO(...)` /
-/// `loadRes(...)` consume). `parity_mode` is `"strict"` or `"corrected"`
+/// `gt` is the COCO ground-truth JSON payload as `bytes` or a parsed
+/// `CocoDataset` handle; `dt` is any of the detection forms the
+/// evaluator accepts — results JSON `bytes`, columnar `Detections`,
+/// result dicts, or an `(N, 7)` matrix (ADR-0030, ADR-0057, ADR-0064).
+/// `cast_inputs` converts array dtypes rather than refusing them, as on
+/// `Evaluator`. `parity_mode` is `"strict"` or `"corrected"`
 /// per ADR-0002. `t_f` and `t_b` are the foreground / background
 /// thresholds; ADR-0022 pins the bbox defaults at `0.5` / `0.1`.
 /// `max_dets_per_image` matches the oracle's per-image cap (the oracle
@@ -108,35 +111,38 @@ where
 ///
 /// Returns the report dict described in the module docstring.
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, t_f, t_b, max_dets_per_image, use_cats, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn error_decomposition_bbox<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     t_f: f64,
     t_b: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_tide_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Bbox,
         parity_mode,
         t_f,
         t_b,
         max_dets_per_image,
         use_cats,
-        tide::error_decomposition_bbox,
+        cast_inputs,
+        |gt, dt, params, parity| tide::error_decomposition_bbox(&gt.gt, dt, params, parity),
     )
 }
 
 /// TIDE error decomposition for the segm kernel (ADR-0021, Week 3).
 ///
 /// Same signature as [`error_decomposition_bbox`] above; the only
-/// per-call difference is the kernel — `gt_bytes` / `dt_bytes` must
+/// per-call difference is the kernel — `gt` / `dt` must
 /// carry COCO `segmentation` fields under `iouType="segm"` semantics
 /// (polygon or RLE; the J2-strict path synthesizes a rectangle polygon
 /// from a DT bbox when the DT lacks a `segmentation` field, matching
@@ -150,28 +156,34 @@ pub(crate) fn error_decomposition_bbox<'py>(
 /// Returns the report dict described in the module docstring (with
 /// `config.kernel = "segm"`).
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, t_f, t_b, max_dets_per_image, use_cats, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn error_decomposition_segm<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     t_f: f64,
     t_b: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_tide_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Segm,
         parity_mode,
         t_f,
         t_b,
         max_dets_per_image,
         use_cats,
-        tide::error_decomposition_segm,
+        cast_inputs,
+        |gt, dt, params, parity| {
+            let kernel = gt.segm_kernel();
+            tide::error_decomposition_with(&gt.gt, dt, &kernel, KernelMarker::Segm, params, parity)
+        },
     )
 }
 
@@ -185,58 +197,68 @@ pub(crate) fn error_decomposition_segm<'py>(
 /// `t_b = 0.05` (tentative; see the ADR's "Decision gate (boundary
 /// default)" section for the empirical-anchoring follow-up plan).
 ///
-/// Both `gt_bytes` and `dt_bytes` must carry `segmentation` fields —
+/// Both `gt` and `dt` must carry `segmentation` fields —
 /// the same constraint `evaluate_boundary_summary` enforces; polygon
 /// and RLE shapes both work.
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, t_b, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt, parity_mode, t_f, t_b, max_dets_per_image, use_cats, dilation_ratio, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn error_decomposition_boundary<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     t_f: f64,
     t_b: f64,
     max_dets_per_image: usize,
     use_cats: bool,
     dilation_ratio: f64,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     validate_dilation_ratio(dilation_ratio)?;
     run_tide_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Boundary,
         parity_mode,
         t_f,
         t_b,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         move |gt, dt, params, parity| {
-            tide::error_decomposition_boundary(gt, dt, params, parity, dilation_ratio)
+            let kernel = gt.boundary_kernel(dilation_ratio);
+            tide::error_decomposition_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                KernelMarker::Boundary,
+                params,
+                parity,
+            )
         },
     )
 }
 
-/// Common per-call plumbing for the FP-IoU histogram entry points
-/// (ADR-0022 `t_b` ratification machinery). Mirrors [`run_tide_pass`]'s
-/// shape — parse parity, copy bytes off the GIL, run the kernel-
-/// specific histogram extractor inside `py.detach`, materialize a
-/// dict.
+/// Shared plumbing for the FP-IoU histogram entry points (ADR-0022);
+/// same shape as [`run_tide_pass`].
 #[allow(clippy::too_many_arguments)]
 fn run_fp_histogram_pass<'py, F>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    kernel: ArrayIouType,
     parity_mode: &str,
     t_f: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
     kernel_call: F,
 ) -> PyResult<Bound<'py, PyDict>>
 where
     F: FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             TideParams<'_>,
             ParityMode,
@@ -244,12 +266,10 @@ where
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
-    let gt_bytes = gt.as_bytes().to_vec();
-    let dt_bytes = dt_bytes.as_bytes().to_vec();
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "fp_iou_histogram")?;
 
     let mut histogram = py.detach(move || -> PyResult<FpIouHistogram> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = parse_dt(&dt_bytes)?;
+        let (gt, dt) = inputs.realize()?;
         let area_ranges = AreaRange::coco_default();
         // `t_b` rides along on TideParams but the histogram extractor
         // ignores it (Bkg cutoff is decided Python-side from the
@@ -280,78 +300,107 @@ where
 /// values from this output (the `t_b` parameter on `error_decomposition_*`
 /// is not consumed here).
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, *, cast_inputs = false))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fp_iou_histogram_bbox<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     t_f: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_fp_histogram_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Bbox,
         parity_mode,
         t_f,
         max_dets_per_image,
         use_cats,
-        tide::compute_fp_iou_histogram_bbox,
+        cast_inputs,
+        |gt, dt, params, parity| tide::compute_fp_iou_histogram_bbox(&gt.gt, dt, params, parity),
     )
 }
 
 /// FP-IoU histogram for the segm kernel.
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, *, cast_inputs = false))]
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fp_iou_histogram_segm<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     t_f: f64,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_fp_histogram_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Segm,
         parity_mode,
         t_f,
         max_dets_per_image,
         use_cats,
-        tide::compute_fp_iou_histogram_segm,
+        cast_inputs,
+        |gt, dt, params, parity| {
+            let kernel = gt.segm_kernel();
+            tide::compute_fp_iou_histogram_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                KernelMarker::Segm,
+                params,
+                parity,
+            )
+        },
     )
 }
 
 /// FP-IoU histogram for the boundary-segm kernel. `dilation_ratio`
 /// configures the band thickness (ADR-0010 default `0.02` for COCO).
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, t_f, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt, parity_mode, t_f, max_dets_per_image, use_cats, dilation_ratio, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn fp_iou_histogram_boundary<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     t_f: f64,
     max_dets_per_image: usize,
     use_cats: bool,
     dilation_ratio: f64,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     validate_dilation_ratio(dilation_ratio)?;
     run_fp_histogram_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Boundary,
         parity_mode,
         t_f,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         move |gt, dt, params, parity| {
-            tide::compute_fp_iou_histogram_boundary(gt, dt, params, parity, dilation_ratio)
+            let kernel = gt.boundary_kernel(dilation_ratio);
+            tide::compute_fp_iou_histogram_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                KernelMarker::Boundary,
+                params,
+                parity,
+            )
         },
     )
 }

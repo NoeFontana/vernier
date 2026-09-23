@@ -41,35 +41,35 @@ use std::collections::HashMap;
 
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
-use pyo3::types::{PyBytes, PyDict, PyList};
+use pyo3::types::{PyDict, PyList};
 
 use vernier_core::evaluate::AreaRange;
 use vernier_core::lrp::{self, LrpKernelMarker, LrpParams, LrpPerClass, LrpReport};
-use vernier_core::{CocoDataset, CocoDetections, EvalError, ParityMode};
+use vernier_core::{CocoDetections, EvalError, ParityMode};
 
-use crate::{parse_dt, parse_gt, parse_parity_mode, validate_dilation_ratio};
+use crate::array_ingest::ArrayIouType;
+use crate::dataset::DatasetSnapshot;
+use crate::{parse_parity_mode, validate_dilation_ratio, DiagnosticInputs};
 
-/// Common per-call plumbing for the four LRP kernel entry points:
-/// parse parity mode, copy JSON bytes off the GIL, run the kernel-
-/// specific orchestrator inside `py.detach`, and materialise the
-/// report dict. `kernel_call` carries the kernel-specific dispatch
-/// (and any extra knobs like `dilation_ratio` / `sigmas`) closed
-/// over by the per-kernel wrappers below.
+/// Shared plumbing for the LRP entry points: resolve `gt` / `dt`
+/// (ADR-0064), run `kernel_call` off the GIL, build the report dict.
 #[allow(clippy::too_many_arguments)]
 fn run_lrp_pass<'py, F>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
+    kernel: ArrayIouType,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
     kernel_call: F,
 ) -> PyResult<Bound<'py, PyDict>>
 where
     F: FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             LrpParams<'_>,
             ParityMode,
@@ -77,14 +77,10 @@ where
         + Send,
 {
     let parity = parse_parity_mode(parity_mode)?;
-    // Copy the JSON bytes off the GIL-tied PyBytes borrow so the
-    // parse and the LRP orchestration can run inside `py.detach`.
-    let gt_bytes = gt.as_bytes().to_vec();
-    let dt_bytes = dt_bytes.as_bytes().to_vec();
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "optimal_lrp")?;
 
     let report = py.detach(move || -> PyResult<LrpReport> {
-        let gt = parse_gt(&gt_bytes)?;
-        let dt = parse_dt(&dt_bytes)?;
+        let (gt, dt) = inputs.realize()?;
         let area_ranges = AreaRange::coco_default();
         // The LRP pass only consumes the retained IoU matrices; the
         // matching engine's IoU-threshold ladder is irrelevant. Use
@@ -107,9 +103,12 @@ where
 
 /// LRP / oLRP for the bbox kernel (ADR-0043 + ADR-0044).
 ///
-/// `gt_bytes` / `dt_bytes` are the COCO ground-truth and detection
-/// JSON payloads as bytes (the same shape pycocotools' `COCO(...)` /
-/// `loadRes(...)` consume). `parity_mode` is `"strict"` or
+/// `gt` is the COCO ground-truth JSON payload as `bytes` or a parsed
+/// `CocoDataset` handle; `dt` is any of the detection forms the
+/// evaluator accepts — results JSON `bytes`, columnar `Detections`,
+/// result dicts, or an `(N, 7)` matrix (ADR-0030, ADR-0057, ADR-0064).
+/// `cast_inputs` converts array dtypes rather than refusing them, as on
+/// `Evaluator`. `parity_mode` is `"strict"` or
 /// `"corrected"` per ADR-0002. `tp_threshold` is the IoU floor above
 /// which a matched pair is a TP (default `0.5` per ADR-0044).
 /// `tau_grid` is the confidence-threshold grid; the canonical default
@@ -119,55 +118,64 @@ where
 ///
 /// Returns the report dict described in the module docstring.
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_bbox<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_lrp_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Bbox,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
-        lrp::optimal_lrp_bbox,
+        cast_inputs,
+        |gt, dt, params, parity| lrp::optimal_lrp_bbox(&gt.gt, dt, params, parity),
     )
 }
 
 /// LRP / oLRP for the segm (mask) kernel.
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats))]
+#[pyo3(signature = (gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_segm<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_lrp_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Segm,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
-        lrp::optimal_lrp_segm,
+        cast_inputs,
+        |gt, dt, params, parity| {
+            let kernel = gt.segm_kernel();
+            lrp::optimal_lrp_with(&gt.gt, dt, &kernel, LrpKernelMarker::Segm, params, parity)
+        },
     )
 }
 
@@ -176,31 +184,42 @@ pub(crate) fn optimal_lrp_segm<'py>(
 /// `dilation_ratio` configures the boundary band thickness (ADR-0010
 /// default `0.02` for COCO, `0.008` for LVIS).
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, dilation_ratio))]
+#[pyo3(signature = (gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, dilation_ratio, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_boundary<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
     dilation_ratio: f64,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     validate_dilation_ratio(dilation_ratio)?;
     run_lrp_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Boundary,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
+        cast_inputs,
         move |gt, dt, params, parity| {
-            lrp::optimal_lrp_boundary(gt, dt, params, parity, dilation_ratio)
+            let kernel = gt.boundary_kernel(dilation_ratio);
+            lrp::optimal_lrp_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                LrpKernelMarker::Boundary,
+                params,
+                parity,
+            )
         },
     )
 }
@@ -212,29 +231,34 @@ pub(crate) fn optimal_lrp_boundary<'py>(
 /// ...]}`); an empty mapping means "use the COCO-person 17-sigma
 /// table for every category".
 #[pyfunction]
-#[pyo3(signature = (gt, dt_bytes, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, sigmas))]
+#[pyo3(signature = (gt, dt, parity_mode, tp_threshold, tau_grid, max_dets_per_image, use_cats, sigmas, *, cast_inputs = false))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn optimal_lrp_keypoints<'py>(
     py: Python<'py>,
-    gt: &Bound<'py, PyBytes>,
-    dt_bytes: &Bound<'py, PyBytes>,
+    gt: &Bound<'py, PyAny>,
+    dt: &Bound<'py, PyAny>,
     parity_mode: &str,
     tp_threshold: f64,
     tau_grid: Vec<f64>,
     max_dets_per_image: usize,
     use_cats: bool,
     sigmas: HashMap<i64, Vec<f64>>,
+    cast_inputs: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     run_lrp_pass(
         py,
         gt,
-        dt_bytes,
+        dt,
+        ArrayIouType::Keypoints,
         parity_mode,
         tp_threshold,
         tau_grid,
         max_dets_per_image,
         use_cats,
-        move |gt, dt, params, parity| lrp::optimal_lrp_keypoints(gt, dt, params, parity, sigmas),
+        cast_inputs,
+        move |gt, dt, params, parity| {
+            lrp::optimal_lrp_keypoints(&gt.gt, dt, params, parity, sigmas)
+        },
     )
 }
 
