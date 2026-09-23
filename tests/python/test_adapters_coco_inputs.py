@@ -25,6 +25,7 @@ from typing import Any, cast
 
 import numpy as np
 import pytest
+from numpy.typing import NDArray
 
 from vernier import _core
 from vernier._array_types import CompressedRLE
@@ -872,3 +873,133 @@ def test_the_pair_drives_the_surfaces_the_docs_promise() -> None:
         error_decomposition(ground_truth, cast("Any", detections))
     with pytest.raises(NotImplementedError, match="CocoDataset"):
         Evaluator(iou=Bbox()).evaluate(ground_truth, detections, tables="all")
+
+
+class _Unrepresentable:
+    """An array-like whose dtype numpy has no equivalent for, as ``bfloat16`` has none."""
+
+    def __init__(self, values: list[list[float]] | list[float]) -> None:
+        self._values = values
+        self.doubled = False
+
+    def __array__(self, dtype: Any = None) -> NDArray[Any]:
+        raise TypeError("Got unsupported ScalarType BFloat16")
+
+    def double(self) -> NDArray[np.float64]:
+        self.doubled = True
+        return np.asarray(self._values, dtype=np.float64)
+
+
+def test_a_dtype_numpy_cannot_represent_is_widened_not_refused() -> None:
+    """A dtype numpy has no equivalent for must reach the gate, not die before it.
+
+    ``numpy.asarray`` refuses such a value outright, so without the retry the caller sees a dtype
+    complaint naming a library vernier never mentions, from a route whose whole purpose is to take a
+    trainer's tensors as they are.
+    """
+    boxes = _Unrepresentable([[0.0, 0.0, 4.0, 4.0]])
+    scores = _Unrepresentable([0.9])
+    detections: Any = {
+        "boxes": boxes,
+        "scores": scores,
+        "labels": np.array([1]),
+        "counts": np.array([1]),
+    }
+    targets: Any = {
+        "boxes": _Unrepresentable([[0.0, 0.0, 4.0, 4.0]]),
+        "labels": np.array([1]),
+        "iscrowd": np.array([0]),
+        "area": _Unrepresentable([16.0]),
+        "counts": np.array([1]),
+    }
+
+    ground_truth, _ = coco_inputs_from_columns(detections, targets, box_format="xywh")
+    assert ground_truth.num_annotations == 1
+    assert boxes.doubled
+    assert scores.doubled
+
+
+def test_widening_does_not_bypass_the_cast_inputs_gate() -> None:
+    """``cast_inputs=False`` must refuse the widened value exactly as it refuses ``float32``.
+
+    ``_cast_f64`` never sees this value -- ``numpy.asarray`` refused it first -- so the retry has to
+    apply the gate itself rather than leave it to the caller further down.
+    """
+    detections: Any = {
+        "boxes": _Unrepresentable([[0.0, 0.0, 4.0, 4.0]]),
+        "scores": _Unrepresentable([0.9]),
+        "labels": np.array([1]),
+        "counts": np.array([1]),
+    }
+    targets: Any = {
+        "boxes": np.zeros((1, 4), dtype=np.float64),
+        "labels": np.array([1]),
+        "iscrowd": np.array([0]),
+        "area": np.array([16.0]),
+        "counts": np.array([1]),
+    }
+
+    refusal = r"expected dtype float64, got a dtype numpy cannot represent"
+    with pytest.raises(TypeError, match=refusal):
+        coco_inputs_from_columns(detections, targets, box_format="xywh", cast_inputs=False)
+
+
+def test_a_value_that_cannot_widen_still_names_the_field() -> None:
+    """When the retry is unavailable or fails, the original refusal survives with the field name."""
+
+    class _Opaque:
+        def __array__(self, dtype: Any = None) -> NDArray[Any]:
+            raise TypeError("Got unsupported ScalarType Nonesuch")
+
+    detections: Any = {
+        "boxes": _Opaque(),
+        "scores": np.array([0.9]),
+        "labels": np.array([1]),
+        "counts": np.array([1]),
+    }
+    targets: Any = {
+        "boxes": np.zeros((1, 4), dtype=np.float64),
+        "labels": np.array([1]),
+        "iscrowd": np.array([0]),
+        "area": np.array([16.0]),
+        "counts": np.array([1]),
+    }
+
+    with pytest.raises(TypeError, match=r"detections\.boxes: cannot read as an array"):
+        coco_inputs_from_columns(detections, targets, box_format="xywh")
+
+
+def test_bfloat16_state_evaluates_and_matches_float32() -> None:
+    """The real dtype this exists for: an autocast trainer's ``bfloat16`` must evaluate.
+
+    Every value is exactly representable in ``bfloat16``, so the ``float32`` spelling of the same
+    state is a bit-exact oracle and the widening cannot be hiding a rounding change.
+    """
+    torch = pytest.importorskip("torch")
+    from vernier.instance import Bbox, Evaluator
+
+    boxes = [[0.0, 0.0, 16.0, 16.0], [32.0, 32.0, 64.0, 64.0]]
+
+    def evaluate(dtype: Any) -> Any:
+        detections: Any = {
+            "boxes": torch.tensor(boxes, dtype=dtype),
+            "scores": torch.tensor([0.75, 0.5], dtype=dtype),
+            "labels": torch.tensor([1, 2]),
+            "counts": torch.tensor([2]),
+        }
+        targets: Any = {
+            "boxes": torch.tensor(boxes, dtype=dtype),
+            "labels": torch.tensor([1, 2]),
+            "iscrowd": torch.tensor([0, 0]),
+            "area": torch.tensor([256.0, 1024.0], dtype=dtype),
+            "counts": torch.tensor([2]),
+        }
+        ground_truth, detection_input = coco_inputs_from_columns(
+            detections, targets, box_format="xywh"
+        )
+        return Evaluator(iou=Bbox()).evaluate(ground_truth, detection_input).stats
+
+    widened = evaluate(torch.bfloat16)
+    # Anti-vacuity: a perfect match, so an emptied or mangled run could not reach here.
+    assert widened[0] > 0.99
+    assert np.array_equal(np.asarray(widened), np.asarray(evaluate(torch.float32)))
