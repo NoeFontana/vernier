@@ -2163,9 +2163,33 @@ conversion drives <a href="../../reference/python/instance/"><code>Evaluator</co
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>
 </span></code></pre></div>
 <p><code>coco_metrics</code> is just the convenience wrapper over this pair.</p>
-<p>TIDE, LRP, the confusion matrix and the <code>tables=</code> / <code>manifest=</code> paths do
-<strong>not</strong> accept these inputs yet — each asks for GT JSON bytes, a
-limitation that predates this route. For those, keep using a COCO file.</p>
+<p>The diagnostics take the same pair (ADR-0064), so going from "AP moved"
+to "here is which error moved it" costs no second conversion and no
+COCO file:</p>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier.instance</span><span class="w"> </span><span class="kn">import</span> <span class="p">(</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>    <span class="n">confusion_matrix</span><span class="p">,</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>    <span class="n">error_decomposition</span><span class="p">,</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>    <span class="n">fp_iou_histogram</span><span class="p">,</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>    <span class="n">optimal_lrp</span><span class="p">,</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="p">)</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="n">report</span> <span class="o">=</span> <span class="n">error_decomposition</span><span class="p">(</span><span class="n">ground_truth</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>       <span class="c1"># TIDE&#39;s six bins</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="nb">print</span><span class="p">(</span><span class="n">report</span><span class="o">.</span><span class="n">delta</span><span class="p">)</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="nb">print</span><span class="p">(</span><span class="n">optimal_lrp</span><span class="p">(</span><span class="n">ground_truth</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span><span class="o">.</span><span class="n">per_class</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="o">.</span><span class="n">tau</span><span class="p">)</span>  <span class="c1"># deployable cutoff</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="n">confusion_matrix</span><span class="p">(</span><span class="n">ground_truth</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>                   <span class="c1"># which classes swap</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="n">fp_iou_histogram</span><span class="p">(</span><span class="n">ground_truth</span><span class="p">,</span> <span class="n">dt</span><span class="p">)</span>                   <span class="c1"># per-FP IoU pairs</span>
+</span></code></pre></div>
+<p><code>Evaluator.evaluate(..., tables=...)</code> and <code>(..., manifest=...)</code> read it
+too, so per-class tables and per-slice breakdowns run off the same
+conversion.</p>
+<p><code>ground_truth</code> is a parsed handle, so its JSON parse — and, for the mask
+kernels, its per-annotation derivations — happen once across every
+surface you call. <code>dt</code> is re-read per call: no JSON and no Python object
+per detection, but not free on a masked run, so call the diagnostics you
+need rather than all four.</p>
+<p>The four diagnostics refuse an LVIS federated handle (one built by
+<code>CocoDataset.from_lvis_json</code>): they have no LVIS disposition. This route
+builds COCO-flat ground truth, so it never produces one.</p>
 <h2 id="what-it-decides-for-you">What it decides for you</h2>
 <p>These are behaviour, not parameters, because each has exactly one correct
 answer — and each is silent when got wrong:</p>
