@@ -945,6 +945,10 @@ impl EvalGrid {
 /// [`evaluate_boundary`]; this entry point is exposed for downstream
 /// code that ships its own kernel.
 ///
+/// `dt` is evaluated as given. For federated (LVIS) ground truth, apply
+/// the per-image cap first with [`CocoDetections::trim_for`] (quirk
+/// **AC2**); [`crate::stream::StreamingEvaluator`] does so itself.
+///
 /// # Errors
 ///
 /// Propagates [`EvalError`] from the underlying [`Similarity`],

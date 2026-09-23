@@ -478,24 +478,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         &mut self,
         parsed: ParsedDetections<K>,
     ) -> Result<UpdateReport, EvalError> {
-        let (detections, batch_image_ids) = self.admit(parsed.detections)?;
-
-        // Run the unchanged batch orchestrator over just this batch's
-        // detections. The grid it returns has the same `(K, A, I)`
-        // shape as the streaming evaluator's target grid (we share the
-        // dataset and params), but the orchestrator iterates the *full*
-        // GT image set — every image with any GTs produces cells, even
-        // when no detection in this batch landed on it. We filter those
-        // out below: streaming semantics file a cell exactly once,
-        // when its image first appears in a batch.
-        let mut grid = evaluate_with(
-            &self.dataset,
-            &detections,
-            self.params.borrow(),
-            self.parity_mode,
-            &self.kernel,
-        )?;
-        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
+        self.update_with(parsed.detections, evaluate_with)
     }
 
     /// Parallel sibling of [`Self::update_parsed`] (ADR-0047). Same
@@ -511,31 +494,26 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         &mut self,
         parsed: ParsedDetections<K>,
     ) -> Result<UpdateReport, EvalError> {
-        let (detections, batch_image_ids) = self.admit(parsed.detections)?;
-
-        let mut grid = evaluate_with_parallel(
-            &self.dataset,
-            &detections,
-            self.params.borrow(),
-            self.parity_mode,
-            &self.kernel,
-        )?;
-        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
+        self.update_with(parsed.detections, evaluate_with_parallel)
     }
 
-    /// Admit one batch: reject an `image_id` seen in a prior batch, then
-    /// apply the federated per-image cap (ADR-0065).
-    ///
-    /// Rejecting repeats keeps `update()` additive — each cell is built
-    /// once and never mutated, so `finalize()` is bit-identical to a batch
-    /// run. It also makes the per-batch trim exact: the cap is per image,
-    /// and every image's detections arrive in exactly one batch. The ids
-    /// are taken before the trim so an image capped to nothing is still
-    /// marked seen.
-    fn admit(
-        &self,
+    /// The body of [`Self::update_parsed`] and
+    /// [`Self::update_parsed_parallel`]; `evaluate` is the matching pass.
+    fn update_with(
+        &mut self,
         detections: CocoDetections,
-    ) -> Result<(CocoDetections, HashSet<i64>), EvalError> {
+        evaluate: impl FnOnce(
+            &CocoDataset,
+            &CocoDetections,
+            crate::evaluate::EvaluateParams<'_>,
+            ParityMode,
+            &K,
+        ) -> Result<crate::evaluate::EvalGrid, EvalError>,
+    ) -> Result<UpdateReport, EvalError> {
+        // Reject any image_id seen in a prior batch. This keeps update()
+        // additive — each cell is built once, so finalize() is
+        // bit-identical to a batch run — and makes the per-batch federated
+        // cap exact (ADR-0065).
         let mut batch_image_ids: HashSet<i64> = HashSet::new();
         for dt in detections.detections() {
             let id = dt.image_id.0;
@@ -550,8 +528,21 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             }
             batch_image_ids.insert(id);
         }
+        // Ids are taken before the cap, so an image capped to nothing is
+        // still marked seen.
         let detections = detections.trim_for(&self.dataset, self.params.max_dets_per_image);
-        Ok((detections, batch_image_ids))
+
+        // The orchestrator iterates the *full* GT image set, so images
+        // this batch did not carry still produce cells; `merge_batch_grid`
+        // drops them — a cell is filed once, when its image first appears.
+        let mut grid = evaluate(
+            &self.dataset,
+            &detections,
+            self.params.borrow(),
+            self.parity_mode,
+            &self.kernel,
+        )?;
+        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
     }
 
     /// Shared post-matching bookkeeping for [`Self::update_parsed`] and
