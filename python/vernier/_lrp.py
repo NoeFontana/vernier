@@ -49,9 +49,6 @@ if TYPE_CHECKING:
     import polars as pl
 
     from vernier._array_types import DetectionsInput
-
-    # Referenced only by annotations and docstrings since ADR-0064
-    # deleted the `isinstance(gt, CocoDataset)` guard.
     from vernier._core import CocoDataset
     from vernier._core import (
         _LrpReportDict as _FFILrpReportDict,  # pyright: ignore[reportPrivateUsage]
@@ -306,9 +303,8 @@ def optimal_lrp(
     :func:`vernier.adapters.coco_inputs` returns is therefore read here
     unchanged (ADR-0064).
 
-    A handle saves the GT JSON parse, not the per-kernel GT
-    derivations — the LRP orchestrator takes a dataset and no cache
-    (ADR-0064). A handle built by
+    A handle saves the GT JSON parse, and the mask kernels reuse and
+    fill its per-annotation caches. A handle built by
     :meth:`vernier.CocoDataset.from_lvis_json` is refused: LRP has no
     LVIS federated disposition.
 

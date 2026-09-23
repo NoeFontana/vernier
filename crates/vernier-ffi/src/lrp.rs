@@ -45,21 +45,14 @@ use pyo3::types::{PyDict, PyList};
 
 use vernier_core::evaluate::AreaRange;
 use vernier_core::lrp::{self, LrpKernelMarker, LrpParams, LrpPerClass, LrpReport};
-use vernier_core::{CocoDataset, CocoDetections, EvalError, ParityMode};
+use vernier_core::{CocoDetections, EvalError, ParityMode};
 
 use crate::array_ingest::ArrayIouType;
+use crate::dataset::DatasetSnapshot;
 use crate::{parse_parity_mode, validate_dilation_ratio, DiagnosticInputs};
 
-/// Common per-call plumbing for the four LRP kernel entry points:
-/// parse parity mode, resolve the `gt=` / `dt=` unions off the GIL, run
-/// the kernel-specific orchestrator inside `py.detach`, and materialise
-/// the report dict. `kernel_call` carries the kernel-specific dispatch
-/// (and any extra knobs like `dilation_ratio` / `sigmas`) closed
-/// over by the per-kernel wrappers below.
-///
-/// Per ADR-0064 `gt` takes `bytes` or a `CocoDataset` and `dt` takes
-/// the whole `DetectionsInput` union, through the same two resolvers
-/// `Evaluator.evaluate` uses.
+/// Shared plumbing for the LRP entry points: resolve `gt` / `dt`
+/// (ADR-0064), run `kernel_call` off the GIL, build the report dict.
 #[allow(clippy::too_many_arguments)]
 fn run_lrp_pass<'py, F>(
     py: Python<'py>,
@@ -76,7 +69,7 @@ fn run_lrp_pass<'py, F>(
 ) -> PyResult<Bound<'py, PyDict>>
 where
     F: FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             LrpParams<'_>,
             ParityMode,
@@ -149,7 +142,7 @@ pub(crate) fn optimal_lrp_bbox<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        lrp::optimal_lrp_bbox,
+        |gt, dt, params, parity| lrp::optimal_lrp_bbox(&gt.gt, dt, params, parity),
     )
 }
 
@@ -179,7 +172,10 @@ pub(crate) fn optimal_lrp_segm<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        lrp::optimal_lrp_segm,
+        |gt, dt, params, parity| {
+            let kernel = gt.segm_kernel();
+            lrp::optimal_lrp_with(&gt.gt, dt, &kernel, LrpKernelMarker::Segm, params, parity)
+        },
     )
 }
 
@@ -215,7 +211,15 @@ pub(crate) fn optimal_lrp_boundary<'py>(
         use_cats,
         cast_inputs,
         move |gt, dt, params, parity| {
-            lrp::optimal_lrp_boundary(gt, dt, params, parity, dilation_ratio)
+            let kernel = gt.boundary_kernel(dilation_ratio);
+            lrp::optimal_lrp_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                LrpKernelMarker::Boundary,
+                params,
+                parity,
+            )
         },
     )
 }
@@ -252,7 +256,9 @@ pub(crate) fn optimal_lrp_keypoints<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        move |gt, dt, params, parity| lrp::optimal_lrp_keypoints(gt, dt, params, parity, sigmas),
+        move |gt, dt, params, parity| {
+            lrp::optimal_lrp_keypoints(&gt.gt, dt, params, parity, sigmas)
+        },
     )
 }
 

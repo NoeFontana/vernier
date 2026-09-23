@@ -71,11 +71,10 @@ This ADR triggers ADR-0001 §"Affect the public API" and
 
 ### Out of scope
 
-- **Any change to an evaluated number.** This ADR widens argument types
-  and nothing else. The parity contract, the disposition table and
-  every quirk stay exactly where they are.
-- **The GT-side derivation caches.** See §"What this deliberately does
-  not do".
+- **Any change to an evaluated number**, with one exception: the
+  plain summary path now applies the ADR-0026 AC2 trim to a federated
+  handle, as the grid path always has (§"Federated ground truth"). The
+  parity contract, the disposition table and every quirk stay put.
 - **`num_threads=`** on the four standalone diagnostics. They have never
   taken it; ADR-0047's policy is resolved per entry point and adding it
   is an independent change.
@@ -156,19 +155,17 @@ and `evaluate_summary_any_gt` carried the same `cast::<PyBytes>()` →
 `GtPayload` and hand each arm's payload to their per-spelling
 implementation, which had been re-deriving exactly that payload on entry
 (`PyBackedBytes::from(gt_json.clone())` in one, `gt.snapshot()` in the
-other). So the accepted-type list and its error message exist once, the
-four implementations get shorter, and `evaluate_summary_impl` — the
+other). `BackgroundEvaluator`'s constructor, which carried a third
+ladder and parsed bytes under the GIL, uses it too. So the accepted-type
+list and its error message exist once, the implementations get shorter,
+and `evaluate_summary_impl` — the
 plain `Evaluator.evaluate` path, not one of the five — loses the
 `gt_json.as_bytes().to_vec()` it was still paying, the same ~20 MB per
 val2017 call the diagnostics lose.
 
-`Parsed` carries a `DatasetSnapshot` rather than a bare
-`Arc<CocoDataset>` because that is already the repo's `Send`-able GT
-hand-off, and its contract — "adding a future cache slot means one
-extra field here" — is what lets the grid path and the diagnostics share
-one enum. The diagnostics read only its `gt` today (see §"What this
-deliberately does not do"), but they do not *discard* the caches to do
-it.
+`Parsed` carries a `DatasetSnapshot` — the dataset *and* its per-kernel
+caches — because every consumer uses both halves (§"The handle's GT
+caches").
 
 The `dt` side adds no new machinery: `prepare_dt_payload` is widened to
 `iou_type: impl Into<ArrayIouType>`, so the evaluators keep passing an
@@ -182,17 +179,15 @@ standalone diagnostics actually call:
 ```rust
 impl DiagnosticInputs {
     fn extract(py, gt, dt, kernel, cast_inputs, surface) -> PyResult<Self>;
-    fn realize(self) -> PyResult<(Arc<CocoDataset>, CocoDetections)>;
+    fn realize(self) -> PyResult<(DatasetSnapshot, CocoDetections)>;
 }
 ```
 
-Bundling matters for one reason beyond brevity: the federated refusal
-below is folded into `extract`, so it is not a separate call a sixth
-diagnostic could forget — there is no way to obtain the inputs without
-naming your surface and being checked. The `DetectionArea::FromBbox`
-choice — the one parity-relevant decision in this plumbing (quirk
-**J3**) — likewise lives in `realize`, stated once rather than at each
-entry point.
+The federated refusal below is folded into `extract`, so a sixth
+diagnostic cannot obtain its inputs without being checked.
+`realize` derives detection areas from the box
+(`DetectionArea::FromBbox`), the quirk **J3** default on every non-grid
+route, `Evaluator.evaluate` included; `dt_area="mask"` stays a grid knob.
 
 `tables=` and `manifest=` need no FFI work beyond a call-site swap:
 deleting the guard, and pointing `evaluate_instance_partitioned_impl`
@@ -228,11 +223,19 @@ and not a chore.
 `CocoDataset.from_json` discards LVIS federated metadata; `from_lvis_json`
 retains it. That asymmetry is documented on `evaluate_grid_any_gt`: for
 LVIS the handle is "not merely the faster spelling — it is the only
-correct one". On the grid path the handle is fully honoured, including
-the ADR-0026 AC2 detection trim that `evaluate_grid_with_dataset_impl`
-applies before matching.
+correct one". The evaluate paths honour it fully, including the ADR-0026
+AC2 per-image detection trim.
 
-The diagnostics have no such trim, and no oracle. `vernier_core`'s
+That was true of the grid path only. The plain summary path —
+`Evaluator.evaluate` with neither `tables=` nor `manifest=` — matched a
+federated handle without trimming, so lifting the `tables=` / `manifest=`
+guards would have let one handle score differently depending on which
+keyword was passed. Both handle paths now call one `trim_federated`
+helper, capping at the ladder's largest `max_dets` as the grid does. The
+fix moves a number only when an image carries more detections than that
+cap, and moves it toward lvis-api.
+
+The diagnostics have no trim, and no oracle. `vernier_core`'s
 matching pass would apply the AA3/AA4 federated branches (it reads
 `gt.federated()` directly), while the LVIS per-image detection cap would
 not be applied — half of the LVIS semantics, silently. There is no
@@ -245,34 +248,35 @@ ADR-0026. This is strictly more conservative than today: before this
 change the input was unreachable, so nothing regresses, and the
 alternative — accepting it — would ship exactly the "plausible, wrong
 number" ADR-0057 rules out. `tables=` and `manifest=` route through the
-grid and are therefore *not* restricted; they get the same federated
-handling the un-tabled call already gets.
+grid and are therefore *not* restricted; every `Evaluator.evaluate`
+branch applies the same federated semantics.
 
 Lifting this needs its own ADR, with an oracle, which is the point.
 
-### What this deliberately does not do
+### The handle's GT caches
 
-**The per-kernel GT caches are not threaded through.** ADR-0020's handle
-carries two benefits: the JSON parse happens once, and the per-annotation
-boundary/segm derivations are memoised on `BoundaryGtCache` /
-`SegmGtCache`. The diagnostics get the first and not the second.
+ADR-0020's handle saves two costs: the JSON parse, and the per-annotation
+segm / boundary derivations memoised on `SegmGtCache` /
+`BoundaryGtCache`. The diagnostics get both, with no `vernier-core` API
+change: every diagnostic already has a kernel-generic entry point
+(`error_decomposition_with`, `compute_fp_iou_histogram_with`,
+`optimal_lrp_with[_partitioned]`, `compute_confusion_matrix`), and the
+cached kernels are public (`SegmIouCached::with_arc_cache`,
+`BoundaryIouCached::with_arc_cache`). `DatasetSnapshot::segm_kernel` /
+`boundary_kernel` build them over the snapshot's caches.
 
-The reason is in `vernier_core`, not in the FFI:
-`tide::error_decomposition_segm`, `lrp::optimal_lrp_segm` and
-`compute_confusion_matrix` take `(&CocoDataset, &CocoDetections,
-params, parity)` and have no cache parameter, where the evaluator's
-`EvalIouType::run` has a `run_cached` sibling taking `DatasetCaches<'_>`.
-Giving the diagnostics the second benefit means adding that sibling to
-each core entry point — a `vernier-core` change, with its own test
-surface, in the crate CLAUDE.md calls the source of truth for
-semantics. Bundling it here would mix a typing change that cannot move
-a number with a caching change that has to prove it doesn't.
+- **Bit-exact.** The cached and uncached kernels call one compute
+  function; the cache only skips re-deriving a GT's RLE geometry.
+- **Valid across TIDE's passes.** Each fix pass rebuilds the dataset,
+  but `apply_fix` keeps every surviving GT's id and geometry (it only
+  relabels or drops detections, or drops missed GTs), so an id-keyed
+  entry stays correct.
+- **Bytes too.** `DatasetSnapshot::from_parsed` gives the bytes path
+  fresh caches, so TIDE's eight passes share one derivation per GT.
 
-So: passing a handle to TIDE saves the GT parse (the dominant cost on a
-first call, and eight passes' worth of nothing on subsequent ones,
-since TIDE parsed once per call already) and leaves
-`dataset.boundary_cache_len` untouched. Worth having, and worth naming
-as partial rather than implying the handle is fully exploited.
+The core per-kernel wrappers (`error_decomposition_segm`,
+`optimal_lrp_boundary`, …) get the same treatment for Rust callers: the
+scratch-reusing kernels, and a call-local cache for TIDE.
 
 **The `gt` union gets no type alias.** `dt` has one —
 `DetectionsInput` in `python/vernier/_array_types.py` — so widening it
@@ -301,6 +305,9 @@ capability change inside a plumbing change.
   evaluator takes, so a caller who already builds detections as arrays
   for `evaluate` does not switch representations to call
   `error_decomposition` on the same run.
+- **Positive.** A handle's mask derivations are shared by the evaluator
+  and all four diagnostics, and TIDE reuses them across its eight passes
+  on either spelling.
 - **Positive.** The `to_vec()` per call on the GT bytes path disappears
   — `PyBackedBytes` borrows instead. On a val2017-shaped payload that is
   ~20 MB of copy per call. Unifying the classifier extends that to
@@ -341,15 +348,13 @@ capability change inside a plumbing change.
   review.
 - 👍 One `gt` parameter, per ADR-0061 — no second function family whose
   gaps only surface when someone needs one.
-- 👍 Cannot move a number: below `GtPayload::realize` and `realize_dt`,
-  the code that runs is byte-for-byte the code that ran before.
+- 👍 Cannot move a diagnostic's number: the resolvers yield the types
+  core took before, and the cached kernels are bit-exact.
 - 👎 Five `#[pyfunction]` signatures widen from `PyBytes` to `PyAny`,
   which moves a type error from compile time in Rust to runtime in
   Python. Mitigated by `GtPayload::extract` being the single classifier
   — one accepted-type list and one message for every `gt=` on the
   instance surface — and by `_core.pyi` carrying the precise union.
-- 👎 The handle is accepted but not fully exploited (caches), so
-  "`CocoDataset` works here" is true with a performance footnote.
 
 ### Option 3 — `*_with_dataset` siblings
 

@@ -1,37 +1,19 @@
 # ADR-0063: An ingest route for training loops
 
-- **Status:** accepted (erratum noted 2026-09-22 — see below)
+- **Status:** accepted (erratum 2026-09-22)
 - **Date:** 2026-09-21
 - **Deciders:** @NoeFontana
 - **Consulted:** —
 - **Informed:** all contributors
 
-## Erratum (2026-09-22): the five surfaces no longer refuse the pair
+## Erratum (2026-09-22)
 
-**No decision below is changed or withdrawn.** This note exists because
-two passages state a *fact about other surfaces* that ADR-0064 made
-false, and an accepted ADR is not edited to keep up with the code.
-
-The passages are §"Decision outcome" ("TIDE, LRP, the confusion matrix,
-the FP-IoU histogram and the `tables=` / `manifest=` paths each refuse a
-`CocoDataset` handle today and ask for GT JSON bytes") and the second
-👎 of §"Option 2 — route returning metrics" ("as would TIDE, LRP and
-tables once those accept a `CocoDataset`"). Both were accurate when
-written, and both were conditional on a limitation ADR-0063 explicitly
-said was "theirs to lift".
-
-[ADR-0064](0064-dataset-handle-on-diagnostic-surfaces.md) lifted it.
-Those five surfaces now take the `(CocoDataset, DetectionsInput)` pair
-this route returns, with no change to this route. Read the two passages
-as the record of why returning the pair was worth it rather than as a
-current description of the surfaces: the wager that "when they lift it,
-these inputs work unchanged" is the part that held, and it is the
-reason nothing here needed revising.
-
-The one exception ADR-0064 records is LVIS federated ground truth,
-which the four standalone diagnostics refuse for want of a disposition;
-that has never been reachable from this route, which builds COCO-flat
-ground truth (ADR-0060).
+No decision here changes. Two passages describe other surfaces as they
+stood when this was written — §"Decision outcome" ("TIDE, LRP, the
+confusion matrix, the FP-IoU histogram and the `tables=` / `manifest=`
+paths each refuse a `CocoDataset` handle") and Option 2's second 👎.
+[ADR-0064](0064-dataset-handle-on-diagnostic-surfaces.md) lifts that
+limitation; those surfaces now take this route's pair unchanged.
 
 ## Context and problem statement
 

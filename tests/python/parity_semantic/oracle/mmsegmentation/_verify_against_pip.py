@@ -79,7 +79,7 @@ def _run(mode: str) -> dict[str, object]:
         # Use the same loader the pytest conftest uses, so this script
         # exercises the exact stub-injection path the test suite does.
         sys.path.insert(0, str(Path(__file__).parent))
-        from _loader import install_stubs  # pyright: ignore[reportMissingImports]
+        from _loader import install_stubs
 
         install_stubs()
     elif mode == "pip":

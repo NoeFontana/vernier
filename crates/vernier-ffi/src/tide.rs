@@ -39,23 +39,19 @@ use pyo3::prelude::*;
 use pyo3::types::PyDict;
 
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
-use vernier_core::tide::{self, FpIouHistogram, TideErrorBin, TideParams, TideReport};
-use vernier_core::{AreaRange, CocoDataset, CocoDetections, EvalError, ParityMode};
+use vernier_core::tide::{
+    self, FpIouHistogram, KernelMarker, TideErrorBin, TideParams, TideReport,
+};
+use vernier_core::{AreaRange, CocoDetections, EvalError, ParityMode};
 
 use crate::array_ingest::ArrayIouType;
+use crate::dataset::DatasetSnapshot;
 use crate::{parse_parity_mode, validate_dilation_ratio, DiagnosticInputs};
 
-/// Common per-call plumbing for the three TIDE kernel entry points:
-/// parse parity mode, resolve the `gt=` / `dt=` unions off the GIL, run
-/// the kernel-specific orchestrator inside `py.detach`, and materialize
-/// the report dict. `kernel_call` carries the kernel-specific dispatch
-/// (and any extra knobs like `dilation_ratio`) closed over by the
-/// per-kernel wrappers below.
-///
-/// Per ADR-0064 `gt` takes `bytes` or a `CocoDataset` and `dt` takes
-/// the whole `DetectionsInput` union, through the same two resolvers
-/// `Evaluator.evaluate` uses — so a diagnostic cannot disagree with an
-/// evaluation about what an input means.
+/// Shared plumbing for the TIDE entry points: resolve `gt` / `dt`
+/// (ADR-0064), run `kernel_call` off the GIL, build the report dict.
+/// `kernel_call` picks the kernel; the mask kernels reuse the snapshot's
+/// GT caches across TIDE's eight evaluation passes.
 #[allow(clippy::too_many_arguments)]
 fn run_tide_pass<'py, F>(
     py: Python<'py>,
@@ -72,7 +68,7 @@ fn run_tide_pass<'py, F>(
 ) -> PyResult<Bound<'py, PyDict>>
 where
     F: FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             TideParams<'_>,
             ParityMode,
@@ -139,7 +135,7 @@ pub(crate) fn error_decomposition_bbox<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        tide::error_decomposition_bbox,
+        |gt, dt, params, parity| tide::error_decomposition_bbox(&gt.gt, dt, params, parity),
     )
 }
 
@@ -184,7 +180,10 @@ pub(crate) fn error_decomposition_segm<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        tide::error_decomposition_segm,
+        |gt, dt, params, parity| {
+            let kernel = gt.segm_kernel();
+            tide::error_decomposition_with(&gt.gt, dt, &kernel, KernelMarker::Segm, params, parity)
+        },
     )
 }
 
@@ -229,16 +228,21 @@ pub(crate) fn error_decomposition_boundary<'py>(
         use_cats,
         cast_inputs,
         move |gt, dt, params, parity| {
-            tide::error_decomposition_boundary(gt, dt, params, parity, dilation_ratio)
+            let kernel = gt.boundary_kernel(dilation_ratio);
+            tide::error_decomposition_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                KernelMarker::Boundary,
+                params,
+                parity,
+            )
         },
     )
 }
 
-/// Common per-call plumbing for the FP-IoU histogram entry points
-/// (ADR-0022 `t_b` ratification machinery). Mirrors [`run_tide_pass`]'s
-/// shape — parse parity, copy bytes off the GIL, run the kernel-
-/// specific histogram extractor inside `py.detach`, materialize a
-/// dict.
+/// Shared plumbing for the FP-IoU histogram entry points (ADR-0022);
+/// same shape as [`run_tide_pass`].
 #[allow(clippy::too_many_arguments)]
 fn run_fp_histogram_pass<'py, F>(
     py: Python<'py>,
@@ -254,7 +258,7 @@ fn run_fp_histogram_pass<'py, F>(
 ) -> PyResult<Bound<'py, PyDict>>
 where
     F: FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             TideParams<'_>,
             ParityMode,
@@ -318,7 +322,7 @@ pub(crate) fn fp_iou_histogram_bbox<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        tide::compute_fp_iou_histogram_bbox,
+        |gt, dt, params, parity| tide::compute_fp_iou_histogram_bbox(&gt.gt, dt, params, parity),
     )
 }
 
@@ -346,7 +350,17 @@ pub(crate) fn fp_iou_histogram_segm<'py>(
         max_dets_per_image,
         use_cats,
         cast_inputs,
-        tide::compute_fp_iou_histogram_segm,
+        |gt, dt, params, parity| {
+            let kernel = gt.segm_kernel();
+            tide::compute_fp_iou_histogram_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                KernelMarker::Segm,
+                params,
+                parity,
+            )
+        },
     )
 }
 
@@ -378,7 +392,15 @@ pub(crate) fn fp_iou_histogram_boundary<'py>(
         use_cats,
         cast_inputs,
         move |gt, dt, params, parity| {
-            tide::compute_fp_iou_histogram_boundary(gt, dt, params, parity, dilation_ratio)
+            let kernel = gt.boundary_kernel(dilation_ratio);
+            tide::compute_fp_iou_histogram_with(
+                &gt.gt,
+                dt,
+                &kernel,
+                KernelMarker::Boundary,
+                params,
+                parity,
+            )
         },
     )
 }

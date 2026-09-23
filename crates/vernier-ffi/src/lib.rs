@@ -34,16 +34,13 @@
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
 
 use numpy::ndarray::Array1;
 use numpy::ToPyArray;
 use pyo3::create_exception;
-use pyo3::exceptions::{
-    PyNotImplementedError, PyRuntimeError, PyTypeError, PyUserWarning, PyValueError,
-};
+use pyo3::exceptions::{PyNotImplementedError, PyRuntimeError, PyUserWarning, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
@@ -678,11 +675,6 @@ fn parse_gt_parallel(bytes: &[u8], threads: usize) -> PyResult<CocoDataset> {
 
 /// Parse a COCO detections payload across a thread budget (ADR-0054).
 /// Must run inside a rayon pool.
-///
-/// There is no sequential `parse_dt` sibling of [`parse_gt`] any more:
-/// since ADR-0064 every `dt=` argument — JSON bytes included — goes
-/// through [`build_update_payload`] and [`realize_dt`], so the
-/// detections side has exactly one entry point per thread policy.
 fn parse_dt_parallel(
     bytes: &[u8],
     threads: usize,
@@ -915,12 +907,6 @@ fn evaluate_grid_impl(
     // Resolve threading policy under the GIL so the env-var / re-entry
     // `UserWarning` can fire to Python before we detach.
     let thread_policy = threads::resolve_threads(py, num_threads);
-    // `gt_bytes` arrives as a zero-copy `PyBackedBytes` borrow from
-    // `GtPayload::extract`: it keeps the underlying `Py<PyBytes>` alive
-    // across `py.detach` while exposing `&[u8]` via `Deref`, which
-    // saves a 20 MB `to_vec()` per call on val2017 and is `Send + Sync`
-    // so the buffer crosses the GIL release safely (the underlying
-    // object is Python-immutable and refcount-pinned).
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
     let iou_for_run = iou_thr.clone();
@@ -1099,19 +1085,11 @@ fn evaluate_grid_with_dataset_impl(
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt) =
         py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let dt = realize_dt(dt_payload, dt_area)?;
-            // ADR-0026 AC2: federated datasets trim DTs at input time
-            // (mirrors `LVISResults.limit_dets_per_image` at construction).
-            // The trim is a no-op when fewer than `max_dets_per_image`
-            // DTs land on any single image, and is disabled with a
-            // negative cap (AC5).
-            let dt = if snapshot.gt.is_federated() {
-                #[allow(clippy::cast_possible_wrap)]
-                let cap = max_dets_per_image as i64;
-                dt.lvis_trim(cap)
-            } else {
-                dt
-            };
+            let dt = trim_federated(
+                &snapshot.gt,
+                realize_dt(dt_payload, dt_area)?,
+                max_dets_per_image,
+            );
             let caches = snapshot.caches();
             let params = EvaluateParams {
                 iou_thresholds: &iou_for_run,
@@ -1477,10 +1455,6 @@ fn evaluate_summary_impl(
     // ascending ladder.
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
-    // `gt_bytes` is the same zero-copy `PyBackedBytes` borrow
-    // `evaluate_grid_impl` takes — GIL-crossable without the memcpy the
-    // GIL-tied `PyBytes` borrow used to force (ADR-0064 unified the two
-    // `gt=` classifiers, and this path inherited the grid's).
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
 
     let summary = py.detach(move || -> PyResult<Summary> {
@@ -1654,12 +1628,11 @@ fn evaluate_summary_with_dataset_impl(
     sort_max_dets(&mut max_dets);
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let summary = py.detach(move || -> PyResult<Summary> {
-        let dt = realize_dt(dt_payload, DetectionArea::FromBbox)?;
         run_pipeline_with_dataset(
             &iou_type,
             &snapshot.gt,
             snapshot.caches(),
-            &dt,
+            realize_dt(dt_payload, DetectionArea::FromBbox)?,
             parity,
             &max_dets,
             use_cats,
@@ -1728,6 +1701,20 @@ pub(crate) fn parse_sigmas(d: &Bound<'_, PyDict>) -> PyResult<HashMap<i64, Vec<f
     Ok(out)
 }
 
+/// ADR-0026 AC2: a federated ground truth caps detections at
+/// `max_dets` per image, across categories, before matching
+/// (`LVISResults.limit_dets_per_image`). Identity on flat ground truth.
+///
+/// Every handle path that evaluates goes through here, so a federated
+/// handle scores the same whichever `Evaluator.evaluate` branch it takes.
+fn trim_federated(gt: &CocoDataset, dt: CocoDetections, max_dets: usize) -> CocoDetections {
+    if !gt.is_federated() {
+        return dt;
+    }
+    // Saturate: a wrapped cap would land in AC5's negative "disabled" range.
+    dt.lvis_trim(i64::try_from(max_dets).unwrap_or(i64::MAX))
+}
+
 fn run_pipeline(
     iou_type: &EvalIouType,
     gt: &CocoDataset,
@@ -1759,15 +1746,15 @@ fn run_pipeline(
 
 /// End-to-end pipeline against a parsed-once dataset (ADR-0020).
 /// Mirrors [`run_pipeline`] but routes through
-/// [`EvalIouType::run_cached`] so kernels with a cache slot
-/// (`evaluate_segm_cached`, `evaluate_boundary_cached`) reuse GT-side
-/// derivations across calls.
+/// [`EvalIouType::run_cached`] so kernels with a cache slot reuse
+/// GT-side derivations across calls, and applies the federated trim the
+/// grid path applies.
 #[allow(clippy::too_many_arguments)]
 fn run_pipeline_with_dataset(
     iou_type: &EvalIouType,
     gt: &CocoDataset,
     caches: DatasetCaches<'_>,
-    dt: &CocoDetections,
+    dt: CocoDetections,
     parity: ParityMode,
     max_dets: &[usize],
     use_cats: bool,
@@ -1775,6 +1762,7 @@ fn run_pipeline_with_dataset(
 ) -> Result<Summary, EvalError> {
     let area = area_ranges_for(iou_type);
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
+    let dt = trim_federated(gt, dt, max_det_top);
     let eval_params = EvaluateParams {
         iou_thresholds: iou_thresholds(),
         area_ranges: &area,
@@ -1783,8 +1771,15 @@ fn run_pipeline_with_dataset(
         retain_iou: false,
         retain_meta: false,
     };
-    let grid =
-        run_grid_cached_with_policy(iou_type, gt, dt, eval_params, parity, caches, thread_policy)?;
+    let grid = run_grid_cached_with_policy(
+        iou_type,
+        gt,
+        &dt,
+        eval_params,
+        parity,
+        caches,
+        thread_policy,
+    )?;
     summarize_grid(
         &grid,
         SummarizePlan::for_iou_type(iou_type),
@@ -2390,14 +2385,8 @@ impl From<&EvalIouType> for array_ingest::ArrayIouType {
 }
 
 /// Resolve the Python `dt=` argument for the foreground evaluators.
-/// Bundles cast-state construction with the shared
-/// [`build_update_payload`] dispatch so each `*_impl` doesn't repeat the
-/// two-line preamble.
-/// `iou_type` is `impl Into<ArrayIouType>` so both spellings of "which
-/// kernel" reach one function: the evaluators thread an
-/// [`EvalIouType`] (converted by the `From` impl above), while the
-/// diagnostics hold the [`array_ingest::ArrayIouType`] marker their
-/// per-kernel entry point already names.
+/// Cast-state construction plus [`build_update_payload`]. Takes either
+/// kernel spelling: an [`EvalIouType`] or an [`array_ingest::ArrayIouType`].
 pub(crate) fn prepare_dt_payload<'py>(
     py: Python<'py>,
     dt: &Bound<'py, PyAny>,
@@ -2408,36 +2397,17 @@ pub(crate) fn prepare_dt_payload<'py>(
     build_update_payload(py, dt, iou_type.into(), &cast_state)
 }
 
-/// The `(gt, dt)` pair a diagnostic takes, classified under the GIL
-/// and realized off it (ADR-0064).
-///
-/// TIDE, the FP-IoU histogram, LRP and the confusion matrix drive
-/// [`vernier_core`] directly rather than through
-/// [`evaluate_grid_any_gt`], and all four resolve their two arguments
-/// identically. Bundling that here is what keeps the three decisions in
-/// this plumbing stated exactly once:
-///
-/// - the accepted `gt=` spellings, via the single [`dataset::GtPayload`]
-///   classifier;
-/// - the LVIS-federated refusal, which is folded into
-///   [`Self::extract`] rather than left as a call each surface must
-///   remember — a sixth diagnostic cannot obtain one of these without
-///   naming itself and being checked;
-/// - the [`DetectionArea`] a detection's area is derived from, which is
-///   parity-relevant (quirk **J3**) and stated in [`Self::realize`].
+/// A diagnostic's `(gt, dt)` pair, classified under the GIL and realized
+/// off it (ADR-0064). Shared by TIDE, the FP-IoU histogram, LRP and the
+/// confusion matrix.
 pub(crate) struct DiagnosticInputs {
     gt: dataset::GtPayload,
     dt: UpdatePayload,
 }
 
 impl DiagnosticInputs {
-    /// Classify a diagnostic's `gt=` and `dt=` arguments. Must run
-    /// under the GIL; the parse happens in [`Self::realize`].
-    ///
-    /// `surface` names the caller in the federated refusal, which runs
-    /// here — before the detections are converted — so a ground truth
-    /// this surface cannot evaluate is rejected without paying for the
-    /// `dt` ingest first.
+    /// Classify `gt` and `dt`. Must run under the GIL. Refuses federated
+    /// ground truth for `surface` before paying for the `dt` ingest.
     pub(crate) fn extract<'py>(
         py: Python<'py>,
         gt: &Bound<'py, PyAny>,
@@ -2455,23 +2425,15 @@ impl DiagnosticInputs {
         })
     }
 
-    /// Realize into the pair [`vernier_core`] takes. Call inside
-    /// `py.detach` — the GT JSON parse happens here.
+    /// Parse and convert. Call inside `py.detach`.
     ///
-    /// [`DetectionArea::FromBbox`] is what
-    /// `CocoDetections::from_json_bytes` applies (quirk **J3** derives a
-    /// detection's area from its box), so the array `dt` routes read
-    /// areas exactly as the results-file route these surfaces have
-    /// always taken does. It is the one semantic choice in this
-    /// plumbing, and it is made here rather than once per entry point.
-    ///
-    /// The returned dataset is the snapshot's `gt` alone: the
-    /// diagnostics' core entry points take no cache argument, so the
-    /// per-kernel derivations stay unused (ADR-0064).
-    pub(crate) fn realize(self) -> PyResult<(Arc<CocoDataset>, CocoDetections)> {
+    /// Areas come from the box ([`DetectionArea::FromBbox`]), the J3
+    /// default every non-grid route applies; `dt_area="mask"` is a grid
+    /// knob. The snapshot carries the GT caches the mask kernels reuse.
+    pub(crate) fn realize(self) -> PyResult<(dataset::DatasetSnapshot, CocoDetections)> {
         let gt = self.gt.realize()?;
         let dt = realize_dt(self.dt, DetectionArea::FromBbox)?;
-        Ok((gt.gt, dt))
+        Ok((gt, dt))
     }
 }
 
@@ -3349,19 +3311,9 @@ impl PyBackgroundEvaluator {
         // per-kernel caches that the worker thread reuses across
         // `submit()` rounds; raw bytes carry no caches and the kernel
         // dispatch below stays on the uncached variant.
-        let (snapshot, has_dataset_handle) = if let Ok(py_dataset) = gt.cast::<dataset::PyDataset>()
-        {
-            (py_dataset.borrow().snapshot(), true)
-        } else if let Ok(bytes) = gt.cast::<PyBytes>() {
-            (
-                dataset::DatasetSnapshot::from_parsed(parse_gt(bytes.as_bytes())?),
-                false,
-            )
-        } else {
-            return Err(PyTypeError::new_err(
-                "BackgroundEvaluator(...) gt must be `bytes` or `vernier.instance.CocoDataset`",
-            ));
-        };
+        let gt_payload = dataset::GtPayload::extract(gt)?;
+        let has_dataset_handle = matches!(gt_payload, dataset::GtPayload::Parsed(_));
+        let snapshot = py.detach(move || gt_payload.realize())?;
         let (dataset, boundary_cache_arc, segm_cache_arc) = snapshot.into_parts();
 
         if !shutdown_timeout_seconds.is_finite() || shutdown_timeout_seconds < 0.0 {

@@ -627,7 +627,7 @@ def test_columnar_and_per_sample_agree(iou_type: Any) -> None:
         target_columns["rles"] = [m for record in targets for m in record.get("masks", [])]
         detection_columns["rles"] = [m for record in predictions for m in record.get("masks", [])]
 
-    by_record, record_detections = coco_inputs(predictions, targets)  # type: ignore[arg-type]
+    by_record, record_detections = coco_inputs(predictions, targets)
     by_column, column_detections = coco_inputs_from_columns(detection_columns, target_columns)
 
     assert by_record.dataset_hash == by_column.dataset_hash
@@ -635,8 +635,8 @@ def test_columnar_and_per_sample_agree(iou_type: Any) -> None:
     if iou_type == "bbox":
         assert np.array_equal(np.asarray(record_detections), np.asarray(column_detections))
     else:
-        assert len(record_detections) == len(column_detections) == len(per_image)  # type: ignore[arg-type]
-        for a, b in zip(record_detections, column_detections, strict=True):  # type: ignore[arg-type]
+        assert len(record_detections) == len(column_detections) == len(per_image)
+        for a, b in zip(record_detections, column_detections, strict=True):
             left, right = cast("dict[str, Any]", a), cast("dict[str, Any]", b)
             assert left["image_id"] == right["image_id"]
             for key in ("boxes", "scores", "labels"):

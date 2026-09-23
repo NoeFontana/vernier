@@ -36,10 +36,6 @@ if TYPE_CHECKING:
     import numpy as np
 
     from vernier._array_types import DetectionsInput
-
-    # Referenced only by annotations and docstrings since ADR-0064
-    # deleted the `isinstance(gt, CocoDataset)` guards, and
-    # `from __future__ import annotations` keeps those lazy.
     from vernier._core import CocoDataset
 
     # `_TideReportDict` is a TypedDict declared in the `.pyi` stub for
@@ -204,10 +200,9 @@ def error_decomposition(
     :func:`vernier.adapters.coco_inputs` returns is therefore read here
     unchanged (ADR-0064).
 
-    Passing a handle saves the GT JSON parse, not the per-kernel GT
-    derivations: the TIDE orchestrator takes a dataset and no cache, so
-    ``boundary_cache_len`` / ``segm_cache_len`` stay untouched by this
-    call (ADR-0064 §"What this deliberately does not do").
+    A handle saves the GT JSON parse, and the mask kernels reuse and
+    fill its per-annotation caches, as
+    :meth:`vernier.instance.Evaluator.evaluate` does.
 
     A handle built by :meth:`vernier.CocoDataset.from_lvis_json` is
     refused — TIDE has no LVIS federated disposition, and applying half

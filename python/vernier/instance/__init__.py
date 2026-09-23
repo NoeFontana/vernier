@@ -788,11 +788,6 @@ class Evaluator:
             normalize_tables_arg(tables, SUPPORTED_TABLES) if tables is not None else set()
         )
 
-        # `gt` needs no branch here (ADR-0064): every `evaluate_*_grid`
-        # below takes `bytes | CocoDataset` (ADR-0061), and `grid.dataset()`
-        # hands back the handle the grid retained either way — which is
-        # exactly what the per-table builders take.
-        #
         # per_detection (best_iou) and per_pair require the spine to
         # retain its IoU matrices.
         need_retention = bool(requested & {"per_detection", "per_pair"})

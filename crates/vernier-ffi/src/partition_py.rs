@@ -32,12 +32,13 @@ use vernier_core::partition::{
     evaluate_partitioned, evaluate_partitioned_lrp, image_id_to_idx, GridDims,
     PartitionedLrpReport, PartitionedSummary,
 };
-use vernier_core::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
-use vernier_core::{CocoDataset, CocoDetections, EvalError};
+use vernier_core::similarity::{BboxIou, OksSimilarity};
+use vernier_core::{CocoDetections, EvalError};
 
 use crate::array_ingest::ArrayIouType;
 use crate::arrow_helpers::{wrap_batch, ArrowRecordBatchPy};
 use crate::breakdown;
+use crate::dataset::DatasetSnapshot;
 use crate::manifest_py::manifest_to_canonical_json;
 use crate::tables::{
     slices_instance_ap_to_arrow, slices_instance_lrp_to_arrow, slices_record_batch_panoptic,
@@ -134,8 +135,8 @@ pub(crate) fn warn_about_manifest(
     Ok(())
 }
 
-/// Shared per-paradigm orchestration: run the grid pass, resolve the
-/// manifest, dispatch into `evaluate_partitioned`.
+/// Shared per-paradigm orchestration: canonicalize the manifest, run the
+/// grid pass, resolve the manifest, dispatch into `evaluate_partitioned`.
 #[allow(clippy::too_many_arguments)]
 fn evaluate_instance_partitioned_impl(
     py: Python<'_>,
@@ -154,10 +155,8 @@ fn evaluate_instance_partitioned_impl(
     key_kind: &str,
     num_threads: Option<usize>,
 ) -> PyResult<PyPartitionedSummary> {
-    // ADR-0064: `evaluate_grid_any_gt` is the same dispatcher the
-    // un-partitioned evaluate uses, so `gt` takes `bytes` or a
-    // `CocoDataset` here for exactly the reasons it does there —
-    // including the ADR-0026 federated handling, which the grid owns.
+    // A malformed manifest fails before the evaluation it would discard.
+    let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
     let grid = evaluate_grid_any_gt(
         py,
         iou_type,
@@ -180,8 +179,6 @@ fn evaluate_instance_partitioned_impl(
     // (id-ascending sort).
     let snapshot = grid.dataset_snapshot();
     let image_id_to_idx = image_id_to_idx(&*snapshot.gt);
-
-    let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
 
     let cross = parse_cross_axes(cross_axes);
     let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &image_id_to_idx, &cross)
@@ -516,7 +513,7 @@ impl PyPartitionedLrpReport {
 /// place.
 type LrpKernelDispatch = Box<
     dyn FnOnce(
-            &CocoDataset,
+            &DatasetSnapshot,
             &CocoDetections,
             LrpParams<'_>,
             vernier_core::ParityMode,
@@ -527,8 +524,8 @@ type LrpKernelDispatch = Box<
 
 /// Shared per-kernel orchestration for partitioned LRP.
 ///
-/// 1. Resolve `gt` and `dt` off the GIL via `py.detach` — the same two
-///    unions `Evaluator.evaluate` takes, per ADR-0064.
+/// 1. Canonicalize the manifest, then resolve `gt` and `dt` (ADR-0064),
+///    converting off the GIL.
 /// 2. Build `image_id_to_idx` from the resolved GT, resolve the
 ///    manifest into a partition spec, emit warnings.
 /// 3. Run [`evaluate_partitioned_lrp`] (1× matching pass; N+1 cheap
@@ -552,15 +549,16 @@ fn evaluate_instance_partitioned_lrp_impl(
     dispatch: LrpKernelDispatch,
 ) -> PyResult<PyPartitionedLrpReport> {
     let parity = parse_parity_mode(parity_mode)?;
-    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "optimal_lrp")?;
+    // Cheap validation first: a bad manifest fails before the `dt` ingest.
     let manifest_bytes = manifest_to_canonical_json(py, manifest, key_kind)?;
+    let inputs = DiagnosticInputs::extract(py, gt, dt, kernel, cast_inputs, "optimal_lrp")?;
     let cross = cross_axes.unwrap_or_default();
 
     let (gt, dt) = py.detach(move || inputs.realize())?;
 
     // Resolve manifest under the GIL so warnings surface to Python's
     // warnings module before the heavy work runs off-GIL.
-    let id_map = image_id_to_idx(&*gt);
+    let id_map = image_id_to_idx(&*gt.gt);
     let (spec, warnings) = partition_spec_from_manifest(&manifest_bytes, &id_map, &cross)
         .map_err(|e| PyValueError::new_err(format!("manifest resolution failed: {e}")))?;
     warn_about_manifest(py, &warnings)?;
@@ -639,7 +637,7 @@ pub(crate) fn evaluate_bbox_partitioned_lrp(
         key_kind,
         Box::new(|gt, dt, params, parity, spec| {
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
                 &BboxIou,
                 LrpKernelMarker::Bbox,
@@ -699,9 +697,9 @@ pub(crate) fn evaluate_segm_partitioned_lrp(
         key_kind,
         Box::new(|gt, dt, params, parity, spec| {
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
-                &SegmIou,
+                &gt.segm_kernel(),
                 LrpKernelMarker::Segm,
                 params,
                 parity,
@@ -760,11 +758,10 @@ pub(crate) fn evaluate_boundary_partitioned_lrp(
         cross_axes,
         key_kind,
         Box::new(move |gt, dt, params, parity, spec| {
-            let kernel = BoundaryIou { dilation_ratio };
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
-                &kernel,
+                &gt.boundary_kernel(dilation_ratio),
                 LrpKernelMarker::Boundary,
                 params,
                 parity,
@@ -825,7 +822,7 @@ pub(crate) fn evaluate_keypoints_partitioned_lrp(
         Box::new(move |gt, dt, params, parity, spec| {
             let kernel = OksSimilarity::new(sigmas_map);
             evaluate_partitioned_lrp(
-                gt,
+                &gt.gt,
                 dt,
                 &kernel,
                 LrpKernelMarker::Keypoints,

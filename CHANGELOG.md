@@ -21,35 +21,39 @@ additive / perf / docs".
   `manifest=` form), `confusion_matrix`, `fp_iou_histogram` and
   `Evaluator.evaluate`'s `tables=` / `manifest=` paths now take a
   `CocoDataset` handle for `gt` and the whole `DetectionsInput` union
-  for `dt` — the same two arguments `Evaluator.evaluate` and
-  `evaluate_*_grid` have taken since ADR-0061 and ADR-0030. The five
-  `NotImplementedError` guards are gone.
+  for `dt`, like `Evaluator.evaluate` and `evaluate_*_grid`. So the
+  `(CocoDataset, DetectionsInput)` pair from `coco_inputs` reaches every
+  instance surface without a COCO file. The four standalone diagnostics
+  gain `cast_inputs` (default `False`, as on `Evaluator`).
 
-  This completes ADR-0063's case for returning inputs rather than a
-  metric: the `(CocoDataset, DetectionsInput)` pair from `coco_inputs`
-  / `coco_inputs_from_columns` now reaches every instance surface, so a
-  training loop can go from "AP dropped" to a TIDE decomposition of why
-  without serializing a COCO file. Nothing below the argument
-  resolution changed, and no evaluated number moves.
+  Those four refuse LVIS federated ground truth (a
+  `CocoDataset.from_lvis_json` handle) with `NotImplementedError`: they
+  have no federated disposition.
 
-  Each of the four standalone diagnostics also gains `cast_inputs`,
-  matching `Evaluator`'s field and its `False` default.
+### Fixed
 
-  LVIS federated ground truth — a handle from
-  `CocoDataset.from_lvis_json` — is refused on those four, since they
-  would apply the AA3/AA4 branches without the ADR-0026 detection trim
-  and there is no oracle for the result. `tables=` / `manifest=` route
-  through the grid and are unrestricted.
+- `Evaluator.evaluate(lvis_handle, dt)` — neither `tables=` nor
+  `manifest=` — now applies the ADR-0026 AC2 per-image detection cap, as
+  the grid path always has. It matched a federated handle untrimmed, so
+  an image carrying more detections than the largest `max_dets` scored
+  differently from `tables=`, `manifest=`, `evaluate_*_grid` and
+  lvis-api.
 
-### Changed
+### Performance
 
-- The `gt` bytes path no longer copies the payload before releasing the
-  GIL — `PyBackedBytes` borrows it instead. ADR-0064 made
-  `GtPayload::extract` the single classifier of the
-  `bytes | CocoDataset` union, so this reaches `evaluate_*_summary` as
-  well as the diagnostics: the plain `Evaluator.evaluate` path was still
-  paying a `to_vec()` of the whole ground truth per call (~20 MB on
-  val2017).
+- The segm / boundary diagnostics reuse a `CocoDataset` handle's GT
+  caches, shared with `Evaluator.evaluate`, and TIDE shares one cache
+  across its eight passes on either `gt` spelling. On 500 val2017
+  images, boundary TIDE runs ~27% faster, and boundary LRP / confusion
+  matrix / FP-IoU histogram ~33% faster on a warm handle. Results are
+  bit-identical. The `vernier-core` per-kernel diagnostic wrappers
+  switch to the scratch-reusing mask kernels too.
+- The `gt` bytes path borrows the payload across the GIL release rather
+  than copying it (~20 MB per call on val2017), on `evaluate_*_summary`
+  as well as the diagnostics. `BackgroundEvaluator` now parses bytes GT
+  off the GIL.
+- `manifest=` (partitioned AP and LRP) validates the manifest before
+  running the evaluation or reading the detections.
 
 ## [0.5.2] - 2026-09-22
 

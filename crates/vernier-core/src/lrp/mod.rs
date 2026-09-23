@@ -42,9 +42,9 @@ pub use params::LrpParams;
 
 use crate::dataset::{CocoDataset, CocoDetections, EvalDataset};
 use crate::error::EvalError;
-use crate::evaluate::COLLAPSED_CATEGORY_SENTINEL;
+use crate::evaluate::{boundary_kernel, segm_kernel, COLLAPSED_CATEGORY_SENTINEL};
 use crate::parity::ParityMode;
-use crate::similarity::{BboxIou, BoundaryIou, OksSimilarity, SegmIou};
+use crate::similarity::{BboxIou, OksSimilarity};
 
 use std::collections::{HashMap, HashSet};
 
@@ -347,7 +347,8 @@ pub fn optimal_lrp_segm(
     params: LrpParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<LrpReport, EvalError> {
-    optimal_lrp_with(gt, dt, &SegmIou, LrpKernelMarker::Segm, params, parity_mode)
+    let kernel = segm_kernel(None);
+    optimal_lrp_with(gt, dt, &kernel, LrpKernelMarker::Segm, params, parity_mode)
 }
 
 /// End-to-end LRP for the boundary-segm kernel.
@@ -365,7 +366,7 @@ pub fn optimal_lrp_boundary(
     parity_mode: ParityMode,
     dilation_ratio: f64,
 ) -> Result<LrpReport, EvalError> {
-    let kernel = BoundaryIou { dilation_ratio };
+    let kernel = boundary_kernel(dilation_ratio, None);
     optimal_lrp_with(
         gt,
         dt,
@@ -449,7 +450,7 @@ pub fn optimal_lrp_segm_partitioned(
     optimal_lrp_with_partitioned(
         gt,
         dt,
-        &SegmIou,
+        &segm_kernel(None),
         LrpKernelMarker::Segm,
         params,
         parity_mode,
@@ -470,7 +471,7 @@ pub fn optimal_lrp_boundary_partitioned(
     dilation_ratio: f64,
     image_filters: &[HashSet<usize>],
 ) -> Result<Vec<LrpReport>, EvalError> {
-    let kernel = BoundaryIou { dilation_ratio };
+    let kernel = boundary_kernel(dilation_ratio, None);
     optimal_lrp_with_partitioned(
         gt,
         dt,

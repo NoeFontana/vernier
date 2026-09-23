@@ -1,26 +1,12 @@
 """ADR-0064: the `(CocoDataset, DetectionsInput)` pair on every instance surface.
 
-ADR-0063 returns inputs rather than a metric so that every vernier
-surface composes with one conversion. Five surfaces did not hold up
-their end — TIDE, LRP, the confusion matrix, the FP-IoU histogram and
-the ``tables=`` / ``manifest=`` paths each refused a
-:class:`CocoDataset` and took detections only as JSON bytes. This
-module is the evidence that they now do.
+Each case evaluates *one document* in both spellings — GT bytes vs. a
+handle, results JSON vs. an ``(N, 7)`` matrix in the JSON's own order
+(so quirk **J1**'s positional auto-ids match) — and asserts the same
+result, not merely that the call runs.
 
-**Same result, not merely "it runs".** Each case builds the two
-spellings of *one document* — a handle parsed from the GT bytes, and
-an ``(N, 7)`` detection matrix laid out in the JSON array's own order
-so the auto-id assignment of quirk **J1** lands identically — and
-asserts the surface returns the same thing from both. A test that only
-checked for the absence of an exception would pass while the handle
-path quietly evaluated something else.
-
-The refusal that remains is LVIS federated ground truth: the matching
-pass would apply the AA3/AA4 branches while the ADR-0026 AC2 detection
-trim, which lives on the grid path, would not. Half the semantics with
-no oracle for the other half is the plausible-but-wrong number ADR-0057
-rules out, so it raises. ``tables=`` / ``manifest=`` route through the
-grid and are correspondingly *not* restricted.
+The four standalone diagnostics refuse LVIS federated ground truth; the
+``Evaluator.evaluate`` branches accept it and must agree with each other.
 """
 
 from __future__ import annotations
@@ -56,8 +42,9 @@ _LVIS_FIXTURE = Path(__file__).parent / "parity_lvis" / "fixtures" / "federated_
 #: clean diagonal, a class swap, a localization miss and a duplicate.
 _CASES = ["all_perfect", "all_cls", "all_loc", "all_dupe"]
 
-#: The mask-kernel fixture, for the segm / boundary entry points.
-_SEGM_FIXTURE = "segm_all_cls"
+#: The mask-kernel fixture: same-class pairs overlap partially, so every
+#: diagnostic's matching pass calls the kernel (and so fills a cache).
+_SEGM_FIXTURE = "segm_all_loc"
 
 
 def _load(root: Path) -> tuple[bytes, bytes]:
@@ -269,43 +256,74 @@ def test_cast_inputs_gates_a_float32_matrix() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The other kernels, and the limitation the ADR records
+# The mask kernels, and the handle's GT caches
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("iou", [Segm(), Boundary()], ids=["segm", "boundary"])
-def test_the_mask_kernels_read_the_handle_too(iou: object) -> None:
-    """Widening ``gt`` is per-entry-point, and each kernel has its own
-    entry point — so bbox passing proves nothing about segm."""
+def _histogram_shape(h: Any) -> object:
+    return (h.iou_same.tolist(), h.iou_cross.tolist(), h.n_fps, h.n_total_dts, h.kernel)
+
+
+def _confusion_shape(df: object) -> object:
+    pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
+    return _counts(df)
+
+
+_MASK_DIAGNOSTICS = [
+    pytest.param(error_decomposition, lambda r: r, id="error_decomposition"),
+    pytest.param(fp_iou_histogram, _histogram_shape, id="fp_iou_histogram"),
+    pytest.param(optimal_lrp, _lrp_shape, id="optimal_lrp"),
+    pytest.param(confusion_matrix, _confusion_shape, id="confusion_matrix"),
+]
+
+
+@pytest.mark.parametrize(
+    ("iou", "cache_len"),
+    [(Segm(), "segm_cache_len"), (Boundary(), "boundary_cache_len")],
+    ids=["segm", "boundary"],
+)
+@pytest.mark.parametrize(("call", "shape"), _MASK_DIAGNOSTICS)
+def test_mask_diagnostics_fill_and_reuse_the_handle_cache(
+    call: Any, shape: Any, iou: object, cache_len: str
+) -> None:
+    """Each mask entry point takes the handle, fills its GT cache, and a
+    warm cache reproduces the bytes result bit for bit."""
     gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / _SEGM_FIXTURE)
     handle = CocoDataset.from_json(gt_bytes)
+    expected = shape(call(gt_bytes, dt_bytes, iou=iou))
 
-    assert error_decomposition(handle, dt_bytes, iou=iou) == error_decomposition(
-        gt_bytes, dt_bytes, iou=iou
-    )
+    assert shape(call(handle, dt_bytes, iou=iou)) == expected
+    assert getattr(handle, cache_len) > 0
+    assert shape(call(handle, dt_bytes, iou=iou)) == expected
 
 
-def test_the_handle_saves_the_parse_and_not_the_derivations() -> None:
-    """ADR-0064 §"What this deliberately does not do", pinned.
-
-    `vernier_core`'s TIDE entry points take a dataset and no cache, so a
-    segm pass through a handle leaves ``segm_cache_len`` at zero where
-    the same handle through :meth:`Evaluator.evaluate` populates it. The
-    claim is a limitation, and a limitation nobody checks is how a
-    docstring drifts into fiction.
-    """
+def test_diagnostics_share_the_cache_the_evaluator_fills() -> None:
     gt_bytes, dt_bytes = _load(_TIDE_FIXTURES / _SEGM_FIXTURE)
     handle = CocoDataset.from_json(gt_bytes)
-
-    error_decomposition(handle, dt_bytes, iou=Segm())
-    assert handle.segm_cache_len == 0
-
     Evaluator(iou=Segm()).evaluate(handle, dt_bytes)
-    assert handle.segm_cache_len > 0
+    warmed = handle.segm_cache_len
+
+    report = error_decomposition(handle, dt_bytes, iou=Segm())
+
+    assert handle.segm_cache_len == warmed
+    assert report == error_decomposition(gt_bytes, dt_bytes, iou=Segm())
+
+
+def test_a_bad_manifest_fails_before_the_detections_are_read() -> None:
+    """The manifest is canonicalized before the ``dt`` ingest (and before
+    the grid pass), so a bad one never pays for either."""
+    gt_bytes, _ = _load(_PARTITION_FIXTURE)
+    refused_dt = cast("Any", np.zeros((3, 5)))
+    missing = _PARTITION_FIXTURE / "absent.json"
+
+    with pytest.raises(ValueError, match="manifest file read failed"):
+        optimal_lrp(gt_bytes, refused_dt, iou=Bbox(), manifest=missing)
+    with pytest.raises(ValueError, match="manifest file read failed"):
+        Evaluator(iou=Bbox()).evaluate(gt_bytes, refused_dt, manifest=missing)
 
 
 # ---------------------------------------------------------------------------
-# The refusal that stays
+# LVIS federated ground truth
 # ---------------------------------------------------------------------------
 
 
@@ -313,29 +331,77 @@ def _federated_handle() -> CocoDataset:
     return CocoDataset.from_lvis_json((_LVIS_FIXTURE / "gt.json").read_bytes())
 
 
+def _partitioned_lrp(gt: Any, dt: Any, *, iou: Any) -> object:
+    pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
+    manifest = {
+        "manifest_version": "1",
+        "key_kind": "image_id",
+        "rows": [{"key": 1, "split": "a"}, {"key": 2, "split": "b"}],
+    }
+    return optimal_lrp(gt, dt, iou=iou, manifest=manifest)
+
+
+@pytest.mark.parametrize("iou", [Bbox(), Segm(), Boundary()], ids=["bbox", "segm", "boundary"])
 @pytest.mark.parametrize(
     "call",
     [
         pytest.param(error_decomposition, id="error_decomposition"),
         pytest.param(fp_iou_histogram, id="fp_iou_histogram"),
         pytest.param(optimal_lrp, id="optimal_lrp"),
+        pytest.param(_partitioned_lrp, id="optimal_lrp_manifest"),
         pytest.param(confusion_matrix, id="confusion_matrix"),
     ],
 )
-def test_federated_ground_truth_is_refused(call: Any) -> None:
+def test_federated_ground_truth_is_refused(call: Any, iou: object) -> None:
+    """Every diagnostic entry point, per kernel: each is its own FFI call site."""
     dt_bytes = (_LVIS_FIXTURE / "dt.json").read_bytes()
     with pytest.raises(NotImplementedError, match="federated"):
-        call(_federated_handle(), dt_bytes, iou=Bbox())
+        call(_federated_handle(), dt_bytes, iou=iou)
 
 
 def test_a_flat_handle_over_the_same_annotations_is_not_refused() -> None:
-    """The refusal is about the metadata, not about LVIS-shaped data:
-    loading the same file through the COCO parser drops the federated
-    extras, and then the diagnostics have nothing to be half-right
-    about."""
+    """The refusal is about the federated metadata, which
+    ``CocoDataset.from_json`` drops."""
     gt_bytes, dt_bytes = _load(_LVIS_FIXTURE)
     flat = CocoDataset.from_json(gt_bytes)
     assert not flat.is_federated
 
     from_pair = error_decomposition(flat, _dt_matrix(dt_bytes), iou=Bbox())
     assert from_pair == error_decomposition(gt_bytes, dt_bytes, iou=Bbox())
+
+
+def test_every_evaluate_branch_applies_the_federated_trim() -> None:
+    """ADR-0026 AC2 caps detections per image, across categories, on every
+    ``Evaluator.evaluate`` branch — plain, ``tables=`` and ``manifest=``.
+
+    100 high-scoring category-1 false positives crowd the only category-2
+    true positive out of the image's top 100, so an untrimmed path scores
+    category 2 at AP 1 and a trimmed one at AP 0.
+    """
+    pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
+    image = {"id": 1, "width": 100, "height": 100}
+    gt = {
+        "images": [{**image, "neg_category_ids": [], "not_exhaustive_category_ids": []}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 10, 10], "area": 100},
+            {"id": 2, "image_id": 1, "category_id": 2, "bbox": [50, 50, 10, 10], "area": 100},
+        ],
+        "categories": [
+            {"id": 1, "name": "a", "frequency": "f"},
+            {"id": 2, "name": "b", "frequency": "f"},
+        ],
+    }
+    fps = [[1, 80, 80, 5, 5, 0.99 - i * 1e-3, 1] for i in range(100)]
+    dt = np.asarray([*fps, [1, 50, 50, 10, 10, 0.01, 2]], dtype=np.float64)
+    handle = CocoDataset.from_lvis_json(json.dumps(gt).encode())
+    manifest = {"manifest_version": "1", "key_kind": "image_id", "rows": [{"key": 1, "s": "x"}]}
+    ev = Evaluator(iou=Bbox())
+
+    plain = ev.evaluate(handle, dt)
+    tabled = ev.evaluate(handle, dt, tables=("per_class",)).summary
+    sliced = ev.evaluate(handle, dt, manifest=manifest).summary
+
+    assert tabled is not None
+    assert sliced is not None
+    assert plain.stats == tabled.stats == sliced.stats
+    assert plain.stats == ev.evaluate(handle, dt[:100]).stats

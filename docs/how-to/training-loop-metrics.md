@@ -168,20 +168,15 @@ fp_iou_histogram(ground_truth, dt)                   # per-FP IoU pairs
 too, so per-class tables and per-slice breakdowns run off the same
 conversion.
 
-"The same conversion" is exact about the ground truth and approximate
-about the detections: `ground_truth` is a parsed handle, so its JSON
-parse happens once no matter how many surfaces you call, while `dt` is
-still an array the FFI reads per call. That read is the cheap half — no
-JSON, no Python object per detection — but it is not free on a masked
-run, so prefer one pass over the diagnostics you actually want to a
-speculative sweep of all four.
+`ground_truth` is a parsed handle, so its JSON parse — and, for the mask
+kernels, its per-annotation derivations — happen once across every
+surface you call. `dt` is re-read per call: no JSON and no Python object
+per detection, but not free on a masked run, so call the diagnostics you
+need rather than all four.
 
-The one ground truth these four refuse is an LVIS federated handle —
-one built by `CocoDataset.from_lvis_json` rather than `from_json`.
-Those surfaces have no LVIS disposition, and applying part of the
-semantics silently would be worse than raising. This route never
-produces one (it builds COCO-flat ground truth), so it only bites a
-caller mixing an LVIS file into the same call.
+The four diagnostics refuse an LVIS federated handle (one built by
+`CocoDataset.from_lvis_json`): they have no LVIS disposition. This route
+builds COCO-flat ground truth, so it never produces one.
 
 ## What it decides for you
 
