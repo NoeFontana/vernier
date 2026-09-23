@@ -72,14 +72,15 @@ SampleIouType = Literal["bbox", "segm"]
 _Columnish: TypeAlias = "Prediction | Target | DetectionColumns | TargetColumns"
 
 
-def _as_array(value: Any, field: str) -> NDArray[Any]:
+def _as_array(value: Any, field: str, *, cast_inputs: bool = True) -> NDArray[Any]:
     """Return ``value`` as a numpy array without naming its framework.
 
     ``.detach()`` drops an autograd graph and ``.cpu()`` moves a device
     tensor; both are probed by attribute, so torch, jax and anything
     else offering them work, and numpy (offering neither) falls straight
     through. The final :func:`numpy.asarray` is zero-copy for any CPU
-    buffer exporting the array or DLPack protocol.
+    buffer exporting the array or DLPack protocol; only a dtype it
+    refuses costs anything more.
     """
     if hasattr(value, "detach"):
         value = value.detach()
@@ -87,9 +88,38 @@ def _as_array(value: Any, field: str) -> NDArray[Any]:
         value = value.cpu()
     try:
         array: NDArray[Any] = np.asarray(value)
-    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
-        raise TypeError(f"{field}: cannot read as an array ({exc})") from exc
+    except (TypeError, ValueError) as exc:
+        array = _as_f64_unrepresentable(value, field, exc, cast_inputs=cast_inputs)
     return array
+
+
+def _as_f64_unrepresentable(
+    value: Any, field: str, exc: Exception, *, cast_inputs: bool
+) -> NDArray[Any]:
+    """Retry a dtype numpy has no equivalent for, through the value's own f64 conversion.
+
+    An autocast training loop holds ``bfloat16``, which numpy cannot
+    represent, so :func:`numpy.asarray` refuses the tensor outright and
+    the caller sees a dtype complaint naming a library vernier never
+    mentions. ``.double()`` is probed by attribute like ``.detach()``
+    above, and is exact -- ``bfloat16`` is ``float32`` with a truncated
+    mantissa, so this invents no precision the value did not have.
+
+    Converting is what ``cast_inputs`` gates (ADR-0004, ADR-0030), so
+    ``cast_inputs=False`` refuses here rather than in
+    :func:`_cast_f64`, which would never see this value.
+    """
+    if not cast_inputs:
+        raise TypeError(
+            f"{field}: expected dtype float64, got a dtype numpy cannot represent ({exc}). "
+            "Pass cast_inputs=True to convert, or convert it yourself."
+        ) from exc
+    if hasattr(value, "double"):
+        try:
+            return np.asarray(value.double())
+        except (TypeError, ValueError):
+            pass
+    raise TypeError(f"{field}: cannot read as an array ({exc})") from exc
 
 
 def _cast_f64(array: NDArray[Any], field: str, *, cast_inputs: bool) -> NDArray[np.float64]:
@@ -121,7 +151,7 @@ def _boxes(
     ``(0, 4)``, which is the shape concatenation and per-image counting
     both need.
     """
-    array = _as_array(value, field)
+    array = _as_array(value, field, cast_inputs=cast_inputs)
     # An empty image may arrive `(1, 0)` (TorchMetrics' `_fix_empty_tensors`
     # shapes it that way to dodge a DDP all-reduce hang) or `(0, 4)`; both
     # mean zero boxes. Anything else must be `(N, 4)` on the nose — checking
@@ -449,7 +479,7 @@ def _required(record: _Columnish, key: str, field: str) -> Any:
 
 def _column(record: _Columnish, key: str, field: str, *, cast_inputs: bool) -> NDArray[Any]:
     """One required float64 column off a record."""
-    array = _as_array(_required(record, key, field), f"{field}.{key}")
+    array = _as_array(_required(record, key, field), f"{field}.{key}", cast_inputs=cast_inputs)
     column = _cast_f64(array, f"{field}.{key}", cast_inputs=cast_inputs)
     return np.reshape(column, (-1,))
 
