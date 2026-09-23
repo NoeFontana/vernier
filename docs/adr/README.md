@@ -80,6 +80,7 @@ else is detail.
 | [0043](0043-lrp-oracle-and-namespace.md) | LRP / oLRP — numpy oracle, kemaloksuz tripwire, cross-paradigm namespace | accepted |
 | [0044](0044-lrp-thresholds-and-tau-grid.md) | LRP — tau grid resolution and per-kernel TP thresholds | accepted |
 | [0045](0045-lrp-keypoints-shipped.md) | LRP for keypoints — shipped, not deferred | accepted |
+| [0063](0063-oriented-box-evaluation.md) | Oriented-box evaluation — `RotatedBox` and `Quad` kernels | proposed |
 
 ### Public surfaces — dataset, results, streaming, CLI
 
