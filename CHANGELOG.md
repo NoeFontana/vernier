@@ -14,6 +14,8 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-09-24
+
 ### Added
 
 - **The parsed pair on every instance surface** (ADR-0064). TIDE
@@ -80,4 +82,5 @@ out of searches and sweeps.
 - [0.0.2](docs/changelog/0.0.2.md) — 2026-05-12
 - [0.0.1](docs/changelog/0.0.1.md) — 2026-04-30
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.3...HEAD
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.4...HEAD
+[0.5.4]: https://github.com/NoeFontana/vernier/compare/v0.5.3...v0.5.4
