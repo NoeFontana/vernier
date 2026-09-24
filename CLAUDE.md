@@ -12,6 +12,7 @@ Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 - `crates/vernier-ffi/` — PyO3 bindings → `vernier._core`. Data conversion only; logic belongs in core. `publish = false`.
 - `python/vernier/` — user-facing Python wrapper. `pyright` strict.
 - `docs/adr/` — MADR-format ADRs. Significant changes start as a `proposed` ADR, not a PR. Immutable once `accepted`; supersede with a new ADR.
+- `docs/changelog/` — frozen per-release history, one file per version. Do not search, sweep, or edit it. `CHANGELOG.md` keeps `[Unreleased]` plus the most recently released version; older entries move here.
 
 ## Commands (use `just`)
 

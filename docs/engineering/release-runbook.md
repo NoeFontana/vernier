@@ -208,7 +208,12 @@ git switch -c chore/release-X.Y.Z
 #     and bump every internal path-dep entry to X.Y.Z.
 cargo update --workspace
 uv lock
-# Add a CHANGELOG.md entry under the new version heading.
+# Add a CHANGELOG.md entry under the new version heading. Only
+# [Unreleased] and the most recently released version live in
+# CHANGELOG.md; older entries are archived one-per-file under
+# docs/changelog/ (see CLAUDE.md). Move the previous release's section
+# there in this same PR, once this release's entry replaces it as the
+# newest.
 just lint && just test && just audit
 # docs.rs dry-run — catches feature-flag combinations CI's docs-rust
 # job won't see. Excludes vernier-ffi (publish = false; docs.rs never
@@ -554,4 +559,5 @@ release is X.Y.(Z+1), not a re-cut of X.Y.Z.
 
 - [`docs/engineering/registry-reservations.md`](registry-reservations.md) — what vernier publishes on each registry, under which credentials, and the "a name is claimed by its first real release" rule (ADR-0048).
 - [`docs/adr/0048-vernier-facade-crate.md`](../adr/0048-vernier-facade-crate.md) — the `vernier` facade crate and the retirement of the reservation practice.
-- [`CHANGELOG.md`](../../CHANGELOG.md) — release history.
+- [`CHANGELOG.md`](../../CHANGELOG.md) — unreleased changes and the current release.
+- [`docs/changelog/`](../changelog/) — archived per-version release history.

@@ -6,13 +6,17 @@ strict: true
 
 docs_dir: docs
 
-# adr/ and engineering/ are in-tree internal references; not user-facing.
+# adr/, engineering/ and changelog/ are in-tree internal references; not
+# user-facing. changelog/ entries are frozen release notes written with
+# repo-root-relative links (as rendered on GitHub), which don't resolve
+# under mkdocs' docs/ tree.
 # /README.md (anchored) is the top-level docs/README.md; docs/index.md is the
 # landing page. Subdirectory READMEs (tutorials/README.md etc.) are the
 # section landing pages — must not be excluded.
 exclude_docs: |
   adr/**
   engineering/**
+  changelog/**
   /README.md
 
 theme:
