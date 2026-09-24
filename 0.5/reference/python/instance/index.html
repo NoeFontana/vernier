@@ -7457,14 +7457,15 @@ persona leaves it <code>None</code>.</p>
 </h2>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">confusion_matrix</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier.instance.IouKind" href="#vernier.instance.IouKind">IouKind</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">t_f</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">=</span> <span class="mf">0.5</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">max_dets_per_image</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">use_cats</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="polars.DataFrame">DataFrame</span></span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><span title="polars.DataFrame">DataFrame</span></span>
 </span></code></pre></div>
 
     <div class="doc doc-contents ">
@@ -7526,9 +7527,10 @@ needed for visualization.</p>
             <td>
               <div class="doc-md-description">
                 <p>Ground-truth COCO JSON payload as bytes (the same shape
-<code>pycocotools.COCO(...)</code> consumes). The :class:<code>CocoDataset</code>
-handle from ADR-0020 is not yet wired through this path —
-passing one raises :class:<code>NotImplementedError</code>.</p>
+<code>pycocotools.COCO(...)</code> consumes) or a
+:class:<code>CocoDataset</code> handle (ADR-0020, ADR-0060). A handle
+carrying LVIS federated metadata is refused — the confusion
+matrix has no federated disposition (ADR-0064).</p>
               </div>
             </td>
             <td>
@@ -7540,11 +7542,16 @@ passing one raises :class:<code>NotImplementedError</code>.</p>
                 <code>dt</code>
             </td>
             <td>
-                  <code><span title="bytes">bytes</span></code>
+                  <code><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Detection COCO JSON payload as bytes.</p>
+                <p>Any detection form the evaluator accepts — the detection
+COCO JSON payload as bytes, columnar
+:class:<code>vernier.instance.Detections</code>, result dicts, or an <code>(N, 7)</code>
+matrix (ADR-0030, ADR-0057, ADR-0064). The pair
+:func:<code>vernier.adapters.coco_inputs</code> returns is read here
+unchanged.</p>
               </div>
             </td>
             <td>
@@ -7639,6 +7646,24 @@ Defaults to <code>"corrected"</code>.</p>
                   <code>&#39;corrected&#39;</code>
             </td>
           </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cast_inputs</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Convert array dtypes rather than refusing them, as
+on :class:<code>vernier.instance.Evaluator</code>. Defaults to
+<code>False</code>; no effect on the bytes route.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
       </tbody>
     </table>
 
@@ -7691,9 +7716,9 @@ Defaults to <code>"corrected"</code>.</p>
             </td>
             <td>
               <div class="doc-md-description">
-                <p><code>iou=Keypoints(...)</code> (ADR-0024) or
-<code>gt</code> is a :class:<code>CocoDataset</code> handle (ADR-0020 forward-compat
-marker not yet wired through).</p>
+                <p><code>iou=Keypoints(...)</code> (ADR-0024), or
+<code>gt</code> is a federated :class:<code>CocoDataset</code> handle
+(ADR-0026 / ADR-0064).</p>
               </div>
             </td>
           </tr>
@@ -7752,7 +7777,7 @@ df.pivot(values="count", index="gt_class", on="dt_class")  # wide</p>
           <div class="doc-overloads">
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">optimal_lrp</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">tp_threshold</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7760,9 +7785,10 @@ df.pivot(values="count", index="gt_class", on="dt_class")  # wide</p>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">max_dets_per_image</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">use_cats</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            LrpReport
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            LrpReport
 
 
   
@@ -7770,7 +7796,7 @@ df.pivot(values="count", index="gt_class", on="dt_class")  # wide</p>
    (vernier._lrp.LrpReport)" href="#vernier.instance.LrpReport">LrpReport</a></span>
 </span></code></pre></div><div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">optimal_lrp</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">tp_threshold</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7778,9 +7804,10 @@ df.pivot(values="count", index="gt_class", on="dt_class")  # wide</p>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">max_dets_per_image</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">use_cats</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><span title="vernier._lrp.LrpManifest">LrpManifest</span></span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            PartitionedLrpReport
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><span title="vernier._lrp.LrpManifest">LrpManifest</span></span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            PartitionedLrpReport
 
 
   
@@ -7789,7 +7816,7 @@ df.pivot(values="count", index="gt_class", on="dt_class")  # wide</p>
 </span></code></pre></div>          </div>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">optimal_lrp</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">tp_threshold</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7797,9 +7824,10 @@ df.pivot(values="count", index="gt_class", on="dt_class")  # wide</p>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">max_dets_per_image</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">use_cats</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><span title="vernier._lrp.LrpManifest">LrpManifest</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            LrpReport
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">manifest</span><span class="p">:</span> <span class="n"><span title="vernier._lrp.LrpManifest">LrpManifest</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">cross_axes</span><span class="p">:</span> <span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="collections.abc.Sequence">Sequence</span></span><span class="p">[</span><span class="n"><span title="str">str</span></span><span class="p">]]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            LrpReport
 
 
   
@@ -7822,10 +7850,21 @@ metric's headline deliverable is the <em>(number, threshold)</em> pair:
 <code>tau</code> is the deployable cutoff a practitioner would set on the
 model to get the reported behaviour.</p>
 <p><code>gt</code> is the GT JSON bytes (the same shape pycocotools' <code>COCO</code>
-constructor consumes). <code>dt</code> is the detections JSON bytes (the
-shape <code>COCO.loadRes</code> consumes). The :class:<code>vernier.CocoDataset</code>
-parsed-once handle is accepted in the type signature for
-forward-compat but raises :class:<code>NotImplementedError</code> today.</p>
+constructor consumes) or a :class:<code>vernier.CocoDataset</code> handle
+(ADR-0020, ADR-0060). <code>dt</code> is anything
+:meth:<code>vernier.instance.Evaluator.evaluate</code> accepts: the detections
+JSON bytes (the shape <code>COCO.loadRes</code> consumes), columnar
+:class:<code>vernier.instance.Detections</code>, result dicts, or an <code>(N, 7)</code> matrix
+(ADR-0030, ADR-0057). The pair
+:func:<code>vernier.adapters.coco_inputs</code> returns is therefore read here
+unchanged (ADR-0064).</p>
+<p>A handle saves the GT JSON parse, and the mask kernels reuse and
+fill its per-annotation caches. A handle built by
+:meth:<code>vernier.CocoDataset.from_lvis_json</code> is refused: LRP has no
+LVIS federated disposition.</p>
+<p><code>cast_inputs</code> converts array dtypes rather than refusing them,
+exactly as on :class:<code>vernier.instance.Evaluator</code>; it defaults to
+<code>False</code> and has no effect on the bytes route.</p>
 <p><code>iou</code> selects the kernel: <code>Bbox()</code> (default), <code>Segm()</code>,
 <code>Boundary(dilation_ratio=...)</code>, or <code>Keypoints(sigmas=...)</code>.
 Unlike TIDE (ADR-0024 deferral), LRP supports the keypoints kernel
@@ -7876,7 +7915,7 @@ or a :class:<code>PartitionedLrpReport</code> when <code>manifest</code> is supp
 </h2>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">error_decomposition</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">t_f</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
@@ -7884,7 +7923,8 @@ or a :class:<code>PartitionedLrpReport</code> when <code>manifest</code> is supp
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">max_dets_per_image</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">use_cats</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            TideReport
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            TideReport
 
 
   
@@ -7903,12 +7943,24 @@ baseline plus one per bin plus the all-FPs-removed sanity total);
 expect roughly 6x the cost of a single :class:<code>Evaluator.evaluate</code>
 call.</p>
 <p><code>gt</code> is the GT JSON bytes (the same shape pycocotools'
-<code>COCO</code> constructor consumes). <code>dt</code> is the detections JSON
-bytes (the shape <code>COCO.loadRes</code> consumes). The
-:class:<code>vernier.CocoDataset</code> parsed-once handle (ADR-0020) is accepted
-in the type signature for forward-compat but raises
-:class:<code>NotImplementedError</code> today — the TIDE FFI is not yet wired
-through the CocoDataset cache. Tracked as a 0.5.x follow-up.</p>
+<code>COCO</code> constructor consumes) or a :class:<code>vernier.CocoDataset</code>
+handle (ADR-0020, ADR-0060). <code>dt</code> is anything
+:meth:<code>vernier.instance.Evaluator.evaluate</code> accepts: the detections
+JSON bytes (the shape <code>COCO.loadRes</code> consumes), columnar
+:class:<code>vernier.instance.Detections</code>, result dicts, or an <code>(N, 7)</code> matrix
+(ADR-0030, ADR-0057). The pair
+:func:<code>vernier.adapters.coco_inputs</code> returns is therefore read here
+unchanged (ADR-0064).</p>
+<p>A handle saves the GT JSON parse, and the mask kernels reuse and
+fill its per-annotation caches, as
+:meth:<code>vernier.instance.Evaluator.evaluate</code> does.</p>
+<p>A handle built by :meth:<code>vernier.CocoDataset.from_lvis_json</code> is
+refused — TIDE has no LVIS federated disposition, and applying half
+the semantics silently is the failure ADR-0057 rules out.</p>
+<p><code>cast_inputs</code> converts array dtypes rather than refusing them,
+exactly as on :class:<code>vernier.instance.Evaluator</code>; it defaults to
+<code>False</code> (ADR-0004's f64 boundary) and has no effect on the bytes
+route.</p>
 <p><code>iou</code> selects the kernel: <code>Bbox()</code> (default), <code>Segm()</code>, or
 <code>Boundary(dilation_ratio=...)</code>. <code>Keypoints(...)</code> raises
 :class:<code>NotImplementedError</code> per ADR-0024 — TIDE on OKS has no
@@ -7972,14 +8024,15 @@ deferral.</p>
 </h2>
 <div class="language-python doc-signature highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nf">fp_iou_histogram</span><span class="p">(</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="n">gt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span> <span class="o">|</span> <span class="n"><a class="autorefs autorefs-internal" title="            CocoDataset (vernier._core.CocoDataset)" href="#vernier.instance.CocoDataset">CocoDataset</a></span><span class="p">,</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><span title="bytes">bytes</span></span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">dt</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><span title="object">object</span></span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">t_f</span><span class="p">:</span> <span class="n"><span title="float">float</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="n">max_dets_per_image</span><span class="p">:</span> <span class="n"><span title="int">int</span></span> <span class="o">=</span> <span class="mi">100</span><span class="p">,</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="n">use_cats</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">=</span> <span class="s2">&quot;corrected&quot;</span><span class="p">,</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            FpIouHistogram
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            FpIouHistogram
 
 
   
@@ -8016,8 +8069,8 @@ Python-side to compute the bin-as-Bkg fraction at candidate <code>t_b</code>.</p
             </td>
             <td>
               <div class="doc-md-description">
-                <p>GT JSON bytes (CocoDataset handle deferred, same as
-:func:<code>error_decomposition</code>).</p>
+                <p>GT JSON bytes or a :class:<code>vernier.CocoDataset</code> handle,
+same as :func:<code>error_decomposition</code>.</p>
               </div>
             </td>
             <td>
@@ -8029,11 +8082,13 @@ Python-side to compute the bin-as-Bkg fraction at candidate <code>t_b</code>.</p
                 <code>dt</code>
             </td>
             <td>
-                  <code><span title="bytes">bytes</span></code>
+                  <code><a class="autorefs autorefs-internal" title="vernier._array_types.DetectionsInput" href="#vernier.instance.DetectionsInput">DetectionsInput</a></code>
             </td>
             <td>
               <div class="doc-md-description">
-                <p>Detection JSON bytes.</p>
+                <p>Any detection form the evaluator accepts — results JSON
+bytes, columnar :class:<code>vernier.instance.Detections</code>, result dicts,
+or an <code>(N, 7)</code> matrix (ADR-0064).</p>
               </div>
             </td>
             <td>
@@ -8123,6 +8178,22 @@ on :func:<code>error_decomposition</code> is <em>not</em> consumed here.</p>
             </td>
             <td>
                   <code>&#39;corrected&#39;</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>cast_inputs</code>
+            </td>
+            <td>
+                  <code><span title="bool">bool</span></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Same as :func:<code>error_decomposition</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
             </td>
           </tr>
       </tbody>
