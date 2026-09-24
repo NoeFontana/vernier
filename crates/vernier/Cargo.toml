@@ -51,8 +51,8 @@ partial = ["dep:vernier-partial"]
 # are deliberately absent.
 # ---------------------------------------------------------------------------
 [dependencies]
-vernier-core = { path = "../vernier-core", version = "0.5.3" }
-vernier-mask = { path = "../vernier-mask", version = "0.5.3" }
-vernier-panoptic = { path = "../vernier-panoptic", version = "0.5.3", optional = true }
-vernier-semantic = { path = "../vernier-semantic", version = "0.5.3", optional = true }
-vernier-partial = { path = "../vernier-partial", version = "0.5.3", optional = true }
+vernier-core = { path = "../vernier-core", version = "0.5.4" }
+vernier-mask = { path = "../vernier-mask", version = "0.5.4" }
+vernier-panoptic = { path = "../vernier-panoptic", version = "0.5.4", optional = true }
+vernier-semantic = { path = "../vernier-semantic", version = "0.5.4", optional = true }
+vernier-partial = { path = "../vernier-partial", version = "0.5.4", optional = true }
