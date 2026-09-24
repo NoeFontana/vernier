@@ -32,6 +32,7 @@ from vernier.instance import (
     optimal_lrp,
 )
 
+from .federated_crowding import crowded, federated_handle
 from .parity.conftest import loadres_to_detections
 
 _TIDE_FIXTURES = Path(__file__).parent / "oracle" / "tide" / "fixtures"
@@ -372,28 +373,10 @@ def test_a_flat_handle_over_the_same_annotations_is_not_refused() -> None:
 
 def test_every_evaluate_branch_applies_the_federated_trim() -> None:
     """ADR-0026 AC2 caps detections per image, across categories, on every
-    ``Evaluator.evaluate`` branch — plain, ``tables=`` and ``manifest=``.
-
-    100 high-scoring category-1 false positives crowd the only category-2
-    true positive out of the image's top 100, so an untrimmed path scores
-    category 2 at AP 1 and a trimmed one at AP 0.
-    """
+    ``Evaluator.evaluate`` branch — plain, ``tables=`` and ``manifest=``."""
     pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
-    image = {"id": 1, "width": 100, "height": 100}
-    gt = {
-        "images": [{**image, "neg_category_ids": [], "not_exhaustive_category_ids": []}],
-        "annotations": [
-            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [0, 0, 10, 10], "area": 100},
-            {"id": 2, "image_id": 1, "category_id": 2, "bbox": [50, 50, 10, 10], "area": 100},
-        ],
-        "categories": [
-            {"id": 1, "name": "a", "frequency": "f"},
-            {"id": 2, "name": "b", "frequency": "f"},
-        ],
-    }
-    fps = [[1, 80, 80, 5, 5, 0.99 - i * 1e-3, 1] for i in range(100)]
-    dt = np.asarray([*fps, [1, 50, 50, 10, 10, 0.01, 2]], dtype=np.float64)
-    handle = CocoDataset.from_lvis_json(json.dumps(gt).encode())
+    dt = crowded(1)
+    handle = federated_handle([1])
     manifest = {"manifest_version": "1", "key_kind": "image_id", "rows": [{"key": 1, "s": "x"}]}
     ev = Evaluator(iou=Bbox())
 

@@ -1599,6 +1599,21 @@ impl CocoDetections {
         self.by_image.get(&image).map_or(&[][..], Vec::as_slice)
     }
 
+    /// [`Self::lvis_trim`] to `max_dets` when `gt` is federated and some
+    /// image exceeds the cap; `self` unchanged otherwise (ADR-0026 AC2,
+    /// ADR-0065). Applied by whoever assembles the detection set, as
+    /// `LVISResults` does at construction.
+    #[must_use]
+    pub fn trim_for(self, gt: &CocoDataset, max_dets: usize) -> Self {
+        // Nothing to drop leaves the set as is: only the flat order would
+        // differ, and consumers read detections by id and per-cell score.
+        if !gt.is_federated() || self.by_image.values().all(|ix| ix.len() <= max_dets) {
+            return self;
+        }
+        // Saturate: a wrapped cap would land in AC5's negative "disabled" range.
+        self.lvis_trim(i64::try_from(max_dets).unwrap_or(i64::MAX))
+    }
+
     /// LVIS per-image top-`max_dets` trim (quirk **AC2** of ADR-0026).
     ///
     /// Mirrors `LVISResults.limit_dets_per_image` at

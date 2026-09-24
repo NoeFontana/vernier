@@ -1085,11 +1085,7 @@ fn evaluate_grid_with_dataset_impl(
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt) =
         py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let dt = trim_federated(
-                &snapshot.gt,
-                realize_dt(dt_payload, dt_area)?,
-                max_dets_per_image,
-            );
+            let dt = realize_dt(dt_payload, dt_area)?.trim_for(&snapshot.gt, max_dets_per_image);
             let caches = snapshot.caches();
             let params = EvaluateParams {
                 iou_thresholds: &iou_for_run,
@@ -1701,20 +1697,6 @@ pub(crate) fn parse_sigmas(d: &Bound<'_, PyDict>) -> PyResult<HashMap<i64, Vec<f
     Ok(out)
 }
 
-/// ADR-0026 AC2: a federated ground truth caps detections at
-/// `max_dets` per image, across categories, before matching
-/// (`LVISResults.limit_dets_per_image`). Identity on flat ground truth.
-///
-/// Every handle path that evaluates goes through here, so a federated
-/// handle scores the same whichever `Evaluator.evaluate` branch it takes.
-fn trim_federated(gt: &CocoDataset, dt: CocoDetections, max_dets: usize) -> CocoDetections {
-    if !gt.is_federated() {
-        return dt;
-    }
-    // Saturate: a wrapped cap would land in AC5's negative "disabled" range.
-    dt.lvis_trim(i64::try_from(max_dets).unwrap_or(i64::MAX))
-}
-
 fn run_pipeline(
     iou_type: &EvalIouType,
     gt: &CocoDataset,
@@ -1747,8 +1729,8 @@ fn run_pipeline(
 /// End-to-end pipeline against a parsed-once dataset (ADR-0020).
 /// Mirrors [`run_pipeline`] but routes through
 /// [`EvalIouType::run_cached`] so kernels with a cache slot reuse
-/// GT-side derivations across calls, and applies the federated trim the
-/// grid path applies.
+/// GT-side derivations across calls, and applies the federated trim
+/// (ADR-0026 AC2) as the grid path does.
 #[allow(clippy::too_many_arguments)]
 fn run_pipeline_with_dataset(
     iou_type: &EvalIouType,
@@ -1762,7 +1744,7 @@ fn run_pipeline_with_dataset(
 ) -> Result<Summary, EvalError> {
     let area = area_ranges_for(iou_type);
     let max_det_top = max_dets.iter().copied().max().unwrap_or(100);
-    let dt = trim_federated(gt, dt, max_det_top);
+    let dt = dt.trim_for(gt, max_det_top);
     let eval_params = EvaluateParams {
         iou_thresholds: iou_thresholds(),
         area_ranges: &area,
