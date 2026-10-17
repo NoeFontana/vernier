@@ -12,3 +12,5 @@ targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-unknown-
 install-path = "CARGO_HOME"
 hosting = "github"
 install-updater = false
+# Allow CI workflow modifications (e.g. actions upgrades) without failing dist plan
+allow-dirty = ["ci"]

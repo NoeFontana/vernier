@@ -24,8 +24,8 @@ jobs:
         target: [x86_64, aarch64]
         manylinux: [auto, musllinux_1_2]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - uses: Swatinem/rust-cache@v2
@@ -52,8 +52,8 @@ jobs:
       matrix:
         target: [x86_64, aarch64]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - uses: Swatinem/rust-cache@v2
@@ -79,8 +79,8 @@ jobs:
       matrix:
         target: [x64]
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
           architecture: ${{ matrix.target }}
@@ -104,8 +104,8 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.x"
       - uses: PyO3/maturin-action@v1
@@ -130,7 +130,7 @@ jobs:
           pattern: wheels-linux-x86_64-auto
           merge-multiple: true
           path: dist
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
       - name: install built wheel into fresh venv
@@ -158,7 +158,7 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: assert tag == workspace.package.version == project.version
         run: |
           set -euo pipefail
@@ -248,7 +248,7 @@ jobs:
       id-token: write   # OIDC for crates-io-auth-action
       contents: read    # actions/checkout
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       # No `Swatinem/rust-cache` here on purpose — `cargo publish` packs
       # each crate from a clean state into its own scratch dir, so any
