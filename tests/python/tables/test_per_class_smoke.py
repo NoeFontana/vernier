@@ -94,12 +94,7 @@ def test_per_class_arrow_pycapsule_round_trips_through_polars() -> None:
     assert type(schema_capsule).__name__ == "PyCapsule"
     assert type(array_capsule).__name__ == "PyCapsule"
 
-    df = polars.from_arrow(batch)
-    # polars sometimes wraps a single batch as a DataFrame, sometimes as
-    # a Series (chunked array path). Accept both — the producer
-    # guarantee is the protocol, not the consumer-side wrapping.
-    if isinstance(df, polars.Series):
-        df = df.to_frame()
+    df = polars.DataFrame(batch)
     assert isinstance(df, polars.DataFrame)
 
     # Schema pin: 13 columns in pinned order. Any rename/add is gated on
@@ -149,9 +144,7 @@ def test_per_class_table_alignes_with_synchronous_summary_stats() -> None:
     polars = pytest.importorskip("polars", reason="`vernier[tables]` extra not installed")
     grid, accum, dataset = _build_grid_and_accum()
     batch = per_class_to_arrow_pycapsule(grid, accum, dataset)
-    df = polars.from_arrow(batch)
-    if isinstance(df, polars.Series):
-        df = df.to_frame()
+    df = polars.DataFrame(batch)
 
     summary = Evaluator().evaluate(_GT, _DT)
     summary_ap = summary.stats[0]  # AP @ all areas, all IoUs, maxDets=largest

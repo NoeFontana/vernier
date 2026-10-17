@@ -82,7 +82,7 @@ def test_background_finalize_with_tables_per_image_matches_batch() -> None:
         ev.submit(_DT_BATCH_2)
         _, bg_arrow, _, _, _ = ev.finalize_with_tables(per_image=True)
     assert bg_arrow is not None
-    bg_df = polars.from_arrow(bg_arrow).sort("image_id")
+    bg_df = polars.DataFrame(bg_arrow).sort("image_id")
 
     from polars.testing import assert_frame_equal
 
@@ -98,7 +98,7 @@ def test_background_finalize_with_tables_per_class_matches_batch() -> None:
         ev.submit(_DT_BATCH_FULL)
         _, _, bg_arrow, _, _ = ev.finalize_with_tables(per_class=True)
     assert bg_arrow is not None
-    bg_df = polars.from_arrow(bg_arrow).sort("category_id")
+    bg_df = polars.DataFrame(bg_arrow).sort("category_id")
 
     from polars.testing import assert_frame_equal
 
@@ -124,7 +124,7 @@ def test_background_finalize_per_detection_matches_batch() -> None:
         ev.submit(_DT_BATCH_2)
         _, _, _, bg_arrow, _ = ev.finalize_with_tables(per_detection=True)
     assert bg_arrow is not None
-    bg_df = polars.from_arrow(bg_arrow).sort("detection_id")
+    bg_df = polars.DataFrame(bg_arrow).sort("detection_id")
 
     from polars.testing import assert_frame_equal
 
