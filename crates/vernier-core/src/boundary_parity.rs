@@ -48,7 +48,7 @@ pub const ORACLE_COMMIT_SHA: &str = "37d25586a677b043ed585f10e5c42d4e80176ea9";
 ///
 /// Mirrors `pyproject.toml`'s `[dependency-groups].dev` entry —
 /// changing one without the other is a build failure.
-pub const ORACLE_OPENCV_PIN: &str = "opencv-python==4.10.0.84";
+pub const ORACLE_OPENCV_PIN: &str = "opencv-python==5.0.0.93";
 
 #[cfg(test)]
 mod tests {
@@ -84,6 +84,6 @@ mod tests {
         // Tripwire: this constant mirrors `pyproject.toml`'s dev-extras
         // entry. Editing one without the other defeats the reproducibility
         // contract of the vendored oracle (ADR-0010 §"Oracle (E2 + E3)").
-        assert_eq!(ORACLE_OPENCV_PIN, "opencv-python==4.10.0.84");
+        assert_eq!(ORACLE_OPENCV_PIN, "opencv-python==5.0.0.93");
     }
 }

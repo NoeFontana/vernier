@@ -137,7 +137,7 @@ dev = [
     # mask_to_boundary calls cv2.erode + cv2.copyMakeBorder. Pin mirrored by
     # ORACLE_OPENCV_PIN in crates/vernier-core/src/boundary_parity.rs; both
     # update atomically. Bumping is ADR-level (see ADR-0010 §"Oracle (E2 + E3)").
-    "opencv-python==4.10.0.84",
+    "opencv-python==5.0.0.93",
     # LVIS reference oracle (ADR-0026). Vendored verbatim under
     # tests/python/parity_lvis/oracle/lvis_api/ at the same SHA, but
     # `pip install lvis==0.5.3` is the canonical way users obtain the
