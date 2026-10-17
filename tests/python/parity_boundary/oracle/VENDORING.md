@@ -100,7 +100,7 @@ The upstream's `boundary_utils.mask_to_boundary` calls `cv2.erode` and
 `[dependency-groups].dev`:
 
 ```
-opencv-python==4.10.0.84
+opencv-python==5.0.0.93
 ```
 
 Both `cv2.erode` and `cv2.copyMakeBorder` have been API-stable since
