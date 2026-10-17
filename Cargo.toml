@@ -85,7 +85,7 @@ predicates = "3"
 # JSON/CSV/Prettyprint helpers we have no use for.
 arrow-array = { version = "55", default-features = false, features = ["ffi"] }
 arrow-buffer = { version = "55", default-features = false }
-arrow-data = { version = "55", default-features = false, features = ["ffi"] }
+arrow-data = { version = "60", default-features = false, features = ["ffi"] }
 arrow-schema = { version = "55", default-features = false, features = ["ffi"] }
 # PNG decoder used by `vernier-panoptic::dataset::from_files` (ADR-0025
 # axis E2). Single-format decoder (~150 KB), no umbrella `image` crate.
