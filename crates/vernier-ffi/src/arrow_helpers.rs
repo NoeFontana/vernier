@@ -97,14 +97,19 @@ fn schema_to_ffi(schema: &Schema) -> PyResult<FFI_ArrowSchema> {
     let parent = FFI_ArrowSchema::try_new("+s", children, None)
         .map_err(|e| PyValueError::new_err(format!("arrow parent FFI build failed: {e}")))?;
     let parent = if !schema.metadata().is_empty() {
-        parent
-            .with_metadata(
-                schema
-                    .metadata()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone())),
-            )
-            .map_err(|e| PyValueError::new_err(format!("arrow schema metadata failed: {e}")))?
+        // SAFETY: `parent` was constructed immediately above via `FFI_ArrowSchema::try_new`,
+        // satisfying the requirement that the schema was produced by this crate and not from
+        // an external foreign C producer.
+        unsafe {
+            parent
+                .with_metadata(
+                    schema
+                        .metadata()
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone())),
+                )
+                .map_err(|e| PyValueError::new_err(format!("arrow schema metadata failed: {e}")))?
+        }
     } else {
         parent
     };
