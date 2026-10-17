@@ -293,7 +293,7 @@ class BackgroundEvaluator:
         self,
         detections: bytes,
         *,
-        timeout: float | None = None,   # None = block forever
+        timeout: float | None = None,  # None = block forever
     ) -> None: ...
 
     def snapshot(self, *, peek: bool = False) -> Summary: ...
@@ -315,7 +315,7 @@ class BackgroundEvaluator:
     @property
     def detections_seen(self) -> int: ...
     @property
-    def queue_depth(self) -> int: ...      # currently queued, not yet processed
+    def queue_depth(self) -> int: ...  # currently queued, not yet processed
     @property
     def memory_used_bytes(self) -> int: ...
 ```

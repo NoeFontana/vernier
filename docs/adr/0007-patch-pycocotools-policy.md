@@ -97,8 +97,11 @@ unpatch = adapters.patch_pycocotools(parity_mode="strict")
 try:
     # Existing pycocotools-using code now exercises vernier.
     from pycocotools.cocoeval import COCOeval
+
     e = COCOeval(coco_gt, coco_dt, iouType="bbox")
-    e.evaluate(); e.accumulate(); e.summarize()
+    e.evaluate()
+    e.accumulate()
+    e.summarize()
 finally:
     unpatch()  # Restores original pycocotools.cocoeval.COCOeval.
 ```

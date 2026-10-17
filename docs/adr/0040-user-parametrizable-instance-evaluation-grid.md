@@ -110,9 +110,9 @@ class Evaluator:
     iou: IouKind = field(default_factory=Bbox)
     parity_mode: ParityMode = "corrected"
     max_dets: tuple[int, ...] | None = None
-    iou_thresholds: tuple[float, ...] | None = None       # NEW
-    recall_thresholds: tuple[float, ...] | None = None    # NEW
-    area_ranges: Breakdown | None = None                  # NEW
+    iou_thresholds: tuple[float, ...] | None = None  # NEW
+    recall_thresholds: tuple[float, ...] | None = None  # NEW
+    area_ranges: Breakdown | None = None  # NEW
     use_cats: bool = True
     cast_inputs: bool = False
 ```

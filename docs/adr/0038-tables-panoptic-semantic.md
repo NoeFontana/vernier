@@ -141,6 +141,7 @@ Both new entry points run under `py.detach` (GIL dropped), per ADR-0006 and the 
 
 TableName = Literal["per_class"]
 
+
 @dataclass(frozen=True)
 class EvalResult:
     summary: Summary  # = vernier.panoptic.Summary (PanopticSummary)
@@ -150,13 +151,17 @@ class EvalResult:
     def per_class(self) -> "pl.DataFrame":
         return _arrow_to_dataframe(self._per_class_batch, "per_class")
 
+
 class Evaluator:
     @overload
     def evaluate(self, gt, dt, *, tables: None = None) -> Summary: ...
     @overload
     def evaluate(
-        self, gt, dt,
-        *, tables: Literal["all"] | tuple[TableName, ...],
+        self,
+        gt,
+        dt,
+        *,
+        tables: Literal["all"] | tuple[TableName, ...],
     ) -> EvalResult: ...
     def evaluate(self, gt, dt, *, tables=None): ...
 ```

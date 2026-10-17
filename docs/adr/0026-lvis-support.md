@@ -122,9 +122,10 @@ class Frequency(StrEnum):
     precomputed at dataset publication; vernier reads it as-is and
     never derives it from `image_count` (AB2).
     """
-    RARE = "r"       # < 10 train images
-    COMMON = "c"     # [10, 100) train images
-    FREQUENT = "f"   # ≥ 100 train images
+
+    RARE = "r"  # < 10 train images
+    COMMON = "c"  # [10, 100) train images
+    FREQUENT = "f"  # ≥ 100 train images
 ```
 
 `Evaluator` is **not** modified. LVIS users construct

@@ -112,6 +112,7 @@ class PanopticDataset:
     - :meth:`from_files` — JSON path + PNG dir; Rust decodes via ``png``.
     - :meth:`from_arrays` — pre-decoded ``uint32`` label maps + segments_info.
     """
+
     @classmethod
     def from_files(cls, json_path: str | Path, png_dir: str | Path) -> Self: ...
     @classmethod
@@ -128,6 +129,7 @@ class PanopticPredictions:
     """Sibling shape to PanopticDataset; predictions never carry a
     taxonomy (categories are GT-side only, quirk S9), so neither
     constructor accepts ``categories``."""
+
     @classmethod
     def from_files(cls, json_path: str | Path, png_dir: str | Path) -> Self: ...
     @classmethod
@@ -149,6 +151,7 @@ class SegmentInfo:
 class ClassPanopticStats:
     """Strict superset of panopticapi's per-class shape (which is just
     {pq, sq, rq}, quirk W8). Count fields are vernier-only."""
+
     pq: float
     sq: float
     rq: float

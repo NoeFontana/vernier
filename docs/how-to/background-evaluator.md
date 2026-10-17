@@ -102,10 +102,10 @@ the single-core bound is the bottleneck. Opt in with
 
 ```python
 # Training-loop validation: keep the trainer's cores free.
-ev.background(gt)                       # default: one worker, no rayon pool
+ev.background(gt)  # default: one worker, no rayon pool
 
 # Dedicated val-loader: spend the idle CPUs.
-ev.background(gt, num_threads=8)        # per-worker rayon pool, drain-batched
+ev.background(gt, num_threads=8)  # per-worker rayon pool, drain-batched
 ```
 
 Under the hood the worker builds a scoped `rayon::ThreadPool` of

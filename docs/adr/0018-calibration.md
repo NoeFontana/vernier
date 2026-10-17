@@ -302,25 +302,28 @@ from vernier.instance import Evaluator
 # same summarizer.
 result = Evaluator(iou_type="segm").evaluate(gt, dt)
 
-cal = result.calibration()        # marginal, IoU=0.5, 15 quantile bins
-cal.ece                           # float
-cal.mce                           # float
-cal.n_detections                  # int
-cal.reliability                   # Arrow RecordBatch (PyCapsule) —
-                                  # bin_id, score_lo, score_hi,
-                                  # mean_score, accuracy, count, gap,
-                                  # ci_lo, ci_hi
+cal = result.calibration()  # marginal, IoU=0.5, 15 quantile bins
+cal.ece  # float
+cal.mce  # float
+cal.n_detections  # int
+cal.reliability  # Arrow RecordBatch (PyCapsule) —
+# bin_id, score_lo, score_hi,
+# mean_score, accuracy, count, gap,
+# ci_lo, ci_hi
 # zero-copy into the user's DataFrame library:
 #   pl.from_arrow(cal.reliability)   /   cal.reliability via duckdb / pandas
 
 cal_pc = result.calibration(per_class=True)
-cal_pc.per_class                  # Arrow RecordBatch: class_id, ece, mce, n
-cal_pc.worst(k=5)                 # convenience
+cal_pc.per_class  # Arrow RecordBatch: class_id, ece, mce, n
+cal_pc.worst(k=5)  # convenience
 
 cal = result.calibration(
-    iou=0.5, n_bins=15, binning="quantile",
-    min_score=0.05, confidence="wilson",
-    per_class_aggregation="macro",   # or "micro"
+    iou=0.5,
+    n_bins=15,
+    binning="quantile",
+    min_score=0.05,
+    confidence="wilson",
+    per_class_aggregation="macro",  # or "micro"
 )
 ```
 

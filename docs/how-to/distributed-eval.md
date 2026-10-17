@@ -20,17 +20,13 @@ import torch.distributed as dist
 from vernier.instance import Evaluator, Bbox
 
 ev = Evaluator(iou=Bbox(), parity_mode="corrected")
-partial = ev.evaluate_to_partial(
-    gt_bytes, dt_for_this_rank, rank_id=dist.get_rank()
-)  # bytes
+partial = ev.evaluate_to_partial(gt_bytes, dt_for_this_rank, rank_id=dist.get_rank())  # bytes
 
 gathered: list[bytes | None] = [None] * dist.get_world_size()
 dist.all_gather_object(gathered, partial)
 
 if dist.get_rank() == 0:
-    summary = Evaluator.from_partials(
-        gt_bytes, gathered, iou=Bbox(), parity_mode="corrected"
-    )
+    summary = Evaluator.from_partials(gt_bytes, gathered, iou=Bbox(), parity_mode="corrected")
     log_metrics(summary)
 ```
 
@@ -61,7 +57,9 @@ dist.all_gather_object(gathered, partial)
 
 if dist.get_rank() == 0:
     summary = sem.Evaluator.from_partials(
-        n_classes=19, partials=gathered, parity_mode="strict",
+        n_classes=19,
+        partials=gathered,
+        parity_mode="strict",
     )
     log_metrics(summary)
 ```
@@ -94,7 +92,7 @@ partial = ev.evaluate_to_partial(
     images_for_this_rank,
     categories=categories_json,
     rank_id=dist.get_rank(),
-    retain_per_image_deltas=True,    # opt-in for deterministic CI gate
+    retain_per_image_deltas=True,  # opt-in for deterministic CI gate
 )
 
 gathered: list[bytes | None] = [None] * dist.get_world_size()

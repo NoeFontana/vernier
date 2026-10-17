@@ -58,6 +58,7 @@ the bbox-IoU optimization plan.
 
    ```python
    import vernier._core as c
+
    # ... run evaluations ...
    n = c.dump_bbox_iou_histogram("/tmp/bbox-hist.csv")
    ```

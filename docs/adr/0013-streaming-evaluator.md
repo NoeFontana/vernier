@@ -220,7 +220,7 @@ for image_id, dets in stream:
 final = ev.finalize()
 
 reference = Evaluator(parity_mode="strict").evaluate(gt, all_dets)
-assert final.stats == reference.stats   # bit-equal
+assert final.stats == reference.stats  # bit-equal
 ```
 
 The invariant holds because `accumulate()` over the final store is
@@ -456,10 +456,11 @@ Two new exceptions ship in `vernier`:
 ```python
 class MemoryBudgetWarning(UserWarning): ...
 
+
 class OutOfBudgetError(RuntimeError):
     used_bytes: int
     budget_bytes: int
-    breakdown: dict[str, int]   # "cells_store", "scores", "match_flags", ...
+    breakdown: dict[str, int]  # "cells_store", "scores", "match_flags", ...
 ```
 
 Three deliberate departures from `Evaluator`'s shape (per ADR-0006):

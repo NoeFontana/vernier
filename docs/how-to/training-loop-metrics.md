@@ -97,17 +97,21 @@ accepted, because the two populations differ — a metric object's state at
 bitmasks:
 
 ```python
-targets.append({
-    "boxes": target["boxes"],
-    "labels": target["labels"],
-    "masks": target["masks"],          # (N, H, W) bitmasks
-})
+targets.append(
+    {
+        "boxes": target["boxes"],
+        "labels": target["labels"],
+        "masks": target["masks"],  # (N, H, W) bitmasks
+    }
+)
 # ...or, already encoded:
-targets.append({
-    "boxes": target["boxes"],
-    "labels": target["labels"],
-    "rles": [{"size": (h, w), "counts": counts}, ...],
-})
+targets.append(
+    {
+        "boxes": target["boxes"],
+        "labels": target["labels"],
+        "rles": [{"size": (h, w), "counts": counts}, ...],
+    }
+)
 
 metrics = coco_metrics(predictions, targets, iou_type=("bbox", "segm"))
 print(metrics["bbox_map"], metrics["segm_map"])
@@ -157,11 +161,11 @@ from vernier.instance import (
     optimal_lrp,
 )
 
-report = error_decomposition(ground_truth, dt)       # TIDE's six bins
+report = error_decomposition(ground_truth, dt)  # TIDE's six bins
 print(report.delta)
 print(optimal_lrp(ground_truth, dt).per_class[0].tau)  # deployable cutoff
-confusion_matrix(ground_truth, dt)                   # which classes swap
-fp_iou_histogram(ground_truth, dt)                   # per-FP IoU pairs
+confusion_matrix(ground_truth, dt)  # which classes swap
+fp_iou_histogram(ground_truth, dt)  # per-FP IoU pairs
 ```
 
 `Evaluator.evaluate(..., tables=...)` and `(..., manifest=...)` read it

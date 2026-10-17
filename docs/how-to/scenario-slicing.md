@@ -22,8 +22,8 @@ manifest = {
     "rows": [
         {"key": 1, "weather": "clear", "time_of_day": "day"},
         {"key": 2, "weather": "clear", "time_of_day": "night"},
-        {"key": 3, "weather": "fog",   "time_of_day": "day"},
-        {"key": 4, "weather": "fog",   "time_of_day": "night"},
+        {"key": 3, "weather": "fog", "time_of_day": "day"},
+        {"key": 4, "weather": "fog", "time_of_day": "night"},
     ],
 }
 
@@ -32,8 +32,8 @@ dt_bytes = Path("detections.json").read_bytes()
 
 result = Evaluator(iou=Bbox()).evaluate(gt_bytes, dt_bytes, manifest=manifest)
 
-print(result.stats[0])   # overall AP — bit-equal to the un-partitioned path
-print(result.slices)     # polars DataFrame: one row per (axis, value) cell
+print(result.stats[0])  # overall AP — bit-equal to the un-partitioned path
+print(result.slices)  # polars DataFrame: one row per (axis, value) cell
 ```
 
 The `overall` headline on `result.stats` / `result.summary` is

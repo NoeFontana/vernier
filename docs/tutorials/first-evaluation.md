@@ -89,10 +89,7 @@ for epoch in range(num_epochs):
             # ingests any DLPack-producing array library (torch, jax,
             # cupy, numpy) zero-copy via ADR-0030.
             predictions = model(images)
-            bg.submit([
-                {"image_id": int(t["image_id"]), **p}
-                for t, p in zip(targets, predictions)
-            ])
+            bg.submit([{"image_id": int(t["image_id"]), **p} for t, p in zip(targets, predictions)])
         summary = bg.finalize()
     print(f"epoch {epoch}: AP =", summary.stats[0], "AP50 =", summary.stats[1])
 ```

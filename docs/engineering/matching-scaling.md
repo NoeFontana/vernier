@@ -27,6 +27,7 @@ cargo build --release --features bench-histogram -p vernier-core
 
 ```python
 from bench.workloads.synthetic import make_workload_scaled
+
 gt_path, dt_path = make_workload_scaled(scale=10)
 # ... feed into the evaluator ...
 ```

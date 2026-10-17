@@ -30,12 +30,30 @@ vehicle parts, custom categories), pass `sigmas=` as
 
 ```python
 summary = Evaluator(
-    iou=Keypoints(sigmas={
-        1: [0.026, 0.025, 0.025, 0.035, 0.035,  # head
-            0.079, 0.079, 0.072, 0.072, 0.062, 0.062,  # arms
-            0.107, 0.107, 0.087, 0.087, 0.089, 0.089],  # legs
-        2: [0.04] * 12,  # custom 12-keypoint category
-    }),
+    iou=Keypoints(
+        sigmas={
+            1: [
+                0.026,
+                0.025,
+                0.025,
+                0.035,
+                0.035,  # head
+                0.079,
+                0.079,
+                0.072,
+                0.072,
+                0.062,
+                0.062,  # arms
+                0.107,
+                0.107,
+                0.087,
+                0.087,
+                0.089,
+                0.089,
+            ],  # legs
+            2: [0.04] * 12,  # custom 12-keypoint category
+        }
+    ),
 ).evaluate(dataset, dt_bytes)
 ```
 

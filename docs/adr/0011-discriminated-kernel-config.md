@@ -73,13 +73,19 @@ The Python public API becomes:
 ```python
 @dataclass(frozen=True, slots=True)
 class Bbox: ...
+
+
 @dataclass(frozen=True, slots=True)
 class Segm: ...
+
+
 @dataclass(frozen=True, slots=True)
 class Boundary:
     dilation_ratio: float = 0.02
 
+
 IouKind = Bbox | Segm | Boundary
+
 
 @dataclass(frozen=True, slots=True)
 class Evaluator:
@@ -93,10 +99,15 @@ class Evaluator:
 
 ```python
 match self.iou:
-    case Bbox():     run = evaluate_bbox_summary; extra = ()
-    case Segm():     run = evaluate_segm_summary; extra = ()
+    case Bbox():
+        run = evaluate_bbox_summary
+        extra = ()
+    case Segm():
+        run = evaluate_segm_summary
+        extra = ()
     case Boundary(dilation_ratio=r):
-                     run = evaluate_boundary_summary; extra = (r,)
+        run = evaluate_boundary_summary
+        extra = (r,)
 ```
 
 The migration in this PR drops the old `iou_type: IouType` field and the

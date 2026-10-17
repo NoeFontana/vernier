@@ -46,19 +46,19 @@ per_slice_per_class: dict[tuple[str, str], pl.DataFrame] = {}
 for axis in {a for row in assignments.values() for a in row}:
     values = {row[axis] for row in assignments.values() if axis in row}
     for value in values:
-        slice_image_ids = {
-            iid for iid, axes in assignments.items()
-            if axes.get(axis) == value
-        }
+        slice_image_ids = {iid for iid, axes in assignments.items() if axes.get(axis) == value}
         slice_dt = [r for r in dt_records if r["image_id"] in slice_image_ids]
         result = ev.evaluate(gt_bytes, json.dumps(slice_dt).encode(), tables=("per_class",))
         per_slice_per_class[(axis, value)] = result.per_class
 
 # 3) Stack into one long table for analysis.
-long = pl.concat([
-    df.with_columns(pl.lit(axis).alias("axis"), pl.lit(value).alias("value"))
-    for (axis, value), df in per_slice_per_class.items()
-], how="diagonal")
+long = pl.concat(
+    [
+        df.with_columns(pl.lit(axis).alias("axis"), pl.lit(value).alias("value"))
+        for (axis, value), df in per_slice_per_class.items()
+    ],
+    how="diagonal",
+)
 ```
 
 The pattern runs the matching engine `N` times (one per slice) — C1 in

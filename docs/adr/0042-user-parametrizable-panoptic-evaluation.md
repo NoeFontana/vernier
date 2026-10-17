@@ -99,9 +99,9 @@ and composition rules.**
 @dataclass(frozen=True, slots=True)
 class Evaluator:
     parity_mode: ParityMode = "corrected"
-    pq_iou_threshold: float | None = None                # NEW
-    category_filter: CategoryFilter | None = None        # NEW
-    class_grouping: Breakdown | None = None              # NEW
+    pq_iou_threshold: float | None = None  # NEW
+    category_filter: CategoryFilter | None = None  # NEW
+    class_grouping: Breakdown | None = None  # NEW
     stuff_thing_partition: StuffThingPartition | None = None  # NEW
 ```
 
@@ -110,7 +110,7 @@ class Evaluator:
 ```python
 @dataclass(frozen=True, slots=True)
 class StuffThingPartition:
-    stuff: frozenset[int]   # category ids
+    stuff: frozenset[int]  # category ids
     things: frozenset[int]  # category ids
 ```
 
@@ -158,8 +158,8 @@ class PanopticSummary:
     pq: float
     sq: float
     rq: float
-    pq_st: float       # stuff-only PQ (existing)
-    pq_th: float       # things-only PQ (existing)
+    pq_st: float  # stuff-only PQ (existing)
+    pq_th: float  # things-only PQ (existing)
     per_class: dict[int, ClassPanopticStats]
     per_group: dict[str, GroupPanopticStats] | None  # NEW
     # ... existing fields ...
