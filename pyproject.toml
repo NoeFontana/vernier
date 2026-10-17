@@ -65,7 +65,7 @@ tables = ["polars>=1.0"]
 # Pulled in explicitly via `uv sync --extra real-models`; the
 # @pytest.mark.real_models tests skip cleanly when the extra is absent.
 real-models = [
-    "rfdetr==1.6.5.post0",
+    "rfdetr==1.11.1",
     "platformdirs>=4",
     "torch>=2.4",
     # rfdetr 1.6.5.post0's own metadata pins `transformers<6.0.0,>=5.1.0`;
