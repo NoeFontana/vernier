@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8.1.0
       - name: Install docs deps
         run: uv sync --group docs --no-install-project
       - name: Build (strict)
@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8.1.0
       - name: Install docs deps
         run: uv sync --group docs --no-install-project
       - name: Spell-check user-facing docs
@@ -102,7 +102,7 @@ jobs:
           # itself, but unshallowing keeps the diff readable in the
           # workflow log.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v8.1.0
       - name: Install docs deps
         run: uv sync --group docs --no-install-project
       - name: Configure git identity
