@@ -27,8 +27,8 @@ jobs:
     name: mkdocs build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - name: Install docs deps
         run: uv sync --group docs --no-install-project
       - name: Build (strict)
@@ -38,8 +38,8 @@ jobs:
     name: codespell
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
       - name: Install docs deps
         run: uv sync --group docs --no-install-project
       - name: Spell-check user-facing docs
@@ -95,14 +95,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # mike commits to the gh-pages branch and needs to see it; the
           # default shallow checkout works because mike fetches gh-pages
           # itself, but unshallowing keeps the diff readable in the
           # workflow log.
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@v7
       - name: Install docs deps
         run: uv sync --group docs --no-install-project
       - name: Configure git identity
