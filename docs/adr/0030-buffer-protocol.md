@@ -57,21 +57,24 @@ Justification: the matching kernel, accumulate logic, snapshot/finalize lifecycl
 
 ```python
 class Detections(TypedDict, total=False):
-    image_id: int                       # required
-    boxes: NDArray[np.float64]          # (N, 4), xywh, contiguous — required for bbox / segm
-    scores: NDArray[np.float64]         # (N,) contiguous — required
-    labels: NDArray[np.int64]           # (N,) contiguous — required
+    image_id: int  # required
+    boxes: NDArray[np.float64]  # (N, 4), xywh, contiguous — required for bbox / segm
+    scores: NDArray[np.float64]  # (N,) contiguous — required
+    labels: NDArray[np.int64]  # (N,) contiguous — required
     # iou_type-specific:
-    rles: Sequence[RLE]                 # for iou_type in {"segm", "boundary"}
-    keypoints: NDArray[np.float64]      # (N, K, 3) for iou_type == "keypoints"
+    rles: Sequence[RLE]  # for iou_type in {"segm", "boundary"}
+    keypoints: NDArray[np.float64]  # (N, K, 3) for iou_type == "keypoints"
+
 
 class UncompressedRLE(TypedDict):
-    counts: NDArray[np.uint32]          # contiguous
-    size: tuple[int, int]               # (height, width)
+    counts: NDArray[np.uint32]  # contiguous
+    size: tuple[int, int]  # (height, width)
+
 
 class CompressedRLE(TypedDict):
-    counts: bytes                       # COCO 6-bit ASCII (pycocotools.mask.encode output)
-    size: tuple[int, int]               # (height, width)
+    counts: bytes  # COCO 6-bit ASCII (pycocotools.mask.encode output)
+    size: tuple[int, int]  # (height, width)
+
 
 # Bitmask form: NDArray[np.bool_ | np.uint8] of shape (H, W), C- or F-order.
 ```
@@ -83,6 +86,7 @@ Updated method signatures:
 ```python
 class StreamingEvaluator:
     def update(self, detections: bytes | Detections | Sequence[Detections]) -> UpdateReport: ...
+
 
 class BackgroundEvaluator:
     def submit(

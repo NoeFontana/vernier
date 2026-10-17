@@ -14,8 +14,8 @@ The public surface lives under `vernier.instance` (per ADR-0029),
 plus the pycocotools-shaped shim re-exported at the root:
 
 ```python
-from vernier import COCOeval, patch_pycocotools          # shim path
-from vernier.instance import Bbox, CocoDataset, Evaluator    # native path
+from vernier import COCOeval, patch_pycocotools  # shim path
+from vernier.instance import Bbox, CocoDataset, Evaluator  # native path
 ```
 
 | `pycocotools` | vernier (shim) | vernier (native) |
@@ -45,8 +45,11 @@ unpatch = patch_pycocotools(parity_mode="strict")
 try:
     # Existing pycocotools code runs unchanged; COCOeval is now vernier's.
     from pycocotools.cocoeval import COCOeval
+
     cocoEval = COCOeval(coco_gt, coco_dt, iouType="bbox")
-    cocoEval.evaluate(); cocoEval.accumulate(); cocoEval.summarize()
+    cocoEval.evaluate()
+    cocoEval.accumulate()
+    cocoEval.summarize()
 finally:
     unpatch()
 ```
@@ -71,6 +74,7 @@ ultralytics, detectron2, etc.) under vernier, drop a five-line
 # conftest.py
 import pytest
 from vernier import patch_pycocotools
+
 
 @pytest.fixture(autouse=True, scope="session")
 def _vernier_strict():
@@ -240,7 +244,7 @@ dt_bytes = Path("detections.json").read_bytes()
 dataset = CocoDataset.from_json(gt_bytes)
 summary = Evaluator(iou=Bbox(), parity_mode="strict").evaluate(dataset, dt_bytes)
 
-print(summary.stats[0])              # AP, e.g. 0.347
+print(summary.stats[0])  # AP, e.g. 0.347
 for line in summary.pretty_lines():  # the pycocotools-shaped 12-line block
     print(line)
 ```

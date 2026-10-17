@@ -69,6 +69,6 @@ def test_oracle_rejects_unsupported_metric() -> None:
         IoUMetric,
     )
 
-    one = torch.tensor([1.0])  # pyright: ignore[reportPrivateImportUsage]
+    one = torch.tensor([1.0])
     with pytest.raises(KeyError, match="not supported"):
         IoUMetric.total_area_to_metrics(one, one, one, one, ["mUnknown"])

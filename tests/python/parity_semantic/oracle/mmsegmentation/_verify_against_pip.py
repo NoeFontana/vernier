@@ -93,8 +93,8 @@ def _run(mode: str) -> dict[str, object]:
     from mmseg.evaluation.metrics.iou_metric import IoUMetric
 
     pred, gt = _build_fixture()
-    pred_t = torch.from_numpy(pred)  # pyright: ignore[reportPrivateImportUsage]
-    gt_t = torch.from_numpy(gt)  # pyright: ignore[reportPrivateImportUsage]
+    pred_t = torch.from_numpy(pred)
+    gt_t = torch.from_numpy(gt)
 
     intersect, union, area_pred, area_label = IoUMetric.intersect_and_union(
         pred_t, gt_t, num_classes=5, ignore_index=255

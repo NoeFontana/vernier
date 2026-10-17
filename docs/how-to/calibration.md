@@ -38,8 +38,8 @@ histogram pass.
 cal_15 = result.calibration(n_bins=15)
 cal_30 = result.calibration(n_bins=30)
 cal_equal = result.calibration(binning="equal_width")
-cal_strict = result.calibration(min_score=0.0)         # include all scores
-cal_iou75 = result.calibration(iou=0.75)               # re-fold at a different T-axis
+cal_strict = result.calibration(min_score=0.0)  # include all scores
+cal_iou75 = result.calibration(iou=0.75)  # re-fold at a different T-axis
 ```
 
 `iou` resolves to the kernel's pinned T-axis index under `PARITY_EPS`;
@@ -55,8 +55,8 @@ P4, P5, P6).
 
 ```python
 cal = result.calibration(per_class=True)
-print(cal.per_class)         # polars: class_id, ece, mce, n
-print(cal.worst(5))          # top-5 worst-calibrated classes by ECE
+print(cal.per_class)  # polars: class_id, ece, mce, n
+print(cal.worst(5))  # top-5 worst-calibrated classes by ECE
 ```
 
 The per-class table is only built when `per_class=True`; accessing
@@ -78,12 +78,12 @@ from vernier.instance import Bbox, Evaluator
 ev = Evaluator(iou=Bbox())
 bg = ev.background(gt_bytes)
 
-for batch in epoch_outputs():           # whatever your loop yields
+for batch in epoch_outputs():  # whatever your loop yields
     bg.submit(batch.detections)
 
 snap = StreamingSnapshot.from_background(bg)
-print(snap.summary.stats[0])             # bit-equal to the batch path
-print(snap.calibration().ece)            # same fold over retained cells
+print(snap.summary.stats[0])  # bit-equal to the batch path
+print(snap.calibration().ece)  # same fold over retained cells
 ```
 
 `StreamingSnapshot.from_background(bg)` consumes the worker via

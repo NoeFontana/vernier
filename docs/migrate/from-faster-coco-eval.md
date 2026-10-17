@@ -9,8 +9,8 @@ and want vernier's auditable parity guarantees.
 ## TL;DR — what to change
 
 ```python
-from vernier import COCOeval, patch_pycocotools          # shim path
-from vernier.instance import Bbox, CocoDataset, Evaluator    # native path
+from vernier import COCOeval, patch_pycocotools  # shim path
+from vernier.instance import Bbox, CocoDataset, Evaluator  # native path
 ```
 
 | `faster-coco-eval` | vernier |
@@ -72,8 +72,11 @@ try:
     # runs unchanged here. The COCOeval symbol now points at vernier's
     # drop-in.
     from pycocotools.cocoeval import COCOeval
+
     cocoEval = COCOeval(coco_gt, coco_dt, iouType="bbox")
-    cocoEval.evaluate(); cocoEval.accumulate(); cocoEval.summarize()
+    cocoEval.evaluate()
+    cocoEval.accumulate()
+    cocoEval.summarize()
 finally:
     unpatch()
 ```

@@ -67,7 +67,8 @@ wrapper:
 
 ```python
 ev = vernier.semantic.Evaluator(parity_mode="strict").stream(
-    n_classes=19, ignore_label=255,
+    n_classes=19,
+    ignore_label=255,
 )
 for image_id, gt_arr, dt_arr in dataloader:
     ev.update(image_id, gt_arr, dt_arr)
@@ -131,8 +132,8 @@ heads). vernier provides an explicit merge step:
 # masks[image_id] is shape (n_classes, H, W) uint8.
 dt = Predictions.from_binary_masks(
     {image_id: masks_3d},
-    merge="argmax",        # or "first" / "highest_class_id"
-    unlabeled_class=255,   # written into all-zero-mask pixels
+    merge="argmax",  # or "first" / "highest_class_id"
+    unlabeled_class=255,  # written into all-zero-mask pixels
 )
 ```
 

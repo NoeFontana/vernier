@@ -416,16 +416,16 @@ import polars as pl
 
 # Manifest from a DataFrame the user already has — no sidecar file.
 meta = pl.read_parquet("image_metadata.parquet")  # image_id, weather, time_of_day, ...
-result = Evaluator().evaluate(gt, dt, manifest=meta)   # manifest= accepts PyCapsule objects
+result = Evaluator().evaluate(gt, dt, manifest=meta)  # manifest= accepts PyCapsule objects
 
-slices = pl.from_arrow(result.slices)   # zero-copy Arrow RecordBatch → polars
+slices = pl.from_arrow(result.slices)  # zero-copy Arrow RecordBatch → polars
 slices.write_parquet("run_2026_05_14_slices.parquet")  # user's polars, not vernier
 
 # Fan-in over many in-memory results (or Arrow tables, or JSON paths).
 summary = vernier.aggregate(
     results=[r_clean, r_fog, r_noise],
     manifest=corruption_meta,
-    baseline="clean",        # enables rPC
+    baseline="clean",  # enables rPC
 )
 pl.from_arrow(summary).write_parquet("robustness.parquet")
 ```

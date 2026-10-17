@@ -32,11 +32,11 @@ gt_bytes = (fixture / "gt.json").read_bytes()
 dt_bytes = (fixture / "dt.json").read_bytes()
 
 report = error_decomposition(gt_bytes, dt_bytes, iou=Bbox())
-print(report.baseline_map)         # 0.0
-print(report.delta)                # {'cls': 0.0, 'loc': 0.999..., 'both': 0.0,
-                                   #  'dupe': 0.0, 'bkg': 0.0, 'missed': 0.0}
-print(report.delta_all_fp_removed) # 0.0
-print(report.config)               # TideConfig(t_f=0.5, t_b=0.1, kernel='bbox')
+print(report.baseline_map)  # 0.0
+print(report.delta)  # {'cls': 0.0, 'loc': 0.999..., 'both': 0.0,
+#  'dupe': 0.0, 'bkg': 0.0, 'missed': 0.0}
+print(report.delta_all_fp_removed)  # 0.0
+print(report.config)  # TideConfig(t_f=0.5, t_b=0.1, kernel='bbox')
 ```
 
 The model's baseline mAP is `0.0` (the lone detection misses the
@@ -121,10 +121,11 @@ Override per call when the model's distribution warrants it:
 
 ```python
 report = error_decomposition(
-    gt_bytes, dt_bytes,
+    gt_bytes,
+    dt_bytes,
     iou=Bbox(),
     t_f=0.5,
-    t_b=0.2,   # tighter Bkg cutoff for a model that fires near-misses everywhere
+    t_b=0.2,  # tighter Bkg cutoff for a model that fires near-misses everywhere
 )
 ```
 

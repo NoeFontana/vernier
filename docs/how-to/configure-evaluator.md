@@ -71,8 +71,8 @@ which resolves to the kernel's canonical ladder:
 Override with an explicit tuple:
 
 ```python
-Evaluator(iou=Bbox(), max_dets=(1, 10, 100, 300))   # LVIS-flavored 300
-Evaluator(iou=Bbox(), max_dets=(100,))              # single ladder rung
+Evaluator(iou=Bbox(), max_dets=(1, 10, 100, 300))  # LVIS-flavored 300
+Evaluator(iou=Bbox(), max_dets=(100,))  # single ladder rung
 ```
 
 LVIS uses `(300,)` per quirk **AB4**; see

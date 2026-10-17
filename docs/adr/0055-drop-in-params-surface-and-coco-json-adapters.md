@@ -121,10 +121,10 @@ path for all of them:
 ```python
 from vernier.adapters import (
     with_placeholder_image_sizes,  # bbox / keypoints: fill every gap with 0
-    with_mask_image_sizes,         # segm / boundary: fill only where annToRLE would not have run
-    detection_image_sizes,         # the {image_id: size | None} mapping the above reads
-    coco_json_default,             # json.dumps hook: bytes RLE counts, NumPy scalars
-    to_coco_json,                  # the dumps + encode one-liner
+    with_mask_image_sizes,  # segm / boundary: fill only where annToRLE would not have run
+    detection_image_sizes,  # the {image_id: size | None} mapping the above reads
+    coco_json_default,  # json.dumps hook: bytes RLE counts, NumPy scalars
+    to_coco_json,  # the dumps + encode one-liner
 )
 ```
 

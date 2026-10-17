@@ -98,10 +98,10 @@ Chosen option: **3 — surface both fields together.**
 @dataclass(frozen=True, slots=True)
 class Evaluator:
     parity_mode: ParityMode = "corrected"
-    n_classes: int                                       # required (existing)
-    ignore_label: int = 255                              # existing
-    class_filter: CategoryFilter | None = None           # NEW
-    class_grouping: Breakdown | None = None              # NEW
+    n_classes: int  # required (existing)
+    ignore_label: int = 255  # existing
+    class_filter: CategoryFilter | None = None  # NEW
+    class_grouping: Breakdown | None = None  # NEW
 ```
 
 `CategoryFilter` is the type from ADR-0026, re-exported here. The

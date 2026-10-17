@@ -122,8 +122,13 @@ each paradigm namespace:
 class InvalidEvalParams(ValueError):
     """Base for paradigm-specific construction errors."""
 
+
 class InvalidInstanceParams(InvalidEvalParams): ...
+
+
 class InvalidSemanticParams(InvalidEvalParams): ...
+
+
 class InvalidPanopticParams(InvalidEvalParams): ...
 ```
 
@@ -173,10 +178,13 @@ Vec<Bucket> }`) lifts to Python as one type with two factories:
 ```python
 class Breakdown:
     @classmethod
-    def from_ranges(cls, axis: str, buckets: Sequence[tuple[str, float, float]]) -> Breakdown: ...
+    def from_ranges(cls, axis: str, buckets: Sequence[tuple[str, float, float]]) -> Breakdown:
+        ...
         # f64-keyed; instance area ranges, future depth/occlusion axes.
+
     @classmethod
-    def from_class_groups(cls, axis: str, groups: Mapping[str, Sequence[int]]) -> Breakdown: ...
+    def from_class_groups(cls, axis: str, groups: Mapping[str, Sequence[int]]) -> Breakdown:
+        ...
         # class-id-keyed; semantic / panoptic class grouping.
 ```
 

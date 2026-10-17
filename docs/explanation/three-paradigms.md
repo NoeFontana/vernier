@@ -7,9 +7,9 @@ ADR-0028, ADR-0029):
 ```python
 import vernier
 
-vernier.instance.Evaluator()    # bbox / segm / boundary / keypoints (AP fold)
-vernier.panoptic.Evaluator()    # panoptic-quality (PQ)
-vernier.semantic.Evaluator()    # semantic-segmentation (mIoU)
+vernier.instance.Evaluator()  # bbox / segm / boundary / keypoints (AP fold)
+vernier.panoptic.Evaluator()  # panoptic-quality (PQ)
+vernier.semantic.Evaluator()  # semantic-segmentation (mIoU)
 ```
 
 The submodules are mutually exclusive: a model emits *one* of these

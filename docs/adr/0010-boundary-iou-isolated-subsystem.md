@@ -372,6 +372,7 @@ vernier.evaluate(..., iou_type="boundary")
 
 # pycocotools drop-in shim
 from vernier import COCOeval
+
 COCOeval(gt, dt, iouType="boundary")  # mirrors bowenc0221 signature
 ```
 

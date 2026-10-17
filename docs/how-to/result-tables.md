@@ -24,11 +24,11 @@ with open("detections.json", "rb") as f:
     dt = f.read()
 
 result = Evaluator().evaluate(gt, dt, tables="all")
-print(result.stats[0])       # headline AP, same as Summary.stats
-print(result.per_image)      # polars.DataFrame
-print(result.per_class)      # polars.DataFrame
+print(result.stats[0])  # headline AP, same as Summary.stats
+print(result.per_image)  # polars.DataFrame
+print(result.per_class)  # polars.DataFrame
 print(result.per_detection)  # polars.DataFrame
-print(result.per_pair)       # polars.DataFrame
+print(result.per_pair)  # polars.DataFrame
 ```
 
 `tables="all"` requests every table the active build supports. The
@@ -44,8 +44,7 @@ vernier` does not pay the cost. Pass a tuple
 import polars as pl
 
 worst = (
-    result.per_image
-    .with_columns((pl.col("fp_at_50") + pl.col("fn_at_50")).alias("err_at_50"))
+    result.per_image.with_columns((pl.col("fp_at_50") + pl.col("fn_at_50")).alias("err_at_50"))
     .sort("err_at_50", descending=True)
     .head(20)
     .select("image_id", "n_gt", "n_dt", "tp_at_50", "fp_at_50", "fn_at_50")
@@ -63,8 +62,7 @@ table deliberately omits per-image AP; see
 
 ```python
 weak_classes = (
-    result.per_class
-    .filter(pl.col("ap") < 0.3)
+    result.per_class.filter(pl.col("ap") < 0.3)
     .sort("ap")
     .select("category_id", "category_name", "ap", "ap50", "n_gt", "n_dt")
 )
@@ -80,8 +78,7 @@ internally (quirk **C5**) is translated rather than leaked.
 
 ```python
 hard_tps = (
-    result.per_detection
-    .filter((pl.col("match_status_at_50") == "tp") & (pl.col("best_iou") < 0.6))
+    result.per_detection.filter((pl.col("match_status_at_50") == "tp") & (pl.col("best_iou") < 0.6))
     .sort("best_iou")
     .select("detection_id", "image_id", "category_id", "score", "best_iou")
 )
@@ -102,14 +99,14 @@ the image.
 from vernier.instance import Evaluator, TablesConfig
 
 result = Evaluator().evaluate(
-    gt, dt,
+    gt,
+    dt,
     tables=("per_pair",),
     tables_config=TablesConfig(per_pair_iou_floor=0.0),
 )
 
 per_class_pairs = (
-    result.per_pair
-    .group_by("category_id")
+    result.per_pair.group_by("category_id")
     .agg(
         pl.len().alias("n_pairs"),
         pl.col("iou").mean().alias("mean_iou"),
@@ -162,11 +159,12 @@ PyCapsule-aware consumer reads it zero-copy.
 from vernier.instance import Evaluator, TablesConfig
 
 result = Evaluator().evaluate(
-    gt, dt,
+    gt,
+    dt,
     tables=("per_pair",),
     tables_config=TablesConfig(
-        per_pair_iou_floor=0.3,      # default 0.1; raise to keep fewer rows
-        per_pair_max_rows=5_000_000, # default 10_000_000; lower to fail faster
+        per_pair_iou_floor=0.3,  # default 0.1; raise to keep fewer rows
+        per_pair_max_rows=5_000_000,  # default 10_000_000; lower to fail faster
     ),
 )
 ```

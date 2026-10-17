@@ -137,8 +137,8 @@ def run_mmsegmentation(
     inside ``intersect_and_union``) and passed to the static method
     as torch tensors.
     """
-    pred_t = torch.from_numpy(np.ascontiguousarray(pred).astype(np.int64))  # pyright: ignore[reportPrivateImportUsage]
-    gt_t = torch.from_numpy(np.ascontiguousarray(gt).astype(np.int64))  # pyright: ignore[reportPrivateImportUsage]
+    pred_t = torch.from_numpy(np.ascontiguousarray(pred).astype(np.int64))
+    gt_t = torch.from_numpy(np.ascontiguousarray(gt).astype(np.int64))
 
     intersect, union, area_pred, area_label = IoUMetric.intersect_and_union(
         pred_t, gt_t, num_classes, ignore_index

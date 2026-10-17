@@ -236,11 +236,11 @@ class StreamingEvaluator:
         use_cats: bool = True,
         memory_budget_bytes: int | None = None,
         retain_iou: bool = False,
-        rank_id: int | None = None,        # NEW
+        rank_id: int | None = None,  # NEW
     ) -> None: ...
 
-    def to_partial(self) -> bytes: ...                    # NEW; non-consuming
-    def finalize_to_partial(self) -> bytes: ...           # NEW; consuming
+    def to_partial(self) -> bytes: ...  # NEW; non-consuming
+    def finalize_to_partial(self) -> bytes: ...  # NEW; consuming
 
     @classmethod
     def from_partials(
@@ -254,19 +254,26 @@ class StreamingEvaluator:
         use_cats: bool = True,
         memory_budget_bytes: int | None = None,
         retain_iou: bool = False,
-    ) -> StreamingEvaluator: ...                          # NEW
+    ) -> StreamingEvaluator: ...  # NEW
 ```
 
 Five new exception types ship in `vernier`:
 
 ```python
 class PartialFormatMismatch(RuntimeError): ...
+
+
 class PartialDatasetMismatch(RuntimeError): ...
+
+
 class PartialParamsMismatch(RuntimeError): ...
+
+
 class PartialPartitionOverlap(RuntimeError):
     rank_a: int
     rank_b: int
     image_id: int
+
 
 class PartialRankCollision(RuntimeError):
     rank_id: int

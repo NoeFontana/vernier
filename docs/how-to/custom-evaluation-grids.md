@@ -34,16 +34,15 @@ ev = Evaluator(iou=Bbox(), iou_thresholds=(0.5, 0.6, 0.7, 0.8, 0.9))
 try:
     ev.evaluate(gt, dt)
 except IncompatibleSummaryPlan as e:
-    print(e.field)        # "iou_thresholds"
-    print(e.plan)         # "COCO 12-stat / keypoints 10-stat / LVIS 13-stat"
+    print(e.field)  # "iou_thresholds"
+    print(e.plan)  # "COCO 12-stat / keypoints 10-stat / LVIS 13-stat"
     print(e.remediation)  # "...Use evaluate_tables(...) for tabular output..."
 ```
 
 The fix is a one-line swap to `evaluate_tables`:
 
 ```python
-result = Evaluator(iou=Bbox(), iou_thresholds=(0.5, 0.6, 0.7, 0.8, 0.9)) \
-    .evaluate_tables(gt, dt)
+result = Evaluator(iou=Bbox(), iou_thresholds=(0.5, 0.6, 0.7, 0.8, 0.9)).evaluate_tables(gt, dt)
 
 # `result.summary` is None on a custom-grid run — slot indices don't generalise.
 # `result.per_class`, `result.per_image`, etc. carry explicit labels.
@@ -90,9 +89,9 @@ area = Breakdown.from_ranges(
     "distance",
     [
         ("all", 0.0, 1e10),
-        ("near", 0.0, 25.0),       # 0-5 m
-        ("mid", 25.0, 225.0),      # 5-15 m
-        ("far", 225.0, 1e10),      # 15 m+
+        ("near", 0.0, 25.0),  # 0-5 m
+        ("mid", 25.0, 225.0),  # 5-15 m
+        ("far", 225.0, 1e10),  # 15 m+
     ],
 )
 ev = Evaluator(iou=Bbox(), area_ranges=area)
@@ -125,10 +124,16 @@ screening), the canonical 101-point linspace is too sparse near
 ```python
 import numpy as np
 
-dense_tail = tuple(np.concatenate([
-    np.linspace(0.0, 0.9, 91),
-    np.linspace(0.901, 1.0, 100),  # 10× density on the last decile
-]).round(4).tolist())
+dense_tail = tuple(
+    np.concatenate(
+        [
+            np.linspace(0.0, 0.9, 91),
+            np.linspace(0.901, 1.0, 100),  # 10× density on the last decile
+        ]
+    )
+    .round(4)
+    .tolist()
+)
 
 ev = Evaluator(iou=Bbox(), recall_thresholds=dense_tail)
 result = ev.evaluate_tables(gt, dt)

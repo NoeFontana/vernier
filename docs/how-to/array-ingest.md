@@ -55,12 +55,14 @@ with BackgroundEvaluator(gt_bytes, iou_type="bbox") as ev:
     for images, image_ids in val_loader:
         out = model(images)  # boxes (N, 4), scores (N,), labels (N,)
         for image_id, b, s, l in zip(image_ids, out.boxes, out.scores, out.labels):
-            ev.submit({
-                "image_id": int(image_id),
-                "boxes": b.cpu().numpy().astype(np.float64),
-                "scores": s.cpu().numpy().astype(np.float64),
-                "labels": l.cpu().numpy().astype(np.int64),
-            })
+            ev.submit(
+                {
+                    "image_id": int(image_id),
+                    "boxes": b.cpu().numpy().astype(np.float64),
+                    "scores": s.cpu().numpy().astype(np.float64),
+                    "labels": l.cpu().numpy().astype(np.int64),
+                }
+            )
     summary = ev.finalize()
 ```
 
@@ -127,22 +129,26 @@ gt_bytes = open("instances_val2017.json", "rb").read()
 with BackgroundEvaluator(gt_bytes, iou_type="segm") as ev:
     for image_id, masks_hxw, boxes, scores, labels in batches:
         rles = []
-        for m in masks_hxw:               # m: (H, W) bool
+        for m in masks_hxw:  # m: (H, W) bool
             compressed = pmask.encode(np.asfortranarray(m.astype(np.uint8)))
             # Convert to uncompressed counts:
             binary = np.asarray(pmask.decode(compressed))
             counts = _column_major_runs(binary)  # your own helper
-            rles.append({
-                "counts": np.asarray(counts, dtype=np.uint32),
-                "size": (m.shape[0], m.shape[1]),
-            })
-        ev.submit({
-            "image_id": int(image_id),
-            "boxes": boxes,
-            "scores": scores,
-            "labels": labels,
-            "rles": rles,
-        })
+            rles.append(
+                {
+                    "counts": np.asarray(counts, dtype=np.uint32),
+                    "size": (m.shape[0], m.shape[1]),
+                }
+            )
+        ev.submit(
+            {
+                "image_id": int(image_id),
+                "boxes": boxes,
+                "scores": scores,
+                "labels": labels,
+                "rles": rles,
+            }
+        )
 ```
 
 A future `vernier.mask.encode_batch` helper will package the encode
@@ -155,13 +161,15 @@ loop above (per ADR-0030 §"Future work").
 
 ```python
 with BackgroundEvaluator(gt_bytes, iou_type="keypoints") as ev:
-    ev.submit({
-        "image_id": 1,
-        "boxes": np.asarray(...),    # (N, 4)
-        "scores": np.asarray(...),   # (N,)
-        "labels": np.asarray(...),   # (N,)
-        "keypoints": np.asarray(...),  # (N, K, 3)
-    })
+    ev.submit(
+        {
+            "image_id": 1,
+            "boxes": np.asarray(...),  # (N, 4)
+            "scores": np.asarray(...),  # (N,)
+            "labels": np.asarray(...),  # (N,)
+            "keypoints": np.asarray(...),  # (N, K, 3)
+        }
+    )
 ```
 
 ## Background evaluator
@@ -174,12 +182,14 @@ from vernier.instance import BackgroundEvaluator
 
 with BackgroundEvaluator(gt_bytes, iou_type="bbox") as bg:
     for image_id, boxes, scores, labels in val_loader:
-        bg.submit({
-            "image_id": int(image_id),
-            "boxes": boxes,
-            "scores": scores,
-            "labels": labels,
-        })
+        bg.submit(
+            {
+                "image_id": int(image_id),
+                "boxes": boxes,
+                "scores": scores,
+                "labels": labels,
+            }
+        )
     summary = bg.finalize()
 ```
 

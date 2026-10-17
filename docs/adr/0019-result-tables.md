@@ -377,15 +377,18 @@ the same shape:
 # python/vernier/_types.py
 TableName = Literal["per_image", "per_class", "per_detection", "per_pair"]
 
+
 @dataclass(frozen=True)
 class TablesConfig:
     per_pair_iou_floor: float = 0.1
     per_pair_max_rows: int = 10_000_000
     per_detection_with_geometry: bool = False
 
+
 @dataclass(frozen=True)
 class EvalResult:
     """Returned only when `tables=...` is non-None on evaluate()."""
+
     summary: Summary
 
     # Lazy properties — polars is imported on first access.
@@ -410,12 +413,16 @@ class EvalResult:
 ```python
 class Evaluator:
     @overload
-    def evaluate(self, gt: bytes, dt: bytes,
-                 *, tables: None = ...) -> Summary: ...
+    def evaluate(self, gt: bytes, dt: bytes, *, tables: None = ...) -> Summary: ...
     @overload
-    def evaluate(self, gt: bytes, dt: bytes,
-                 *, tables: tuple[TableName, ...] | Literal["all"],
-                 tables_config: TablesConfig = ...) -> EvalResult: ...
+    def evaluate(
+        self,
+        gt: bytes,
+        dt: bytes,
+        *,
+        tables: tuple[TableName, ...] | Literal["all"],
+        tables_config: TablesConfig = ...,
+    ) -> EvalResult: ...
 ```
 
 `StreamingEvaluator` and `BackgroundEvaluator` gain matching
@@ -569,18 +576,18 @@ later from the cells store.
 The contract:
 
 ```python
-ev = StreamingEvaluator(gt, retain_iou=True)         # opt-in at construction
+ev = StreamingEvaluator(gt, retain_iou=True)  # opt-in at construction
 for batch in train_loader:
     ev.update(predictions(batch))
-result = ev.finalize(tables="all")                   # works
+result = ev.finalize(tables="all")  # works
 ```
 
 ```python
-ev = StreamingEvaluator(gt)                          # default, no retention
+ev = StreamingEvaluator(gt)  # default, no retention
 for batch in train_loader:
     ev.update(predictions(batch))
 result = ev.finalize(tables=("per_image", "per_class"))  # works — cheap tables
-result = ev.finalize(tables=("per_pair",))           # raises ValueError
+result = ev.finalize(tables=("per_pair",))  # raises ValueError
 ```
 
 The `ValueError` is structured: it names the missing flag and

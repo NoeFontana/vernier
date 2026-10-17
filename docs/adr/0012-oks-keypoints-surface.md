@@ -124,7 +124,7 @@ class Keypoints:
 class Evaluator:
     iou: IouKind = field(default_factory=Bbox)
     parity_mode: ParityMode = "corrected"
-    max_dets: tuple[int, ...] | None = None     # was tuple[int, ...] = (1, 10, 100)
+    max_dets: tuple[int, ...] | None = None  # was tuple[int, ...] = (1, 10, 100)
     use_cats: bool = True
 ```
 
@@ -141,6 +141,7 @@ _KERNEL_MAX_DETS: dict[type[IouKind], tuple[int, ...]] = {
     Boundary: (1, 10, 100),
     Keypoints: (20,),
 }
+
 
 def _resolve_max_dets(self) -> list[int]:
     if self.max_dets is not None:
