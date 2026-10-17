@@ -36,11 +36,7 @@ def arrow_to_dataframe(batch: object | None, name: str) -> pl.DataFrame:
             "result tables expose polars.DataFrame; install polars via "
             "`pip install 'vernier[tables]'`"
         ) from e
-    # polars 1.40+ types `from_arrow` overload with `Unknown` data params
-    # under pyright strict mode, surfacing reportUnknownMemberType. The call
-    # itself is sound (batch is an Arrow PyCapsule from the FFI layer); the
-    # ignore is scoped to this single call site.
-    df = pl.from_arrow(batch)
-    if isinstance(df, pl.Series):
-        df = df.to_frame()
-    return df
+    # Construct polars.DataFrame directly from the Arrow PyCapsule to avoid
+    # the Polars 2.0 deprecation warning on pl.from_arrow. Polars' FrameInitTypes
+    # does not type arbitrary __arrow_c_array__ PyCapsules under strict mode.
+    return pl.DataFrame(batch)  # pyright: ignore[reportArgumentType]
