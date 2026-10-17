@@ -92,7 +92,7 @@ serde_json = { workspace = true }
 # FFI-internal scheduling deps for the background evaluator (ADR-0014).
 # Both are best-effort and crate-local; do NOT promote to
 # `[workspace.dependencies]` (only one consumer).
-thread-priority = "1"
+thread-priority = "3"
 core_affinity = "0.8"
 # Allocator A/B for the bbox-scaling investigation (`mimalloc-global`
 # feature). Optional and crate-local; do NOT promote to
