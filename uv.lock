@@ -1882,11 +1882,11 @@ wheels = [
 
 [[package]]
 name = "platformdirs"
-version = "4.12.2"
+version = "4.12.3"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/17/c8/721b3855fe457da514fe249247d404b9b39c5d16532278f70ebaa6acf18b/platformdirs-4.12.2.tar.gz", hash = "sha256:eab5f70271a490ef74618bb314fbb86e3c7e82fa3b9c922c2ea0e0a1a155d329", size = 59353, upload-time = "2026-09-29T18:27:56.009Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/42/23/4a86fc741c38c5b69792a4ef954b281afa69bea9f083f881de1b0d23bc07/platformdirs-4.12.3.tar.gz", hash = "sha256:427fc0bb321ae0c5b037fa03238ca74820437be162e78b4848c4d4055b9b766c", size = 59538, upload-time = "2026-10-03T23:40:46.595Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d0/89/446044f33aba0348d35e433f56d12206d010a5281a1df54054d4cfb82388/platformdirs-4.12.2-py3-none-any.whl", hash = "sha256:29dbf06d96c500bc6bdbce75fb0a14d63279c93b1842f97e72a135b33e856983", size = 32457, upload-time = "2026-09-29T18:27:54.43Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/9b/6ce1ead737fe496611bda600c263b9a11ae7bd8f41bb13f9bd7e0a2c37a4/platformdirs-4.12.3-py3-none-any.whl", hash = "sha256:080f3b39423b5abfca9a23d84c4e9795f54d395cd8459867a8ded44084fcd5f8", size = 32493, upload-time = "2026-10-03T23:40:45.104Z" },
 ]
 
 [[package]]
@@ -2509,7 +2509,7 @@ wheels = [
 
 [[package]]
 name = "rfdetr"
-version = "1.11.1"
+version = "1.11.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -2523,9 +2523,9 @@ dependencies = [
     { name = "tqdm" },
     { name = "transformers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/c5/46/a70b2c73509819aa3f04719eb049ecf2ddb19746908cc2633957d02c4f20/rfdetr-1.11.1.tar.gz", hash = "sha256:66ed968b2f9e4bcff4c0d3586afbe489cd3a83a8db5bcb82f2a125637a219854", size = 715269, upload-time = "2026-09-30T11:18:16.325Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/5c/56408bdb7d30e4fdb7cd332c7d0a29c1fa06bee93fb730359367d8198564/rfdetr-1.11.2.tar.gz", hash = "sha256:11c3395b004c2ffdd30b7bf83c324a2b8caf5e5609c7407c73b484b9ce7454d3", size = 734014, upload-time = "2026-10-04T11:23:11.706Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/69/79/a170c8761ee780b6b48e7e7aabefbdb9da35dc37d5566749e2da41857c72/rfdetr-1.11.1-py3-none-any.whl", hash = "sha256:cb29c790ca75f9d671d405e9d52155afed37c98b2b53ac554489a7692e85caab", size = 768670, upload-time = "2026-09-30T11:18:14.265Z" },
+    { url = "https://files.pythonhosted.org/packages/16/94/a592dd9ba73df327ed82a15665948683b88365428139cc175c540f8a8f84/rfdetr-1.11.2-py3-none-any.whl", hash = "sha256:2f23589567123b59302f1cfa9d14d23630f9f583ee6f3468c5891e33fb103b2a", size = 788908, upload-time = "2026-10-04T11:23:09.757Z" },
 ]
 
 [[package]]
@@ -3172,7 +3172,7 @@ requires-dist = [
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=6.0" },
     { name = "polars", marker = "extra == 'tables'", specifier = ">=1.0" },
     { name = "pyarrow", specifier = ">=15" },
-    { name = "rfdetr", marker = "extra == 'real-models'", specifier = "==1.11.1" },
+    { name = "rfdetr", marker = "extra == 'real-models'", specifier = "==1.11.2" },
     { name = "timm", marker = "extra == 'real-models'", specifier = ">=1.0" },
     { name = "torch", marker = "extra == 'real-models'", specifier = ">=2.4" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4" },
