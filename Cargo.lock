@@ -1682,6 +1682,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "vernier-geom"
+version = "0.5.1"
+dependencies = [
+ "proptest",
+ "pulp",
+ "thiserror",
+]
+
+[[package]]
 name = "vernier-mask"
 version = "0.5.4"
 dependencies = [

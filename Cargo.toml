@@ -5,6 +5,7 @@ members = [
     "crates/vernier-cli",
     "crates/vernier-core",
     "crates/vernier-ffi",
+    "crates/vernier-geom",
     "crates/vernier-mask",
     "crates/vernier-panoptic",
     "crates/vernier-partial",
