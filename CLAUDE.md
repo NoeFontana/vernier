@@ -19,11 +19,16 @@ Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 - `just bootstrap` — one-time `uv sync` + `maturin develop --release`
 - `just develop` — fast iterative rebuild (debug Rust)
 - `just build` — release wheel into `target/wheels/`
-- `just test` / `test-rust` / `test-py` / `test-parity` — full suite or subset
-- `just lint` — clippy + ruff + pyright (CI-equivalent, read-only)
+- `just check` — ultra-fast static analysis (workspace compile check + ruff + pyright, ~1s)
+- `just test` / `test-rust` / `test-py` / `test-parity` — full suite or subset (pytest runs with `pytest-xdist -n auto`)
+- `just test-fast` — ultra-fast iterative unit tests across Rust & Python (~2s)
+- `just test-crate <name>` — test a specific workspace crate (e.g. `core`, `cli`, `mask`)
+- `just lint` — clippy + ruff + pyright + powerset + wasm (CI-equivalent, read-only)
+- `just lint-fast` — fast local lint loop (clippy + ruff + pyright)
 - `just fmt` — cargo fmt + ruff format + ruff check --fix
 - `just audit` — `cargo deny check`
 - `just check-features` — `cargo hack --feature-powerset check -p vernier` (ADR-0048 facade gate; runs as part of `lint-rust`)
+- `just prune` — prune compiled target artifacts without destroying `.venv`
 - `just clean` — nuke `target/`, `.venv`, built `_core*.so`
 
 Single tests:

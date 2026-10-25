@@ -150,9 +150,22 @@ codegen-units = 1
 debug = "line-tables-only"
 strip = "debuginfo"
 
-# Faster local dev: skip LTO, more codegen units.
+# Faster local dev: skip LTO, more codegen units, right-sized line debuginfo, and unpacked DWARF.
 [profile.dev]
 opt-level = 0
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+# Pre-optimize third-party dependencies so heavy routines (SIMD, Arrow, rkyv, proptest)
+# execute fast in tests without slowing down workspace crate compilation.
+[profile.dev.package."*"]
+opt-level = 2
+
+# Test profile inherits from dev with line debuginfo and unpacked DWARF
+[profile.test]
+inherits = "dev"
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
 
 # bench profile mirrors release; divan and criterion both use it.
 [profile.bench]

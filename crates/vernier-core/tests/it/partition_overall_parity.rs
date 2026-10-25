@@ -23,7 +23,7 @@ use vernier_core::partition::{
 use vernier_core::summarize::summarize_detection;
 use vernier_core::{accumulate, parity, CocoDataset, CocoDetections, EvalDataset};
 
-mod common;
+use super::common;
 use common::fixture_path;
 
 fn load_fixture(name: &str) -> (CocoDataset, CocoDetections) {

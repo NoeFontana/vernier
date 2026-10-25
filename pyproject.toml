@@ -126,6 +126,7 @@ dev = [
     "maturin>=1.13,<2.0",
     "pytest>=9",
     "pytest-benchmark>=5",
+    "pytest-xdist>=3.5",
     "ruff>=0.15",
     "pyright>=1.1.409",
     # Reference oracle for parity tests. Pinned exact: every quirk we reproduce
@@ -289,6 +290,8 @@ exclude = [
     # Same philosophy as the bench exclude: opt-in heavy code that we
     # don't gate `just lint` on. Linted by ruff (style) but not typed.
     "tests/python/integration/real_models",
+    # Semantic parity harness — depends on optional `torch` extra; see conftest.py
+    "tests/python/parity_semantic",
 ]
 strict = ["python/vernier"]
 pythonVersion = "3.10"
@@ -301,7 +304,7 @@ reportUnnecessaryTypeIgnoreComment = "warning"
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
-addopts = "-ra --strict-markers --strict-config"
+addopts = "-ra --strict-markers --strict-config -n auto"
 # Don't descend into the vendored boundary-IoU oracle tree — it's not
 # vernier's tests, and pytest collection would try to import modules that
 # need opencv-python at module load time. The harness adds the oracle to

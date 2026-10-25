@@ -32,7 +32,7 @@ use vernier_core::tide::{
 };
 use vernier_core::{AreaRange, CocoDataset, CocoDetections, ParityMode};
 
-mod common;
+use super::common;
 use common::{expected_path, fixture_path};
 
 const PARITY_TOL: f64 = 1e-9;

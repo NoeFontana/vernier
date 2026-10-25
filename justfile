@@ -3,6 +3,14 @@
 
 set shell := ["bash", "-cu"]
 
+# Ensure PyO3 extension tests (vernier-ffi) locate libpython at runtime.
+py_libdir := `uv run python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')" 2>/dev/null || true`
+export LD_LIBRARY_PATH := if py_libdir != "" { py_libdir + if env("LD_LIBRARY_PATH", "") != "" { ":" + env("LD_LIBRARY_PATH", "") } else { "" } } else { env("LD_LIBRARY_PATH", "") }
+
+# Linker auto-configuration: prefer clang + mold when available for fast linking.
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER := if `which clang 2>/dev/null || true` != "" { "clang" } else { "gcc" }
+export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS := if `which mold 2>/dev/null || true` != "" { "-C link-arg=-fuse-ld=mold" } else if `which ld.lld 2>/dev/null || true` != "" { "-C link-arg=-fuse-ld=lld" } else { "" }
+
 # Default recipe: list available recipes.
 default:
     @just --list
@@ -24,12 +32,27 @@ develop:
 build:
     uv run maturin build --release
 
+# Ultra-fast static analysis (compile check + ruff + pyright) without linking binaries.
+check:
+    cargo check --workspace
+    uv run ruff check .
+    uv run pyright
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 # Run all tests (Rust + Python).
 test: test-rust test-py
+
+# Fast iterative unit tests (skips slow parity and integration sweeps).
+test-fast:
+    uv run cargo nextest run --workspace -E 'not test(slow)'
+    uv run pytest -m "not slow and not parity"
+
+# Run tests for a specific workspace crate (e.g. `just test-crate core`).
+test-crate CRATE:
+    uv run cargo nextest run -p vernier-{{CRATE}}
 
 test-rust:
     uv run cargo nextest run --workspace
@@ -88,6 +111,13 @@ test-coco-val:
 # ---------------------------------------------------------------------------
 # Lint & format
 # ---------------------------------------------------------------------------
+
+# Fast local lint loop (clippy + ruff + pyright, skips powerset and wasm cross-compile checks).
+lint-fast:
+    cargo fmt --all -- --check
+    cargo clippy --workspace --all-targets -- -D warnings
+    uv run ruff check .
+    uv run pyright
 
 # Run all linters (CI-equivalent, read-only).
 lint: lint-rust lint-py lint-citations
@@ -214,6 +244,10 @@ bench-develop-histogram:
 # Security/license audit of Rust dependencies.
 audit:
     cargo deny check
+
+# Prune workspace build artifacts without destroying .venv or caches.
+prune:
+    cargo clean -p vernier -p vernier-core -p vernier-cli -p vernier-ffi -p vernier-panoptic -p vernier-semantic -p vernier-partial -p vernier-mask
 
 # Remove all build artifacts and the venv.
 clean:
