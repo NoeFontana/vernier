@@ -15,7 +15,7 @@ use vernier_core::similarity::BboxIou;
 use vernier_core::tide::{compute_confusion_matrix, ConfusionMatrixCounts};
 use vernier_core::{CocoDataset, CocoDetections, ParityMode};
 
-mod common;
+use super::common;
 use common::fixture_path;
 
 fn load_fixture(name: &str) -> (CocoDataset, CocoDetections) {

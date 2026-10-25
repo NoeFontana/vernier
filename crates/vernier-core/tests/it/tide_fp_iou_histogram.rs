@@ -14,7 +14,7 @@ use vernier_core::tide::{
 };
 use vernier_core::{AreaRange, CocoDataset, CocoDetections, ParityMode};
 
-mod common;
+use super::common;
 use common::fixture_path;
 
 fn load_fixture(name: &str) -> (CocoDataset, CocoDetections) {
