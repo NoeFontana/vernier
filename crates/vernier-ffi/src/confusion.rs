@@ -21,7 +21,7 @@
 //!
 //! Mixed-type class columns (int category id vs string `"__none__"`
 //! sentinel) are awkward to model in polars; the FFI casts every class
-//! id to its decimal-string repr so the column has uniform `pl.Utf8`
+//! id to its decimal-string repr so the column has uniform `pl.String`
 //! dtype. Users wanting numeric ids can `df.with_columns(pl.col("gt_class").cast(pl.Int64,
 //! strict=False))` themselves; the `__none__` rows become `null` in
 //! that cast, which is the natural representation of "no class".
