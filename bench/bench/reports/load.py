@@ -119,20 +119,20 @@ def iter_result_files(results_root: Path, *, shas: set[str] | None = None) -> It
 
 
 _EMPTY_SCHEMA: dict[str, pl.DataType] = {
-    "git_sha": pl.Utf8,
-    "machine_fingerprint": pl.Utf8,
-    "paradigm": pl.Utf8,
-    "workload_id": pl.Utf8,
-    "iou_type": pl.Utf8,
-    "impl": pl.Utf8,
-    "impl_version": pl.Utf8,
-    "mode": pl.Utf8,
+    "git_sha": pl.String,
+    "machine_fingerprint": pl.String,
+    "paradigm": pl.String,
+    "workload_id": pl.String,
+    "iou_type": pl.String,
+    "impl": pl.String,
+    "impl_version": pl.String,
+    "mode": pl.String,
     "reps_count": pl.Int64,
     "total_median_ns": pl.Int64,
     "total_iqr_ns": pl.Int64,
     "peak_rss_median_bytes": pl.Int64,
     "peak_rss_max_bytes": pl.Int64,
-    "tensor_sha256": pl.Utf8,
+    "tensor_sha256": pl.String,
     "mtime": pl.Float64,
 }
 

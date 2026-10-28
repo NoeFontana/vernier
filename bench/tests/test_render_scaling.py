@@ -198,7 +198,7 @@ def test_group_by_synthetic_param_slices_matching_rows() -> None:
 
 
 def test_group_by_synthetic_param_empty_df_returns_empty() -> None:
-    df = pl.DataFrame(schema={"workload_id": pl.Utf8})
+    df = pl.DataFrame(schema={"workload_id": pl.String})
     out = group_by_synthetic_param(
         df,
         vary="n_images",
