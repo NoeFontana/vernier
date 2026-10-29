@@ -204,7 +204,7 @@ def _spawn_one_rep(
     )
     # ADR-0047 — append the optional threading axis when the cell pins
     # a thread count. Runners forward it to their library's own knob
-    # where one exists (vernier ``num_threads``, hotcoco
+    # where one exists (vernier ``num_threads``, hotcoco / ufcoco
     # ``RAYON_NUM_THREADS``, faster-coco-eval worker counts).
     if num_threads is not None:
         cmd.extend(["--num-threads", str(num_threads)])
