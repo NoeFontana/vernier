@@ -45,6 +45,7 @@ IMPL_LABELS: dict[str, str] = {
     "faster-coco-eval": "faster-coco-eval",
     "hotcoco": "hotcoco",
     "hotcoco_lvis": "hotcoco",
+    "ufcoco": "ufcoco",
     "boundary-iou-api": "boundary-iou-api",
     "panopticapi": "panopticapi",
     "mmsegmentation": "mmsegmentation",
@@ -59,6 +60,7 @@ IMPL_ORDER: list[str] = [
     "vernier_lvis",
     "hotcoco",
     "hotcoco_lvis",
+    "ufcoco",
     "faster-coco-eval",
     "pycocotools",
     "boundary-iou-api",
@@ -553,7 +555,11 @@ def render_scaling_section(cells: dict[CellKey, CellStats]) -> str:
     return "\n".join(out)
 
 
-_PYPI_BASELINES: frozenset[str] = frozenset({"pycocotools", "faster-coco-eval", "hotcoco"})
+_PYPI_BASELINES: frozenset[str] = frozenset(
+    {"pycocotools", "faster-coco-eval", "hotcoco", "ufcoco"}
+)
+# Impls whose PyPI distribution name differs from the bench impl id.
+_PYPI_NAMES: dict[str, str] = {"ufcoco": "ultrafast-pycocotools"}
 _GH_BASELINES: dict[str, str] = {
     "panopticapi": "cocodataset/panopticapi",
     "boundary-iou-api": "bowenc0221/boundary-iou-api",
@@ -576,7 +582,8 @@ _HEX_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 
 def _baseline_link(impl: str, version: str) -> str:
     if impl in _PYPI_BASELINES:
-        return f"[`{impl}=={version}`](https://pypi.org/project/{impl}/{version}/)"
+        dist = _PYPI_NAMES.get(impl, impl)
+        return f"[`{dist}=={version}`](https://pypi.org/project/{dist}/{version}/)"
     if impl in _GH_BASELINES and _HEX_SHA_RE.match(version):
         return (
             f"[`{impl}` @ `{version[:7]}`]"
@@ -709,8 +716,8 @@ the total is reported. Instance and LVIS cells run under an enforced
 CPU budget: every runner process is pinned (CPU affinity, one logical
 CPU per physical core before SMT siblings) to 1 CPU for the headline
 tables and `N` CPUs for `nt=N` cells, and the budget is also passed to
-each library's own thread knob (vernier `num_threads`, hotcoco
-`RAYON_NUM_THREADS`, faster-coco-eval `rle_iou_max_workers` /
+each library's own thread knob (vernier `num_threads`, hotcoco and
+ufcoco `RAYON_NUM_THREADS`, faster-coco-eval `rle_iou_max_workers` /
 `boundary_cpu_count`). The CPU/wall column is process CPU time over
 wall time — ~1.00 means the impl used one core; anything well below
 the budget means it spent wall time waiting rather than computing.
