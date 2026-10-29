@@ -6,7 +6,7 @@
 //! concatenated per category.
 //!
 //! Strict-mode bit-equality across thread counts holds by construction:
-//! both paths share [`crate::evaluate::GridPlan`] and the per-cell body,
+//! both paths share `GridPlan` and the per-cell body,
 //! the matching kernel is pure on owned data, and concatenating the
 //! chunks in order reproduces the sequential pass's packed arena exactly
 //! (metadata and the retained-IoU map are keyed, so their order is

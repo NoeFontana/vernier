@@ -282,7 +282,7 @@ impl<K: EvalKernel> ParsedDetections<K> {
 ///
 /// Holds a [`CocoDataset`] plus a sparse store of [`PerImageEval`] cells
 /// produced by per-batch `match_image` calls. [`Self::snapshot`] runs
-/// [`accumulate`] + summarize over the current store at any time;
+/// [`accumulate_grid`](crate::accumulate::accumulate_grid) + summarize over the current store at any time;
 /// [`Self::finalize`] consumes the evaluator and returns the same
 /// [`Summary`]. Bit-identical to a batch run over the union of all
 /// `update()` batches submitted in order.
@@ -466,7 +466,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// # Errors
     ///
     /// Propagates [`EvalError`] from the parse path, the underlying
-    /// batch evaluation (the [`evaluate_with`] pass restricted to the
+    /// batch evaluation (the [`evaluate_with`](crate::evaluate::evaluate_with) pass restricted to the
     /// batch's images), and the budget check
     /// ([`EvalError::OutOfBudget`]). On any error the evaluator state
     /// is unchanged and remains usable.
@@ -486,7 +486,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// - [`EvalError::OutOfBudget`] if the projected post-insert total
     ///   crosses [`MemoryBudget::bytes`]. State is unchanged on error.
     /// - Any [`EvalError`] from the underlying batch evaluation (the
-    ///   [`evaluate_with`] pass restricted to the batch's images).
+    ///   [`evaluate_with`](crate::evaluate::evaluate_with) pass restricted to the batch's images).
     pub fn update_parsed(
         &mut self,
         parsed: ParsedDetections<K>,
@@ -696,7 +696,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// # Errors
     ///
-    /// Propagates [`EvalError`] from the underlying [`accumulate`] or
+    /// Propagates [`EvalError`] from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) or
     /// summarize call.
     pub fn snapshot(&mut self) -> Result<Summary, EvalError> {
         self.compute_summary()
@@ -706,7 +706,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// # Errors
     ///
-    /// Propagates [`EvalError`] from the underlying [`accumulate`] or
+    /// Propagates [`EvalError`] from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) or
     /// summarize call.
     pub fn finalize(mut self) -> Result<Summary, EvalError> {
         self.compute_summary()
@@ -733,7 +733,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// # Errors
     ///
-    /// Propagates [`EvalError`] from the underlying [`accumulate`] or
+    /// Propagates [`EvalError`] from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) or
     /// summarize call.
     pub fn snapshot_with_cells(&mut self) -> Result<SnapshotWithCells, EvalError> {
         self.compute_summary_and_cells()
@@ -754,7 +754,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// - [`EvalError::NotImplemented`] when `request.per_detection` or
     ///   `request.per_pair` is set.
-    /// - Any error from the underlying [`accumulate`] / summarize /
+    /// - Any error from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) / summarize /
     ///   [`crate::tables::build_per_image`] / [`crate::tables::build_per_class`] calls.
     pub fn finalize_with_tables(
         mut self,
