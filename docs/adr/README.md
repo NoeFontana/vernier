@@ -145,6 +145,7 @@ else is detail.
 | [0063](0063-per-sample-ingest-route.md) | A per-sample ingest route for training loops (`coco_inputs`, `coco_metrics`) | accepted (erratum 2026-09-22) |
 | [0064](0064-dataset-handle-on-diagnostic-surfaces.md) | The parsed pair (`CocoDataset` + `DetectionsInput`) on every instance surface — TIDE, LRP, confusion matrix, FP-IoU histogram, `tables=` / `manifest=` | proposed |
 | [0065](0065-federated-cap-on-the-streaming-evaluators.md) | Apply the LVIS per-image cap per streaming batch (`StreamingEvaluator`, `BackgroundEvaluator`) | proposed |
+| [0066](0066-columnar-detections-and-packed-eval-grid.md) | Columnar detection storage, `DetectionsBatch` ingest, and packed evaluation grids | proposed |
 
 ### TIDE design package — proposed cluster
 
