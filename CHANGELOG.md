@@ -47,6 +47,9 @@ additive / perf / docs".
 - `EvalKernel::dt_anns_can_fail`, defaulting to `true`. A kernel whose
   detection annotations cannot fail to build (`BboxIou`) lets empty-GT
   cells skip building them.
+- `DetectionFields` and `CocoDetections::from_json_bytes_with` /
+  `from_json_bytes_parallel_with`: a detection JSON load can skip the
+  `segmentation` / `keypoints` payloads the bbox kernel never reads.
 
 ### Performance
 
@@ -96,6 +99,12 @@ additive / perf / docs".
   calls. One thread, COCO val2017, evaluate stage: jittered segm −37%,
   RF-DETR Seg-Nano segm −17%, jittered boundary −6%. Bit-identical
   output.
+- **bbox evaluation skips detection masks.** A bbox evaluation parses
+  only the fields the bbox kernel reads, so a results file that also
+  carries masks no longer pays to parse them. RF-DETR Seg-Nano on COCO
+  val2017, one thread: 753 → 525 ms end to end (−30%). A malformed
+  `segmentation` or `keypoints` value no longer fails a bbox
+  evaluation, matching pycocotools, which never reads them there.
 
 ## [0.5.5] - 2026-10-29
 

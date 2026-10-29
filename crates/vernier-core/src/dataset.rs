@@ -1540,6 +1540,53 @@ pub enum DetectionArea {
     Mask,
 }
 
+/// Which optional per-detection payloads a JSON load materializes.
+///
+/// pycocotools' bbox evaluation never reads a result's `segmentation`
+/// or `keypoints`. Under [`DetectionFields::Boxes`] the parser skips
+/// them unparsed, which is most of the bytes in a mask-carrying results
+/// file; a malformed value there is skipped too, not reported.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum DetectionFields {
+    /// Every field, so any kernel or table can read the result.
+    #[default]
+    All,
+    /// Only what the bbox kernel reads: ids, score, `bbox`, `area`.
+    Boxes,
+}
+
+/// [`DetectionInput`] without the payloads only the mask and keypoint
+/// kernels read. An undeclared field is skipped by serde's
+/// `IgnoredAny`, which scans it without allocating or converting
+/// numbers.
+#[derive(Deserialize)]
+struct BoxDetectionInput {
+    #[serde(default)]
+    id: Option<AnnId>,
+    image_id: ImageId,
+    category_id: CategoryId,
+    score: f64,
+    bbox: Bbox,
+    #[serde(default)]
+    area: Option<f64>,
+}
+
+impl From<BoxDetectionInput> for DetectionInput {
+    fn from(row: BoxDetectionInput) -> Self {
+        Self {
+            id: row.id,
+            image_id: row.image_id,
+            category_id: row.category_id,
+            score: row.score,
+            bbox: row.bbox,
+            area: row.area,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+        }
+    }
+}
+
 /// Columnar caller-side input for a batch of detections (ADR-0066).
 ///
 /// Columnar sibling of `Vec<DetectionInput>`: required columns
@@ -1629,13 +1676,21 @@ impl DetectionColumnsInput {
 /// Deserializes a JSON array of [`DetectionInput`] straight into
 /// [`DetectionColumnsInput`], with no row-major intermediate. A supplied
 /// `area` is dropped unless `keep_area`: only a [`DetectionArea::Supplied`]
-/// build reads it (quirk **J3**).
+/// build reads it (quirk **J3**). `fields` picks the row shape.
 #[derive(Clone, Copy)]
 struct DetectionColumnsSeed {
     keep_area: bool,
+    fields: DetectionFields,
 }
 
 impl DetectionColumnsSeed {
+    fn new(area: DetectionArea, fields: DetectionFields) -> Self {
+        Self {
+            keep_area: matches!(area, DetectionArea::Supplied),
+            fields,
+        }
+    }
+
     fn push(self, cols: &mut DetectionColumnsInput, mut row: DetectionInput) {
         if !self.keep_area {
             row.area = None;
@@ -1662,8 +1717,17 @@ impl<'de> serde::de::Visitor<'de> for DetectionColumnsSeed {
 
     fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
         let mut cols = DetectionColumnsInput::with_capacity(seq.size_hint().unwrap_or(0));
-        while let Some(row) = seq.next_element()? {
-            self.push(&mut cols, row);
+        match self.fields {
+            DetectionFields::All => {
+                while let Some(row) = seq.next_element::<DetectionInput>()? {
+                    self.push(&mut cols, row);
+                }
+            }
+            DetectionFields::Boxes => {
+                while let Some(row) = seq.next_element::<BoxDetectionInput>()? {
+                    self.push(&mut cols, row.into());
+                }
+            }
         }
         Ok(cols)
     }
@@ -1892,11 +1956,22 @@ impl CocoDetections {
     /// [`Self::from_json_bytes`] with an explicit [`DetectionArea`]
     /// source.
     pub fn from_json_bytes_with_area(bytes: &[u8], area: DetectionArea) -> Result<Self, EvalError> {
+        Self::from_json_bytes_with(bytes, area, DetectionFields::All)
+    }
+
+    /// [`Self::from_json_bytes_with_area`] materializing only `fields`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_json_bytes`].
+    pub fn from_json_bytes_with(
+        bytes: &[u8],
+        area: DetectionArea,
+        fields: DetectionFields,
+    ) -> Result<Self, EvalError> {
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
-        let seed = DetectionColumnsSeed {
-            keep_area: matches!(area, DetectionArea::Supplied),
-        };
+        let seed = DetectionColumnsSeed::new(area, fields);
         let mut de = serde_json::Deserializer::from_slice(bytes);
         let columns = serde::de::DeserializeSeed::deserialize(seed, &mut de)?;
         de.end()?;
@@ -1948,22 +2023,46 @@ impl CocoDetections {
         threads: usize,
         area: DetectionArea,
     ) -> Result<Self, EvalError> {
+        Self::from_json_bytes_parallel_with(bytes, threads, area, DetectionFields::All)
+    }
+
+    /// [`Self::from_json_bytes_parallel_with_area`] materializing only
+    /// `fields`.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::from_json_bytes`].
+    pub fn from_json_bytes_parallel_with(
+        bytes: &[u8],
+        threads: usize,
+        area: DetectionArea,
+        fields: DetectionFields,
+    ) -> Result<Self, EvalError> {
         if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
-            return Self::from_json_bytes_with_area(bytes, area);
+            return Self::from_json_bytes_with(bytes, area, fields);
         }
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
-        let seed = DetectionColumnsSeed {
-            keep_area: matches!(area, DetectionArea::Supplied),
-        };
+        let seed = DetectionColumnsSeed::new(area, fields);
         let parsed = crate::json_split::document_object_array(bytes).and_then(|elements| {
-            crate::json_split::parse_elements_parallel_into(
-                bytes,
-                &elements,
-                crate::json_split::chunks_for(threads),
-                DetectionColumnsInput::with_capacity,
-                |cols, row| seed.push(cols, row),
-            )
+            let n_chunks = crate::json_split::chunks_for(threads);
+            let init = DetectionColumnsInput::with_capacity;
+            match fields {
+                DetectionFields::All => crate::json_split::parse_elements_parallel_into(
+                    bytes,
+                    &elements,
+                    n_chunks,
+                    init,
+                    |cols, row: DetectionInput| seed.push(cols, row),
+                ),
+                DetectionFields::Boxes => crate::json_split::parse_elements_parallel_into(
+                    bytes,
+                    &elements,
+                    n_chunks,
+                    init,
+                    |cols, row: BoxDetectionInput| seed.push(cols, row.into()),
+                ),
+            }
             .ok()
         });
         #[cfg(feature = "bench-timings")]
@@ -1986,7 +2085,7 @@ impl CocoDetections {
             // As on the GT side: the fallback's own instrumentation is
             // the only one that fires, so the abandoned scan is not
             // added to `DT_PARSE_NS` a second time.
-            None => Self::from_json_bytes_with_area(bytes, area),
+            None => Self::from_json_bytes_with(bytes, area, fields),
         }
     }
 
@@ -2120,9 +2219,7 @@ impl CocoDetections {
         inputs: Vec<DetectionInput>,
         area: DetectionArea,
     ) -> Result<Self, EvalError> {
-        let seed = DetectionColumnsSeed {
-            keep_area: matches!(area, DetectionArea::Supplied),
-        };
+        let seed = DetectionColumnsSeed::new(area, DetectionFields::All);
         let mut columns = DetectionColumnsInput::with_capacity(inputs.len());
         for input in inputs {
             seed.push(&mut columns, input);
@@ -2982,6 +3079,75 @@ mod tests {
                     format!("{:?}", parallel.records().collect::<Vec<_>>()),
                     "threads={threads} area={area:?}"
                 );
+            }
+        }
+    }
+
+    /// [`DetectionFields::Boxes`] keeps every column the bbox kernel
+    /// reads, bit-for-bit, and drops the mask and keypoint payloads —
+    /// malformed ones included, as pycocotools' bbox path never reads
+    /// them — on the serial and the parallel loader alike.
+    #[test]
+    fn boxes_only_dt_loader_skips_mask_and_keypoint_payloads() {
+        let mut json = String::from("[");
+        for i in 0..120 {
+            if i > 0 {
+                json.push(',');
+            }
+            let extra = match i % 4 {
+                0 => r#", "segmentation": [[0, 0, 4, 0, 4, 4]]"#,
+                1 => {
+                    r#", "segmentation": {"size": [4, 4], "counts": "04L4"}, "keypoints": [1, 2, 2]"#
+                }
+                2 => r#", "segmentation": {"counts": 17}, "keypoints": "bad""#,
+                _ => "",
+            };
+            json.push_str(&format!(
+                r#"{{"image_id": {}, "category_id": 3, "bbox": [1.5,0,{},2], "score": 0.{}, "area": 9.0{extra}}}"#,
+                i % 7,
+                i + 1,
+                i % 9 + 1
+            ));
+        }
+        json.push(']');
+        let boxes_of = |d: &CocoDetections| {
+            (0..d.len())
+                .map(|i| {
+                    (
+                        d.id_at(i),
+                        d.score_at(i).to_bits(),
+                        d.bbox_at(i),
+                        d.area_at(i).to_bits(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // `All` refuses the malformed rows; `Boxes` never looks at them.
+        assert!(CocoDetections::from_json_bytes(json.as_bytes()).is_err());
+        for area in [DetectionArea::FromBbox, DetectionArea::Supplied] {
+            let serial =
+                CocoDetections::from_json_bytes_with(json.as_bytes(), area, DetectionFields::Boxes)
+                    .expect("serial");
+            assert_eq!(serial.len(), 120);
+            assert!((0..120).all(|i| serial.segmentation_at(i).is_none()));
+            assert!((0..120).all(|i| serial.keypoints_at(i).is_none()));
+            let well_formed: String = json.replace(
+                r#", "segmentation": {"counts": 17}, "keypoints": "bad""#,
+                "",
+            );
+            let all = CocoDetections::from_json_bytes_with_area(well_formed.as_bytes(), area)
+                .expect("all");
+            assert_eq!(boxes_of(&serial), boxes_of(&all), "area={area:?}");
+            for threads in [3usize, 8] {
+                let parallel = CocoDetections::from_json_bytes_parallel_with(
+                    json.as_bytes(),
+                    threads,
+                    area,
+                    DetectionFields::Boxes,
+                )
+                .expect("par");
+                assert_eq!(boxes_of(&serial), boxes_of(&parallel), "threads={threads}");
             }
         }
     }
