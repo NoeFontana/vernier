@@ -104,7 +104,9 @@ additive / perf / docs".
   carries masks no longer pays to parse them. RF-DETR Seg-Nano on COCO
   val2017, one thread: 753 → 525 ms end to end (−30%). A malformed
   `segmentation` or `keypoints` value no longer fails a bbox
-  evaluation, matching pycocotools, which never reads them there.
+  evaluation, matching pycocotools, which never reads them there; the
+  result-dict route skips `segmentation` under bbox too, so both routes
+  accept the same payloads (ADR-0057).
 
 ## [0.5.5] - 2026-10-29
 

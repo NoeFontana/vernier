@@ -656,24 +656,21 @@ def test_buffer_counts_are_refused_instead_of_read_as_run_lengths(wrap: Any) -> 
         _segm_grid(dt)
 
 
-def test_a_bad_segmentation_is_refused_on_the_bbox_grid_too() -> None:
-    """``segmentation`` is read under ``iou_type='bbox'`` on purpose.
+def test_segmentation_is_not_read_on_the_bbox_grid_by_any_route() -> None:
+    """``segmentation`` is skipped under ``iou_type='bbox'``, on every route.
 
-    The parsed mask is dead for *scoring* there — ``dt_area='mask'`` is
-    refused outside the segm / boundary grids, and nothing else on the
-    bbox path reads a detection's segmentation. It is **not** dead for
-    *validation*: a results file whose ``segmentation`` is structurally
-    wrong fails to load on the bbox grid, so skipping the read on the
-    list route would make it accept payloads the file route rejects.
-    That is precisely the route divergence ADR-0057 exists to avoid, so
-    the read is not gated on ``iou_type``.
+    pycocotools' bbox path never reads a result's mask, and the file route
+    skips it unparsed (``DetectionFields::Boxes``) — most of the bytes of a
+    mask-carrying results file. The list route must agree, or it would
+    refuse a payload the file route evaluates: that is the route
+    divergence ADR-0057 exists to avoid. So a structurally wrong
+    ``segmentation`` changes nothing on either route.
     """
     dicts = _as_dict_list()
+    expected = _grid(json.dumps(dicts).encode())
     dicts[1]["segmentation"] = {"counts": [1, 2, 3], "size": [64]}
-    with pytest.raises((TypeError, ValueError)):
-        _grid(json.dumps(dicts).encode())
-    with pytest.raises((TypeError, ValueError), match=r"detections\[1\]\.segmentation"):
-        _grid(dicts)
+    for got in (_grid(json.dumps(dicts).encode()), _grid(dicts)):
+        assert _normalize(got.eval_imgs()) == _normalize(expected.eval_imgs())
 
 
 # --- a route with no segmentation under segm means J2 -----------------------

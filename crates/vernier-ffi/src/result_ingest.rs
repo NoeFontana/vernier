@@ -137,11 +137,20 @@ pub(crate) fn ann_dicts_to_columns<'py>(
         // synthesizes a rectangle from the bbox; corrected refuses,
         // naming the detection). Requiring it here would make the list
         // route reject a bbox-only payload the file route evaluates.
-        let segmentation = dict
-            .get_item(k_segmentation)?
-            .filter(|v| !v.is_none())
-            .map(|obj| extract_segmentation(&obj, i, ctx))
-            .transpose()?;
+        //
+        // Under `bbox` it is not read at all, as `keypoints` is not read
+        // outside `keypoints`: the file route parses bbox results with
+        // `DetectionFields::Boxes`, which skips both unparsed, so reading
+        // one here would make this route refuse a payload that one
+        // accepts.
+        let segmentation = match iou_type {
+            ArrayIouType::Bbox => None,
+            _ => dict
+                .get_item(k_segmentation)?
+                .filter(|v| !v.is_none())
+                .map(|obj| extract_segmentation(&obj, i, ctx))
+                .transpose()?,
+        };
 
         let keypoints = match iou_type {
             ArrayIouType::Keypoints => Some(extract_keypoints(
