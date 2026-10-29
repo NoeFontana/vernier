@@ -708,9 +708,9 @@ fn accumulate_cell(
         return;
     }
 
-    let npig_f = npig as f64;
-    let mut rc = vec![0.0_f64; n_d];
-    let mut pr = vec![0.0_f64; n_d];
+    let mut targets = Vec::with_capacity(recall_thresholds.len());
+    recall_targets(recall_thresholds, npig, &mut targets);
+    let mut events = TpEvents::default();
     let mut dtm = vec![false; n_d];
     let mut dtg = vec![false; n_d];
 
@@ -727,29 +727,12 @@ fn accumulate_cell(
         }
 
         // C7: cumulative TP/FP exclude ignore-tagged DTs.
-        let mut tp = 0.0_f64;
-        let mut fp = 0.0_f64;
-        for (out_idx, &src_idx) in stream.perm.iter().enumerate() {
-            if !dtg[src_idx] {
-                if dtm[src_idx] {
-                    tp += 1.0;
-                } else {
-                    fp += 1.0;
-                }
-            }
-            rc[out_idx] = tp / npig_f;
-            pr[out_idx] = tp / (tp + fp + PARITY_EPS);
-        }
-
-        finish_threshold_curve(
-            &rc,
-            &mut pr,
-            stream.scores,
-            stream.perm,
-            recall_thresholds,
-            t,
-            a,
-            m,
+        events.sweep(stream.perm.iter().map(|&src| (dtm[src], dtg[src])));
+        events.finish(
+            &targets,
+            npig,
+            &stream,
+            (t, a, m),
             precision,
             recall,
             scores,
@@ -1354,59 +1337,6 @@ fn build_packed_sort_plan(cat: &PackedCategory, cap: usize) -> SortPlan<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn finish_threshold_curve(
-    rc: &[f64],
-    pr: &mut [f64],
-    stream_scores: &[f64],
-    stream_perm: &[usize],
-    recall_thresholds: &[f64],
-    t: usize,
-    a: usize,
-    m: usize,
-    precision: &mut ArrayViewMut4<'_, f64>,
-    recall: &mut ArrayViewMut3<'_, f64>,
-    scores: &mut ArrayViewMut4<'_, f64>,
-) {
-    let n_d = rc.len();
-    // C4: terminal cumulative recall.
-    recall[(t, a, m)] = rc[n_d - 1];
-
-    // C2: right-to-left running max on precision (envelope).
-    for j in (1..n_d).rev() {
-        if pr[j] > pr[j - 1] {
-            pr[j - 1] = pr[j];
-        }
-    }
-
-    // C1 + C3: searchsorted-left + bounds-check. Past the curve, slots are
-    // filled with 0.0 — overwriting the -1 sentinel so the summarizer's
-    // `s > -1` filter keeps them.
-    let mut p_lane = precision
-        .index_axis_mut(Axis(0), t)
-        .index_axis_move(Axis(1), a)
-        .index_axis_move(Axis(1), m);
-    let mut s_lane = scores
-        .index_axis_mut(Axis(0), t)
-        .index_axis_move(Axis(1), a)
-        .index_axis_move(Axis(1), m);
-    let mut last_pi = 0usize;
-    let mut prev_target = f64::NEG_INFINITY;
-    for (ri, &target) in recall_thresholds.iter().enumerate() {
-        let lo = if target >= prev_target { last_pi } else { 0 };
-        let pi = lo + rc[lo..].partition_point(|&v| v < target);
-        last_pi = pi;
-        prev_target = target;
-        if pi < n_d {
-            p_lane[ri] = pr[pi];
-            s_lane[ri] = stream_scores[stream_perm[pi]];
-        } else {
-            p_lane[ri] = 0.0;
-            s_lane[ri] = 0.0;
-        }
-    }
-}
-
 fn copy_saturated_max_det_lane(
     a: usize,
     src_m: usize,
@@ -1422,6 +1352,176 @@ fn copy_saturated_max_det_lane(
         for ri in 0..n_r {
             precision[(t, ri, a, dst_m)] = precision[(t, ri, a, src_m)];
             scores[(t, ri, a, dst_m)] = scores[(t, ri, a, src_m)];
+        }
+    }
+}
+
+/// Where a recall threshold lands on a PR curve, as a true-positive count.
+///
+/// `rc[j]` (quirk **C1**'s searchsorted target) only changes at a true
+/// positive, to `k / npig` after the `k`-th one, so the first `j` with
+/// `rc[j] >= r` is the position of the `k`-th true positive for the
+/// smallest `k` whose `k / npig` reaches `r`. That `k` depends on `npig`
+/// alone, so it is resolved once per `(category, area)` and shared by
+/// every threshold and `maxDet` lane.
+fn recall_targets(recall_thresholds: &[f64], npig: usize, out: &mut Vec<usize>) {
+    #[allow(clippy::cast_precision_loss)]
+    let npig_f = npig as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let reaches = |k: usize, r: f64| k as f64 / npig_f >= r;
+    out.clear();
+    out.extend(recall_thresholds.iter().map(|&r| {
+        // `rc[0] >= r` holds for any `r <= 0`, and `v < NaN` is false,
+        // so both land on position 0 whether or not it is a true
+        // positive: `RECALL_AT_START`.
+        if r.is_nan() || r <= 0.0 {
+            return RECALL_AT_START;
+        }
+        // `k / npig` is monotone in `k`, so step from the real-valued
+        // estimate to the exact boundary of the f64 comparison.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mut k = ((r * npig_f) as usize).clamp(1, npig + 1);
+        while k > 1 && reaches(k - 1, r) {
+            k -= 1;
+        }
+        while k <= npig && !reaches(k, r) {
+            k += 1;
+        }
+        // `k > npig` is never reached: a lane has at most `npig` true
+        // positives.
+        k
+    }));
+}
+
+/// [`recall_targets`] entry for a threshold met at curve position 0.
+const RECALL_AT_START: usize = 0;
+
+/// True positives of one `(t, a, m)` lane: stream position of each, and
+/// the precision just after it.
+#[derive(Default)]
+struct TpEvents {
+    pos: Vec<usize>,
+    pr: Vec<f64>,
+}
+
+impl TpEvents {
+    /// Records the lane's true positives from `(matched, ignored)` per
+    /// detection in score order.
+    ///
+    /// This is the C2 sweep without the curve: `pr = tp / (tp + fp + eps)`
+    /// (the same f64 expression, so the same bits) is taken only where a
+    /// true positive lands. Between two of them precision only falls (a
+    /// false positive grows the denominator, an ignored detection changes
+    /// nothing), so the right-to-left running max that **C2** takes over
+    /// the whole curve equals the one over these points.
+    fn sweep(&mut self, lane: impl Iterator<Item = (bool, bool)>) {
+        self.pos.clear();
+        self.pr.clear();
+        let mut fp = 0_u32;
+        for (j, (matched, ignored)) in lane.enumerate() {
+            fp += u32::from(!matched & !ignored);
+            if matched & !ignored {
+                self.push(j, fp);
+            }
+        }
+        self.envelope();
+    }
+
+    /// Records a true positive at stream position `j`, `fp` false
+    /// positives in.
+    #[inline]
+    fn push(&mut self, j: usize, fp: u32) {
+        #[allow(clippy::cast_precision_loss)]
+        let tp_f = (self.pr.len() + 1) as f64;
+        let fp_f = f64::from(fp);
+        self.pos.push(j);
+        self.pr.push(tp_f / (tp_f + fp_f + PARITY_EPS));
+    }
+
+    /// [`Self::sweep`] for every lane of a 16-bit flag word at once:
+    /// bit `t` is "matched at threshold `t`", bit `t + 16` "ignored".
+    /// One pass over the stream instead of one per threshold; the
+    /// per-lane false-positive counts are a 16-wide add.
+    fn sweep_bits16(lanes: &mut [Self], sorted_flags: &[u32]) {
+        let n_t = lanes.len();
+        debug_assert!(n_t <= 16);
+        for lane in lanes.iter_mut() {
+            lane.pos.clear();
+            lane.pr.clear();
+        }
+        let lane_mask = u32::MAX >> (32 - n_t.max(1));
+        let mut fp = [0_u32; 16];
+        for (j, &flag) in sorted_flags.iter().enumerate() {
+            let live = !(flag >> 16) & lane_mask;
+            let miss = !flag & live;
+            for (t, count) in fp.iter_mut().enumerate() {
+                *count += u32::from(miss & (1 << t) != 0);
+            }
+            let mut hit = flag & live;
+            while hit != 0 {
+                let t = hit.trailing_zeros() as usize;
+                hit &= hit - 1;
+                lanes[t].push(j, fp[t]);
+            }
+        }
+        for lane in lanes.iter_mut() {
+            lane.envelope();
+        }
+    }
+
+    /// C2: right-to-left running max, over the true positives.
+    fn envelope(&mut self) {
+        for k in (1..self.pr.len()).rev() {
+            if self.pr[k] > self.pr[k - 1] {
+                self.pr[k - 1] = self.pr[k];
+            }
+        }
+    }
+
+    /// Writes the lane's recall (**C4**) and its precision / score at
+    /// each recall threshold (**C1** + **C3**) from the swept events.
+    #[allow(clippy::too_many_arguments)]
+    fn finish(
+        &self,
+        targets: &[usize],
+        npig: usize,
+        stream: &StreamView<'_>,
+        (t, a, m): (usize, usize, usize),
+        precision: &mut ArrayViewMut4<'_, f64>,
+        recall: &mut ArrayViewMut3<'_, f64>,
+        scores: &mut ArrayViewMut4<'_, f64>,
+    ) {
+        let n_tp = self.pr.len();
+        // C4: terminal cumulative recall, `tp / npig` at the last true
+        // positive (0 when there is none).
+        #[allow(clippy::cast_precision_loss)]
+        let terminal = if n_tp == 0 {
+            0.0
+        } else {
+            n_tp as f64 / npig as f64
+        };
+        recall[(t, a, m)] = terminal;
+        let mut p_lane = precision
+            .index_axis_mut(Axis(0), t)
+            .index_axis_move(Axis(1), a)
+            .index_axis_move(Axis(1), m);
+        let mut s_lane = scores
+            .index_axis_mut(Axis(0), t)
+            .index_axis_move(Axis(1), a)
+            .index_axis_move(Axis(1), m);
+        let score_at = |pos: usize| stream.scores[stream.perm[pos]];
+        for (ri, &k) in targets.iter().enumerate() {
+            let (p, sc) = if k == RECALL_AT_START {
+                // Position 0: the envelope there is the curve's maximum.
+                (self.pr.first().copied().unwrap_or(0.0), score_at(0))
+            } else if k <= n_tp {
+                (self.pr[k - 1], score_at(self.pos[k - 1]))
+            } else {
+                // C3: past the curve, 0.0 over the -1 sentinel.
+                (0.0, 0.0)
+            };
+            p_lane[ri] = p;
+            s_lane[ri] = sc;
         }
     }
 }
@@ -1447,12 +1547,15 @@ fn accumulate_packed_category(
     let plan = build_packed_sort_plan(cat, cap);
     let mut derived = DerivedStream::default();
     let max_n_d = plan.scores.len();
-    let mut rc = vec![0.0_f64; max_n_d];
-    let mut pr = vec![0.0_f64; max_n_d];
     let mut raw_flags_u32: Vec<u32> = Vec::new();
     let mut sorted_flags_u32: Vec<u32> = Vec::with_capacity(max_n_d);
     let mut dtm_general: Vec<bool> = Vec::new();
     let mut dtg_general: Vec<bool> = Vec::new();
+    let mut events = TpEvents::default();
+    let mut lanes: Vec<TpEvents> = std::iter::repeat_with(TpEvents::default)
+        .take(n_t.min(16))
+        .collect();
+    let mut targets: Vec<usize> = Vec::with_capacity(p.recall_thresholds.len());
     let n_r = p.recall_thresholds.len();
 
     for a in 0..n_a {
@@ -1460,8 +1563,7 @@ fn accumulate_packed_category(
         if npig == 0 {
             continue;
         }
-        #[allow(clippy::cast_precision_loss)]
-        let npig_f = npig as f64;
+        recall_targets(p.recall_thresholds, npig, &mut targets);
         let mut saturated_m: Option<usize> = None;
 
         for (m, &max_det) in p.max_dets.iter().enumerate() {
@@ -1500,9 +1602,6 @@ fn accumulate_packed_category(
                 continue;
             }
 
-            let rc_slice = &mut rc[..n_d];
-            let pr_slice = &mut pr[..n_d];
-
             match &cat.dt_flags {
                 PackedCategoryFlags::Bits16(by_area) => {
                     let area_flags = &by_area[a];
@@ -1519,38 +1618,13 @@ fn accumulate_packed_category(
                         sorted_flags_u32.extend(stream.perm.iter().map(|&src| raw_flags_u32[src]));
                     }
 
-                    for t in 0..n_t {
-                        let m_bit = 1_u32 << t;
-                        let g_bit = 1_u32 << (t + 16);
-                        let mut tp = 0.0_f64;
-                        let mut fp = 0.0_f64;
-                        let mut cur_rc = 0.0_f64;
-                        let mut cur_pr = 0.0_f64;
-                        for (out_idx, &flag) in sorted_flags_u32.iter().enumerate() {
-                            if (flag & g_bit) == 0 {
-                                if (flag & m_bit) != 0 {
-                                    tp += 1.0;
-                                    cur_rc = tp / npig_f;
-                                    cur_pr = tp / (tp + fp + PARITY_EPS);
-                                } else {
-                                    fp += 1.0;
-                                    if tp != 0.0 {
-                                        cur_pr = tp / (tp + fp + PARITY_EPS);
-                                    }
-                                }
-                            }
-                            rc_slice[out_idx] = cur_rc;
-                            pr_slice[out_idx] = cur_pr;
-                        }
-                        finish_threshold_curve(
-                            rc_slice,
-                            pr_slice,
-                            stream.scores,
-                            stream.perm,
-                            p.recall_thresholds,
-                            t,
-                            a,
-                            m,
+                    TpEvents::sweep_bits16(&mut lanes, &sorted_flags_u32);
+                    for (t, events) in lanes.iter().enumerate() {
+                        events.finish(
+                            &targets,
+                            npig,
+                            &stream,
+                            (t, a, m),
                             precision,
                             recall,
                             scores,
@@ -1573,35 +1647,17 @@ fn accumulate_packed_category(
                                 cursor += 1;
                             }
                         }
-                        let mut tp = 0.0_f64;
-                        let mut fp = 0.0_f64;
-                        let mut cur_rc = 0.0_f64;
-                        let mut cur_pr = 0.0_f64;
-                        for (out_idx, &src_idx) in stream.perm.iter().enumerate() {
-                            if !dtg_general[src_idx] {
-                                if dtm_general[src_idx] {
-                                    tp += 1.0;
-                                    cur_rc = tp / npig_f;
-                                    cur_pr = tp / (tp + fp + PARITY_EPS);
-                                } else {
-                                    fp += 1.0;
-                                    if tp != 0.0 {
-                                        cur_pr = tp / (tp + fp + PARITY_EPS);
-                                    }
-                                }
-                            }
-                            rc_slice[out_idx] = cur_rc;
-                            pr_slice[out_idx] = cur_pr;
-                        }
-                        finish_threshold_curve(
-                            rc_slice,
-                            pr_slice,
-                            stream.scores,
-                            stream.perm,
-                            p.recall_thresholds,
-                            t,
-                            a,
-                            m,
+                        events.sweep(
+                            stream
+                                .perm
+                                .iter()
+                                .map(|&src| (dtm_general[src], dtg_general[src])),
+                        );
+                        events.finish(
+                            &targets,
+                            npig,
+                            &stream,
+                            (t, a, m),
                             precision,
                             recall,
                             scores,
@@ -1616,7 +1672,162 @@ fn accumulate_packed_category(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ndarray::array;
+    use ndarray::{array, Array3};
+
+    #[allow(clippy::too_many_arguments)]
+    fn finish_threshold_curve(
+        rc: &[f64],
+        pr: &mut [f64],
+        stream_scores: &[f64],
+        stream_perm: &[usize],
+        recall_thresholds: &[f64],
+        t: usize,
+        a: usize,
+        m: usize,
+        precision: &mut ArrayViewMut4<'_, f64>,
+        recall: &mut ArrayViewMut3<'_, f64>,
+        scores: &mut ArrayViewMut4<'_, f64>,
+    ) {
+        let n_d = rc.len();
+        // C4: terminal cumulative recall.
+        recall[(t, a, m)] = rc[n_d - 1];
+
+        // C2: right-to-left running max on precision (envelope).
+        for j in (1..n_d).rev() {
+            if pr[j] > pr[j - 1] {
+                pr[j - 1] = pr[j];
+            }
+        }
+
+        // C1 + C3: searchsorted-left + bounds-check. Past the curve, slots are
+        // filled with 0.0 — overwriting the -1 sentinel so the summarizer's
+        // `s > -1` filter keeps them.
+        let mut p_lane = precision
+            .index_axis_mut(Axis(0), t)
+            .index_axis_move(Axis(1), a)
+            .index_axis_move(Axis(1), m);
+        let mut s_lane = scores
+            .index_axis_mut(Axis(0), t)
+            .index_axis_move(Axis(1), a)
+            .index_axis_move(Axis(1), m);
+        let mut last_pi = 0usize;
+        let mut prev_target = f64::NEG_INFINITY;
+        for (ri, &target) in recall_thresholds.iter().enumerate() {
+            let lo = if target >= prev_target { last_pi } else { 0 };
+            let pi = lo + rc[lo..].partition_point(|&v| v < target);
+            last_pi = pi;
+            prev_target = target;
+            if pi < n_d {
+                p_lane[ri] = pr[pi];
+                s_lane[ri] = stream_scores[stream_perm[pi]];
+            } else {
+                p_lane[ri] = 0.0;
+                s_lane[ri] = 0.0;
+            }
+        }
+    }
+
+    /// The C1–C4 curve as pycocotools draws it — `rc` and `pr` at every
+    /// detection, C2's running max over the whole curve, a binary search
+    /// per recall threshold — kept as the oracle for [`TpEvents`].
+    #[allow(clippy::too_many_arguments)]
+    fn reference_lane(
+        lane: &[(bool, bool)],
+        npig: usize,
+        stream_scores: &[f64],
+        stream_perm: &[usize],
+        recall_thresholds: &[f64],
+    ) -> (Vec<f64>, f64, Vec<f64>) {
+        let n_r = recall_thresholds.len();
+        let mut precision = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
+        let mut recall = Array3::<f64>::from_elem((1, 1, 1), -1.0);
+        let mut scores = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
+        #[allow(clippy::cast_precision_loss)]
+        let npig_f = npig as f64;
+        let (mut tp, mut fp) = (0.0_f64, 0.0_f64);
+        let mut rc = Vec::with_capacity(lane.len());
+        let mut pr = Vec::with_capacity(lane.len());
+        for &(matched, ignored) in lane {
+            if !ignored {
+                if matched {
+                    tp += 1.0;
+                } else {
+                    fp += 1.0;
+                }
+            }
+            rc.push(tp / npig_f);
+            pr.push(tp / (tp + fp + PARITY_EPS));
+        }
+        finish_threshold_curve(
+            &rc,
+            &mut pr,
+            stream_scores,
+            stream_perm,
+            recall_thresholds,
+            0,
+            0,
+            0,
+            &mut precision.view_mut(),
+            &mut recall.view_mut(),
+            &mut scores.view_mut(),
+        );
+        (
+            precision.iter().copied().collect(),
+            recall[(0, 0, 0)],
+            scores.iter().copied().collect(),
+        )
+    }
+
+    proptest::proptest! {
+        /// [`TpEvents`] reproduces the drawn curve bit for bit: random
+        /// lanes (true / false positives, ignored detections), any `npig`
+        /// the lane can reach, the COCO recall grid or thresholds off it
+        /// (NaN, negative, zero, above one).
+        #[test]
+        fn tp_events_match_the_drawn_curve(
+            lane in proptest::collection::vec((proptest::bool::ANY, proptest::bool::weighted(0.2)), 1..300),
+            extra_gt in 0_usize..20,
+            custom_recall in proptest::bool::ANY,
+        ) {
+            let n_tp = lane.iter().filter(|&&(m, g)| m && !g).count();
+            let npig = (n_tp + extra_gt).max(1);
+            let recall_grid: Vec<f64> = if custom_recall {
+                vec![f64::NAN, -0.5, 0.0, 0.1, 1.0 / 3.0, 0.5, 0.99, 1.0, 1.5]
+            } else {
+                crate::parity::recall_thresholds().to_vec()
+            };
+            #[allow(clippy::cast_precision_loss)]
+            let stream_scores: Vec<f64> = (0..lane.len()).map(|d| 1.0 - d as f64 * 1e-3).collect();
+            let perm: Vec<usize> = (0..lane.len()).rev().collect();
+            let sorted: Vec<(bool, bool)> = perm.iter().map(|&src| lane[src]).collect();
+            let (want_p, want_r, want_s) =
+                reference_lane(&sorted, npig, &stream_scores, &perm, &recall_grid);
+
+            let n_r = recall_grid.len();
+            let mut precision = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
+            let mut recall = Array3::<f64>::from_elem((1, 1, 1), -1.0);
+            let mut scores = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
+            let mut targets = Vec::new();
+            recall_targets(&recall_grid, npig, &mut targets);
+            let takes = [lane.len()];
+            let stream = StreamView { takes: &takes, scores: &stream_scores, perm: &perm };
+            let mut events = TpEvents::default();
+            events.sweep(sorted.iter().copied());
+            events.finish(
+                &targets,
+                npig,
+                &stream,
+                (0, 0, 0),
+                &mut precision.view_mut(),
+                &mut recall.view_mut(),
+                &mut scores.view_mut(),
+            );
+            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+            proptest::prop_assert_eq!(bits(&precision.iter().copied().collect::<Vec<_>>()), bits(&want_p));
+            proptest::prop_assert_eq!(recall[(0, 0, 0)].to_bits(), want_r.to_bits());
+            proptest::prop_assert_eq!(bits(&scores.iter().copied().collect::<Vec<_>>()), bits(&want_s));
+        }
+    }
 
     fn one_threshold_eval(
         scores: Vec<f64>,

@@ -64,6 +64,16 @@ additive / perf / docs".
   `evaluate_bbox_summary` on 1.5M detections over 5,000 images goes from
   2.55 s to 0.69 s on one thread and from 1.60 s to 0.19 s on eight,
   where 0.5.5 had stopped scaling past four. Bit-identical output.
+- **`accumulate` sweeps true positives, not the whole PR curve.** The
+  precision envelope can only peak at a true positive, and a recall
+  threshold lands on a fixed true-positive count, so each lane records
+  its true positives in one pass over the 16-bit flag words (all
+  thresholds at once) and reads the 101 recall points off them: no
+  per-detection division, curve stores or binary searches. The dense
+  per-cell accumulator (partitioned evaluation, non-packed grids) runs
+  the same sweep. One thread, COCO val2017: RF-DETR Nano 132 → 52 ms
+  (−60%), jittered 37.5 → 17 ms (−55%); a two-slice partitioned
+  evaluation of RF-DETR Nano 1010 → 778 ms (−23%). Bit-identical output.
 
 ## [0.5.5] - 2026-10-29
 
