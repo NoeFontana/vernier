@@ -720,10 +720,10 @@ impl RetainedIous {
         self.inner.get(&(k, i)).map(|m| m.view())
     }
 
-    /// Move-out variant of [`Self::get`]. Used by streaming to roll
-    /// per-batch matrices into the long-lived store.
-    pub(crate) fn remove(&mut self, k: usize, i: usize) -> Option<Array2<f64>> {
-        self.inner.remove(&(k, i))
+    /// Move every matrix out as `((k, i), iou)`, in arbitrary order. Used
+    /// by streaming to roll a batch's matrices into the long-lived store.
+    pub(crate) fn into_entries(self) -> impl Iterator<Item = ((usize, usize), Array2<f64>)> {
+        self.inner.into_iter()
     }
 
     /// Iterate `(k, i, view)` triplets in arbitrary order. The

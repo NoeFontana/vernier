@@ -166,7 +166,12 @@ fn occupied_pairs(
 ) -> Vec<(u32, u32)> {
     let gt_anns = gt.annotations();
     let dt_anns = dt.detections();
-    let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(gt_anns.len() + dt_anns.len());
+    // Sized for the whole GT only on a full pass; a subset pass pushes its
+    // own images' pairs and grows from empty.
+    let mut pairs: Vec<(u32, u32)> = match image_subset {
+        None => Vec::with_capacity(gt_anns.len() + dt_anns.len()),
+        Some(_) => Vec::new(),
+    };
     // Hoisted: empty for every well-formed dataset, so the hot loop
     // below keeps a predictable branch instead of a second lookup.
     let repeats = buckets.repeats();

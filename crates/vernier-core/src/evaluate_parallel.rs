@@ -124,8 +124,22 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
         retained: Vec<(usize, Array2<f64>)>,
     }
 
-    let per_image: Vec<ImageOutput> = (0..n_i)
-        .into_par_iter()
+    // The images this pass visits: the subset (sorted, deduplicated, in
+    // range) or the whole axis. A streaming update fans out over its own
+    // images only, never `0..I`.
+    let visit: Vec<usize> = match image_subset {
+        None => (0..n_i).collect(),
+        Some(subset) => {
+            let mut v: Vec<usize> = subset.iter().copied().filter(|&i| i < n_i).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        }
+    };
+
+    let per_image: Vec<ImageOutput> = visit
+        .par_iter()
+        .copied()
         .map_init(
             || {
                 (
@@ -202,7 +216,7 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
     // one counting pass over the CSR values replaces a couple of
     // million pushes' worth of regrowth.
     let mut per_category_cells = vec![0_usize; n_k];
-    for i in 0..n_i {
+    for &i in &visit {
         for &k in occupied.row(i) {
             per_category_cells[k as usize] += n_a;
         }
@@ -213,8 +227,8 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
         .into_iter()
         .map(Vec::with_capacity)
         .collect();
-    let mut retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = Vec::with_capacity(n_i);
-    for (i, image_output) in per_image.into_iter().enumerate() {
+    let mut retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = Vec::with_capacity(visit.len());
+    for (&i, image_output) in visit.iter().zip(per_image) {
         for (k, a, eval, meta) in image_output.cells {
             // Offset within the category's own chunk.
             let offset = (a as usize) * n_i + i;
@@ -250,7 +264,7 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
     }
 
     let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
-    for (i, per_image) in retained_per_image.into_iter().enumerate() {
+    for (&i, per_image) in visit.iter().zip(retained_per_image) {
         for (k, iou) in per_image {
             retained_pairs.push(((k, i), iou));
         }
@@ -681,7 +695,7 @@ mod tests {
             area_ranges: &area,
             max_dets_per_image: 100,
             use_cats: true,
-            retain_iou: false,
+            retain_iou: true,
             retain_meta: false,
         };
         let full = evaluate_with(&gt, &dt, params, ParityMode::Strict, &BboxIou).expect("full");
@@ -726,6 +740,22 @@ mod tests {
                     }
                     _ => panic!("presence mismatch at flat={flat} (in subset: {in_subset})"),
                 }
+            }
+        }
+        let full_ious = full.retained_ious.as_ref().expect("full retains");
+        for grid in [&seq, &par] {
+            let ious = grid.retained_ious.as_ref().expect("subset retains");
+            let mut got: Vec<(usize, usize)> = ious.iter().map(|(k, i, _)| (k, i)).collect();
+            got.sort_unstable();
+            let mut want: Vec<(usize, usize)> = full_ious
+                .iter()
+                .map(|(k, i, _)| (k, i))
+                .filter(|&(_, i)| subset.contains(&i))
+                .collect();
+            want.sort_unstable();
+            assert_eq!(got, want, "retained IoU keys are the subset's");
+            for &(k, i) in &got {
+                assert_eq!(ious.get(k, i), full_ious.get(k, i), "(k={k}, i={i})");
             }
         }
         assert!(full

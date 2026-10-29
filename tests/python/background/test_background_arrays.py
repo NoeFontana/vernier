@@ -48,10 +48,11 @@ def test_queue_full_error_carries_through_arrays(fixtures_dir: Path) -> None:
     blocked first send (no draining) means a later attempt with
     timeout=0 raises ``QueueFullError``.
 
-    Saturation is a race the worker can win between two sends, so every
-    attempt carries a fresh ``image_id``: a send the worker drains in
-    time must not resubmit an image, which ``update()`` rejects (no
-    silent merge) and ``finalize()`` would then re-raise.
+    The first send is heavy enough to keep the worker busy while the
+    later, microsecond-scale sends fill the queue, so saturation does not
+    depend on scheduling. Each later send still carries a fresh
+    ``image_id``: a send the worker does drain must not resubmit an
+    image, which ``update()`` rejects (no silent merge).
     """
     gt_bytes = (fixtures_dir / "missing_dt_image" / "gt.json").read_bytes()
     bg = BackgroundEvaluator(
@@ -62,11 +63,16 @@ def test_queue_full_error_carries_through_arrays(fixtures_dir: Path) -> None:
         # Lowest worker priority, as in the JSON-path backpressure test.
         worker_nice=19,
     )
+    # A heavy first payload keeps the worker busy for tens of milliseconds
+    # (index build + top-k over 300k detections), while each submit below
+    # takes microseconds: the capacity-1 queue fills deterministically
+    # rather than by winning a scheduling race against a fast worker.
+    n_heavy = 300_000
     payload_a: Detections = {
         "image_id": 1,
-        "boxes": np.array([[10.0, 10.0, 50.0, 50.0]], dtype=np.float64),
-        "scores": np.array([0.9], dtype=np.float64),
-        "labels": np.array([1], dtype=np.int64),
+        "boxes": np.tile(np.array([[10.0, 10.0, 50.0, 50.0]], dtype=np.float64), (n_heavy, 1)),
+        "scores": np.linspace(0.1, 0.9, n_heavy, dtype=np.float64),
+        "labels": np.ones(n_heavy, dtype=np.int64),
     }
 
     def payload_b(image_id: int) -> Detections:
@@ -78,14 +84,9 @@ def test_queue_full_error_carries_through_arrays(fixtures_dir: Path) -> None:
         }
 
     bg.submit(payload_a)
-    # Drive the queue full in the worst-case ordering: many quick sends
-    # each with timeout=0; a fixed-cardinality loop is enough to expose
-    # backpressure without resorting to sleep games. An array update
-    # costs only its own image, so the worker can keep pace for a few
-    # hundred sends; the bound is generous, and the loop exits on the
-    # first ``QueueFullError``.
+    # Fresh image ids, so a send the worker does reach is never a repeat.
     raised = False
-    for attempt in range(4096):
+    for attempt in range(64):
         try:
             bg.submit(payload_b(2 + attempt), timeout=0.0)
         except QueueFullError:

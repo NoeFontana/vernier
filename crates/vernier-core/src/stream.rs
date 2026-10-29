@@ -1,9 +1,9 @@
 //! Streaming evaluator (ADR-0013).
 //!
 //! Composes around the locked spine: each `update()` runs `match_image`
-//! over the new detections (via the existing `evaluate_with` path) and
-//! appends one [`PerImageEval`] per `(category, area, image)` cell to an
-//! internal sparse store. [`StreamingEvaluator::snapshot`] and
+//! over the new detections — the batch evaluator restricted to the
+//! batch's images — and appends one [`PerImageEval`] per
+//! `(category, area, image)` cell to an internal sparse store. [`StreamingEvaluator::snapshot`] and
 //! [`StreamingEvaluator::finalize`] call [`crate::accumulate`] over the
 //! current store unchanged.
 //!
@@ -424,8 +424,14 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     }
 
     /// Number of GT images that have not yet received any detection.
+    ///
+    /// Counts GT images only: a detection naming an image id the ground
+    /// truth does not have is accepted (and counted by
+    /// [`Self::images_seen`]) but covers no GT image.
     pub fn images_pending(&self) -> usize {
-        self.grid_meta.n_images.saturating_sub(self.images_seen())
+        self.grid_meta
+            .n_images
+            .saturating_sub(self.seen_image_indices.len())
     }
 
     /// Total bytes the evaluator currently holds (sum of the three
@@ -457,7 +463,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// # Errors
     ///
     /// Propagates [`EvalError`] from the parse path, the underlying
-    /// [`evaluate_with`] call, and the budget check
+    /// batch evaluation (the [`evaluate_with`] pass restricted to the
+    /// batch's images), and the budget check
     /// ([`EvalError::OutOfBudget`]). On any error the evaluator state
     /// is unchanged and remains usable.
     pub fn update(&mut self, json_bytes: &[u8]) -> Result<UpdateReport, EvalError> {
@@ -475,7 +482,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///   silent merge — submit duplicates as a single batch instead).
     /// - [`EvalError::OutOfBudget`] if the projected post-insert total
     ///   crosses [`MemoryBudget::bytes`]. State is unchanged on error.
-    /// - Any [`EvalError`] from the underlying [`evaluate_with`] call.
+    /// - Any [`EvalError`] from the underlying batch evaluation (the
+    ///   [`evaluate_with`] pass restricted to the batch's images).
     pub fn update_parsed(
         &mut self,
         parsed: ParsedDetections<K>,
@@ -542,8 +550,10 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             });
         }
         // The batch's grid indices, sorted: the matching pass visits only
-        // these images, so an update costs its own images, not the whole
-        // GT. Unknown image ids name no grid image and produce no cells.
+        // these images, so an update's matching costs its own images, not
+        // the whole GT (the dense `K·A·I` result grid it still allocates
+        // goes away with ADR-0066's packed grid). Unknown image ids name no
+        // grid image and produce no cells.
         let mut batch_image_indices: Vec<usize> = batch_image_ids
             .iter()
             .filter_map(|&id| self.grid_meta.image_id_to_idx.get(&ImageId(id)).copied())
@@ -635,17 +645,15 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             self.bytes_match_flags += cost.match_flags;
         }
 
+        // The batch pass only evaluated the batch's images, so its matrices
+        // are exactly the batch's: move them all, no `(k, i)` probing.
         // Streaming rejects duplicate image_ids earlier, so each (k, i)
         // entry is inserted at most once across all `update()` calls.
         if let (Some(store), Some(per_batch)) =
-            (self.retained_ious.as_mut(), grid.retained_ious.as_mut())
+            (self.retained_ious.as_mut(), grid.retained_ious.take())
         {
-            for k in 0..n_k {
-                for &i in batch_image_indices {
-                    if let Some(iou) = per_batch.remove(k, i) {
-                        store.insert(k, i, iou);
-                    }
-                }
+            for ((k, i), iou) in per_batch.into_entries() {
+                store.insert(k, i, iou);
             }
         }
 
@@ -1060,7 +1068,10 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// `gt_only_cells` cache on first call.
     fn densify_with_gt_overlay(&mut self) -> Result<Vec<Option<Box<PerImageEval>>>, EvalError> {
         let mut eval_imgs = self.cells.flatten(&self.grid_meta);
-        if self.images_seen() >= self.grid_meta.n_images {
+        // GT images covered, not ids seen: an id outside the GT would
+        // otherwise count toward "every image seen" and drop the overlay
+        // for a GT image that never got a detection, inflating recall.
+        if self.images_pending() == 0 {
             return Ok(eval_imgs);
         }
         self.ensure_gt_only_cells()?;
@@ -1538,6 +1549,32 @@ mod tests {
                 "order {order:?}: {detail}"
             );
         }
+    }
+
+    /// A detection on an image id the GT does not have must not count as
+    /// covering a GT image: the GT-only overlay still files the GT image
+    /// that got no detection, so recall matches a stream without the
+    /// stray id.
+    #[test]
+    fn a_detection_on_an_unknown_image_does_not_hide_a_missed_gt_image() {
+        let run = |batch: &[u8]| {
+            let mut ev = StreamingEvaluator::new(
+                tiny_dataset(),
+                BboxIou,
+                default_params(),
+                ParityMode::Strict,
+                MemoryBudget::auto_default(),
+            )
+            .unwrap();
+            ev.update(batch).unwrap();
+            assert_eq!(ev.images_pending(), 1, "GT image 2 got no detection");
+            ev.finalize().unwrap()
+        };
+        let hit = r#"{"image_id": 1, "category_id": 1, "score": 0.9, "bbox": [0, 0, 10, 10]}"#;
+        let stray = r#"{"image_id": 99, "category_id": 1, "score": 0.8, "bbox": [0, 0, 10, 10]}"#;
+        let with_stray = run(format!("[{hit},{stray}]").as_bytes());
+        let without = run(format!("[{hit}]").as_bytes());
+        assert_eq!(with_stray.stats(), without.stats());
     }
 
     #[test]
