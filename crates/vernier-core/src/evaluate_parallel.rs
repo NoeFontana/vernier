@@ -733,6 +733,7 @@ mod tests {
             .iter()
             .enumerate()
             .any(|(f, c)| c.is_some() && f % n_i == 1));
+    }
 
     /// The grid-level accessors are views of the stored cells:
     /// `category_cells` yields exactly the populated `[k][a][..]` slots in
