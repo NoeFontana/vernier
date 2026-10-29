@@ -45,8 +45,13 @@ def test_submit_arrays_matches_streaming_bytes(fixtures_dir: Path) -> None:
 @pytest.mark.parity
 def test_queue_full_error_carries_through_arrays(fixtures_dir: Path) -> None:
     """Same backpressure semantics as the JSON path. Capacity=1 + a
-    blocked first send (no draining) means the second attempt with
+    blocked first send (no draining) means a later attempt with
     timeout=0 raises ``QueueFullError``.
+
+    Saturation is a race the worker can win between two sends, so every
+    attempt carries a fresh ``image_id``: a send the worker drains in
+    time must not resubmit an image, which ``update()`` rejects (no
+    silent merge) and ``finalize()`` would then re-raise.
     """
     gt_bytes = (fixtures_dir / "missing_dt_image" / "gt.json").read_bytes()
     bg = BackgroundEvaluator(
@@ -54,6 +59,8 @@ def test_queue_full_error_carries_through_arrays(fixtures_dir: Path) -> None:
         iou_type="bbox",
         parity_mode="strict",
         queue_capacity=1,
+        # Lowest worker priority, as in the JSON-path backpressure test.
+        worker_nice=19,
     )
     payload_a: Detections = {
         "image_id": 1,
@@ -61,20 +68,26 @@ def test_queue_full_error_carries_through_arrays(fixtures_dir: Path) -> None:
         "scores": np.array([0.9], dtype=np.float64),
         "labels": np.array([1], dtype=np.int64),
     }
-    payload_b: Detections = {
-        "image_id": 2,
-        "boxes": np.array([[10.0, 10.0, 50.0, 50.0]], dtype=np.float64),
-        "scores": np.array([0.8], dtype=np.float64),
-        "labels": np.array([1], dtype=np.int64),
-    }
+
+    def payload_b(image_id: int) -> Detections:
+        return {
+            "image_id": image_id,
+            "boxes": np.array([[10.0, 10.0, 50.0, 50.0]], dtype=np.float64),
+            "scores": np.array([0.8], dtype=np.float64),
+            "labels": np.array([1], dtype=np.int64),
+        }
+
     bg.submit(payload_a)
     # Drive the queue full in the worst-case ordering: many quick sends
     # each with timeout=0; a fixed-cardinality loop is enough to expose
-    # backpressure deterministically without resorting to sleep games.
+    # backpressure without resorting to sleep games. An array update
+    # costs only its own image, so the worker can keep pace for a few
+    # hundred sends; the bound is generous, and the loop exits on the
+    # first ``QueueFullError``.
     raised = False
-    for _ in range(64):
+    for attempt in range(4096):
         try:
-            bg.submit(payload_b, timeout=0.0)
+            bg.submit(payload_b(2 + attempt), timeout=0.0)
         except QueueFullError:
             raised = True
             break
