@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use ndarray::Array2;
 
 use crate::dataset::{
-    CategoryId, CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, EvalDataset, ImageId,
+    CategoryId, CocoAnnotation, CocoDataset, CocoDetections, EvalDataset, ImageId,
 };
 use crate::error::EvalError;
 use crate::evaluate::dt_top_indices_for_cell;
@@ -167,7 +167,6 @@ pub fn assign_bins(
 
     let mut out = BinAssignment::default();
     let gt_anns = gt.annotations();
-    let dt_anns = dt.detections();
 
     // Map (image_id, gt_input_idx) → per-image local column index used
     // by CrossClassIous. Same ordering used by the side pass:
@@ -182,7 +181,6 @@ pub fn assign_bins(
             cross_class,
             params,
             gt_anns,
-            dt_anns,
             &mut out,
         )?;
     }
@@ -198,7 +196,6 @@ fn assign_bins_for_image(
     cross_class: &CrossClassIous,
     params: &TideParams<'_>,
     gt_anns: &[CocoAnnotation],
-    dt_anns: &[CocoDetection],
     out: &mut BinAssignment,
 ) -> Result<(), EvalError> {
     // Per-image GT list in the same column ordering CrossClassIous uses.
@@ -216,6 +213,7 @@ fn assign_bins_for_image(
     }
 
     let cross = cross_class.get(image_idx);
+    let dt_cats = dt.category_ids();
 
     // For each DT in the cap-applied list, its row index in the cross
     // matrix is its position in `dt_local_indices` (the side pass walks
@@ -238,7 +236,7 @@ fn assign_bins_for_image(
         let mut cats: Vec<CategoryId> = gt_local_indices
             .iter()
             .map(|&j| gt_anns[j].category_id)
-            .chain(dt_local_indices.iter().map(|&j| dt_anns[j].category_id))
+            .chain(dt_local_indices.iter().map(|&j| dt_cats[j]))
             .collect();
         cats.sort_unstable_by_key(|c| c.0);
         cats.dedup();
@@ -251,9 +249,9 @@ fn assign_bins_for_image(
     for cat in cats_in_image {
         same_class_match_one_category(
             &gt_local_indices_with_pos(gt_local_indices, gt_anns, cat, params.use_cats),
-            &dt_local_indices_with_pos(&dt_local_indices, dt_anns, cat, params.use_cats),
+            &dt_local_indices_with_pos(&dt_local_indices, dt_cats, cat, params.use_cats),
             gt_anns,
-            dt_anns,
+            dt,
             params,
             &mut per_dt_matched,
             &mut per_dt_ignore,
@@ -263,7 +261,7 @@ fn assign_bins_for_image(
 
     // 2. Per-DT bin label using the cross-class side-pass IoU.
     for (row_idx, &dt_input_idx) in dt_local_indices.iter().enumerate() {
-        let dt = &dt_anns[dt_input_idx];
+        let dt_cat = dt_cats[dt_input_idx];
         let key = (image_id.0, dt_input_idx);
 
         if per_dt_ignore.get(&dt_input_idx).copied().unwrap_or(false) {
@@ -294,7 +292,7 @@ fn assign_bins_for_image(
         // FP: compute iou_same / iou_cross from the side pass.
         let (iou_same, best_same_col, iou_cross, best_cross_col) = best_same_and_cross(
             row_idx,
-            dt.category_id,
+            dt_cat,
             cross,
             gt_local_indices,
             gt_anns,
@@ -349,14 +347,14 @@ fn gt_local_indices_with_pos(
 /// matches the cross-class row ordering.
 fn dt_local_indices_with_pos(
     dt_local_indices: &[usize],
-    dt_anns: &[CocoDetection],
+    dt_cats: &[CategoryId],
     cat: CategoryId,
     use_cats: bool,
 ) -> Vec<(usize, usize)> {
     dt_local_indices
         .iter()
         .enumerate()
-        .filter(|&(_, &di)| !use_cats || dt_anns[di].category_id == cat)
+        .filter(|&(_, &di)| !use_cats || dt_cats[di] == cat)
         .map(|(row, &di)| (row, di))
         .collect()
 }
@@ -366,7 +364,7 @@ fn same_class_match_one_category(
     gts_in_cat: &[(usize, usize)], // (col_idx in cross matrix, gt_input_idx)
     dts_in_cat: &[(usize, usize)], // (row_idx in cross matrix, dt_input_idx)
     gt_anns: &[CocoAnnotation],
-    dt_anns: &[CocoDetection],
+    dt: &CocoDetections,
     params: &TideParams<'_>,
     per_dt_matched: &mut HashMap<usize, bool>,
     per_dt_ignore: &mut HashMap<usize, bool>,
@@ -377,6 +375,8 @@ fn same_class_match_one_category(
     }
     let n_g = gts_in_cat.len();
     let n_d = dts_in_cat.len();
+    let dt_bboxes = dt.bboxes();
+    let dt_scores_col = dt.scores();
 
     // Build the same-class IoU matrix afresh via the shared bbox
     // kernel. Rebuilding here (rather than reading from CrossClassIous's
@@ -407,7 +407,7 @@ fn same_class_match_one_category(
         let dt_kernel: Vec<BboxAnn> = dts_in_cat
             .iter()
             .map(|&(_, di)| BboxAnn {
-                bbox: dt_anns[di].bbox,
+                bbox: dt_bboxes[di],
                 is_crowd: false,
             })
             .collect();
@@ -430,7 +430,7 @@ fn same_class_match_one_category(
         .collect();
     let dt_scores: Vec<f64> = dts_in_cat
         .iter()
-        .map(|&(_, di)| dt_anns[di].score)
+        .map(|&(_, di)| dt_scores_col[di])
         .collect();
 
     let single_threshold = [params.t_f];

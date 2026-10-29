@@ -968,10 +968,8 @@ pub fn build_per_detection(
     // Detection ids are stable (auto-assigned when absent), so the
     // matching engine's sorted-DT order resolves uniquely back to a
     // single detection by id.
-    let det_index: HashMap<i64, &crate::dataset::CocoDetection> = detections
-        .detections()
-        .iter()
-        .map(|d| (d.id.0, d))
+    let det_index: HashMap<i64, usize> = (0..detections.len())
+        .map(|idx| (detections.id_at(idx).0, idx))
         .collect();
 
     let with_geometry = config.per_detection_with_geometry;
@@ -1002,12 +1000,11 @@ pub fn build_per_detection(
                 category_id.push(meta.category_id);
                 score.push(cell.dt_scores[d]);
 
-                let det = det_index.get(&dt_id);
-                area.push(det.map(|d| d.area).unwrap_or(f64::NAN));
+                let det_idx = det_index.get(&dt_id).copied();
+                area.push(det_idx.map_or(f64::NAN, |idx| detections.area_at(idx)));
                 if with_geometry {
-                    let b = det
-                        .map(|d| d.bbox)
-                        .unwrap_or_else(|| Bbox::from([f64::NAN; 4]));
+                    let b = det_idx
+                        .map_or_else(|| Bbox::from([f64::NAN; 4]), |idx| detections.bbox_at(idx));
                     bbox_xywh.push([b.x, b.y, b.w, b.h]);
                 }
 
@@ -1604,15 +1601,7 @@ mod tests {
     #[test]
     fn build_per_image_rejects_non_detection_grid() {
         // Build an EvalGrid with n_area_ranges=3 (kp shape) by hand.
-        let grid = EvalGrid {
-            eval_imgs: vec![None; 3],
-            eval_imgs_meta: vec![None; 3],
-            builds_meta: true,
-            n_categories: 1,
-            n_area_ranges: 3,
-            n_images: 1,
-            retained_ious: None,
-        };
+        let grid = EvalGrid::from_eval_imgs(vec![None; 3], vec![None; 3], true, 1, 3, 1, None);
         let dataset = dataset_with_two_categories();
         let err = build_per_image(&grid, &dataset, crate::parity::iou_thresholds()).unwrap_err();
         assert!(matches!(err, EvalError::DimensionMismatch { .. }));
@@ -1632,7 +1621,7 @@ mod tests {
             n_images: grid.n_images,
         };
         let accum =
-            crate::accumulate::accumulate(&grid.eval_imgs, p, crate::parity::ParityMode::Corrected)
+            crate::accumulate::accumulate_grid(&grid, p, crate::parity::ParityMode::Corrected)
                 .unwrap();
 
         let tables = build_tables(
@@ -1726,7 +1715,7 @@ mod tests {
         // The `eval_imgs` slice is what `accumulate` consumes; require
         // the count of populated cells matches and that the retention
         // field is present iff the flag is on.
-        assert_eq!(grid_off.eval_imgs.len(), grid_on.eval_imgs.len());
+        assert_eq!(grid_off.eval_imgs().len(), grid_on.eval_imgs().len());
         assert!(grid_off.retained_ious.is_none());
         assert!(grid_on.retained_ious.is_some());
         let retained = grid_on.retained_ious.as_ref().unwrap();
@@ -1745,9 +1734,9 @@ mod tests {
             n_images: grid_off.n_images,
         };
         let acc_off =
-            crate::accumulate::accumulate(&grid_off.eval_imgs, p, ParityMode::Corrected).unwrap();
+            crate::accumulate::accumulate_grid(&grid_off, p, ParityMode::Corrected).unwrap();
         let acc_on =
-            crate::accumulate::accumulate(&grid_on.eval_imgs, p, ParityMode::Corrected).unwrap();
+            crate::accumulate::accumulate_grid(&grid_on, p, ParityMode::Corrected).unwrap();
         let sum_off = crate::summarize::summarize_detection(
             &acc_off,
             iou_thresholds(),
@@ -1782,7 +1771,7 @@ mod tests {
             n_images: grid.n_images,
         };
         let accum =
-            crate::accumulate::accumulate(&grid.eval_imgs, p, crate::parity::ParityMode::Corrected)
+            crate::accumulate::accumulate_grid(&grid, p, crate::parity::ParityMode::Corrected)
                 .unwrap();
         let request = TablesRequest {
             per_detection: true,
@@ -1816,7 +1805,7 @@ mod tests {
             n_images: grid.n_images,
         };
         let accum =
-            crate::accumulate::accumulate(&grid.eval_imgs, p, crate::parity::ParityMode::Corrected)
+            crate::accumulate::accumulate_grid(&grid, p, crate::parity::ParityMode::Corrected)
                 .unwrap();
         let request = TablesRequest {
             per_pair: true,
@@ -1851,9 +1840,9 @@ mod tests {
         let mut store = RetainedIous::new();
         let iou = ndarray::Array2::<f64>::from_shape_vec((2, 2), vec![0.5, 0.6, 0.7, 0.8]).unwrap();
         store.insert(0, 0, iou);
-        let grid = EvalGrid {
-            eval_imgs: vec![None],
-            eval_imgs_meta: vec![Some(Box::new(crate::evaluate::EvalImageMeta {
+        let grid = EvalGrid::from_eval_imgs(
+            vec![None],
+            vec![Some(Box::new(crate::evaluate::EvalImageMeta {
                 image_id: 1,
                 category_id: 1,
                 area_rng: [0.0, f64::INFINITY],
@@ -1863,12 +1852,12 @@ mod tests {
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
             }))],
-            builds_meta: true,
-            n_categories: 1,
-            n_area_ranges: 1,
-            n_images: 1,
-            retained_ious: Some(store.clone()),
-        };
+            true,
+            1,
+            1,
+            1,
+            Some(store.clone()),
+        );
         let cfg = TablesConfig {
             per_pair_iou_floor: 0.0,
             per_pair_max_rows: 2,
@@ -1891,9 +1880,9 @@ mod tests {
         let mut store = RetainedIous::new();
         let iou = ndarray::Array2::<f64>::from_shape_vec((2, 2), vec![0.5, 0.6, 0.7, 0.8]).unwrap();
         store.insert(0, 0, iou);
-        let grid = EvalGrid {
-            eval_imgs: vec![None],
-            eval_imgs_meta: vec![Some(Box::new(crate::evaluate::EvalImageMeta {
+        let grid = EvalGrid::from_eval_imgs(
+            vec![None],
+            vec![Some(Box::new(crate::evaluate::EvalImageMeta {
                 image_id: 1,
                 category_id: 1,
                 area_rng: [0.0, f64::INFINITY],
@@ -1903,12 +1892,12 @@ mod tests {
                 dt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
                 gt_matches: ndarray::Array2::<i64>::zeros((10, 2)),
             }))],
-            builds_meta: true,
-            n_categories: 1,
-            n_area_ranges: 1,
-            n_images: 1,
-            retained_ious: Some(store.clone()),
-        };
+            true,
+            1,
+            1,
+            1,
+            Some(store.clone()),
+        );
         let cfg = TablesConfig {
             per_pair_iou_floor: 0.65,
             ..TablesConfig::default()

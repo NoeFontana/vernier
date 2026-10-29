@@ -45,9 +45,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
 use vernier_core::accumulate::{
-    accumulate, accumulate_parallel, sort_max_dets, AccumulateParams, PerImageEval,
+    accumulate_grid, accumulate_grid_parallel, sort_max_dets, AccumulateParams, PerImageEval,
 };
-use vernier_core::dataset::{CategoryId, DetectionArea, DetectionInput};
+use vernier_core::dataset::{CategoryId, DetectionArea, DetectionColumnsInput};
 use vernier_core::evaluate::{
     evaluate_boundary_cached, evaluate_segm_cached, BoundaryIouCached, EvalImageMeta, EvalKernel,
     OwnedEvaluateParams, SegmIouCached,
@@ -340,7 +340,7 @@ impl PyEvalGrid {
         let list = PyList::empty(py);
         for (cell, meta) in self
             .inner
-            .eval_imgs
+            .eval_imgs()
             .iter()
             .zip(self.inner.eval_imgs_meta.iter())
         {
@@ -409,7 +409,7 @@ impl PyEvalGrid {
         let n_categories = self.inner.n_categories;
         let n_area_ranges = self.inner.n_area_ranges;
         let n_images = self.inner.n_images;
-        let eval_imgs = &self.inner.eval_imgs;
+        let grid = &self.inner;
         let iou_thr = self.iou_thresholds.clone();
         let recall_thr = self.recall_thresholds.clone();
         let policy = self.thread_policy;
@@ -423,7 +423,7 @@ impl PyEvalGrid {
                     n_area_ranges,
                     n_images,
                 };
-                accumulate_with_policy(eval_imgs, params, parity, policy)
+                accumulate_with_policy(grid, params, parity, policy)
             })
             .map_err(|e| PyValueError::new_err(format!("{e}")))?;
         Ok(PyAccumulated {
@@ -1777,16 +1777,16 @@ fn run_pipeline_with_dataset(
 /// A pool that fails to build falls back to it too — the tensors are the
 /// same, only slower.
 fn accumulate_with_policy(
-    eval_imgs: &[Option<Box<PerImageEval>>],
+    grid: &EvalGrid,
     params: AccumulateParams<'_>,
     parity: ParityMode,
     thread_policy: threads::ThreadPolicy,
 ) -> Result<Accumulated, EvalError> {
     match thread_policy.thread_count() {
-        None => accumulate(eval_imgs, params, parity),
+        None => accumulate_grid(grid, params, parity),
         Some(n) => match threads::build_scoped_pool(n) {
-            Ok(pool) => pool.install(|| accumulate_parallel(eval_imgs, params, parity)),
-            Err(_) => accumulate(eval_imgs, params, parity),
+            Ok(pool) => pool.install(|| accumulate_grid_parallel(grid, params, parity)),
+            Err(_) => accumulate_grid(grid, params, parity),
         },
     }
 }
@@ -1808,7 +1808,7 @@ fn summarize_grid(
         n_area_ranges: grid.n_area_ranges,
         n_images: grid.n_images,
     };
-    let acc = accumulate_with_policy(&grid.eval_imgs, acc_params, parity, thread_policy)?;
+    let acc = accumulate_with_policy(grid, acc_params, parity, thread_policy)?;
     match summary_plan {
         // ADR-0012 / D5: kp summary is the 10-stat plan over the
         // 3-bucket area grid. Detection's 12-stat plan would index
@@ -2171,16 +2171,16 @@ pub(crate) fn emit_warning<W: pyo3::type_object::PyTypeInfo>(
 
 impl StreamingState {
     /// Run an `update`. The JSON arm defers parsing to the kernel-typed
-    /// `from_json_bytes`; the array arm calls `from_inputs` here so the
-    /// HashMap build runs without the GIL (we're already inside
+    /// `from_json_bytes`; the array arm calls `from_columns` here so the
+    /// CSR index build runs without the GIL (we're already inside
     /// `py.detach` on every call site).
     fn run_update(&mut self, payload: UpdatePayload) -> Result<UpdateReport, EvalError> {
         macro_rules! dispatch {
             ($ev:expr) => {
                 match payload {
                     UpdatePayload::Bytes(b) => $ev.update(&b),
-                    UpdatePayload::Inputs(inputs) => {
-                        let detections = CocoDetections::from_inputs(inputs)?;
+                    UpdatePayload::Columns(cols) => {
+                        let detections = CocoDetections::from_columns(cols)?;
                         $ev.update_parsed(ParsedDetections::from_detections(detections))
                     }
                 }
@@ -2276,14 +2276,14 @@ fn streaming_tables_result(summary: Summary, tables: Tables) -> PyResult<Streami
 }
 
 /// One kernel-input payload bound for the streaming evaluator. The JSON
-/// path holds the JSON bytes; the array path holds a flat
-/// `Vec<DetectionInput>`. **Neither** variant carries a constructed
-/// [`CocoDetections`] — the `from_inputs` HashMap build is
+/// path holds the JSON bytes; the array path holds SoA
+/// [`DetectionColumnsInput`]. **Neither** variant carries a constructed
+/// [`CocoDetections`] — the `from_columns` CSR index build is
 /// intentionally deferred to the consumer's `py.detach` block so it
 /// doesn't hold the GIL.
 pub(crate) enum UpdatePayload {
     Bytes(pyo3::pybacked::PyBackedBytes),
-    Inputs(Vec<DetectionInput>),
+    Columns(DetectionColumnsInput),
 }
 
 /// Classify and materialize the Python `detections=` argument into an
@@ -2298,11 +2298,14 @@ pub(crate) fn build_update_payload<'py>(
 ) -> PyResult<UpdatePayload> {
     Ok(match array_ingest::DetectionsArg::extract(detections)? {
         array_ingest::DetectionsArg::Bytes(b) => UpdatePayload::Bytes(b),
-        array_ingest::DetectionsArg::Dicts { dicts, indexed } => UpdatePayload::Inputs(
-            array_ingest::dicts_to_inputs(py, &dicts, indexed, iou_type, cast_state)?,
+        array_ingest::DetectionsArg::Batch(dict) => UpdatePayload::Columns(
+            array_ingest::batch_to_columns(py, &dict, iou_type, cast_state)?,
         ),
-        array_ingest::DetectionsArg::AnnList(dicts) => UpdatePayload::Inputs(
-            array_ingest::ann_dicts_to_inputs(py, &dicts, iou_type, cast_state)?,
+        array_ingest::DetectionsArg::Dicts { dicts, indexed } => UpdatePayload::Columns(
+            array_ingest::dicts_to_columns(py, &dicts, indexed, iou_type, cast_state)?,
+        ),
+        array_ingest::DetectionsArg::AnnList(dicts) => UpdatePayload::Columns(
+            array_ingest::ann_dicts_to_columns(py, &dicts, iou_type, cast_state)?,
         ),
         // `iou_type` does not gate this arm. An `(N, 7)` matrix carries
         // no segmentation and no keypoints, which is the same thing a
@@ -2313,28 +2316,28 @@ pub(crate) fn build_update_payload<'py>(
         // here would make the matrix route stricter than the file route
         // it is supposed to be indistinguishable from. See ADR-0057.
         array_ingest::DetectionsArg::Matrix(arr) => {
-            UpdatePayload::Inputs(array_ingest::matrix_to_inputs(py, &arr, cast_state)?)
+            UpdatePayload::Columns(array_ingest::matrix_to_columns(py, &arr, cast_state)?)
         }
     })
 }
 
 /// Realize a Send-safe [`UpdatePayload`] inside `py.detach` into the
 /// [`CocoDetections`] the foreground pipeline takes by reference.
-/// `Bytes` is parsed via `from_json_bytes`; `Inputs` runs `from_inputs`
+/// `Bytes` is parsed via `from_json_bytes`; `Columns` runs `from_columns`
 /// — both happen without the GIL.
 pub(crate) fn realize_dt(payload: UpdatePayload, area: DetectionArea) -> PyResult<CocoDetections> {
     match payload {
         UpdatePayload::Bytes(b) => {
             CocoDetections::from_json_bytes_with_area(&b, area).map_err(coco_load_error_to_pyerr)
         }
-        // `Inputs` may or may not carry a per-detection `area`, and
-        // `from_inputs_with_area` reads it only under `Supplied`
-        // (quirk J3). The ADR-0030 columnar dicts and the `(N, 7)` matrix
-        // have no area column, so `Supplied` falls back to the
+        // `Columns` may or may not carry a per-detection `areas` column, and
+        // `from_columns_with_area` reads it only under `Supplied`
+        // (quirk J3). The ADR-0030/0066 columnar dicts and the `(N, 7)`
+        // matrix have no area column, so `Supplied` falls back to the
         // bbox-derived value for them; the ADR-0057 result-dict route
         // carries the `area` field a results *file* carries, so
         // `Supplied` honours it exactly as the file route does.
-        UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs_with_area(inputs, area)
+        UpdatePayload::Columns(cols) => CocoDetections::from_columns_with_area(cols, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }
 }
@@ -2348,7 +2351,7 @@ fn realize_dt_parallel(
 ) -> PyResult<CocoDetections> {
     match payload {
         UpdatePayload::Bytes(b) => parse_dt_parallel(&b, threads, area),
-        UpdatePayload::Inputs(inputs) => CocoDetections::from_inputs_with_area(inputs, area)
+        UpdatePayload::Columns(cols) => CocoDetections::from_columns_with_area(cols, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }
 }
@@ -2912,8 +2915,8 @@ impl BackgroundEvalState {
                 let parsed = match payload {
                     UpdatePayload::Bytes(b) => ParsedDetections::<$K>::from_json_bytes(&b)
                         .map_err(background::SubmitError::Eval)?,
-                    UpdatePayload::Inputs(inputs) => {
-                        let detections = CocoDetections::from_inputs(inputs)
+                    UpdatePayload::Columns(cols) => {
+                        let detections = CocoDetections::from_columns(cols)
                             .map_err(background::SubmitError::Eval)?;
                         ParsedDetections::<$K>::from_detections(detections)
                     }

@@ -455,6 +455,387 @@ fn match_image_with_perm_gated(
     })
 }
 
+/// Reusable per-worker scratch for allocation-free matching into
+/// [`crate::accumulate::PackedCategory`] (ADR-0066).
+///
+/// Used on the default `!builds_meta` hot path where detections are
+/// already pre-sorted descending by score (`dt_perm` is identity) and
+/// matched annotation IDs (`EvalImageMeta`) are not requested.
+#[derive(Default)]
+pub(crate) struct MatchScratch {
+    gt_perm: Vec<usize>,
+    gt_iscrowd_sorted: Vec<bool>,
+    gt_matched: Vec<bool>,
+    dt_best: Vec<f64>,
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn run_presorted_bits16_ladder<const PREFILTER: bool>(
+    iou_matrix: ArrayView2<'_, f64>,
+    iou_thresholds: &[f64],
+    n_d: usize,
+    n_unignored: usize,
+    gt_perm: &[usize],
+    gt_iscrowd_sorted: &[bool],
+    gt_matched: &mut [bool],
+    dt_best: &[f64],
+    dst_flags: &mut [u32],
+) {
+    let n_g = gt_perm.len();
+    for (tind, &t) in iou_thresholds.iter().enumerate() {
+        gt_matched.fill(false);
+        let seed = t.min(1.0 - IOU_BOUNDARY_EPS);
+        let m_bit = 1_u32 << tind;
+        let g_bit = 1_u32 << (tind + 16);
+
+        for (d, slot) in dst_flags.iter_mut().enumerate().take(n_d) {
+            if PREFILTER && dt_best[d] < seed {
+                continue;
+            }
+            let mut best = seed;
+            let mut m: i64 = -1;
+
+            // Scan non-ignore GTs (`0..n_unignored`).
+            for (k_g, &g_orig) in gt_perm[..n_unignored].iter().enumerate() {
+                if gt_matched[k_g] {
+                    continue;
+                }
+                let iou = iou_matrix[(g_orig, d)];
+                if iou < best {
+                    continue;
+                }
+                best = iou;
+                m = k_g as i64;
+            }
+
+            // B3: scan trailing ignore GTs (`n_unignored..n_g`) only if
+            // no non-ignore GT matched.
+            if m < 0 {
+                for k_g in n_unignored..n_g {
+                    if gt_matched[k_g] {
+                        continue;
+                    }
+                    let g_orig = gt_perm[k_g];
+                    let iou = iou_matrix[(g_orig, d)];
+                    if iou < best {
+                        continue;
+                    }
+                    best = iou;
+                    m = k_g as i64;
+                }
+            }
+
+            if m < 0 {
+                continue;
+            }
+            let m_idx = m as usize;
+            // B4: crowds are many-to-one, so only non-crowd GTs mark
+            // `gt_matched`.
+            if !gt_iscrowd_sorted[m_idx] {
+                gt_matched[m_idx] = true;
+            }
+            // B6: matched-to-ignore sets ignore bit; matched-to-valid
+            // clears any pre-initialized B7/AA3 unmatched-ignore bit.
+            if m_idx >= n_unignored {
+                *slot |= m_bit | g_bit;
+            } else {
+                *slot = (*slot | m_bit) & !g_bit;
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+fn run_presorted_general_ladder<const PREFILTER: bool>(
+    iou_matrix: ArrayView2<'_, f64>,
+    iou_thresholds: &[f64],
+    n_d: usize,
+    n_unignored: usize,
+    gt_perm: &[usize],
+    gt_iscrowd_sorted: &[bool],
+    gt_matched: &mut [bool],
+    dt_best: &[f64],
+    dst_matched: &mut [bool],
+    dst_ignore: &mut [bool],
+) {
+    let n_g = gt_perm.len();
+    let n_t = iou_thresholds.len();
+    for (tind, &t) in iou_thresholds.iter().enumerate() {
+        gt_matched.fill(false);
+        let seed = t.min(1.0 - IOU_BOUNDARY_EPS);
+
+        for d in 0..n_d {
+            if PREFILTER && dt_best[d] < seed {
+                continue;
+            }
+            let mut best = seed;
+            let mut m: i64 = -1;
+
+            for (k_g, &g_orig) in gt_perm[..n_unignored].iter().enumerate() {
+                if gt_matched[k_g] {
+                    continue;
+                }
+                let iou = iou_matrix[(g_orig, d)];
+                if iou < best {
+                    continue;
+                }
+                best = iou;
+                m = k_g as i64;
+            }
+
+            if m < 0 {
+                for k_g in n_unignored..n_g {
+                    if gt_matched[k_g] {
+                        continue;
+                    }
+                    let g_orig = gt_perm[k_g];
+                    let iou = iou_matrix[(g_orig, d)];
+                    if iou < best {
+                        continue;
+                    }
+                    best = iou;
+                    m = k_g as i64;
+                }
+            }
+
+            if m < 0 {
+                continue;
+            }
+            let m_idx = m as usize;
+            if !gt_iscrowd_sorted[m_idx] {
+                gt_matched[m_idx] = true;
+            }
+            let flat = d * n_t + tind;
+            dst_matched[flat] = true;
+            dst_ignore[flat] = m_idx >= n_unignored;
+        }
+    }
+}
+
+impl MatchScratch {
+    /// Precomputes column maxima on `iou_matrix` once per `(category,
+    /// image)` cell when `G * D >= PREFILTER_MIN_CELL`, reusing the
+    /// result across all area ranges.
+    #[allow(clippy::needless_pass_by_value)]
+    pub(crate) fn prepare_iou(&mut self, iou_matrix: ArrayView2<'_, f64>) {
+        let n_g = iou_matrix.nrows();
+        let n_d = iou_matrix.ncols();
+        if n_g * n_d < PREFILTER_MIN_CELL {
+            self.dt_best.clear();
+            return;
+        }
+        self.dt_best.clear();
+        self.dt_best.resize(n_d, f64::NEG_INFINITY);
+        for g in 0..n_g {
+            for (slot, &v) in self.dt_best.iter_mut().zip(iou_matrix.row(g)) {
+                *slot = if v.is_nan() {
+                    f64::INFINITY
+                } else {
+                    slot.max(v)
+                };
+            }
+        }
+    }
+
+    fn partition_gts(&mut self, gt_ignore: &[bool], gt_iscrowd: &[bool]) -> usize {
+        let n_g = gt_ignore.len();
+        self.gt_perm.clear();
+        self.gt_perm.reserve(n_g);
+        self.gt_iscrowd_sorted.clear();
+        self.gt_iscrowd_sorted.reserve(n_g);
+        for (i, (&ig, &crowd)) in gt_ignore.iter().zip(gt_iscrowd).enumerate() {
+            if !ig {
+                self.gt_perm.push(i);
+                self.gt_iscrowd_sorted.push(crowd);
+            }
+        }
+        let n_unignored = self.gt_perm.len();
+        for (i, (&ig, &crowd)) in gt_ignore.iter().zip(gt_iscrowd).enumerate() {
+            if ig {
+                self.gt_perm.push(i);
+                self.gt_iscrowd_sorted.push(crowd);
+            }
+        }
+        self.gt_matched.resize(n_g, false);
+        n_unignored
+    }
+
+    /// Runs greedy matching on pre-sorted detections (`n_t <= 16`) and
+    /// appends `n_d` bit-packed `(matched_u16 | (ignore_u16 << 16))`
+    /// words to `out_flags`. Returns `n_unignored`.
+    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    pub(crate) fn match_presorted_bits16(
+        &mut self,
+        iou_matrix: ArrayView2<'_, f64>,
+        gt_ignore: &[bool],
+        gt_iscrowd: &[bool],
+        dt_unmatched_ignore: &[bool],
+        iou_thresholds: &[f64],
+        _parity_mode: ParityMode,
+        out_flags: &mut Vec<u32>,
+    ) -> Result<usize, EvalError> {
+        let n_g = gt_ignore.len();
+        let n_d = dt_unmatched_ignore.len();
+        let n_t = iou_thresholds.len();
+        debug_assert!(n_t <= 16);
+
+        #[cfg(feature = "bench-histogram")]
+        let _hist_guard = histogram::CallTimer::new(n_g, n_d);
+
+        if gt_iscrowd.len() != n_g {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "gt_iscrowd len {} does not match gt_ignore len {}",
+                    gt_iscrowd.len(),
+                    n_g
+                ),
+            });
+        }
+        if iou_matrix.nrows() != n_g || iou_matrix.ncols() != n_d {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "iou_matrix is {}x{}, expected {}x{}",
+                    iou_matrix.nrows(),
+                    iou_matrix.ncols(),
+                    n_g,
+                    n_d
+                ),
+            });
+        }
+
+        let n_unignored = self.partition_gts(gt_ignore, gt_iscrowd);
+        let all_t_ig: u32 = if n_t == 0 {
+            0
+        } else {
+            ((1_u32 << n_t) - 1) << 16
+        };
+        let base = out_flags.len();
+        out_flags.extend(
+            dt_unmatched_ignore
+                .iter()
+                .map(|&ig| if ig { all_t_ig } else { 0 }),
+        );
+        if n_g == 0 || n_d == 0 || n_t == 0 {
+            return Ok(n_unignored);
+        }
+
+        let dst = &mut out_flags[base..base + n_d];
+        if n_g * n_d >= PREFILTER_MIN_CELL {
+            run_presorted_bits16_ladder::<true>(
+                iou_matrix,
+                iou_thresholds,
+                n_d,
+                n_unignored,
+                &self.gt_perm,
+                &self.gt_iscrowd_sorted,
+                &mut self.gt_matched,
+                &self.dt_best,
+                dst,
+            );
+        } else {
+            run_presorted_bits16_ladder::<false>(
+                iou_matrix,
+                iou_thresholds,
+                n_d,
+                n_unignored,
+                &self.gt_perm,
+                &self.gt_iscrowd_sorted,
+                &mut self.gt_matched,
+                &[],
+                dst,
+            );
+        }
+        Ok(n_unignored)
+    }
+
+    /// Arbitrary-`n_t` fallback (`n_t > 16`) for pre-sorted detections.
+    /// Appends `n_d * n_t` booleans (layout `[d * n_t + tind]`) to
+    /// `out_matched` and `out_ignore`. Returns `n_unignored`.
+    #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
+    pub(crate) fn match_presorted_general(
+        &mut self,
+        iou_matrix: ArrayView2<'_, f64>,
+        gt_ignore: &[bool],
+        gt_iscrowd: &[bool],
+        dt_unmatched_ignore: &[bool],
+        iou_thresholds: &[f64],
+        _parity_mode: ParityMode,
+        out_matched: &mut Vec<bool>,
+        out_ignore: &mut Vec<bool>,
+    ) -> Result<usize, EvalError> {
+        let n_g = gt_ignore.len();
+        let n_d = dt_unmatched_ignore.len();
+        let n_t = iou_thresholds.len();
+
+        #[cfg(feature = "bench-histogram")]
+        let _hist_guard = histogram::CallTimer::new(n_g, n_d);
+
+        if gt_iscrowd.len() != n_g {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "gt_iscrowd len {} does not match gt_ignore len {}",
+                    gt_iscrowd.len(),
+                    n_g
+                ),
+            });
+        }
+        if iou_matrix.nrows() != n_g || iou_matrix.ncols() != n_d {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "iou_matrix is {}x{}, expected {}x{}",
+                    iou_matrix.nrows(),
+                    iou_matrix.ncols(),
+                    n_g,
+                    n_d
+                ),
+            });
+        }
+
+        let n_unignored = self.partition_gts(gt_ignore, gt_iscrowd);
+        let base = out_matched.len();
+        let added = n_d * n_t;
+        out_matched.resize(base + added, false);
+        out_ignore.reserve(added);
+        for &ig in dt_unmatched_ignore {
+            out_ignore.extend(std::iter::repeat_n(ig, n_t));
+        }
+        if n_g == 0 || n_d == 0 || n_t == 0 {
+            return Ok(n_unignored);
+        }
+
+        let dst_m = &mut out_matched[base..base + added];
+        let dst_g = &mut out_ignore[base..base + added];
+        if n_g * n_d >= PREFILTER_MIN_CELL {
+            run_presorted_general_ladder::<true>(
+                iou_matrix,
+                iou_thresholds,
+                n_d,
+                n_unignored,
+                &self.gt_perm,
+                &self.gt_iscrowd_sorted,
+                &mut self.gt_matched,
+                &self.dt_best,
+                dst_m,
+                dst_g,
+            );
+        } else {
+            run_presorted_general_ladder::<false>(
+                iou_matrix,
+                iou_thresholds,
+                n_d,
+                n_unignored,
+                &self.gt_perm,
+                &self.gt_iscrowd_sorted,
+                &mut self.gt_matched,
+                &[],
+                dst_m,
+                dst_g,
+            );
+        }
+        Ok(n_unignored)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

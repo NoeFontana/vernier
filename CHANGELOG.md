@@ -14,6 +14,58 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Added
+
+- **Multi-image columnar `DetectionsBatch` on `DetectionsInput`** (ADR-0066).
+  `vernier.instance.DetectionsBatch` carries whole-dataset or multi-image
+  detection columns (`image_ids`, optional per-image `counts`, `boxes`,
+  `scores`, `labels`, and optional `rles` / `keypoints`) across every
+  `DetectionsInput` entry point (`Evaluator.evaluate`, `evaluate_*_grid`,
+  `BackgroundEvaluator.submit`, partitioned evaluation, and TIDE / LRP /
+  confusion-matrix / FP-IoU-histogram diagnostics).
+- **Direct-to-SoA Rust constructors and packed-grid accumulation** (ADR-0066).
+  `CocoDetections::from_columns`, `DetectionColumns`, `DetectionColumnsInput`,
+  `CsrIndex`, `CategoryPackedCells`, `PackedEvalGrid`, `MatchScratch`,
+  `accumulate_grid`, and `accumulate_grid_parallel` in `vernier-core` (and
+  re-exported through `vernier`).
+
+### Changed
+
+- **Breaking (0.6.0) — `vernier.adapters.coco_inputs` and
+  `coco_inputs_from_columns` return `DetectionsBatch`** on both `bbox` and
+  `segm`, replacing the `(N, 7)` float64 `np.column_stack` copy on `bbox` and
+  the per-image `list[Detections]` dict loop on `segm`. Callers forwarding the
+  returned `(CocoDataset, DetectionsInput)` pair to `vernier.instance` require
+  no code changes.
+- **Breaking (0.6.0) — `vernier-core` / `vernier` Rust API:**
+  - `CocoDetections` is backed by `Arc<DetectionColumns>` (Structure of Arrays)
+    and flat 2-buffer `CsrIndex` tables rather than `Vec<CocoDetection>`; index
+    lookups return `&[u32]` row indices, and `records()` returns an exact-size
+    iterator yielding `CocoDetection` by value.
+  - `EvalGrid.eval_imgs` is now a lazy method `EvalGrid::eval_imgs(&self) -> &[Option<Box<PerImageEval>>]`
+    backed by `OnceLock` over `PackedEvalGrid` instead of an eager struct field.
+  - `EvalKernel::build_dt_anns` and `build_dt_anns_into` take `&CocoDetections`
+    directly instead of `&[&CocoDetection]`.
+
+### Performance
+
+- **6.8×–8.2× faster end-to-end RF-DETR validation (`5,000` images × `300`
+  queries = `1.5M` detections, `80` classes)** (ADR-0066):
+  - `coco_inputs_from_columns` drops from `157 ms` to `2.4 ms` (`float64 xywh`)
+    / `24.0 ms` (`float32 xyxy → float64 xywh` in-place widening).
+  - FFI detection routes (`DetectionsBatch`, `Detections`, `ResultAnnotation`,
+    and `(N, 7)` `DetectionMatrix`) write directly into `DetectionColumnsInput`
+    off the GIL (`py.detach`), with branchless inline SSE2 `cvttsd2si64`
+    round-trip integer checks replacing `libm::trunc` calls on `(N, 7)` IDs.
+  - `match_image_into_packed` reuses `MatchScratch` across cells and short-circuits
+    empty-GT cells (`n_g == 0`, ~93% of unthresholded 300-query DETR cells) on
+    infallible kernels (`BboxIou`).
+  - Category-major `PackedEvalGrid` + L1/L2-resident `accumulate_grid_parallel`
+    cut 4-thread PR accumulation from `965 ms` to `67 ms` (`14.3×`) and fused
+    4-thread `evaluate_bbox_summary` from `1,454 ms` to `211.5 ms` (`6.9×`).
+  - `StreamingEvaluator::update_with` now evaluates only the `O(batch_images)`
+    subset present in each incoming batch rather than scanning all GT images.
+
 ## [0.5.4] - 2026-09-24
 
 ### Added

@@ -688,14 +688,772 @@ fn accumulate_cell(
             .index_axis_mut(Axis(0), t)
             .index_axis_move(Axis(1), a)
             .index_axis_move(Axis(1), m);
+        let mut last_pi = 0usize;
+        let mut prev_target = f64::NEG_INFINITY;
         for (ri, &target) in recall_thresholds.iter().enumerate() {
-            let pi = rc.partition_point(|&v| v < target);
+            let lo = if target >= prev_target { last_pi } else { 0 };
+            let pi = lo + rc[lo..].partition_point(|&v| v < target);
+            last_pi = pi;
+            prev_target = target;
             if pi < n_d {
                 p_lane[ri] = pr[pi];
                 s_lane[ri] = stream.scores[stream.perm[pi]];
             } else {
                 p_lane[ri] = 0.0;
                 s_lane[ri] = 0.0;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Packed category-major EvalGrid storage + L2-resident accumulate (ADR-0066)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub(crate) enum PackedCategoryFlags {
+    /// Used whenever `n_t <= 16` (including the 10-threshold COCO default).
+    /// Outer `Vec` has length `n_a`; each inner `Vec<u32>` has length
+    /// `total_dts` and packs `matched_mask_u16 | ((ignore_mask_u16 as u32) << 16)`.
+    Bits16(Vec<Vec<u32>>),
+    /// Arbitrary-`n_t` fallback (`n_t > 16`).
+    /// Outer `Vec`s have length `n_a`; each inner `Vec<bool>` has length
+    /// `total_dts * n_t` in `[d_global * n_t + t]` layout.
+    General {
+        matched: Vec<Vec<bool>>,
+        ignore: Vec<Vec<bool>>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PackedCategory {
+    /// Occupied image indices `i` (`0..n_images`), strictly ascending.
+    pub(crate) occupied_images: Vec<u32>,
+    /// CSR offsets into `dt_scores` and per-area flag vectors (`len == M_occ + 1`).
+    pub(crate) dt_offsets: Vec<u32>,
+    /// Pre-sorted (score-descending) detection scores for each occupied
+    /// cell, stored once across all `n_a` area ranges.
+    pub(crate) dt_scores: Vec<f64>,
+    /// Maximum `dt_offsets[occ + 1] - dt_offsets[occ]` in this category.
+    pub(crate) max_cell_dts: usize,
+    /// Total GT count `G` for each occupied cell (`len == M_occ`).
+    pub(crate) n_gts: Vec<u32>,
+    /// Non-ignore GT count per `(area, occ_idx)`: outer `len == n_a`,
+    /// inner `len == M_occ`.
+    pub(crate) n_unignored_by_area: Vec<Vec<u32>>,
+    /// Pre-summed `npig` per area range (`len == n_a`).
+    pub(crate) npig_by_area: Vec<usize>,
+    /// Per-`(area, detection)` matched & ignore flags across `n_t` thresholds.
+    pub(crate) dt_flags: PackedCategoryFlags,
+    /// Number of IoU thresholds `n_t`.
+    pub(crate) n_t: usize,
+}
+
+impl PackedCategory {
+    pub(crate) fn with_capacity(n_a: usize, n_t: usize, occ_cap: usize, dt_cap: usize) -> Self {
+        let mut dt_offsets = Vec::with_capacity(occ_cap.saturating_add(1));
+        dt_offsets.push(0);
+        let dt_flags = if n_t <= 16 {
+            PackedCategoryFlags::Bits16((0..n_a).map(|_| Vec::with_capacity(dt_cap)).collect())
+        } else {
+            let elem_cap = dt_cap.saturating_mul(n_t);
+            PackedCategoryFlags::General {
+                matched: (0..n_a).map(|_| Vec::with_capacity(elem_cap)).collect(),
+                ignore: (0..n_a).map(|_| Vec::with_capacity(elem_cap)).collect(),
+            }
+        };
+        Self {
+            occupied_images: Vec::with_capacity(occ_cap),
+            dt_offsets,
+            dt_scores: Vec::with_capacity(dt_cap),
+            max_cell_dts: 0,
+            n_gts: Vec::with_capacity(occ_cap),
+            n_unignored_by_area: (0..n_a).map(|_| Vec::with_capacity(occ_cap)).collect(),
+            npig_by_area: vec![0usize; n_a],
+            dt_flags,
+            n_t,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn begin_cell(&mut self, image_idx: u32, n_g: usize, dt_scores: &[f64]) {
+        self.occupied_images.push(image_idx);
+        self.dt_scores.extend_from_slice(dt_scores);
+        self.dt_offsets
+            .push(u32::try_from(self.dt_scores.len()).unwrap_or(u32::MAX));
+        if dt_scores.len() > self.max_cell_dts {
+            self.max_cell_dts = dt_scores.len();
+        }
+        self.n_gts.push(u32::try_from(n_g).unwrap_or(u32::MAX));
+    }
+
+    #[inline]
+    pub(crate) fn push_empty_gt_cell_area(
+        &mut self,
+        a: usize,
+        dt_areas: &[f64],
+        area: &crate::evaluate::AreaRange,
+        not_exhaustive: bool,
+    ) {
+        self.n_unignored_by_area[a].push(0);
+        match &mut self.dt_flags {
+            PackedCategoryFlags::Bits16(by_area) => {
+                let all_t_ig: u32 = if self.n_t == 0 {
+                    0
+                } else {
+                    ((1_u32 << self.n_t) - 1) << 16
+                };
+                if not_exhaustive {
+                    by_area[a].extend(std::iter::repeat_n(all_t_ig, dt_areas.len()));
+                } else {
+                    by_area[a].extend(dt_areas.iter().map(|&ar| {
+                        if area.contains(ar) {
+                            0
+                        } else {
+                            all_t_ig
+                        }
+                    }));
+                }
+            }
+            PackedCategoryFlags::General { matched, ignore } => {
+                let added = dt_areas.len() * self.n_t;
+                let new_matched_len = matched[a].len() + added;
+                matched[a].resize(new_matched_len, false);
+                if not_exhaustive {
+                    let new_ignore_len = ignore[a].len() + added;
+                    ignore[a].resize(new_ignore_len, true);
+                } else {
+                    ignore[a].reserve(added);
+                    for &ar in dt_areas {
+                        ignore[a].extend(std::iter::repeat_n(!area.contains(ar), self.n_t));
+                    }
+                }
+            }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn push_matched_cell_area(&mut self, a: usize, n_unignored: usize) {
+        self.n_unignored_by_area[a].push(u32::try_from(n_unignored).unwrap_or(u32::MAX));
+        self.npig_by_area[a] += n_unignored;
+    }
+
+    pub(crate) fn push_from_per_image_eval(&mut self, a: usize, cell: &PerImageEval) {
+        let n_unignored = cell.gt_ignore.iter().filter(|&&ig| !ig).count();
+        self.push_matched_cell_area(a, n_unignored);
+        let n_d = cell.dt_scores.len();
+        let n_t = self.n_t;
+        match &mut self.dt_flags {
+            PackedCategoryFlags::Bits16(by_area) => {
+                by_area[a].reserve(n_d);
+                for d in 0..n_d {
+                    let mut word = 0_u32;
+                    for t in 0..n_t {
+                        if cell.dt_matched[(t, d)] {
+                            word |= 1_u32 << t;
+                        }
+                        if cell.dt_ignore[(t, d)] {
+                            word |= 1_u32 << (t + 16);
+                        }
+                    }
+                    by_area[a].push(word);
+                }
+            }
+            PackedCategoryFlags::General { matched, ignore } => {
+                let added = n_d * n_t;
+                matched[a].reserve(added);
+                ignore[a].reserve(added);
+                for d in 0..n_d {
+                    for t in 0..n_t {
+                        matched[a].push(cell.dt_matched[(t, d)]);
+                        ignore[a].push(cell.dt_ignore[(t, d)]);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn concat_chunks(mut chunks: Vec<Self>, n_a: usize, n_t: usize) -> Self {
+        if chunks.is_empty() {
+            return Self::with_capacity(n_a, n_t, 0, 0);
+        }
+        if chunks.len() == 1 {
+            return chunks
+                .pop()
+                .unwrap_or_else(|| Self::with_capacity(n_a, n_t, 0, 0));
+        }
+        let total_occ: usize = chunks.iter().map(|c| c.occupied_images.len()).sum();
+        let total_dts: usize = chunks.iter().map(|c| c.dt_scores.len()).sum();
+        let mut out = Self::with_capacity(n_a, n_t, total_occ, total_dts);
+        for chunk in chunks {
+            let base_dt = u32::try_from(out.dt_scores.len()).unwrap_or(u32::MAX);
+            out.occupied_images
+                .extend_from_slice(&chunk.occupied_images);
+            out.dt_offsets.extend(
+                chunk.dt_offsets[1..]
+                    .iter()
+                    .map(|&off| base_dt.saturating_add(off)),
+            );
+            out.dt_scores.extend_from_slice(&chunk.dt_scores);
+            if chunk.max_cell_dts > out.max_cell_dts {
+                out.max_cell_dts = chunk.max_cell_dts;
+            }
+            out.n_gts.extend_from_slice(&chunk.n_gts);
+            for a in 0..n_a {
+                out.n_unignored_by_area[a].extend_from_slice(&chunk.n_unignored_by_area[a]);
+                out.npig_by_area[a] += chunk.npig_by_area[a];
+            }
+            match (&mut out.dt_flags, chunk.dt_flags) {
+                (PackedCategoryFlags::Bits16(dst), PackedCategoryFlags::Bits16(src)) => {
+                    for (dst_a, src_a) in dst.iter_mut().zip(src) {
+                        dst_a.extend_from_slice(&src_a);
+                    }
+                }
+                (
+                    PackedCategoryFlags::General {
+                        matched: dst_m,
+                        ignore: dst_g,
+                    },
+                    PackedCategoryFlags::General {
+                        matched: src_m,
+                        ignore: src_g,
+                    },
+                ) => {
+                    for ((dm, dg), (sm, sg)) in dst_m
+                        .iter_mut()
+                        .zip(dst_g.iter_mut())
+                        .zip(src_m.into_iter().zip(src_g))
+                    {
+                        dm.extend_from_slice(&sm);
+                        dg.extend_from_slice(&sg);
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    pub(crate) fn extract_cell(&self, a: usize, occ: usize) -> PerImageEval {
+        let d_start = self.dt_offsets[occ] as usize;
+        let d_end = self.dt_offsets[occ + 1] as usize;
+        let n_d = d_end - d_start;
+        let n_t = self.n_t;
+        let dt_scores = self.dt_scores[d_start..d_end].to_vec();
+
+        let n_g = self.n_gts[occ] as usize;
+        let n_unignored = self.n_unignored_by_area[a][occ] as usize;
+        let mut gt_ignore = vec![false; n_g];
+        for slot in &mut gt_ignore[n_unignored.min(n_g)..] {
+            *slot = true;
+        }
+
+        let mut dt_matched = Array2::<bool>::default((n_t, n_d));
+        let mut dt_ignore = Array2::<bool>::default((n_t, n_d));
+        match &self.dt_flags {
+            PackedCategoryFlags::Bits16(by_area) => {
+                let slice = &by_area[a][d_start..d_end];
+                for (d, &word) in slice.iter().enumerate() {
+                    for t in 0..n_t {
+                        dt_matched[(t, d)] = (word & (1_u32 << t)) != 0;
+                        dt_ignore[(t, d)] = (word & (1_u32 << (t + 16))) != 0;
+                    }
+                }
+            }
+            PackedCategoryFlags::General { matched, ignore } => {
+                let m_slice = &matched[a][d_start * n_t..d_end * n_t];
+                let g_slice = &ignore[a][d_start * n_t..d_end * n_t];
+                for d in 0..n_d {
+                    let row = d * n_t;
+                    for t in 0..n_t {
+                        dt_matched[(t, d)] = m_slice[row + t];
+                        dt_ignore[(t, d)] = g_slice[row + t];
+                    }
+                }
+            }
+        }
+
+        PerImageEval {
+            dt_scores,
+            dt_matched,
+            dt_ignore,
+            gt_ignore,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PackedEvalGrid {
+    pub(crate) categories: Vec<PackedCategory>,
+    pub(crate) n_categories: usize,
+    pub(crate) n_area_ranges: usize,
+    pub(crate) n_images: usize,
+    pub(crate) n_t: usize,
+}
+
+impl PackedEvalGrid {
+    pub(crate) fn has_any_cell(&self) -> bool {
+        self.n_area_ranges > 0
+            && self
+                .categories
+                .iter()
+                .any(|c| !c.occupied_images.is_empty())
+    }
+
+    pub(crate) fn materialize_eval_imgs(&self) -> Vec<Option<Box<PerImageEval>>> {
+        let n_k = self.n_categories;
+        let n_a = self.n_area_ranges;
+        let n_i = self.n_images;
+        let mut out: Vec<Option<Box<PerImageEval>>> = vec![None; n_k * n_a * n_i];
+        if n_a == 0 || n_i == 0 {
+            return out;
+        }
+        for (k, cat) in self.categories.iter().enumerate() {
+            let nk = k * n_a * n_i;
+            for a in 0..n_a {
+                let na = nk + a * n_i;
+                for (occ, &i32) in cat.occupied_images.iter().enumerate() {
+                    let i = i32 as usize;
+                    out[na + i] = Some(Box::new(cat.extract_cell(a, occ)));
+                }
+            }
+        }
+        out
+    }
+}
+
+fn validate_packed_grid(
+    packed: &PackedEvalGrid,
+    n_t: usize,
+    n_k: usize,
+    n_a: usize,
+    n_i: usize,
+) -> Result<(), EvalError> {
+    let actual_len = packed.n_categories * packed.n_area_ranges * packed.n_images;
+    let expected = n_k * n_a * n_i;
+    if packed.n_categories != n_k
+        || packed.n_area_ranges != n_a
+        || packed.n_images != n_i
+        || actual_len != expected
+    {
+        return Err(EvalError::DimensionMismatch {
+            detail: format!(
+                "eval_imgs len {} != n_categories({}) * n_area_ranges({}) * n_images({}) = {}",
+                actual_len, n_k, n_a, n_i, expected
+            ),
+        });
+    }
+    if packed.has_any_cell() && packed.n_t != n_t {
+        return Err(EvalError::DimensionMismatch {
+            detail: format!(
+                "PerImageEval row count {} != iou_thresholds len {}",
+                packed.n_t, n_t
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Accumulate an [`crate::evaluate::EvalGrid`] into precision / recall /
+/// scores tensors (ADR-0066).
+///
+/// Sweeps the grid's flat category-major `PackedEvalGrid` directly in
+/// L1/L2 cache without materializing `Vec<Option<Box<PerImageEval>>>`.
+/// Falls back to [`accumulate`] on grids constructed via
+/// [`crate::evaluate::EvalGrid::from_eval_imgs`].
+///
+/// # Errors
+///
+/// Same validation as [`accumulate`]: returns
+/// [`EvalError::DimensionMismatch`] when the grid's dimensions or
+/// threshold count disagree with `p`.
+pub fn accumulate_grid(
+    grid: &crate::evaluate::EvalGrid,
+    p: AccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
+    let Some(packed) = &grid.packed else {
+        return accumulate(grid.eval_imgs(), p, parity_mode);
+    };
+    let n_t = p.iou_thresholds.len();
+    let n_r = p.recall_thresholds.len();
+    let n_k = p.n_categories;
+    let n_a = p.n_area_ranges;
+    let n_m = p.max_dets.len();
+    let n_i = p.n_images;
+
+    validate_packed_grid(packed, n_t, n_k, n_a, n_i)?;
+    let _ = parity_mode;
+
+    let mut precision = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
+    let mut recall = Array4::<f64>::from_elem((n_t, n_k, n_a, n_m), -1.0);
+    let mut scores = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
+
+    for (k, ((mut p_k, mut r_k), mut s_k)) in precision
+        .axis_iter_mut(Axis(2))
+        .zip(recall.axis_iter_mut(Axis(1)))
+        .zip(scores.axis_iter_mut(Axis(2)))
+        .enumerate()
+    {
+        accumulate_packed_category(
+            &packed.categories[k],
+            p,
+            n_t,
+            n_a,
+            &mut p_k,
+            &mut r_k,
+            &mut s_k,
+        );
+    }
+
+    Ok(Accumulated {
+        precision,
+        recall,
+        scores,
+    })
+}
+
+/// Rayon sibling of [`accumulate_grid`], fanned out over the category axis.
+///
+/// Bit-identical to [`accumulate_grid`]; callers on the sequential path
+/// (`num_threads ∈ {None, 1}`) call [`accumulate_grid`] and never enter
+/// rayon (ADR-0047).
+///
+/// # Errors
+///
+/// Same validation as [`accumulate_grid`].
+pub fn accumulate_grid_parallel(
+    grid: &crate::evaluate::EvalGrid,
+    p: AccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
+    let Some(packed) = &grid.packed else {
+        return accumulate_parallel(grid.eval_imgs(), p, parity_mode);
+    };
+    let n_t = p.iou_thresholds.len();
+    let n_r = p.recall_thresholds.len();
+    let n_k = p.n_categories;
+    let n_a = p.n_area_ranges;
+    let n_m = p.max_dets.len();
+    let n_i = p.n_images;
+
+    validate_packed_grid(packed, n_t, n_k, n_a, n_i)?;
+    let _ = parity_mode;
+
+    let mut precision = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
+    let mut recall = Array4::<f64>::from_elem((n_t, n_k, n_a, n_m), -1.0);
+    let mut scores = Array5::<f64>::from_elem((n_t, n_r, n_k, n_a, n_m), -1.0);
+
+    let p_views: Vec<ArrayViewMut4<'_, f64>> = precision.axis_iter_mut(Axis(2)).collect();
+    let r_views: Vec<ArrayViewMut3<'_, f64>> = recall.axis_iter_mut(Axis(1)).collect();
+    let s_views: Vec<ArrayViewMut4<'_, f64>> = scores.axis_iter_mut(Axis(2)).collect();
+
+    p_views
+        .into_par_iter()
+        .zip(r_views)
+        .zip(s_views)
+        .enumerate()
+        .for_each(|(k, ((mut p_k, mut r_k), mut s_k))| {
+            accumulate_packed_category(
+                &packed.categories[k],
+                p,
+                n_t,
+                n_a,
+                &mut p_k,
+                &mut r_k,
+                &mut s_k,
+            );
+        });
+
+    Ok(Accumulated {
+        precision,
+        recall,
+        scores,
+    })
+}
+
+fn build_packed_sort_plan(cat: &PackedCategory, cap: usize) -> SortPlan {
+    let m_occ = cat.occupied_images.len();
+    let mut takes = Vec::with_capacity(m_occ);
+    let scores = if cap >= cat.max_cell_dts {
+        for occ in 0..m_occ {
+            takes.push((cat.dt_offsets[occ + 1] - cat.dt_offsets[occ]) as usize);
+        }
+        cat.dt_scores.clone()
+    } else {
+        let mut total = 0usize;
+        for occ in 0..m_occ {
+            let take = ((cat.dt_offsets[occ + 1] - cat.dt_offsets[occ]) as usize).min(cap);
+            takes.push(take);
+            total += take;
+        }
+        let mut gathered = Vec::with_capacity(total);
+        for (occ, &take) in takes.iter().enumerate() {
+            let start = cat.dt_offsets[occ] as usize;
+            gathered.extend_from_slice(&cat.dt_scores[start..start + take]);
+        }
+        gathered
+    };
+    let perm = argsort_score_desc(&scores);
+    let has_nan = scores.iter().any(|s| s.is_nan());
+    SortPlan {
+        cap,
+        takes,
+        scores,
+        perm,
+        has_nan,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_threshold_curve(
+    rc: &[f64],
+    pr: &mut [f64],
+    stream_scores: &[f64],
+    stream_perm: &[usize],
+    recall_thresholds: &[f64],
+    t: usize,
+    a: usize,
+    m: usize,
+    precision: &mut ArrayViewMut4<'_, f64>,
+    recall: &mut ArrayViewMut3<'_, f64>,
+    scores: &mut ArrayViewMut4<'_, f64>,
+) {
+    let n_d = rc.len();
+    recall[(t, a, m)] = rc[n_d - 1];
+
+    for j in (1..n_d).rev() {
+        if pr[j] > pr[j - 1] {
+            pr[j - 1] = pr[j];
+        }
+    }
+
+    let mut p_lane = precision
+        .index_axis_mut(Axis(0), t)
+        .index_axis_move(Axis(1), a)
+        .index_axis_move(Axis(1), m);
+    let mut s_lane = scores
+        .index_axis_mut(Axis(0), t)
+        .index_axis_move(Axis(1), a)
+        .index_axis_move(Axis(1), m);
+    let mut last_pi = 0usize;
+    let mut prev_target = f64::NEG_INFINITY;
+    for (ri, &target) in recall_thresholds.iter().enumerate() {
+        let lo = if target >= prev_target { last_pi } else { 0 };
+        let pi = lo + rc[lo..].partition_point(|&v| v < target);
+        last_pi = pi;
+        prev_target = target;
+        if pi < n_d {
+            p_lane[ri] = pr[pi];
+            s_lane[ri] = stream_scores[stream_perm[pi]];
+        } else {
+            p_lane[ri] = 0.0;
+            s_lane[ri] = 0.0;
+        }
+    }
+}
+
+fn copy_saturated_max_det_lane(
+    a: usize,
+    src_m: usize,
+    dst_m: usize,
+    precision: &mut ArrayViewMut4<'_, f64>,
+    recall: &mut ArrayViewMut3<'_, f64>,
+    scores: &mut ArrayViewMut4<'_, f64>,
+) {
+    let n_t = precision.len_of(Axis(0));
+    let n_r = precision.len_of(Axis(1));
+    for t in 0..n_t {
+        recall[(t, a, dst_m)] = recall[(t, a, src_m)];
+        for ri in 0..n_r {
+            precision[(t, ri, a, dst_m)] = precision[(t, ri, a, src_m)];
+            scores[(t, ri, a, dst_m)] = scores[(t, ri, a, src_m)];
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn accumulate_packed_category(
+    cat: &PackedCategory,
+    p: AccumulateParams<'_>,
+    n_t: usize,
+    n_a: usize,
+    precision: &mut ArrayViewMut4<'_, f64>,
+    recall: &mut ArrayViewMut3<'_, f64>,
+    scores: &mut ArrayViewMut4<'_, f64>,
+) {
+    if cat.occupied_images.is_empty() || n_a == 0 {
+        return;
+    }
+    if cat.npig_by_area.iter().all(|&npig| npig == 0) {
+        return;
+    }
+
+    let cap = p.max_dets.iter().copied().max().unwrap_or(0);
+    let plan = build_packed_sort_plan(cat, cap);
+    let mut derived = DerivedStream::default();
+    let max_n_d = plan.scores.len();
+    let mut rc = vec![0.0_f64; max_n_d];
+    let mut pr = vec![0.0_f64; max_n_d];
+    let mut raw_flags_u32: Vec<u32> = Vec::new();
+    let mut sorted_flags_u32: Vec<u32> = Vec::with_capacity(max_n_d);
+    let mut dtm_general: Vec<bool> = Vec::new();
+    let mut dtg_general: Vec<bool> = Vec::new();
+    let n_r = p.recall_thresholds.len();
+
+    for a in 0..n_a {
+        let npig = cat.npig_by_area[a];
+        if npig == 0 {
+            continue;
+        }
+        #[allow(clippy::cast_precision_loss)]
+        let npig_f = npig as f64;
+        let mut saturated_m: Option<usize> = None;
+
+        for (m, &max_det) in p.max_dets.iter().enumerate() {
+            if max_det >= cat.max_cell_dts {
+                if let Some(prev_m) = saturated_m {
+                    copy_saturated_max_det_lane(a, prev_m, m, precision, recall, scores);
+                    continue;
+                }
+                saturated_m = Some(m);
+            }
+
+            let stream = if max_det >= cap || max_det >= cat.max_cell_dts {
+                StreamView {
+                    takes: &plan.takes,
+                    scores: &plan.scores,
+                    perm: &plan.perm,
+                }
+            } else {
+                derived.fill_from(&plan, max_det);
+                StreamView {
+                    takes: &derived.takes,
+                    scores: &derived.scores,
+                    perm: &derived.perm,
+                }
+            };
+
+            let n_d = stream.scores.len();
+            if n_d == 0 {
+                for t in 0..n_t {
+                    recall[(t, a, m)] = 0.0;
+                    for ri in 0..n_r {
+                        precision[(t, ri, a, m)] = 0.0;
+                        scores[(t, ri, a, m)] = 0.0;
+                    }
+                }
+                continue;
+            }
+
+            let rc_slice = &mut rc[..n_d];
+            let pr_slice = &mut pr[..n_d];
+
+            match &cat.dt_flags {
+                PackedCategoryFlags::Bits16(by_area) => {
+                    let area_flags = &by_area[a];
+                    sorted_flags_u32.clear();
+                    if max_det >= cat.max_cell_dts {
+                        sorted_flags_u32.extend(stream.perm.iter().map(|&src| area_flags[src]));
+                    } else {
+                        raw_flags_u32.clear();
+                        raw_flags_u32.reserve(n_d);
+                        for (occ, &keep) in stream.takes.iter().enumerate() {
+                            let start = cat.dt_offsets[occ] as usize;
+                            raw_flags_u32.extend_from_slice(&area_flags[start..start + keep]);
+                        }
+                        sorted_flags_u32.extend(stream.perm.iter().map(|&src| raw_flags_u32[src]));
+                    }
+
+                    for t in 0..n_t {
+                        let m_bit = 1_u32 << t;
+                        let g_bit = 1_u32 << (t + 16);
+                        let mut tp = 0.0_f64;
+                        let mut fp = 0.0_f64;
+                        let mut cur_rc = 0.0_f64;
+                        let mut cur_pr = 0.0_f64;
+                        for (out_idx, &flag) in sorted_flags_u32.iter().enumerate() {
+                            if (flag & g_bit) == 0 {
+                                if (flag & m_bit) != 0 {
+                                    tp += 1.0;
+                                    cur_rc = tp / npig_f;
+                                    cur_pr = tp / (tp + fp + PARITY_EPS);
+                                } else {
+                                    fp += 1.0;
+                                    if tp != 0.0 {
+                                        cur_pr = tp / (tp + fp + PARITY_EPS);
+                                    }
+                                }
+                            }
+                            rc_slice[out_idx] = cur_rc;
+                            pr_slice[out_idx] = cur_pr;
+                        }
+                        finish_threshold_curve(
+                            rc_slice,
+                            pr_slice,
+                            stream.scores,
+                            stream.perm,
+                            p.recall_thresholds,
+                            t,
+                            a,
+                            m,
+                            precision,
+                            recall,
+                            scores,
+                        );
+                    }
+                }
+                PackedCategoryFlags::General { matched, ignore } => {
+                    let m_area = &matched[a];
+                    let g_area = &ignore[a];
+                    dtm_general.resize(n_d, false);
+                    dtg_general.resize(n_d, false);
+                    for t in 0..n_t {
+                        let mut cursor = 0usize;
+                        for (occ, &keep) in stream.takes.iter().enumerate() {
+                            let start = cat.dt_offsets[occ] as usize;
+                            for d in 0..keep {
+                                let flat = (start + d) * n_t + t;
+                                dtm_general[cursor] = m_area[flat];
+                                dtg_general[cursor] = g_area[flat];
+                                cursor += 1;
+                            }
+                        }
+                        let mut tp = 0.0_f64;
+                        let mut fp = 0.0_f64;
+                        let mut cur_rc = 0.0_f64;
+                        let mut cur_pr = 0.0_f64;
+                        for (out_idx, &src_idx) in stream.perm.iter().enumerate() {
+                            if !dtg_general[src_idx] {
+                                if dtm_general[src_idx] {
+                                    tp += 1.0;
+                                    cur_rc = tp / npig_f;
+                                    cur_pr = tp / (tp + fp + PARITY_EPS);
+                                } else {
+                                    fp += 1.0;
+                                    if tp != 0.0 {
+                                        cur_pr = tp / (tp + fp + PARITY_EPS);
+                                    }
+                                }
+                            }
+                            rc_slice[out_idx] = cur_rc;
+                            pr_slice[out_idx] = cur_pr;
+                        }
+                        finish_threshold_curve(
+                            rc_slice,
+                            pr_slice,
+                            stream.scores,
+                            stream.perm,
+                            p.recall_thresholds,
+                            t,
+                            a,
+                            m,
+                            precision,
+                            recall,
+                            scores,
+                        );
+                    }
+                }
             }
         }
     }

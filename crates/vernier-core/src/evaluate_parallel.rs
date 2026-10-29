@@ -16,18 +16,18 @@
 
 use std::collections::{HashMap, HashSet};
 
-use ndarray::{Array2, ArrayView2, ArrayViewMut2};
+use ndarray::Array2;
 use rayon::prelude::*;
 
-use crate::accumulate::PerImageEval;
+use crate::accumulate::{PackedCategory, PackedEvalGrid};
 use crate::cell_occupancy;
 use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, ImageId, ImageMeta};
 use crate::error::EvalError;
 use crate::evaluate::{
-    dt_top_indices_for_cell_into, evaluate_cell, gt_indices_for_cell, raw_dt_indices_for_cell,
-    strict_oks_use_cats_blackout, CellBuffers, CellScratch, EvalGrid, EvalImageMeta, EvalKernel,
-    EvaluateParams, KernelScratch, COLLAPSED_CATEGORY_SENTINEL,
+    evaluate_category_slice, strict_oks_use_cats_blackout, CellScratch, EvalGrid, EvalImageMeta,
+    EvalKernel, EvaluateParams, KernelScratch,
 };
+use crate::matching::MatchScratch;
 use crate::parity::ParityMode;
 
 /// Wall-time split for [`evaluate_with_parallel`], gated on `bench-timings`.
@@ -60,10 +60,25 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     parity_mode: ParityMode,
     kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
+    evaluate_subset_with_parallel(gt, dt, params, parity_mode, kernel, None)
+}
+
+/// Subset-scoped sibling of [`evaluate_with_parallel`] (ADR-0066).
+pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+    image_subset: Option<&[usize]>,
+) -> Result<EvalGrid, EvalError> {
+    const CHUNK_IMAGES: usize = 512;
+
     let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
     images.sort_unstable_by_key(|im| im.id.0);
     let n_i = images.len();
     let n_a = params.area_ranges.len();
+    let n_t = params.iou_thresholds.len();
 
     let category_buckets: Vec<Option<CategoryId>> = if params.use_cats {
         let mut cats: Vec<_> = gt.categories().iter().map(|c| c.id).collect();
@@ -73,6 +88,7 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
         vec![None]
     };
     let n_k = category_buckets.len();
+    let builds_meta = params.builds_meta();
 
     let federated_per_image: Vec<Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>> =
         match (params.use_cats, gt.federated()) {
@@ -89,92 +105,79 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
 
     let strict_lvis_zero_area_filter =
         matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
+    let oks_use_cats_blackout = strict_oks_use_cats_blackout(kernel, params.use_cats, parity_mode);
 
     let gt_anns = gt.annotations();
-    let dt_anns = dt.detections();
 
-    // Per-image rayon tasks emit only the cells they actually filled,
-    // then a single pass scatters them into the canonical `(k, a, i)`
-    // buffers downstream consumers (`accumulate`, `tables`, rkyv
-    // archive) expect.
-    //
-    // The previous shape wrote into an image-major `(i, k, a)` buffer
-    // and permuted it in place afterwards. That permutation is
-    // `O(K * A * I)` however few cells hold anything, plus a `visited`
-    // bitmap of the same length: on Objects365 val, 116.8M slots and a
-    // 117 MB bitmap to move 2.5M live entries, all of it serial.
-    // Scattering the live entries makes the post-pass proportional to
-    // occupancy instead. See `crate::cell_occupancy`.
     #[cfg(feature = "bench-timings")]
     let t_par = std::time::Instant::now();
 
     let image_ids: Vec<ImageId> = images.iter().map(|im| im.id).collect();
     let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
-    let occupied = cell_occupancy::by_image(&image_ids, gt, dt, &bucket_index);
+    let occupied =
+        cell_occupancy::by_category_subset(&image_ids, image_subset, n_k, gt, dt, &bucket_index);
 
-    type CellOutput = (
-        u32,
-        u32,
-        Option<Box<PerImageEval>>,
-        Option<Box<EvalImageMeta>>,
-    );
-    struct ImageOutput {
-        cells: Vec<CellOutput>,
+    // Partition each category's occupied-image slice into `CHUNK_IMAGES`-wide
+    // tasks so heavy categories (`person`) and `use_cats=false` (`n_k = 1`)
+    // fan out across all workers without tail stragglers, while sparse
+    // categories (`<= CHUNK_IMAGES`) produce a single zero-copy chunk.
+    let mut chunk_tasks: Vec<(usize, &[u32])> = Vec::new();
+    let mut cat_chunk_offsets: Vec<usize> = Vec::with_capacity(n_k + 1);
+    cat_chunk_offsets.push(0);
+    for k in 0..n_k {
+        for chunk in occupied.row(k).chunks(CHUNK_IMAGES) {
+            chunk_tasks.push((k, chunk));
+        }
+        cat_chunk_offsets.push(chunk_tasks.len());
+    }
+
+    struct ChunkOutput {
+        packed: PackedCategory,
+        meta: Vec<(usize, Box<EvalImageMeta>)>,
         retained: Vec<(usize, Array2<f64>)>,
     }
 
-    let per_image: Vec<ImageOutput> = (0..n_i)
+    let chunk_outputs: Vec<ChunkOutput> = chunk_tasks
         .into_par_iter()
         .map_init(
             || {
                 (
                     CellScratch::new(),
                     KernelScratch::<K::Annotation>::default(),
-                    // One `n_a`-wide staging buffer per worker: the
-                    // per-cell body writes area-range outputs into a
-                    // contiguous slice, and we drain the live ones out.
-                    vec![None; n_a],
-                    vec![None; n_a],
+                    MatchScratch::default(),
                 )
             },
-            |(scratch, kernel_scratch, eval_staging, meta_staging), i| {
-                let candidate_ks = occupied.row(i);
-                let mut cells: Vec<CellOutput> = Vec::with_capacity(candidate_ks.len() * n_a);
-                let mut retained: Vec<(usize, Array2<f64>)> = Vec::new();
-                for &k in candidate_ks {
-                    let k = k as usize;
-                    process_one_cell_into(
-                        scratch,
-                        kernel_scratch,
-                        k,
-                        i,
-                        &images,
-                        &category_buckets,
-                        gt,
-                        gt_anns,
-                        dt,
-                        dt_anns,
-                        params,
-                        parity_mode,
-                        kernel,
-                        &federated_per_image,
-                        strict_lvis_zero_area_filter,
-                        eval_staging,
-                        meta_staging,
-                        &mut retained,
-                    )?;
-                    for a in 0..n_a {
-                        let eval = eval_staging[a].take();
-                        let meta = meta_staging[a].take();
-                        if eval.is_some() || meta.is_some() {
-                            let (Ok(k32), Ok(a32)) = (u32::try_from(k), u32::try_from(a)) else {
-                                continue;
-                            };
-                            cells.push((k32, a32, eval, meta));
-                        }
-                    }
-                }
-                Ok::<ImageOutput, EvalError>(ImageOutput { cells, retained })
+            |(scratch, kernel_scratch, match_scratch), (k, img_chunk)| {
+                let mut meta = Vec::new();
+                let mut retained = Vec::new();
+                let packed = evaluate_category_slice(
+                    scratch,
+                    kernel_scratch,
+                    match_scratch,
+                    category_buckets[k],
+                    img_chunk,
+                    &images,
+                    gt,
+                    gt_anns,
+                    dt,
+                    params,
+                    parity_mode,
+                    kernel,
+                    &federated_per_image,
+                    strict_lvis_zero_area_filter,
+                    oks_use_cats_blackout,
+                    if builds_meta { Some(&mut meta) } else { None },
+                    if params.retain_iou {
+                        Some(&mut retained)
+                    } else {
+                        None
+                    },
+                )?;
+                Ok::<ChunkOutput, EvalError>(ChunkOutput {
+                    packed,
+                    meta,
+                    retained,
+                })
             },
         )
         .collect::<Result<Vec<_>, _>>()?;
@@ -185,95 +188,80 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     #[cfg(feature = "bench-timings")]
     let t_post = std::time::Instant::now();
 
-    // Regroup the live cells by category, then let each category's
-    // chunk of the output be filled by its own worker.
-    //
-    // The output buffers are `K * A * I` slots — 1.78 GiB of pointers on
-    // Objects365 — and `vec![None; ..]` hands back lazily-zeroed pages.
-    // Writing the live cells therefore first-touches most of that range,
-    // and on one thread the page faults, not the moves, are the cost.
-    // Categories own disjoint, contiguous `A * I` ranges, so faulting
-    // them in parallel is sound and turns the post-pass into per-worker
-    // page-fault throughput.
-    let chunk_len = n_a * n_i;
-    // Pre-size each bucket from the occupancy index: a category's live
-    // cells are at most `A` per occupied `(image, category)` pair, so
-    // one counting pass over the CSR values replaces a couple of
-    // million pushes' worth of regrowth.
-    let mut per_category_cells = vec![0_usize; n_k];
-    for i in 0..n_i {
-        for &k in occupied.row(i) {
-            per_category_cells[k as usize] += n_a;
-        }
-    }
-    // Offset within the category's chunk, plus the cell's two outputs.
-    type ScatterCell = (usize, Option<Box<PerImageEval>>, Option<Box<EvalImageMeta>>);
-    let mut by_category: Vec<Vec<ScatterCell>> = per_category_cells
-        .into_iter()
-        .map(Vec::with_capacity)
-        .collect();
-    let mut retained_per_image: Vec<Vec<(usize, Array2<f64>)>> = Vec::with_capacity(n_i);
-    for (i, image_output) in per_image.into_iter().enumerate() {
-        for (k, a, eval, meta) in image_output.cells {
-            // Offset within the category's own chunk.
-            let offset = (a as usize) * n_i + i;
-            by_category[k as usize].push((offset, eval, meta));
-        }
-        retained_per_image.push(image_output.retained);
-    }
-
-    let total_slots = n_k * chunk_len;
-    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; total_slots];
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = Vec::new();
-    if params.builds_meta() {
-        eval_imgs_meta = vec![None; total_slots];
-        eval_imgs
-            .par_chunks_mut(chunk_len.max(1))
-            .zip(eval_imgs_meta.par_chunks_mut(chunk_len.max(1)))
-            .zip(by_category.into_par_iter())
-            .for_each(|((eval_chunk, meta_chunk), cells)| {
-                for (offset, eval, meta) in cells {
-                    eval_chunk[offset] = eval;
-                    meta_chunk[offset] = meta;
-                }
-            });
+    let mut chunk_iter = chunk_outputs.into_iter();
+    let mut per_cat_packed: Vec<Vec<PackedCategory>> = Vec::with_capacity(n_k);
+    let mut per_cat_meta: Vec<Vec<(usize, Box<EvalImageMeta>)>> = if builds_meta {
+        Vec::with_capacity(n_k)
     } else {
-        eval_imgs
-            .par_chunks_mut(chunk_len.max(1))
-            .zip(by_category.into_par_iter())
-            .for_each(|(eval_chunk, cells)| {
-                for (offset, eval, _) in cells {
-                    eval_chunk[offset] = eval;
-                }
-            });
-    }
-
-    let mut retained_pairs: Vec<((usize, usize), Array2<f64>)> = Vec::new();
-    for (i, per_image) in retained_per_image.into_iter().enumerate() {
-        for (k, iou) in per_image {
-            retained_pairs.push(((k, i), iou));
-        }
-    }
-
-    // Sort by `(k, i)` before HashMap insertion so the final map is
-    // built in the same order the sequential path would have used —
-    // independent of par_iter completion order.
-    let retained_ious_map: Option<HashMap<(usize, usize), Array2<f64>>> = if params.retain_iou {
-        retained_pairs.sort_by_key(|&(key, _)| key);
-        Some(retained_pairs.into_iter().collect())
+        Vec::new()
+    };
+    let mut retained_ious_map: Option<HashMap<(usize, usize), Array2<f64>>> = if params.retain_iou {
+        Some(HashMap::new())
     } else {
         None
     };
 
-    let grid = EvalGrid {
-        eval_imgs,
-        eval_imgs_meta,
-        builds_meta: params.builds_meta(),
+    for k in 0..n_k {
+        let count = cat_chunk_offsets[k + 1] - cat_chunk_offsets[k];
+        let mut packed_chunks = Vec::with_capacity(count);
+        let mut meta_cells = Vec::new();
+        for _ in 0..count {
+            if let Some(out) = chunk_iter.next() {
+                packed_chunks.push(out.packed);
+                if builds_meta {
+                    meta_cells.extend(out.meta);
+                }
+                if let Some(map) = retained_ious_map.as_mut() {
+                    // Chunks within category `k` are in strictly ascending `i`
+                    // order, matching sequential insertion order directly.
+                    for (i, mat) in out.retained {
+                        map.insert((k, i), mat);
+                    }
+                }
+            }
+        }
+        per_cat_packed.push(packed_chunks);
+        if builds_meta {
+            per_cat_meta.push(meta_cells);
+        }
+    }
+
+    let packed_categories: Vec<PackedCategory> = per_cat_packed
+        .into_par_iter()
+        .map(|chunks| PackedCategory::concat_chunks(chunks, n_a, n_t))
+        .collect();
+
+    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = Vec::new();
+    if builds_meta {
+        let chunk_len = n_a * n_i;
+        let total_slots = n_k * chunk_len;
+        eval_imgs_meta = vec![None; total_slots];
+        if chunk_len > 0 {
+            eval_imgs_meta
+                .par_chunks_mut(chunk_len)
+                .zip(per_cat_meta.into_par_iter())
+                .for_each(|(meta_chunk, cells)| {
+                    for (offset, meta) in cells {
+                        meta_chunk[offset] = Some(meta);
+                    }
+                });
+        }
+    }
+
+    let packed = PackedEvalGrid {
+        categories: packed_categories,
         n_categories: n_k,
         n_area_ranges: n_a,
         n_images: n_i,
-        retained_ious: retained_ious_map.map(crate::tables::RetainedIous::from_map),
+        n_t,
     };
+    let grid = EvalGrid::from_packed(
+        packed,
+        eval_imgs_meta,
+        builds_meta,
+        retained_ious_map.map(crate::tables::RetainedIous::from_map),
+    );
+
     #[cfg(feature = "bench-timings")]
     {
         let post_ns = u64::try_from(t_post.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -282,179 +270,6 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
         timings::COUNTERS.bump(timings::N_CALLS);
     }
     Ok(grid)
-}
-
-/// Per-cell body. Writes per-area-range outputs directly into
-/// `eval_slice` / `meta_slice` (length = `params.area_ranges.len()`);
-/// pushes retained IoU into `retained_out` when enabled.
-#[allow(clippy::too_many_arguments)]
-fn process_one_cell_into<K: EvalKernel>(
-    scratch: &mut CellScratch,
-    kernel_scratch: &mut KernelScratch<K::Annotation>,
-    k: usize,
-    i: usize,
-    images: &[&ImageMeta],
-    category_buckets: &[Option<CategoryId>],
-    gt: &CocoDataset,
-    gt_anns: &[crate::dataset::CocoAnnotation],
-    dt: &CocoDetections,
-    dt_anns: &[crate::dataset::CocoDetection],
-    params: EvaluateParams<'_>,
-    parity_mode: ParityMode,
-    kernel: &K,
-    federated_per_image: &[Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>],
-    strict_lvis_zero_area_filter: bool,
-    eval_slice: &mut [Option<Box<PerImageEval>>],
-    meta_slice: &mut [Option<Box<EvalImageMeta>>],
-    retained_out: &mut Vec<(usize, Array2<f64>)>,
-) -> Result<(), EvalError> {
-    let cat = category_buckets[k];
-    let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
-    let image = images[i];
-    let image_id = image.id;
-
-    let gt_indices_raw = gt_indices_for_cell(gt, image_id, cat);
-    let gt_indices_buf: Vec<usize>;
-    let gt_indices: &[usize] =
-        if strict_lvis_zero_area_filter && gt_indices_raw.iter().any(|&j| gt_anns[j].area <= 0.0) {
-            gt_indices_buf = gt_indices_raw
-                .iter()
-                .copied()
-                .filter(|&j| gt_anns[j].area > 0.0)
-                .collect();
-            &gt_indices_buf
-        } else {
-            gt_indices_raw
-        };
-    let raw_dt_indices = raw_dt_indices_for_cell(dt, image_id, cat);
-    if gt_indices.is_empty() && raw_dt_indices.is_empty() {
-        return Ok(());
-    }
-
-    // AA4 cell-skip + AA3 `not_exhaustive` flag; `federated_per_image`
-    // is `Some` exactly when federated semantics apply.
-    let mut not_exhaustive_for_cell = false;
-    if let (Some(c), Some(Some((neg_set, nel_set)))) = (cat, federated_per_image.get(i)) {
-        if gt_indices.is_empty() && !neg_set.contains(&c) {
-            return Ok(());
-        }
-        not_exhaustive_for_cell = nel_set.contains(&c);
-    }
-
-    dt_top_indices_for_cell_into(
-        &mut scratch.dt_indices,
-        &mut scratch.dt_score_buf,
-        &mut scratch.dt_perm_buf,
-        dt_anns,
-        raw_dt_indices,
-        params.max_dets_per_image,
-    );
-
-    scratch.gt_areas.clear();
-    scratch
-        .gt_areas
-        .extend(gt_indices.iter().map(|&j| gt_anns[j].area));
-    scratch.gt_iscrowd.clear();
-    scratch
-        .gt_iscrowd
-        .extend(gt_indices.iter().map(|&j| gt_anns[j].is_crowd));
-    scratch.gt_base_ignore.clear();
-    scratch.gt_base_ignore.extend(
-        gt_indices.iter().map(|&j| {
-            gt_anns[j].effective_ignore(parity_mode) || kernel.extra_gt_ignore(&gt_anns[j])
-        }),
-    );
-    scratch.gt_ids.clear();
-    scratch
-        .gt_ids
-        .extend(gt_indices.iter().map(|&j| gt_anns[j].id.0));
-    scratch.dt_areas.clear();
-    scratch
-        .dt_areas
-        .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].area));
-    scratch.dt_scores.clear();
-    scratch
-        .dt_scores
-        .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].score));
-    scratch.dt_ids.clear();
-    scratch
-        .dt_ids
-        .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].id.0));
-
-    #[cfg(feature = "bench-timings")]
-    {
-        crate::evaluate::build_anns_count::bump();
-        crate::evaluate::build_anns_count::bump();
-    }
-    kernel.build_gt_anns_into(&mut kernel_scratch.gt, gt_anns, gt_indices, image)?;
-    kernel.build_dt_anns_into(
-        &mut kernel_scratch.dt,
-        dt_anns,
-        &scratch.dt_indices,
-        image,
-        parity_mode,
-    )?;
-
-    let g = kernel_scratch.gt.len();
-    let d = kernel_scratch.dt.len();
-    scratch.iou_buf.clear();
-    scratch.iou_buf.resize(g * d, 0.0);
-    // Quirk **F6** (corrected, ADR-0058): strict mode reproduces
-    // `computeOks`' missing `useCats` fork by leaving the zero-filled
-    // scratch untouched. Mirrors `evaluate::evaluate_with`.
-    if g > 0 && d > 0 && !strict_oks_use_cats_blackout(kernel, params.use_cats, parity_mode) {
-        let mut iou_view =
-            ArrayViewMut2::from_shape((g, d), &mut scratch.iou_buf[..]).map_err(|e| {
-                EvalError::DimensionMismatch {
-                    detail: format!("iou scratch view: {e}"),
-                }
-            })?;
-        kernel.compute(&kernel_scratch.gt, &kernel_scratch.dt, &mut iou_view)?;
-    }
-
-    let iou_view = ArrayView2::from_shape((g, d), &scratch.iou_buf[..]).map_err(|e| {
-        EvalError::DimensionMismatch {
-            detail: format!("iou scratch view: {e}"),
-        }
-    })?;
-    let buffers = CellBuffers {
-        image_id: image_id.0,
-        category_id,
-        max_det: params.max_dets_per_image,
-        gt_areas: &scratch.gt_areas,
-        gt_iscrowd: &scratch.gt_iscrowd,
-        gt_base_ignore: &scratch.gt_base_ignore,
-        gt_ids: &scratch.gt_ids,
-        dt_areas: &scratch.dt_areas,
-        dt_scores: &scratch.dt_scores,
-        dt_ids: &scratch.dt_ids,
-        iou: iou_view,
-        not_exhaustive: not_exhaustive_for_cell,
-    };
-
-    for (a, area) in params.area_ranges.iter().enumerate() {
-        let (cell, meta) = evaluate_cell(
-            &mut scratch.gt_ignore_buf,
-            &buffers,
-            area,
-            params.iou_thresholds,
-            parity_mode,
-            params.builds_meta(),
-        )?;
-        eval_slice[a] = Some(Box::new(cell));
-        meta_slice[a] = meta.map(Box::new);
-    }
-
-    if params.retain_iou {
-        let cloned = Array2::from_shape_vec((g, d), scratch.iou_buf.clone()).map_err(|e| {
-            EvalError::DimensionMismatch {
-                detail: format!("retained iou clone: {e}"),
-            }
-        })?;
-        retained_out.push((k, cloned));
-    }
-
-    Ok(())
 }
 
 // ----- Per-paradigm parallel sibling wrappers -------------------------
@@ -694,8 +509,13 @@ mod tests {
         assert_eq!(seq.n_categories, par.n_categories);
         assert_eq!(seq.n_area_ranges, par.n_area_ranges);
         assert_eq!(seq.n_images, par.n_images);
-        assert_eq!(seq.eval_imgs.len(), par.eval_imgs.len());
-        for (idx, (s, p)) in seq.eval_imgs.iter().zip(par.eval_imgs.iter()).enumerate() {
+        assert_eq!(seq.eval_imgs().len(), par.eval_imgs().len());
+        for (idx, (s, p)) in seq
+            .eval_imgs()
+            .iter()
+            .zip(par.eval_imgs().iter())
+            .enumerate()
+        {
             match (s, p) {
                 (None, None) => {}
                 (Some(s), Some(p)) => {
@@ -736,7 +556,13 @@ mod tests {
             n_area_ranges: seq.n_area_ranges,
             n_images: seq.n_images,
         };
-        let acc_seq = accumulate(&seq.eval_imgs, acc_params, ParityMode::Strict).expect("acc seq");
+        let acc_seq = crate::accumulate::accumulate_grid(&seq, acc_params, ParityMode::Strict)
+            .expect("acc seq");
+        let acc_dense =
+            accumulate(seq.eval_imgs(), acc_params, ParityMode::Strict).expect("acc dense");
+        assert_eq!(acc_seq.precision, acc_dense.precision);
+        assert_eq!(acc_seq.recall, acc_dense.recall);
+        assert_eq!(acc_seq.scores, acc_dense.scores);
 
         // Sweep across a few thread counts to catch any race or order-
         // dependence the par_iter scheduler might introduce.
@@ -748,8 +574,15 @@ mod tests {
             let par = pool
                 .install(|| evaluate_with_parallel(&gt, &dt, params, ParityMode::Strict, &kernel))
                 .expect("par");
-            let acc_par =
-                accumulate(&par.eval_imgs, acc_params, ParityMode::Strict).expect("acc par");
+            let acc_par = pool
+                .install(|| {
+                    crate::accumulate::accumulate_grid_parallel(
+                        &par,
+                        acc_params,
+                        ParityMode::Strict,
+                    )
+                })
+                .expect("acc par");
             assert_eq!(
                 acc_seq.precision, acc_par.precision,
                 "precision mismatch at n_threads={n_threads}"

@@ -74,7 +74,7 @@ fn overall_matches_unpartitioned_eval() {
     )
     .unwrap();
     let part = evaluate_partitioned(
-        &grid.eval_imgs,
+        grid.eval_imgs(),
         dims,
         &spec,
         iou_thresholds(),
@@ -87,7 +87,7 @@ fn overall_matches_unpartitioned_eval() {
     // grid directly. This is the same code path partition's overall
     // executes, but with no intermediate slice loop.
     let accum = accumulate::accumulate(
-        &grid.eval_imgs,
+        grid.eval_imgs(),
         accumulate::AccumulateParams {
             iou_thresholds: iou_thresholds(),
             recall_thresholds: parity::recall_thresholds(),
@@ -154,7 +154,7 @@ fn two_axis_manifest_with_unassigned_smokes_through() {
     assert_eq!(labels, vec![("weather", "fog"), ("weather", UNASSIGNED)]);
 
     let part = evaluate_partitioned(
-        &grid.eval_imgs,
+        grid.eval_imgs(),
         dims,
         &spec,
         iou_thresholds(),
@@ -200,7 +200,7 @@ fn manifest_with_only_unknown_keys_yields_overall_only_spec() {
     assert!(spec.slices.is_empty(), "spec.slices must be empty");
 
     let part = evaluate_partitioned(
-        &grid.eval_imgs,
+        grid.eval_imgs(),
         dims,
         &spec,
         iou_thresholds(),

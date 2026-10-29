@@ -2,15 +2,15 @@
 //! `loadRes`-shaped detections without going through JSON.
 //!
 //! Both routes are pure data conversion. They terminate in
-//! `Vec<DetectionInput>` — the same column layout
+//! [`DetectionColumnsInput`] — the same SoA column layout
 //! [`CocoDetections::from_json_bytes`] hands to
-//! [`CocoDetections::from_inputs`] — so the `loadRes` semantics
+//! [`CocoDetections::from_columns`] — so the `loadRes` semantics
 //! (quirks **J1**, **J3**, **J4**/**E2**) are *inherited* from core
 //! rather than restated here. Nothing downstream can tell which route
 //! produced a payload, because after this module there is no route:
-//! there is one `Vec<DetectionInput>`.
+//! there is one [`DetectionColumnsInput`].
 //!
-//! - [`ann_dicts_to_inputs`] — a Python list of per-annotation result
+//! - [`ann_dicts_to_columns`] — a Python list of per-annotation result
 //!   dicts, the shape `pycocotools.COCO.loadRes` consumes and the one
 //!   TorchMetrics-style callers build. Keys are fetched with
 //!   module-lifetime interned strings (`intern!`), so `PyDict_GetItem`
@@ -18,24 +18,26 @@
 //!   comparing a freshly-built `str` per annotation per field.
 //!   Every field a results file can carry is accepted, including the
 //!   polygon `segmentation` shape — see [`extract_segmentation`].
-//! - [`matrix_to_inputs`] — an `(N, 7)` C-contiguous float64 array laid
+//! - [`matrix_to_columns`] — an `(N, 7)` C-contiguous float64 array laid
 //!   out as `image_id, x, y, w, h, score, category_id`. No per-element
-//!   Python object is touched at all. It carries no segmentation and no
-//!   keypoints, which is exactly what a *bbox-only* results file carries:
-//!   under `iou_type="segm"`/`"boundary"` quirk **J2** decides what that
-//!   means, and under `"keypoints"` core refuses. Neither is restated
-//!   here; see ADR-0057.
+//!   Python object is touched at all, and the column scan runs inside
+//!   [`Python::detach`] while keeping the DLPack capsule pinned. It
+//!   carries no segmentation and no keypoints, which is exactly what a
+//!   *bbox-only* results file carries: under `iou_type="segm"`/`"boundary"`
+//!   quirk **J2** decides what that means, and under `"keypoints"` core
+//!   refuses. Neither is restated here; see ADR-0057.
 //!
-//! Neither routine can release the GIL: both read Python objects. They
-//! are written as one tight pass so that the serial floor they impose
-//! is as short as it can be, and the caller detaches immediately after.
+//! [`ann_dicts_to_columns`] cannot release the GIL because it reads
+//! Python dicts; it is written as one tight pass so that the serial
+//! floor it imposes is as short as it can be, and the caller detaches
+//! immediately after.
 
 use pyo3::exceptions::{PyTypeError, PyValueError};
 use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PySequence, PyString};
 
-use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
+use vernier_core::dataset::{AnnId, Bbox, CategoryId, DetectionColumnsInput, ImageId};
 use vernier_core::segmentation::Segmentation;
 
 use crate::array_ingest::{
@@ -69,22 +71,23 @@ pub(crate) fn dict_is_result_annotation(dict: &Bound<'_, PyDict>) -> PyResult<bo
     Ok(dict.contains(intern!(py, "bbox"))? || dict.contains(intern!(py, "category_id"))?)
 }
 
-/// Convert a list of per-annotation result dicts into the shared column
-/// layout.
+/// Convert a list of per-annotation result dicts into the shared SoA
+/// column layout.
 ///
-/// One pass, no intermediate allocation per annotation beyond the
-/// `DetectionInput` itself. Every key is an interned, module-lifetime
-/// `PyString`: `intern!` caches it in the interpreter's static string
-/// table on first use, so the `PyDict_GetItem` probe compares pointers
-/// on the fast path.
-pub(crate) fn ann_dicts_to_inputs<'py>(
+/// One pass, allocating optional sparse columns (`ids`, `areas`,
+/// `segmentations`, `keypoints`, `num_keypoints`) lazily only when at
+/// least one annotation supplies them. Every key is an interned,
+/// module-lifetime `PyString`: `intern!` caches it in the interpreter's
+/// static string table on first use, so the `PyDict_GetItem` probe
+/// compares pointers on the fast path.
+pub(crate) fn ann_dicts_to_columns<'py>(
     py: Python<'py>,
     dicts: &[Bound<'py, PyDict>],
     iou_type: ArrayIouType,
     ctx: &CastCtx<'py, '_>,
-) -> PyResult<Vec<DetectionInput>> {
-    // Resolve the eight keys once for the whole batch rather than once
-    // per annotation. `intern!` is already a cached lookup, but hoisting
+) -> PyResult<DetectionColumnsInput> {
+    // Resolve the keys once for the whole batch rather than once per
+    // annotation. `intern!` is already a cached lookup, but hoisting
     // it also hoists the `Bound` clone out of the inner loop.
     let k_image_id = intern!(py, "image_id");
     let k_category_id = intern!(py, "category_id");
@@ -96,7 +99,17 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
     let k_num_keypoints = intern!(py, "num_keypoints");
     let k_area = intern!(py, "area");
 
-    let mut inputs = Vec::with_capacity(dicts.len());
+    let n = dicts.len();
+    let mut image_ids = Vec::with_capacity(n);
+    let mut category_ids = Vec::with_capacity(n);
+    let mut scores = Vec::with_capacity(n);
+    let mut bboxes = Vec::with_capacity(n);
+    let mut ids: Option<Vec<Option<AnnId>>> = None;
+    let mut areas: Option<Vec<Option<f64>>> = None;
+    let mut segmentations: Option<Vec<Option<Segmentation>>> = None;
+    let mut keypoints_col: Option<Vec<Option<Vec<f64>>>> = None;
+    let mut num_keypoints_col: Option<Vec<Option<u32>>> = None;
+
     for (i, dict) in dicts.iter().enumerate() {
         let image_id: i64 = required(dict, k_image_id, i, "image_id")?
             .extract()
@@ -110,19 +123,20 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
         let bbox = extract_bbox(&required(dict, k_bbox, i, "bbox")?, i)?;
 
         // Quirk J1 (**strict**): an absent `id` is auto-assigned
-        // 1..N by position, in `from_inputs`. A supplied `id` is
+        // 1..N by position, in `from_columns`. A supplied `id` is
         // preserved rather than overwritten — vernier's long-standing
         // documented position on J1, unchanged by this route, and the
         // reason this function reads `id` at all instead of dropping
         // it the way `loadRes` effectively does.
         let id = match dict.get_item(k_id)? {
             Some(v) if !v.is_none() => {
-                Some(vernier_core::dataset::AnnId(v.extract().map_err(|e| {
+                Some(AnnId(v.extract().map_err(|e| {
                     field_err(i, "id", &format!("expected int: {e}"))
                 })?))
             }
             _ => None,
         };
+        push_sparse(&mut ids, i, n, id);
 
         // `segmentation` is optional on every `iou_type`, exactly as it
         // is in a results *file*: `serde_json` leaves the field `None`
@@ -135,6 +149,7 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             .filter(|v| !v.is_none())
             .map(|obj| extract_segmentation(&obj, i, ctx))
             .transpose()?;
+        push_sparse(&mut segmentations, i, n, segmentation);
 
         let keypoints = match iou_type {
             ArrayIouType::Keypoints => Some(extract_keypoints(
@@ -143,6 +158,8 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             )?),
             _ => None,
         };
+        push_sparse(&mut keypoints_col, i, n, keypoints);
+
         let num_keypoints = match dict.get_item(k_num_keypoints)? {
             Some(v) if !v.is_none() => Some(
                 v.extract()
@@ -150,10 +167,11 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             ),
             _ => None,
         };
+        push_sparse(&mut num_keypoints_col, i, n, num_keypoints);
 
-        // Carried, not dropped: `from_inputs` ignores it unless the
-        // detections are built with `DetectionArea::Supplied`, and under
-        // that mode a dropped `area` would make this route observably
+        // Carried, not dropped: `from_columns_with_area` ignores it unless
+        // the detections are built with `DetectionArea::Supplied`, and
+        // under that mode a dropped `area` would make this route observably
         // different from the file route (quirk **J3**).
         let area = match dict.get_item(k_area)? {
             Some(v) if !v.is_none() => Some(
@@ -162,20 +180,40 @@ pub(crate) fn ann_dicts_to_inputs<'py>(
             ),
             _ => None,
         };
+        push_sparse(&mut areas, i, n, area);
 
-        inputs.push(DetectionInput {
-            id,
-            image_id: ImageId(image_id),
-            category_id: CategoryId(category_id),
-            score,
-            bbox,
-            area,
-            segmentation,
-            keypoints,
-            num_keypoints,
-        });
+        image_ids.push(ImageId(image_id));
+        category_ids.push(CategoryId(category_id));
+        scores.push(score);
+        bboxes.push(bbox);
     }
-    Ok(inputs)
+
+    Ok(DetectionColumnsInput {
+        ids,
+        image_ids,
+        category_ids,
+        scores,
+        bboxes,
+        areas,
+        segmentations,
+        keypoints: keypoints_col,
+        num_keypoints: num_keypoints_col,
+    })
+}
+
+/// Append `val` to a lazily-allocated optional column of total capacity `cap`.
+#[inline]
+fn push_sparse<T>(col: &mut Option<Vec<Option<T>>>, idx: usize, cap: usize, val: Option<T>) {
+    match (col.as_mut(), val) {
+        (Some(vec), v) => vec.push(v),
+        (None, Some(v)) => {
+            let mut vec = Vec::with_capacity(cap);
+            vec.resize_with(idx, || None);
+            vec.push(Some(v));
+            *col = Some(vec);
+        }
+        (None, None) => {}
+    }
 }
 
 /// One `segmentation` field, in every shape a COCO results *file*
@@ -447,42 +485,72 @@ const COL_NAMES: [&str; MATRIX_COLS] = ["image_id", "x", "y", "w", "h", "score",
 ///   detections — both of which change the evaluated dataset without
 ///   any diagnostic.
 ///
-/// `score` is taken verbatim; `from_inputs` rejects a non-finite score.
-pub(crate) fn matrix_to_inputs<'py>(
+/// `score` is taken verbatim; `from_columns` rejects a non-finite score.
+pub(crate) fn matrix_to_columns<'py>(
+    py: Python<'py>,
     obj: &Bound<'py, PyAny>,
     ctx: &CastCtx<'py, '_>,
-) -> PyResult<Vec<DetectionInput>> {
+) -> PyResult<DetectionColumnsInput> {
     let obj = ctx.maybe_cast(obj.clone(), "detections", "float64")?;
     let view = dlpack::extract_f64_2d(&obj, "detections", MATRIX_COLS)?;
     let flat = view.as_slice();
+    // `view` stays alive on the stack here, keeping the DLPack capsule
+    // pinned while we release the GIL for the N-row scan + column fill.
+    py.detach(|| parse_matrix_slice(flat))
+}
+
+fn parse_matrix_slice(flat: &[f64]) -> PyResult<DetectionColumnsInput> {
     let n = flat.len() / MATRIX_COLS;
-    let mut inputs = Vec::with_capacity(n);
-    for i in 0..n {
-        let row = &flat[i * MATRIX_COLS..(i + 1) * MATRIX_COLS];
-        inputs.push(DetectionInput {
-            // The (N, 7) layout has no area column; J3 derives it from
-            // the bbox, as it does for a bbox-only results file.
-            area: None,
-            id: None,
-            image_id: ImageId(exact_int(row[0], 0, i)?),
-            category_id: CategoryId(exact_int(row[6], 6, i)?),
-            score: row[5],
-            bbox: Bbox {
-                x: row[1],
-                y: row[2],
-                w: row[3],
-                h: row[4],
-            },
-            segmentation: None,
-            keypoints: None,
-            num_keypoints: None,
+    let mut image_ids = Vec::with_capacity(n);
+    let mut category_ids = Vec::with_capacity(n);
+    let mut scores = Vec::with_capacity(n);
+    let mut bboxes = Vec::with_capacity(n);
+    for (i, row) in flat.chunks_exact(MATRIX_COLS).enumerate() {
+        image_ids.push(ImageId(exact_int(row[0], 0, i)?));
+        category_ids.push(CategoryId(exact_int(row[6], 6, i)?));
+        scores.push(row[5]);
+        bboxes.push(Bbox {
+            x: row[1],
+            y: row[2],
+            w: row[3],
+            h: row[4],
         });
     }
-    Ok(inputs)
+    Ok(DetectionColumnsInput {
+        // The (N, 7) layout has no area or id column; J1 assigns 1..N and
+        // J3 derives area from the bbox, matching a bbox-only results file.
+        ids: None,
+        image_ids,
+        category_ids,
+        scores,
+        bboxes,
+        areas: None,
+        segmentations: None,
+        keypoints: None,
+        num_keypoints: None,
+    })
 }
 
 /// Exact-integer round-trip check for a float64 id column.
+///
+/// Hot path uses inline IEEE-754 integer conversion (`cvttsd2si` +
+/// `cvtsi2sd` on x86_64 SSE2) instead of `f64::fract` (which lowers to an
+/// external `libm::trunc` call on baseline x86_64 builds without SSE4.1).
+#[inline]
 fn exact_int(v: f64, col: usize, row: usize) -> PyResult<i64> {
+    if v.abs() <= MAX_EXACT_INT_F64 {
+        let i = v as i64;
+        #[allow(clippy::cast_precision_loss, clippy::float_cmp)]
+        if (i as f64) == v {
+            return Ok(i);
+        }
+    }
+    exact_int_cold(v, col, row)
+}
+
+#[cold]
+#[inline(never)]
+fn exact_int_cold(v: f64, col: usize, row: usize) -> PyResult<i64> {
     let name = COL_NAMES[col];
     if !v.is_finite() {
         return Err(PyValueError::new_err(format!(
@@ -495,14 +563,11 @@ fn exact_int(v: f64, col: usize, row: usize) -> PyResult<i64> {
              the (N, 7) float64 route will not truncate an id"
         )));
     }
-    if v.abs() > MAX_EXACT_INT_F64 {
-        return Err(PyValueError::new_err(format!(
-            "detections[{row}].{name}: {v} exceeds 2^53, beyond which float64 \
-             cannot represent every integer exactly; pass this dataset as a \
-             list of result dicts or as JSON"
-        )));
-    }
-    Ok(v as i64)
+    Err(PyValueError::new_err(format!(
+        "detections[{row}].{name}: {v} exceeds 2^53, beyond which float64 \
+         cannot represent every integer exactly; pass this dataset as a \
+         list of result dicts or as JSON"
+    )))
 }
 
 /// Is this object plausibly the `(N, 7)` matrix rather than a sequence
@@ -521,9 +586,11 @@ mod tests {
     #[test]
     fn exact_int_accepts_integral_values() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(exact_int(0.0, 0, 0)?, 0);
+        assert_eq!(exact_int(-0.0, 0, 0)?, 0);
         assert_eq!(exact_int(42.0, 6, 0)?, 42);
         assert_eq!(exact_int(-7.0, 0, 0)?, -7);
         assert_eq!(exact_int(MAX_EXACT_INT_F64, 0, 0)?, 9_007_199_254_740_992);
+        assert_eq!(exact_int(-MAX_EXACT_INT_F64, 0, 0)?, -9_007_199_254_740_992);
         Ok(())
     }
 
@@ -541,6 +608,8 @@ mod tests {
 
     #[test]
     fn exact_int_rejects_beyond_two_pow_53() {
+        assert!(exact_int(MAX_EXACT_INT_F64 + 2.0, 0, 0).is_err());
+        assert!(exact_int(-MAX_EXACT_INT_F64 - 2.0, 0, 0).is_err());
         assert!(exact_int(MAX_EXACT_INT_F64 * 4.0, 0, 0).is_err());
         assert!(exact_int(-MAX_EXACT_INT_F64 * 4.0, 0, 0).is_err());
     }

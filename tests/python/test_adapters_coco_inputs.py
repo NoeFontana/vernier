@@ -130,7 +130,10 @@ def test_empty_boxes_shaped_one_by_zero_are_normalized() -> None:
     dataset, detections = coco_inputs(predictions, targets)
     assert dataset.num_annotations == 1
     assert dataset.num_images == 2
-    assert np.asarray(detections).shape == (1, 7)
+    assert isinstance(detections, dict)
+    batch = cast("dict[str, Any]", detections)
+    assert batch["boxes"].shape == (1, 4)
+    assert batch["counts"].tolist() == [1, 0]
 
 
 def test_iscrowd_above_255_stays_a_crowd() -> None:
@@ -633,16 +636,19 @@ def test_columnar_and_per_sample_agree(iou_type: Any) -> None:
 
     assert by_record.dataset_hash == by_column.dataset_hash
     assert by_record.num_annotations == by_column.num_annotations > 0
+    assert isinstance(record_detections, dict)
+    assert isinstance(column_detections, dict)
+    left, right = (
+        cast("dict[str, Any]", record_detections),
+        cast("dict[str, Any]", column_detections),
+    )
+    for key in ("image_ids", "counts", "boxes", "scores", "labels"):
+        assert np.array_equal(np.asarray(left[key]), np.asarray(right[key]))
     if iou_type == "bbox":
-        assert np.array_equal(np.asarray(record_detections), np.asarray(column_detections))
+        assert "rles" not in left
+        assert "rles" not in right
     else:
-        assert len(record_detections) == len(column_detections) == len(per_image)
-        for a, b in zip(record_detections, column_detections, strict=True):
-            left, right = cast("dict[str, Any]", a), cast("dict[str, Any]", b)
-            assert left["image_id"] == right["image_id"]
-            for key in ("boxes", "scores", "labels"):
-                assert np.array_equal(np.asarray(left[key]), np.asarray(right[key]))
-            assert len(left["rles"]) == len(right["rles"])
+        assert len(left["rles"]) == len(right["rles"])
 
 
 def _box_records() -> tuple[list[Prediction], list[Target]]:

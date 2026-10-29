@@ -31,6 +31,7 @@ import numpy as np
 import pytest
 
 from vernier import _core
+from vernier._array_types import DetectionsBatch
 
 # --- shared fixture: one logical detection set, expressed three ways ---------
 
@@ -117,6 +118,16 @@ def _as_matrix() -> np.ndarray:
     )
 
 
+def _as_batch() -> dict[str, Any]:
+    """DetectionsBatch route (ADR-0066): flat image_ids + boxes/scores/labels."""
+    return {
+        "image_ids": np.array([d["image_id"] for d in DETECTIONS], dtype=np.int64),
+        "boxes": np.array([d["bbox"] for d in DETECTIONS], dtype=np.float64),
+        "scores": np.array([d["score"] for d in DETECTIONS], dtype=np.float64),
+        "labels": np.array([d["category_id"] for d in DETECTIONS], dtype=np.int64),
+    }
+
+
 def _grid(dt: Any) -> Any:
     return _core.evaluate_bbox_grid(
         GT_BYTES, dt, parity_mode="strict", max_dets_per_image=100, use_cats=True, retain_meta=True
@@ -147,8 +158,8 @@ def _normalize(eval_imgs: list[Any]) -> list[dict[str, Any]]:
 
 @pytest.mark.parametrize(
     "build",
-    [_as_dict_list, _as_matrix],
-    ids=["list-route", "matrix-route"],
+    [_as_dict_list, _as_matrix, _as_batch],
+    ids=["list-route", "matrix-route", "batch-route"],
 )
 def test_route_matches_file_route_cell_for_cell(build: Any) -> None:
     """Every eval_imgs cell is identical to the file route's."""
@@ -159,8 +170,8 @@ def test_route_matches_file_route_cell_for_cell(build: Any) -> None:
 
 @pytest.mark.parametrize(
     "build",
-    [_as_dict_list, _as_matrix],
-    ids=["list-route", "matrix-route"],
+    [_as_dict_list, _as_matrix, _as_batch],
+    ids=["list-route", "matrix-route", "batch-route"],
 )
 def test_route_matches_file_route_summary(build: Any) -> None:
     """The 12-stat summary agrees bit-for-bit."""
@@ -867,3 +878,110 @@ def test_non_contiguous_error_names_the_torch_fix_too() -> None:
     strided = _as_matrix()[::2]
     with pytest.raises(TypeError, match=r"contiguous\(\)"):
         _grid(strided)
+
+
+# --- ADR-0066 DetectionsBatch route -----------------------------------------
+
+
+def test_detections_batch_with_counts_matches_file_route() -> None:
+    """``DetectionsBatch`` with ``(image_ids, counts)`` agrees cell-for-cell."""
+    grouped = sorted(DETECTIONS, key=lambda d: d["image_id"])
+    batch = {
+        "image_ids": np.array([1, 2], dtype=np.int64),
+        "counts": np.array(
+            [
+                sum(1 for d in grouped if d["image_id"] == 1),
+                sum(1 for d in grouped if d["image_id"] == 2),
+            ],
+            dtype=np.int64,
+        ),
+        "boxes": np.array([d["bbox"] for d in grouped], dtype=np.float64),
+        "scores": np.array([d["score"] for d in grouped], dtype=np.float64),
+        "labels": np.array([d["category_id"] for d in grouped], dtype=np.int64),
+    }
+    reference = _normalize(_grid(json.dumps(grouped).encode()).eval_imgs())
+    assert _normalize(_grid(batch).eval_imgs()) == reference
+
+
+def test_detections_batch_honours_cast_inputs() -> None:
+    """``DetectionsBatch`` enforces ADR-0004 float64 by default and casts on opt-in."""
+    batch_f32: Any = {
+        "image_ids": np.array([d["image_id"] for d in DETECTIONS], dtype=np.int32),
+        "boxes": np.array([d["bbox"] for d in DETECTIONS], dtype=np.float32),
+        "scores": np.array([d["score"] for d in DETECTIONS], dtype=np.float32),
+        "labels": np.array([d["category_id"] for d in DETECTIONS], dtype=np.int32),
+    }
+    with pytest.raises(TypeError, match="float64"):
+        _core.evaluate_bbox_grid(
+            GT_BYTES, batch_f32, parity_mode="strict", max_dets_per_image=100, use_cats=True
+        )
+    with pytest.warns(UserWarning, match="cast_inputs=True"):
+        cast_grid = _core.evaluate_bbox_grid(
+            GT_BYTES,
+            batch_f32,
+            parity_mode="strict",
+            max_dets_per_image=100,
+            use_cats=True,
+            cast_inputs=True,
+        )
+    reference = _grid(_as_bytes()).accumulate([1, 10, 100]).summarize().stats
+    assert cast_grid.accumulate([1, 10, 100]).summarize().stats == pytest.approx(reference)
+
+
+def test_detections_batch_keypoints_matches_file_route() -> None:
+    """``DetectionsBatch`` carries ``keypoints`` cleanly."""
+    kp_arr = np.array([d["keypoints"] for d in KP_DETECTIONS], dtype=np.float64).reshape(
+        len(KP_DETECTIONS), -1, 3
+    )
+    batch: DetectionsBatch = {
+        "image_ids": np.array([d["image_id"] for d in KP_DETECTIONS], dtype=np.int64),
+        "boxes": np.array([d["bbox"] for d in KP_DETECTIONS], dtype=np.float64),
+        "scores": np.array([d["score"] for d in KP_DETECTIONS], dtype=np.float64),
+        "labels": np.array([d["category_id"] for d in KP_DETECTIONS], dtype=np.int64),
+        "keypoints": kp_arr,
+    }
+    ref = _core.evaluate_keypoints_grid(
+        KP_GT_BYTES,
+        json.dumps(KP_DETECTIONS).encode(),
+        parity_mode="strict",
+        max_dets_per_image=20,
+        use_cats=True,
+        sigmas={},
+        retain_meta=True,
+    )
+    cand = _core.evaluate_keypoints_grid(
+        KP_GT_BYTES,
+        batch,
+        parity_mode="strict",
+        max_dets_per_image=20,
+        use_cats=True,
+        sigmas={},
+        retain_meta=True,
+    )
+    assert _normalize(cand.eval_imgs()) == _normalize(ref.eval_imgs())
+
+
+def test_detections_batch_validation_errors() -> None:
+    """Ambiguous keys and mismatched ``counts`` are refused explicitly."""
+    both = {**_as_batch(), "image_id": 1}
+    with pytest.raises(ValueError, match="cannot specify both 'image_id'"):
+        _grid(both)
+
+    neg_counts = {
+        **_as_batch(),
+        "image_ids": np.array([1, 2], dtype=np.int64),
+        "counts": np.array([-1, 8], dtype=np.int64),
+    }
+    with pytest.raises(ValueError, match="non-negative"):
+        _grid(neg_counts)
+
+    bad_sum = {
+        **_as_batch(),
+        "image_ids": np.array([1, 2], dtype=np.int64),
+        "counts": np.array([3, 3], dtype=np.int64),
+    }
+    with pytest.raises(ValueError, match="sum"):
+        _grid(bad_sum)
+
+    with pytest.raises(ValueError, match="DetectionsBatch dict directly"):
+        _grid([_as_batch()])

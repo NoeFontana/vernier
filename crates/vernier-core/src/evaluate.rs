@@ -85,14 +85,13 @@
 
 use ndarray::{Array2, ArrayView2, ArrayViewMut2};
 
-use crate::accumulate::PerImageEval;
+use crate::accumulate::{PackedCategory, PackedCategoryFlags, PackedEvalGrid, PerImageEval};
 use crate::cell_occupancy;
 use crate::dataset::{
-    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, EvalDataset,
-    ImageId, ImageMeta,
+    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetections, EvalDataset, ImageId, ImageMeta,
 };
 use crate::error::EvalError;
-use crate::matching::{match_image_with_perm, MatchResult};
+use crate::matching::{match_image_with_perm, MatchResult, MatchScratch};
 use crate::parity::ParityMode;
 use crate::segmentation::Segmentation;
 use crate::similarity::{
@@ -219,7 +218,7 @@ impl AreaRange {
         ]
     }
 
-    fn contains(&self, area: f64) -> bool {
+    pub(crate) fn contains(&self, area: f64) -> bool {
         // D6 (strict): pycocotools (cocoeval.py:251) keeps a GT/DT in a
         // bucket when `not (area < lo or area > hi)`, i.e. non-strict
         // inclusion on both ends. An area equal to a bucket boundary
@@ -417,7 +416,7 @@ pub trait EvalKernel: Similarity {
     ) -> Result<Vec<Self::Annotation>, EvalError>;
 
     /// Build the kernel's DT annotation slice for one `(image, category)`
-    /// cell, in score-descending sorted order matching `dt_indices`.
+    /// cell, in score-descending sorted order matching `indices`.
     ///
     /// `parity_mode` is threaded through so kernels with parity-aware
     /// fallbacks (segm's J2 bbox→polygon synthesis under
@@ -425,7 +424,7 @@ pub trait EvalKernel: Similarity {
     /// up the call stack.
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
@@ -461,13 +460,26 @@ pub trait EvalKernel: Similarity {
     fn build_dt_anns_into(
         &self,
         buf: &mut Vec<Self::Annotation>,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<(), EvalError> {
-        *buf = self.build_dt_anns(dt_anns, indices, image, parity_mode)?;
+        *buf = self.build_dt_anns(dt, indices, image, parity_mode)?;
         Ok(())
+    }
+
+    /// Whether [`Self::build_dt_anns`] can return `Err` for any detection
+    /// under `parity_mode`.
+    ///
+    /// Defaults to `true` (safe conservative default for custom kernels,
+    /// RLE/polygon rasterization in segm/boundary, and missing keypoints
+    /// in OKS). Overridden to `false` on [`BboxIou`], whose
+    /// [`Self::build_dt_anns_into`] is an infallible slice gather, allowing
+    /// `g == 0` cells to elide annotation materialization completely
+    /// (ADR-0066).
+    fn dt_anns_can_fail(&self, _parity_mode: ParityMode) -> bool {
+        true
     }
 
     /// Optional kernel-specific GT ignore override. Default `false` (no
@@ -519,16 +531,17 @@ impl EvalKernel for BboxIou {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         _image: &ImageMeta,
         _parity_mode: ParityMode,
     ) -> Result<Vec<BboxAnn>, EvalError> {
         // E2/J4: DT never carries crowd.
+        let bboxes = dt.bboxes();
         Ok(indices
             .iter()
             .map(|&j| BboxAnn {
-                bbox: dt_anns[j].bbox,
+                bbox: bboxes[j],
                 is_crowd: false,
             })
             .collect())
@@ -552,18 +565,23 @@ impl EvalKernel for BboxIou {
     fn build_dt_anns_into(
         &self,
         buf: &mut Vec<BboxAnn>,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         _image: &ImageMeta,
         _parity_mode: ParityMode,
     ) -> Result<(), EvalError> {
         // E2/J4: DT never carries crowd.
+        let bboxes = dt.bboxes();
         buf.clear();
         buf.extend(indices.iter().map(|&j| BboxAnn {
-            bbox: dt_anns[j].bbox,
+            bbox: bboxes[j],
             is_crowd: false,
         }));
         Ok(())
+    }
+
+    fn dt_anns_can_fail(&self, _parity_mode: ParityMode) -> bool {
+        false
     }
 }
 
@@ -583,12 +601,12 @@ impl EvalKernel for SegmIou {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -608,12 +626,12 @@ impl EvalKernel for BoundaryIou {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -652,7 +670,7 @@ impl EvalKernel for OksSimilarity {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         _image: &ImageMeta,
         _parity_mode: ParityMode,
@@ -664,20 +682,20 @@ impl EvalKernel for OksSimilarity {
         indices
             .iter()
             .map(|&j| {
-                let dt = &dt_anns[j];
+                let ann_id = dt.id_at(j).0;
+                let image_id = dt.image_id_at(j).0;
                 let kps = dt
-                    .keypoints
-                    .as_deref()
-                    .ok_or_else(|| missing_keypoints_err("DT", dt.id.0, dt.image_id.0))?;
+                    .keypoints_at(j)
+                    .ok_or_else(|| missing_keypoints_err("DT", ann_id, image_id))?;
                 let num_keypoints = dt
-                    .num_keypoints
+                    .num_keypoints_at(j)
                     .unwrap_or_else(|| count_visible_keypoints(kps));
                 Ok(OksAnn {
-                    category_id: dt.category_id.0,
+                    category_id: dt.category_id_at(j).0,
                     keypoints: kps.to_vec(),
                     num_keypoints,
-                    bbox: dt.bbox.into(),
-                    area: dt.area,
+                    bbox: dt.bbox_at(j).into(),
+                    area: dt.area_at(j),
                 })
             })
             .collect()
@@ -745,7 +763,7 @@ fn build_segm_gt_anns(
 }
 
 fn build_segm_dt_anns(
-    dt_anns: &[CocoDetection],
+    dt: &CocoDetections,
     indices: &[usize],
     image: &ImageMeta,
     parity_mode: ParityMode,
@@ -753,8 +771,8 @@ fn build_segm_dt_anns(
     indices
         .iter()
         .map(|&j| {
-            let dt = &dt_anns[j];
-            let rle = match (&dt.segmentation, parity_mode) {
+            let ann_id = dt.id_at(j).0;
+            let rle = match (dt.segmentation_at(j), parity_mode) {
                 (Some(seg), _) => seg.to_rle(image.height, image.width)?,
                 // J2 (`strict`): pycocotools' coco.py:341 synthesizes
                 // a rectangular polygon `[[x1,y1, x1,y2, x2,y2, x2,y1]]`
@@ -763,7 +781,7 @@ fn build_segm_dt_anns(
                 // bit-for-bit so strict-mode parity covers bbox-only
                 // result files.
                 (None, ParityMode::Strict) => {
-                    synthesize_dt_segm_from_bbox(&dt.bbox, image.height, image.width)?
+                    synthesize_dt_segm_from_bbox(&dt.bbox_at(j), image.height, image.width)?
                 }
                 // J2 (`corrected`) + J6 (`corrected`): silent coercion
                 // of bbox results to rectangle masks is a footgun.
@@ -773,13 +791,13 @@ fn build_segm_dt_anns(
                 // error rather than the first-entry-decides dispatch
                 // pycocotools follows.
                 (None, ParityMode::Corrected) => {
-                    return Err(missing_segmentation_err("DT", dt.id.0, image.id.0));
+                    return Err(missing_segmentation_err("DT", ann_id, image.id.0));
                 }
             };
             Ok(SegmAnn {
                 rle,
                 is_crowd: false,
-                ann_id: dt.id.0,
+                ann_id,
             })
         })
         .collect()
@@ -852,28 +870,24 @@ pub struct EvalImageMeta {
 }
 
 /// Output of [`evaluate_bbox`] / [`evaluate_segm`] / [`evaluate_boundary`]
-/// — the flat `(K, A, I)` grid of
-/// [`PerImageEval`] cells the accumulator consumes, plus the dimensions
-/// needed to construct [`crate::accumulate::AccumulateParams`].
+/// — the `(K, A, I)` evaluation grid consumed by
+/// [`crate::accumulate::accumulate_grid`], plus the dimensions needed to
+/// construct [`crate::accumulate::AccumulateParams`].
+///
+/// Internally stores a flat category-major `PackedEvalGrid` (ADR-0066) so
+/// evaluation and accumulation run in contiguous L1/L2-resident streams
+/// without allocating `PerImageEval` heap boxes. Callers that inspect
+/// individual cells via [`Self::eval_imgs`] or [`Self::cell`] materialize
+/// the dense `[k][a][i]` view lazily on first access via an internal
+/// [`std::sync::OnceLock`].
 #[derive(Debug, Clone)]
 pub struct EvalGrid {
-    /// `Some(cell)` per `(k, a, i)` triple where the cell ran; `None`
-    /// where pycocotools would emit `None` (image absent from
-    /// detections, no GTs and no DTs in the cell). Layout is K-major,
-    /// then A, then I — `eval_imgs[k * A * I + a * I + i]`.
-    ///
-    /// Cells are heap-boxed: `Option<Box<PerImageEval>>` is 8 bytes
-    /// (Box's `NonNull` niche absorbs the discriminant), so the dense
-    /// `n_categories * n_area_ranges * n_images` grid only pays for a
-    /// pointer per slot at zero-init time. On val2017 (1.6M slots,
-    /// 14k populated) this drops the upfront alloc from 268 MB to
-    /// 12.8 MB and the zero-init from ~120 ms to ~5 ms — see
-    /// `docs/engineering/benchmarking/2026-05-bbox-cdf.md`.
-    pub eval_imgs: Vec<Option<Box<PerImageEval>>>,
+    pub(crate) packed: Option<PackedEvalGrid>,
+    eval_imgs_cache: std::sync::OnceLock<Vec<Option<Box<PerImageEval>>>>,
     /// Pycocotools-shaped bookkeeping for each populated cell (same
-    /// `[k][a][i]` layout as `eval_imgs`; `None` wherever `eval_imgs` is
-    /// `None`). Boxed for the same reason as `eval_imgs`. Empty when the
-    /// grid was built without [`EvaluateParams::retain_meta`] or
+    /// `[k][a][i]` layout as [`Self::eval_imgs`]; `None` wherever
+    /// [`Self::eval_imgs`] is `None`). Empty when the grid was built
+    /// without [`EvaluateParams::retain_meta`] or
     /// [`EvaluateParams::retain_iou`]; see [`Self::has_meta`].
     pub eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>>,
     /// Whether `eval_imgs_meta` was built — the resolved
@@ -896,13 +910,88 @@ pub struct EvalGrid {
 }
 
 impl EvalGrid {
+    /// Construct an [`EvalGrid`] from a pre-materialized dense
+    /// `Vec<Option<Box<PerImageEval>>>` `[k][a][i]` slice.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_eval_imgs(
+        eval_imgs: Vec<Option<Box<PerImageEval>>>,
+        eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>>,
+        builds_meta: bool,
+        n_categories: usize,
+        n_area_ranges: usize,
+        n_images: usize,
+        retained_ious: Option<crate::tables::RetainedIous>,
+    ) -> Self {
+        let eval_imgs_cache = std::sync::OnceLock::new();
+        let _ = eval_imgs_cache.set(eval_imgs);
+        Self {
+            packed: None,
+            eval_imgs_cache,
+            eval_imgs_meta,
+            builds_meta,
+            n_categories,
+            n_area_ranges,
+            n_images,
+            retained_ious,
+        }
+    }
+
+    pub(crate) fn from_packed(
+        packed: PackedEvalGrid,
+        eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>>,
+        builds_meta: bool,
+        retained_ious: Option<crate::tables::RetainedIous>,
+    ) -> Self {
+        let n_categories = packed.n_categories;
+        let n_area_ranges = packed.n_area_ranges;
+        let n_images = packed.n_images;
+        Self {
+            packed: Some(packed),
+            eval_imgs_cache: std::sync::OnceLock::new(),
+            eval_imgs_meta,
+            builds_meta,
+            n_categories,
+            n_area_ranges,
+            n_images,
+            retained_ious,
+        }
+    }
+
+    /// Dense `[k][a][i]` slice (`eval_imgs[k * A * I + a * I + i]`) of
+    /// per-cell evaluation results, lazily materialized on first call
+    /// when the grid was built in packed category-major layout.
+    ///
+    /// Accumulation callers should prefer
+    /// [`crate::accumulate::accumulate_grid`] to avoid materializing
+    /// per-cell heap allocations.
+    pub fn eval_imgs(&self) -> &[Option<Box<PerImageEval>>] {
+        self.eval_imgs_cache.get_or_init(|| {
+            self.packed
+                .as_ref()
+                .map_or_else(Vec::new, PackedEvalGrid::materialize_eval_imgs)
+        })
+    }
+
+    /// Consumes the grid and returns its dense `[k][a][i]` cell vector,
+    /// reusing the cached vector if already materialized or unpacking
+    /// once otherwise.
+    pub fn into_eval_imgs(mut self) -> Vec<Option<Box<PerImageEval>>> {
+        if let Some(cached) = self.eval_imgs_cache.take() {
+            cached
+        } else {
+            self.packed
+                .as_ref()
+                .map_or_else(Vec::new, PackedEvalGrid::materialize_eval_imgs)
+        }
+    }
+
     /// Cell at `(category_index, area_index, image_index)`. Returns
     /// `None` when the indices are in bounds but no cell ran (image
     /// absent from detections, or no GTs and no DTs in the cell);
     /// returns `None` for out-of-bounds indices as well.
     pub fn cell(&self, k: usize, a: usize, i: usize) -> Option<&PerImageEval> {
         let idx = self.flat_index(k, a, i)?;
-        self.eval_imgs.get(idx).and_then(Option::as_deref)
+        self.eval_imgs().get(idx).and_then(Option::as_deref)
     }
 
     /// Whether [`Self::eval_imgs_meta`] was built (the grid was
@@ -938,8 +1027,8 @@ impl EvalGrid {
 ///
 /// Iterates `(image, category)` cells, computes the IoU matrix once per
 /// cell via the kernel, runs the [`crate::matching`] engine once per area range,
-/// and packs the results into a flat `[k][a][i]`-ordered grid suitable
-/// for [`crate::accumulate`].
+/// and packs the results into an [`EvalGrid`] suitable for
+/// [`crate::accumulate::accumulate_grid`].
 ///
 /// Most callers want [`evaluate_bbox`], [`evaluate_segm`], or
 /// [`evaluate_boundary`]; this entry point is exposed for downstream
@@ -961,11 +1050,29 @@ pub fn evaluate_with<K: EvalKernel>(
     parity_mode: ParityMode,
     kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
+    evaluate_subset_with(gt, dt, params, parity_mode, kernel, None)
+}
+
+/// Subset-scoped sibling of [`evaluate_with`] (ADR-0066).
+///
+/// When `image_subset` is `Some(sorted_unique_indices)`, only GT images
+/// whose sorted index `i` lies in `sorted_unique_indices` are evaluated;
+/// [`crate::stream::StreamingEvaluator`] uses this so each `update(batch)`
+/// is `O(batch)` rather than `O(I)`.
+pub(crate) fn evaluate_subset_with<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+    image_subset: Option<&[usize]>,
+) -> Result<EvalGrid, EvalError> {
     // Image and category ordering: id-ascending, deterministic across runs.
     let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
     images.sort_unstable_by_key(|im| im.id.0);
     let n_i = images.len();
     let n_a = params.area_ranges.len();
+    let n_t = params.iou_thresholds.len();
 
     // L4: collapse to a single virtual bucket when `use_cats=false`.
     let category_buckets: Vec<Option<CategoryId>> = if params.use_cats {
@@ -977,31 +1084,18 @@ pub fn evaluate_with<K: EvalKernel>(
     };
     let n_k = category_buckets.len();
 
-    let mut eval_imgs: Vec<Option<Box<PerImageEval>>> = vec![None; n_k * n_a * n_i];
     let builds_meta = params.builds_meta();
     let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = if builds_meta {
         vec![None; n_k * n_a * n_i]
     } else {
         Vec::new()
     };
-    // Optional IoU retention, keyed by `(k, i)` — IoU is geometry-only,
-    // so storing per-area would duplicate ~4× under the COCO grid.
-    let mut retained_ious_map: Option<std::collections::HashMap<(usize, usize), Array2<f64>>> =
-        if params.retain_iou {
-            Some(std::collections::HashMap::new())
-        } else {
-            None
-        };
+    let mut retained_ious_map: Option<HashMap<(usize, usize), Array2<f64>>> = if params.retain_iou {
+        Some(HashMap::new())
+    } else {
+        None
+    };
 
-    // ADR-0026 federated metadata is consumed only when `use_cats=true`;
-    // LVIS evaluation is per-category by construction. With
-    // `use_cats=false` the federated maps are intentionally ignored
-    // and the eval falls back to COCO semantics (the L4 `k=0` collapse
-    // never carries federated state). Pre-resolve the per-image
-    // (neg, not_exhaustive) set references once — the inner cell
-    // loop hits this `n_k` times per image, and the HashMap lookups
-    // dominate runtime on long-tail datasets (1203 cats * 19809 images
-    // = ~24M redundant probes on full LVIS val).
     let federated_per_image: Vec<Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>> =
         match (params.use_cats, gt.federated()) {
             (true, Some(fed)) => images
@@ -1015,168 +1109,298 @@ pub fn evaluate_with<K: EvalKernel>(
             _ => Vec::new(),
         };
 
-    // Pre-grown scratch shared across every `(k, i)` cell. `clear()`
-    // + `extend()` per cell amortizes the ~14k allocator round-trips
-    // val2017 would otherwise pay for these gathers.
     let mut scratch = CellScratch::new();
-    // Pooled `Vec<K::Annotation>` for `build_*_anns_into` overrides
-    // (today: bbox only). Grown once to worst-case cell shape, reused
-    // for every cell after — see [`KernelScratch`].
     let mut kernel_scratch = KernelScratch::<K::Annotation>::default();
+    let mut match_scratch = MatchScratch::default();
     let gt_anns = gt.annotations();
-    let dt_anns = dt.detections();
 
-    // Quirk **AG6** (strict, ADR-0026): the LVIS oracle's
-    // `LVIS.get_ann_ids` applies a strict `area > 0` filter
-    // (`lvis/lvis.py:94`) and silently drops GTs whose JSON `area`
-    // is zero. Post-filter `img_pl` then drives `_prepare`'s federated
-    // DT filter, so on "all-zero-area" `(image, category)` cells the
-    // DT is dropped along with the GT, and on "mixed" cells the
-    // orphan DTs become FPs. Reproduce in strict mode for federated
-    // datasets only — COCO and `Corrected` mode keep zero-area
-    // annotations (vernier's default behavior). The filter slots in
-    // before the cell-empty short-circuit so the AA4 cell-skip path
-    // naturally fires when every GT in a cell is zero-area.
     let strict_lvis_zero_area_filter =
         matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
-
-    // Quirk **F6** (corrected, ADR-0058): `computeOks` has no `useCats`
-    // fork, so pycocotools scores every keypoints cell against an empty
-    // IoU matrix when `useCats=0`. See `strict_oks_use_cats_blackout`.
     let oks_use_cats_blackout = strict_oks_use_cats_blackout(kernel, params.use_cats, parity_mode);
 
-    // Visit only cells that can hold anything. The `(gt, dt)` empty
-    // check below is what decides a cell is a no-op, and it costs two
-    // index lookups to reach; at 365 categories x 80k images that is
-    // 29.2M lookups to find 626k real cells. `OccupiedCells` answers
-    // the same question once, in annotation order. See
-    // `crate::cell_occupancy`.
     let image_ids: Vec<ImageId> = images.iter().map(|im| im.id).collect();
     let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
-    let occupied = cell_occupancy::by_category(&image_ids, n_k, gt, dt, &bucket_index);
+    let occupied =
+        cell_occupancy::by_category_subset(&image_ids, image_subset, n_k, gt, dt, &bucket_index);
 
-    for (k, cat) in category_buckets.iter().enumerate() {
-        let nk = k * n_a * n_i;
-        let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
-        for &i in occupied.row(k) {
-            let i = i as usize;
-            let image = images[i];
-            let image_id = image.id;
-            let gt_indices_raw = gt_indices_for_cell(gt, image_id, *cat);
-            let gt_indices_buf: Vec<usize>;
-            let gt_indices: &[usize] = if strict_lvis_zero_area_filter
-                && gt_indices_raw.iter().any(|&j| gt_anns[j].area <= 0.0)
-            {
-                gt_indices_buf = gt_indices_raw
-                    .iter()
-                    .copied()
-                    .filter(|&j| gt_anns[j].area > 0.0)
-                    .collect();
-                &gt_indices_buf
+    let mut packed_categories = Vec::with_capacity(n_k);
+    let mut meta_entries: Vec<(usize, Box<EvalImageMeta>)> = Vec::new();
+    let mut retained_entries: Vec<(usize, Array2<f64>)> = Vec::new();
+
+    for (k, &cat) in category_buckets.iter().enumerate() {
+        let packed_cat = evaluate_category_slice(
+            &mut scratch,
+            &mut kernel_scratch,
+            &mut match_scratch,
+            cat,
+            occupied.row(k),
+            &images,
+            gt,
+            gt_anns,
+            dt,
+            params,
+            parity_mode,
+            kernel,
+            &federated_per_image,
+            strict_lvis_zero_area_filter,
+            oks_use_cats_blackout,
+            if builds_meta {
+                meta_entries.clear();
+                Some(&mut meta_entries)
             } else {
-                gt_indices_raw
-            };
-            let raw_dt_indices = raw_dt_indices_for_cell(dt, image_id, *cat);
-            if gt_indices.is_empty() && raw_dt_indices.is_empty() {
+                None
+            },
+            if params.retain_iou {
+                retained_entries.clear();
+                Some(&mut retained_entries)
+            } else {
+                None
+            },
+        )?;
+        if builds_meta {
+            let nk = k * n_a * n_i;
+            for (cat_offset, meta) in meta_entries.drain(..) {
+                eval_imgs_meta[nk + cat_offset] = Some(meta);
+            }
+        }
+        if let Some(map) = retained_ious_map.as_mut() {
+            for (i, mat) in retained_entries.drain(..) {
+                map.insert((k, i), mat);
+            }
+        }
+        packed_categories.push(packed_cat);
+    }
+
+    let packed = PackedEvalGrid {
+        categories: packed_categories,
+        n_categories: n_k,
+        n_area_ranges: n_a,
+        n_images: n_i,
+        n_t,
+    };
+
+    Ok(EvalGrid::from_packed(
+        packed,
+        eval_imgs_meta,
+        builds_meta,
+        retained_ious_map.map(crate::tables::RetainedIous::from_map),
+    ))
+}
+
+/// Evaluates an ascending slice of occupied image indices for one category
+/// bucket `cat`, writing results into a fresh [`PackedCategory`] (and
+/// optionally recording per-cell metadata / retained IoUs).
+///
+/// Shared between [`evaluate_subset_with`] and
+/// [`crate::evaluate_parallel::evaluate_subset_with_parallel`] so sequential
+/// and parallel execution share one exact cell body.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn evaluate_category_slice<K: EvalKernel>(
+    scratch: &mut CellScratch,
+    kernel_scratch: &mut KernelScratch<K::Annotation>,
+    match_scratch: &mut MatchScratch,
+    cat: Option<CategoryId>,
+    img_indices: &[u32],
+    images: &[&ImageMeta],
+    gt: &CocoDataset,
+    gt_anns: &[CocoAnnotation],
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+    federated_per_image: &[Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>],
+    strict_lvis_zero_area_filter: bool,
+    oks_use_cats_blackout: bool,
+    mut meta_out: Option<&mut Vec<(usize, Box<EvalImageMeta>)>>,
+    mut retained_out: Option<&mut Vec<(usize, Array2<f64>)>>,
+) -> Result<PackedCategory, EvalError> {
+    let n_i = images.len();
+    let n_a = params.area_ranges.len();
+    let n_t = params.iou_thresholds.len();
+    let builds_meta = meta_out.is_some();
+    let dt_can_fail = kernel.dt_anns_can_fail(parity_mode);
+    let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
+    let dt_scores_col = dt.scores();
+
+    let cap_dts = if dt.is_empty() {
+        0
+    } else {
+        img_indices.len().saturating_mul(4)
+    };
+    let mut packed_cat = PackedCategory::with_capacity(n_a, n_t, img_indices.len(), cap_dts);
+
+    for &i_u32 in img_indices {
+        let i = i_u32 as usize;
+        let image = images[i];
+        let image_id = image.id;
+        let gt_indices_raw = gt_indices_for_cell(gt, image_id, cat);
+        let gt_indices_buf: Vec<usize>;
+        let gt_indices: &[usize] = if strict_lvis_zero_area_filter
+            && gt_indices_raw.iter().any(|&j| gt_anns[j].area <= 0.0)
+        {
+            gt_indices_buf = gt_indices_raw
+                .iter()
+                .copied()
+                .filter(|&j| gt_anns[j].area > 0.0)
+                .collect();
+            &gt_indices_buf
+        } else {
+            gt_indices_raw
+        };
+        let raw_dt_indices = raw_dt_indices_for_cell(dt, image_id, cat);
+        if gt_indices.is_empty() && raw_dt_indices.is_empty() {
+            continue;
+        }
+
+        let mut not_exhaustive_for_cell = false;
+        if let (Some(c), Some(Some((neg_set, nel_set)))) = (cat, federated_per_image.get(i)) {
+            if gt_indices.is_empty() && !neg_set.contains(&c) {
                 continue;
             }
+            not_exhaustive_for_cell = nel_set.contains(&c);
+        }
 
-            // AA4 cell-skip and AA3 `not_exhaustive` flag. The outer
-            // resolution of `federated_per_image` ensures every entry
-            // is `Some` exactly when federated semantics apply to
-            // this cell.
-            let mut not_exhaustive_for_cell = false;
-            if let (Some(c), Some(Some((neg_set, nel_set)))) = (cat, federated_per_image.get(i)) {
-                // pos[I] is derived from GTs at load: `C ∈ pos[I]`
-                // exactly when `gt_indices` is non-empty for this
-                // cell. Skip when the cell is outside `pos ∪ neg`.
-                if gt_indices.is_empty() && !neg_set.contains(c) {
-                    continue;
-                }
-                not_exhaustive_for_cell = nel_set.contains(c);
+        dt_top_indices_for_cell_into(
+            &mut scratch.dt_indices,
+            &mut scratch.dt_scores,
+            &mut scratch.dt_score_buf,
+            &mut scratch.dt_perm_buf,
+            dt_scores_col,
+            raw_dt_indices,
+            params.max_dets_per_image,
+        );
+
+        scratch.dt_areas.clear();
+        scratch
+            .dt_areas
+            .extend(scratch.dt_indices.iter().map(|&j| dt.area_at(j)));
+
+        // Fast path for `!builds_meta` when `g == 0` (~93.6% of cells on
+        // dense-query detectors): every detection is unmatched across all
+        // thresholds and area ranges, so `dt_matched` is identically false
+        // and `dt_ignore` is purely `!area.contains(dt_area) || not_exhaustive`.
+        if !builds_meta && gt_indices.is_empty() {
+            if dt_can_fail && !scratch.dt_indices.is_empty() {
+                #[cfg(feature = "bench-timings")]
+                build_anns_count::bump();
+                kernel.build_dt_anns_into(
+                    &mut kernel_scratch.dt,
+                    dt,
+                    &scratch.dt_indices,
+                    image,
+                    parity_mode,
+                )?;
             }
+            packed_cat.begin_cell(i_u32, 0, &scratch.dt_scores);
+            for (a, area) in params.area_ranges.iter().enumerate() {
+                packed_cat.push_empty_gt_cell_area(
+                    a,
+                    &scratch.dt_areas,
+                    area,
+                    not_exhaustive_for_cell,
+                );
+            }
+            continue;
+        }
 
-            // Top-N DT filter — fills `scratch.dt_indices` in place,
-            // reusing `dt_score_buf` and `dt_perm_buf` across cells.
-            dt_top_indices_for_cell_into(
-                &mut scratch.dt_indices,
-                &mut scratch.dt_score_buf,
-                &mut scratch.dt_perm_buf,
-                dt_anns,
-                raw_dt_indices,
-                params.max_dets_per_image,
-            );
+        scratch.gt_areas.clear();
+        scratch
+            .gt_areas
+            .extend(gt_indices.iter().map(|&j| gt_anns[j].area));
+        scratch.gt_iscrowd.clear();
+        scratch
+            .gt_iscrowd
+            .extend(gt_indices.iter().map(|&j| gt_anns[j].is_crowd));
+        scratch.gt_base_ignore.clear();
+        scratch.gt_base_ignore.extend(gt_indices.iter().map(|&j| {
+            gt_anns[j].effective_ignore(parity_mode) || kernel.extra_gt_ignore(&gt_anns[j])
+        }));
 
-            // Area-invariant per-cell gathers — built once, reused
-            // across every area range. All seven Vecs are fields of
-            // `scratch`; `clear()` + `extend()` keeps the allocations
-            // amortized.
-            scratch.gt_areas.clear();
-            scratch
-                .gt_areas
-                .extend(gt_indices.iter().map(|&j| gt_anns[j].area));
-            scratch.gt_iscrowd.clear();
-            scratch
-                .gt_iscrowd
-                .extend(gt_indices.iter().map(|&j| gt_anns[j].is_crowd));
-            // D1: parity-mode fork lives on the annotation; pass through.
-            // Kernel-specific ignore reasons (OKS quirk **D2**) are
-            // OR-ed in via [`EvalKernel::extra_gt_ignore`].
-            scratch.gt_base_ignore.clear();
-            scratch.gt_base_ignore.extend(gt_indices.iter().map(|&j| {
-                gt_anns[j].effective_ignore(parity_mode) || kernel.extra_gt_ignore(&gt_anns[j])
-            }));
+        #[cfg(feature = "bench-timings")]
+        {
+            build_anns_count::bump();
+            build_anns_count::bump();
+        }
+        kernel.build_gt_anns_into(&mut kernel_scratch.gt, gt_anns, gt_indices, image)?;
+        kernel.build_dt_anns_into(
+            &mut kernel_scratch.dt,
+            dt,
+            &scratch.dt_indices,
+            image,
+            parity_mode,
+        )?;
+
+        let g = kernel_scratch.gt.len();
+        let d = kernel_scratch.dt.len();
+        scratch.iou_buf.clear();
+        scratch.iou_buf.resize(g * d, 0.0);
+        if g > 0 && d > 0 && !oks_use_cats_blackout {
+            let mut iou_view = ArrayViewMut2::from_shape((g, d), &mut scratch.iou_buf[..])
+                .map_err(|e| EvalError::DimensionMismatch {
+                    detail: format!("iou scratch view: {e}"),
+                })?;
+            kernel.compute(&kernel_scratch.gt, &kernel_scratch.dt, &mut iou_view)?;
+        }
+
+        let iou_view = ArrayView2::from_shape((g, d), &scratch.iou_buf[..]).map_err(|e| {
+            EvalError::DimensionMismatch {
+                detail: format!("iou scratch view: {e}"),
+            }
+        })?;
+
+        if !builds_meta {
+            match_scratch.prepare_iou(iou_view);
+            packed_cat.begin_cell(i_u32, g, &scratch.dt_scores);
+            for (a, area) in params.area_ranges.iter().enumerate() {
+                scratch.gt_ignore_buf.clear();
+                scratch.gt_ignore_buf.extend(
+                    scratch
+                        .gt_base_ignore
+                        .iter()
+                        .zip(&scratch.gt_areas)
+                        .map(|(&base, &ar)| base || !area.contains(ar)),
+                );
+                scratch.dt_unmatched_ignore_buf.clear();
+                if not_exhaustive_for_cell {
+                    scratch.dt_unmatched_ignore_buf.resize(d, true);
+                } else {
+                    scratch
+                        .dt_unmatched_ignore_buf
+                        .extend(scratch.dt_areas.iter().map(|&ar| !area.contains(ar)));
+                }
+                let n_unignored = match &mut packed_cat.dt_flags {
+                    PackedCategoryFlags::Bits16(by_area) => match_scratch.match_presorted_bits16(
+                        iou_view,
+                        &scratch.gt_ignore_buf,
+                        &scratch.gt_iscrowd,
+                        &scratch.dt_unmatched_ignore_buf,
+                        params.iou_thresholds,
+                        parity_mode,
+                        &mut by_area[a],
+                    )?,
+                    PackedCategoryFlags::General { matched, ignore } => match_scratch
+                        .match_presorted_general(
+                            iou_view,
+                            &scratch.gt_ignore_buf,
+                            &scratch.gt_iscrowd,
+                            &scratch.dt_unmatched_ignore_buf,
+                            params.iou_thresholds,
+                            parity_mode,
+                            &mut matched[a],
+                            &mut ignore[a],
+                        )?,
+                };
+                packed_cat.push_matched_cell_area(a, n_unignored);
+            }
+        } else {
             scratch.gt_ids.clear();
             scratch
                 .gt_ids
                 .extend(gt_indices.iter().map(|&j| gt_anns[j].id.0));
-            scratch.dt_areas.clear();
-            scratch
-                .dt_areas
-                .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].area));
-            scratch.dt_scores.clear();
-            scratch
-                .dt_scores
-                .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].score));
             scratch.dt_ids.clear();
             scratch
                 .dt_ids
-                .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].id.0));
-
-            #[cfg(feature = "bench-timings")]
-            {
-                build_anns_count::bump();
-                build_anns_count::bump();
-            }
-            kernel.build_gt_anns_into(&mut kernel_scratch.gt, gt_anns, gt_indices, image)?;
-            kernel.build_dt_anns_into(
-                &mut kernel_scratch.dt,
-                dt_anns,
-                &scratch.dt_indices,
-                image,
-                parity_mode,
-            )?;
-
-            // IoU scratch backing — `Vec<f64>` reused across cells, sized
-            // to `g * d` per cell. Zero-fill keeps the empty-side fallback
-            // (`g == 0` or `d == 0`) bit-identical to `Array2::zeros`.
-            let g = kernel_scratch.gt.len();
-            let d = kernel_scratch.dt.len();
-            scratch.iou_buf.clear();
-            scratch.iou_buf.resize(g * d, 0.0);
-            if g > 0 && d > 0 && !oks_use_cats_blackout {
-                let mut iou_view = ArrayViewMut2::from_shape((g, d), &mut scratch.iou_buf[..])
-                    .map_err(|e| EvalError::DimensionMismatch {
-                        detail: format!("iou scratch view: {e}"),
-                    })?;
-                kernel.compute(&kernel_scratch.gt, &kernel_scratch.dt, &mut iou_view)?;
-            }
-
-            let iou_view = ArrayView2::from_shape((g, d), &scratch.iou_buf[..]).map_err(|e| {
-                EvalError::DimensionMismatch {
-                    detail: format!("iou scratch view: {e}"),
-                }
-            })?;
+                .extend(scratch.dt_indices.iter().map(|&j| dt.id_at(j).0));
             let buffers = CellBuffers {
                 image_id: image_id.0,
                 category_id,
@@ -1191,6 +1415,7 @@ pub fn evaluate_with<K: EvalKernel>(
                 iou: iou_view,
                 not_exhaustive: not_exhaustive_for_cell,
             };
+            packed_cat.begin_cell(i_u32, g, &scratch.dt_scores);
             for (a, area) in params.area_ranges.iter().enumerate() {
                 let (cell, meta) = evaluate_cell(
                     &mut scratch.gt_ignore_buf,
@@ -1198,40 +1423,26 @@ pub fn evaluate_with<K: EvalKernel>(
                     area,
                     params.iou_thresholds,
                     parity_mode,
-                    builds_meta,
+                    true,
                 )?;
-                let flat = nk + a * n_i + i;
-                eval_imgs[flat] = Some(Box::new(cell));
-                if let Some(meta) = meta {
-                    eval_imgs_meta[flat] = Some(Box::new(meta));
+                packed_cat.push_from_per_image_eval(a, &cell);
+                if let (Some(sink), Some(meta)) = (meta_out.as_deref_mut(), meta) {
+                    sink.push((a * n_i + i, Box::new(meta)));
                 }
             }
-
-            // Retain a clone of the IoU matrix exactly when the caller
-            // asked. The check is at end-of-cell so the area-range
-            // loop above runs on the borrow `buffers.iou`; cloning
-            // here costs O(G*D) f64s, only when retention is active.
-            if let Some(map) = retained_ious_map.as_mut() {
+            if let Some(sink) = retained_out.as_deref_mut() {
                 let cloned =
                     Array2::from_shape_vec((g, d), scratch.iou_buf.clone()).map_err(|e| {
                         EvalError::DimensionMismatch {
                             detail: format!("retained iou clone: {e}"),
                         }
                     })?;
-                map.insert((k, i), cloned);
+                sink.push((i, cloned));
             }
         }
     }
 
-    Ok(EvalGrid {
-        eval_imgs,
-        eval_imgs_meta,
-        builds_meta,
-        n_categories: n_k,
-        n_area_ranges: n_a,
-        n_images: n_i,
-        retained_ious: retained_ious_map.map(crate::tables::RetainedIous::from_map),
-    })
+    Ok(packed_cat)
 }
 
 /// Run the per-image evaluation pass *and* the cross-class IoU side
@@ -1421,12 +1632,12 @@ impl EvalKernel for SegmIouCached<'_> {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -1589,12 +1800,12 @@ impl EvalKernel for BoundaryIouCached<'_> {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -1719,13 +1930,15 @@ pub(crate) fn dt_top_indices_for_cell(
 ) -> Vec<usize> {
     let raw_indices = raw_dt_indices_for_cell(dt, image, cat);
     let mut out = Vec::new();
+    let mut scores_out = Vec::new();
     let mut score_buf = Vec::new();
     let mut perm_buf = Vec::new();
     dt_top_indices_for_cell_into(
         &mut out,
+        &mut scores_out,
         &mut score_buf,
         &mut perm_buf,
-        dt.detections(),
+        dt.scores(),
         raw_indices,
         max_dets,
     );
@@ -1733,22 +1946,51 @@ pub(crate) fn dt_top_indices_for_cell(
 }
 
 /// Allocation-free counterpart to [`dt_top_indices_for_cell`]. Fills
-/// `out` with the top-`max_dets` DT input indices ordered by descending
-/// score (stable mergesort, quirk **A1**), reusing `score_buf` and
-/// `perm_buf` across calls. The hot per-cell loop in [`evaluate_with`]
-/// would otherwise pay three allocator round-trips per `(image,
-/// category)` cell — across val2017's 14k non-empty cells that
-/// dominates the score-sort wall time.
+/// `out` and `scores_out` with the top-`max_dets` DT input indices and
+/// descending scores (stable mergesort, quirk **A1**), reusing `score_buf`
+/// and `perm_buf` across calls.
 pub(crate) fn dt_top_indices_for_cell_into(
     out: &mut Vec<usize>,
+    scores_out: &mut Vec<f64>,
     score_buf: &mut Vec<f64>,
     perm_buf: &mut Vec<usize>,
-    dts: &[CocoDetection],
+    dt_scores: &[f64],
     raw_indices: &[usize],
     max_dets: usize,
 ) {
+    out.clear();
+    scores_out.clear();
+    if max_dets == 0 || raw_indices.is_empty() {
+        return;
+    }
+    if raw_indices.len() == 1 {
+        let idx = raw_indices[0];
+        out.push(idx);
+        scores_out.push(dt_scores[idx]);
+        return;
+    }
+    if raw_indices.len() == 2 {
+        let i0 = raw_indices[0];
+        let i1 = raw_indices[1];
+        let s0 = dt_scores[i0];
+        let s1 = dt_scores[i1];
+        // Stable tiebreak + NaN preservation: swap `[0, 1]` iff `s1 > s0`.
+        let (first_i, first_s, second_i, second_s) = if s1 > s0 {
+            (i1, s1, i0, s0)
+        } else {
+            (i0, s0, i1, s1)
+        };
+        out.push(first_i);
+        scores_out.push(first_s);
+        if max_dets >= 2 {
+            out.push(second_i);
+            scores_out.push(second_s);
+        }
+        return;
+    }
+
     score_buf.clear();
-    score_buf.extend(raw_indices.iter().map(|&i| dts[i].score));
+    score_buf.extend(raw_indices.iter().map(|&i| dt_scores[i]));
     perm_buf.clear();
     perm_buf.extend(0..score_buf.len());
     // Stable mergesort tiebreak (quirk A1) — must match
@@ -1758,16 +2000,19 @@ pub(crate) fn dt_top_indices_for_cell_into(
             .partial_cmp(&score_buf[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    out.clear();
-    out.extend(perm_buf.iter().take(max_dets).map(|&k| raw_indices[k]));
+    let keep = perm_buf.len().min(max_dets);
+    out.reserve(keep);
+    scores_out.reserve(keep);
+    for &k in &perm_buf[..keep] {
+        out.push(raw_indices[k]);
+        scores_out.push(score_buf[k]);
+    }
 }
 
 /// Per-cell scratch buffers reused across the `(image, category)` loop
 /// in [`evaluate_with`]. All `Vec` fields are `clear()`-ed and re-grown
 /// each cell so allocator round-trips are paid once per buffer at most
-/// (subsequent cells stay within the high-water capacity). On val2017
-/// this elides ~11 allocations per cell × 14k cells = ~154k allocator
-/// round-trips.
+/// (subsequent cells stay within the high-water capacity).
 #[derive(Default)]
 pub(crate) struct CellScratch {
     /// Cell-level GT gathers — sized to `gt_indices.len()` per cell.
@@ -1791,10 +2036,10 @@ pub(crate) struct CellScratch {
     /// Permutation scratch for [`dt_top_indices_for_cell_into`].
     pub(crate) dt_perm_buf: Vec<usize>,
     /// Per-area-range `gt_ignore` mask reused across each call to
-    /// [`evaluate_cell`] (the four COCO area ranges times every cell —
-    /// passing through scratch elides one `Vec<bool>` allocation per
-    /// area-range pass).
+    /// [`evaluate_cell`] or [`MatchScratch`].
     pub(crate) gt_ignore_buf: Vec<bool>,
+    /// Per-area-range unmatched-DT ignore mask (`B7 | AA3`).
+    pub(crate) dt_unmatched_ignore_buf: Vec<bool>,
 }
 
 impl CellScratch {
@@ -2108,7 +2353,7 @@ mod tests {
         assert_eq!(grid.n_area_ranges, 4);
         assert_eq!(grid.n_images, 1);
         // Both DTs perfectly overlap their GTs → all four area cells exist.
-        let cells: Vec<_> = grid.eval_imgs.iter().filter(|c| c.is_some()).collect();
+        let cells: Vec<_> = grid.eval_imgs().iter().filter(|c| c.is_some()).collect();
         assert_eq!(cells.len(), 4);
         // The "all" bucket (a=0) has both DTs matched at every threshold.
         let all_cell = grid.cell(0, 0, 0).unwrap();
@@ -2121,19 +2366,19 @@ mod tests {
     fn perfect_match_summarizes_to_one() {
         let grid = perfect_match_grid();
         let max_dets = vec![1usize, 10, 100];
-        let acc = accumulate(
-            &grid.eval_imgs,
-            AccumulateParams {
-                iou_thresholds: iou_thresholds(),
-                recall_thresholds: recall_thresholds(),
-                max_dets: &max_dets,
-                n_categories: grid.n_categories,
-                n_area_ranges: grid.n_area_ranges,
-                n_images: grid.n_images,
-            },
-            ParityMode::Strict,
-        )
-        .unwrap();
+        let p = AccumulateParams {
+            iou_thresholds: iou_thresholds(),
+            recall_thresholds: recall_thresholds(),
+            max_dets: &max_dets,
+            n_categories: grid.n_categories,
+            n_area_ranges: grid.n_area_ranges,
+            n_images: grid.n_images,
+        };
+        let acc = crate::accumulate::accumulate_grid(&grid, p, ParityMode::Strict).unwrap();
+        let acc_dense = accumulate(grid.eval_imgs(), p, ParityMode::Strict).unwrap();
+        assert_eq!(acc.precision, acc_dense.precision);
+        assert_eq!(acc.recall, acc_dense.recall);
+        assert_eq!(acc.scores, acc_dense.scores);
         let summary =
             summarize_detection(&acc, iou_thresholds(), &max_dets, ParityMode::Strict).unwrap();
         let stats = summary.stats();
@@ -2621,7 +2866,7 @@ mod tests {
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let max_dets = vec![1usize, 10, 100];
         let acc = accumulate(
-            &grid.eval_imgs,
+            grid.eval_imgs(),
             AccumulateParams {
                 iou_thresholds: iou_thresholds(),
                 recall_thresholds: recall_thresholds(),
@@ -2959,7 +3204,7 @@ mod tests {
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let max_dets = vec![1usize, 10, 100];
         let acc = accumulate(
-            &grid.eval_imgs,
+            grid.eval_imgs(),
             AccumulateParams {
                 iou_thresholds: iou_thresholds(),
                 recall_thresholds: recall_thresholds(),
@@ -3096,7 +3341,7 @@ mod tests {
     }
 
     fn boundary_grid_cells(grid: &EvalGrid) -> Vec<f64> {
-        grid.eval_imgs
+        grid.eval_imgs()
             .iter()
             .filter_map(|c| c.as_ref())
             .flat_map(|c| c.dt_scores.iter().copied())

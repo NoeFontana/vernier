@@ -40,10 +40,12 @@
 #![allow(clippy::unwrap_used)]
 
 use divan::{black_box, Bencher};
+use vernier_core::accumulate::{accumulate_grid, accumulate_grid_parallel, AccumulateParams};
 use vernier_core::dataset::{
-    AnnId, Bbox, CategoryId, CategoryMeta, CocoAnnotation, DetectionInput, ImageId, ImageMeta,
+    AnnId, Bbox, CategoryId, CategoryMeta, CocoAnnotation, DetectionColumnsInput, ImageId,
+    ImageMeta,
 };
-use vernier_core::parity::iou_thresholds;
+use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::{
     evaluate_bbox, evaluate_bbox_parallel, AreaRange, CocoDataset, CocoDetections, EvaluateParams,
     ParityMode,
@@ -83,6 +85,13 @@ const DENSE_MLE_1CAT: Scenario = Scenario {
     n_categories: 1,
     gts_per_image: 250,
     dts_per_image: 250,
+};
+
+const DETR_300Q: Scenario = Scenario {
+    n_images: 500,
+    n_categories: 80,
+    gts_per_image: 7,
+    dts_per_image: 300,
 };
 
 fn xorshift(state: &mut u64) -> u64 {
@@ -145,7 +154,11 @@ fn build_dataset(s: Scenario) -> (CocoDataset, CocoDetections) {
         }
     }
 
-    let mut dt_inputs = Vec::with_capacity(s.n_images * s.dts_per_image);
+    let total_dts = s.n_images * s.dts_per_image;
+    let mut dt_image_ids = Vec::with_capacity(total_dts);
+    let mut dt_category_ids = Vec::with_capacity(total_dts);
+    let mut dt_scores = Vec::with_capacity(total_dts);
+    let mut dt_bboxes = Vec::with_capacity(total_dts);
     for img in &images {
         for _ in 0..s.dts_per_image {
             let cat = (xorshift(&mut state) as usize) % s.n_categories;
@@ -154,22 +167,26 @@ fn build_dataset(s: Scenario) -> (CocoDataset, CocoDetections) {
             let x = unit(&mut state) * (img_w - w);
             let y = unit(&mut state) * (img_h - h);
             let score = unit(&mut state);
-            dt_inputs.push(DetectionInput {
-                id: None,
-                image_id: img.id,
-                category_id: CategoryId(cat as i64 + 1),
-                score,
-                bbox: Bbox { x, y, w, h },
-                area: None,
-                segmentation: None,
-                keypoints: None,
-                num_keypoints: None,
-            });
+            dt_image_ids.push(img.id);
+            dt_category_ids.push(CategoryId(cat as i64 + 1));
+            dt_scores.push(score);
+            dt_bboxes.push(Bbox { x, y, w, h });
         }
     }
 
     let gt = CocoDataset::from_parts(images, gt_anns, categories).unwrap();
-    let dt = CocoDetections::from_inputs(dt_inputs).unwrap();
+    let dt = CocoDetections::from_columns(DetectionColumnsInput {
+        ids: None,
+        image_ids: dt_image_ids,
+        category_ids: dt_category_ids,
+        scores: dt_scores,
+        bboxes: dt_bboxes,
+        areas: None,
+        segmentations: None,
+        keypoints: None,
+        num_keypoints: None,
+    })
+    .unwrap();
     (gt, dt)
 }
 
@@ -203,6 +220,36 @@ fn framework_dense_mle_5cat(bencher: Bencher) {
 #[divan::bench]
 fn framework_dense_mle_1cat(bencher: Bencher) {
     run(bencher, DENSE_MLE_1CAT);
+}
+
+#[divan::bench]
+fn framework_detr_300q_e2e(bencher: Bencher) {
+    let (gt, dt) = build_dataset(DETR_300Q);
+    let area_ranges = AreaRange::coco_default();
+    let iou_thr = iou_thresholds();
+    let rec_thr = recall_thresholds();
+    let max_dets = [1usize, 10, 100];
+    bencher.bench_local(|| {
+        let params = EvaluateParams {
+            iou_thresholds: iou_thr,
+            area_ranges: &area_ranges,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+            retain_meta: false,
+        };
+        let grid =
+            evaluate_bbox(black_box(&gt), black_box(&dt), params, ParityMode::Strict).unwrap();
+        let acc_params = AccumulateParams {
+            iou_thresholds: iou_thr,
+            recall_thresholds: rec_thr,
+            max_dets: &max_dets,
+            n_categories: grid.n_categories,
+            n_area_ranges: grid.n_area_ranges,
+            n_images: grid.n_images,
+        };
+        accumulate_grid(&grid, acc_params, ParityMode::Strict).unwrap()
+    });
 }
 
 // Parallel sweep arms — pool built once outside the timing window
@@ -246,4 +293,41 @@ fn framework_dense_mle_5cat_parallel(bencher: Bencher, &num_threads: &usize) {
 #[divan::bench(args = THREAD_COUNTS)]
 fn framework_dense_mle_1cat_parallel(bencher: Bencher, &num_threads: &usize) {
     run_parallel(bencher, DENSE_MLE_1CAT, num_threads);
+}
+
+#[divan::bench(args = THREAD_COUNTS)]
+fn framework_detr_300q_e2e_parallel(bencher: Bencher, &num_threads: &usize) {
+    let (gt, dt) = build_dataset(DETR_300Q);
+    let area_ranges = AreaRange::coco_default();
+    let iou_thr = iou_thresholds();
+    let rec_thr = recall_thresholds();
+    let max_dets = [1usize, 10, 100];
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap();
+    bencher.bench_local(|| {
+        let params = EvaluateParams {
+            iou_thresholds: iou_thr,
+            area_ranges: &area_ranges,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+            retain_meta: false,
+        };
+        pool.install(|| {
+            let grid =
+                evaluate_bbox_parallel(black_box(&gt), black_box(&dt), params, ParityMode::Strict)
+                    .unwrap();
+            let acc_params = AccumulateParams {
+                iou_thresholds: iou_thr,
+                recall_thresholds: rec_thr,
+                max_dets: &max_dets,
+                n_categories: grid.n_categories,
+                n_area_ranges: grid.n_area_ranges,
+                n_images: grid.n_images,
+            };
+            accumulate_grid_parallel(&grid, acc_params, ParityMode::Strict).unwrap()
+        })
+    });
 }

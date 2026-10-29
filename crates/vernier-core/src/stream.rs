@@ -25,8 +25,10 @@ use crate::dataset::{
     ImageId,
 };
 use crate::error::EvalError;
-use crate::evaluate::{evaluate_with, EvalImageMeta, EvalKernel, OwnedEvaluateParams};
-use crate::evaluate_parallel::evaluate_with_parallel;
+use crate::evaluate::{
+    evaluate_subset_with, evaluate_with, EvalImageMeta, EvalKernel, OwnedEvaluateParams,
+};
+use crate::evaluate_parallel::evaluate_subset_with_parallel;
 use crate::parity::{recall_thresholds, ParityMode};
 use crate::summarize::{summarize_detection, summarize_with, StatRequest, Summary};
 
@@ -478,15 +480,15 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         &mut self,
         parsed: ParsedDetections<K>,
     ) -> Result<UpdateReport, EvalError> {
-        self.update_with(parsed.detections, evaluate_with)
+        self.update_with(parsed.detections, evaluate_subset_with)
     }
 
     /// Parallel sibling of [`Self::update_parsed`] (ADR-0047). Same
     /// body but routes the per-batch matching pass through
-    /// [`evaluate_with_parallel`]; caller `install`s a
+    /// [`crate::evaluate_parallel::evaluate_with_parallel`]; caller `install`s a
     /// `rayon::ThreadPool` around the call. Post-matching bookkeeping
     /// is shared, so strict-mode bit-equality across thread counts
-    /// follows from [`evaluate_with_parallel`]'s contract.
+    /// follows from [`crate::evaluate_parallel::evaluate_with_parallel`]'s contract.
     ///
     /// # Errors
     /// Same set as [`Self::update_parsed`].
@@ -494,11 +496,12 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         &mut self,
         parsed: ParsedDetections<K>,
     ) -> Result<UpdateReport, EvalError> {
-        self.update_with(parsed.detections, evaluate_with_parallel)
+        self.update_with(parsed.detections, evaluate_subset_with_parallel)
     }
 
     /// The body of [`Self::update_parsed`] and
-    /// [`Self::update_parsed_parallel`]; `evaluate` is the matching pass.
+    /// [`Self::update_parsed_parallel`]; `evaluate` is the batch-subset
+    /// matching pass.
     fn update_with(
         &mut self,
         detections: CocoDetections,
@@ -508,15 +511,16 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             crate::evaluate::EvaluateParams<'_>,
             ParityMode,
             &K,
+            Option<&[usize]>,
         ) -> Result<crate::evaluate::EvalGrid, EvalError>,
     ) -> Result<UpdateReport, EvalError> {
-        // Reject any image_id seen in a prior batch. This keeps update()
-        // additive — each cell is built once, so finalize() is
-        // bit-identical to a batch run — and makes the per-batch federated
-        // cap exact (ADR-0065).
-        let mut batch_image_ids: HashSet<i64> = HashSet::new();
-        for dt in detections.detections() {
-            let id = dt.image_id.0;
+        // Reject any image_id seen in a prior batch. `distinct_image_ids()`
+        // is already deduplicated at `CocoDetections` construction time,
+        // keeping this check `O(B)` instead of `O(N)`.
+        let distinct_ids = detections.distinct_image_ids();
+        let mut batch_image_ids: Vec<i64> = Vec::with_capacity(distinct_ids.len());
+        for img_id in distinct_ids {
+            let id = img_id.0;
             if self.seen_images.contains(&id) {
                 return Err(EvalError::InvalidAnnotation {
                     detail: format!(
@@ -526,68 +530,81 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                     ),
                 });
             }
-            batch_image_ids.insert(id);
+            batch_image_ids.push(id);
         }
+
+        // Map batch image_ids to sorted unique GT image indices so the
+        // matching pass visits only `O(B)` images instead of `O(I)`.
+        let mut batch_image_indices: Vec<usize> = batch_image_ids
+            .iter()
+            .filter_map(|&id| self.grid_meta.image_id_to_idx.get(&ImageId(id)).copied())
+            .collect();
+        batch_image_indices.sort_unstable();
+        batch_image_indices.dedup();
+
         // Ids are taken before the cap, so an image capped to nothing is
         // still marked seen.
         let detections = detections.trim_for(&self.dataset, self.params.max_dets_per_image);
 
-        // The orchestrator iterates the *full* GT image set, so images
-        // this batch did not carry still produce cells; `merge_batch_grid`
-        // drops them — a cell is filed once, when its image first appears.
         let mut grid = evaluate(
             &self.dataset,
             &detections,
             self.params.borrow(),
             self.parity_mode,
             &self.kernel,
+            Some(&batch_image_indices),
         )?;
-        self.merge_batch_grid(&detections, &batch_image_ids, &mut grid)
+        self.merge_batch_grid(
+            &detections,
+            &batch_image_ids,
+            &batch_image_indices,
+            &mut grid,
+        )
     }
 
     /// Shared post-matching bookkeeping for [`Self::update_parsed`] and
-    /// [`Self::update_parsed_parallel`]. Filters the per-batch grid down
-    /// to images the batch actually carried, runs the budget check, and
-    /// commits the resulting cells into the streaming store.
+    /// [`Self::update_parsed_parallel`]. Unpacks only the populated cells
+    /// produced for this batch, runs the budget check, and commits them
+    /// into the streaming store without materializing a dense `(K, A, I)`
+    /// grid.
     fn merge_batch_grid(
         &mut self,
         detections: &CocoDetections,
-        batch_image_ids: &HashSet<i64>,
+        batch_image_ids: &[i64],
+        batch_image_indices: &[usize],
         grid: &mut crate::evaluate::EvalGrid,
     ) -> Result<UpdateReport, EvalError> {
-        // Map batch image_ids to their I-axis indices so we can keep
-        // only the cells whose image appears in this batch. Anything
-        // else would (a) double-count GTs on every empty / partial
-        // update and (b) trip the duplicate-image_id guard the next
-        // time those images receive their own detections.
-        let mut batch_image_indices: HashSet<usize> = HashSet::with_capacity(batch_image_ids.len());
-        for id in batch_image_ids {
-            if let Some(&idx) = self.grid_meta.image_id_to_idx.get(&ImageId(*id)) {
-                batch_image_indices.insert(idx);
-            }
-            // Unknown image_ids fall through silently; the underlying
-            // gather treats them as "no GTs / no DTs of interest" so
-            // they produce no cells anyway.
-        }
-
-        // Pre-compute insertion cost. Iterate batch images first so the
-        // walk is `O(batch_size * K * A)` instead of `O(I * K * A)` —
-        // critical at COCO scale where `I` is in the thousands but a
-        // typical training-loop batch covers tens of images.
         let n_t = self.params.iou_thresholds.len();
         let n_k = grid.n_categories;
         let n_a = grid.n_area_ranges;
         let n_i = grid.n_images;
         let mut staged: Vec<(usize, usize, usize, PerImageEval, CellCost)> = Vec::new();
         let mut cost_total = CellCost::default();
-        for &i in &batch_image_indices {
-            for k in 0..n_k {
-                for a in 0..n_a {
-                    let flat = k * n_a * n_i + a * n_i + i;
-                    if let Some(cell) = grid.eval_imgs.get(flat).and_then(|opt| opt.as_deref()) {
-                        let cost = cell_cost(cell, n_t);
-                        cost_total = cost_total.add(cost);
-                        staged.push((k, a, i, cell.clone(), cost));
+        if let Some(packed) = &grid.packed {
+            if n_a > 0 {
+                for (k, cat) in packed.categories.iter().enumerate() {
+                    for (occ, &i32) in cat.occupied_images.iter().enumerate() {
+                        let i = i32 as usize;
+                        for a in 0..n_a {
+                            let cell = cat.extract_cell(a, occ);
+                            let cost = cell_cost(&cell, n_t);
+                            cost_total = cost_total.add(cost);
+                            staged.push((k, a, i, cell, cost));
+                        }
+                    }
+                }
+            }
+        } else {
+            let dense = grid.eval_imgs();
+            for &i in batch_image_indices {
+                for k in 0..n_k {
+                    for a in 0..n_a {
+                        let flat = k * n_a * n_i + a * n_i + i;
+                        if let Some(cell) = dense.get(flat).and_then(Option::as_deref) {
+                            let cost = cell_cost(cell, n_t);
+                            cost_total = cost_total.add(cost);
+                            staged.push((k, a, i, cell.clone(), cost));
+                        }
                     }
                 }
             }
@@ -629,7 +646,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             (self.retained_ious.as_mut(), grid.retained_ious.as_mut())
         {
             for k in 0..n_k {
-                for &i in &batch_image_indices {
+                for &i in batch_image_indices {
                     if let Some(iou) = per_batch.remove(k, i) {
                         store.insert(k, i, iou);
                     }
@@ -641,7 +658,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // is on — both are needed by per_detection / per_pair table
         // builders. Cells without retention skip this work entirely.
         if self.params.retain_iou {
-            for &i in &batch_image_indices {
+            for &i in batch_image_indices {
                 for k in 0..n_k {
                     for a in 0..n_a {
                         let flat = k * n_a * n_i + a * n_i + i;
@@ -656,18 +673,17 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                     }
                 }
             }
-            self.dets_seen
-                .extend(detections.detections().iter().cloned());
+            self.dets_seen.extend(detections.records());
         }
 
-        let n_detections_accepted = detections.detections().len();
+        let n_detections_accepted = detections.len();
         self.n_detections += n_detections_accepted;
         self.next_dt_id = self.next_dt_id.saturating_add(n_detections_accepted as i64);
-        for id in batch_image_ids {
-            self.seen_images.insert(*id);
+        for &id in batch_image_ids {
+            self.seen_images.insert(id);
         }
-        for idx in &batch_image_indices {
-            self.seen_image_indices.insert(*idx);
+        for &idx in batch_image_indices {
+            self.seen_image_indices.insert(idx);
         }
 
         let total_used = self.memory_used_bytes();
@@ -820,22 +836,22 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             vec![None; total]
         };
 
-        let synthetic_grid = crate::evaluate::EvalGrid {
+        let synthetic_grid = crate::evaluate::EvalGrid::from_eval_imgs(
             eval_imgs,
             eval_imgs_meta,
             // Dense either way — the non-`retain_iou` branch above fills
             // `total` `None`s rather than leaving the vec empty — and the
             // builders that read cell metadata are already refused above
             // unless `retain_iou` is on.
-            builds_meta: true,
-            n_categories: n_k,
-            n_area_ranges: n_a,
-            n_images: n_i,
-            retained_ious: self.retained_ious.clone(),
-        };
+            true,
+            n_k,
+            n_a,
+            n_i,
+            self.retained_ious.clone(),
+        );
 
         let max_dets: [usize; 3] = [1, 10, 100];
-        let (summary, accumulated) = self.summarize_dense(&synthetic_grid.eval_imgs)?;
+        let (summary, accumulated) = self.summarize_dense(synthetic_grid.eval_imgs())?;
 
         // Build a fresh `CocoDetections` view over every detection seen
         // so far when per_detection is requested; cheaper tables don't
@@ -1016,7 +1032,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             self.parity_mode,
             &self.kernel,
         )?;
-        self.gt_only_cells = Some(grid.eval_imgs);
+        self.gt_only_cells = Some(grid.into_eval_imgs());
         Ok(())
     }
 

@@ -1,8 +1,8 @@
 //! Array-based detection ingest for `StreamingEvaluator.update` and
-//! `BackgroundEvaluator.submit` (ADR-0030).
+//! `BackgroundEvaluator.submit` (ADR-0030, ADR-0066).
 //!
-//! Routes Python `Detections` dicts through the same
-//! `CocoDetections::from_inputs` constructor the JSON path uses; parity
+//! Routes Python `Detections` and `DetectionsBatch` dicts through the same
+//! `CocoDetections::from_columns` constructor the JSON path uses; parity
 //! is structural, not a separate invariant.
 
 use std::cell::OnceCell;
@@ -16,7 +16,7 @@ use pyo3::types::{
     PyAny, PyByteArray, PyBytes, PyDict, PyList, PyMemoryView, PySequence, PyString, PyTuple,
 };
 
-use vernier_core::dataset::{Bbox, CategoryId, DetectionInput, ImageId};
+use vernier_core::dataset::{Bbox, CategoryId, DetectionColumnsInput, ImageId};
 use vernier_core::segmentation::{Segmentation, SegmentationRle, SegmentationRleCounts};
 use vernier_core::EvalError;
 use vernier_mask::Rle;
@@ -40,6 +40,8 @@ pub(crate) enum DetectionsArg<'py> {
     /// crosses `py.detach` without a copy — saves ~10 ms per val2017
     /// DT submission (17 MB jittered output).
     Bytes(PyBackedBytes),
+    /// Multi-image / whole-dataset columnar `DetectionsBatch` dict (ADR-0066).
+    Batch(Bound<'py, PyDict>),
     /// One or more per-image `Detections` dicts. Single-image inputs
     /// land here as a one-element vec.
     Dicts {
@@ -51,7 +53,7 @@ pub(crate) enum DetectionsArg<'py> {
     },
     /// A list of per-annotation COCO *result* dicts — the shape
     /// `loadRes` consumes and TorchMetrics-style callers build. Handled
-    /// by `result_ingest::ann_dicts_to_inputs`.
+    /// by `result_ingest::ann_dicts_to_columns`.
     AnnList(Vec<Bound<'py, PyDict>>),
     /// An `(N, 7)` C-contiguous float64 array laid out as
     /// `image_id, x, y, w, h, score, category_id`.
@@ -67,6 +69,18 @@ impl<'py> DetectionsArg<'py> {
         }
         if let Ok(d) = obj.cast::<PyDict>() {
             let d = d.clone();
+            let py = d.py();
+            let has_image_ids = d.contains(intern!(py, "image_ids"))?;
+            let has_image_id = d.contains(intern!(py, "image_id"))?;
+            if has_image_ids && has_image_id {
+                return Err(PyValueError::new_err(
+                    "detections: cannot specify both 'image_id' (single-image Detections) \
+                     and 'image_ids' (multi-image DetectionsBatch)",
+                ));
+            }
+            if has_image_ids {
+                return Ok(Self::Batch(d));
+            }
             return Ok(if crate::result_ingest::dict_is_result_annotation(&d)? {
                 Self::AnnList(vec![d])
             } else {
@@ -99,6 +113,14 @@ impl<'py> DetectionsArg<'py> {
             // support, so the first element decides the route. `boxes`
             // (columnar) wins over `bbox` (per-annotation), so an
             // ADR-0030 payload can never be re-routed here.
+            if let Some(first) = dicts.first() {
+                if first.contains(intern!(first.py(), "image_ids"))? {
+                    return Err(PyValueError::new_err(
+                        "detections[0]: got 'image_ids' inside a sequence; pass a \
+                         DetectionsBatch dict directly rather than wrapping it in a list",
+                    ));
+                }
+            }
             let is_ann = match dicts.first() {
                 Some(first) => crate::result_ingest::dict_is_result_annotation(first)?,
                 // An empty list is the same empty payload either way.
@@ -115,8 +137,9 @@ impl<'py> DetectionsArg<'py> {
         }
         let type_name = type_name_of(obj);
         Err(PyTypeError::new_err(format!(
-            "detections must be bytes, a Detections dict, a sequence of Detections dicts, \
-             a list of COCO result dicts, or an (N, 7) float64 array; got {type_name}"
+            "detections must be bytes, a Detections or DetectionsBatch dict, \
+             a sequence of Detections dicts, a list of COCO result dicts, \
+             or an (N, 7) float64 array; got {type_name}"
         )))
     }
 }
@@ -294,22 +317,46 @@ impl<'py, 'a> CastCtx<'py, 'a> {
     }
 }
 
-/// Extract one `Detections` dict into a flat `Vec<DetectionInput>` ready
-/// to feed `CocoDetections::from_inputs`. `iou_type` controls which
+struct DictKeys<'py> {
+    image_id: &'py Bound<'py, PyString>,
+    boxes: &'py Bound<'py, PyString>,
+    scores: &'py Bound<'py, PyString>,
+    labels: &'py Bound<'py, PyString>,
+    rles: &'py Bound<'py, PyString>,
+    keypoints: &'py Bound<'py, PyString>,
+}
+
+impl<'py> DictKeys<'py> {
+    fn intern(py: Python<'py>) -> Self {
+        Self {
+            image_id: intern!(py, "image_id"),
+            boxes: intern!(py, "boxes"),
+            scores: intern!(py, "scores"),
+            labels: intern!(py, "labels"),
+            rles: intern!(py, "rles"),
+            keypoints: intern!(py, "keypoints"),
+        }
+    }
+}
+
+/// Append one `Detections` dict directly into `DetectionColumnsInput` ready
+/// to feed `CocoDetections::from_columns`. `iou_type` controls which
 /// fields are required and which are silently ignored.
 ///
 /// `ann` is the dict's position in a sequence `detections=` argument, so
 /// a rejection can point at the offending element rather than leaving
 /// the caller to find it in a 5000-entry list (quirk **J6**). It is
 /// `None` when a single bare dict was passed.
-fn extract_inputs_one<'py>(
+fn append_dict_columns<'py>(
     dict: &Bound<'py, PyDict>,
+    keys: &DictKeys<'py>,
     ann: Option<usize>,
     iou_type: ArrayIouType,
     ctx: &CastCtx<'py, '_>,
-) -> PyResult<Vec<DetectionInput>> {
+    out: &mut DetectionColumnsInput,
+) -> PyResult<()> {
     let here = FieldPath::new(ann, "");
-    let image_id_obj = dict.get_item("image_id")?.ok_or_else(|| {
+    let image_id_obj = dict.get_item(keys.image_id)?.ok_or_else(|| {
         PyValueError::new_err(format!(
             "{here}: missing required field 'image_id' \
              (each Detections dict must carry an integer image id)"
@@ -322,7 +369,7 @@ fn extract_inputs_one<'py>(
     let image_id = ImageId(image_id_raw);
 
     let boxes_path = FieldPath::new(ann, ".boxes").to_string();
-    let boxes_obj = dict.get_item("boxes")?.ok_or_else(|| {
+    let boxes_obj = dict.get_item(keys.boxes)?.ok_or_else(|| {
         PyValueError::new_err(format!(
             "{here}: missing required field 'boxes' (N×4 float64 xywh array)"
         ))
@@ -333,7 +380,7 @@ fn extract_inputs_one<'py>(
     let n = boxes.len() / 4;
 
     let scores_path = FieldPath::new(ann, ".scores").to_string();
-    let scores_obj = dict.get_item("scores")?.ok_or_else(|| {
+    let scores_obj = dict.get_item(keys.scores)?.ok_or_else(|| {
         PyValueError::new_err(format!(
             "{here}: missing required field 'scores' (length-N float64)"
         ))
@@ -349,7 +396,7 @@ fn extract_inputs_one<'py>(
     let scores = scores_view.as_slice();
 
     let labels_path = FieldPath::new(ann, ".labels").to_string();
-    let labels_obj = dict.get_item("labels")?.ok_or_else(|| {
+    let labels_obj = dict.get_item(keys.labels)?.ok_or_else(|| {
         PyValueError::new_err(format!(
             "{here}: missing required field 'labels' (length-N int64)"
         ))
@@ -364,77 +411,63 @@ fn extract_inputs_one<'py>(
     }
     let labels = labels_view.as_slice();
 
-    let mut rles: Vec<Option<Segmentation>> = match iou_type {
-        ArrayIouType::Segm | ArrayIouType::Boundary => {
-            let rles_obj = dict.get_item("rles")?.ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "{here}: iou_type={} requires a 'rles' field \
-                     (sequence of RLE dicts or 2-D bool/uint8 bitmasks)",
-                    iou_type.as_str()
-                ))
-            })?;
-            extract_rles(&rles_obj, FieldPath::new(ann, ".rles"), n, ctx)?
-                .into_iter()
-                .map(Some)
-                .collect()
-        }
-        ArrayIouType::Bbox | ArrayIouType::Keypoints => Vec::new(),
-    };
-
-    let kp_data = match iou_type {
-        ArrayIouType::Keypoints => {
-            let kp_path = FieldPath::new(ann, ".keypoints").to_string();
-            let kp_obj = dict.get_item("keypoints")?.ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "{here}: iou_type='keypoints' requires a 'keypoints' field \
-                     ((N, K, 3) float64 array of [x, y, v] triplets)"
-                ))
-            })?;
-            let kp_obj = ctx.maybe_cast(kp_obj, &kp_path, "float64")?;
-            let (view, k) = dlpack::extract_f64_3d_kp(&kp_obj, &kp_path)?;
-            let stride = k * 3;
-            let expected = n.checked_mul(stride).ok_or_else(|| {
-                PyValueError::new_err(format!(
-                    "{kp_path}: shape product (N={n}, K={k}, 3) overflows usize"
-                ))
-            })?;
-            if view.len() != expected {
-                return Err(PyValueError::new_err(format!(
-                    "{kp_path}: flat length {} disagrees with shape (N={n}, K={k}, 3)",
-                    view.len()
-                )));
-            }
-            Some((view, stride))
-        }
-        _ => None,
-    };
-
-    let mut inputs: Vec<DetectionInput> = Vec::with_capacity(n);
-    for i in 0..n {
-        let bbox = Bbox {
-            x: boxes[4 * i],
-            y: boxes[4 * i + 1],
-            w: boxes[4 * i + 2],
-            h: boxes[4 * i + 3],
-        };
-        let segmentation = rles.get_mut(i).and_then(Option::take);
-        let keypoints = kp_data.as_ref().map(|(view, stride)| {
-            let start = i * *stride;
-            view.as_slice()[start..start + *stride].to_vec()
-        });
-        inputs.push(DetectionInput {
-            id: None,
-            image_id,
-            category_id: CategoryId(labels[i]),
-            score: scores[i],
-            bbox,
-            area: None,
-            segmentation,
-            keypoints,
-            num_keypoints: None,
-        });
+    if matches!(iou_type, ArrayIouType::Segm | ArrayIouType::Boundary) {
+        let rles_obj = dict.get_item(keys.rles)?.ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{here}: iou_type={} requires a 'rles' field \
+                 (sequence of RLE dicts or 2-D bool/uint8 bitmasks)",
+                iou_type.as_str()
+            ))
+        })?;
+        let extracted = extract_rles(&rles_obj, FieldPath::new(ann, ".rles"), n, ctx)?;
+        let segs = out
+            .segmentations
+            .get_or_insert_with(|| Vec::with_capacity(n));
+        segs.extend(extracted.into_iter().map(Some));
     }
-    Ok(inputs)
+
+    if matches!(iou_type, ArrayIouType::Keypoints) {
+        let kp_path = FieldPath::new(ann, ".keypoints").to_string();
+        let kp_obj = dict.get_item(keys.keypoints)?.ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{here}: iou_type='keypoints' requires a 'keypoints' field \
+                 ((N, K, 3) float64 array of [x, y, v] triplets)"
+            ))
+        })?;
+        let kp_obj = ctx.maybe_cast(kp_obj, &kp_path, "float64")?;
+        let (view, k) = dlpack::extract_f64_3d_kp(&kp_obj, &kp_path)?;
+        let stride = k * 3;
+        let expected = n.checked_mul(stride).ok_or_else(|| {
+            PyValueError::new_err(format!(
+                "{kp_path}: shape product (N={n}, K={k}, 3) overflows usize"
+            ))
+        })?;
+        if view.len() != expected {
+            return Err(PyValueError::new_err(format!(
+                "{kp_path}: flat length {} disagrees with shape (N={n}, K={k}, 3)",
+                view.len()
+            )));
+        }
+        let flat = view.as_slice();
+        let kp_col = out.keypoints.get_or_insert_with(|| Vec::with_capacity(n));
+        kp_col.reserve(n);
+        for i in 0..n {
+            let start = i * stride;
+            kp_col.push(Some(flat[start..start + stride].to_vec()));
+        }
+    }
+
+    out.image_ids.extend(std::iter::repeat_n(image_id, n));
+    out.category_ids
+        .extend(labels.iter().map(|&c| CategoryId(c)));
+    out.scores.extend_from_slice(scores);
+    out.bboxes.extend(boxes.chunks_exact(4).map(|b| Bbox {
+        x: b[0],
+        y: b[1],
+        w: b[2],
+        h: b[3],
+    }));
+    Ok(())
 }
 
 /// Per-item dispatcher: uncompressed dict, compressed (bytes) dict, or
@@ -733,47 +766,264 @@ fn ascontig_for<'py>(
     }
 }
 
-/// Convert per-image dict payloads into a flat `Vec<DetectionInput>`.
-/// `CocoDetections::from_inputs` is intentionally **not** called here:
+/// Extract a multi-image `DetectionsBatch` dict (ADR-0066) directly into
+/// [`DetectionColumnsInput`].
+///
+/// Array metadata and optional Python `rles` are extracted under the GIL;
+/// the dense numeric column materialization runs inside [`Python::detach`]
+/// while the `DLPackView` capsules remain pinned on the stack.
+pub(crate) fn batch_to_columns<'py>(
+    py: Python<'py>,
+    dict: &Bound<'py, PyDict>,
+    iou_type: ArrayIouType,
+    cast_state: &CastState,
+) -> PyResult<DetectionColumnsInput> {
+    let ascontig = ascontig_for(py, cast_state)?;
+    let ctx = CastCtx::new(py, cast_state, &ascontig);
+
+    let k_boxes = intern!(py, "boxes");
+    let k_scores = intern!(py, "scores");
+    let k_labels = intern!(py, "labels");
+    let k_image_ids = intern!(py, "image_ids");
+    let k_counts = intern!(py, "counts");
+    let k_rles = intern!(py, "rles");
+    let k_keypoints = intern!(py, "keypoints");
+
+    let boxes_obj = dict.get_item(k_boxes)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'boxes' (N×4 float64 xywh array)")
+    })?;
+    let boxes_obj = ctx.maybe_cast(boxes_obj, "detections.boxes", "float64")?;
+    let boxes_view = dlpack::extract_f64_2d(&boxes_obj, "detections.boxes", 4)?;
+    let n = boxes_view.len() / 4;
+
+    let scores_obj = dict.get_item(k_scores)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'scores' (length-N float64)")
+    })?;
+    let scores_obj = ctx.maybe_cast(scores_obj, "detections.scores", "float64")?;
+    let scores_view = dlpack::extract_f64_1d(&scores_obj, "detections.scores")?;
+    if scores_view.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "detections.scores: length {} disagrees with boxes (N={n})",
+            scores_view.len()
+        )));
+    }
+
+    let labels_obj = dict.get_item(k_labels)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'labels' (length-N int64)")
+    })?;
+    let labels_obj = ctx.maybe_cast(labels_obj, "detections.labels", "int64")?;
+    let labels_view = dlpack::extract_i64_1d(&labels_obj, "detections.labels")?;
+    if labels_view.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "detections.labels: length {} disagrees with boxes (N={n})",
+            labels_view.len()
+        )));
+    }
+
+    let image_ids_obj = dict.get_item(k_image_ids)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'image_ids' (int64 array)")
+    })?;
+    let image_ids_obj = ctx.maybe_cast(image_ids_obj, "detections.image_ids", "int64")?;
+    let image_ids_view = dlpack::extract_i64_1d(&image_ids_obj, "detections.image_ids")?;
+
+    let counts_view = match dict.get_item(k_counts)? {
+        Some(v) if !v.is_none() => {
+            let v = ctx.maybe_cast(v, "detections.counts", "int64")?;
+            let view = dlpack::extract_i64_1d(&v, "detections.counts")?;
+            if view.len() != image_ids_view.len() {
+                return Err(PyValueError::new_err(format!(
+                    "detections.counts: length {} disagrees with detections.image_ids (M={})",
+                    view.len(),
+                    image_ids_view.len()
+                )));
+            }
+            let mut sum: usize = 0;
+            for (m, &c) in view.as_slice().iter().enumerate() {
+                if c < 0 {
+                    return Err(PyValueError::new_err(format!(
+                        "detections.counts[{m}]: count must be non-negative, got {c}"
+                    )));
+                }
+                let cu = usize::try_from(c).map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "detections.counts[{m}]: count {c} overflows usize"
+                    ))
+                })?;
+                sum = sum.checked_add(cu).ok_or_else(|| {
+                    PyValueError::new_err("detections.counts: sum overflows usize")
+                })?;
+            }
+            if sum != n {
+                return Err(PyValueError::new_err(format!(
+                    "detections.counts: sum ({sum}) disagrees with boxes (N={n})"
+                )));
+            }
+            Some(view)
+        }
+        _ => {
+            if image_ids_view.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "detections.image_ids: length {} disagrees with boxes (N={n})",
+                    image_ids_view.len()
+                )));
+            }
+            None
+        }
+    };
+
+    let segmentations: Option<Vec<Option<Segmentation>>> = match iou_type {
+        ArrayIouType::Segm | ArrayIouType::Boundary => match dict.get_item(k_rles)? {
+            Some(rles_obj) if !rles_obj.is_none() => Some(
+                extract_rles(&rles_obj, FieldPath::new(None, ".rles"), n, &ctx)?
+                    .into_iter()
+                    .map(Some)
+                    .collect(),
+            ),
+            // Quirk J2: omitted `rles` on `DetectionsBatch` is governed
+            // downstream by the kernel (`strict` synthesizes the bbox
+            // rectangle; `corrected` refuses naming the detection),
+            // matching the file, result-list, and `(N, 7)` matrix routes.
+            _ => None,
+        },
+        ArrayIouType::Bbox | ArrayIouType::Keypoints => None,
+    };
+
+    let kp_data = match iou_type {
+        ArrayIouType::Keypoints => {
+            let kp_obj = dict.get_item(k_keypoints)?.ok_or_else(|| {
+                PyValueError::new_err(
+                    "detections: iou_type='keypoints' requires a 'keypoints' field \
+                     ((N, K, 3) float64 array of [x, y, v] triplets)",
+                )
+            })?;
+            let kp_obj = ctx.maybe_cast(kp_obj, "detections.keypoints", "float64")?;
+            let (view, k) = dlpack::extract_f64_3d_kp(&kp_obj, "detections.keypoints")?;
+            let stride = k * 3;
+            let expected = n.checked_mul(stride).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "detections.keypoints: shape product (N={n}, K={k}, 3) overflows usize"
+                ))
+            })?;
+            if view.len() != expected {
+                return Err(PyValueError::new_err(format!(
+                    "detections.keypoints: flat length {} disagrees with shape (N={n}, K={k}, 3)",
+                    view.len()
+                )));
+            }
+            Some((view, stride))
+        }
+        _ => None,
+    };
+
+    let boxes_slice = boxes_view.as_slice();
+    let scores_slice = scores_view.as_slice();
+    let labels_slice = labels_view.as_slice();
+    let image_ids_slice = image_ids_view.as_slice();
+    let counts_slice = counts_view.as_ref().map(dlpack::DLPackView::as_slice);
+    let kp_slice = kp_data
+        .as_ref()
+        .map(|(view, stride)| (view.as_slice(), *stride));
+
+    let (image_ids, category_ids, scores, bboxes, keypoints) = py.detach(|| {
+        let image_ids: Vec<ImageId> = match counts_slice {
+            None => image_ids_slice.iter().map(|&id| ImageId(id)).collect(),
+            Some(counts) => {
+                let mut out = Vec::with_capacity(n);
+                for (&id, &c) in image_ids_slice.iter().zip(counts) {
+                    #[allow(clippy::cast_sign_loss)]
+                    out.extend(std::iter::repeat_n(ImageId(id), c as usize));
+                }
+                out
+            }
+        };
+        let category_ids: Vec<CategoryId> = labels_slice.iter().map(|&c| CategoryId(c)).collect();
+        let scores: Vec<f64> = scores_slice.to_vec();
+        let bboxes: Vec<Bbox> = boxes_slice
+            .chunks_exact(4)
+            .map(|b| Bbox {
+                x: b[0],
+                y: b[1],
+                w: b[2],
+                h: b[3],
+            })
+            .collect();
+        let keypoints: Option<Vec<Option<Vec<f64>>>> = kp_slice.map(|(flat, stride)| {
+            (0..n)
+                .map(|i| {
+                    let start = i * stride;
+                    Some(flat[start..start + stride].to_vec())
+                })
+                .collect()
+        });
+        (image_ids, category_ids, scores, bboxes, keypoints)
+    });
+
+    Ok(DetectionColumnsInput {
+        ids: None,
+        image_ids,
+        category_ids,
+        scores,
+        bboxes,
+        areas: None,
+        segmentations,
+        keypoints,
+        num_keypoints: None,
+    })
+}
+
+/// Convert per-image dict payloads directly into [`DetectionColumnsInput`].
+/// `CocoDetections::from_columns` is intentionally **not** called here:
 /// the consumer (foreground evaluator, streaming/background dispatch)
-/// runs it inside its own `py.detach` block so the HashMap build runs
+/// runs it inside its own `py.detach` block so the CSR index build runs
 /// without holding the GIL.
 ///
 /// `indexed` says whether the caller passed a *sequence* of dicts; when
 /// it did, every rejection names the offending element.
-pub(crate) fn dicts_to_inputs(
+pub(crate) fn dicts_to_columns(
     py: Python<'_>,
     dicts: &[Bound<'_, PyDict>],
     indexed: bool,
     iou_type: ArrayIouType,
     cast_state: &CastState,
-) -> PyResult<Vec<DetectionInput>> {
+) -> PyResult<DetectionColumnsInput> {
     let ascontig = ascontig_for(py, cast_state)?;
     let ctx = CastCtx::new(py, cast_state, &ascontig);
-    let mut all_inputs: Vec<DetectionInput> = Vec::new();
+    let keys = DictKeys::intern(py);
+    let mut out = DetectionColumnsInput {
+        ids: None,
+        image_ids: Vec::new(),
+        category_ids: Vec::new(),
+        scores: Vec::new(),
+        bboxes: Vec::new(),
+        areas: None,
+        segmentations: matches!(iou_type, ArrayIouType::Segm | ArrayIouType::Boundary)
+            .then(Vec::new),
+        keypoints: matches!(iou_type, ArrayIouType::Keypoints).then(Vec::new),
+        num_keypoints: None,
+    };
     for (i, dict) in dicts.iter().enumerate() {
         let ann = indexed.then_some(i);
-        all_inputs.extend(extract_inputs_one(dict, ann, iou_type, &ctx)?);
+        append_dict_columns(dict, &keys, ann, iou_type, &ctx, &mut out)?;
     }
-    Ok(all_inputs)
+    Ok(out)
 }
 
-/// Sibling of [`dicts_to_inputs`] for the per-annotation result-dict
+/// Sibling of [`dicts_to_columns`] for the per-annotation result-dict
 /// route. Builds the same [`CastCtx`] (the `segmentation` field accepts
 /// the same bitmask forms as `rles`) and delegates the pass itself to
 /// `result_ingest`.
-pub(crate) fn ann_dicts_to_inputs(
+pub(crate) fn ann_dicts_to_columns(
     py: Python<'_>,
     dicts: &[Bound<'_, PyDict>],
     iou_type: ArrayIouType,
     cast_state: &CastState,
-) -> PyResult<Vec<DetectionInput>> {
+) -> PyResult<DetectionColumnsInput> {
     let ascontig = ascontig_for(py, cast_state)?;
     let ctx = CastCtx::new(py, cast_state, &ascontig);
-    crate::result_ingest::ann_dicts_to_inputs(py, dicts, iou_type, &ctx)
+    crate::result_ingest::ann_dicts_to_columns(py, dicts, iou_type, &ctx)
 }
 
-/// Sibling of [`dicts_to_inputs`] for the ADR-0060 ground-truth route.
+/// Sibling of [`dicts_to_columns`] for the ADR-0060 ground-truth route.
 /// Builds the same [`CastCtx`] (the GT `segmentation` column accepts the
 /// same shapes as `rles` and `detections[i].segmentation`) and delegates
 /// the pass itself to `gt_ingest`.
@@ -793,18 +1043,18 @@ pub(crate) fn gt_parts_from_arrays(
     crate::gt_ingest::gt_parts_from_arrays(images, annotations, categories, &ctx)
 }
 
-/// Sibling of [`dicts_to_inputs`] for the `(N, 7)` matrix route. The
+/// Sibling of [`dicts_to_columns`] for the `(N, 7)` matrix route. The
 /// matrix is a single array, so the only thing the context carries that
 /// it can use is the `cast_inputs=True` promotion — which it *does*
 /// honour, on the same terms as `Detections.boxes`.
-pub(crate) fn matrix_to_inputs(
+pub(crate) fn matrix_to_columns(
     py: Python<'_>,
     matrix: &Bound<'_, PyAny>,
     cast_state: &CastState,
-) -> PyResult<Vec<DetectionInput>> {
+) -> PyResult<DetectionColumnsInput> {
     let ascontig = ascontig_for(py, cast_state)?;
     let ctx = CastCtx::new(py, cast_state, &ascontig);
-    crate::result_ingest::matrix_to_inputs(matrix, &ctx)
+    crate::result_ingest::matrix_to_columns(py, matrix, &ctx)
 }
 
 // ---------------------------------------------------------------------------
@@ -814,11 +1064,12 @@ pub(crate) fn matrix_to_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vernier_core::dataset::DetectionInput;
     use vernier_core::CocoDetections;
 
-    /// `from_inputs` of array-derived records yields the same indices as
-    /// `from_json_bytes` for the same logical detections. The new path is
-    /// just another way to construct the same `Vec<DetectionInput>`.
+    /// `from_columns` of array-derived records yields the same indices as
+    /// `from_json_bytes` for the same logical detections. The SoA path
+    /// converges on the identical `CocoDetections` representation.
     #[test]
     fn array_inputs_match_json_for_bbox_only() -> Result<(), Box<dyn std::error::Error>> {
         let inputs = vec![
@@ -858,14 +1109,35 @@ mod tests {
 
         let json = serde_json::to_vec(&inputs)?;
         let from_json = CocoDetections::from_json_bytes(&json)?;
-        let from_arr = CocoDetections::from_inputs(inputs)?;
+        let from_arr = CocoDetections::from_columns(DetectionColumnsInput {
+            ids: None,
+            image_ids: vec![ImageId(1), ImageId(1)],
+            category_ids: vec![CategoryId(7), CategoryId(7)],
+            scores: vec![0.9, 0.8],
+            bboxes: vec![
+                Bbox {
+                    x: 1.0,
+                    y: 2.0,
+                    w: 3.0,
+                    h: 4.0,
+                },
+                Bbox {
+                    x: 5.0,
+                    y: 6.0,
+                    w: 7.0,
+                    h: 8.0,
+                },
+            ],
+            areas: None,
+            segmentations: None,
+            keypoints: None,
+            num_keypoints: None,
+        })?;
 
-        assert_eq!(from_json.detections().len(), from_arr.detections().len());
-        for (a, b) in from_json
-            .detections()
-            .iter()
-            .zip(from_arr.detections().iter())
-        {
+        let json_recs = from_json.records();
+        let arr_recs = from_arr.records();
+        assert_eq!(json_recs.len(), arr_recs.len());
+        for (a, b) in json_recs.zip(arr_recs) {
             assert_eq!(a.id, b.id);
             assert_eq!(a.image_id, b.image_id);
             assert_eq!(a.category_id, b.category_id);

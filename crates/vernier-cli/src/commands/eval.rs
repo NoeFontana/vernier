@@ -16,7 +16,9 @@ use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::process;
 
-use vernier_core::accumulate::{accumulate, sort_max_dets, AccumulateParams};
+use vernier_core::accumulate::{
+    accumulate_grid, accumulate_grid_parallel, sort_max_dets, AccumulateParams,
+};
 use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
 use vernier_core::lrp::{self, LrpParams, LrpReport};
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
@@ -213,7 +215,24 @@ fn run_pipeline(
         n_area_ranges: grid.n_area_ranges,
         n_images: grid.n_images,
     };
-    let acc = accumulate(&grid.eval_imgs, acc_params, parity)?;
+    let resolved_threads = match threads {
+        0 => std::thread::available_parallelism()
+            .map(std::num::NonZeroUsize::get)
+            .unwrap_or(1),
+        n => n,
+    };
+    let acc = if resolved_threads <= 1 {
+        accumulate_grid(&grid, acc_params, parity)?
+    } else {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(resolved_threads)
+            .thread_name(|i| format!("vernier-rayon-{i}"))
+            .build()
+            .map_err(|e| EvalError::InvalidConfig {
+                detail: format!("failed to build rayon pool of {resolved_threads} threads: {e}"),
+            })?;
+        pool.install(|| accumulate_grid_parallel(&grid, acc_params, parity))?
+    };
     if matches!(iou_type, IouTypeArg::Keypoints) {
         // ADR-0012 / D5: kp summary uses the 10-stat plan over the
         // 3-bucket area grid.

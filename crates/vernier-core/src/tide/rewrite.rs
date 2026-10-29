@@ -150,9 +150,10 @@ pub fn apply_fix(
     // enforces this contract: any future fix-kind that mutates GTs
     // AND calls `resolve_target` would trip the assert under
     // `cargo test`.
-    let mut new_dts: Vec<DetectionInput> = Vec::with_capacity(dt.detections().len());
+    let mut new_dts: Vec<DetectionInput> = Vec::with_capacity(dt.len());
     let original_anns = gt.annotations();
-    for (dt_input_idx, det) in dt.detections().iter().enumerate() {
+    for dt_input_idx in 0..dt.len() {
+        let det = dt.record_at(dt_input_idx);
         let key = (det.image_id.0, dt_input_idx);
         let label = assignment.dt_labels.get(&key).copied();
 
@@ -263,7 +264,7 @@ pub fn apply_fix(
 /// downstream `evaluate_with` cell ordering only insofar as scores
 /// determine the in-cell sort, but ids being preserved makes the
 /// rewrite output debug-printable side-by-side with the input.
-fn passthrough_input(det: &CocoDetection) -> DetectionInput {
+fn passthrough_input(det: CocoDetection) -> DetectionInput {
     DetectionInput {
         id: Some(det.id),
         image_id: det.image_id,
@@ -271,8 +272,8 @@ fn passthrough_input(det: &CocoDetection) -> DetectionInput {
         score: det.score,
         bbox: det.bbox,
         area: None,
-        segmentation: det.segmentation.clone(),
-        keypoints: det.keypoints.clone(),
+        segmentation: det.segmentation,
+        keypoints: det.keypoints,
         num_keypoints: det.num_keypoints,
     }
 }

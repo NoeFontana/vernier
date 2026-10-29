@@ -106,6 +106,46 @@ class Detections(TypedDict, total=False):
     keypoints: NDArray[np.float64]
 
 
+class DetectionsBatch(TypedDict, total=False):
+    """Multi-image or whole-dataset detection batch in columnar form (ADR-0066).
+
+    Eliminates per-image Python dict construction and ``(N, 7)`` matrix
+    widening copies when predictions are already concatenated across images
+    (as emitted by :func:`vernier.adapters.coco_inputs` and
+    :func:`vernier.adapters.coco_inputs_from_columns`).
+
+    Required fields:
+
+    - ``boxes``: ``float64`` ``(N, 4)`` C-contiguous, xywh.
+    - ``scores``: ``float64`` ``(N,)`` C-contiguous.
+    - ``labels``: ``int64`` ``(N,)`` C-contiguous.
+    - ``image_ids``: ``int64`` ``(N,)`` per-detection image ids when
+      ``counts`` is omitted, or ``int64`` ``(M,)`` per-image ids paired
+      with ``counts``.
+
+    Optional fields:
+
+    - ``counts``: ``int64`` ``(M,)`` non-negative detection counts per
+      image summing to ``N`` (paired with length-``M`` ``image_ids``).
+    - ``rles``: length-``N`` ``Sequence[RLEInput]``. When omitted under
+      ``segm`` / ``boundary``, quirk **J2** governs downstream (matching
+      the JSON file, result-list, and ``(N, 7)`` matrix routes).
+    - ``keypoints``: ``float64`` ``(N, K, 3)`` C-contiguous (required
+      under ``iou_type='keypoints'``).
+
+    Narrower dtypes (``float32``, ``int32``) are promoted when
+    ``cast_inputs=True`` and rejected otherwise (ADR-0004, ADR-0030).
+    """
+
+    image_ids: NDArray[np.int64]
+    counts: NDArray[np.int64]
+    boxes: NDArray[np.float64]
+    scores: NDArray[np.float64]
+    labels: NDArray[np.int64]
+    rles: Sequence[RLEInput]
+    keypoints: NDArray[np.float64]
+
+
 class ResultAnnotation(TypedDict, total=False):
     """One COCO *result* annotation — the shape ``loadRes`` consumes.
 
@@ -391,6 +431,7 @@ DetectionsInput: TypeAlias = (
     bytes
     | Detections
     | Sequence[Detections]
+    | DetectionsBatch
     | ResultAnnotation
     | Sequence[ResultAnnotation]
     | DetectionMatrix
@@ -402,6 +443,7 @@ __all__ = [
     "DetectionColumns",
     "DetectionMatrix",
     "Detections",
+    "DetectionsBatch",
     "DetectionsInput",
     "GtAnnotations",
     "GtCategory",
