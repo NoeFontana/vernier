@@ -81,7 +81,7 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
         n_images: grid.n_images,
     };
     let partitioned = partition::evaluate_partitioned(
-        grid.eval_imgs(),
+        &grid.eval_imgs(),
         dims,
         &inputs.spec,
         iou_thresholds(),

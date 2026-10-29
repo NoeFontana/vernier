@@ -20,8 +20,9 @@
 //!   polygon `segmentation` shape — see [`extract_segmentation`].
 //! - [`matrix_to_columns`] — an `(N, 7)` C-contiguous float64 array laid
 //!   out as `image_id, x, y, w, h, score, category_id`. No per-element
-//!   Python object is touched at all, and the column scan runs inside
-//!   [`Python::detach`] while keeping the DLPack capsule pinned. It
+//!   Python object is touched at all; the single column scan runs under
+//!   the GIL because it reads the caller's live, mutable buffer
+//!   (ADR-0006), and the CSR index build after it runs detached. It
 //!   carries no segmentation and no keypoints, which is exactly what a
 //!   *bbox-only* results file carries: under `iou_type="segm"`/`"boundary"`
 //!   quirk **J2** decides what that means, and under `"keypoints"` core
@@ -37,7 +38,9 @@ use pyo3::intern;
 use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyDict, PyList, PySequence, PyString};
 
-use vernier_core::dataset::{AnnId, Bbox, CategoryId, DetectionColumnsInput, ImageId};
+use vernier_core::dataset::{
+    AnnId, Bbox, CategoryId, DetectionColumnsInput, DetectionInput, ImageId,
+};
 use vernier_core::segmentation::Segmentation;
 
 use crate::array_ingest::{
@@ -99,16 +102,7 @@ pub(crate) fn ann_dicts_to_columns<'py>(
     let k_num_keypoints = intern!(py, "num_keypoints");
     let k_area = intern!(py, "area");
 
-    let n = dicts.len();
-    let mut image_ids = Vec::with_capacity(n);
-    let mut category_ids = Vec::with_capacity(n);
-    let mut scores = Vec::with_capacity(n);
-    let mut bboxes = Vec::with_capacity(n);
-    let mut ids: Option<Vec<Option<AnnId>>> = None;
-    let mut areas: Option<Vec<Option<f64>>> = None;
-    let mut segmentations: Option<Vec<Option<Segmentation>>> = None;
-    let mut keypoints_col: Option<Vec<Option<Vec<f64>>>> = None;
-    let mut num_keypoints_col: Option<Vec<Option<u32>>> = None;
+    let mut columns = DetectionColumnsInput::with_capacity(dicts.len());
 
     for (i, dict) in dicts.iter().enumerate() {
         let image_id: i64 = required(dict, k_image_id, i, "image_id")?
@@ -136,7 +130,6 @@ pub(crate) fn ann_dicts_to_columns<'py>(
             }
             _ => None,
         };
-        push_sparse(&mut ids, i, n, id);
 
         // `segmentation` is optional on every `iou_type`, exactly as it
         // is in a results *file*: `serde_json` leaves the field `None`
@@ -149,7 +142,6 @@ pub(crate) fn ann_dicts_to_columns<'py>(
             .filter(|v| !v.is_none())
             .map(|obj| extract_segmentation(&obj, i, ctx))
             .transpose()?;
-        push_sparse(&mut segmentations, i, n, segmentation);
 
         let keypoints = match iou_type {
             ArrayIouType::Keypoints => Some(extract_keypoints(
@@ -158,7 +150,6 @@ pub(crate) fn ann_dicts_to_columns<'py>(
             )?),
             _ => None,
         };
-        push_sparse(&mut keypoints_col, i, n, keypoints);
 
         let num_keypoints = match dict.get_item(k_num_keypoints)? {
             Some(v) if !v.is_none() => Some(
@@ -167,7 +158,6 @@ pub(crate) fn ann_dicts_to_columns<'py>(
             ),
             _ => None,
         };
-        push_sparse(&mut num_keypoints_col, i, n, num_keypoints);
 
         // Carried, not dropped: `from_columns_with_area` ignores it unless
         // the detections are built with `DetectionArea::Supplied`, and
@@ -180,40 +170,20 @@ pub(crate) fn ann_dicts_to_columns<'py>(
             ),
             _ => None,
         };
-        push_sparse(&mut areas, i, n, area);
 
-        image_ids.push(ImageId(image_id));
-        category_ids.push(CategoryId(category_id));
-        scores.push(score);
-        bboxes.push(bbox);
+        columns.push(DetectionInput {
+            id,
+            image_id: ImageId(image_id),
+            category_id: CategoryId(category_id),
+            score,
+            bbox,
+            area,
+            segmentation,
+            keypoints,
+            num_keypoints,
+        });
     }
-
-    Ok(DetectionColumnsInput {
-        ids,
-        image_ids,
-        category_ids,
-        scores,
-        bboxes,
-        areas,
-        segmentations,
-        keypoints: keypoints_col,
-        num_keypoints: num_keypoints_col,
-    })
-}
-
-/// Append `val` to a lazily-allocated optional column of total capacity `cap`.
-#[inline]
-fn push_sparse<T>(col: &mut Option<Vec<Option<T>>>, idx: usize, cap: usize, val: Option<T>) {
-    match (col.as_mut(), val) {
-        (Some(vec), v) => vec.push(v),
-        (None, Some(v)) => {
-            let mut vec = Vec::with_capacity(cap);
-            vec.resize_with(idx, || None);
-            vec.push(Some(v));
-            *col = Some(vec);
-        }
-        (None, None) => {}
-    }
+    Ok(columns)
 }
 
 /// One `segmentation` field, in every shape a COCO results *file*
@@ -486,17 +456,18 @@ const COL_NAMES: [&str; MATRIX_COLS] = ["image_id", "x", "y", "w", "h", "score",
 ///   any diagnostic.
 ///
 /// `score` is taken verbatim; `from_columns` rejects a non-finite score.
+///
+/// The scan runs **under the GIL** (ADR-0006): `flat` borrows the
+/// producer's live, mutable buffer, and only the GIL keeps another
+/// Python thread from writing it mid-copy. The copy is a single
+/// streaming pass; the CSR index build that follows runs detached.
 pub(crate) fn matrix_to_columns<'py>(
-    py: Python<'py>,
     obj: &Bound<'py, PyAny>,
     ctx: &CastCtx<'py, '_>,
 ) -> PyResult<DetectionColumnsInput> {
     let obj = ctx.maybe_cast(obj.clone(), "detections", "float64")?;
     let view = dlpack::extract_f64_2d(&obj, "detections", MATRIX_COLS)?;
-    let flat = view.as_slice();
-    // `view` stays alive on the stack here, keeping the DLPack capsule
-    // pinned while we release the GIL for the N-row scan + column fill.
-    py.detach(|| parse_matrix_slice(flat))
+    parse_matrix_slice(view.as_slice())
 }
 
 fn parse_matrix_slice(flat: &[f64]) -> PyResult<DetectionColumnsInput> {

@@ -1086,6 +1086,13 @@ def _detections(
     Hands the concatenated columns and per-image ``counts`` straight across
     the FFI with zero Python array copies and zero per-image dict slicing on
     both ``bbox`` and ``segm``.
+
+    ``rles`` is attached exactly when it covers every row (``_build``
+    already refused a partial column), which includes the zero-detection
+    case. Predictions without masks therefore omit it, and a ``segm``
+    pass over them is refused at the FFI instead of falling back to quirk
+    **J2**'s bbox rectangles — masked ground truth does not make unmasked
+    predictions evaluable as masks.
     """
     batch = DetectionsBatch(
         image_ids=np.ascontiguousarray(image_ids),
@@ -1094,7 +1101,7 @@ def _detections(
         scores=np.ascontiguousarray(scores),
         labels=np.ascontiguousarray(labels),
     )
-    if len(rles):
+    if len(rles) == len(scores):
         batch["rles"] = rles
     return batch
 

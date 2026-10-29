@@ -769,9 +769,12 @@ fn ascontig_for<'py>(
 /// Extract a multi-image `DetectionsBatch` dict (ADR-0066) directly into
 /// [`DetectionColumnsInput`].
 ///
-/// Array metadata and optional Python `rles` are extracted under the GIL;
-/// the dense numeric column materialization runs inside [`Python::detach`]
-/// while the `DLPackView` capsules remain pinned on the stack.
+/// Everything here runs under the GIL, the numeric column copies included:
+/// the `DLPackView` slices alias the caller's live, mutable buffers, and
+/// per ADR-0006 conversion finishes before [`Python::detach`] — a
+/// detached copy would race any Python thread still writing them. The
+/// copies are streaming `memcpy`-shaped passes; the CSR index build in
+/// `CocoDetections::from_columns` is what the consumer runs detached.
 pub(crate) fn batch_to_columns<'py>(
     py: Python<'py>,
     dict: &Bound<'py, PyDict>,
@@ -871,20 +874,31 @@ pub(crate) fn batch_to_columns<'py>(
         }
     };
 
+    // `DetectionsBatch` is the multi-image `Detections`, so it takes the
+    // array surface's rule, not the file's: a mask pass needs `rles`.
+    // Quirk J2 (a bbox rectangle standing in for a missing mask) belongs
+    // to the routes that mirror a `loadRes` file — bytes, result dicts,
+    // the `(N, 7)` matrix. An array caller who left the masks out has a
+    // bug, and J2 would turn it into a plausible, wrong segm AP.
     let segmentations: Option<Vec<Option<Segmentation>>> = match iou_type {
-        ArrayIouType::Segm | ArrayIouType::Boundary => match dict.get_item(k_rles)? {
-            Some(rles_obj) if !rles_obj.is_none() => Some(
+        ArrayIouType::Segm | ArrayIouType::Boundary => {
+            let rles_obj = dict
+                .get_item(k_rles)?
+                .filter(|v| !v.is_none())
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "detections: iou_type={} requires a 'rles' field \
+                         (sequence of RLE dicts or 2-D bool/uint8 bitmasks)",
+                        iou_type.as_str()
+                    ))
+                })?;
+            Some(
                 extract_rles(&rles_obj, FieldPath::new(None, ".rles"), n, &ctx)?
                     .into_iter()
                     .map(Some)
                     .collect(),
-            ),
-            // Quirk J2: omitted `rles` on `DetectionsBatch` is governed
-            // downstream by the kernel (`strict` synthesizes the bbox
-            // rectangle; `corrected` refuses naming the detection),
-            // matching the file, result-list, and `(N, 7)` matrix routes.
-            _ => None,
-        },
+            )
+        }
         ArrayIouType::Bbox | ArrayIouType::Keypoints => None,
     };
 
@@ -915,47 +929,44 @@ pub(crate) fn batch_to_columns<'py>(
         _ => None,
     };
 
-    let boxes_slice = boxes_view.as_slice();
-    let scores_slice = scores_view.as_slice();
-    let labels_slice = labels_view.as_slice();
-    let image_ids_slice = image_ids_view.as_slice();
-    let counts_slice = counts_view.as_ref().map(dlpack::DLPackView::as_slice);
-    let kp_slice = kp_data
-        .as_ref()
-        .map(|(view, stride)| (view.as_slice(), *stride));
-
-    let (image_ids, category_ids, scores, bboxes, keypoints) = py.detach(|| {
-        let image_ids: Vec<ImageId> = match counts_slice {
-            None => image_ids_slice.iter().map(|&id| ImageId(id)).collect(),
-            Some(counts) => {
-                let mut out = Vec::with_capacity(n);
-                for (&id, &c) in image_ids_slice.iter().zip(counts) {
-                    #[allow(clippy::cast_sign_loss)]
-                    out.extend(std::iter::repeat_n(ImageId(id), c as usize));
-                }
-                out
+    let image_ids: Vec<ImageId> = match &counts_view {
+        None => image_ids_view
+            .as_slice()
+            .iter()
+            .map(|&id| ImageId(id))
+            .collect(),
+        Some(counts) => {
+            let mut out = Vec::with_capacity(n);
+            for (&id, &c) in image_ids_view.as_slice().iter().zip(counts.as_slice()) {
+                // `c >= 0` and `sum(counts) == n` were validated above.
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                out.extend(std::iter::repeat_n(ImageId(id), c as usize));
             }
-        };
-        let category_ids: Vec<CategoryId> = labels_slice.iter().map(|&c| CategoryId(c)).collect();
-        let scores: Vec<f64> = scores_slice.to_vec();
-        let bboxes: Vec<Bbox> = boxes_slice
-            .chunks_exact(4)
-            .map(|b| Bbox {
-                x: b[0],
-                y: b[1],
-                w: b[2],
-                h: b[3],
-            })
-            .collect();
-        let keypoints: Option<Vec<Option<Vec<f64>>>> = kp_slice.map(|(flat, stride)| {
-            (0..n)
-                .map(|i| {
-                    let start = i * stride;
-                    Some(flat[start..start + stride].to_vec())
-                })
-                .collect()
-        });
-        (image_ids, category_ids, scores, bboxes, keypoints)
+            out
+        }
+    };
+    let category_ids: Vec<CategoryId> = labels_view
+        .as_slice()
+        .iter()
+        .map(|&c| CategoryId(c))
+        .collect();
+    let scores: Vec<f64> = scores_view.as_slice().to_vec();
+    let bboxes: Vec<Bbox> = boxes_view
+        .as_slice()
+        .chunks_exact(4)
+        .map(|b| Bbox {
+            x: b[0],
+            y: b[1],
+            w: b[2],
+            h: b[3],
+        })
+        .collect();
+    // Indexed rather than `chunks_exact`: `K = 0` gives a zero stride.
+    let keypoints: Option<Vec<Option<Vec<f64>>>> = kp_data.as_ref().map(|(view, stride)| {
+        let flat = view.as_slice();
+        (0..n)
+            .map(|i| Some(flat[i * stride..(i + 1) * stride].to_vec()))
+            .collect()
     });
 
     Ok(DetectionColumnsInput {
@@ -1054,7 +1065,7 @@ pub(crate) fn matrix_to_columns(
 ) -> PyResult<DetectionColumnsInput> {
     let ascontig = ascontig_for(py, cast_state)?;
     let ctx = CastCtx::new(py, cast_state, &ascontig);
-    crate::result_ingest::matrix_to_columns(py, matrix, &ctx)
+    crate::result_ingest::matrix_to_columns(matrix, &ctx)
 }
 
 // ---------------------------------------------------------------------------

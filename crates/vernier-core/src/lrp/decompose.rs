@@ -133,7 +133,10 @@ pub(crate) fn decompose_class(
     // non-ignore GTs and the crowd flags per cell.
     let gt_anns = gt.annotations();
 
-    for (i, image) in image_order.iter().enumerate() {
+    // Only populated cells contribute (an unpopulated one has neither
+    // GTs nor DTs), so walk the category's occupied images in ascending
+    // order rather than probing all `I`.
+    for (i, cell) in grid.category_cells(k, 0) {
         // ADR-0046 partitioned LRP: skip cells whose image index is
         // not in the slice. Filter applies uniformly to the n_pos_gt
         // count and the per-cell matching emission below — both must
@@ -144,10 +147,7 @@ pub(crate) fn decompose_class(
                 continue;
             }
         }
-        let cell = match grid.cell(k, 0, i) {
-            Some(c) => c,
-            None => continue,
-        };
+        let image = image_order[i];
         // cell_meta presence is a precondition for cell presence; skip
         // defensively so a streaming-evaluator desync can never panic
         // the LRP pass.
@@ -196,7 +196,7 @@ pub(crate) fn decompose_class(
 
         run_cell_matching(
             &iou_view,
-            cell,
+            &cell,
             gt_indices,
             gt_anns,
             parity_mode,
@@ -478,8 +478,7 @@ pub(crate) fn prepare_lrp_pass<'gt, K: EvalKernel>(
     // Reconstruct the same image / category orderings the
     // evaluator's K and I axes use, so the (k, i) keys on retained
     // line up with what we walk here.
-    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
 
     let category_buckets: Vec<Option<CategoryId>> = if params.use_cats {
         let mut cats: Vec<_> = gt.categories().iter().map(|c| c.id).collect();

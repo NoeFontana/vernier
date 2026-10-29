@@ -497,22 +497,15 @@ fn per_class_calibration_schema() -> Schema {
 /// summarize step, then calls this function to mint the handle the
 /// `EvalResult.calibration(...)` accessor consumes.
 ///
-/// Each populated cell is **deep-cloned** (the grid keeps its
-/// `eval_imgs` intact for subsequent table builders / LRP / TIDE folds
-/// off the same grid). `None` slots are skipped, so the work is
-/// proportional to detection volume — not the dense `K * A * I` grid —
-/// but each populated `PerImageEval` carries `dt_scores: Vec<f64>` plus
-/// two `Array2<bool>`, all of which are copied. Acceptable today
-/// because cells are opt-in via `calibration=True`; revisit with `Arc`
-/// or ownership-transfer if a streaming-calibration path lands.
+/// The cells are unpacked from the grid's packed arena once, straight
+/// into the handle — no intermediate copy, and the grid itself is left
+/// as it was for subsequent table builders / LRP / TIDE folds. (A grid
+/// assembled from dense cells is cloned instead, since the handle must
+/// own its cells.) Cells are opt-in via `calibration=True`.
 #[pyfunction]
-pub(crate) fn cells_from_grid(grid: &crate::PyEvalGrid) -> PyResult<EvalCells> {
+pub(crate) fn cells_from_grid(py: Python<'_>, grid: &crate::PyEvalGrid) -> PyResult<EvalCells> {
     let inner = grid.eval_grid_ref();
-    let cells: Vec<Option<Box<PerImageEval>>> = inner
-        .eval_imgs()
-        .iter()
-        .map(|slot| slot.as_ref().map(|cell| Box::new(cell.as_ref().clone())))
-        .collect();
+    let cells: Vec<Option<Box<PerImageEval>>> = py.detach(|| inner.eval_imgs().into_owned());
     Ok(EvalCells::new(
         cells,
         inner.n_categories,

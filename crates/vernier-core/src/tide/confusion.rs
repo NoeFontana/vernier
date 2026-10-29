@@ -101,8 +101,7 @@ pub fn compute_confusion_matrix<K: EvalKernel>(
     let mut category_ids: Vec<i64> = gt.categories().iter().map(|c| c.id.0).collect();
     category_ids.sort_unstable();
 
-    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
 
     let gt_anns = gt.annotations();
     let mut counts: HashMap<(Option<usize>, Option<usize>), u64> = HashMap::new();

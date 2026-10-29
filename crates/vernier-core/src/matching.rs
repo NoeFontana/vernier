@@ -156,76 +156,170 @@ pub(crate) struct MatchResult {
     pub dt_ignore: Array2<bool>,
 }
 
-/// The `(threshold, DT)` matching ladder.
+/// Where the greedy ladder's matches land, and how a DT's score rank
+/// maps to its IoU-matrix column.
+///
+/// The ladder itself — quirks **B1**-**B4** and **B6** — exists exactly
+/// once, in [`run_ladder`]; the three output shapes (the `MatchResult`
+/// index matrices behind `EvalImageMeta`, and the two packed accumulator
+/// layouts) are sinks it is monomorphized over. A parity fix to the scan
+/// therefore lands on every path at once.
+trait LadderSink {
+    /// IoU-matrix column of the `rank`-th score-sorted DT.
+    fn column(&self, rank: usize) -> usize;
+    /// DT `rank` matched sorted GT `m` at threshold `tind`. `to_ignore`
+    /// is quirk **B6**: whether `m` is an ignore-GT.
+    fn record(&mut self, tind: usize, rank: usize, m: usize, to_ignore: bool);
+}
+
+/// `MatchResult` index matrices; columns reached through `dt_perm`.
+struct IndexSink<'a> {
+    dt_perm: &'a [usize],
+    dt_matches: &'a mut Array2<i64>,
+    gt_matches: &'a mut Array2<i64>,
+    dt_ignore: &'a mut Array2<bool>,
+}
+
+impl LadderSink for IndexSink<'_> {
+    #[inline(always)]
+    fn column(&self, rank: usize) -> usize {
+        self.dt_perm[rank]
+    }
+
+    #[inline(always)]
+    fn record(&mut self, tind: usize, rank: usize, m: usize, to_ignore: bool) {
+        self.dt_ignore[(tind, rank)] = to_ignore;
+        self.dt_matches[(tind, rank)] = m as i64;
+        self.gt_matches[(tind, m)] = rank as i64;
+    }
+}
+
+/// One `matched_u16 | ignore_u16 << 16` word per pre-sorted DT
+/// (`n_t <= 16`), pre-filled with the unmatched-ignore bits.
+struct Bits16Sink<'a> {
+    flags: &'a mut [u32],
+}
+
+impl LadderSink for Bits16Sink<'_> {
+    #[inline(always)]
+    fn column(&self, rank: usize) -> usize {
+        rank
+    }
+
+    #[inline(always)]
+    fn record(&mut self, tind: usize, rank: usize, _m: usize, to_ignore: bool) {
+        let m_bit = 1_u32 << tind;
+        let g_bit = 1_u32 << (tind + 16);
+        // A match overrides the pre-filled unmatched-ignore (B7 / AA3)
+        // bit with B6's: set when the GT is an ignore-GT, cleared if not.
+        let slot = &mut self.flags[rank];
+        *slot = (*slot | m_bit) & !g_bit | if to_ignore { g_bit } else { 0 };
+    }
+}
+
+/// `[rank * n_t + tind]` booleans per pre-sorted DT (`n_t > 16`),
+/// `ignore` pre-filled with the unmatched-ignore flags.
+struct GeneralSink<'a> {
+    n_t: usize,
+    matched: &'a mut [bool],
+    ignore: &'a mut [bool],
+}
+
+impl LadderSink for GeneralSink<'_> {
+    #[inline(always)]
+    fn column(&self, rank: usize) -> usize {
+        rank
+    }
+
+    #[inline(always)]
+    fn record(&mut self, tind: usize, rank: usize, _m: usize, to_ignore: bool) {
+        let flat = rank * self.n_t + tind;
+        self.matched[flat] = true;
+        self.ignore[flat] = to_ignore;
+    }
+}
+
+/// The `(threshold, DT)` matching ladder — the one implementation of the
+/// pycocotools greedy loop (`cocoeval.py:268-296`).
+///
+/// GTs arrive A4-partitioned (`gt_perm[..n_unignored]` non-ignore, the
+/// rest ignore, each block in input order), which turns **B3** into
+/// structure rather than a per-GT test: a DT scans the non-ignore block,
+/// and only if nothing there matched does it go on into the ignore tail.
+/// That is exactly pycocotools' "break at the first ignore-GT once a real
+/// match exists" — the tail is only ever reached with `m == -1`.
 ///
 /// Monomorphized on `PREFILTER`: with it off, `dt_best` is unused and
-/// the skip test folds away, leaving the loop the compiler saw before
-/// the prefilter existed. With it on, `dt_best[d]` is the DT's best
-/// overlap with any GT — below the threshold seed, the DT cannot match
-/// (`best` only ever rises from the seed, so every `iou < best` test
-/// would `continue` and `m` would stay -1, which the `m < 0` guard
-/// turns into a no-op), so its whole `G`-long scan is dead work.
-/// Skipping it is output-identical, not an approximation.
-// `ArrayView2` is a `Copy` view, so by-value is idiomatic here too
-// (same rationale as the ADR-0005 entry points below).
+/// the skip test folds away. With it on, `dt_best[col]` is the DT's best
+/// overlap with any GT — below the threshold seed the DT cannot match
+/// (`best` only rises from the seed, so every `iou < best` test would
+/// `continue`), so its whole `G`-long scan is dead work. Skipping it is
+/// output-identical, not an approximation.
+// `ArrayView2` is a `Copy` view, so by-value is idiomatic.
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-fn run_ladder<const PREFILTER: bool>(
+#[inline(always)]
+fn run_ladder<const PREFILTER: bool, S: LadderSink>(
     iou_matrix: ArrayView2<'_, f64>,
     iou_thresholds: &[f64],
-    dt_perm: &[usize],
+    n_d: usize,
+    n_unignored: usize,
     gt_perm: &[usize],
-    gt_ignore_sorted: &[bool],
     gt_iscrowd_sorted: &[bool],
+    gt_matched: &mut [bool],
     dt_best: &[f64],
-    dt_matches: &mut Array2<i64>,
-    gt_matches: &mut Array2<i64>,
-    dt_ignore: &mut Array2<bool>,
+    sink: &mut S,
 ) {
-    let n_g = gt_ignore_sorted.len();
+    let (unignored, ignored) = gt_perm.split_at(n_unignored);
     for (tind, &t) in iou_thresholds.iter().enumerate() {
+        gt_matched.fill(false);
         // B1: seed best at `min(t, 1 - 1e-10)` so a DT whose best
         // overlap exactly equals the threshold still matches.
         let seed = t.min(1.0 - IOU_BOUNDARY_EPS);
-        for (k_d, &d_orig) in dt_perm.iter().enumerate() {
-            if PREFILTER && dt_best[d_orig] < seed {
+        for rank in 0..n_d {
+            let col = sink.column(rank);
+            if PREFILTER && dt_best[col] < seed {
                 continue;
             }
             let mut best = seed;
-            let mut m: i64 = -1;
-
-            for k_g in 0..n_g {
-                // B4: skip already-matched GT unless it is a crowd
-                // (crowds are many-to-one).
-                if gt_matches[(tind, k_g)] >= 0 && !gt_iscrowd_sorted[k_g] {
+            let mut m = usize::MAX;
+            for (k_g, &g_orig) in unignored.iter().enumerate() {
+                // B4: an already-taken GT is out of contention; crowds
+                // never mark themselves taken (many-to-one).
+                if gt_matched[k_g] {
                     continue;
                 }
-                // B3: once a non-ignore match has been made, stop at the
-                // first ignore-GT. A4 guarantees ignore-GTs are at the
-                // tail, so this short-circuits the rest of the row.
-                if m >= 0 && !gt_ignore_sorted[m as usize] && gt_ignore_sorted[k_g] {
-                    break;
-                }
-
-                let g_orig = gt_perm[k_g];
-                let iou = iou_matrix[(g_orig, d_orig)];
-
-                // B2: non-strict comparison. On equality the later GT
-                // wins (the update path runs when `iou >= best`).
+                let iou = iou_matrix[(g_orig, col)];
+                // B2: non-strict comparison — on equality the later GT
+                // wins, since the update runs when `iou >= best`.
                 if iou < best {
                     continue;
                 }
                 best = iou;
-                m = k_g as i64;
+                m = k_g;
             }
-
-            if m < 0 {
+            // B3: the ignore tail is reached only without a real match.
+            if m == usize::MAX {
+                for (k_t, &g_orig) in ignored.iter().enumerate() {
+                    let k_g = n_unignored + k_t;
+                    if gt_matched[k_g] {
+                        continue;
+                    }
+                    let iou = iou_matrix[(g_orig, col)];
+                    if iou < best {
+                        continue;
+                    }
+                    best = iou;
+                    m = k_g;
+                }
+            }
+            if m == usize::MAX {
                 continue;
             }
-            let m_idx = m as usize;
-            // B6: matched-to-ignore DTs inherit the ignore flag.
-            dt_ignore[(tind, k_d)] = gt_ignore_sorted[m_idx];
-            dt_matches[(tind, k_d)] = m;
-            gt_matches[(tind, m_idx)] = k_d as i64;
+            if !gt_iscrowd_sorted[m] {
+                gt_matched[m] = true;
+            }
+            // B6: a DT matched to an ignore-GT inherits the ignore flag.
+            sink.record(tind, rank, m, m >= n_unignored);
         }
     }
 }
@@ -242,8 +336,8 @@ fn run_ladder<const PREFILTER: bool>(
 /// median and well below that regime.
 const PREFILTER_MIN_CELL: usize = 256;
 
-/// `out[d] = max_g iou[(g, d)]` — the best overlap each DT has with any
-/// GT, used to skip DTs that cannot match at a given threshold.
+/// `out[d] = max_g iou[(g, d)]` — the best overlap each DT column has
+/// with any GT, used to skip DTs that cannot match at a given threshold.
 ///
 /// Walks the matrix in row-major order (the layout ADR-0005 pins) so
 /// the read stream stays sequential; the accumulator is the `D`-long
@@ -255,10 +349,10 @@ const PREFILTER_MIN_CELL: usize = 256;
 /// mask that, and a `NaN` bbox can reach here through the ADR-0030
 /// array-ingest path, which does not go via JSON.
 #[allow(clippy::needless_pass_by_value)]
-fn column_maxima(iou_matrix: ArrayView2<'_, f64>) -> Vec<f64> {
-    let mut best = vec![f64::NEG_INFINITY; iou_matrix.ncols()];
-    for g in 0..iou_matrix.nrows() {
-        for (slot, &v) in best.iter_mut().zip(iou_matrix.row(g)) {
+fn column_maxima_into(out: &mut Vec<f64>, iou_matrix: ArrayView2<'_, f64>) {
+    #[inline(always)]
+    fn fold_row<'r>(out: &mut [f64], row: impl IntoIterator<Item = &'r f64>) {
+        for (slot, &v) in out.iter_mut().zip(row) {
             *slot = if v.is_nan() {
                 f64::INFINITY
             } else {
@@ -266,7 +360,52 @@ fn column_maxima(iou_matrix: ArrayView2<'_, f64>) -> Vec<f64> {
             };
         }
     }
-    best
+    let n_d = iou_matrix.ncols();
+    out.clear();
+    out.resize(n_d, f64::NEG_INFINITY);
+    // Every kernel writes a standard-layout matrix, so the common case is
+    // one flat slice: plain `&[f64]` rows let the fold vectorize, which
+    // ndarray's generic row iterators do not.
+    match iou_matrix.as_slice() {
+        Some(flat) if n_d > 0 => {
+            for row in flat.chunks_exact(n_d) {
+                fold_row(out, row);
+            }
+        }
+        _ => {
+            for g in 0..iou_matrix.nrows() {
+                fold_row(out, iou_matrix.row(g));
+            }
+        }
+    }
+}
+
+/// Shape checks every matcher entry shares: `iou_matrix` is `(G, D)`
+/// and the crowd flags cover every GT.
+#[allow(clippy::needless_pass_by_value)]
+fn check_cell_dims(
+    iou_matrix: ArrayView2<'_, f64>,
+    n_g: usize,
+    n_d: usize,
+    n_crowd: usize,
+) -> Result<(), EvalError> {
+    if n_crowd != n_g {
+        return Err(EvalError::DimensionMismatch {
+            detail: format!("gt_iscrowd len {n_crowd} does not match gt_ignore len {n_g}"),
+        });
+    }
+    if iou_matrix.nrows() != n_g || iou_matrix.ncols() != n_d {
+        return Err(EvalError::DimensionMismatch {
+            detail: format!(
+                "iou_matrix is {}x{}, expected {}x{}",
+                iou_matrix.nrows(),
+                iou_matrix.ncols(),
+                n_g,
+                n_d
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Greedy assignment of detections to ground-truth annotations across
@@ -367,88 +506,42 @@ fn match_image_with_perm_gated(
     #[cfg(feature = "bench-histogram")]
     let _hist_guard = histogram::CallTimer::new(n_g, n_d);
 
-    if gt_iscrowd.len() != n_g {
-        return Err(EvalError::DimensionMismatch {
-            detail: format!(
-                "gt_iscrowd len {} does not match gt_ignore len {}",
-                gt_iscrowd.len(),
-                n_g
-            ),
-        });
-    }
-    if iou_matrix.nrows() != n_g || iou_matrix.ncols() != n_d {
-        return Err(EvalError::DimensionMismatch {
-            detail: format!(
-                "iou_matrix is {}x{}, expected {}x{}",
-                iou_matrix.nrows(),
-                iou_matrix.ncols(),
-                n_g,
-                n_d
-            ),
-        });
-    }
+    check_cell_dims(iou_matrix, n_g, n_d, gt_iscrowd.len())?;
 
-    // A4 (strict): stable sort GTs by `_ignore`, so non-ignore precede
-    // ignore. The B3 early-termination relies on this layout. NB:
-    // `slice::sort_by_key` is stable (unstable is `sort_unstable_by_key`),
-    // so GTs sharing an `_ignore` value keep their input order.
-    let mut gt_perm: Vec<usize> = (0..n_g).collect();
-    gt_perm.sort_by_key(|&i| gt_ignore[i]);
-
-    let gt_ignore_sorted: Vec<bool> = gt_perm.iter().map(|&i| gt_ignore[i]).collect();
-    let gt_iscrowd_sorted: Vec<bool> = gt_perm.iter().map(|&i| gt_iscrowd[i]).collect();
+    // A4 (strict): stable partition of GTs by `_ignore`, so non-ignore
+    // precede ignore and each block keeps its input order — the same
+    // permutation a stable sort by key produces.
+    let mut scratch = MatchScratch::default();
+    let n_unignored = scratch.partition_gts(gt_ignore, gt_iscrowd);
 
     let mut dt_matches = Array2::<i64>::from_elem((n_t, n_d), -1);
     let mut gt_matches = Array2::<i64>::from_elem((n_t, n_g), -1);
     let mut dt_ignore = Array2::<bool>::default((n_t, n_d));
 
-    if n_g == 0 || n_d == 0 || n_t == 0 {
-        return Ok(MatchResult {
-            dt_perm,
-            gt_perm,
-            dt_matches,
-            gt_matches,
-            dt_ignore,
-        });
-    }
-
-    // The ladder is monomorphized on whether the prefilter is active,
-    // so a sub-gate cell compiles to exactly the pre-prefilter loop —
-    // no residual per-`(threshold, DT)` branch on an inactive Option.
-    // On a COCO-shaped grid, where the median non-empty cell is
-    // `G · D = 1`, that branch alone cost ~4 %.
-    if n_g * n_d >= prefilter_min_cell {
-        let dt_best = column_maxima(iou_matrix);
-        run_ladder::<true>(
+    if n_g != 0 && n_d != 0 && n_t != 0 {
+        let prefilter = n_g * n_d >= prefilter_min_cell;
+        if prefilter {
+            column_maxima_into(&mut scratch.dt_best, iou_matrix);
+        }
+        let mut sink = IndexSink {
+            dt_perm: &dt_perm,
+            dt_matches: &mut dt_matches,
+            gt_matches: &mut gt_matches,
+            dt_ignore: &mut dt_ignore,
+        };
+        scratch.ladder(
             iou_matrix,
             iou_thresholds,
-            &dt_perm,
-            &gt_perm,
-            &gt_ignore_sorted,
-            &gt_iscrowd_sorted,
-            &dt_best,
-            &mut dt_matches,
-            &mut gt_matches,
-            &mut dt_ignore,
-        );
-    } else {
-        run_ladder::<false>(
-            iou_matrix,
-            iou_thresholds,
-            &dt_perm,
-            &gt_perm,
-            &gt_ignore_sorted,
-            &gt_iscrowd_sorted,
-            &[],
-            &mut dt_matches,
-            &mut gt_matches,
-            &mut dt_ignore,
+            n_d,
+            n_unignored,
+            prefilter,
+            &mut sink,
         );
     }
 
     Ok(MatchResult {
         dt_perm,
-        gt_perm,
+        gt_perm: scratch.gt_perm,
         dt_matches,
         gt_matches,
         dt_ignore,
@@ -460,7 +553,8 @@ fn match_image_with_perm_gated(
 ///
 /// Used on the default `!builds_meta` hot path where detections are
 /// already pre-sorted descending by score (`dt_perm` is identity) and
-/// matched annotation IDs (`EvalImageMeta`) are not requested.
+/// matched annotation IDs (`EvalImageMeta`) are not requested. The
+/// matching itself is [`run_ladder`], shared with [`match_image`].
 #[derive(Default)]
 pub(crate) struct MatchScratch {
     gt_perm: Vec<usize>,
@@ -469,174 +563,22 @@ pub(crate) struct MatchScratch {
     dt_best: Vec<f64>,
 }
 
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-fn run_presorted_bits16_ladder<const PREFILTER: bool>(
-    iou_matrix: ArrayView2<'_, f64>,
-    iou_thresholds: &[f64],
-    n_d: usize,
-    n_unignored: usize,
-    gt_perm: &[usize],
-    gt_iscrowd_sorted: &[bool],
-    gt_matched: &mut [bool],
-    dt_best: &[f64],
-    dst_flags: &mut [u32],
-) {
-    let n_g = gt_perm.len();
-    for (tind, &t) in iou_thresholds.iter().enumerate() {
-        gt_matched.fill(false);
-        let seed = t.min(1.0 - IOU_BOUNDARY_EPS);
-        let m_bit = 1_u32 << tind;
-        let g_bit = 1_u32 << (tind + 16);
-
-        for (d, slot) in dst_flags.iter_mut().enumerate().take(n_d) {
-            if PREFILTER && dt_best[d] < seed {
-                continue;
-            }
-            let mut best = seed;
-            let mut m: i64 = -1;
-
-            // Scan non-ignore GTs (`0..n_unignored`).
-            for (k_g, &g_orig) in gt_perm[..n_unignored].iter().enumerate() {
-                if gt_matched[k_g] {
-                    continue;
-                }
-                let iou = iou_matrix[(g_orig, d)];
-                if iou < best {
-                    continue;
-                }
-                best = iou;
-                m = k_g as i64;
-            }
-
-            // B3: scan trailing ignore GTs (`n_unignored..n_g`) only if
-            // no non-ignore GT matched.
-            if m < 0 {
-                for k_g in n_unignored..n_g {
-                    if gt_matched[k_g] {
-                        continue;
-                    }
-                    let g_orig = gt_perm[k_g];
-                    let iou = iou_matrix[(g_orig, d)];
-                    if iou < best {
-                        continue;
-                    }
-                    best = iou;
-                    m = k_g as i64;
-                }
-            }
-
-            if m < 0 {
-                continue;
-            }
-            let m_idx = m as usize;
-            // B4: crowds are many-to-one, so only non-crowd GTs mark
-            // `gt_matched`.
-            if !gt_iscrowd_sorted[m_idx] {
-                gt_matched[m_idx] = true;
-            }
-            // B6: matched-to-ignore sets ignore bit; matched-to-valid
-            // clears any pre-initialized B7/AA3 unmatched-ignore bit.
-            if m_idx >= n_unignored {
-                *slot |= m_bit | g_bit;
-            } else {
-                *slot = (*slot | m_bit) & !g_bit;
-            }
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-fn run_presorted_general_ladder<const PREFILTER: bool>(
-    iou_matrix: ArrayView2<'_, f64>,
-    iou_thresholds: &[f64],
-    n_d: usize,
-    n_unignored: usize,
-    gt_perm: &[usize],
-    gt_iscrowd_sorted: &[bool],
-    gt_matched: &mut [bool],
-    dt_best: &[f64],
-    dst_matched: &mut [bool],
-    dst_ignore: &mut [bool],
-) {
-    let n_g = gt_perm.len();
-    let n_t = iou_thresholds.len();
-    for (tind, &t) in iou_thresholds.iter().enumerate() {
-        gt_matched.fill(false);
-        let seed = t.min(1.0 - IOU_BOUNDARY_EPS);
-
-        for d in 0..n_d {
-            if PREFILTER && dt_best[d] < seed {
-                continue;
-            }
-            let mut best = seed;
-            let mut m: i64 = -1;
-
-            for (k_g, &g_orig) in gt_perm[..n_unignored].iter().enumerate() {
-                if gt_matched[k_g] {
-                    continue;
-                }
-                let iou = iou_matrix[(g_orig, d)];
-                if iou < best {
-                    continue;
-                }
-                best = iou;
-                m = k_g as i64;
-            }
-
-            if m < 0 {
-                for k_g in n_unignored..n_g {
-                    if gt_matched[k_g] {
-                        continue;
-                    }
-                    let g_orig = gt_perm[k_g];
-                    let iou = iou_matrix[(g_orig, d)];
-                    if iou < best {
-                        continue;
-                    }
-                    best = iou;
-                    m = k_g as i64;
-                }
-            }
-
-            if m < 0 {
-                continue;
-            }
-            let m_idx = m as usize;
-            if !gt_iscrowd_sorted[m_idx] {
-                gt_matched[m_idx] = true;
-            }
-            let flat = d * n_t + tind;
-            dst_matched[flat] = true;
-            dst_ignore[flat] = m_idx >= n_unignored;
-        }
-    }
-}
-
 impl MatchScratch {
     /// Precomputes column maxima on `iou_matrix` once per `(category,
     /// image)` cell when `G * D >= PREFILTER_MIN_CELL`, reusing the
-    /// result across all area ranges.
+    /// result across all area ranges. Must run before the cell's
+    /// `match_presorted_*` calls.
     #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn prepare_iou(&mut self, iou_matrix: ArrayView2<'_, f64>) {
-        let n_g = iou_matrix.nrows();
-        let n_d = iou_matrix.ncols();
-        if n_g * n_d < PREFILTER_MIN_CELL {
+        if iou_matrix.nrows() * iou_matrix.ncols() >= PREFILTER_MIN_CELL {
+            column_maxima_into(&mut self.dt_best, iou_matrix);
+        } else {
             self.dt_best.clear();
-            return;
-        }
-        self.dt_best.clear();
-        self.dt_best.resize(n_d, f64::NEG_INFINITY);
-        for g in 0..n_g {
-            for (slot, &v) in self.dt_best.iter_mut().zip(iou_matrix.row(g)) {
-                *slot = if v.is_nan() {
-                    f64::INFINITY
-                } else {
-                    slot.max(v)
-                };
-            }
         }
     }
 
+    /// A4 stable partition into `gt_perm` (non-ignore block first) with
+    /// the crowd flags permuted alongside. Returns the non-ignore count.
     fn partition_gts(&mut self, gt_ignore: &[bool], gt_iscrowd: &[bool]) -> usize {
         let n_g = gt_ignore.len();
         self.gt_perm.clear();
@@ -656,13 +598,55 @@ impl MatchScratch {
                 self.gt_iscrowd_sorted.push(crowd);
             }
         }
+        // Contents are irrelevant: the ladder clears it per threshold.
         self.gt_matched.resize(n_g, false);
         n_unignored
     }
 
+    /// Dispatch [`run_ladder`] on the prefilter flag.
+    #[allow(clippy::needless_pass_by_value)]
+    #[inline(always)]
+    fn ladder<S: LadderSink>(
+        &mut self,
+        iou_matrix: ArrayView2<'_, f64>,
+        iou_thresholds: &[f64],
+        n_d: usize,
+        n_unignored: usize,
+        prefilter: bool,
+        sink: &mut S,
+    ) {
+        if prefilter {
+            debug_assert_eq!(self.dt_best.len(), iou_matrix.ncols());
+            run_ladder::<true, S>(
+                iou_matrix,
+                iou_thresholds,
+                n_d,
+                n_unignored,
+                &self.gt_perm,
+                &self.gt_iscrowd_sorted,
+                &mut self.gt_matched,
+                &self.dt_best,
+                sink,
+            );
+        } else {
+            run_ladder::<false, S>(
+                iou_matrix,
+                iou_thresholds,
+                n_d,
+                n_unignored,
+                &self.gt_perm,
+                &self.gt_iscrowd_sorted,
+                &mut self.gt_matched,
+                &[],
+                sink,
+            );
+        }
+    }
+
     /// Runs greedy matching on pre-sorted detections (`n_t <= 16`) and
     /// appends `n_d` bit-packed `(matched_u16 | (ignore_u16 << 16))`
-    /// words to `out_flags`. Returns `n_unignored`.
+    /// words to `out_flags`. `dt_unmatched_ignore[d]` is the ignore flag
+    /// an *unmatched* DT carries (B7 / AA3). Returns `n_unignored`.
     #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
     pub(crate) fn match_presorted_bits16(
         &mut self,
@@ -682,27 +666,7 @@ impl MatchScratch {
         #[cfg(feature = "bench-histogram")]
         let _hist_guard = histogram::CallTimer::new(n_g, n_d);
 
-        if gt_iscrowd.len() != n_g {
-            return Err(EvalError::DimensionMismatch {
-                detail: format!(
-                    "gt_iscrowd len {} does not match gt_ignore len {}",
-                    gt_iscrowd.len(),
-                    n_g
-                ),
-            });
-        }
-        if iou_matrix.nrows() != n_g || iou_matrix.ncols() != n_d {
-            return Err(EvalError::DimensionMismatch {
-                detail: format!(
-                    "iou_matrix is {}x{}, expected {}x{}",
-                    iou_matrix.nrows(),
-                    iou_matrix.ncols(),
-                    n_g,
-                    n_d
-                ),
-            });
-        }
-
+        check_cell_dims(iou_matrix, n_g, n_d, gt_iscrowd.len())?;
         let n_unignored = self.partition_gts(gt_ignore, gt_iscrowd);
         let all_t_ig: u32 = if n_t == 0 {
             0
@@ -718,33 +682,18 @@ impl MatchScratch {
         if n_g == 0 || n_d == 0 || n_t == 0 {
             return Ok(n_unignored);
         }
-
-        let dst = &mut out_flags[base..base + n_d];
-        if n_g * n_d >= PREFILTER_MIN_CELL {
-            run_presorted_bits16_ladder::<true>(
-                iou_matrix,
-                iou_thresholds,
-                n_d,
-                n_unignored,
-                &self.gt_perm,
-                &self.gt_iscrowd_sorted,
-                &mut self.gt_matched,
-                &self.dt_best,
-                dst,
-            );
-        } else {
-            run_presorted_bits16_ladder::<false>(
-                iou_matrix,
-                iou_thresholds,
-                n_d,
-                n_unignored,
-                &self.gt_perm,
-                &self.gt_iscrowd_sorted,
-                &mut self.gt_matched,
-                &[],
-                dst,
-            );
-        }
+        let mut sink = Bits16Sink {
+            flags: &mut out_flags[base..],
+        };
+        let prefilter = n_g * n_d >= PREFILTER_MIN_CELL;
+        self.ladder(
+            iou_matrix,
+            iou_thresholds,
+            n_d,
+            n_unignored,
+            prefilter,
+            &mut sink,
+        );
         Ok(n_unignored)
     }
 
@@ -770,68 +719,31 @@ impl MatchScratch {
         #[cfg(feature = "bench-histogram")]
         let _hist_guard = histogram::CallTimer::new(n_g, n_d);
 
-        if gt_iscrowd.len() != n_g {
-            return Err(EvalError::DimensionMismatch {
-                detail: format!(
-                    "gt_iscrowd len {} does not match gt_ignore len {}",
-                    gt_iscrowd.len(),
-                    n_g
-                ),
-            });
-        }
-        if iou_matrix.nrows() != n_g || iou_matrix.ncols() != n_d {
-            return Err(EvalError::DimensionMismatch {
-                detail: format!(
-                    "iou_matrix is {}x{}, expected {}x{}",
-                    iou_matrix.nrows(),
-                    iou_matrix.ncols(),
-                    n_g,
-                    n_d
-                ),
-            });
-        }
-
+        check_cell_dims(iou_matrix, n_g, n_d, gt_iscrowd.len())?;
         let n_unignored = self.partition_gts(gt_ignore, gt_iscrowd);
         let base = out_matched.len();
-        let added = n_d * n_t;
-        out_matched.resize(base + added, false);
-        out_ignore.reserve(added);
+        out_matched.resize(base + n_d * n_t, false);
+        out_ignore.reserve(n_d * n_t);
         for &ig in dt_unmatched_ignore {
             out_ignore.extend(std::iter::repeat_n(ig, n_t));
         }
         if n_g == 0 || n_d == 0 || n_t == 0 {
             return Ok(n_unignored);
         }
-
-        let dst_m = &mut out_matched[base..base + added];
-        let dst_g = &mut out_ignore[base..base + added];
-        if n_g * n_d >= PREFILTER_MIN_CELL {
-            run_presorted_general_ladder::<true>(
-                iou_matrix,
-                iou_thresholds,
-                n_d,
-                n_unignored,
-                &self.gt_perm,
-                &self.gt_iscrowd_sorted,
-                &mut self.gt_matched,
-                &self.dt_best,
-                dst_m,
-                dst_g,
-            );
-        } else {
-            run_presorted_general_ladder::<false>(
-                iou_matrix,
-                iou_thresholds,
-                n_d,
-                n_unignored,
-                &self.gt_perm,
-                &self.gt_iscrowd_sorted,
-                &mut self.gt_matched,
-                &[],
-                dst_m,
-                dst_g,
-            );
-        }
+        let mut sink = GeneralSink {
+            n_t,
+            matched: &mut out_matched[base..],
+            ignore: &mut out_ignore[base..],
+        };
+        let prefilter = n_g * n_d >= PREFILTER_MIN_CELL;
+        self.ladder(
+            iou_matrix,
+            iou_thresholds,
+            n_d,
+            n_unignored,
+            prefilter,
+            &mut sink,
+        );
         Ok(n_unignored)
     }
 }
@@ -840,6 +752,13 @@ impl MatchScratch {
 mod tests {
     use super::*;
     use ndarray::array;
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn column_maxima(iou: ArrayView2<'_, f64>) -> Vec<f64> {
+        let mut out = Vec::new();
+        column_maxima_into(&mut out, iou);
+        out
+    }
 
     fn run(
         iou: &Array2<f64>,
@@ -1262,5 +1181,170 @@ mod tests {
             forced.dt_matches[(0, 0)] >= 0,
             "the top-scoring DT must still match under the prefilter"
         );
+    }
+
+    /// Tiny deterministic xorshift; the test must not depend on a crate RNG.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            self.0
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+    }
+
+    /// Literal transliteration of `cocoeval.py:268-296` — one loop over
+    /// the A4-sorted GTs with the B3 `break` inline — kept independent of
+    /// [`run_ladder`]'s split-block form so the two can check each other.
+    fn pycocotools_ladder(
+        iou: &Array2<f64>,
+        gt_ignore: &[bool],
+        gt_iscrowd: &[bool],
+        thresholds: &[f64],
+    ) -> (Array2<i64>, Array2<i64>, Array2<bool>) {
+        let (n_g, n_d, n_t) = (gt_ignore.len(), iou.ncols(), thresholds.len());
+        let mut gt_perm: Vec<usize> = (0..n_g).collect();
+        gt_perm.sort_by_key(|&g| gt_ignore[g]);
+        let mut dtm = Array2::<i64>::from_elem((n_t, n_d), -1);
+        let mut gtm = Array2::<i64>::from_elem((n_t, n_g), -1);
+        let mut dt_ig = Array2::<bool>::default((n_t, n_d));
+        for (t, &thr) in thresholds.iter().enumerate() {
+            for d in 0..n_d {
+                let mut best = thr.min(1.0 - IOU_BOUNDARY_EPS);
+                let mut m: i64 = -1;
+                for (k, &g) in gt_perm.iter().enumerate() {
+                    if gtm[(t, k)] >= 0 && !gt_iscrowd[g] {
+                        continue;
+                    }
+                    if m >= 0 && !gt_ignore[gt_perm[m as usize]] && gt_ignore[g] {
+                        break;
+                    }
+                    if iou[(g, d)] < best {
+                        continue;
+                    }
+                    best = iou[(g, d)];
+                    m = k as i64;
+                }
+                if m >= 0 {
+                    dt_ig[(t, d)] = gt_ignore[gt_perm[m as usize]];
+                    dtm[(t, d)] = m;
+                    gtm[(t, m as usize)] = d as i64;
+                }
+            }
+        }
+        (dtm, gtm, dt_ig)
+    }
+
+    /// The packed matchers are the `evaluate_with` hot path; the index
+    /// matcher feeds `EvalImageMeta`. Both must say the same thing about
+    /// every `(threshold, DT)` — with the unmatched-ignore overlay (B7 /
+    /// AA3) applied on top of the index matcher's B6 flag, exactly as
+    /// `evaluate_cell` does. Random cells cover crowds, interleaved
+    /// ignores, IoU ties (quantized to 0.05, so threshold equality and
+    /// B2 ties occur), `NaN`s, and both sides of the prefilter gate.
+    #[test]
+    fn packed_matchers_agree_with_the_index_matcher() {
+        let coco: Vec<f64> = (0..10).map(|i| 0.5 + 0.05 * f64::from(i)).collect();
+        let wide: Vec<f64> = (0..20).map(|i| 0.05 * f64::from(i)).collect();
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        let mut scratch = MatchScratch::default();
+        let mut cells_with_matches = 0;
+        for _ in 0..600 {
+            let n_g = rng.below(24) as usize;
+            let n_d = rng.below(40) as usize;
+            let iou = Array2::from_shape_fn((n_g, n_d), |_| match rng.below(50) {
+                0 => f64::NAN,
+                v => (v as f64 * 0.05).min(1.0) * f64::from(u8::from(rng.below(3) != 0)),
+            });
+            let gt_ignore: Vec<bool> = (0..n_g).map(|_| rng.below(4) == 0).collect();
+            let gt_iscrowd: Vec<bool> = (0..n_g).map(|_| rng.below(6) == 0).collect();
+            let unmatched_ignore: Vec<bool> = (0..n_d).map(|_| rng.below(3) == 0).collect();
+
+            for thresholds in [&coco, &wide] {
+                let n_t = thresholds.len();
+                let reference = match_image_with_perm(
+                    iou.view(),
+                    &gt_ignore,
+                    &gt_iscrowd,
+                    (0..n_d).collect(),
+                    thresholds,
+                    ParityMode::Strict,
+                )
+                .unwrap();
+                let (dtm, gtm, dt_ig) =
+                    pycocotools_ladder(&iou, &gt_ignore, &gt_iscrowd, thresholds);
+                assert_eq!(reference.dt_matches, dtm, "dtMatches vs pycocotools loop");
+                assert_eq!(reference.gt_matches, gtm, "gtMatches vs pycocotools loop");
+                assert_eq!(reference.dt_ignore, dt_ig, "dtIgnore vs pycocotools loop");
+                let expected = |t: usize, d: usize| {
+                    let matched = reference.dt_matches[(t, d)] >= 0;
+                    let ignore = if matched {
+                        reference.dt_ignore[(t, d)]
+                    } else {
+                        unmatched_ignore[d]
+                    };
+                    (matched, ignore)
+                };
+                cells_with_matches += usize::from(reference.dt_matches.iter().any(|&m| m >= 0));
+                let n_unignored = gt_ignore.iter().filter(|&&ig| !ig).count();
+
+                scratch.prepare_iou(iou.view());
+                if n_t <= 16 {
+                    let mut flags = vec![0xDEAD_BEEF_u32];
+                    let got = scratch
+                        .match_presorted_bits16(
+                            iou.view(),
+                            &gt_ignore,
+                            &gt_iscrowd,
+                            &unmatched_ignore,
+                            thresholds,
+                            ParityMode::Strict,
+                            &mut flags,
+                        )
+                        .unwrap();
+                    assert_eq!(got, n_unignored);
+                    assert_eq!(flags.len(), 1 + n_d, "appends exactly D words");
+                    for d in 0..n_d {
+                        for t in 0..n_t {
+                            let word = flags[1 + d];
+                            let got = (word >> t & 1 == 1, word >> (t + 16) & 1 == 1);
+                            assert_eq!(got, expected(t, d), "bits16 (t={t}, d={d})");
+                        }
+                    }
+                }
+                let (mut matched, mut ignore) = (vec![true], vec![true]);
+                let got = scratch
+                    .match_presorted_general(
+                        iou.view(),
+                        &gt_ignore,
+                        &gt_iscrowd,
+                        &unmatched_ignore,
+                        thresholds,
+                        ParityMode::Strict,
+                        &mut matched,
+                        &mut ignore,
+                    )
+                    .unwrap();
+                assert_eq!(got, n_unignored);
+                assert_eq!(matched.len(), 1 + n_d * n_t);
+                for d in 0..n_d {
+                    for t in 0..n_t {
+                        let flat = 1 + d * n_t + t;
+                        assert_eq!(
+                            (matched[flat], ignore[flat]),
+                            expected(t, d),
+                            "general (t={t}, d={d})"
+                        );
+                    }
+                }
+            }
+        }
+        assert!(cells_with_matches > 300, "fixture must exercise matching");
     }
 }

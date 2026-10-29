@@ -722,6 +722,25 @@ def test_bbox_only_under_segm_is_j2_on_every_route() -> None:
     assert _normalize(_segm_grid(as_matrix).eval_imgs()) == reference
 
 
+@pytest.mark.parametrize("parity_mode", ["strict", "corrected"])
+def test_detections_batch_without_rles_is_refused_under_segm(parity_mode: str) -> None:
+    """``DetectionsBatch`` is an array route, so J2 does not apply to it.
+
+    Like the per-image ``Detections`` dict, a mask pass needs the mask
+    column; only the routes that mirror a ``loadRes`` file inherit the
+    bbox-rectangle fallback.
+    """
+    _, dicts, _ = _bbox_only_under_segm()
+    batch = {
+        "image_ids": np.array([d["image_id"] for d in dicts], dtype=np.int64),
+        "boxes": np.array([d["bbox"] for d in dicts], dtype=np.float64),
+        "scores": np.array([d["score"] for d in dicts], dtype=np.float64),
+        "labels": np.array([d["category_id"] for d in dicts], dtype=np.int64),
+    }
+    with pytest.raises(ValueError, match="requires a 'rles' field"):
+        _segm_grid(batch, parity_mode)
+
+
 @pytest.mark.parametrize("route", [0, 1, 2], ids=["file", "list", "matrix"])
 def test_bbox_only_under_segm_is_refused_in_corrected_mode(route: int) -> None:
     """**J2** (``corrected``): the same three routes refuse, identically.

@@ -127,9 +127,12 @@ class DetectionsBatch(TypedDict, total=False):
 
     - ``counts``: ``int64`` ``(M,)`` non-negative detection counts per
       image summing to ``N`` (paired with length-``M`` ``image_ids``).
-    - ``rles``: length-``N`` ``Sequence[RLEInput]``. When omitted under
-      ``segm`` / ``boundary``, quirk **J2** governs downstream (matching
-      the JSON file, result-list, and ``(N, 7)`` matrix routes).
+    - ``rles``: length-``N`` ``Sequence[RLEInput]`` (required under
+      ``iou_type='segm'`` / ``'boundary'``, as on :class:`Detections`).
+      Quirk **J2**'s bbox-rectangle fallback is reserved for the routes
+      that mirror a ``loadRes`` file — JSON bytes, result dicts and the
+      ``(N, 7)`` matrix — so an array caller who omits masks is refused
+      rather than scored on rectangles.
     - ``keypoints``: ``float64`` ``(N, K, 3)`` C-contiguous (required
       under ``iou_type='keypoints'``).
 

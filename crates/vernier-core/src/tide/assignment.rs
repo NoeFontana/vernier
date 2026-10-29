@@ -162,8 +162,7 @@ pub fn assign_bins(
     cross_class: &CrossClassIous,
     params: &TideParams<'_>,
 ) -> Result<BinAssignment, EvalError> {
-    let mut images: Vec<&crate::dataset::ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&crate::dataset::ImageMeta> = gt.grid_images().iter().collect();
 
     let mut out = BinAssignment::default();
     let gt_anns = gt.annotations();

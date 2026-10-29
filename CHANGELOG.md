@@ -19,15 +19,22 @@ additive / perf / docs".
 - **Multi-image columnar `DetectionsBatch` on `DetectionsInput`** (ADR-0066).
   `vernier.instance.DetectionsBatch` carries whole-dataset or multi-image
   detection columns (`image_ids`, optional per-image `counts`, `boxes`,
-  `scores`, `labels`, and optional `rles` / `keypoints`) across every
-  `DetectionsInput` entry point (`Evaluator.evaluate`, `evaluate_*_grid`,
-  `BackgroundEvaluator.submit`, partitioned evaluation, and TIDE / LRP /
-  confusion-matrix / FP-IoU-histogram diagnostics).
-- **Direct-to-SoA Rust constructors and packed-grid accumulation** (ADR-0066).
-  `CocoDetections::from_columns`, `DetectionColumns`, `DetectionColumnsInput`,
-  `CsrIndex`, `CategoryPackedCells`, `PackedEvalGrid`, `MatchScratch`,
-  `accumulate_grid`, and `accumulate_grid_parallel` in `vernier-core` (and
-  re-exported through `vernier`).
+  `scores`, `labels`, and `rles` / `keypoints` where the IoU type needs
+  them) across every `DetectionsInput` entry point (`Evaluator.evaluate`,
+  `evaluate_*_grid`, `BackgroundEvaluator.submit`, partitioned evaluation,
+  and TIDE / LRP / confusion-matrix / FP-IoU-histogram diagnostics). Like
+  the per-image `Detections` dict it generalizes, it requires `rles` under
+  `iou_type="segm"` / `"boundary"`: quirk **J2**'s bbox-rectangle fallback
+  stays with the routes that mirror a `loadRes` file (JSON bytes, result
+  dicts, the `(N, 7)` matrix).
+- **Columnar Rust ingest and packed-grid accumulation** (ADR-0066), in
+  `vernier-core` and through the `vernier::instance` facade:
+  `CocoDetections::from_columns` / `from_columns_with_area` over
+  `dataset::DetectionColumnsInput` (with a `with_capacity` / `push` row
+  builder that keeps optional columns sparse), `accumulate::accumulate_grid`
+  and `accumulate::accumulate_grid_parallel`, and
+  `EvalGrid::category_cells(k, a)`, which walks one category's populated
+  cells in image order.
 
 ### Changed
 
@@ -36,35 +43,48 @@ additive / perf / docs".
   `segm`, replacing the `(N, 7)` float64 `np.column_stack` copy on `bbox` and
   the per-image `list[Detections]` dict loop on `segm`. Callers forwarding the
   returned `(CocoDataset, DetectionsInput)` pair to `vernier.instance` require
-  no code changes.
+  no code changes. Predictions without masks beside masked ground truth are
+  still refused by a `segm` pass, as they were before.
 - **Breaking (0.6.0) — `vernier-core` / `vernier` Rust API:**
-  - `CocoDetections` is backed by `Arc<DetectionColumns>` (Structure of Arrays)
-    and flat 2-buffer `CsrIndex` tables rather than `Vec<CocoDetection>`; index
-    lookups return `&[u32]` row indices, and `records()` returns an exact-size
-    iterator yielding `CocoDetection` by value.
-  - `EvalGrid.eval_imgs` is now a lazy method `EvalGrid::eval_imgs(&self) -> &[Option<Box<PerImageEval>>]`
-    backed by `OnceLock` over `PackedEvalGrid` instead of an eager struct field.
-  - `EvalKernel::build_dt_anns` and `build_dt_anns_into` take `&CocoDetections`
-    directly instead of `&[&CocoDetection]`.
+  - `CocoDetections` is backed by private Structure-of-Arrays columns and
+    flat CSR indexes rather than `Vec<CocoDetection>`. `detections()` is
+    replaced by `len`, `record_at`, `records()` (an exact-size iterator
+    yielding `CocoDetection` by value) and per-column accessors
+    (`image_ids`, `category_ids`, `scores`, `bboxes`, `area_at`, …);
+    `indices_for` / `indices_for_image` still return `&[usize]`.
+  - `EvalKernel::build_dt_anns` / `build_dt_anns_into` take
+    `&CocoDetections` instead of `&[CocoDetection]`.
+  - `EvalGrid` stores its cells in a packed category-major arena. The
+    `eval_imgs` field is gone: `EvalGrid::eval_imgs()` returns
+    `Cow<'_, [Option<Box<PerImageEval>>]>`, built per call (and not
+    cached) for an evaluator-produced grid; `EvalGrid::cell` returns
+    `Option<Cow<'_, PerImageEval>>`, unpacking just that cell.
 
 ### Performance
 
-- **6.8×–8.2× faster end-to-end RF-DETR validation (`5,000` images × `300`
-  queries = `1.5M` detections, `80` classes)** (ADR-0066):
+- **Faster end-to-end evaluation on dense-query detectors** (ADR-0066),
+  measured on RF-DETR validation (`5,000` images × `300` queries = `1.5M`
+  detections, `80` classes):
   - `coco_inputs_from_columns` drops from `157 ms` to `2.4 ms` (`float64 xywh`)
     / `24.0 ms` (`float32 xyxy → float64 xywh` in-place widening).
-  - FFI detection routes (`DetectionsBatch`, `Detections`, `ResultAnnotation`,
-    and `(N, 7)` `DetectionMatrix`) write directly into `DetectionColumnsInput`
-    off the GIL (`py.detach`), with branchless inline SSE2 `cvttsd2si64`
-    round-trip integer checks replacing `libm::trunc` calls on `(N, 7)` IDs.
-  - `match_image_into_packed` reuses `MatchScratch` across cells and short-circuits
-    empty-GT cells (`n_g == 0`, ~93% of unthresholded 300-query DETR cells) on
-    infallible kernels (`BboxIou`).
-  - Category-major `PackedEvalGrid` + L1/L2-resident `accumulate_grid_parallel`
-    cut 4-thread PR accumulation from `965 ms` to `67 ms` (`14.3×`) and fused
-    4-thread `evaluate_bbox_summary` from `1,454 ms` to `211.5 ms` (`6.9×`).
-  - `StreamingEvaluator::update_with` now evaluates only the `O(batch_images)`
-    subset present in each incoming batch rather than scanning all GT images.
+  - The `DetectionsBatch` and `(N, 7)` routes copy each column once,
+    straight into `DetectionColumnsInput` (under the GIL, per ADR-0006,
+    since the source buffers are the caller's), and the `(N, 7)` id columns
+    are round-trip checked with an inline integer conversion instead of a
+    `libm::trunc` call; the CSR index build then runs detached.
+  - Matching reuses per-worker scratch across cells and short-circuits
+    empty-GT cells (`n_g == 0`, ~93% of unthresholded 300-query DETR cells),
+    with one greedy-matching implementation shared by every output layout.
+  - The packed `EvalGrid` + `accumulate_grid_parallel` cut 4-thread PR
+    accumulation from `965 ms` to `67 ms` and fused 4-thread
+    `evaluate_bbox_summary` from `1,454 ms` to `211.5 ms`. Diagnostics that
+    read cells (`tables`, LRP) walk only populated cells, and nothing
+    dense is cached alongside the packed grid.
+  - `StreamingEvaluator::update` evaluates only the batch's images, with no
+    per-call `O(I log I)` image sort (the order is cached on the dataset)
+    and no `K·A·I` metadata grid; snapshots accumulate a packed grid built
+    from the populated cells, and the GT-only overlay for unseen images is
+    packed rather than a dense `K·A·I` grid.
 
 ## [0.5.4] - 2026-09-24
 

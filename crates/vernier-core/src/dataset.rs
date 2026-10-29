@@ -609,6 +609,40 @@ pub struct CocoDataset {
     /// the existing Arc-shared layout for `images` / `categories` /
     /// `annotations`.
     cached_hash: Arc<OnceLock<[u8; 32]>>,
+    /// Positions into `images` in id-ascending order: the `I` axis of
+    /// every evaluation grid. Built on first use and shared by clones, so
+    /// a [`crate::stream::StreamingEvaluator`] `update` does not re-sort
+    /// the whole image list per batch.
+    cached_image_order: Arc<OnceLock<Box<[usize]>>>,
+}
+
+/// The images of a [`CocoDataset`] in grid order (id-ascending) — the
+/// one definition of the `I` axis every evaluator, table builder and
+/// diagnostic indexes. A borrowed view: no per-call gather or sort.
+#[derive(Clone, Copy)]
+pub(crate) struct GridImages<'a> {
+    metas: &'a [ImageMeta],
+    order: &'a [usize],
+}
+
+impl<'a> GridImages<'a> {
+    /// Number of images, `I`.
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Image at grid index `i`.
+    #[inline]
+    pub(crate) fn get(&self, i: usize) -> &'a ImageMeta {
+        &self.metas[self.order[i]]
+    }
+
+    /// Images in grid order.
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &'a ImageMeta> + Clone + 'a {
+        let metas = self.metas;
+        self.order.iter().map(move |&p| &metas[p])
+    }
 }
 
 impl CocoDataset {
@@ -746,7 +780,25 @@ impl CocoDataset {
             by_image_cat,
             federated: None,
             cached_hash: Arc::new(OnceLock::new()),
+            cached_image_order: Arc::new(OnceLock::new()),
         })
+    }
+
+    /// The images in grid order (id-ascending), computed once per dataset.
+    ///
+    /// Stable by id, so a (malformed) repeated image id keeps declaration
+    /// order; every grid consumer reads this one order, so their `I` axes
+    /// agree whatever the input.
+    pub(crate) fn grid_images(&self) -> GridImages<'_> {
+        let order = self.cached_image_order.get_or_init(|| {
+            let mut order: Vec<usize> = (0..self.images.len()).collect();
+            order.sort_by_key(|&p| self.images[p].id.0);
+            order.into_boxed_slice()
+        });
+        GridImages {
+            metas: &self.images,
+            order,
+        }
     }
 
     /// Loads an LVIS v1 ground-truth dataset from a JSON byte slice.
@@ -1497,6 +1549,40 @@ pub struct DetectionColumnsInput {
     pub num_keypoints: Option<Vec<Option<u32>>>,
 }
 
+impl DetectionColumnsInput {
+    /// Empty columns with room for `n` rows.
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            image_ids: Vec::with_capacity(n),
+            category_ids: Vec::with_capacity(n),
+            scores: Vec::with_capacity(n),
+            bboxes: Vec::with_capacity(n),
+            ..Self::default()
+        }
+    }
+
+    /// Append one row.
+    ///
+    /// The optional fields stay sparse: an optional column is not
+    /// allocated until a row first supplies a value, and earlier rows are
+    /// then back-filled with `None` — so a bbox-only, auto-id batch never
+    /// allocates them at all. The one owner of that rule for every row-wise
+    /// producer (typed inputs here, result dicts at the FFI).
+    pub fn push(&mut self, row: DetectionInput) {
+        let idx = self.image_ids.len();
+        let cap = self.image_ids.capacity();
+        push_sparse_opt(&mut self.ids, idx, cap, row.id);
+        push_sparse_opt(&mut self.areas, idx, cap, row.area);
+        push_sparse_opt(&mut self.segmentations, idx, cap, row.segmentation);
+        push_sparse_opt(&mut self.keypoints, idx, cap, row.keypoints);
+        push_sparse_opt(&mut self.num_keypoints, idx, cap, row.num_keypoints);
+        self.image_ids.push(row.image_id);
+        self.category_ids.push(row.category_id);
+        self.scores.push(row.score);
+        self.bboxes.push(row.bbox);
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum IdColumn {
     /// Auto-assigned sequential ids `start + idx as i64` (`start = 1`
@@ -1933,45 +2019,16 @@ impl CocoDetections {
         inputs: Vec<DetectionInput>,
         area: DetectionArea,
     ) -> Result<Self, EvalError> {
-        let n = inputs.len();
-        let mut ids: Option<Vec<Option<AnnId>>> = None;
-        let mut image_ids = Vec::with_capacity(n);
-        let mut category_ids = Vec::with_capacity(n);
-        let mut scores = Vec::with_capacity(n);
-        let mut bboxes = Vec::with_capacity(n);
-        let mut areas: Option<Vec<Option<f64>>> = None;
-        let mut segmentations: Option<Vec<Option<Segmentation>>> = None;
-        let mut keypoints: Option<Vec<Option<Vec<f64>>>> = None;
-        let mut num_keypoints: Option<Vec<Option<u32>>> = None;
-
-        for (idx, input) in inputs.into_iter().enumerate() {
-            push_sparse_opt(&mut ids, idx, n, input.id);
-            image_ids.push(input.image_id);
-            category_ids.push(input.category_id);
-            scores.push(input.score);
-            bboxes.push(input.bbox);
-            if matches!(area, DetectionArea::Supplied) {
-                push_sparse_opt(&mut areas, idx, n, input.area);
+        let mut columns = DetectionColumnsInput::with_capacity(inputs.len());
+        let supplied_area = matches!(area, DetectionArea::Supplied);
+        for mut input in inputs {
+            // Only a `Supplied` build reads the area column (quirk J3).
+            if !supplied_area {
+                input.area = None;
             }
-            push_sparse_opt(&mut segmentations, idx, n, input.segmentation);
-            push_sparse_opt(&mut keypoints, idx, n, input.keypoints);
-            push_sparse_opt(&mut num_keypoints, idx, n, input.num_keypoints);
+            columns.push(input);
         }
-
-        Self::from_columns_with_area(
-            DetectionColumnsInput {
-                ids,
-                image_ids,
-                category_ids,
-                scores,
-                bboxes,
-                areas,
-                segmentations,
-                keypoints,
-                num_keypoints,
-            },
-            area,
-        )
+        Self::from_columns_with_area(columns, area)
     }
 
     /// Build from already-resolved records, preserving their ids and

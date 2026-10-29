@@ -836,6 +836,45 @@ def test_masked_ground_truth_beside_box_only_detections() -> None:
     assert float(coco_metrics(predictions, targets, iou_type="bbox")["map"]) > 0
 
 
+@pytest.mark.parametrize("parity_mode", ["strict", "corrected"])
+def test_box_only_detections_are_refused_by_a_segm_pass(parity_mode: str) -> None:
+    """Masked ground truth does not make box-only predictions mask-evaluable.
+
+    Before ADR-0066 the per-image ``Detections`` route refused this with
+    a length mismatch; the ``DetectionsBatch`` it became must refuse it
+    too, in either parity mode, rather than let ``strict`` quirk **J2**
+    score the boxes as rectangles and report a plausible segm AP.
+    """
+    _, actual = _discs()
+    box = np.array([[6.0, 6.0, 13.0, 13.0]])
+    targets: list[Target] = [{"boxes": box, "labels": np.array([0]), "masks": actual[0]}]
+    predictions: list[Prediction] = [
+        {"boxes": box, "scores": np.array([0.9]), "labels": np.array([0])}
+    ]
+    dataset, detections = coco_inputs(predictions, targets)
+    assert "rles" not in cast("dict[str, Any]", detections)
+    with pytest.raises(ValueError, match="requires a 'rles' field"):
+        _core.evaluate_segm_grid(
+            dataset, detections, parity_mode=parity_mode, max_dets_per_image=100, use_cats=True
+        )
+
+
+def test_masked_ground_truth_with_no_detections_still_runs_segm() -> None:
+    """Zero predictions carry a (zero-length) mask column, so segm runs."""
+    _, actual = _discs()
+    box = np.array([[6.0, 6.0, 13.0, 13.0]])
+    targets: list[Target] = [{"boxes": box, "labels": np.array([0]), "masks": actual[0]}]
+    predictions: list[Prediction] = [
+        {"boxes": np.zeros((0, 4)), "scores": np.zeros(0), "labels": np.zeros(0, np.int64)}
+    ]
+    dataset, detections = coco_inputs(predictions, targets)
+    assert len(cast("dict[str, Any]", detections)["rles"]) == 0
+    grid = _core.evaluate_segm_grid(
+        dataset, detections, parity_mode="strict", max_dets_per_image=100, use_cats=True
+    )
+    assert grid.accumulate([1, 10, 100]).summarize().stats[0] == 0.0
+
+
 def test_a_mask_error_names_the_callers_index() -> None:
     """The rewritten prefix keeps the field the extractor appended to it.
 

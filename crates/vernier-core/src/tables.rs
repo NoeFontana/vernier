@@ -458,18 +458,16 @@ pub fn aggregate_per_class_support(
     for k in 0..grid.n_categories {
         let mut n_gt = 0u32;
         let mut n_dt = 0u32;
-        for i in 0..grid.n_images {
-            if let Some(cell) = grid.cell(k, area_index_all, i) {
-                n_gt = n_gt.saturating_add(
-                    cell.gt_ignore
-                        .iter()
-                        .filter(|&&ignored| !ignored)
-                        .count()
-                        .try_into()
-                        .unwrap_or(u32::MAX),
-                );
-                n_dt = n_dt.saturating_add(cell.dt_scores.len().try_into().unwrap_or(u32::MAX));
-            }
+        for (_, cell) in grid.category_cells(k, area_index_all) {
+            n_gt = n_gt.saturating_add(
+                cell.gt_ignore
+                    .iter()
+                    .filter(|&&ignored| !ignored)
+                    .count()
+                    .try_into()
+                    .unwrap_or(u32::MAX),
+            );
+            n_dt = n_dt.saturating_add(cell.dt_scores.len().try_into().unwrap_or(u32::MAX));
         }
         support.n_gt[k] = n_gt;
         support.n_dt[k] = n_dt;
@@ -577,8 +575,7 @@ pub fn build_per_image(
     const A_ALL: usize = 0;
 
     // Image id list: id-ascending sort matches the grid's I-axis.
-    let mut images: Vec<&crate::dataset::ImageMeta> = dataset.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&crate::dataset::ImageMeta> = dataset.grid_images().iter().collect();
     if images.len() != grid.n_images {
         return Err(EvalError::InvalidConfig {
             detail: format!(
@@ -606,10 +603,7 @@ pub fn build_per_image(
     }
 
     for k in 0..grid.n_categories {
-        for i in 0..n_i {
-            let Some(cell) = grid.cell(k, A_ALL, i) else {
-                continue;
-            };
+        for (i, cell) in grid.category_cells(k, A_ALL) {
             // n_gt: non-ignore GTs.
             n_gt[i] = n_gt[i].saturating_add(saturating_u32_count(
                 cell.gt_ignore.iter().filter(|&&b| !b).count(),
@@ -724,12 +718,6 @@ impl RetainedIous {
     /// Borrow the IoU matrix for `(k, i)` if retained.
     pub fn get(&self, k: usize, i: usize) -> Option<ArrayView2<'_, f64>> {
         self.inner.get(&(k, i)).map(|m| m.view())
-    }
-
-    /// Move-out variant of [`Self::get`]. Used by streaming to roll
-    /// per-batch matrices into the long-lived store.
-    pub(crate) fn remove(&mut self, k: usize, i: usize) -> Option<Array2<f64>> {
-        self.inner.remove(&(k, i))
     }
 
     /// Iterate `(k, i, view)` triplets in arbitrary order. The
@@ -984,10 +972,7 @@ pub fn build_per_detection(
     let mut bbox_xywh: Vec<[f64; 4]> = Vec::new();
 
     for k in 0..grid.n_categories {
-        for i in 0..grid.n_images {
-            let Some(cell) = grid.cell(k, A_ALL, i) else {
-                continue;
-            };
+        for (i, cell) in grid.category_cells(k, A_ALL) {
             let Some(meta) = grid.cell_meta(k, A_ALL, i) else {
                 continue;
             };

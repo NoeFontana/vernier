@@ -88,7 +88,8 @@ use ndarray::{Array2, ArrayView2, ArrayViewMut2};
 use crate::accumulate::{PackedCategory, PackedCategoryFlags, PackedEvalGrid, PerImageEval};
 use crate::cell_occupancy;
 use crate::dataset::{
-    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetections, EvalDataset, ImageId, ImageMeta,
+    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetections, EvalDataset, GridImages,
+    ImageId, ImageMeta,
 };
 use crate::error::EvalError;
 use crate::matching::{match_image_with_perm, MatchResult, MatchScratch};
@@ -869,25 +870,36 @@ pub struct EvalImageMeta {
     pub gt_matches: Array2<i64>,
 }
 
+/// Per-cell storage behind an [`EvalGrid`]: exactly one representation,
+/// never both.
+#[derive(Debug, Clone)]
+enum GridCells {
+    /// Category-major packed arena (ADR-0066) — what every evaluator emits.
+    Packed(PackedEvalGrid),
+    /// Dense `[k][a][i]` cells, for grids assembled from pre-built cells
+    /// via [`EvalGrid::from_eval_imgs`].
+    Dense(Vec<Option<Box<PerImageEval>>>),
+}
+
 /// Output of [`evaluate_bbox`] / [`evaluate_segm`] / [`evaluate_boundary`]
 /// — the `(K, A, I)` evaluation grid consumed by
 /// [`crate::accumulate::accumulate_grid`], plus the dimensions needed to
 /// construct [`crate::accumulate::AccumulateParams`].
 ///
-/// Internally stores a flat category-major `PackedEvalGrid` (ADR-0066) so
-/// evaluation and accumulation run in contiguous L1/L2-resident streams
-/// without allocating `PerImageEval` heap boxes. Callers that inspect
-/// individual cells via [`Self::eval_imgs`] or [`Self::cell`] materialize
-/// the dense `[k][a][i]` view lazily on first access via an internal
-/// [`std::sync::OnceLock`].
+/// Evaluators store the cells in a flat category-major packed arena
+/// (ADR-0066), so evaluation and accumulation run over contiguous
+/// L1/L2-resident streams with no per-cell heap box. Nothing dense is
+/// ever cached alongside it: [`Self::cell`] and [`Self::category_cells`]
+/// unpack exactly the cells asked for, and [`Self::eval_imgs`] builds
+/// the dense `[k][a][i]` view on demand for the callers that need all of
+/// it.
 #[derive(Debug, Clone)]
 pub struct EvalGrid {
-    pub(crate) packed: Option<PackedEvalGrid>,
-    eval_imgs_cache: std::sync::OnceLock<Vec<Option<Box<PerImageEval>>>>,
-    /// Pycocotools-shaped bookkeeping for each populated cell (same
-    /// `[k][a][i]` layout as [`Self::eval_imgs`]; `None` wherever
-    /// [`Self::eval_imgs`] is `None`). Empty when the grid was built
-    /// without [`EvaluateParams::retain_meta`] or
+    cells: GridCells,
+    /// Pycocotools-shaped bookkeeping for each populated cell (dense
+    /// `[k][a][i]` layout, `eval_imgs_meta[k * A * I + a * I + i]`;
+    /// `None` wherever [`Self::cell`] is `None`). Empty when the grid was
+    /// built without [`EvaluateParams::retain_meta`] or
     /// [`EvaluateParams::retain_iou`]; see [`Self::has_meta`].
     pub eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>>,
     /// Whether `eval_imgs_meta` was built — the resolved
@@ -922,11 +934,8 @@ impl EvalGrid {
         n_images: usize,
         retained_ious: Option<crate::tables::RetainedIous>,
     ) -> Self {
-        let eval_imgs_cache = std::sync::OnceLock::new();
-        let _ = eval_imgs_cache.set(eval_imgs);
         Self {
-            packed: None,
-            eval_imgs_cache,
+            cells: GridCells::Dense(eval_imgs),
             eval_imgs_meta,
             builds_meta,
             n_categories,
@@ -942,46 +951,46 @@ impl EvalGrid {
         builds_meta: bool,
         retained_ious: Option<crate::tables::RetainedIous>,
     ) -> Self {
-        let n_categories = packed.n_categories;
-        let n_area_ranges = packed.n_area_ranges;
-        let n_images = packed.n_images;
         Self {
-            packed: Some(packed),
-            eval_imgs_cache: std::sync::OnceLock::new(),
+            n_categories: packed.n_categories,
+            n_area_ranges: packed.n_area_ranges,
+            n_images: packed.n_images,
+            cells: GridCells::Packed(packed),
             eval_imgs_meta,
             builds_meta,
-            n_categories,
-            n_area_ranges,
-            n_images,
             retained_ious,
         }
     }
 
-    /// Dense `[k][a][i]` slice (`eval_imgs[k * A * I + a * I + i]`) of
-    /// per-cell evaluation results, lazily materialized on first call
-    /// when the grid was built in packed category-major layout.
-    ///
-    /// Accumulation callers should prefer
-    /// [`crate::accumulate::accumulate_grid`] to avoid materializing
-    /// per-cell heap allocations.
-    pub fn eval_imgs(&self) -> &[Option<Box<PerImageEval>>] {
-        self.eval_imgs_cache.get_or_init(|| {
-            self.packed
-                .as_ref()
-                .map_or_else(Vec::new, PackedEvalGrid::materialize_eval_imgs)
-        })
+    /// The packed arena, when the grid has one (every evaluator output).
+    pub(crate) fn packed(&self) -> Option<&PackedEvalGrid> {
+        match &self.cells {
+            GridCells::Packed(packed) => Some(packed),
+            GridCells::Dense(_) => None,
+        }
     }
 
-    /// Consumes the grid and returns its dense `[k][a][i]` cell vector,
-    /// reusing the cached vector if already materialized or unpacking
-    /// once otherwise.
-    pub fn into_eval_imgs(mut self) -> Vec<Option<Box<PerImageEval>>> {
-        if let Some(cached) = self.eval_imgs_cache.take() {
-            cached
-        } else {
-            self.packed
-                .as_ref()
-                .map_or_else(Vec::new, PackedEvalGrid::materialize_eval_imgs)
+    /// Dense `[k][a][i]` slice (`eval_imgs[k * A * I + a * I + i]`) of
+    /// per-cell evaluation results.
+    ///
+    /// Borrowed for a grid built from dense cells; **built on every call**
+    /// for a packed grid — one heap box per occupied `(k, a, i)` plus a
+    /// `K·A·I` pointer vector — and never cached, so the grid does not
+    /// carry a second copy of itself. Accumulate with
+    /// [`crate::accumulate::accumulate_grid`], and read cells with
+    /// [`Self::cell`] / [`Self::category_cells`], to avoid it.
+    pub fn eval_imgs(&self) -> std::borrow::Cow<'_, [Option<Box<PerImageEval>>]> {
+        match &self.cells {
+            GridCells::Packed(packed) => std::borrow::Cow::Owned(packed.materialize_eval_imgs()),
+            GridCells::Dense(dense) => std::borrow::Cow::Borrowed(dense),
+        }
+    }
+
+    /// Consumes the grid and returns its dense `[k][a][i]` cell vector.
+    pub fn into_eval_imgs(self) -> Vec<Option<Box<PerImageEval>>> {
+        match self.cells {
+            GridCells::Packed(packed) => packed.materialize_eval_imgs(),
+            GridCells::Dense(dense) => dense,
         }
     }
 
@@ -989,9 +998,62 @@ impl EvalGrid {
     /// `None` when the indices are in bounds but no cell ran (image
     /// absent from detections, or no GTs and no DTs in the cell);
     /// returns `None` for out-of-bounds indices as well.
-    pub fn cell(&self, k: usize, a: usize, i: usize) -> Option<&PerImageEval> {
+    ///
+    /// On a packed grid the cell is unpacked on demand (a binary search
+    /// over the category's occupied images, then one cell's worth of
+    /// copies); walk [`Self::category_cells`] to visit many.
+    pub fn cell(&self, k: usize, a: usize, i: usize) -> Option<std::borrow::Cow<'_, PerImageEval>> {
         let idx = self.flat_index(k, a, i)?;
-        self.eval_imgs().get(idx).and_then(Option::as_deref)
+        match &self.cells {
+            GridCells::Packed(packed) => {
+                let cat = &packed.categories[k];
+                let i = u32::try_from(i).ok()?;
+                let occ = cat.occupied_images.binary_search(&i).ok()?;
+                Some(std::borrow::Cow::Owned(cat.extract_cell(a, occ)))
+            }
+            GridCells::Dense(dense) => dense
+                .get(idx)
+                .and_then(Option::as_deref)
+                .map(std::borrow::Cow::Borrowed),
+        }
+    }
+
+    /// Every populated cell of category `k` at area range `a`, as
+    /// `(image_index, cell)` in ascending image order — the order the
+    /// `[k][a][i]` layout and pycocotools both walk. Empty for
+    /// out-of-bounds `k` / `a`. On a packed grid this visits only the
+    /// occupied images, never the whole `I` axis.
+    pub fn category_cells(
+        &self,
+        k: usize,
+        a: usize,
+    ) -> impl Iterator<Item = (usize, std::borrow::Cow<'_, PerImageEval>)> + '_ {
+        let in_bounds = k < self.n_categories && a < self.n_area_ranges;
+        let (packed, dense) = match (&self.cells, in_bounds) {
+            (_, false) => (None, None),
+            (GridCells::Packed(packed), true) => (Some(&packed.categories[k]), None),
+            (GridCells::Dense(dense), true) => {
+                let base = (k * self.n_area_ranges + a) * self.n_images;
+                (None, Some(&dense[base..base + self.n_images]))
+            }
+        };
+        let packed_cells = packed.into_iter().flat_map(move |cat| {
+            cat.occupied_images
+                .iter()
+                .enumerate()
+                .map(move |(occ, &i)| {
+                    (
+                        i as usize,
+                        std::borrow::Cow::Owned(cat.extract_cell(a, occ)),
+                    )
+                })
+        });
+        let dense_cells = dense.into_iter().flat_map(|row| {
+            row.iter()
+                .enumerate()
+                .filter_map(|(i, cell)| cell.as_deref().map(|c| (i, std::borrow::Cow::Borrowed(c))))
+        });
+        packed_cells.chain(dense_cells)
     }
 
     /// Whether [`Self::eval_imgs_meta`] was built (the grid was
@@ -1050,15 +1112,176 @@ pub fn evaluate_with<K: EvalKernel>(
     parity_mode: ParityMode,
     kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
-    evaluate_subset_with(gt, dt, params, parity_mode, kernel, None)
+    evaluate_subset_with(gt, dt, params, parity_mode, kernel, None).map(PackedPass::into_grid)
+}
+
+/// Everything one evaluation pass derives before it visits a cell: the
+/// grid axes, the cells worth visiting, and the per-pass quirk switches.
+///
+/// Built once per pass by [`GridPlan::new`] and shared by the sequential
+/// and parallel evaluators, so the two cannot drift. On a subset pass it
+/// costs `O(visited images)` plus one `O(I)` pointer-free fill for LVIS:
+/// the `I` order itself is cached on the dataset.
+pub(crate) struct GridPlan<'g> {
+    pub(crate) images: GridImages<'g>,
+    pub(crate) category_buckets: Vec<Option<CategoryId>>,
+    /// LVIS `(neg_category_ids, not_exhaustive_category_ids)` per grid
+    /// image, for the images this pass visits. Empty off-LVIS (or under
+    /// `use_cats=false`).
+    pub(crate) federated_per_image: Vec<Option<(&'g HashSet<CategoryId>, &'g HashSet<CategoryId>)>>,
+    pub(crate) occupied: cell_occupancy::OccupiedCells,
+    pub(crate) strict_lvis_zero_area_filter: bool,
+    pub(crate) oks_use_cats_blackout: bool,
+}
+
+impl<'g> GridPlan<'g> {
+    /// Plan a pass over `image_subset` (sorted, unique grid indices), or
+    /// over every image when `None`.
+    ///
+    /// # Errors
+    ///
+    /// [`EvalError::InvalidConfig`] when the image, detection or
+    /// annotation count exceeds `u32::MAX`: the packed grid addresses
+    /// images and detection rows with `u32` offsets, and refusing here
+    /// is what lets every offset below be a plain, unchecked conversion.
+    pub(crate) fn new<K: EvalKernel>(
+        gt: &'g CocoDataset,
+        dt: &CocoDetections,
+        params: EvaluateParams<'_>,
+        parity_mode: ParityMode,
+        kernel: &K,
+        image_subset: Option<&[usize]>,
+    ) -> Result<Self, EvalError> {
+        for (what, n) in [
+            ("images", gt.images().len()),
+            ("detections", dt.len()),
+            ("ground-truth annotations", gt.annotations().len()),
+        ] {
+            if u32::try_from(n).is_err() {
+                return Err(EvalError::InvalidConfig {
+                    detail: format!(
+                        "{n} {what} exceeds the packed evaluation grid's u32 \
+                         addressing (max {}); split the evaluation",
+                        u32::MAX
+                    ),
+                });
+            }
+        }
+
+        let images = gt.grid_images();
+        // L4: collapse to a single virtual bucket when `use_cats=false`.
+        let category_buckets: Vec<Option<CategoryId>> = if params.use_cats {
+            let mut cats: Vec<_> = gt.categories().iter().map(|c| c.id).collect();
+            cats.sort_unstable_by_key(|id| id.0);
+            cats.into_iter().map(Some).collect()
+        } else {
+            vec![None]
+        };
+
+        let federated_per_image = match (params.use_cats, gt.federated()) {
+            (true, Some(fed)) => {
+                let lookup = |i: usize| {
+                    let id = images.get(i).id;
+                    let neg = fed.neg_category_ids.get(&id)?;
+                    let nel = fed.not_exhaustive_category_ids.get(&id)?;
+                    Some((neg, nel))
+                };
+                match image_subset {
+                    None => (0..images.len()).map(lookup).collect(),
+                    Some(subset) => {
+                        let mut out = vec![None; images.len()];
+                        for &i in subset {
+                            if let Some(slot) = out.get_mut(i) {
+                                *slot = lookup(i);
+                            }
+                        }
+                        out
+                    }
+                }
+            }
+            _ => Vec::new(),
+        };
+
+        let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
+        let occupied = cell_occupancy::by_category(
+            images,
+            image_subset,
+            category_buckets.len(),
+            gt,
+            dt,
+            &bucket_index,
+        );
+
+        Ok(Self {
+            images,
+            category_buckets,
+            federated_per_image,
+            occupied,
+            strict_lvis_zero_area_filter: matches!(parity_mode, ParityMode::Strict)
+                && gt.federated().is_some(),
+            oks_use_cats_blackout: strict_oks_use_cats_blackout(
+                kernel,
+                params.use_cats,
+                parity_mode,
+            ),
+        })
+    }
+}
+
+/// Sparse per-cell metadata keyed by `(k, a, i)`.
+pub(crate) type SparseMeta = Vec<((usize, usize, usize), Box<EvalImageMeta>)>;
+
+/// What an evaluation pass produces before it is wrapped as an
+/// [`EvalGrid`]: the packed cells plus the *sparse* side outputs.
+///
+/// A subset pass (the streaming `update`) consumes this directly, so its
+/// cost stays proportional to the cells it evaluated; only
+/// [`Self::into_grid`] — the whole-grid surface — densifies metadata to
+/// the `K·A·I` layout [`EvalGrid::eval_imgs_meta`] promises.
+pub(crate) struct PackedPass {
+    pub(crate) packed: PackedEvalGrid,
+    /// `Some` exactly when the pass built metadata; `(k, a, i)`-keyed,
+    /// in ascending `(k, i, a)` order.
+    pub(crate) meta: Option<SparseMeta>,
+    /// `Some` exactly when the pass retained IoU matrices.
+    pub(crate) retained: Option<HashMap<(usize, usize), Array2<f64>>>,
+}
+
+impl PackedPass {
+    /// Wrap as a whole-grid [`EvalGrid`], densifying the metadata.
+    pub(crate) fn into_grid(self) -> EvalGrid {
+        let Self {
+            packed,
+            meta,
+            retained,
+        } = self;
+        let builds_meta = meta.is_some();
+        let eval_imgs_meta = match meta {
+            None => Vec::new(),
+            Some(entries) => {
+                let (n_a, n_i) = (packed.n_area_ranges, packed.n_images);
+                let mut dense = vec![None; packed.n_categories * n_a * n_i];
+                for ((k, a, i), m) in entries {
+                    dense[(k * n_a + a) * n_i + i] = Some(m);
+                }
+                dense
+            }
+        };
+        EvalGrid::from_packed(
+            packed,
+            eval_imgs_meta,
+            builds_meta,
+            retained.map(crate::tables::RetainedIous::from_map),
+        )
+    }
 }
 
 /// Subset-scoped sibling of [`evaluate_with`] (ADR-0066).
 ///
 /// When `image_subset` is `Some(sorted_unique_indices)`, only GT images
-/// whose sorted index `i` lies in `sorted_unique_indices` are evaluated;
-/// [`crate::stream::StreamingEvaluator`] uses this so each `update(batch)`
-/// is `O(batch)` rather than `O(I)`.
+/// whose grid index `i` lies in `sorted_unique_indices` are evaluated;
+/// [`crate::stream::StreamingEvaluator`] uses this so each
+/// `update(batch)` is `O(batch)` rather than `O(I)`.
 pub(crate) fn evaluate_subset_with<K: EvalKernel>(
     gt: &CocoDataset,
     dt: &CocoDetections,
@@ -1066,125 +1289,65 @@ pub(crate) fn evaluate_subset_with<K: EvalKernel>(
     parity_mode: ParityMode,
     kernel: &K,
     image_subset: Option<&[usize]>,
-) -> Result<EvalGrid, EvalError> {
-    // Image and category ordering: id-ascending, deterministic across runs.
-    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
-    let n_i = images.len();
+) -> Result<PackedPass, EvalError> {
+    let plan = GridPlan::new(gt, dt, params, parity_mode, kernel, image_subset)?;
+    let n_i = plan.images.len();
     let n_a = params.area_ranges.len();
     let n_t = params.iou_thresholds.len();
-
-    // L4: collapse to a single virtual bucket when `use_cats=false`.
-    let category_buckets: Vec<Option<CategoryId>> = if params.use_cats {
-        let mut cats: Vec<_> = gt.categories().iter().map(|c| c.id).collect();
-        cats.sort_unstable_by_key(|id| id.0);
-        cats.into_iter().map(Some).collect()
-    } else {
-        vec![None]
-    };
-    let n_k = category_buckets.len();
-
+    let n_k = plan.category_buckets.len();
     let builds_meta = params.builds_meta();
-    let mut eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = if builds_meta {
-        vec![None; n_k * n_a * n_i]
-    } else {
-        Vec::new()
-    };
-    let mut retained_ious_map: Option<HashMap<(usize, usize), Array2<f64>>> = if params.retain_iou {
-        Some(HashMap::new())
-    } else {
-        None
-    };
-
-    let federated_per_image: Vec<Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>> =
-        match (params.use_cats, gt.federated()) {
-            (true, Some(fed)) => images
-                .iter()
-                .map(|im| {
-                    let neg = fed.neg_category_ids.get(&im.id)?;
-                    let nel = fed.not_exhaustive_category_ids.get(&im.id)?;
-                    Some((neg, nel))
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
 
     let mut scratch = CellScratch::new();
     let mut kernel_scratch = KernelScratch::<K::Annotation>::default();
     let mut match_scratch = MatchScratch::default();
-    let gt_anns = gt.annotations();
-
-    let strict_lvis_zero_area_filter =
-        matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
-    let oks_use_cats_blackout = strict_oks_use_cats_blackout(kernel, params.use_cats, parity_mode);
-
-    let image_ids: Vec<ImageId> = images.iter().map(|im| im.id).collect();
-    let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
-    let occupied =
-        cell_occupancy::by_category_subset(&image_ids, image_subset, n_k, gt, dt, &bucket_index);
-
-    let mut packed_categories = Vec::with_capacity(n_k);
+    let mut categories = Vec::with_capacity(n_k);
+    let mut meta = builds_meta.then(Vec::new);
+    let mut retained = params.retain_iou.then(HashMap::new);
     let mut meta_entries: Vec<(usize, Box<EvalImageMeta>)> = Vec::new();
     let mut retained_entries: Vec<(usize, Array2<f64>)> = Vec::new();
 
-    for (k, &cat) in category_buckets.iter().enumerate() {
+    for (k, &cat) in plan.category_buckets.iter().enumerate() {
+        meta_entries.clear();
+        retained_entries.clear();
         let packed_cat = evaluate_category_slice(
             &mut scratch,
             &mut kernel_scratch,
             &mut match_scratch,
             cat,
-            occupied.row(k),
-            &images,
+            plan.occupied.row(k),
+            &plan,
             gt,
-            gt_anns,
             dt,
             params,
             parity_mode,
             kernel,
-            &federated_per_image,
-            strict_lvis_zero_area_filter,
-            oks_use_cats_blackout,
-            if builds_meta {
-                meta_entries.clear();
-                Some(&mut meta_entries)
-            } else {
-                None
-            },
-            if params.retain_iou {
-                retained_entries.clear();
-                Some(&mut retained_entries)
-            } else {
-                None
-            },
+            meta.is_some().then_some(&mut meta_entries),
+            retained.is_some().then_some(&mut retained_entries),
         )?;
-        if builds_meta {
-            let nk = k * n_a * n_i;
-            for (cat_offset, meta) in meta_entries.drain(..) {
-                eval_imgs_meta[nk + cat_offset] = Some(meta);
-            }
+        if let Some(meta) = meta.as_mut() {
+            meta.extend(
+                meta_entries
+                    .drain(..)
+                    .map(|(cat_offset, m)| ((k, cat_offset / n_i, cat_offset % n_i), m)),
+            );
         }
-        if let Some(map) = retained_ious_map.as_mut() {
-            for (i, mat) in retained_entries.drain(..) {
-                map.insert((k, i), mat);
-            }
+        if let Some(map) = retained.as_mut() {
+            map.extend(retained_entries.drain(..).map(|(i, mat)| ((k, i), mat)));
         }
-        packed_categories.push(packed_cat);
+        categories.push(packed_cat);
     }
 
-    let packed = PackedEvalGrid {
-        categories: packed_categories,
-        n_categories: n_k,
-        n_area_ranges: n_a,
-        n_images: n_i,
-        n_t,
-    };
-
-    Ok(EvalGrid::from_packed(
-        packed,
-        eval_imgs_meta,
-        builds_meta,
-        retained_ious_map.map(crate::tables::RetainedIous::from_map),
-    ))
+    Ok(PackedPass {
+        packed: PackedEvalGrid {
+            categories,
+            n_categories: n_k,
+            n_area_ranges: n_a,
+            n_images: n_i,
+            n_t,
+        },
+        meta,
+        retained,
+    })
 }
 
 /// Evaluates an ascending slice of occupied image indices for one category
@@ -1201,19 +1364,25 @@ pub(crate) fn evaluate_category_slice<K: EvalKernel>(
     match_scratch: &mut MatchScratch,
     cat: Option<CategoryId>,
     img_indices: &[u32],
-    images: &[&ImageMeta],
+    plan: &GridPlan<'_>,
     gt: &CocoDataset,
-    gt_anns: &[CocoAnnotation],
     dt: &CocoDetections,
     params: EvaluateParams<'_>,
     parity_mode: ParityMode,
     kernel: &K,
-    federated_per_image: &[Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>],
-    strict_lvis_zero_area_filter: bool,
-    oks_use_cats_blackout: bool,
     mut meta_out: Option<&mut Vec<(usize, Box<EvalImageMeta>)>>,
     mut retained_out: Option<&mut Vec<(usize, Array2<f64>)>>,
 ) -> Result<PackedCategory, EvalError> {
+    let GridPlan {
+        images,
+        federated_per_image,
+        strict_lvis_zero_area_filter,
+        oks_use_cats_blackout,
+        ..
+    } = plan;
+    let (strict_lvis_zero_area_filter, oks_use_cats_blackout) =
+        (*strict_lvis_zero_area_filter, *oks_use_cats_blackout);
+    let gt_anns = gt.annotations();
     let n_i = images.len();
     let n_a = params.area_ranges.len();
     let n_t = params.iou_thresholds.len();
@@ -1231,7 +1400,7 @@ pub(crate) fn evaluate_category_slice<K: EvalKernel>(
 
     for &i_u32 in img_indices {
         let i = i_u32 as usize;
-        let image = images[i];
+        let image = images.get(i);
         let image_id = image.id;
         let gt_indices_raw = gt_indices_for_cell(gt, image_id, cat);
         let gt_indices_buf: Vec<usize>;
@@ -2353,7 +2522,8 @@ mod tests {
         assert_eq!(grid.n_area_ranges, 4);
         assert_eq!(grid.n_images, 1);
         // Both DTs perfectly overlap their GTs → all four area cells exist.
-        let cells: Vec<_> = grid.eval_imgs().iter().filter(|c| c.is_some()).collect();
+        let eval_imgs = grid.eval_imgs();
+        let cells: Vec<_> = eval_imgs.iter().filter(|c| c.is_some()).collect();
         assert_eq!(cells.len(), 4);
         // The "all" bucket (a=0) has both DTs matched at every threshold.
         let all_cell = grid.cell(0, 0, 0).unwrap();
@@ -2375,7 +2545,7 @@ mod tests {
             n_images: grid.n_images,
         };
         let acc = crate::accumulate::accumulate_grid(&grid, p, ParityMode::Strict).unwrap();
-        let acc_dense = accumulate(grid.eval_imgs(), p, ParityMode::Strict).unwrap();
+        let acc_dense = accumulate(&grid.eval_imgs(), p, ParityMode::Strict).unwrap();
         assert_eq!(acc.precision, acc_dense.precision);
         assert_eq!(acc.recall, acc_dense.recall);
         assert_eq!(acc.scores, acc_dense.scores);
@@ -2866,7 +3036,7 @@ mod tests {
         let grid = evaluate_segm(&gt, &dts, params, ParityMode::Strict).unwrap();
         let max_dets = vec![1usize, 10, 100];
         let acc = accumulate(
-            grid.eval_imgs(),
+            &grid.eval_imgs(),
             AccumulateParams {
                 iou_thresholds: iou_thresholds(),
                 recall_thresholds: recall_thresholds(),
@@ -3204,7 +3374,7 @@ mod tests {
         let grid = evaluate_boundary(&gt, &dts, params, ParityMode::Strict, 0.02).unwrap();
         let max_dets = vec![1usize, 10, 100];
         let acc = accumulate(
-            grid.eval_imgs(),
+            &grid.eval_imgs(),
             AccumulateParams {
                 iou_thresholds: iou_thresholds(),
                 recall_thresholds: recall_thresholds(),

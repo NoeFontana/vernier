@@ -775,16 +775,19 @@ impl PackedCategory {
         }
     }
 
+    /// Open the next occupied cell (image-ascending within a category).
+    ///
+    /// The `as u32` conversions are exact: `GridPlan::new` refuses any
+    /// pass whose image, detection or annotation count exceeds
+    /// `u32::MAX`, and a category holds at most every detection once and
+    /// a cell at most every annotation once.
     #[inline]
     pub(crate) fn begin_cell(&mut self, image_idx: u32, n_g: usize, dt_scores: &[f64]) {
         self.occupied_images.push(image_idx);
         self.dt_scores.extend_from_slice(dt_scores);
-        self.dt_offsets
-            .push(u32::try_from(self.dt_scores.len()).unwrap_or(u32::MAX));
-        if dt_scores.len() > self.max_cell_dts {
-            self.max_cell_dts = dt_scores.len();
-        }
-        self.n_gts.push(u32::try_from(n_g).unwrap_or(u32::MAX));
+        self.dt_offsets.push(self.dt_scores.len() as u32);
+        self.max_cell_dts = self.max_cell_dts.max(dt_scores.len());
+        self.n_gts.push(n_g as u32);
     }
 
     #[inline]
@@ -834,8 +837,69 @@ impl PackedCategory {
 
     #[inline]
     pub(crate) fn push_matched_cell_area(&mut self, a: usize, n_unignored: usize) {
-        self.n_unignored_by_area[a].push(u32::try_from(n_unignored).unwrap_or(u32::MAX));
+        // Exact: `n_unignored <= n_g`, see `begin_cell`.
+        self.n_unignored_by_area[a].push(n_unignored as u32);
         self.npig_by_area[a] += n_unignored;
+    }
+
+    /// Append occupied cell `occ` of `src` as this category's next cell,
+    /// every area range at once.
+    ///
+    /// # Errors
+    ///
+    /// [`EvalError::DimensionMismatch`] if `src` was built for a
+    /// different `(n_a, n_t)`.
+    pub(crate) fn push_cell_from(&mut self, src: &Self, occ: usize) -> Result<(), EvalError> {
+        if src.n_t != self.n_t || src.npig_by_area.len() != self.npig_by_area.len() {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "packed cell built for (n_a={}, n_t={}), expected (n_a={}, n_t={})",
+                    src.npig_by_area.len(),
+                    src.n_t,
+                    self.npig_by_area.len(),
+                    self.n_t
+                ),
+            });
+        }
+        let (d0, d1) = (
+            src.dt_offsets[occ] as usize,
+            src.dt_offsets[occ + 1] as usize,
+        );
+        self.begin_cell(
+            src.occupied_images[occ],
+            src.n_gts[occ] as usize,
+            &src.dt_scores[d0..d1],
+        );
+        for (a, by_occ) in src.n_unignored_by_area.iter().enumerate() {
+            self.push_matched_cell_area(a, by_occ[occ] as usize);
+        }
+        let n_t = self.n_t;
+        match (&mut self.dt_flags, &src.dt_flags) {
+            (PackedCategoryFlags::Bits16(dst), PackedCategoryFlags::Bits16(from)) => {
+                for (dst_a, from_a) in dst.iter_mut().zip(from) {
+                    dst_a.extend_from_slice(&from_a[d0..d1]);
+                }
+            }
+            (
+                PackedCategoryFlags::General { matched, ignore },
+                PackedCategoryFlags::General {
+                    matched: from_m,
+                    ignore: from_g,
+                },
+            ) => {
+                for a in 0..matched.len() {
+                    matched[a].extend_from_slice(&from_m[a][d0 * n_t..d1 * n_t]);
+                    ignore[a].extend_from_slice(&from_g[a][d0 * n_t..d1 * n_t]);
+                }
+            }
+            // Same `n_t` (checked above), hence the same variant.
+            _ => {
+                return Err(EvalError::DimensionMismatch {
+                    detail: "packed cell flags layout disagrees with its n_t".into(),
+                })
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn push_from_per_image_eval(&mut self, a: usize, cell: &PerImageEval) {
@@ -873,36 +937,54 @@ impl PackedCategory {
         }
     }
 
-    pub(crate) fn concat_chunks(mut chunks: Vec<Self>, n_a: usize, n_t: usize) -> Self {
-        if chunks.is_empty() {
-            return Self::with_capacity(n_a, n_t, 0, 0);
+    /// Concatenate image-ascending chunks of one category, in order.
+    ///
+    /// # Errors
+    ///
+    /// [`EvalError::DimensionMismatch`] if a chunk was built for a
+    /// different `(n_a, n_t)` — an internal invariant, refused rather
+    /// than letting a flags layout silently go missing.
+    pub(crate) fn concat_chunks(
+        mut chunks: Vec<Self>,
+        n_a: usize,
+        n_t: usize,
+    ) -> Result<Self, EvalError> {
+        if let Some(bad) = chunks
+            .iter()
+            .find(|c| c.n_t != n_t || c.npig_by_area.len() != n_a)
+        {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "packed chunk built for (n_a={}, n_t={}), expected (n_a={n_a}, n_t={n_t})",
+                    bad.npig_by_area.len(),
+                    bad.n_t
+                ),
+            });
         }
-        if chunks.len() == 1 {
-            return chunks
+        if chunks.len() <= 1 {
+            return Ok(chunks
                 .pop()
-                .unwrap_or_else(|| Self::with_capacity(n_a, n_t, 0, 0));
+                .unwrap_or_else(|| Self::with_capacity(n_a, n_t, 0, 0)));
         }
         let total_occ: usize = chunks.iter().map(|c| c.occupied_images.len()).sum();
         let total_dts: usize = chunks.iter().map(|c| c.dt_scores.len()).sum();
         let mut out = Self::with_capacity(n_a, n_t, total_occ, total_dts);
         for chunk in chunks {
-            let base_dt = u32::try_from(out.dt_scores.len()).unwrap_or(u32::MAX);
+            // Exact: a category's detections fit u32 (see `begin_cell`).
+            let base_dt = out.dt_scores.len() as u32;
             out.occupied_images
                 .extend_from_slice(&chunk.occupied_images);
-            out.dt_offsets.extend(
-                chunk.dt_offsets[1..]
-                    .iter()
-                    .map(|&off| base_dt.saturating_add(off)),
-            );
+            out.dt_offsets
+                .extend(chunk.dt_offsets[1..].iter().map(|&off| base_dt + off));
             out.dt_scores.extend_from_slice(&chunk.dt_scores);
-            if chunk.max_cell_dts > out.max_cell_dts {
-                out.max_cell_dts = chunk.max_cell_dts;
-            }
+            out.max_cell_dts = out.max_cell_dts.max(chunk.max_cell_dts);
             out.n_gts.extend_from_slice(&chunk.n_gts);
             for a in 0..n_a {
                 out.n_unignored_by_area[a].extend_from_slice(&chunk.n_unignored_by_area[a]);
                 out.npig_by_area[a] += chunk.npig_by_area[a];
             }
+            // Both sides were built for this `n_t` (checked above), so
+            // they share a flags variant.
             match (&mut out.dt_flags, chunk.dt_flags) {
                 (PackedCategoryFlags::Bits16(dst), PackedCategoryFlags::Bits16(src)) => {
                     for (dst_a, src_a) in dst.iter_mut().zip(src) {
@@ -928,10 +1010,14 @@ impl PackedCategory {
                         dg.extend_from_slice(&sg);
                     }
                 }
-                _ => {}
+                _ => {
+                    return Err(EvalError::DimensionMismatch {
+                        detail: "packed chunk flags layout disagrees with its n_t".into(),
+                    })
+                }
             }
         }
-        out
+        Ok(out)
     }
 
     pub(crate) fn extract_cell(&self, a: usize, occ: usize) -> PerImageEval {
@@ -1072,9 +1158,19 @@ pub fn accumulate_grid(
     p: AccumulateParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<Accumulated, EvalError> {
-    let Some(packed) = &grid.packed else {
-        return accumulate(grid.eval_imgs(), p, parity_mode);
-    };
+    match grid.packed() {
+        Some(packed) => accumulate_packed(packed, p, parity_mode),
+        None => accumulate(&grid.eval_imgs(), p, parity_mode),
+    }
+}
+
+/// [`accumulate_grid`] over a bare packed arena — also what the
+/// streaming evaluator's snapshots run on.
+pub(crate) fn accumulate_packed(
+    packed: &PackedEvalGrid,
+    p: AccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
     let n_t = p.iou_thresholds.len();
     let n_r = p.recall_thresholds.len();
     let n_k = p.n_categories;
@@ -1127,9 +1223,18 @@ pub fn accumulate_grid_parallel(
     p: AccumulateParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<Accumulated, EvalError> {
-    let Some(packed) = &grid.packed else {
-        return accumulate_parallel(grid.eval_imgs(), p, parity_mode);
-    };
+    match grid.packed() {
+        Some(packed) => accumulate_packed_parallel(packed, p, parity_mode),
+        None => accumulate_parallel(&grid.eval_imgs(), p, parity_mode),
+    }
+}
+
+/// Rayon sibling of [`accumulate_packed`].
+pub(crate) fn accumulate_packed_parallel(
+    packed: &PackedEvalGrid,
+    p: AccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
     let n_t = p.iou_thresholds.len();
     let n_r = p.recall_thresholds.len();
     let n_k = p.n_categories;

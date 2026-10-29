@@ -61,8 +61,7 @@ pub fn compute_cross_class_ious<K: EvalKernel>(
     parity_mode: ParityMode,
     max_dets_per_image: usize,
 ) -> Result<CrossClassIous, EvalError> {
-    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
 
     // Category-id → category-index map matching evaluate_with's K-axis
     // ordering (id-ascending). Indexing rather than the raw id keeps

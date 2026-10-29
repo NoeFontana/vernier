@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use vernier_core::accumulate::{
-    accumulate_grid, accumulate_grid_parallel, sort_max_dets, AccumulateParams,
+    accumulate_grid, accumulate_grid_parallel, sort_max_dets, AccumulateParams, Accumulated,
 };
 use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
 use vernier_core::lrp::{self, LrpParams, LrpReport};
@@ -196,43 +196,17 @@ fn run_pipeline(
         retain_meta: false,
     };
 
-    let grid = run_grid_for_threads(
+    let acc = evaluate_and_accumulate(
         iou_type,
         gt,
         dt,
         eval_params,
         parity,
+        max_dets,
         dilation_ratio,
         sigmas,
         threads,
     )?;
-
-    let acc_params = AccumulateParams {
-        iou_thresholds: iou_thr,
-        recall_thresholds: recall_thresholds(),
-        max_dets,
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
-    };
-    let resolved_threads = match threads {
-        0 => std::thread::available_parallelism()
-            .map(std::num::NonZeroUsize::get)
-            .unwrap_or(1),
-        n => n,
-    };
-    let acc = if resolved_threads <= 1 {
-        accumulate_grid(&grid, acc_params, parity)?
-    } else {
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(resolved_threads)
-            .thread_name(|i| format!("vernier-rayon-{i}"))
-            .build()
-            .map_err(|e| EvalError::InvalidConfig {
-                detail: format!("failed to build rayon pool of {resolved_threads} threads: {e}"),
-            })?;
-        pool.install(|| accumulate_grid_parallel(&grid, acc_params, parity))?
-    };
     if matches!(iou_type, IouTypeArg::Keypoints) {
         // ADR-0012 / D5: kp summary uses the 10-stat plan over the
         // 3-bucket area grid.
@@ -318,24 +292,35 @@ fn lookup_formatter(name: crate::format::FormatName) -> Option<&'static dyn Form
     registry().iter().copied().find(|f| f.id() == name)
 }
 
-/// Dispatch the grid run based on `threads` (ADR-0047).
+/// Evaluate the grid and accumulate it, dispatched on `threads`
+/// (ADR-0047).
 ///
-/// - `threads <= 1`: sequential — today's `evaluate_*` entry points.
 /// - `threads == 0`: auto via [`std::thread::available_parallelism`].
-/// - `threads >= 2`: scoped `rayon::ThreadPool` built around the call,
-///   parallel `evaluate_*_parallel` entry points dispatched via
-///   `pool.install`.
+/// - resolved `<= 1`: sequential `evaluate_*` + [`accumulate_grid`];
+///   rayon is never entered.
+/// - resolved `>= 2`: one scoped `rayon::ThreadPool` runs both stages —
+///   the parallel `evaluate_*_parallel` entry points, then
+///   [`accumulate_grid_parallel`] — so the pool is built once per run.
 #[allow(clippy::too_many_arguments)]
-fn run_grid_for_threads(
+fn evaluate_and_accumulate(
     iou_type: IouTypeArg,
     gt: &CocoDataset,
     dt: &CocoDetections,
     eval_params: EvaluateParams<'_>,
     parity: ParityMode,
+    max_dets: &[usize],
     dilation_ratio: f64,
     sigmas: Option<HashMap<i64, Vec<f64>>>,
     threads: usize,
-) -> Result<EvalGrid, EvalError> {
+) -> Result<Accumulated, EvalError> {
+    let acc_params = |grid: &EvalGrid| AccumulateParams {
+        iou_thresholds: eval_params.iou_thresholds,
+        recall_thresholds: recall_thresholds(),
+        max_dets,
+        n_categories: grid.n_categories,
+        n_area_ranges: grid.n_area_ranges,
+        n_images: grid.n_images,
+    };
     let resolved = match threads {
         0 => std::thread::available_parallelism()
             .map(std::num::NonZeroUsize::get)
@@ -343,14 +328,15 @@ fn run_grid_for_threads(
         n => n,
     };
     if resolved <= 1 {
-        return match iou_type {
+        let grid = match iou_type {
             IouTypeArg::Bbox => evaluate_bbox(gt, dt, eval_params, parity),
             IouTypeArg::Segm => evaluate_segm(gt, dt, eval_params, parity),
             IouTypeArg::Boundary => evaluate_boundary(gt, dt, eval_params, parity, dilation_ratio),
             IouTypeArg::Keypoints => {
                 evaluate_keypoints(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
             }
-        };
+        }?;
+        return accumulate_grid(&grid, acc_params(&grid), parity);
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(resolved)
@@ -359,15 +345,18 @@ fn run_grid_for_threads(
         .map_err(|e| EvalError::InvalidConfig {
             detail: format!("failed to build rayon pool of {resolved} threads: {e}"),
         })?;
-    pool.install(|| match iou_type {
-        IouTypeArg::Bbox => evaluate_bbox_parallel(gt, dt, eval_params, parity),
-        IouTypeArg::Segm => evaluate_segm_parallel(gt, dt, eval_params, parity),
-        IouTypeArg::Boundary => {
-            evaluate_boundary_parallel(gt, dt, eval_params, parity, dilation_ratio)
-        }
-        IouTypeArg::Keypoints => {
-            evaluate_keypoints_parallel(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
-        }
+    pool.install(|| {
+        let grid = match iou_type {
+            IouTypeArg::Bbox => evaluate_bbox_parallel(gt, dt, eval_params, parity),
+            IouTypeArg::Segm => evaluate_segm_parallel(gt, dt, eval_params, parity),
+            IouTypeArg::Boundary => {
+                evaluate_boundary_parallel(gt, dt, eval_params, parity, dilation_ratio)
+            }
+            IouTypeArg::Keypoints => {
+                evaluate_keypoints_parallel(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
+            }
+        }?;
+        accumulate_grid_parallel(&grid, acc_params(&grid), parity)
     })
 }
 
