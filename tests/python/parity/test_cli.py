@@ -33,7 +33,6 @@ import contextlib
 import importlib.util
 import io
 import json
-import os
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -46,7 +45,6 @@ from pycocotools.cocoeval import COCOeval
 from .harness import IouType
 
 FIXTURES = Path(__file__).parent / "fixtures"
-WORKSPACE_ROOT = Path(__file__).resolve().parents[3]
 
 # Fixture per IoU kind. The CLI surface covers four kinds (bbox / segm /
 # boundary / keypoints); boundary needs an additional `--dilation-ratio`
@@ -59,29 +57,6 @@ _FIXTURE_BY_KIND: dict[IouType, str] = {
 }
 
 _HAS_VERNIER_CORE = importlib.util.find_spec("vernier._core") is not None
-
-
-@pytest.fixture(scope="session")
-def vernier_bin() -> Path:
-    """Build `vernier-cli` once per session and return the binary path.
-
-    Uses `cargo build --release -p vernier-cli` directly rather than
-    `just build`, which would invoke `maturin develop` and pull in the
-    Python extension build (libpython link). The CLI is a pure-Rust
-    workspace member with no PyO3, so it links cleanly on its own.
-    """
-    cargo_toml = WORKSPACE_ROOT / "Cargo.toml"
-    assert cargo_toml.exists(), f"workspace root sanity check failed: {cargo_toml}"
-
-    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", str(WORKSPACE_ROOT / "target")))
-    subprocess.run(
-        ["cargo", "build", "--release", "-p", "vernier-cli"],
-        cwd=WORKSPACE_ROOT,
-        check=True,
-    )
-    binary = target_dir / "release" / "vernier"
-    assert binary.exists(), f"cargo build did not produce {binary}"
-    return binary
 
 
 def _fixture_paths(kind: IouType) -> tuple[Path, Path]:

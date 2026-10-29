@@ -8,7 +8,6 @@ schema metadata, and the missing-label warning path.
 from __future__ import annotations
 
 import json
-import os
 import subprocess
 import warnings
 from pathlib import Path
@@ -514,34 +513,6 @@ def test_aggregate_consumes_cli_v2_json_doc_directly(tmp_path: Path) -> None:
     assert result.column("ap__rpc").to_pylist() == pytest.approx([1.0, 0.40 / 0.80])
     assert result.column("ap50__rpc").to_pylist() == pytest.approx([1.0, 0.50 / 0.90])
     assert result.column("value").to_pylist() == ["clear", "fog"]
-
-
-@pytest.fixture(scope="session")
-def vernier_bin() -> Path:
-    """Locate (and on miss, build) the `vernier` CLI binary.
-
-    Mirrors the bootstrap pattern in
-    `tests/python/parity/test_cli.py::vernier_bin` so the two
-    out-of-process suites agree on where the binary lives. Cargo build
-    is incremental — repeated invocations on a clean tree are fast.
-    """
-    target_dir = Path(os.environ.get("CARGO_TARGET_DIR", str(WORKSPACE_ROOT / "target")))
-    debug_binary = target_dir / "debug" / "vernier"
-    release_binary = target_dir / "release" / "vernier"
-    if release_binary.exists():
-        return release_binary
-    if debug_binary.exists():
-        return debug_binary
-    # Build once. Use --release for parity with how the wheel is
-    # produced; the difference (debug vs release) does not affect the
-    # JSON envelope shape.
-    subprocess.run(
-        ["cargo", "build", "--release", "-p", "vernier-cli"],
-        cwd=WORKSPACE_ROOT,
-        check=True,
-    )
-    assert release_binary.exists(), f"cargo build did not produce {release_binary}"
-    return release_binary
 
 
 @pytest.mark.slow
