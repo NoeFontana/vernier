@@ -1,6 +1,6 @@
 # ADR-0067: Gate synthetic twins of real bench workloads on measured equivalence
 
-- **Status:** proposed
+- **Status:** accepted (2026-10-29)
 - **Date:** 2026-10-29
 - **Deciders:** @NoeFontana
 - **Consulted:** —
