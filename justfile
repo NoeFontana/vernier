@@ -212,9 +212,16 @@ ubench:
     cargo bench --workspace
 
 # Sync the local bench harness env and every per-impl env (ADR-0017).
+#
+# `--reinstall-package vernier` rebuilds vernier from the checkout on every
+# sync. The envs install it as a non-editable path dependency, and uv only
+# rebuilds one of those when its `pyproject.toml` changes: a Rust change
+# without a version bump would otherwise be benchmarked as the previous
+# build while the results are filed under the new git SHA. It is a no-op
+# in the envs that do not install vernier.
 bench-sync:
     uv sync --directory bench
-    for env in bench/envs/*/; do uv sync --directory "$env"; done
+    for env in bench/envs/*/; do uv sync --directory "$env" --reinstall-package vernier; done
 
 # Run the bench harness's own pytest suite. Isolated from `just test-py`.
 bench-test:

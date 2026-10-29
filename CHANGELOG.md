@@ -27,6 +27,16 @@ additive / perf / docs".
   `category_ids`, `scores`, `bboxes`, `area_at`, `bbox_at` and `id_at`.
   `EvalKernel::build_dt_anns` / `build_dt_anns_into` take
   `&CocoDetections` instead of `&[CocoDetection]`.
+- **`EvalGrid` storage is private** (ADR-0066, Rust API only). Evaluators
+  emit a packed category-major arena instead of a dense `K·A·I` grid of
+  boxed cells. `EvalGrid::eval_imgs` is a method returning
+  `Cow<[Option<Box<PerImageEval>>]>` (the dense view, built on demand),
+  not a field; `EvalGrid::cell` returns `Option<Cow<PerImageEval>>`; an
+  `EvalGrid` is built with `EvalGrid::from_eval_imgs`, not a struct
+  literal; its axis sizes are read through `n_categories()`,
+  `n_area_ranges()` and `n_images()` instead of public fields.
+  `accumulate_grid`, `category_cells` and `into_eval_imgs` work on either
+  storage.
 
 ### Added
 
@@ -34,6 +44,9 @@ additive / perf / docs".
   `DetectionColumnsInput` (`with_capacity`, `push`). Every ingest route
   converges on this one constructor, which owns **J1**, **J3**,
   **E2**/**J4** and non-finite score rejection.
+- `EvalKernel::dt_anns_can_fail`, defaulting to `true`. A kernel whose
+  detection annotations cannot fail to build (`BboxIou`) lets empty-GT
+  cells skip building them.
 
 ### Performance
 
@@ -41,6 +54,16 @@ additive / perf / docs".
   intermediate. 1.5M rows, input build included: 311.6 → 80.7 ms (3.9×).
   The `Detections` and `DetectionsBatch` FFI routes share one column
   extractor.
+- **Packed evaluation grid.** `accumulate` sweeps the packed arena
+  directly, empty-GT cells skip the matcher, and the parallel evaluator
+  fans out over image chunks of each category, sized to the thread pool.
+  On a DETR-shaped grid (500 images × 80 categories × 300 queries),
+  evaluate + accumulate go from 171 to 39.6 ms on one thread (4.3×) and
+  from 76.6 to 8.9 ms on eight (8.6×). COCO-shaped cells are 5.0× faster;
+  dense single-class cells are flat. End to end from Python,
+  `evaluate_bbox_summary` on 1.5M detections over 5,000 images goes from
+  2.55 s to 0.69 s on one thread and from 1.60 s to 0.19 s on eight,
+  where 0.5.5 had stopped scaling past four. Bit-identical output.
 
 ## [0.5.5] - 2026-10-29
 
