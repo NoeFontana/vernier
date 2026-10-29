@@ -218,6 +218,14 @@ bench-typecheck:
 bench-run *ARGS:
     uv run --directory bench python -m bench run {{ARGS}}
 
+# ADR-0067 twin gate: measure REAL and TWIN (`twin:<profile>`) on every
+# impl in release mode, then check structure, cost and ranking. Exits
+# non-zero unless the twin passes. Profiles: `python -m bench twin profile`.
+bench-twin-check REAL TWIN IOU="bbox":
+    uv run --directory bench python -m bench run --impl all --workload {{REAL}} --iou {{IOU}} --mode release --no-parity
+    uv run --directory bench python -m bench run --impl all --workload {{TWIN}} --iou {{IOU}} --mode release --no-parity
+    uv run --directory bench python -m bench twin compare {{REAL}} {{TWIN}} --iou {{IOU}}
+
 # ADR-0047 threading-scaling smoke. Runs the `synthetic_threads_smoke`
 # workload — a tiny synthetic fixture pinned to `num_threads ∈ {1, 2, 4, 8}`
 # — and exists to validate the bench-harness threading axis end to end.
