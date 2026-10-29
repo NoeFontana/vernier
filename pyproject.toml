@@ -201,6 +201,32 @@ docs = [
     "codespell>=2.3",
 ]
 
+[tool.uv]
+# `uv run` / `uv sync` rebuild the editable extension whenever one of
+# these changes, so a Python test can never run against a `_core*.so`
+# that predates a Rust edit. uv's default keys are pyproject.toml alone,
+# which is what let stale builds through.
+# Only the crates linked into `_core`: editing the CLI, the facade or a
+# test file must not trigger an extension rebuild.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "Cargo.lock" },
+    { file = "crates/*/Cargo.toml" },
+    { file = "crates/vernier-ffi/build.rs" },
+    { file = "crates/vernier-ffi/src/**/*.rs" },
+    { file = "crates/vernier-core/src/**/*.rs" },
+    { file = "crates/vernier-mask/src/**/*.rs" },
+    { file = "crates/vernier-panoptic/src/**/*.rs" },
+    { file = "crates/vernier-semantic/src/**/*.rs" },
+    { file = "crates/vernier-partial/src/**/*.rs" },
+]
+# Editable builds use the `pyext` profile (optimized, no LTO; see
+# Cargo.toml) instead of maturin's PEP 517 default of `--release`.
+# Scoped to vernier: wheels and the bench env build through maturin
+# directly, with `--release`.
+config-settings-package = { vernier = { build-args = "--profile=pyext" } }
+
 [tool.uv.sources]
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "tools/lvis_val_cache", editable = true }

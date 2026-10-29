@@ -3,6 +3,8 @@
 
 # Rust
 /target
+# Per-checkout pyo3 interpreter pin, written by tools/dev/pin-python.sh.
+/.cargo/
 **/*.rs.bk
 Cargo.lock.bak
 

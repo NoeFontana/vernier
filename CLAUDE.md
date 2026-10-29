@@ -16,8 +16,9 @@ Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 
 ## Commands (use `just`)
 
-- `just bootstrap` — one-time `uv sync` + `maturin develop --release`
-- `just develop` — fast iterative rebuild (debug Rust)
+- `just setup-host` — once per machine: sccache + clang/mold in `~/.cargo/config.toml`
+- `just bootstrap` — first thing in a fresh clone **or new worktree** (~40 s with sccache): `uv sync --all-extras` + pin pyo3's interpreter in a git-ignored `.cargo/config.toml`
+- `just develop` — rebuild the extension if Rust changed; rarely needed, since `uv run` does it itself (`pyext` profile: optimized, no LTO)
 - `just build` — release wheel into `target/wheels/`
 - `just check` — ultra-fast static analysis (workspace compile check + ruff + pyright, ~1s)
 - `just test` / `test-rust` / `test-py` / `test-parity` — full suite or subset (pytest runs with `pytest-xdist -n auto`)
@@ -29,9 +30,10 @@ Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 - `just audit` — `cargo deny check`
 - `just check-features` — `cargo hack --feature-powerset check -p vernier` (ADR-0048 facade gate; runs as part of `lint-rust`)
 - `just prune` — prune compiled target artifacts without destroying `.venv`
+- `just gc` — drop stale incremental caches in every worktree's `target/`
 - `just clean` — nuke `target/`, `.venv`, built `_core*.so`
 
-Single tests:
+Single tests (bare `cargo` and `just` build identically, so mixing them costs no rebuild):
 
 ```bash
 cargo nextest run -p vernier-core <test_name>
@@ -40,7 +42,7 @@ uv run pytest -m parity                  # all parity tests
 uv run pytest -m "not slow"              # skip slow
 ```
 
-Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nextest`, `cargo-deny`, `cargo-hack`. `rustc >= 1.83`, Python >= 3.10.
+Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nextest`, `cargo-deny`, `cargo-hack`. `rustc >= 1.83`, Python >= 3.10. Optional, used by `just setup-host`: `sccache`, `clang` + `mold`.
 
 ## Parity contract — read before changing eval logic
 

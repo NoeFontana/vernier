@@ -36,13 +36,16 @@ Prerequisites:
 - [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) for `just audit`
 - [`cargo-hack`](https://github.com/taiki-e/cargo-hack) for the facade
   feature-powerset check in `just lint`
+- Optional: [`sccache`](https://github.com/mozilla/sccache), `clang` and
+  [`mold`](https://github.com/rui314/mold) for `just setup-host`
 
 ```bash
 # One-time setup
+just setup-host   # optional, once per machine: sccache + mold
 just bootstrap
 
 # Iterate
-just develop      # fast incremental rebuild
+uv run pytest     # rebuilds the extension first if any Rust changed
 just test         # Rust + Python tests
 just lint         # clippy + ruff + pyright (read-only, CI-equivalent)
 just fmt          # auto-format everything

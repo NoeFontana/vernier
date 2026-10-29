@@ -3,13 +3,11 @@
 
 set shell := ["bash", "-cu"]
 
-# Ensure PyO3 extension tests (vernier-ffi) locate libpython at runtime.
-py_libdir := `uv run python -c "import sysconfig; print(sysconfig.get_config_var('LIBDIR') or '')" 2>/dev/null || true`
-export LD_LIBRARY_PATH := if py_libdir != "" { py_libdir + if env("LD_LIBRARY_PATH", "") != "" { ":" + env("LD_LIBRARY_PATH", "") } else { "" } } else { env("LD_LIBRARY_PATH", "") }
-
-# Linker auto-configuration: prefer clang + mold when available for fast linking.
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER := if `which clang 2>/dev/null || true` != "" { "clang" } else { "gcc" }
-export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS := if `which mold 2>/dev/null || true` != "" { "-C link-arg=-fuse-ld=mold" } else if `which ld.lld 2>/dev/null || true` != "" { "-C link-arg=-fuse-ld=lld" } else { "" }
+# No exported build env: `just` and bare `cargo` must build identically,
+# or every switch between them rebuilds the tree. Host speedups go in cargo
+# config instead (`just setup-host`, `just bootstrap`; see tools/dev/).
+# Cargo recipes run outside `uv run`, whose sync would first rebuild the
+# Python extension after any Rust edit; ruff/pyright use `--no-sync`.
 
 # Default recipe: list available recipes.
 default:
@@ -19,24 +17,31 @@ default:
 # Bootstrap & build
 # ---------------------------------------------------------------------------
 
-# Set up the dev environment from a fresh clone.
+# Set up the dev environment from a fresh clone or a new worktree. Builds
+# the extension with the `pyext` profile (see `[tool.uv]` in pyproject.toml).
 bootstrap:
     uv sync --all-extras
-    uv run maturin develop --release
+    tools/dev/pin-python.sh
 
-# Fast iteration build (debug Rust, slow Python).
+# Rebuild the extension if any Rust source changed since the last build.
+# `uv run` makes the same check on its own, so this is rarely needed.
 develop:
-    uv run maturin develop
+    uv sync --inexact
 
 # Optimized wheel into target/wheels/.
 build:
-    uv run maturin build --release
+    uv run --no-sync maturin build --release
+
+# One-time host setup: sccache and clang + mold in the user-level cargo
+# config. Shows the diff and asks before writing.
+setup-host *ARGS:
+    tools/dev/setup-host.sh {{ARGS}}
 
 # Ultra-fast static analysis (compile check + ruff + pyright) without linking binaries.
 check:
     cargo check --workspace
-    uv run ruff check .
-    uv run pyright
+    uv run --no-sync ruff check .
+    uv run --no-sync pyright
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -47,22 +52,22 @@ test: test-rust test-py
 
 # Fast iterative unit tests (skips slow parity and integration sweeps).
 test-fast:
-    uv run cargo nextest run --workspace -E 'not test(slow)'
+    cargo nextest run --workspace -E 'not test(slow)'
     uv run pytest -m "not slow and not parity"
 
 # Run tests for a specific workspace crate (e.g. `just test-crate core`).
 test-crate CRATE:
-    uv run cargo nextest run -p vernier-{{CRATE}}
+    cargo nextest run -p vernier-{{CRATE}}
 
 test-rust:
-    uv run cargo nextest run --workspace
+    cargo nextest run --workspace
 
 # `--verifytypes` needs vernier *installed* (it reads the packaged
 # `py.typed`), so it rides the test lane rather than `lint-py`, which CI
 # runs with `--no-install-project`. See docs/engineering/python-type-stubs.md.
 test-py:
     uv run pytest
-    uv run pyright --verifytypes vernier --ignoreexternal
+    uv run --no-sync pyright --verifytypes vernier --ignoreexternal
 
 # Run only parity tests (against pycocotools reference).
 test-parity:
@@ -116,8 +121,8 @@ test-coco-val:
 lint-fast:
     cargo fmt --all -- --check
     cargo clippy --workspace --all-targets -- -D warnings
-    uv run ruff check .
-    uv run pyright
+    uv run --no-sync ruff check .
+    uv run --no-sync pyright
 
 # Run all linters (CI-equivalent, read-only).
 lint: lint-rust lint-py lint-citations
@@ -139,16 +144,16 @@ check-wasm:
     cargo check --target wasm32-unknown-unknown --workspace --exclude vernier-cli --exclude vernier-ffi
 
 lint-py:
-    uv run ruff check .
-    uv run ruff format --check .
+    uv run --no-sync ruff check .
+    uv run --no-sync ruff format --check .
     # bench/ is excluded from the bare `.` run (own pyproject + ruff
     # config, ADR-0017) but is a first-class consumer of the public
     # Python surface, so lint it here rather than nowhere: an explicit
     # path bypasses `extend-exclude`, and ruff picks up bench's own
     # config hierarchically. Needs no bench env -- only ruff.
-    uv run ruff check bench/
-    uv run ruff format --check bench/
-    uv run pyright
+    uv run --no-sync ruff check bench/
+    uv run --no-sync ruff format --check bench/
+    uv run --no-sync pyright
 
 # Validate the `Wired-by` citations in docs/engineering/pycocotools-quirks.md.
 # Names, never line numbers: the check fails on a stale path, an ambiguous
@@ -159,8 +164,8 @@ lint-citations:
 # Auto-format Rust and Python (writes changes).
 fmt:
     cargo fmt --all
-    uv run ruff format .
-    uv run ruff check --fix .
+    uv run --no-sync ruff format .
+    uv run --no-sync ruff check --fix .
 
 # ---------------------------------------------------------------------------
 # Docs
@@ -256,6 +261,10 @@ audit:
 prune:
     cargo clean -p vernier -p vernier-core -p vernier-cli -p vernier-ffi -p vernier-panoptic -p vernier-semantic -p vernier-partial -p vernier-mask
 
+# Drop incremental caches untouched for DAYS in every worktree's target/.
+gc DAYS="3":
+    tools/dev/gc.sh {{DAYS}}
+
 # Remove all build artifacts and the venv.
 clean:
     cargo clean
@@ -267,4 +276,4 @@ versions:
     @echo "rustc:  $(rustc --version)"
     @echo "cargo:  $(cargo --version)"
     @echo "uv:     $(uv --version)"
-    @echo "python: $(uv run python --version)"
+    @echo "python: $(uv run --no-sync python --version)"
