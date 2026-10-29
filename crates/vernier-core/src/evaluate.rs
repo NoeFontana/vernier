@@ -896,6 +896,44 @@ pub struct EvalGrid {
 }
 
 impl EvalGrid {
+    /// Dense `[k][a][i]` slice of per-cell results
+    /// (`eval_imgs[k * A * I + a * I + i]`).
+    ///
+    /// Prefer this method to the `eval_imgs` field, and prefer
+    /// [`Self::cell`] / [`Self::category_cells`] /
+    /// [`crate::accumulate::accumulate_grid`] to either: ADR-0066 moves
+    /// the grid to a packed layout in 0.6, where the field goes away and
+    /// this method builds the dense view on demand (hence the `Cow`).
+    pub fn eval_imgs(&self) -> std::borrow::Cow<'_, [Option<Box<PerImageEval>>]> {
+        std::borrow::Cow::Borrowed(&self.eval_imgs)
+    }
+
+    /// Consumes the grid and returns its dense `[k][a][i]` cell vector.
+    pub fn into_eval_imgs(self) -> Vec<Option<Box<PerImageEval>>> {
+        self.eval_imgs
+    }
+
+    /// Every populated cell of category `k` at area range `a`, as
+    /// `(image_index, cell)` in ascending image order — the order the
+    /// `[k][a][i]` layout and pycocotools both walk. Empty for
+    /// out-of-bounds `k` / `a`.
+    ///
+    /// Cells are `Cow`: borrowed today, and unpacked on demand from the
+    /// packed grid ADR-0066 introduces in 0.6, where this walk visits only
+    /// the occupied images rather than the whole `I` axis.
+    pub fn category_cells(
+        &self,
+        k: usize,
+        a: usize,
+    ) -> impl Iterator<Item = (usize, std::borrow::Cow<'_, PerImageEval>)> + '_ {
+        let row = self
+            .flat_index(k, a, 0)
+            .map_or(&[][..], |base| &self.eval_imgs[base..base + self.n_images]);
+        row.iter()
+            .enumerate()
+            .filter_map(|(i, cell)| cell.as_deref().map(|c| (i, std::borrow::Cow::Borrowed(c))))
+    }
+
     /// Cell at `(category_index, area_index, image_index)`. Returns
     /// `None` when the indices are in bounds but no cell ran (image
     /// absent from detections, or no GTs and no DTs in the cell);

@@ -20,7 +20,7 @@ use std::env;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use vernier_core::accumulate::{accumulate, AccumulateParams};
+use vernier_core::accumulate::{accumulate_grid, AccumulateParams};
 use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::similarity::BboxIou;
 use vernier_core::{
@@ -124,9 +124,8 @@ fn main() {
         n_area_ranges: area.len(),
         n_images: gt.images().len(),
     };
-    let (_acc, accumulate_ms) = time_ms(|| {
-        accumulate(&grid.eval_imgs, acc_params, ParityMode::Strict).expect("accumulate")
-    });
+    let (_acc, accumulate_ms) =
+        time_ms(|| accumulate_grid(&grid, acc_params, ParityMode::Strict).expect("accumulate"));
 
     let total = read_gt_ms + read_dt_ms + parse_gt_ms + parse_dt_ms + match_ms + accumulate_ms;
     let pct = |ms: f64| 100.0 * ms / total;
