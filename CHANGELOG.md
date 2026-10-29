@@ -110,6 +110,11 @@ additive / perf / docs".
   753 → 525 ms end to end (−30%). A malformed value in a skipped field no
   longer fails the evaluation, matching pycocotools, which never reads it
   there, and both routes accept the same payloads (ADR-0057).
+- **Detection JSON parses in parallel when the GT is a `CocoDataset`.**
+  The grid and summary entry points that take a pre-parsed dataset
+  parsed the detection payload on one thread at any `num_threads`.
+  RF-DETR Nano on COCO val2017, eight threads: parse + evaluate
+  240 → 133 ms (−45%); Seg-Nano segm 800 → 616 ms (−23%).
 
 ## [0.5.5] - 2026-10-29
 

@@ -1090,7 +1090,7 @@ fn evaluate_grid_with_dataset_impl(
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt) =
         py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let dt = realize_dt(dt_payload, dt_area, dt_fields)?
+            let dt = realize_dt_with_policy(dt_payload, dt_area, dt_fields, thread_policy)?
                 .trim_for(&snapshot.gt, max_dets_per_image);
             let caches = snapshot.caches();
             let params = EvaluateParams {
@@ -1635,7 +1635,12 @@ fn evaluate_summary_with_dataset_impl(
             &iou_type,
             &snapshot.gt,
             snapshot.caches(),
-            realize_dt(dt_payload, DetectionArea::FromBbox, iou_type.dt_fields())?,
+            realize_dt_with_policy(
+                dt_payload,
+                DetectionArea::FromBbox,
+                iou_type.dt_fields(),
+                thread_policy,
+            )?,
             parity,
             &max_dets,
             use_cats,
@@ -2347,6 +2352,28 @@ pub(crate) fn realize_dt(
         // `Supplied` honours it exactly as the file route does.
         UpdatePayload::Columns(cols) => CocoDetections::from_columns_with_area(cols, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
+    }
+}
+
+/// [`realize_dt`] under a thread policy, for the entry points whose GT is
+/// already parsed (a `CocoDataset`): [`parse_gt_dt_with_policy`] covers
+/// the bytes-GT ones. Without it a pre-parsed GT left the detection JSON
+/// parse serial at any `num_threads`. `None` stays sequential and never
+/// enters rayon (ADR-0047); a pool-build failure falls back to it.
+fn realize_dt_with_policy(
+    payload: UpdatePayload,
+    area: DetectionArea,
+    fields: DetectionFields,
+    thread_policy: threads::ThreadPolicy,
+) -> PyResult<CocoDetections> {
+    match thread_policy.thread_count() {
+        Some(n) if matches!(payload, UpdatePayload::Bytes(_)) => {
+            match threads::build_scoped_pool(n) {
+                Ok(pool) => pool.install(|| realize_dt_parallel(payload, area, fields, n.get())),
+                Err(_) => realize_dt(payload, area, fields),
+            }
+        }
+        _ => realize_dt(payload, area, fields),
     }
 }
 
