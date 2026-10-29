@@ -485,10 +485,10 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
 
     /// Parallel sibling of [`Self::update_parsed`] (ADR-0047). Same
     /// body but routes the per-batch matching pass through
-    /// [`evaluate_with_parallel`]; caller `install`s a
-    /// `rayon::ThreadPool` around the call. Post-matching bookkeeping
-    /// is shared, so strict-mode bit-equality across thread counts
-    /// follows from [`evaluate_with_parallel`]'s contract.
+    /// [`crate::evaluate_parallel::evaluate_with_parallel`]'s batch-subset
+    /// variant; caller `install`s a `rayon::ThreadPool` around the call.
+    /// Post-matching bookkeeping is shared, so strict-mode bit-equality
+    /// across thread counts follows from that function's contract.
     ///
     /// # Errors
     /// Same set as [`Self::update_parsed`].
