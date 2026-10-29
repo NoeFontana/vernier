@@ -220,6 +220,27 @@ def test_box_formats_converge_on_xywh(box_format: str, boxes: list[list[float]])
     assert dataset.dataset_hash == expected.dataset_hash
 
 
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_xyxy_conversion_never_writes_the_callers_boxes(dtype: Any) -> None:
+    """``xyxy`` widened from float32 is converted in place; the caller's array is not.
+
+    The in-place path may only touch a buffer the conversion itself
+    allocated: a float64 input is read as-is (no copy), so it must take
+    the copying path, and a float32 input is widened into a fresh buffer
+    first. Either way the caller's boxes come back untouched.
+    """
+    xyxy = np.array([[10.0, 20.0, 40.0, 60.0], [0.0, 0.0, 8.0, 4.0]], dtype=dtype)
+    before = xyxy.copy()
+    predictions: list[Prediction] = [
+        {"boxes": xyxy, "scores": np.array([0.9, 0.8]), "labels": np.array([1, 1])}
+    ]
+    targets: list[Target] = [{"boxes": xyxy, "labels": np.array([1, 1])}]
+    _, detections = coco_inputs(predictions, targets, box_format="xyxy")
+    assert np.array_equal(xyxy, before)
+    xywh = np.asarray(detections)[:, 1:5]
+    assert np.array_equal(xywh, [[10.0, 20.0, 30.0, 40.0], [0.0, 0.0, 8.0, 4.0]])
+
+
 def test_fractional_labels_are_refused() -> None:
     """A float label is checked, not truncated: 2.7 must not become class 2."""
     targets: list[Target] = [{"boxes": np.array([[0.0, 0.0, 4.0, 4.0]]), "labels": np.array([2.7])}]
