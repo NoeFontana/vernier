@@ -666,82 +666,6 @@ mod tests {
         (gt, dts)
     }
 
-    /// The grid-level accessors are views of the stored cells:
-    /// `category_cells` yields exactly the populated `[k][a][..]` slots in
-    /// image order (nothing out of bounds, nothing on a short hand-built
-    /// grid), `eval_imgs()` is the stored slice, and both
-    /// `accumulate_grid*` equal `accumulate*` over it.
-    #[test]
-    fn grid_accessors_are_views_of_the_stored_cells() {
-        let (gt, dt) = tiny_grid_inputs();
-        let area = AreaRange::coco_default();
-        let params = EvaluateParams {
-            iou_thresholds: iou_thresholds(),
-            area_ranges: &area,
-            max_dets_per_image: 100,
-            use_cats: true,
-            retain_iou: false,
-            retain_meta: false,
-        };
-        let grid = evaluate_with(&gt, &dt, params, ParityMode::Strict, &BboxIou).expect("grid");
-        let (n_k, n_a, n_i) = (grid.n_categories, grid.n_area_ranges, grid.n_images);
-        assert_eq!(grid.eval_imgs().len(), grid.eval_imgs.len());
-        for k in 0..n_k {
-            for a in 0..n_a {
-                let walked: Vec<usize> = grid
-                    .category_cells(k, a)
-                    .map(|(i, cell)| {
-                        let stored = grid.cell(k, a, i).expect("walked cell is stored");
-                        assert!(std::ptr::eq(&*cell, stored));
-                        i
-                    })
-                    .collect();
-                let expected: Vec<usize> =
-                    (0..n_i).filter(|&i| grid.cell(k, a, i).is_some()).collect();
-                assert_eq!(walked, expected, "(k={k}, a={a})");
-            }
-        }
-        assert_eq!(grid.category_cells(n_k, 0).count(), 0);
-        assert_eq!(grid.category_cells(0, n_a).count(), 0);
-
-        let ladder = crate::accumulate::GridAccumulateParams {
-            iou_thresholds: iou_thresholds(),
-            recall_thresholds: recall_thresholds(),
-            max_dets: &[1, 10, 100],
-        };
-        let via_slice =
-            accumulate(&grid.eval_imgs, ladder.for_grid(&grid), ParityMode::Strict).expect("slice");
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(3)
-            .build()
-            .expect("pool");
-        for via_grid in [
-            crate::accumulate::accumulate_grid(&grid, ladder, ParityMode::Strict).expect("grid"),
-            pool.install(|| {
-                crate::accumulate::accumulate_grid_parallel(&grid, ladder, ParityMode::Strict)
-            })
-            .expect("grid parallel"),
-        ] {
-            assert_eq!(via_grid.precision, via_slice.precision);
-            assert_eq!(via_grid.recall, via_slice.recall);
-            assert_eq!(via_grid.scores, via_slice.scores);
-        }
-
-        // A hand-built grid whose cells do not cover its declared axes
-        // walks as empty rather than panicking, like `cell()`.
-        let short = EvalGrid {
-            eval_imgs: vec![None; 3],
-            eval_imgs_meta: Vec::new(),
-            builds_meta: false,
-            n_categories: 2,
-            n_area_ranges: 1,
-            n_images: 3,
-            retained_ious: None,
-        };
-        assert_eq!(short.category_cells(1, 0).count(), 0);
-        assert!(short.cell(1, 0, 0).is_none());
-    }
-
     #[test]
     fn parallel_eval_imgs_bit_equals_sequential_bbox() {
         let (gt, dt) = tiny_grid_inputs();
@@ -901,5 +825,81 @@ mod tests {
                 "unexpected match outcome in {mode:?} mode"
             );
         }
+    }
+
+    /// The grid-level accessors are views of the stored cells:
+    /// `category_cells` yields exactly the populated `[k][a][..]` slots in
+    /// image order (nothing out of bounds, nothing on a short hand-built
+    /// grid), `eval_imgs()` is the stored slice, and both
+    /// `accumulate_grid*` equal `accumulate*` over it.
+    #[test]
+    fn grid_accessors_are_views_of_the_stored_cells() {
+        let (gt, dt) = tiny_grid_inputs();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+            retain_meta: false,
+        };
+        let grid = evaluate_with(&gt, &dt, params, ParityMode::Strict, &BboxIou).expect("grid");
+        let (n_k, n_a, n_i) = (grid.n_categories, grid.n_area_ranges, grid.n_images);
+        assert_eq!(grid.eval_imgs().len(), grid.eval_imgs.len());
+        for k in 0..n_k {
+            for a in 0..n_a {
+                let walked: Vec<usize> = grid
+                    .category_cells(k, a)
+                    .map(|(i, cell)| {
+                        let stored = grid.cell(k, a, i).expect("walked cell is stored");
+                        assert!(std::ptr::eq(&*cell, stored));
+                        i
+                    })
+                    .collect();
+                let expected: Vec<usize> =
+                    (0..n_i).filter(|&i| grid.cell(k, a, i).is_some()).collect();
+                assert_eq!(walked, expected, "(k={k}, a={a})");
+            }
+        }
+        assert_eq!(grid.category_cells(n_k, 0).count(), 0);
+        assert_eq!(grid.category_cells(0, n_a).count(), 0);
+
+        let ladder = crate::accumulate::GridAccumulateParams {
+            iou_thresholds: iou_thresholds(),
+            recall_thresholds: recall_thresholds(),
+            max_dets: &[1, 10, 100],
+        };
+        let via_slice =
+            accumulate(&grid.eval_imgs, ladder.for_grid(&grid), ParityMode::Strict).expect("slice");
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .expect("pool");
+        for via_grid in [
+            crate::accumulate::accumulate_grid(&grid, ladder, ParityMode::Strict).expect("grid"),
+            pool.install(|| {
+                crate::accumulate::accumulate_grid_parallel(&grid, ladder, ParityMode::Strict)
+            })
+            .expect("grid parallel"),
+        ] {
+            assert_eq!(via_grid.precision, via_slice.precision);
+            assert_eq!(via_grid.recall, via_slice.recall);
+            assert_eq!(via_grid.scores, via_slice.scores);
+        }
+
+        // A hand-built grid whose cells do not cover its declared axes
+        // walks as empty rather than panicking, like `cell()`.
+        let short = EvalGrid {
+            eval_imgs: vec![None; 3],
+            eval_imgs_meta: Vec::new(),
+            builds_meta: false,
+            n_categories: 2,
+            n_area_ranges: 1,
+            n_images: 3,
+            retained_ious: None,
+        };
+        assert_eq!(short.category_cells(1, 0).count(), 0);
+        assert!(short.cell(1, 0, 0).is_none());
     }
 }
