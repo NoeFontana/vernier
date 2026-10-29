@@ -912,24 +912,26 @@ fn evaluate_grid_impl(
     let dt_fields = iou_type.dt_fields();
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
     let iou_for_run = iou_thr.clone();
-    let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
-        let (gt, dt) =
-            parse_gt_dt_with_policy(&gt_bytes, dt_payload, dt_area, dt_fields, thread_policy)?;
-        let params = EvaluateParams {
-            iou_thresholds: &iou_for_run,
-            area_ranges: &area,
-            max_dets_per_image,
-            use_cats,
-            retain_iou,
-            retain_meta,
-        };
-        let grid = run_grid_with_policy(&iou_type, &gt, &dt, params, parity, thread_policy)
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-        Ok((
-            grid,
-            retain_iou.then_some(dt),
-            dataset::DatasetSnapshot::from_parsed(gt),
-        ))
+    let (grid, retained_dt, retained_dataset) = py.detach(move || {
+        threads::with_policy_pool(thread_policy, move || -> PyResult<GridParts> {
+            let (gt, dt) =
+                parse_gt_dt_with_policy(&gt_bytes, dt_payload, dt_area, dt_fields, thread_policy)?;
+            let params = EvaluateParams {
+                iou_thresholds: &iou_for_run,
+                area_ranges: &area,
+                max_dets_per_image,
+                use_cats,
+                retain_iou,
+                retain_meta,
+            };
+            let grid = run_grid_with_policy(&iou_type, &gt, &dt, params, parity, thread_policy)
+                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+            Ok((
+                grid,
+                retain_iou.then_some(dt),
+                dataset::DatasetSnapshot::from_parsed(gt),
+            ))
+        })
     })?;
     Ok(PyEvalGrid {
         inner: grid,
@@ -974,7 +976,7 @@ fn parse_gt_dt_with_policy(
         // splits internally, so the two `join` arms are themselves
         // parallel and rayon rebalances between them. Before that, only
         // two tasks existed and the rest of the budget sat idle.
-        Some(n) => match threads::build_scoped_pool(n) {
+        Some(n) => match threads::scoped_pool(n) {
             Ok(pool) => {
                 let budget = n.get();
                 let (gt, dt) = pool.install(|| {
@@ -1011,8 +1013,8 @@ fn run_grid_with_policy(
     match thread_policy.thread_count() {
         None => iou_type.run(gt, dt, params, parity),
         Some(n) => {
-            let pool = threads::build_scoped_pool(n)
-                .map_err(|detail| EvalError::InvalidConfig { detail })?;
+            let pool =
+                threads::scoped_pool(n).map_err(|detail| EvalError::InvalidConfig { detail })?;
             pool.install(|| iou_type.run_parallel(gt, dt, params, parity))
         }
     }
@@ -1031,8 +1033,8 @@ fn run_grid_cached_with_policy(
     match thread_policy.thread_count() {
         None => iou_type.run_cached(gt, dt, params, parity, caches),
         Some(n) => {
-            let pool = threads::build_scoped_pool(n)
-                .map_err(|detail| EvalError::InvalidConfig { detail })?;
+            let pool =
+                threads::scoped_pool(n).map_err(|detail| EvalError::InvalidConfig { detail })?;
             pool.install(|| iou_type.run_cached_parallel(gt, dt, params, parity, caches))
         }
     }
@@ -1088,31 +1090,35 @@ fn evaluate_grid_with_dataset_impl(
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
     let dt_fields = iou_type.dt_fields();
     let iou_for_run = iou_thr.clone();
-    let (grid, retained_dt) =
-        py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let dt = realize_dt(dt_payload, dt_area, dt_fields)?
-                .trim_for(&snapshot.gt, max_dets_per_image);
-            let caches = snapshot.caches();
-            let params = EvaluateParams {
-                iou_thresholds: &iou_for_run,
-                area_ranges: &area,
-                max_dets_per_image,
-                use_cats,
-                retain_iou,
-                retain_meta,
-            };
-            let grid = run_grid_cached_with_policy(
-                &iou_type,
-                &snapshot.gt,
-                &dt,
-                params,
-                parity,
-                caches,
-                thread_policy,
-            )
-            .map_err(|e| PyValueError::new_err(format!("{e}")))?;
-            Ok((grid, retain_iou.then_some(dt)))
-        })?;
+    let (grid, retained_dt) = py.detach(move || {
+        threads::with_policy_pool(
+            thread_policy,
+            move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
+                let dt = realize_dt_with_policy(dt_payload, dt_area, dt_fields, thread_policy)?
+                    .trim_for(&snapshot.gt, max_dets_per_image);
+                let caches = snapshot.caches();
+                let params = EvaluateParams {
+                    iou_thresholds: &iou_for_run,
+                    area_ranges: &area,
+                    max_dets_per_image,
+                    use_cats,
+                    retain_iou,
+                    retain_meta,
+                };
+                let grid = run_grid_cached_with_policy(
+                    &iou_type,
+                    &snapshot.gt,
+                    &dt,
+                    params,
+                    parity,
+                    caches,
+                    thread_policy,
+                )
+                .map_err(|e| PyValueError::new_err(format!("{e}")))?;
+                Ok((grid, retain_iou.then_some(dt)))
+            },
+        )
+    })?;
     Ok(PyEvalGrid {
         inner: grid,
         parity,
@@ -1459,24 +1465,26 @@ fn evaluate_summary_impl(
     sort_max_dets(&mut max_dets);
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
 
-    let summary = py.detach(move || -> PyResult<Summary> {
-        let (gt, dt) = parse_gt_dt_with_policy(
-            &gt_bytes,
-            dt_payload,
-            DetectionArea::FromBbox,
-            iou_type.dt_fields(),
-            thread_policy,
-        )?;
-        run_pipeline(
-            &iou_type,
-            &gt,
-            &dt,
-            parity,
-            &max_dets,
-            use_cats,
-            thread_policy,
-        )
-        .map_err(|e| PyValueError::new_err(format!("{e}")))
+    let summary = py.detach(move || {
+        threads::with_policy_pool(thread_policy, move || -> PyResult<Summary> {
+            let (gt, dt) = parse_gt_dt_with_policy(
+                &gt_bytes,
+                dt_payload,
+                DetectionArea::FromBbox,
+                iou_type.dt_fields(),
+                thread_policy,
+            )?;
+            run_pipeline(
+                &iou_type,
+                &gt,
+                &dt,
+                parity,
+                &max_dets,
+                use_cats,
+                thread_policy,
+            )
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+        })
     })?;
 
     Ok(PySummary { inner: summary })
@@ -1630,18 +1638,25 @@ fn evaluate_summary_with_dataset_impl(
     let mut max_dets = max_dets;
     sort_max_dets(&mut max_dets);
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
-    let summary = py.detach(move || -> PyResult<Summary> {
-        run_pipeline_with_dataset(
-            &iou_type,
-            &snapshot.gt,
-            snapshot.caches(),
-            realize_dt(dt_payload, DetectionArea::FromBbox, iou_type.dt_fields())?,
-            parity,
-            &max_dets,
-            use_cats,
-            thread_policy,
-        )
-        .map_err(|e| PyValueError::new_err(format!("{e}")))
+    let summary = py.detach(move || {
+        threads::with_policy_pool(thread_policy, move || -> PyResult<Summary> {
+            run_pipeline_with_dataset(
+                &iou_type,
+                &snapshot.gt,
+                snapshot.caches(),
+                realize_dt_with_policy(
+                    dt_payload,
+                    DetectionArea::FromBbox,
+                    iou_type.dt_fields(),
+                    thread_policy,
+                )?,
+                parity,
+                &max_dets,
+                use_cats,
+                thread_policy,
+            )
+            .map_err(|e| PyValueError::new_err(format!("{e}")))
+        })
     })?;
     Ok(PySummary { inner: summary })
 }
@@ -1791,7 +1806,7 @@ fn accumulate_with_policy(
 ) -> Result<Accumulated, EvalError> {
     match thread_policy.thread_count() {
         None => accumulate_grid(grid, params, parity),
-        Some(n) => match threads::build_scoped_pool(n) {
+        Some(n) => match threads::scoped_pool(n) {
             Ok(pool) => pool.install(|| accumulate_grid_parallel(grid, params, parity)),
             Err(_) => accumulate_grid(grid, params, parity),
         },
@@ -2347,6 +2362,26 @@ pub(crate) fn realize_dt(
         // `Supplied` honours it exactly as the file route does.
         UpdatePayload::Columns(cols) => CocoDetections::from_columns_with_area(cols, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
+    }
+}
+
+/// [`realize_dt`] under a thread policy, for the entry points whose GT is
+/// already parsed (a `CocoDataset`): [`parse_gt_dt_with_policy`] covers
+/// the bytes-GT ones. Without it a pre-parsed GT left the detection JSON
+/// parse serial at any `num_threads`. `None` stays sequential and never
+/// enters rayon (ADR-0047); a pool-build failure falls back to it.
+fn realize_dt_with_policy(
+    payload: UpdatePayload,
+    area: DetectionArea,
+    fields: DetectionFields,
+    thread_policy: threads::ThreadPolicy,
+) -> PyResult<CocoDetections> {
+    match thread_policy.thread_count() {
+        Some(n) if matches!(payload, UpdatePayload::Bytes(_)) => match threads::scoped_pool(n) {
+            Ok(pool) => pool.install(|| realize_dt_parallel(payload, area, fields, n.get())),
+            Err(_) => realize_dt(payload, area, fields),
+        },
+        _ => realize_dt(payload, area, fields),
     }
 }
 

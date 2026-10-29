@@ -99,15 +99,67 @@ fn resolve_threads_raw(arg: Option<usize>) -> Option<(usize, bool)> {
     Some((resolved, source_was_env))
 }
 
+/// Name prefix of every scoped pool's worker threads.
+const POOL_THREAD_PREFIX: &str = "vernier-rayon-";
+
 /// Build a scoped `rayon::ThreadPool` of exactly `n` threads. The
 /// caller `install`s the parallel work and drops the pool on return —
 /// the global rayon pool is never involved.
 pub(crate) fn build_scoped_pool(n: NonZeroUsize) -> Result<rayon::ThreadPool, String> {
     rayon::ThreadPoolBuilder::new()
         .num_threads(n.get())
-        .thread_name(|i| format!("vernier-rayon-{i}"))
+        .thread_name(|i| format!("{POOL_THREAD_PREFIX}{i}"))
         .build()
         .map_err(|e| format!("failed to build rayon pool of {} threads: {e}", n.get()))
+}
+
+/// A scoped pool to `install` a stage's parallel work in: the vernier
+/// pool the caller is already a worker of, or a fresh one.
+pub(crate) enum ScopedPool {
+    /// The calling thread is a worker of a vernier pool of the requested
+    /// size, which an outer stage installed.
+    Current,
+    /// Built for this stage, joined when dropped.
+    Owned(rayon::ThreadPool),
+}
+
+impl ScopedPool {
+    /// Run `f` on the pool.
+    pub(crate) fn install<R: Send>(&self, f: impl FnOnce() -> R + Send) -> R {
+        match self {
+            Self::Current => f(),
+            Self::Owned(pool) => pool.install(f),
+        }
+    }
+}
+
+/// A scoped pool of exactly `n` threads: the one the caller is already a
+/// worker of when it is such a pool, a fresh one otherwise. One call's
+/// stages — parse, evaluate, accumulate — then share the pool its entry
+/// point installed ([`with_policy_pool`]) instead of each spawning and
+/// joining its own. Only vernier's scoped pools are reused, never the
+/// global one (ADR-0047).
+pub(crate) fn scoped_pool(n: NonZeroUsize) -> Result<ScopedPool, String> {
+    let on_matching_pool = rayon::current_thread_index().is_some()
+        && rayon::current_num_threads() == n.get()
+        && std::thread::current()
+            .name()
+            .is_some_and(|name| name.starts_with(POOL_THREAD_PREFIX));
+    if on_matching_pool {
+        return Ok(ScopedPool::Current);
+    }
+    build_scoped_pool(n).map(ScopedPool::Owned)
+}
+
+/// Run a whole multi-stage call under `policy`: inside one scoped pool
+/// when it carries a budget, so every stage's [`scoped_pool`] reuses
+/// it. If that pool fails to build, `f` runs on the calling thread and
+/// each stage applies its own pool-failure handling, as before.
+pub(crate) fn with_policy_pool<R: Send>(policy: ThreadPolicy, f: impl FnOnce() -> R + Send) -> R {
+    match policy.thread_count().map(build_scoped_pool) {
+        Some(Ok(pool)) => pool.install(f),
+        Some(Err(_)) | None => f(),
+    }
 }
 
 /// Stash a pool-build failure onto a `BackgroundState::scheduling_outcome`
@@ -161,6 +213,32 @@ mod tests {
         NonZeroUsize::new(resolved)
             .filter(|n| n.get() >= 2)
             .map_or(ThreadPolicy::Sequential, ThreadPolicy::Pool)
+    }
+
+    /// A stage reuses the vernier pool it runs on when the size matches,
+    /// and builds its own otherwise — from a plain thread, a pool of
+    /// another size, or a pool that is not vernier's.
+    #[test]
+    fn scoped_pool_reuses_only_a_matching_vernier_pool() {
+        let two = NonZeroUsize::new(2).unwrap();
+        let three = NonZeroUsize::new(3).unwrap();
+        let is_current = |n| matches!(scoped_pool(n), Ok(ScopedPool::Current));
+        assert!(!is_current(two), "plain thread");
+        let ours = build_scoped_pool(two).unwrap();
+        assert!(ours.install(|| is_current(two)));
+        assert!(!ours.install(|| is_current(three)));
+        let foreign = rayon::ThreadPoolBuilder::new()
+            .num_threads(2)
+            .build()
+            .unwrap();
+        assert!(!foreign.install(|| is_current(two)));
+        // A reused pool runs the stage on the same workers.
+        let names = ours.install(|| {
+            scoped_pool(two)
+                .unwrap()
+                .install(|| std::thread::current().name().map(str::to_owned))
+        });
+        assert!(names.is_some_and(|n| n.starts_with(POOL_THREAD_PREFIX)));
     }
 
     #[test]
