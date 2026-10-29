@@ -18,6 +18,7 @@ Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 
 - `just setup-host` — once per machine: sccache + clang/mold in `~/.cargo/config.toml`
 - `just bootstrap` — first thing in a fresh clone **or new worktree** (~40 s with sccache): `uv sync --all-extras` + pin pyo3's interpreter in a git-ignored `.cargo/config.toml`
+- `just data-pull` / `data-push` / `data-status` — generated bench predictions via the private HF dataset pinned in `tools/dev/bench-data.json`. Pull before re-running inference; after a populate, push and commit the manifest
 - `just develop` — rebuild the extension if Rust changed; rarely needed, since `uv run` does it itself (`pyext` profile: optimized, no LTO)
 - `just build` — release wheel into `target/wheels/`
 - `just check` — ultra-fast static analysis (workspace compile check + ruff + pyright, ~1s)

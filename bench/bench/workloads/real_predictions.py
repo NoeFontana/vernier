@@ -63,6 +63,14 @@ VITPOSE_WORKLOAD_ID = f"coco_val2017_vitpose_base_simple_v{VITPOSE_REVISION[:7]}
 LVIS_DETECTOR_WORKLOAD_ID = f"lvis_v1_val_deformable_detr_v{LVIS_DETECTOR_REVISION[:7]}"
 
 
+def _missing(message: str) -> FileNotFoundError:
+    """A missing-cache error that points at the shared copy before inference."""
+    return FileNotFoundError(
+        "Try `just data-pull` first: it fetches every cached prediction set "
+        f"from the private Hugging Face dataset in seconds. Otherwise: {message}"
+    )
+
+
 def maskrcnn_dt_path() -> Path:
     """Return the Mask R-CNN R50-FPN cached prediction JSON, or raise.
 
@@ -88,7 +96,7 @@ def rfdetr_dt_path(model_name: RfdetrModelName) -> Path:
     """Return the rf-detr cached prediction JSON for ``model_name``."""
     path = rfdetr_cache_path(model_name)
     if not path.is_file():
-        raise FileNotFoundError(
+        raise _missing(
             f"rf-detr ({model_name}) prediction cache missing at {path}. "
             f"Populate it by running `pytest -m real_models "
             f"tests/python/integration/real_models/tide/test_tide_real_models.py` "
@@ -117,7 +125,7 @@ def mask2former_panoptic_dt_paths() -> tuple[Path, Path]:
     cache_dir = mask2former_panoptic_cache_dir()
     dt_json = mask2former_panoptic_dt_json_path()
     if not (cache_dir.is_dir() and dt_json.is_file()):
-        raise FileNotFoundError(
+        raise _missing(
             f"Mask2Former panoptic prediction cache missing at {cache_dir} "
             f"(expected dir + {dt_json.name}). Populate via "
             f"`./tools/fetch-real-predictions.sh --mask2former-panoptic` or "
@@ -140,7 +148,7 @@ def mask2former_ade_dt_path() -> Path:
     """
     cache_dir = mask2former_ade_cache_dir()
     if not cache_dir.is_dir() or not any(cache_dir.iterdir()):
-        raise FileNotFoundError(
+        raise _missing(
             f"Mask2Former ADE-semantic prediction cache missing or empty at "
             f"{cache_dir}. Populate via "
             f"`./tools/fetch-real-predictions.sh --mask2former-ade` or "
@@ -165,7 +173,7 @@ def vitpose_dt_path() -> Path:
     """
     path = vitpose_cache_path()
     if not path.is_file():
-        raise FileNotFoundError(
+        raise _missing(
             f"ViTPose-base-simple prediction cache missing at {path}. "
             f"Populate it by running `pytest -m real_models "
             f"tests/python/integration/real_models/sota/test_vitpose_real_models.py` "
@@ -193,7 +201,7 @@ def lvis_detector_dt_path() -> Path:
     """
     path = lvis_detector_cache_path()
     if not path.is_file():
-        raise FileNotFoundError(
+        raise _missing(
             f"LVIS detector prediction cache missing at {path}. "
             f"Populate it by running `pytest -m real_models "
             f"tests/python/integration/real_models/sota/test_lvis_real_models.py` "
@@ -221,7 +229,7 @@ def detr_r50_dt_path() -> Path:
     """
     path = detr_resnet50_cache_path()
     if not path.is_file():
-        raise FileNotFoundError(
+        raise _missing(
             f"DETR-R50 prediction cache missing at {path}. "
             f"Populate it by running `pytest -m real_models "
             f"tests/python/integration/real_models/sota/test_detr_real_models.py` "

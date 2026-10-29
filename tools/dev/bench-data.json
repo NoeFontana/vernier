@@ -1,0 +1,76 @@
+{
+  "repo": "NoeFontana/vernier-bench-predictions",
+  "revision": "96c0ccffec1edf7dcaf32ed9ac61922d6808a5fb",
+  "artifacts": [
+    {
+      "root": "jittered",
+      "name": "coco_val2017_jittered_seed0_v2.json",
+      "kind": "file",
+      "sha256": "f700a892601bfa983cedc1b7ff9396d3bbf3f88bf92c178659368da608820189",
+      "size": 17787373
+    },
+    {
+      "root": "jittered",
+      "name": "coco_val2017_keypoints_jittered_seed0_v2.json",
+      "kind": "file",
+      "sha256": "92bcb66b132622780f707d8474d04a737ca71707c9a3ff241eb29105a3eccdbe",
+      "size": 8894328
+    },
+    {
+      "root": "jittered",
+      "name": "lvis_v1_val_jittered_seed0_v2.json",
+      "kind": "file",
+      "sha256": "da5991519bb3767b4c31fdc1ccde2f8dfac62434b54700026a51c16c5844c31b",
+      "size": 96817894
+    },
+    {
+      "root": "jittered",
+      "name": "objects365_val_jittered_seed0_v2.json",
+      "kind": "file",
+      "sha256": "3118a448e21a06b5a90b49c95c78a9dc91d3bd29c111c1e697c702db2dcd10e5",
+      "size": 171098982
+    },
+    {
+      "root": "real-models",
+      "name": "detr-r50-1d5f47bd3bdd2c4bbfa585418ffe6da5028b4c0b-coco-val2017.json",
+      "kind": "file",
+      "sha256": "e29f2c1c9c4f13bbd3c7d606175e485249d6251fc4748192b7180a4986527067",
+      "size": 23600789
+    },
+    {
+      "root": "real-models",
+      "name": "mask2former-ade-swin-t-c8cf1b5e823aee214d937d0d001c1850ba44ef6a-ade20k-val",
+      "kind": "dir",
+      "sha256": "2dffce5c34586d4743f19e497af0ad4f055269ada3ab5ca4a7b67c76fc237165",
+      "size": 9605120
+    },
+    {
+      "root": "real-models",
+      "name": "mask2former-pan-swin-t-df6b1142ff50c3276559d9d78f35f6a579c75a77-coco-val2017",
+      "kind": "dir",
+      "sha256": "f06e52aa9352133d76ce3c704c0ef9c0f2ede9af73071fd3b828c102ff37082f",
+      "size": 39188480
+    },
+    {
+      "root": "real-models",
+      "name": "rfdetr-nano-1.6.5.post0-v3-coco-val2017.json",
+      "kind": "file",
+      "sha256": "956b017106d1cb80994f27659378b0ffc122bbcf63267d822fc308f550444f6d",
+      "size": 80716961
+    },
+    {
+      "root": "real-models",
+      "name": "rfdetr-segnano-1.6.5.post0-v3-coco-val2017.json",
+      "kind": "file",
+      "sha256": "3d668ab8675b20859551dd884b12b304dabcdb43e4b53633d5189d07c7f46229",
+      "size": 195737982
+    },
+    {
+      "root": "real-models",
+      "name": "vitpose-base-simple-a93ac0c67e0b7e2c55287d21d4c460c8f3c54d45-coco-val2017.json",
+      "kind": "file",
+      "sha256": "369819c9d85fdfabcf431503d0b2b1f874f99c68e7b84a374c7ee41d468e525a",
+      "size": 8907699
+    }
+  ]
+}
