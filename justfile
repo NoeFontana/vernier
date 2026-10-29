@@ -2,6 +2,14 @@
 # Requires: just, uv, cargo, cargo-nextest, cargo-deny, cargo-hack.
 
 set shell := ["bash", "-cu"]
+# A git-ignored .env may override the variables below.
+set dotenv-load
+
+# Several agents share one machine, each in its own worktree: cap test
+# workers per run instead of letting every run claim all cores
+# (pytest-xdist's `-n auto` and nextest both honour these).
+export PYTEST_XDIST_AUTO_NUM_WORKERS := env("PYTEST_XDIST_AUTO_NUM_WORKERS", "3")
+export NEXTEST_TEST_THREADS := env("NEXTEST_TEST_THREADS", "3")
 
 # No exported build env: `just` and bare `cargo` must build identically,
 # or every switch between them rebuilds the tree. Host speedups go in cargo
@@ -47,13 +55,24 @@ check:
 # Tests
 # ---------------------------------------------------------------------------
 
-# Run all tests (Rust + Python).
+# Run all tests (Rust + Python) except `slow` ones — the same set CI runs.
 test: test-rust test-py
 
-# Fast iterative unit tests (skips slow parity and integration sweeps).
+# Fast iterative loop: every Rust test (the whole suite takes seconds) and
+# the Python tests outside the parity and slow sets.
 test-fast:
-    cargo nextest run --workspace -E 'not test(slow)'
+    cargo nextest run --workspace
     uv run pytest -m "not slow and not parity"
+
+# Run only what the branch's changes can affect, judged from the diff
+# against origin/main. Prints its reasoning; extra args go to pytest.
+test-changed *ARGS:
+    uv run --no-sync python tools/dev/affected.py --run {{ARGS}}
+
+# The `slow` tests. Once the real-model caches are populated this includes
+# real-model inference (hours on CPU); see the real_models marker.
+test-slow:
+    uv run pytest -m slow
 
 # Run tests for a specific workspace crate (e.g. `just test-crate core`).
 test-crate CRATE:

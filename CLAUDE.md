@@ -21,8 +21,11 @@ Mixed Rust/Python monorepo. Build via `maturin` + `uv`; tasks via `just`.
 - `just develop` — rebuild the extension if Rust changed; rarely needed, since `uv run` does it itself (`pyext` profile: optimized, no LTO)
 - `just build` — release wheel into `target/wheels/`
 - `just check` — ultra-fast static analysis (workspace compile check + ruff + pyright, ~1s)
-- `just test` / `test-rust` / `test-py` / `test-parity` — full suite or subset (pytest runs with `pytest-xdist -n auto`)
-- `just test-fast` — ultra-fast iterative unit tests across Rust & Python (~2s)
+- `just test-changed` — only the suites the branch's diff can affect (prints why); the default inner loop
+- `just test` / `test-rust` / `test-py` / `test-parity` — CI's set or a subset (pytest deselects `slow` by default via `addopts`)
+- `just test-fast` — all Rust tests + Python minus parity
+- `just test-slow` — the `slow` tier (see the recipe before running it)
+- Test workers default to 3 per run (parallel agents share the machine); override `PYTEST_XDIST_AUTO_NUM_WORKERS` / `NEXTEST_TEST_THREADS` in a git-ignored `.env`
 - `just test-crate <name>` — test a specific workspace crate (e.g. `core`, `cli`, `mask`)
 - `just lint` — clippy + ruff + pyright + powerset + wasm (CI-equivalent, read-only)
 - `just lint-fast` — fast local lint loop (clippy + ruff + pyright)
@@ -39,7 +42,7 @@ Single tests (bare `cargo` and `just` build identically, so mixing them costs no
 cargo nextest run -p vernier-core <test_name>
 uv run pytest tests/python/parity/test_parity.py::test_perfect_match_baseline_ap
 uv run pytest -m parity                  # all parity tests
-uv run pytest -m "not slow"              # skip slow
+uv run pytest -m ""                      # include slow (pytest skips it by default)
 ```
 
 Prereqs: Rust stable (pinned in `rust-toolchain.toml`), `uv`, `just`, `cargo-nextest`, `cargo-deny`, `cargo-hack`. `rustc >= 1.83`, Python >= 3.10. Optional, used by `just setup-host`: `sccache`, `clang` + `mold`.

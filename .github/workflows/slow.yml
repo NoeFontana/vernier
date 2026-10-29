@@ -45,7 +45,7 @@ jobs:
       - name: maturin develop (release)
         run: uv run --no-sync --python ${{ matrix.python-version }} maturin develop --release
       - name: pytest (no marker filter)
-        run: uv run --no-sync --python ${{ matrix.python-version }} pytest
+        run: uv run --no-sync --python ${{ matrix.python-version }} pytest -m ""
 
   test-rust-release:
     name: cargo nextest (--release)

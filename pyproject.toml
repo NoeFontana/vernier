@@ -68,6 +68,11 @@ real-models = [
     "rfdetr==1.11.2",
     "platformdirs>=4",
     "torch>=2.4",
+    # Already required by rfdetr and transformers. Listed directly only so
+    # the CPU-index source in `[tool.uv.sources]` applies to it (uv sources
+    # bind direct dependencies only); a PyPI torchvision is built against
+    # PyPI's CUDA torch and fails to load its ops on the CPU build.
+    "torchvision",
     # rfdetr 1.6.5.post0's own metadata pins `transformers<6.0.0,>=5.1.0`;
     # matching the floor here keeps the spec internally consistent so a
     # future SOTA-only split (rfdetr dropped from the extra) doesn't
@@ -227,7 +232,18 @@ cache-keys = [
 # directly, with `--release`.
 config-settings-package = { vernier = { build-args = "--profile=pyext" } }
 
+# CPU-only torch for dev environments on Linux. PyPI's Linux wheels pull
+# ~4 GiB of CUDA libraries (nvidia-*, triton) into every venv, and nothing
+# here runs on a GPU. Dev-only: published metadata still says plain
+# `torch`, and macOS/Windows PyPI wheels are CPU-only already.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
 [tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+torchvision = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
 vernier-coco-val-cache = { path = "tools/coco_val_cache", editable = true }
 vernier-lvis-val-cache = { path = "tools/lvis_val_cache", editable = true }
 vernier-lvis-v1-val-cache = { path = "tools/lvis_v1_val_cache", editable = true }
@@ -330,7 +346,10 @@ reportUnnecessaryTypeIgnoreComment = "warning"
 # ---------------------------------------------------------------------------
 [tool.pytest.ini_options]
 testpaths = ["tests/python"]
-addopts = "-ra --strict-markers --strict-config -n auto"
+# `-m "not slow"` by default, matching CI: a bare `pytest` on a machine with
+# the real-model caches populated would otherwise start hours of CPU
+# inference. A later `-m` replaces it (`-m slow`; `-m ""` for everything).
+addopts = '-ra --strict-markers --strict-config -n auto -m "not slow"'
 # Don't descend into the vendored boundary-IoU oracle tree — it's not
 # vernier's tests, and pytest collection would try to import modules that
 # need opencv-python at module load time. The harness adds the oracle to
