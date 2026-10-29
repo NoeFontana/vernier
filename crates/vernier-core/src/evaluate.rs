@@ -962,8 +962,7 @@ pub fn evaluate_with<K: EvalKernel>(
     kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
     // Image and category ordering: id-ascending, deterministic across runs.
-    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
     let n_i = images.len();
     let n_a = params.area_ranges.len();
 

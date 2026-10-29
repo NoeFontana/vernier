@@ -478,8 +478,7 @@ pub(crate) fn prepare_lrp_pass<'gt, K: EvalKernel>(
     // Reconstruct the same image / category orderings the
     // evaluator's K and I axes use, so the (k, i) keys on retained
     // line up with what we walk here.
-    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
 
     let category_buckets: Vec<Option<CategoryId>> = if params.use_cats {
         let mut cats: Vec<_> = gt.categories().iter().map(|c| c.id).collect();

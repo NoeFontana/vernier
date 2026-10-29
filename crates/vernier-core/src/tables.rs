@@ -577,8 +577,7 @@ pub fn build_per_image(
     const A_ALL: usize = 0;
 
     // Image id list: id-ascending sort matches the grid's I-axis.
-    let mut images: Vec<&crate::dataset::ImageMeta> = dataset.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&crate::dataset::ImageMeta> = dataset.grid_images().iter().collect();
     if images.len() != grid.n_images {
         return Err(EvalError::InvalidConfig {
             detail: format!(
