@@ -47,12 +47,135 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
-use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::EvalError;
 use crate::parity::ParityMode;
 use crate::segmentation::{Segmentation, SegmentationRleCounts};
+
+/// Compressed-sparse-row (CSR) index mapping keys `K` to contiguous
+/// `&[usize]` row-index slices, in one flat allocation (`indices`) plus a
+/// key → row-range map, instead of one heap `Vec<usize>` per distinct key.
+///
+/// Rows within a group are ascending (the push order of the per-key `Vec`s
+/// it replaces). A lookup is one hash probe and one slice. Keys are
+/// user-controlled ids, so the map is seeded per instance
+/// (`foldhash::fast::RandomState`): an unkeyed hash would let a crafted
+/// results file collide every key and make the build quadratic.
+///
+/// Wrapped in an `Arc` so cloning `CocoDataset` or `CocoDetections` is
+/// `O(1)`. Built in two linear passes; pass 1 keeps a one-entry
+/// `(last_key, last_slot)` cache so contiguous per-image runs skip the
+/// hash, pass 2 does no hashing.
+#[derive(Debug)]
+struct CsrIndexInner<K> {
+    /// Key → `start..end` into `indices`.
+    ranges: HashMap<K, (usize, usize), foldhash::fast::RandomState>,
+    indices: Vec<usize>,
+    max_group_len: usize,
+}
+
+#[derive(Debug)]
+pub(crate) struct CsrIndex<K> {
+    inner: Arc<CsrIndexInner<K>>,
+}
+
+impl<K> Clone for CsrIndex<K> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Arc::clone(&self.inner),
+        }
+    }
+}
+
+impl<K: Copy + Eq + std::hash::Hash> CsrIndex<K> {
+    /// Index rows `0..len` by `key_at(row)`. `group_capacity_hint` sizes
+    /// the key map up front; an over-estimate is trimmed after the build.
+    pub(crate) fn build(
+        len: usize,
+        group_capacity_hint: usize,
+        mut key_at: impl FnMut(usize) -> K,
+    ) -> Self {
+        // Pass 1: assign each distinct key a dense slot (stored in the
+        // range map's `.0` until the prefix sum turns it into a range)
+        // and count its rows.
+        let mut ranges: HashMap<K, (usize, usize), foldhash::fast::RandomState> =
+            HashMap::with_capacity_and_hasher(group_capacity_hint, Default::default());
+        let mut counts: Vec<usize> = Vec::with_capacity(group_capacity_hint);
+        let mut row_slots: Vec<usize> = Vec::with_capacity(len);
+        let mut last: Option<(K, usize)> = None;
+        for row in 0..len {
+            let key = key_at(row);
+            let slot = match last {
+                Some((prev_key, prev_slot)) if prev_key == key => prev_slot,
+                _ => {
+                    let next_slot = counts.len();
+                    let slot = ranges.entry(key).or_insert((next_slot, 0)).0;
+                    if slot == next_slot {
+                        counts.push(0);
+                    }
+                    last = Some((key, slot));
+                    slot
+                }
+            };
+            counts[slot] += 1;
+            row_slots.push(slot);
+        }
+
+        // Prefix sum into per-slot start offsets; ranges follow from them.
+        let mut heads: Vec<usize> = Vec::with_capacity(counts.len());
+        let mut start = 0;
+        for &n in &counts {
+            heads.push(start);
+            start += n;
+        }
+        let max_group_len = counts.iter().copied().max().unwrap_or(0);
+        for range in ranges.values_mut() {
+            let slot = range.0;
+            *range = (heads[slot], heads[slot] + counts[slot]);
+        }
+
+        // Pass 2: scatter rows in ascending order behind each slot's head.
+        let mut indices = vec![0usize; len];
+        for (row, &slot) in row_slots.iter().enumerate() {
+            indices[heads[slot]] = row;
+            heads[slot] += 1;
+        }
+        // The hint is sized for the common shape; trim a gross
+        // over-estimate (one image, one category) rather than hold it for
+        // the life of the dataset.
+        if ranges.capacity() > 2 * ranges.len() + 16 {
+            ranges.shrink_to_fit();
+        }
+
+        Self {
+            inner: Arc::new(CsrIndexInner {
+                ranges,
+                indices,
+                max_group_len,
+            }),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, key: &K) -> &[usize] {
+        match self.inner.ranges.get(key) {
+            Some(&(start, end)) => &self.inner.indices[start..end],
+            None => &[],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn max_group_len(&self) -> usize {
+        self.inner.max_group_len
+    }
+
+    /// Distinct keys, in unspecified (per-instance) order.
+    #[inline]
+    pub(crate) fn keys(&self) -> impl ExactSizeIterator<Item = &K> + '_ {
+        self.inner.ranges.keys()
+    }
+}
 
 /// Parse vs `from_parts` split for COCO GT / DT loaders, gated on `bench-timings`.
 #[cfg(feature = "bench-timings")]
@@ -485,9 +608,9 @@ pub struct CocoDataset {
     images: Arc<Vec<ImageMeta>>,
     categories: Arc<Vec<CategoryMeta>>,
     annotations: Arc<Vec<CocoAnnotation>>,
-    by_image: FxHashMap<ImageId, Vec<usize>>,
-    by_category: FxHashMap<CategoryId, Vec<usize>>,
-    by_image_cat: FxHashMap<(ImageId, CategoryId), Vec<usize>>,
+    by_image: CsrIndex<ImageId>,
+    by_category: CsrIndex<CategoryId>,
+    by_image_cat: CsrIndex<(ImageId, CategoryId)>,
     federated: Option<FederatedMetadata>,
     /// 32-byte BLAKE3 fingerprint of the dataset's canonical form.
     /// Cached lazily on first call to [`Self::dataset_hash`]; carried
@@ -616,39 +739,47 @@ impl CocoDataset {
         annotations: Vec<CocoAnnotation>,
         categories: Vec<CategoryMeta>,
     ) -> Result<Self, EvalError> {
+        let n_anns = annotations.len();
+        let by_image = CsrIndex::build(n_anns, images.len(), |idx| annotations[idx].image_id);
+        let by_category =
+            CsrIndex::build(n_anns, categories.len(), |idx| annotations[idx].category_id);
+
+        // Every annotation must name a known image and category. Checked
+        // over the indexes' distinct keys — `O(images + categories)`
+        // probes rather than two per annotation — and reported for the
+        // first offending annotation in input order, image before
+        // category, exactly as a per-annotation scan would.
         let known_images: HashSet<ImageId> = images.iter().map(|i| i.id).collect();
         let known_categories: HashSet<CategoryId> = categories.iter().map(|c| c.id).collect();
-
-        let mut by_image: FxHashMap<ImageId, Vec<usize>> =
-            FxHashMap::with_capacity_and_hasher(images.len(), Default::default());
-        let mut by_category: FxHashMap<CategoryId, Vec<usize>> =
-            FxHashMap::with_capacity_and_hasher(categories.len(), Default::default());
-        let mut by_image_cat: FxHashMap<(ImageId, CategoryId), Vec<usize>> = FxHashMap::default();
-
-        for (idx, ann) in annotations.iter().enumerate() {
-            if !known_images.contains(&ann.image_id) {
-                return Err(EvalError::InvalidAnnotation {
-                    detail: format!(
-                        "annotation id={} references unknown image_id={}",
-                        ann.id.0, ann.image_id.0
-                    ),
-                });
-            }
-            if !known_categories.contains(&ann.category_id) {
-                return Err(EvalError::InvalidAnnotation {
-                    detail: format!(
-                        "annotation id={} references unknown category_id={}",
-                        ann.id.0, ann.category_id.0
-                    ),
-                });
-            }
-            by_image.entry(ann.image_id).or_default().push(idx);
-            by_category.entry(ann.category_id).or_default().push(idx);
-            by_image_cat
-                .entry((ann.image_id, ann.category_id))
-                .or_default()
-                .push(idx);
+        let first_row = |rows: &[usize]| rows.first().copied().unwrap_or(usize::MAX);
+        let bad_image = by_image
+            .keys()
+            .filter(|id| !known_images.contains(id))
+            .map(|id| first_row(by_image.get(id)))
+            .min();
+        let bad_category = by_category
+            .keys()
+            .filter(|id| !known_categories.contains(id))
+            .map(|id| first_row(by_category.get(id)))
+            .min();
+        if let Some(row) = bad_image.into_iter().chain(bad_category).min() {
+            let ann = &annotations[row];
+            let (field, value) = if known_images.contains(&ann.image_id) {
+                ("category_id", ann.category_id.0)
+            } else {
+                ("image_id", ann.image_id.0)
+            };
+            return Err(EvalError::InvalidAnnotation {
+                detail: format!(
+                    "annotation id={} references unknown {field}={value}",
+                    ann.id.0
+                ),
+            });
         }
+
+        let by_image_cat = CsrIndex::build(n_anns, n_anns / 2, |idx| {
+            (annotations[idx].image_id, annotations[idx].category_id)
+        });
 
         Ok(Self {
             images: Arc::new(images),
@@ -964,11 +1095,11 @@ impl EvalDataset for CocoDataset {
     }
 
     fn ann_indices_for_image(&self, image_id: ImageId) -> &[usize] {
-        self.by_image.get(&image_id).map_or(&[][..], Vec::as_slice)
+        self.by_image.get(&image_id)
     }
 
     fn ann_indices_for_category(&self, cat_id: CategoryId) -> &[usize] {
-        self.by_category.get(&cat_id).map_or(&[][..], Vec::as_slice)
+        self.by_category.get(&cat_id)
     }
 }
 
@@ -976,9 +1107,7 @@ impl CocoDataset {
     /// Indices into [`Self::annotations`] for a given `(image, category)`
     /// cell. Empty when no GT of that category exists on that image.
     pub fn ann_indices_for(&self, image: ImageId, cat: CategoryId) -> &[usize] {
-        self.by_image_cat
-            .get(&(image, cat))
-            .map_or(&[][..], Vec::as_slice)
+        self.by_image_cat.get(&(image, cat))
     }
 }
 
@@ -1428,8 +1557,8 @@ fn mask_area(input: &DetectionInput, id: AnnId) -> Result<f64, EvalError> {
 #[derive(Debug, Clone)]
 pub struct CocoDetections {
     detections: Arc<Vec<CocoDetection>>,
-    by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>>,
-    by_image: HashMap<ImageId, Vec<usize>>,
+    by_image_cat: CsrIndex<(ImageId, CategoryId)>,
+    by_image: CsrIndex<ImageId>,
 }
 
 impl CocoDetections {
@@ -1579,21 +1708,7 @@ impl CocoDetections {
             });
         }
 
-        let mut by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>> = HashMap::new();
-        let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::new();
-        for (idx, dt) in detections.iter().enumerate() {
-            by_image_cat
-                .entry((dt.image_id, dt.category_id))
-                .or_default()
-                .push(idx);
-            by_image.entry(dt.image_id).or_default().push(idx);
-        }
-
-        Ok(Self {
-            detections: Arc::new(detections),
-            by_image_cat,
-            by_image,
-        })
+        Ok(Self::from_records(detections))
     }
 
     /// Build from already-resolved records, preserving their ids and
@@ -1602,15 +1717,11 @@ impl CocoDetections {
     /// without re-running the auto-id and area-derivation logic in
     /// [`Self::from_inputs`].
     pub fn from_records(records: Vec<CocoDetection>) -> Self {
-        let mut by_image_cat: HashMap<(ImageId, CategoryId), Vec<usize>> = HashMap::new();
-        let mut by_image: HashMap<ImageId, Vec<usize>> = HashMap::new();
-        for (idx, dt) in records.iter().enumerate() {
-            by_image_cat
-                .entry((dt.image_id, dt.category_id))
-                .or_default()
-                .push(idx);
-            by_image.entry(dt.image_id).or_default().push(idx);
-        }
+        let n = records.len();
+        let by_image_cat = CsrIndex::build(n, n / 4, |idx| {
+            (records[idx].image_id, records[idx].category_id)
+        });
+        let by_image = CsrIndex::build(n, n / 64, |idx| records[idx].image_id);
         Self {
             detections: Arc::new(records),
             by_image_cat,
@@ -1627,16 +1738,21 @@ impl CocoDetections {
     /// cell. Empty slice when the cell is empty (no detections of that
     /// category on that image).
     pub fn indices_for(&self, image: ImageId, cat: CategoryId) -> &[usize] {
-        self.by_image_cat
-            .get(&(image, cat))
-            .map_or(&[][..], Vec::as_slice)
+        self.by_image_cat.get(&(image, cat))
     }
 
     /// Indices into [`Self::detections`] for every detection on an
     /// image, regardless of category. Path used when `useCats=false`
     /// (quirk **L4**).
     pub fn indices_for_image(&self, image: ImageId) -> &[usize] {
-        self.by_image.get(&image).map_or(&[][..], Vec::as_slice)
+        self.by_image.get(&image)
+    }
+
+    /// Distinct image ids that carry at least one detection, in
+    /// unspecified order. `O(distinct images)`: read off the index, not
+    /// a scan of the detections.
+    pub fn distinct_image_ids(&self) -> impl ExactSizeIterator<Item = ImageId> + '_ {
+        self.by_image.keys().copied()
     }
 
     /// [`Self::lvis_trim`] to `max_dets` when `gt` is federated and some
@@ -1647,7 +1763,7 @@ impl CocoDetections {
     pub fn trim_for(self, gt: &CocoDataset, max_dets: usize) -> Self {
         // Nothing to drop leaves the set as is: only the flat order would
         // differ, and consumers read detections by id and per-cell score.
-        if !gt.is_federated() || self.by_image.values().all(|ix| ix.len() <= max_dets) {
+        if !gt.is_federated() || self.by_image.max_group_len() <= max_dets {
             return self;
         }
         // Saturate: a wrapped cap would land in AC5's negative "disabled" range.
@@ -1684,15 +1800,11 @@ impl CocoDetections {
     /// invariant — vernier's parity claim covers both sites.
     pub fn lvis_trim(&self, max_dets: i64) -> CocoDetections {
         if max_dets < 0 {
-            // AC5: negative cap disables the trim. Cheap clone — the
-            // detections `Arc` is shared, only the index maps allocate.
+            // AC5: negative cap disables the trim. The clone is `O(1)`:
+            // the detections and both indexes are `Arc`-shared.
             return self.clone();
         }
         let cap = max_dets as usize;
-        let mut by_image_groups: HashMap<ImageId, Vec<usize>> = HashMap::new();
-        for (idx, dt) in self.detections.iter().enumerate() {
-            by_image_groups.entry(dt.image_id).or_default().push(idx);
-        }
         // Iterate images in id-ascending order so the output's flat
         // detections vector is deterministic — the LVIS oracle's
         // `LVISResults.dataset['annotations']` is a dict-iteration
@@ -1700,7 +1812,7 @@ impl CocoDetections {
         // stable since 3.7. Rebuilding the order from id-ascending
         // here matches the shape vernier's later FFI consumers
         // expect; the per-image trim itself is order-invariant.
-        let mut image_ids: Vec<ImageId> = by_image_groups.keys().copied().collect();
+        let mut image_ids: Vec<ImageId> = self.by_image.keys().copied().collect();
         image_ids.sort_unstable_by_key(|i| i.0);
 
         // Tight upper bound on the post-trim count: input length is
@@ -1714,8 +1826,10 @@ impl CocoDetections {
             .len()
             .min(cap.saturating_mul(image_ids.len()));
         let mut out: Vec<CocoDetection> = Vec::with_capacity(upper_bound);
+        let mut group: Vec<usize> = Vec::with_capacity(self.by_image.max_group_len());
         for image_id in image_ids {
-            let mut group = by_image_groups.remove(&image_id).unwrap_or_default();
+            group.clear();
+            group.extend_from_slice(self.by_image.get(&image_id));
             // Stable sort by score descending. `partial_cmp` returns
             // `None` only on NaN; `from_inputs` rejects NaN scores
             // upstream (quirk **AD3** corrected), so `Equal` is the
@@ -1887,6 +2001,85 @@ mod tests {
             }
             other => panic!("expected InvalidAnnotation, got {other:?}"),
         }
+    }
+
+    /// Validation reports the first offending annotation in input order —
+    /// image checked before category — whatever the index's key order.
+    #[test]
+    fn rejects_the_first_offending_annotation_in_input_order() {
+        const BAD: &str = r#"{
+            "images": [{"id": 1, "width": 10, "height": 10}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 2, "image_id": 1, "category_id": 7,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 3, "image_id": 99, "category_id": 8,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 4, "image_id": 98, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "thing"}]
+        }"#;
+        let EvalError::InvalidAnnotation { detail } =
+            CocoDataset::from_json_bytes(BAD.as_bytes()).unwrap_err()
+        else {
+            panic!("expected InvalidAnnotation");
+        };
+        assert_eq!(detail, "annotation id=2 references unknown category_id=7");
+        // An annotation wrong on both counts reports its image.
+        let both = BAD.replacen(
+            r#""image_id": 1, "category_id": 7"#,
+            r#""image_id": 5, "category_id": 7"#,
+            1,
+        );
+        let EvalError::InvalidAnnotation { detail } =
+            CocoDataset::from_json_bytes(both.as_bytes()).unwrap_err()
+        else {
+            panic!("expected InvalidAnnotation");
+        };
+        assert_eq!(detail, "annotation id=2 references unknown image_id=5");
+    }
+
+    /// `distinct_image_ids` is exactly the set of detection image ids, and
+    /// `trim_for` trims a federated set only past the per-image cap.
+    #[test]
+    fn distinct_image_ids_and_the_trim_boundary() {
+        let det = |image: i64, score: f64| DetectionInput {
+            id: None,
+            image_id: ImageId(image),
+            category_id: CategoryId(1),
+            score,
+            bbox: Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            area: None,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+        };
+        // Image 1 carries 3 detections, image 2 carries 1.
+        let inputs = vec![det(1, 0.9), det(2, 0.8), det(1, 0.7), det(1, 0.6)];
+        let dt = CocoDetections::from_inputs(inputs).unwrap();
+        let mut ids: Vec<i64> = dt.distinct_image_ids().map(|i| i.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2]);
+
+        let lvis = CocoDataset::from_lvis_json_bytes(LVIS_MIN_VALID.as_bytes()).unwrap();
+        assert_eq!(
+            dt.clone().trim_for(&lvis, 3).detections().len(),
+            4,
+            "at the cap"
+        );
+        let trimmed = dt.clone().trim_for(&lvis, 2);
+        assert_eq!(trimmed.detections().len(), 3, "one past the cap");
+        assert_eq!(trimmed.indices_for_image(ImageId(1)).len(), 2);
+        // Off-LVIS, nothing is trimmed whatever the cap.
+        let coco = load_crowd_region();
+        assert_eq!(dt.trim_for(&coco, 1).detections().len(), 4);
     }
 
     #[test]
@@ -2609,6 +2802,28 @@ mod tests {
             keypoints: None,
             num_keypoints: None,
         }
+    }
+
+    /// Each group lists its rows in ascending order — the push order the
+    /// per-key `Vec<usize>` maps had, which matching's stable tie-breaks
+    /// rely on — including when a key's runs are interleaved with others
+    /// (the run-length cache's miss path).
+    #[test]
+    fn csr_index_groups_rows_in_ascending_order() {
+        let keys = [3_i64, 3, 1, 3, 2, 2, 1, 3];
+        let index = CsrIndex::build(keys.len(), 0, |i| keys[i]);
+        assert_eq!(index.get(&3), &[0, 1, 3, 7]);
+        assert_eq!(index.get(&1), &[2, 6]);
+        assert_eq!(index.get(&2), &[4, 5]);
+        assert!(index.get(&9).is_empty());
+        assert_eq!(index.max_group_len(), 4);
+        let mut distinct: Vec<i64> = index.keys().copied().collect();
+        distinct.sort_unstable();
+        assert_eq!(distinct, [1, 2, 3]);
+
+        let empty = CsrIndex::<i64>::build(0, 0, |_| 0);
+        assert!(empty.get(&0).is_empty());
+        assert_eq!(empty.max_group_len(), 0);
     }
 
     proptest! {

@@ -1713,6 +1713,7 @@ dependencies = [
  "crc32fast",
  "csv",
  "divan",
+ "foldhash",
  "memchr",
  "ndarray",
  "proptest",

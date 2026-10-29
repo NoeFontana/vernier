@@ -75,6 +75,7 @@ thread_local = { workspace = true }
 # the n_images × n_categories eval grid. Lookup-only maps; iteration
 # order never feeds output. Mirrors vernier-panoptic's existing use.
 rustc-hash = { workspace = true }
+foldhash = { workspace = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
