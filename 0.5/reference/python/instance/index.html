@@ -21,7 +21,7 @@
       
       
       <link rel="icon" href="../../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.7">
     
     
       
@@ -29,7 +29,7 @@
       
     
     
-      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1521,6 +1521,17 @@
     <span class="md-ellipsis">
       
         <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;Detections
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#vernier.instance.DetectionsBatch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        <code class="doc-symbol doc-symbol-toc doc-symbol-class"></code>&nbsp;DetectionsBatch
       
     </span>
   </a>
@@ -3321,6 +3332,82 @@ keypoints) lives under <code>vernier.instance</code>. Sibling to
 <li><code>rles[i]</code> (bitmask): 2-D <code>bool</code> or <code>uint8</code>, shape <code>(H, W)</code>, C- or F-order.</li>
 <li><code>keypoints</code>: <code>float64</code> <code>(N, K, 3)</code> C-contiguous.</li>
 </ul>
+
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-class">
+
+
+
+<h2 id="vernier.instance.DetectionsBatch" class="doc doc-heading">
+<code class="doc-symbol doc-symbol-heading doc-symbol-class"></code>            <span class="doc doc-object-name doc-class-name">DetectionsBatch</span>
+
+
+</h2>
+
+
+    <div class="doc doc-contents ">
+            <p class="doc doc-class-bases">
+              Bases: <code><span title="typing.TypedDict">TypedDict</span></code></p>
+
+
+
+        <p>Multi-image or whole-dataset detection batch in columnar form (ADR-0066).</p>
+<p>Eliminates per-image Python dict construction and <code>(N, 7)</code> matrix
+widening copies when predictions are already concatenated across images
+(as emitted by :func:<code>vernier.adapters.coco_inputs</code> and
+:func:<code>vernier.adapters.coco_inputs_from_columns</code>).</p>
+<p>Required fields:</p>
+<ul>
+<li><code>boxes</code>: <code>float64</code> <code>(N, 4)</code> C-contiguous, xywh.</li>
+<li><code>scores</code>: <code>float64</code> <code>(N,)</code> C-contiguous.</li>
+<li><code>labels</code>: <code>int64</code> <code>(N,)</code> C-contiguous.</li>
+<li><code>image_ids</code>: <code>int64</code> <code>(N,)</code> per-detection image ids when
+  <code>counts</code> is omitted, or <code>int64</code> <code>(M,)</code> per-image ids paired
+  with <code>counts</code>.</li>
+</ul>
+<p>Optional fields:</p>
+<ul>
+<li><code>counts</code>: <code>int64</code> <code>(M,)</code> non-negative detection counts per
+  image summing to <code>N</code> (paired with length-<code>M</code> <code>image_ids</code>).</li>
+<li><code>rles</code>: length-<code>N</code> <code>Sequence[RLEInput]</code> (required under
+  <code>iou_type='segm'</code> / <code>'boundary'</code>, as on :class:<code>Detections</code>).
+  Quirk <strong>J2</strong>'s bbox-rectangle fallback is reserved for the routes
+  that mirror a <code>loadRes</code> file — JSON bytes, result dicts and the
+  <code>(N, 7)</code> matrix — so an array caller who omits masks is refused
+  rather than scored on rectangles.</li>
+<li><code>keypoints</code>: <code>float64</code> <code>(N, K, 3)</code> C-contiguous (required
+  under <code>iou_type='keypoints'</code>).</li>
+</ul>
+<p>Narrower dtypes (<code>float32</code>, <code>int32</code>) are promoted when
+<code>cast_inputs=True</code> and rejected otherwise (ADR-0004, ADR-0030).</p>
 
 
 
@@ -7067,14 +7154,14 @@ boundary. JSON-bytes detections ignore this flag.</p>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    <span class="o">*</span><span class="p">,</span>
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    <span class="n">iou</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier.instance.IouKind" href="#vernier.instance.IouKind">IouKind</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    <span class="n">parity_mode</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="vernier._types.ParityMode" href="../panoptic/#vernier.panoptic.ParityMode">ParityMode</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">max_dets</span><span class="p">:</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    <span class="n">max_dets</span><span class="p">:</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="int">int</span></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span> <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    <span class="n">iou_thresholds</span><span class="p">:</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="float">float</span></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="o">|</span> <span class="kc">None</span>
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
 </span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    <span class="n">recall_thresholds</span><span class="p">:</span> <span class="n"><span title="tuple">tuple</span></span><span class="p">[</span><span class="n"><span title="float">float</span></span><span class="p">,</span> <span class="o">...</span><span class="p">]</span>
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="o">|</span> <span class="kc">None</span>
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">area_ranges</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Breakdown (vernier._core.Breakdown)" href="#vernier.instance.Breakdown">Breakdown</a></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    <span class="n">area_ranges</span><span class="p">:</span> <span class="n"><a class="autorefs autorefs-internal" title="            Breakdown (vernier._core.Breakdown)" href="#vernier.instance.Breakdown">Breakdown</a></span> <span class="o">|</span> <span class="n"><span title="vernier.instance._UnsetType">_UnsetType</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="n"><span title="vernier.instance._UNSET">_UNSET</span></span><span class="p">,</span>
 </span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    <span class="n">use_cats</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>    <span class="n">cast_inputs</span><span class="p">:</span> <span class="n"><span title="bool">bool</span></span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
 </span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a><span class="p">)</span> <span class="o">-&gt;</span> <span class="n"><a class="autorefs autorefs-internal" title="            Evaluator
@@ -7216,12 +7303,15 @@ explicit override.</p>
     <div class="doc doc-contents ">
 
         <p>Run the evaluation pipeline against a GT/DT pair.</p>
-<p><code>dt</code> accepts any of four shapes, all of which evaluate
+<p><code>dt</code> accepts any of five shapes, all of which evaluate
 identically for the same logical detections:</p>
 <ul>
 <li>the COCO <code>loadRes</code>-shaped JSON payload as <code>bytes</code>;</li>
 <li>the array-form :class:<code>Detections</code> shapes introduced by
   ADR-0030 — a single per-image dict or a sequence of them;</li>
+<li>a :class:<code>DetectionsBatch</code> — every image's detections in one
+  set of columns, with per-detection <code>image_ids</code> or per-image
+  <code>image_ids</code> + <code>counts</code> (ADR-0066);</li>
 <li>a list of per-annotation :class:<code>ResultAnnotation</code> dicts, the
   shape <code>pycocotools.COCO.loadRes</code> consumes and the one a
   TorchMetrics-style caller already holds (ADR-0057);</li>
@@ -7548,8 +7638,9 @@ matrix has no federated disposition (ADR-0064).</p>
               <div class="doc-md-description">
                 <p>Any detection form the evaluator accepts — the detection
 COCO JSON payload as bytes, columnar
-:class:<code>vernier.instance.Detections</code>, result dicts, or an <code>(N, 7)</code>
-matrix (ADR-0030, ADR-0057, ADR-0064). The pair
+:class:<code>vernier.instance.Detections</code> /
+:class:<code>vernier.instance.DetectionsBatch</code>, result dicts, or an
+<code>(N, 7)</code> matrix (ADR-0030, ADR-0057, ADR-0064, ADR-0066). The pair
 :func:<code>vernier.adapters.coco_inputs</code> returns is read here
 unchanged.</p>
               </div>
@@ -7854,8 +7945,8 @@ constructor consumes) or a :class:<code>vernier.CocoDataset</code> handle
 (ADR-0020, ADR-0060). <code>dt</code> is anything
 :meth:<code>vernier.instance.Evaluator.evaluate</code> accepts: the detections
 JSON bytes (the shape <code>COCO.loadRes</code> consumes), columnar
-:class:<code>vernier.instance.Detections</code>, result dicts, or an <code>(N, 7)</code> matrix
-(ADR-0030, ADR-0057). The pair
+:class:<code>vernier.instance.Detections</code> / :class:<code>vernier.instance.DetectionsBatch</code>,
+result dicts, or an <code>(N, 7)</code> matrix (ADR-0030, ADR-0057, ADR-0066). The pair
 :func:<code>vernier.adapters.coco_inputs</code> returns is therefore read here
 unchanged (ADR-0064).</p>
 <p>A handle saves the GT JSON parse, and the mask kernels reuse and
@@ -7947,8 +8038,8 @@ call.</p>
 handle (ADR-0020, ADR-0060). <code>dt</code> is anything
 :meth:<code>vernier.instance.Evaluator.evaluate</code> accepts: the detections
 JSON bytes (the shape <code>COCO.loadRes</code> consumes), columnar
-:class:<code>vernier.instance.Detections</code>, result dicts, or an <code>(N, 7)</code> matrix
-(ADR-0030, ADR-0057). The pair
+:class:<code>vernier.instance.Detections</code> / :class:<code>vernier.instance.DetectionsBatch</code>,
+result dicts, or an <code>(N, 7)</code> matrix (ADR-0030, ADR-0057, ADR-0066). The pair
 :func:<code>vernier.adapters.coco_inputs</code> returns is therefore read here
 unchanged (ADR-0064).</p>
 <p>A handle saves the GT JSON parse, and the mask kernels reuse and
@@ -8087,8 +8178,9 @@ same as :func:<code>error_decomposition</code>.</p>
             <td>
               <div class="doc-md-description">
                 <p>Any detection form the evaluator accepts — results JSON
-bytes, columnar :class:<code>vernier.instance.Detections</code>, result dicts,
-or an <code>(N, 7)</code> matrix (ADR-0064).</p>
+bytes, columnar :class:<code>vernier.instance.Detections</code> /
+:class:<code>vernier.instance.DetectionsBatch</code>, result dicts, or an
+<code>(N, 7)</code> matrix (ADR-0064, ADR-0066).</p>
               </div>
             </td>
             <td>
@@ -8430,7 +8522,7 @@ on :func:<code>error_decomposition</code> is <em>not</em> consumed here.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

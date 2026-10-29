@@ -17,7 +17,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.7">
     
     
       
@@ -25,7 +25,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -1940,8 +1940,8 @@ histogram pass.</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">cal_15</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">n_bins</span><span class="o">=</span><span class="mi">15</span><span class="p">)</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="n">cal_30</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">n_bins</span><span class="o">=</span><span class="mi">30</span><span class="p">)</span>
 </span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="n">cal_equal</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">binning</span><span class="o">=</span><span class="s2">&quot;equal_width&quot;</span><span class="p">)</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">cal_strict</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">min_score</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>         <span class="c1"># include all scores</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">cal_iou75</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="mf">0.75</span><span class="p">)</span>               <span class="c1"># re-fold at a different T-axis</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="n">cal_strict</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">min_score</span><span class="o">=</span><span class="mf">0.0</span><span class="p">)</span>  <span class="c1"># include all scores</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="n">cal_iou75</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="mf">0.75</span><span class="p">)</span>  <span class="c1"># re-fold at a different T-axis</span>
 </span></code></pre></div>
 <p><code>iou</code> resolves to the kernel's pinned T-axis index under <code>PARITY_EPS</code>;
 values that don't land on a threshold the evaluator was configured
@@ -1953,8 +1953,8 @@ parity-pinned per the quirks survey
 P4, P5, P6).</p>
 <h2 id="per-class-breakdown">Per-class breakdown</h2>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="n">cal</span> <span class="o">=</span> <span class="n">result</span><span class="o">.</span><span class="n">calibration</span><span class="p">(</span><span class="n">per_class</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">print</span><span class="p">(</span><span class="n">cal</span><span class="o">.</span><span class="n">per_class</span><span class="p">)</span>         <span class="c1"># polars: class_id, ece, mce, n</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nb">print</span><span class="p">(</span><span class="n">cal</span><span class="o">.</span><span class="n">worst</span><span class="p">(</span><span class="mi">5</span><span class="p">))</span>          <span class="c1"># top-5 worst-calibrated classes by ECE</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">print</span><span class="p">(</span><span class="n">cal</span><span class="o">.</span><span class="n">per_class</span><span class="p">)</span>  <span class="c1"># polars: class_id, ece, mce, n</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="nb">print</span><span class="p">(</span><span class="n">cal</span><span class="o">.</span><span class="n">worst</span><span class="p">(</span><span class="mi">5</span><span class="p">))</span>  <span class="c1"># top-5 worst-calibrated classes by ECE</span>
 </span></code></pre></div>
 <p>The per-class table is only built when <code>per_class=True</code>; accessing
 <code>.per_class</code> without it raises <code>RuntimeError</code>. The marginal
@@ -1971,12 +1971,12 @@ store off-thread:</p>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">Evaluator</span><span class="p">(</span><span class="n">iou</span><span class="o">=</span><span class="n">Bbox</span><span class="p">())</span>
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="n">bg</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">background</span><span class="p">(</span><span class="n">gt_bytes</span><span class="p">)</span>
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>
-</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">epoch_outputs</span><span class="p">():</span>           <span class="c1"># whatever your loop yields</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="k">for</span> <span class="n">batch</span> <span class="ow">in</span> <span class="n">epoch_outputs</span><span class="p">():</span>  <span class="c1"># whatever your loop yields</span>
 </span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a>    <span class="n">bg</span><span class="o">.</span><span class="n">submit</span><span class="p">(</span><span class="n">batch</span><span class="o">.</span><span class="n">detections</span><span class="p">)</span>
 </span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
 </span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="n">snap</span> <span class="o">=</span> <span class="n">StreamingSnapshot</span><span class="o">.</span><span class="n">from_background</span><span class="p">(</span><span class="n">bg</span><span class="p">)</span>
-</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="nb">print</span><span class="p">(</span><span class="n">snap</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>             <span class="c1"># bit-equal to the batch path</span>
-</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">snap</span><span class="o">.</span><span class="n">calibration</span><span class="p">()</span><span class="o">.</span><span class="n">ece</span><span class="p">)</span>            <span class="c1"># same fold over retained cells</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="nb">print</span><span class="p">(</span><span class="n">snap</span><span class="o">.</span><span class="n">summary</span><span class="o">.</span><span class="n">stats</span><span class="p">[</span><span class="mi">0</span><span class="p">])</span>  <span class="c1"># bit-equal to the batch path</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a><span class="nb">print</span><span class="p">(</span><span class="n">snap</span><span class="o">.</span><span class="n">calibration</span><span class="p">()</span><span class="o">.</span><span class="n">ece</span><span class="p">)</span>  <span class="c1"># same fold over retained cells</span>
 </span></code></pre></div>
 <p><code>StreamingSnapshot.from_background(bg)</code> consumes the worker via
 <code>finalize_with_cells()</code> (one-shot — a second <code>finalize_*</code> call on the
@@ -2063,7 +2063,7 @@ underlying batches are reachable as <code>cal._reliability_batch</code> /
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

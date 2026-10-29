@@ -21,7 +21,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-ProperDocs 1.6.7, mkdocs-material-9.7.7">
     
     
       
@@ -29,7 +29,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -2155,11 +2155,12 @@ upcast at the FFI boundary.</p>
 <p>Confusion matrices are additively aggregable, so streaming is a thin
 wrapper:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="n">ev</span> <span class="o">=</span> <span class="n">vernier</span><span class="o">.</span><span class="n">semantic</span><span class="o">.</span><span class="n">Evaluator</span><span class="p">(</span><span class="n">parity_mode</span><span class="o">=</span><span class="s2">&quot;strict&quot;</span><span class="p">)</span><span class="o">.</span><span class="n">stream</span><span class="p">(</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">n_classes</span><span class="o">=</span><span class="mi">19</span><span class="p">,</span> <span class="n">ignore_label</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="p">)</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="k">for</span> <span class="n">image_id</span><span class="p">,</span> <span class="n">gt_arr</span><span class="p">,</span> <span class="n">dt_arr</span> <span class="ow">in</span> <span class="n">dataloader</span><span class="p">:</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>    <span class="n">ev</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="n">gt_arr</span><span class="p">,</span> <span class="n">dt_arr</span><span class="p">)</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>    <span class="n">n_classes</span><span class="o">=</span><span class="mi">19</span><span class="p">,</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>    <span class="n">ignore_label</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">)</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="k">for</span> <span class="n">image_id</span><span class="p">,</span> <span class="n">gt_arr</span><span class="p">,</span> <span class="n">dt_arr</span> <span class="ow">in</span> <span class="n">dataloader</span><span class="p">:</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>    <span class="n">ev</span><span class="o">.</span><span class="n">update</span><span class="p">(</span><span class="n">image_id</span><span class="p">,</span> <span class="n">gt_arr</span><span class="p">,</span> <span class="n">dt_arr</span><span class="p">)</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="n">summary</span> <span class="o">=</span> <span class="n">ev</span><span class="o">.</span><span class="n">finalize</span><span class="p">()</span>
 </span></code></pre></div>
 <p>Streaming <code>finalize()</code> is <strong>bit-equal to batch <code>evaluate(...)</code></strong> on
 f64 outputs over the same images (pinned by
@@ -2221,8 +2222,8 @@ heads). vernier provides an explicit merge step:</p>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># masks[image_id] is shape (n_classes, H, W) uint8.</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="n">dt</span> <span class="o">=</span> <span class="n">Predictions</span><span class="o">.</span><span class="n">from_binary_masks</span><span class="p">(</span>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>    <span class="p">{</span><span class="n">image_id</span><span class="p">:</span> <span class="n">masks_3d</span><span class="p">},</span>
-</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">merge</span><span class="o">=</span><span class="s2">&quot;argmax&quot;</span><span class="p">,</span>        <span class="c1"># or &quot;first&quot; / &quot;highest_class_id&quot;</span>
-</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">unlabeled_class</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span>   <span class="c1"># written into all-zero-mask pixels</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>    <span class="n">merge</span><span class="o">=</span><span class="s2">&quot;argmax&quot;</span><span class="p">,</span>  <span class="c1"># or &quot;first&quot; / &quot;highest_class_id&quot;</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>    <span class="n">unlabeled_class</span><span class="o">=</span><span class="mi">255</span><span class="p">,</span>  <span class="c1"># written into all-zero-mask pixels</span>
 </span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="p">)</span>
 </span></code></pre></div>
 <p>The <code>merge</code> selector is required to be explicit per quirk <strong>AN3</strong>:
@@ -2314,7 +2315,7 @@ to the dataset's <code>ignore_label</code>.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.sections", "toc.integrate", "content.code.copy"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>
