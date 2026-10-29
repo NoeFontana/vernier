@@ -2289,6 +2289,9 @@ pub(crate) fn build_update_payload<'py>(
 ) -> PyResult<UpdatePayload> {
     Ok(match array_ingest::DetectionsArg::extract(detections)? {
         array_ingest::DetectionsArg::Bytes(b) => UpdatePayload::Bytes(b),
+        array_ingest::DetectionsArg::Batch(dict) => UpdatePayload::Inputs(
+            array_ingest::batch_to_inputs(py, &dict, iou_type, cast_state)?,
+        ),
         array_ingest::DetectionsArg::Dicts { dicts, indexed } => UpdatePayload::Inputs(
             array_ingest::dicts_to_inputs(py, &dicts, indexed, iou_type, cast_state)?,
         ),

@@ -40,6 +40,8 @@ pub(crate) enum DetectionsArg<'py> {
     /// crosses `py.detach` without a copy — saves ~10 ms per val2017
     /// DT submission (17 MB jittered output).
     Bytes(PyBackedBytes),
+    /// Multi-image / whole-dataset columnar `DetectionsBatch` dict (ADR-0066).
+    Batch(Bound<'py, PyDict>),
     /// One or more per-image `Detections` dicts. Single-image inputs
     /// land here as a one-element vec.
     Dicts {
@@ -67,6 +69,18 @@ impl<'py> DetectionsArg<'py> {
         }
         if let Ok(d) = obj.cast::<PyDict>() {
             let d = d.clone();
+            let py = d.py();
+            let has_image_ids = d.contains(intern!(py, "image_ids"))?;
+            let has_image_id = d.contains(intern!(py, "image_id"))?;
+            if has_image_ids && has_image_id {
+                return Err(PyValueError::new_err(
+                    "detections: cannot specify both 'image_id' (single-image Detections) \
+                     and 'image_ids' (multi-image DetectionsBatch)",
+                ));
+            }
+            if has_image_ids {
+                return Ok(Self::Batch(d));
+            }
             return Ok(if crate::result_ingest::dict_is_result_annotation(&d)? {
                 Self::AnnList(vec![d])
             } else {
@@ -99,6 +113,14 @@ impl<'py> DetectionsArg<'py> {
             // support, so the first element decides the route. `boxes`
             // (columnar) wins over `bbox` (per-annotation), so an
             // ADR-0030 payload can never be re-routed here.
+            if let Some(first) = dicts.first() {
+                if first.contains(intern!(first.py(), "image_ids"))? {
+                    return Err(PyValueError::new_err(
+                        "detections[0]: got 'image_ids' inside a sequence; pass a \
+                         DetectionsBatch dict directly rather than wrapping it in a list",
+                    ));
+                }
+            }
             let is_ann = match dicts.first() {
                 Some(first) => crate::result_ingest::dict_is_result_annotation(first)?,
                 // An empty list is the same empty payload either way.
@@ -115,8 +137,9 @@ impl<'py> DetectionsArg<'py> {
         }
         let type_name = type_name_of(obj);
         Err(PyTypeError::new_err(format!(
-            "detections must be bytes, a Detections dict, a sequence of Detections dicts, \
-             a list of COCO result dicts, or an (N, 7) float64 array; got {type_name}"
+            "detections must be bytes, a Detections or DetectionsBatch dict, \
+             a sequence of Detections dicts, a list of COCO result dicts, \
+             or an (N, 7) float64 array; got {type_name}"
         )))
     }
 }
@@ -731,6 +754,216 @@ fn ascontig_for<'py>(
         Some(_) => Ok(Some(resolve_ascontiguousarray(py)?)),
         None => Ok(None),
     }
+}
+
+/// Extract a multi-image `DetectionsBatch` dict (ADR-0066) into the flat
+/// `Vec<DetectionInput>` every array route produces.
+///
+/// Everything here runs under the GIL, the numeric column copies included:
+/// the `DLPackView` slices alias the caller's live, mutable buffers, and
+/// per ADR-0006 conversion finishes before [`Python::detach`] — a
+/// detached copy would race any Python thread still writing them. The
+/// copies are single streaming passes; the index build in
+/// `CocoDetections::from_inputs` is what the consumer runs detached.
+pub(crate) fn batch_to_inputs<'py>(
+    py: Python<'py>,
+    dict: &Bound<'py, PyDict>,
+    iou_type: ArrayIouType,
+    cast_state: &CastState,
+) -> PyResult<Vec<DetectionInput>> {
+    let ascontig = ascontig_for(py, cast_state)?;
+    let ctx = CastCtx::new(py, cast_state, &ascontig);
+
+    let k_boxes = intern!(py, "boxes");
+    let k_scores = intern!(py, "scores");
+    let k_labels = intern!(py, "labels");
+    let k_image_ids = intern!(py, "image_ids");
+    let k_counts = intern!(py, "counts");
+    let k_rles = intern!(py, "rles");
+    let k_keypoints = intern!(py, "keypoints");
+
+    let boxes_obj = dict.get_item(k_boxes)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'boxes' (N×4 float64 xywh array)")
+    })?;
+    let boxes_obj = ctx.maybe_cast(boxes_obj, "detections.boxes", "float64")?;
+    let boxes_view = dlpack::extract_f64_2d(&boxes_obj, "detections.boxes", 4)?;
+    let n = boxes_view.len() / 4;
+
+    let scores_obj = dict.get_item(k_scores)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'scores' (length-N float64)")
+    })?;
+    let scores_obj = ctx.maybe_cast(scores_obj, "detections.scores", "float64")?;
+    let scores_view = dlpack::extract_f64_1d(&scores_obj, "detections.scores")?;
+    if scores_view.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "detections.scores: length {} disagrees with boxes (N={n})",
+            scores_view.len()
+        )));
+    }
+
+    let labels_obj = dict.get_item(k_labels)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'labels' (length-N int64)")
+    })?;
+    let labels_obj = ctx.maybe_cast(labels_obj, "detections.labels", "int64")?;
+    let labels_view = dlpack::extract_i64_1d(&labels_obj, "detections.labels")?;
+    if labels_view.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "detections.labels: length {} disagrees with boxes (N={n})",
+            labels_view.len()
+        )));
+    }
+
+    let image_ids_obj = dict.get_item(k_image_ids)?.ok_or_else(|| {
+        PyValueError::new_err("detections: missing required field 'image_ids' (int64 array)")
+    })?;
+    let image_ids_obj = ctx.maybe_cast(image_ids_obj, "detections.image_ids", "int64")?;
+    let image_ids_view = dlpack::extract_i64_1d(&image_ids_obj, "detections.image_ids")?;
+
+    let counts_view = match dict.get_item(k_counts)? {
+        Some(v) if !v.is_none() => {
+            let v = ctx.maybe_cast(v, "detections.counts", "int64")?;
+            let view = dlpack::extract_i64_1d(&v, "detections.counts")?;
+            if view.len() != image_ids_view.len() {
+                return Err(PyValueError::new_err(format!(
+                    "detections.counts: length {} disagrees with detections.image_ids (M={})",
+                    view.len(),
+                    image_ids_view.len()
+                )));
+            }
+            let mut sum: usize = 0;
+            for (m, &c) in view.as_slice().iter().enumerate() {
+                if c < 0 {
+                    return Err(PyValueError::new_err(format!(
+                        "detections.counts[{m}]: count must be non-negative, got {c}"
+                    )));
+                }
+                let cu = usize::try_from(c).map_err(|_| {
+                    PyValueError::new_err(format!(
+                        "detections.counts[{m}]: count {c} overflows usize"
+                    ))
+                })?;
+                sum = sum.checked_add(cu).ok_or_else(|| {
+                    PyValueError::new_err("detections.counts: sum overflows usize")
+                })?;
+            }
+            if sum != n {
+                return Err(PyValueError::new_err(format!(
+                    "detections.counts: sum ({sum}) disagrees with boxes (N={n})"
+                )));
+            }
+            Some(view)
+        }
+        _ => {
+            if image_ids_view.len() != n {
+                return Err(PyValueError::new_err(format!(
+                    "detections.image_ids: length {} disagrees with boxes (N={n})",
+                    image_ids_view.len()
+                )));
+            }
+            None
+        }
+    };
+
+    // `DetectionsBatch` is the multi-image `Detections`, so it takes the
+    // array surface's rule, not the file's: a mask pass needs `rles`.
+    // Quirk J2 (a bbox rectangle standing in for a missing mask) belongs
+    // to the routes that mirror a `loadRes` file — bytes, result dicts,
+    // the `(N, 7)` matrix. An array caller who left the masks out has a
+    // bug, and J2 would turn it into a plausible, wrong segm AP.
+    let segmentations: Option<Vec<Option<Segmentation>>> = match iou_type {
+        ArrayIouType::Segm | ArrayIouType::Boundary => {
+            let rles_obj = dict
+                .get_item(k_rles)?
+                .filter(|v| !v.is_none())
+                .ok_or_else(|| {
+                    PyValueError::new_err(format!(
+                        "detections: iou_type={} requires a 'rles' field \
+                         (sequence of RLE dicts or 2-D bool/uint8 bitmasks)",
+                        iou_type.as_str()
+                    ))
+                })?;
+            Some(
+                extract_rles(&rles_obj, FieldPath::new(None, ".rles"), n, &ctx)?
+                    .into_iter()
+                    .map(Some)
+                    .collect(),
+            )
+        }
+        ArrayIouType::Bbox | ArrayIouType::Keypoints => None,
+    };
+
+    let kp_data = match iou_type {
+        ArrayIouType::Keypoints => {
+            let kp_obj = dict.get_item(k_keypoints)?.ok_or_else(|| {
+                PyValueError::new_err(
+                    "detections: iou_type='keypoints' requires a 'keypoints' field \
+                     ((N, K, 3) float64 array of [x, y, v] triplets)",
+                )
+            })?;
+            let kp_obj = ctx.maybe_cast(kp_obj, "detections.keypoints", "float64")?;
+            let (view, k) = dlpack::extract_f64_3d_kp(&kp_obj, "detections.keypoints")?;
+            let stride = k * 3;
+            let expected = n.checked_mul(stride).ok_or_else(|| {
+                PyValueError::new_err(format!(
+                    "detections.keypoints: shape product (N={n}, K={k}, 3) overflows usize"
+                ))
+            })?;
+            if view.len() != expected {
+                return Err(PyValueError::new_err(format!(
+                    "detections.keypoints: flat length {} disagrees with shape (N={n}, K={k}, 3)",
+                    view.len()
+                )));
+            }
+            Some((view, stride))
+        }
+        _ => None,
+    };
+
+    let row_image_ids: Vec<ImageId> = match &counts_view {
+        None => image_ids_view
+            .as_slice()
+            .iter()
+            .map(|&id| ImageId(id))
+            .collect(),
+        Some(counts) => {
+            let mut out = Vec::with_capacity(n);
+            for (&id, &c) in image_ids_view.as_slice().iter().zip(counts.as_slice()) {
+                // `c >= 0` and `sum(counts) == n` were validated above.
+                #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+                out.extend(std::iter::repeat_n(ImageId(id), c as usize));
+            }
+            out
+        }
+    };
+    let mut segmentations = segmentations.map(Vec::into_iter);
+    let kp = kp_data
+        .as_ref()
+        .map(|(view, stride)| (view.as_slice(), *stride));
+    let inputs = row_image_ids
+        .into_iter()
+        .zip(boxes_view.as_slice().chunks_exact(4))
+        .zip(scores_view.as_slice())
+        .zip(labels_view.as_slice())
+        .enumerate()
+        .map(|(i, (((image_id, b), &score), &label))| DetectionInput {
+            id: None,
+            image_id,
+            category_id: CategoryId(label),
+            score,
+            bbox: Bbox {
+                x: b[0],
+                y: b[1],
+                w: b[2],
+                h: b[3],
+            },
+            area: None,
+            segmentation: segmentations.as_mut().and_then(Iterator::next).flatten(),
+            // Indexed rather than `chunks_exact`: `K = 0` gives a zero stride.
+            keypoints: kp.map(|(flat, stride)| flat[i * stride..(i + 1) * stride].to_vec()),
+            num_keypoints: None,
+        })
+        .collect();
+    Ok(inputs)
 }
 
 /// Convert per-image dict payloads into a flat `Vec<DetectionInput>`.
