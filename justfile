@@ -30,6 +30,22 @@ default:
 bootstrap:
     uv sync --all-extras
     tools/dev/pin-python.sh
+    tools/dev/link-data-cache.sh
+
+# Fetch the generated bench data (real-model and jittered predictions)
+# from the private Hugging Face dataset pinned in tools/dev/bench-data.json:
+# hours of inference, in seconds. Needs HF_TOKEN. Args: --only ROOT, --dry-run.
+data-pull *ARGS:
+    uv run --no-sync python tools/dev/bench_data.py pull {{ARGS}}
+
+# Upload generated bench data that is new or changed, then commit the
+# updated tools/dev/bench-data.json. Args: --dry-run.
+data-push *ARGS:
+    uv run --no-sync python tools/dev/bench_data.py push {{ARGS}}
+
+# Which pinned bench-data artifacts are present on this machine.
+data-status:
+    uv run --no-sync python tools/dev/bench_data.py status
 
 # Rebuild the extension if any Rust source changed since the last build.
 # `uv run` makes the same check on its own, so this is rarely needed.
