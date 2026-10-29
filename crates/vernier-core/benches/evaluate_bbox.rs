@@ -31,6 +31,12 @@
 //!   image so each surviving cell sits at `G·D ≥ 12,500`. Per-cell
 //!   setup is sub-1% of cell cost; the inner kernel + matching loop
 //!   dominate.
+//! - **`framework_detr_300q_e2e`** — the unthresholded set-prediction
+//!   regime (DETR family, ADR-0066): 500 images × 80 cats, 300 queries
+//!   and ~7 GTs per image, so nearly every occupied cell has no GT and
+//!   the grid is dense in cells rather than in matches. Timed end to end
+//!   (evaluate + accumulate), because at this shape grid storage and
+//!   accumulation cost as much as matching.
 //!
 //! Run with `just bench` or
 //! `cargo bench -p vernier-core --bench evaluate_bbox`.
@@ -40,10 +46,11 @@
 #![allow(clippy::unwrap_used)]
 
 use divan::{black_box, Bencher};
+use vernier_core::accumulate::{accumulate, accumulate_parallel, AccumulateParams};
 use vernier_core::dataset::{
     AnnId, Bbox, CategoryId, CategoryMeta, CocoAnnotation, DetectionInput, ImageId, ImageMeta,
 };
-use vernier_core::parity::iou_thresholds;
+use vernier_core::parity::{iou_thresholds, recall_thresholds};
 use vernier_core::{
     evaluate_bbox, evaluate_bbox_parallel, AreaRange, CocoDataset, CocoDetections, EvaluateParams,
     ParityMode,
@@ -83,6 +90,13 @@ const DENSE_MLE_1CAT: Scenario = Scenario {
     n_categories: 1,
     gts_per_image: 250,
     dts_per_image: 250,
+};
+
+const DETR_300Q: Scenario = Scenario {
+    n_images: 500,
+    n_categories: 80,
+    gts_per_image: 7,
+    dts_per_image: 300,
 };
 
 fn xorshift(state: &mut u64) -> u64 {
@@ -246,4 +260,56 @@ fn framework_dense_mle_5cat_parallel(bencher: Bencher, &num_threads: &usize) {
 #[divan::bench(args = THREAD_COUNTS)]
 fn framework_dense_mle_1cat_parallel(bencher: Bencher, &num_threads: &usize) {
     run_parallel(bencher, DENSE_MLE_1CAT, num_threads);
+}
+
+/// Evaluate + accumulate at the COCO `max_dets` ladder; `pool` selects the
+/// parallel entry points (built once, outside the timing window).
+fn run_e2e(bencher: Bencher, s: Scenario, pool: Option<&rayon::ThreadPool>) {
+    let (gt, dt) = build_dataset(s);
+    let area_ranges = AreaRange::coco_default();
+    let iou_thr = iou_thresholds();
+    let max_dets = [1usize, 10, 100];
+    let params = EvaluateParams {
+        iou_thresholds: iou_thr,
+        area_ranges: &area_ranges,
+        max_dets_per_image: 100,
+        use_cats: true,
+        retain_iou: false,
+        retain_meta: false,
+    };
+    let acc_params = |grid: &vernier_core::EvalGrid| AccumulateParams {
+        iou_thresholds: iou_thr,
+        recall_thresholds: recall_thresholds(),
+        max_dets: &max_dets,
+        n_categories: grid.n_categories,
+        n_area_ranges: grid.n_area_ranges,
+        n_images: grid.n_images,
+    };
+    bencher.bench_local(|| match pool {
+        None => {
+            let grid =
+                evaluate_bbox(black_box(&gt), black_box(&dt), params, ParityMode::Strict).unwrap();
+            accumulate(&grid.eval_imgs, acc_params(&grid), ParityMode::Strict).unwrap()
+        }
+        Some(pool) => pool.install(|| {
+            let grid =
+                evaluate_bbox_parallel(black_box(&gt), black_box(&dt), params, ParityMode::Strict)
+                    .unwrap();
+            accumulate_parallel(&grid.eval_imgs, acc_params(&grid), ParityMode::Strict).unwrap()
+        }),
+    });
+}
+
+#[divan::bench]
+fn framework_detr_300q_e2e(bencher: Bencher) {
+    run_e2e(bencher, DETR_300Q, None);
+}
+
+#[divan::bench(args = THREAD_COUNTS)]
+fn framework_detr_300q_e2e_parallel(bencher: Bencher, &num_threads: &usize) {
+    let pool = rayon::ThreadPoolBuilder::new()
+        .num_threads(num_threads)
+        .build()
+        .unwrap();
+    run_e2e(bencher, DETR_300Q, Some(&pool));
 }
