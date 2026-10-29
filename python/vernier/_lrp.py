@@ -298,8 +298,8 @@ def optimal_lrp(
     (ADR-0020, ADR-0060). ``dt`` is anything
     :meth:`vernier.instance.Evaluator.evaluate` accepts: the detections
     JSON bytes (the shape ``COCO.loadRes`` consumes), columnar
-    :class:`vernier.instance.Detections`, result dicts, or an ``(N, 7)`` matrix
-    (ADR-0030, ADR-0057). The pair
+    :class:`vernier.instance.Detections` / :class:`vernier.instance.DetectionsBatch`,
+    result dicts, or an ``(N, 7)`` matrix (ADR-0030, ADR-0057, ADR-0066). The pair
     :func:`vernier.adapters.coco_inputs` returns is therefore read here
     unchanged (ADR-0064).
 

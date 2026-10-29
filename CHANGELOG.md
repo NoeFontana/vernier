@@ -14,6 +14,27 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Added
+
+- **`vernier.instance.DetectionsBatch`** (ADR-0066): every image's
+  detections in one set of columns — `boxes`, `scores`, `labels`, and
+  `image_ids` per detection or per image with `counts` — accepted by
+  every `DetectionsInput` entry point. `rles` is required under
+  `iou_type="segm"` / `"boundary"` exactly as on `Detections`; quirk
+  **J2**'s bbox-rectangle fallback stays with the `loadRes`-shaped routes
+  (JSON bytes, result dicts, the `(N, 7)` matrix).
+
+### Changed
+
+- **`vernier.adapters.coco_inputs` / `coco_inputs_from_columns` return a
+  `DetectionsBatch`** on both `bbox` and `segm`, instead of an `(N, 7)`
+  matrix (bbox) or a list of per-image `Detections` (segm). The declared
+  return type (`DetectionsInput`) and every documented consumer are
+  unchanged; a caller that inspected the concrete value — e.g.
+  `np.asarray(detections)` — now gets a dict. Box-only predictions beside
+  masked ground truth are refused by a segm pass, and `coco_metrics`
+  names the side missing masks before running any pass.
+
 ## [0.5.4] - 2026-09-24
 
 ### Added

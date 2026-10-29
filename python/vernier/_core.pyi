@@ -12,6 +12,7 @@ from typing_extensions import Self
 
 from vernier._array_types import CompressedRLE as CompressedRLE
 from vernier._array_types import Detections as Detections
+from vernier._array_types import DetectionsBatch as DetectionsBatch
 from vernier._array_types import DetectionsInput as DetectionsInput
 from vernier._array_types import GtAnnotations as GtAnnotations
 from vernier._array_types import GtCategory as GtCategory

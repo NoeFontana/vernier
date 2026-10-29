@@ -26,10 +26,11 @@ when violated rather than loud:
   ``(0, 4)`` (TorchMetrics' ``_fix_empty_tensors`` shapes it that way to
   avoid a DDP all-reduce hang), which breaks both concatenation and
   per-image counting unless it is normalized first;
-* the fastest detection route depends on whether masks are present —
-  the ``(N, 7)`` matrix carries box state with no Python object per
-  detection, while a mask needs the columnar route, the only one that
-  carries one *and* keeps the arrays whole.
+* detections leave as one :class:`vernier.instance.DetectionsBatch` —
+  the concatenated columns plus per-image ``counts``, with no Python
+  object per detection or per image and no ``(N, 7)`` widening copy —
+  carrying ``rles`` exactly when every prediction has a mask
+  (ADR-0066).
 
 **No framework is imported or named.** Arrays are read through DLPack
 or :func:`numpy.asarray`, and a device tensor is moved by duck-typed
@@ -49,7 +50,7 @@ from numpy.typing import NDArray
 from vernier import _core
 from vernier._array_types import (
     DetectionColumns,
-    Detections,
+    DetectionsBatch,
     DetectionsInput,
     GtCategory,
     Prediction,
@@ -566,7 +567,7 @@ def coco_inputs(
         TypeError: If a value cannot be read as an array, or its dtype
             is wrong under ``cast_inputs=False``.
     """
-    dataset, detections, _ = _records_to_inputs(
+    dataset, detections, _, _ = _records_to_inputs(
         predictions,
         targets,
         box_format=box_format,
@@ -585,7 +586,7 @@ def _records_to_inputs(
     categories: Sequence[int] | Sequence[GtCategory] | None,
     area: AreaPolicy,
     cast_inputs: bool,
-) -> tuple[_core.CocoDataset, DetectionsInput, list[GtCategory]]:
+) -> tuple[_core.CocoDataset, DetectionsInput, list[GtCategory], tuple[bool, bool]]:
     """:func:`coco_inputs`, also returning the resolved ``categories``.
 
     :func:`coco_metrics` needs that order for its ``classes`` key and
@@ -797,7 +798,7 @@ def coco_inputs_from_columns(
         if len(declared) != n_images:
             raise ValueError(f"targets.sizes: {len(declared)} entries for {n_images} images")
         sizes = [(int(h), int(w)) for h, w in declared]
-    dataset, detections_input, _ = _build(
+    dataset, detections_input, _, _ = _build(
         gt_boxes=gt_boxes,
         gt_labels=gt_labels,
         gt_crowds=crowds,
@@ -891,7 +892,7 @@ def _build(
     sizes: Sequence[tuple[int, int] | None] | None,
     categories: Sequence[int] | Sequence[GtCategory] | None,
     area: AreaPolicy,
-) -> tuple[_core.CocoDataset, DetectionsInput, list[GtCategory]]:
+) -> tuple[_core.CocoDataset, DetectionsInput, list[GtCategory], tuple[bool, bool]]:
     """Assemble vernier's inputs from whole columns.
 
     The single builder both public spellings land on, so a per-sample
@@ -939,10 +940,11 @@ def _build(
         annotations,  # type: ignore[arg-type]
         resolved,
     )
-    detections = _detections(
-        image_ids, dt_boxes, dt_scores, dt_labels, dt_counts, dt_rles, masked=masked
-    )
-    return dataset, detections, resolved
+    detections = _detections(image_ids, dt_boxes, dt_scores, dt_labels, dt_counts, dt_rles)
+    # What a `segm` pass needs: every row of each side carrying a mask
+    # (vacuously true for a side with no rows).
+    segm_ready = (len(gt_rles) == total, len(dt_rles) == int(dt_counts.sum()))
+    return dataset, detections, resolved, segm_ready
 
 
 def _offsets(counts: NDArray[np.int64]) -> NDArray[np.int64]:
@@ -1087,41 +1089,30 @@ def _detections(
     labels: NDArray[np.int64],
     counts: NDArray[np.int64],
     rles: Sequence[RLEInput],
-    *,
-    masked: bool,
-) -> DetectionsInput:
-    """Pick the fastest detection route that can express these detections.
+) -> DetectionsBatch:
+    """Assemble whole-column detections as a :class:`DetectionsBatch` (ADR-0066).
 
-    ``bbox`` takes the ``(N, 7)`` matrix -- the only route that hands the
-    whole state over with no Python object per detection. What it cannot
-    carry is exactly what a bbox pass does not use: a segmentation, an
-    explicit id, a supplied area.
+    Hands the concatenated columns and per-image ``counts`` straight across
+    the FFI with zero Python array copies and zero per-image dict slicing on
+    both ``bbox`` and ``segm``.
 
-    ``segm`` takes the columnar route, the only one that carries a mask
-    *and* keeps the arrays whole; its per-image entries are **views**
-    into the columns, not copies. The third route, a list of COCO result
-    dicts, costs more per-detection Python than the rest of the ingest
-    put together.
+    ``rles`` is attached exactly when it covers every row (``_build``
+    already refused a partial column), which includes the zero-detection
+    case. Predictions without masks therefore omit it, and a ``segm``
+    pass over them is refused at the FFI instead of falling back to quirk
+    **J2**'s bbox rectangles — masked ground truth does not make unmasked
+    predictions evaluable as masks.
     """
-    if not masked:
-        if not len(scores):
-            return np.zeros((0, 7), dtype=np.float64)
-        # `column_stack` promotes the int64 id columns against the float64
-        # boxes and scores, so the result is already float64 and
-        # C-contiguous; a further `astype` would memcpy N*56 bytes for nothing.
-        matrix = np.column_stack([np.repeat(image_ids, counts), boxes, scores, labels])
-        return cast("NDArray[np.float64]", matrix)
-    at = _offsets(counts)
-    return [
-        Detections(
-            image_id=int(image_id),
-            boxes=np.ascontiguousarray(boxes[start:stop]),
-            scores=scores[start:stop],
-            labels=labels[start:stop],
-            rles=rles[start:stop],
-        )
-        for image_id, start, stop in zip(image_ids, at[:-1], at[1:], strict=True)
-    ]
+    batch = DetectionsBatch(
+        image_ids=np.ascontiguousarray(image_ids),
+        counts=np.ascontiguousarray(counts),
+        boxes=np.ascontiguousarray(boxes),
+        scores=np.ascontiguousarray(scores),
+        labels=np.ascontiguousarray(labels),
+    )
+    if len(rles) == len(scores):
+        batch["rles"] = rles
+    return batch
 
 
 #: The twelve COCO summary statistics, in the canonical order
@@ -1236,7 +1227,7 @@ def coco_metrics(
     # reads them, so a two-IoU-type run converts the state once. `_categories`
     # is order-defining (it sorts by id) and the build already resolves it, so
     # taking it back from there reads every label column exactly once.
-    dataset, detections, resolved = _records_to_inputs(
+    dataset, detections, resolved, (gt_masked, dt_masked) = _records_to_inputs(
         predictions,
         targets,
         box_format=box_format,
@@ -1244,8 +1235,12 @@ def coco_metrics(
         area=area,
         cast_inputs=cast_inputs,
     )
-    if "segm" in iou_types and not isinstance(detections, list):
-        raise ValueError("iou_type='segm' needs masks on the records; none were passed")
+    # Checked per side and before any grid runs: a box-only prediction set
+    # beside masked targets would otherwise finish the bbox pass and only
+    # then be refused by the segm route.
+    if "segm" in iou_types and not (gt_masked and dt_masked):
+        side = "targets" if not gt_masked else "predictions"
+        raise ValueError(f"iou_type='segm' needs masks on the {side}; none were passed")
     results: dict[str, float | NDArray[Any]] = {}
     for kind in iou_types:
         prefix = "" if len(iou_types) == 1 else f"{kind}_"

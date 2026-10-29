@@ -195,8 +195,8 @@ def error_decomposition(
     handle (ADR-0020, ADR-0060). ``dt`` is anything
     :meth:`vernier.instance.Evaluator.evaluate` accepts: the detections
     JSON bytes (the shape ``COCO.loadRes`` consumes), columnar
-    :class:`vernier.instance.Detections`, result dicts, or an ``(N, 7)`` matrix
-    (ADR-0030, ADR-0057). The pair
+    :class:`vernier.instance.Detections` / :class:`vernier.instance.DetectionsBatch`,
+    result dicts, or an ``(N, 7)`` matrix (ADR-0030, ADR-0057, ADR-0066). The pair
     :func:`vernier.adapters.coco_inputs` returns is therefore read here
     unchanged (ADR-0064).
 
@@ -470,8 +470,9 @@ def fp_iou_histogram(
         gt: GT JSON bytes or a :class:`vernier.CocoDataset` handle,
             same as :func:`error_decomposition`.
         dt: Any detection form the evaluator accepts — results JSON
-            bytes, columnar :class:`vernier.instance.Detections`, result dicts,
-            or an ``(N, 7)`` matrix (ADR-0064).
+            bytes, columnar :class:`vernier.instance.Detections` /
+            :class:`vernier.instance.DetectionsBatch`, result dicts, or an
+            ``(N, 7)`` matrix (ADR-0064, ADR-0066).
         iou: Kernel selector — :class:`vernier.Bbox` (default),
             :class:`vernier.Segm`, or :class:`vernier.Boundary`.
             :class:`vernier.Keypoints` raises per ADR-0024.
