@@ -240,7 +240,7 @@ def test_xyxy_conversion_never_writes_the_callers_boxes(dtype: Any) -> None:
     targets: list[Target] = [{"boxes": xyxy, "labels": np.array([1, 1])}]
     _, detections = coco_inputs(predictions, targets, box_format="xyxy")
     assert np.array_equal(xyxy, before)
-    xywh = np.asarray(detections)[:, 1:5]
+    xywh = cast("dict[str, Any]", detections)["boxes"]
     assert np.array_equal(xywh, [[10.0, 20.0, 30.0, 40.0], [0.0, 0.0, 8.0, 4.0]])
 
 
