@@ -193,9 +193,9 @@ fn evaluate_instance_partitioned_impl(
     let iou_thr = grid.iou_thresholds_vec();
     let grid_inner = grid.eval_grid_ref();
     let dims = GridDims {
-        n_categories: grid_inner.n_categories,
-        n_area_ranges: grid_inner.n_area_ranges,
-        n_images: grid_inner.n_images,
+        n_categories: grid_inner.n_categories(),
+        n_area_ranges: grid_inner.n_area_ranges(),
+        n_images: grid_inner.n_images(),
     };
     // Read off the grid rather than taken as a parameter: this function
     // already receives the `EvalIouType` that built it, so a separate
@@ -205,7 +205,10 @@ fn evaluate_instance_partitioned_impl(
     let summary = py
         .detach(
             move || -> Result<PartitionedSummary, vernier_core::EvalError> {
-                evaluate_partitioned(&grid_inner.eval_imgs(), dims, &spec, &iou_thr, parity, plan)
+                // Materialized here, off the GIL: on a packed grid this is
+                // the per-cell unpack, not a borrow.
+                let eval_imgs = grid_inner.eval_imgs();
+                evaluate_partitioned(&eval_imgs, dims, &spec, &iou_thr, parity, plan)
             },
         )
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;

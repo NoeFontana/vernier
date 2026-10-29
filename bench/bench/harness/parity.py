@@ -414,17 +414,24 @@ _TIER_PAIRS: dict[IouType, tuple[tuple[Tier, str, str, float], ...]] = {
         ("bit-equal", "vernier", "pycocotools", 0.0),
         ("float-tolerance", "vernier", "faster-coco-eval", FLOAT_TOLERANCE_ATOL),
         ("float-tolerance", "vernier", "hotcoco", FLOAT_TOLERANCE_ATOL),
+        ("float-tolerance", "vernier", "ufcoco", FLOAT_TOLERANCE_ATOL),
     ),
     "segm": (
         ("bit-equal", "vernier", "pycocotools", 0.0),
         ("float-tolerance", "vernier", "faster-coco-eval", FLOAT_TOLERANCE_ATOL),
         ("float-tolerance", "vernier", "hotcoco", FLOAT_TOLERANCE_ATOL),
+        ("float-tolerance", "vernier", "ufcoco", FLOAT_TOLERANCE_ATOL),
     ),
     "keypoints": (
         ("bit-equal", "vernier", "pycocotools", 0.0),
         ("float-tolerance", "vernier", "faster-coco-eval", FLOAT_TOLERANCE_ATOL),
         ("float-tolerance", "vernier", "hotcoco", FLOAT_TOLERANCE_ATOL),
+        ("float-tolerance", "vernier", "ufcoco", FLOAT_TOLERANCE_ATOL),
     ),
+    # No ufcoco tier: its boundary IoU is not the boundary-iou-api
+    # number (measured on coco_val2017_jittered_seed0: 39k precision
+    # cells differ, AP 0.3275 vs the oracle's 0.3264), so a tolerance
+    # pairing would fail by design. Its timings are still recorded.
     "boundary": (("boundary-tolerance", "vernier", "boundary-iou-api", BOUNDARY_PARITY_EPS),),
 }
 
