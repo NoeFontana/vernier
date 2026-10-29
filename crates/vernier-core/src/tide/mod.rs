@@ -72,7 +72,7 @@ pub use rewrite::{apply_fix, FixKind};
 
 use std::collections::HashMap;
 
-use crate::accumulate::{accumulate_grid, sort_max_dets, AccumulateParams};
+use crate::accumulate::{accumulate_grid, sort_max_dets, GridAccumulateParams};
 use crate::dataset::{CocoDataset, CocoDetections};
 use crate::error::EvalError;
 use crate::evaluate::{
@@ -362,13 +362,10 @@ fn compute_map(
     sort_max_dets(&mut max_dets);
     let acc = accumulate_grid(
         grid,
-        AccumulateParams {
+        GridAccumulateParams {
             iou_thresholds,
             recall_thresholds: crate::parity::recall_thresholds(),
             max_dets: &max_dets,
-            n_categories: grid.n_categories,
-            n_area_ranges: grid.n_area_ranges,
-            n_images: grid.n_images,
         },
         ParityMode::Strict,
     )?;

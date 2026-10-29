@@ -45,7 +45,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 
 use vernier_core::accumulate::{
-    accumulate_grid, accumulate_grid_parallel, sort_max_dets, AccumulateParams, PerImageEval,
+    accumulate_grid, accumulate_grid_parallel, sort_max_dets, GridAccumulateParams, PerImageEval,
 };
 use vernier_core::dataset::{CategoryId, DetectionArea, DetectionInput};
 use vernier_core::evaluate::{
@@ -406,22 +406,16 @@ impl PyEvalGrid {
         let mut max_dets = max_dets;
         sort_max_dets(&mut max_dets);
         let parity = self.parity;
-        let n_categories = self.inner.n_categories;
-        let n_area_ranges = self.inner.n_area_ranges;
-        let n_images = self.inner.n_images;
         let grid = &self.inner;
         let iou_thr = self.iou_thresholds.clone();
         let recall_thr = self.recall_thresholds.clone();
         let policy = self.thread_policy;
         let acc = py
             .detach(|| {
-                let params = AccumulateParams {
+                let params = GridAccumulateParams {
                     iou_thresholds: &iou_thr,
                     recall_thresholds: &recall_thr,
                     max_dets: &max_dets,
-                    n_categories,
-                    n_area_ranges,
-                    n_images,
                 };
                 accumulate_with_policy(grid, params, parity, policy)
             })
@@ -1778,7 +1772,7 @@ fn run_pipeline_with_dataset(
 /// same, only slower.
 fn accumulate_with_policy(
     grid: &EvalGrid,
-    params: AccumulateParams<'_>,
+    params: GridAccumulateParams<'_>,
     parity: ParityMode,
     thread_policy: threads::ThreadPolicy,
 ) -> Result<Accumulated, EvalError> {
@@ -1800,13 +1794,10 @@ fn summarize_grid(
     thread_policy: threads::ThreadPolicy,
 ) -> Result<Summary, EvalError> {
     let iou_thr = iou_thresholds();
-    let acc_params = AccumulateParams {
+    let acc_params = GridAccumulateParams {
         iou_thresholds: iou_thr,
         recall_thresholds: recall_thresholds(),
         max_dets,
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
     };
     let acc = accumulate_with_policy(grid, acc_params, parity, thread_policy)?;
     match summary_plan {

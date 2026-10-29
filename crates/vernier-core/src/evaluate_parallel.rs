@@ -668,8 +668,9 @@ mod tests {
 
     /// The grid-level accessors are views of the stored cells:
     /// `category_cells` yields exactly the populated `[k][a][..]` slots in
-    /// image order (nothing out of bounds), `eval_imgs()` borrows the
-    /// slice, and `accumulate_grid*` equal `accumulate*` over it.
+    /// image order (nothing out of bounds, nothing on a short hand-built
+    /// grid), `eval_imgs()` is the stored slice, and both
+    /// `accumulate_grid*` equal `accumulate*` over it.
     #[test]
     fn grid_accessors_are_views_of_the_stored_cells() {
         let (gt, dt) = tiny_grid_inputs();
@@ -684,7 +685,7 @@ mod tests {
         };
         let grid = evaluate_with(&gt, &dt, params, ParityMode::Strict, &BboxIou).expect("grid");
         let (n_k, n_a, n_i) = (grid.n_categories, grid.n_area_ranges, grid.n_images);
-        assert!(matches!(grid.eval_imgs(), std::borrow::Cow::Borrowed(_)));
+        assert_eq!(grid.eval_imgs().len(), grid.eval_imgs.len());
         for k in 0..n_k {
             for a in 0..n_a {
                 let walked: Vec<usize> = grid
@@ -703,35 +704,42 @@ mod tests {
         assert_eq!(grid.category_cells(n_k, 0).count(), 0);
         assert_eq!(grid.category_cells(0, n_a).count(), 0);
 
-        let acc_params = AccumulateParams {
+        let ladder = crate::accumulate::GridAccumulateParams {
             iou_thresholds: iou_thresholds(),
             recall_thresholds: recall_thresholds(),
             max_dets: &[1, 10, 100],
-            n_categories: n_k,
-            n_area_ranges: n_a,
-            n_images: n_i,
         };
-        let via_grid = crate::accumulate::accumulate_grid(&grid, acc_params, ParityMode::Strict)
-            .expect("grid");
-        let via_slice = accumulate(&grid.eval_imgs, acc_params, ParityMode::Strict).expect("slice");
-        assert_eq!(via_grid.precision, via_slice.precision);
-        assert_eq!(via_grid.recall, via_slice.recall);
-        assert_eq!(via_grid.scores, via_slice.scores);
-
-        // Same `K·A·I` product, transposed axes: the slice check alone would
-        // pass it; the grid entry points refuse it.
-        let transposed = AccumulateParams {
-            n_categories: n_a,
-            n_area_ranges: n_k,
-            ..acc_params
-        };
-        assert_ne!(n_k, n_a, "fixture must make the transposition observable");
-        for result in [
-            crate::accumulate::accumulate_grid(&grid, transposed, ParityMode::Strict),
-            crate::accumulate::accumulate_grid_parallel(&grid, transposed, ParityMode::Strict),
+        let via_slice =
+            accumulate(&grid.eval_imgs, ladder.for_grid(&grid), ParityMode::Strict).expect("slice");
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .expect("pool");
+        for via_grid in [
+            crate::accumulate::accumulate_grid(&grid, ladder, ParityMode::Strict).expect("grid"),
+            pool.install(|| {
+                crate::accumulate::accumulate_grid_parallel(&grid, ladder, ParityMode::Strict)
+            })
+            .expect("grid parallel"),
         ] {
-            assert!(matches!(result, Err(EvalError::DimensionMismatch { .. })));
+            assert_eq!(via_grid.precision, via_slice.precision);
+            assert_eq!(via_grid.recall, via_slice.recall);
+            assert_eq!(via_grid.scores, via_slice.scores);
         }
+
+        // A hand-built grid whose cells do not cover its declared axes
+        // walks as empty rather than panicking, like `cell()`.
+        let short = EvalGrid {
+            eval_imgs: vec![None; 3],
+            eval_imgs_meta: Vec::new(),
+            builds_meta: false,
+            n_categories: 2,
+            n_area_ranges: 1,
+            n_images: 3,
+            retained_ious: None,
+        };
+        assert_eq!(short.category_cells(1, 0).count(), 0);
+        assert!(short.cell(1, 0, 0).is_none());
     }
 
     #[test]

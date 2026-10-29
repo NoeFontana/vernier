@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use vernier_core::accumulate::{
-    accumulate_grid, accumulate_grid_parallel, sort_max_dets, AccumulateParams, Accumulated,
+    accumulate_grid, accumulate_grid_parallel, sort_max_dets, Accumulated, GridAccumulateParams,
 };
 use vernier_core::boundary_parity::BOUNDARY_DILATION_RATIO_DEFAULT;
 use vernier_core::lrp::{self, LrpParams, LrpReport};
@@ -26,8 +26,7 @@ use vernier_core::summarize::{summarize_detection, summarize_with, StatRequest};
 use vernier_core::{
     evaluate_bbox, evaluate_bbox_parallel, evaluate_boundary, evaluate_boundary_parallel,
     evaluate_keypoints, evaluate_keypoints_parallel, evaluate_segm, evaluate_segm_parallel,
-    AreaRange, CocoDataset, CocoDetections, EvalError, EvalGrid, EvaluateParams, ParityMode,
-    Summary,
+    AreaRange, CocoDataset, CocoDetections, EvalError, EvaluateParams, ParityMode, Summary,
 };
 
 use crate::cli::{EmitDestination, EmitSpec, EvalArgs, IouTypeArg, MetricArg};
@@ -313,13 +312,10 @@ fn evaluate_and_accumulate(
     sigmas: Option<HashMap<i64, Vec<f64>>>,
     threads: usize,
 ) -> Result<Accumulated, EvalError> {
-    let acc_params = |grid: &EvalGrid| AccumulateParams {
+    let acc_params = GridAccumulateParams {
         iou_thresholds: eval_params.iou_thresholds,
         recall_thresholds: recall_thresholds(),
         max_dets,
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
     };
     let resolved = match threads {
         0 => std::thread::available_parallelism()
@@ -336,7 +332,7 @@ fn evaluate_and_accumulate(
                 evaluate_keypoints(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
             }
         }?;
-        return accumulate_grid(&grid, acc_params(&grid), parity);
+        return accumulate_grid(&grid, acc_params, parity);
     }
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(resolved)
@@ -356,7 +352,7 @@ fn evaluate_and_accumulate(
                 evaluate_keypoints_parallel(gt, dt, eval_params, parity, sigmas.unwrap_or_default())
             }
         }?;
-        accumulate_grid_parallel(&grid, acc_params(&grid), parity)
+        accumulate_grid_parallel(&grid, acc_params, parity)
     })
 }
 

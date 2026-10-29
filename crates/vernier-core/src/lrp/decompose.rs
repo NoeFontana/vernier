@@ -141,12 +141,14 @@ pub(crate) fn decompose_class(
         // count and the per-cell matching emission below — both must
         // be restricted to the slice so the per-class arrays and the
         // denominator are consistent.
-        if let Some(mask) = image_mask {
-            if !mask[i] {
-                continue;
-            }
+        // `get`, not indexing: a grid wider than this image order (an
+        // evaluator/dataset desync) skips, never panics.
+        if image_mask.is_some_and(|mask| !mask.get(i).copied().unwrap_or(false)) {
+            continue;
         }
-        let image = image_order[i];
+        let Some(&image) = image_order.get(i) else {
+            continue;
+        };
         // cell_meta presence is a precondition for cell presence; skip
         // defensively so a streaming-evaluator desync can never panic
         // the LRP pass.

@@ -593,7 +593,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         for &i in &batch_image_indices {
             for k in 0..n_k {
                 for a in 0..n_a {
-                    if let Some(cell) = grid.cell(k, a, i) {
+                    let flat = k * n_a * n_i + a * n_i + i;
+                    if let Some(cell) = grid.eval_imgs.get(flat).and_then(|opt| opt.as_deref()) {
                         let cost = cell_cost(cell, n_t);
                         cost_total = cost_total.add(cost);
                         staged.push((k, a, i, cell.clone(), cost));
@@ -844,7 +845,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         };
 
         let max_dets: [usize; 3] = [1, 10, 100];
-        let (summary, accumulated) = self.summarize_dense(&synthetic_grid.eval_imgs)?;
+        let (summary, accumulated) = self.summarize_dense(&synthetic_grid.eval_imgs())?;
 
         // Build a fresh `CocoDetections` view over every detection seen
         // so far when per_detection is requested; cheaper tables don't

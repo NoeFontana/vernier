@@ -321,6 +321,35 @@ pub fn accumulate_parallel(
     })
 }
 
+/// What [`accumulate_grid`] reads a grid with: the [`AccumulateParams`]
+/// ladder minus its `(K, A, I)` axes, which the grid supplies itself — so
+/// they cannot disagree with it.
+#[derive(Debug, Clone, Copy)]
+pub struct GridAccumulateParams<'p> {
+    /// IoU thresholds, length `T` (see [`AccumulateParams::iou_thresholds`]).
+    pub iou_thresholds: &'p [f64],
+    /// Recall integration thresholds, length `R`
+    /// (see [`AccumulateParams::recall_thresholds`]).
+    pub recall_thresholds: &'p [f64],
+    /// Per-image maxDet caps, sorted ascending (quirk **A2**; see
+    /// [`AccumulateParams::max_dets`]).
+    pub max_dets: &'p [usize],
+}
+
+impl<'p> GridAccumulateParams<'p> {
+    /// The full [`AccumulateParams`] for `grid`.
+    pub fn for_grid(self, grid: &crate::evaluate::EvalGrid) -> AccumulateParams<'p> {
+        AccumulateParams {
+            iou_thresholds: self.iou_thresholds,
+            recall_thresholds: self.recall_thresholds,
+            max_dets: self.max_dets,
+            n_categories: grid.n_categories,
+            n_area_ranges: grid.n_area_ranges,
+            n_images: grid.n_images,
+        }
+    }
+}
+
 /// Accumulate an [`crate::evaluate::EvalGrid`] into precision / recall /
 /// scores tensors — the grid-level entry point, and the one to call.
 ///
@@ -332,34 +361,13 @@ pub fn accumulate_parallel(
 ///
 /// # Errors
 ///
-/// Same validation as [`accumulate`], plus
-/// [`EvalError::DimensionMismatch`] when `p`'s `(K, A, I)` axes are not
-/// the grid's own.
+/// Same validation as [`accumulate`].
 pub fn accumulate_grid(
     grid: &crate::evaluate::EvalGrid,
-    p: AccumulateParams<'_>,
+    p: GridAccumulateParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<Accumulated, EvalError> {
-    check_grid_axes(grid, &p)?;
-    accumulate(&grid.eval_imgs(), p, parity_mode)
-}
-
-/// `p` must describe this grid. The slice validation alone checks only
-/// the product `K·A·I`, which two transposed axes satisfy.
-fn check_grid_axes(
-    grid: &crate::evaluate::EvalGrid,
-    p: &AccumulateParams<'_>,
-) -> Result<(), EvalError> {
-    let grid_axes = (grid.n_categories, grid.n_area_ranges, grid.n_images);
-    let param_axes = (p.n_categories, p.n_area_ranges, p.n_images);
-    if grid_axes == param_axes {
-        return Ok(());
-    }
-    Err(EvalError::DimensionMismatch {
-        detail: format!(
-            "AccumulateParams axes (K, A, I) = {param_axes:?} disagree with the grid's {grid_axes:?}"
-        ),
-    })
+    accumulate(&grid.eval_imgs(), p.for_grid(grid), parity_mode)
 }
 
 /// Rayon sibling of [`accumulate_grid`]; bit-identical to it. Callers on
@@ -368,14 +376,13 @@ fn check_grid_axes(
 ///
 /// # Errors
 ///
-/// Same validation as [`accumulate_grid`].
+/// Same validation as [`accumulate`].
 pub fn accumulate_grid_parallel(
     grid: &crate::evaluate::EvalGrid,
-    p: AccumulateParams<'_>,
+    p: GridAccumulateParams<'_>,
     parity_mode: ParityMode,
 ) -> Result<Accumulated, EvalError> {
-    check_grid_axes(grid, &p)?;
-    accumulate_parallel(&grid.eval_imgs(), p, parity_mode)
+    accumulate_parallel(&grid.eval_imgs(), p.for_grid(grid), parity_mode)
 }
 
 /// One score-descending permutation, shared by every `(area range,

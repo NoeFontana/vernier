@@ -926,9 +926,12 @@ impl EvalGrid {
         k: usize,
         a: usize,
     ) -> impl Iterator<Item = (usize, std::borrow::Cow<'_, PerImageEval>)> + '_ {
+        // `get`, not indexing: a hand-built grid may hold fewer cells than
+        // its axes declare, and walks as empty there, as `cell()` answers None.
         let row = self
             .flat_index(k, a, 0)
-            .map_or(&[][..], |base| &self.eval_imgs[base..base + self.n_images]);
+            .and_then(|base| self.eval_imgs.get(base..base + self.n_images))
+            .unwrap_or(&[]);
         row.iter()
             .enumerate()
             .filter_map(|(i, cell)| cell.as_deref().map(|c| (i, std::borrow::Cow::Borrowed(c))))
