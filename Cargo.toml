@@ -164,14 +164,28 @@ split-debuginfo = "unpacked"
 
 # Pre-optimize third-party dependencies so heavy routines (SIMD, Arrow, rkyv, proptest)
 # execute fast in tests without slowing down workspace crate compilation.
+# No debuginfo for them: nobody steps into a dependency, and it was the
+# bulk of `target/debug/deps`.
 [profile.dev.package."*"]
 opt-level = 2
+debug = false
 
 # Test profile inherits from dev with line debuginfo and unpacked DWARF
 [profile.test]
 inherits = "dev"
 debug = "line-tables-only"
 split-debuginfo = "unpacked"
+
+# The Python extension a dev checkout tests against (`uv run`, `just
+# develop`). Optimized, so parity tests don't crawl through opt-level 0,
+# but without release's thin LTO + single codegen unit, which dominate
+# its link time. Never used for wheels or benches: those build
+# `--release`, the profile users get.
+[profile.pyext]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
 
 # bench profile mirrors release; divan and criterion both use it.
 [profile.bench]

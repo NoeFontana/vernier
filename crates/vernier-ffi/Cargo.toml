@@ -105,3 +105,7 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 # points; declared explicitly here so the FFI can build pools and
 # install closures without an indirect path through core.
 rayon = { workspace = true }
+
+[build-dependencies]
+# libpython rpath for the test binaries (see build.rs).
+pyo3-build-config = "0.29"
