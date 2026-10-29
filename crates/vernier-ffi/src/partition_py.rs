@@ -202,11 +202,10 @@ fn evaluate_instance_partitioned_impl(
     // flag was a second source of truth that could disagree with the
     // first.
     let plan = grid.summary_plan().to_core();
-    let eval_imgs = grid_inner.eval_imgs.as_slice();
     let summary = py
         .detach(
             move || -> Result<PartitionedSummary, vernier_core::EvalError> {
-                evaluate_partitioned(eval_imgs, dims, &spec, &iou_thr, parity, plan)
+                evaluate_partitioned(&grid_inner.eval_imgs(), dims, &spec, &iou_thr, parity, plan)
             },
         )
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;

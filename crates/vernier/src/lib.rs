@@ -146,7 +146,7 @@
 ///
 /// // One (category, area-range, image) cell; the detection is a perfect
 /// // overlap, so it matches at the single 0.5 IoU threshold.
-/// let cell = grid.eval_imgs[0].as_ref().ok_or("cell was not evaluated")?;
+/// let cell = grid.cell(0, 0, 0).ok_or("cell was not evaluated")?;
 /// assert!(cell.dt_matched[(0, 0)]);
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```

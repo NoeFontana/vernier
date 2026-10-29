@@ -508,11 +508,7 @@ fn per_class_calibration_schema() -> Schema {
 #[pyfunction]
 pub(crate) fn cells_from_grid(grid: &crate::PyEvalGrid) -> PyResult<EvalCells> {
     let inner = grid.eval_grid_ref();
-    let cells: Vec<Option<Box<PerImageEval>>> = inner
-        .eval_imgs
-        .iter()
-        .map(|slot| slot.as_ref().map(|cell| Box::new(cell.as_ref().clone())))
-        .collect();
+    let cells = inner.eval_imgs().into_owned();
     Ok(EvalCells::new(
         cells,
         inner.n_categories,

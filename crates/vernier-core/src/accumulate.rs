@@ -321,6 +321,70 @@ pub fn accumulate_parallel(
     })
 }
 
+/// What [`accumulate_grid`] reads a grid with: the [`AccumulateParams`]
+/// ladder minus its `(K, A, I)` axes, which the grid supplies itself — so
+/// they cannot disagree with it.
+#[derive(Debug, Clone, Copy)]
+pub struct GridAccumulateParams<'p> {
+    /// IoU thresholds, length `T` (see [`AccumulateParams::iou_thresholds`]).
+    pub iou_thresholds: &'p [f64],
+    /// Recall integration thresholds, length `R`
+    /// (see [`AccumulateParams::recall_thresholds`]).
+    pub recall_thresholds: &'p [f64],
+    /// Per-image maxDet caps, sorted ascending (quirk **A2**; see
+    /// [`AccumulateParams::max_dets`]).
+    pub max_dets: &'p [usize],
+}
+
+impl<'p> GridAccumulateParams<'p> {
+    /// The full [`AccumulateParams`] for `grid`.
+    pub fn for_grid(self, grid: &crate::evaluate::EvalGrid) -> AccumulateParams<'p> {
+        AccumulateParams {
+            iou_thresholds: self.iou_thresholds,
+            recall_thresholds: self.recall_thresholds,
+            max_dets: self.max_dets,
+            n_categories: grid.n_categories,
+            n_area_ranges: grid.n_area_ranges,
+            n_images: grid.n_images,
+        }
+    }
+}
+
+/// Accumulate an [`crate::evaluate::EvalGrid`] into precision / recall /
+/// scores tensors — the grid-level entry point, and the one to call.
+///
+/// Today it reads [`crate::evaluate::EvalGrid::eval_imgs`] and is
+/// identical to [`accumulate`]; ADR-0066 moves the grid to a packed
+/// layout in 0.6, where this entry point reads that layout directly and
+/// the per-cell slice stops being stored. Calling it now makes that
+/// change invisible.
+///
+/// # Errors
+///
+/// Same validation as [`accumulate`].
+pub fn accumulate_grid(
+    grid: &crate::evaluate::EvalGrid,
+    p: GridAccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
+    accumulate(&grid.eval_imgs(), p.for_grid(grid), parity_mode)
+}
+
+/// Rayon sibling of [`accumulate_grid`]; bit-identical to it. Callers on
+/// the sequential path (`num_threads ∈ {None, 1}`) call
+/// [`accumulate_grid`] and never enter rayon (ADR-0047).
+///
+/// # Errors
+///
+/// Same validation as [`accumulate`].
+pub fn accumulate_grid_parallel(
+    grid: &crate::evaluate::EvalGrid,
+    p: GridAccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
+    accumulate_parallel(&grid.eval_imgs(), p.for_grid(grid), parity_mode)
+}
+
 /// One score-descending permutation, shared by every `(area range,
 /// max-det)` cell of a category (ADR-0052).
 ///

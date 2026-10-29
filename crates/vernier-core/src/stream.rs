@@ -845,7 +845,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         };
 
         let max_dets: [usize; 3] = [1, 10, 100];
-        let (summary, accumulated) = self.summarize_dense(&synthetic_grid.eval_imgs)?;
+        let (summary, accumulated) = self.summarize_dense(&synthetic_grid.eval_imgs())?;
 
         // Build a fresh `CocoDetections` view over every detection seen
         // so far when per_detection is requested; cheaper tables don't
@@ -1026,7 +1026,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             self.parity_mode,
             &self.kernel,
         )?;
-        self.gt_only_cells = Some(grid.eval_imgs);
+        self.gt_only_cells = Some(grid.into_eval_imgs());
         Ok(())
     }
 

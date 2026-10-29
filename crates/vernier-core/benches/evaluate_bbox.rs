@@ -46,7 +46,7 @@
 #![allow(clippy::unwrap_used)]
 
 use divan::{black_box, Bencher};
-use vernier_core::accumulate::{accumulate, accumulate_parallel, AccumulateParams};
+use vernier_core::accumulate::{accumulate_grid, accumulate_grid_parallel, GridAccumulateParams};
 use vernier_core::dataset::{
     AnnId, Bbox, CategoryId, CategoryMeta, CocoAnnotation, DetectionInput, ImageId, ImageMeta,
 };
@@ -277,25 +277,22 @@ fn run_e2e(bencher: Bencher, s: Scenario, pool: Option<&rayon::ThreadPool>) {
         retain_iou: false,
         retain_meta: false,
     };
-    let acc_params = |grid: &vernier_core::EvalGrid| AccumulateParams {
+    let ladder = GridAccumulateParams {
         iou_thresholds: iou_thr,
         recall_thresholds: recall_thresholds(),
         max_dets: &max_dets,
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
     };
     bencher.bench_local(|| match pool {
         None => {
             let grid =
                 evaluate_bbox(black_box(&gt), black_box(&dt), params, ParityMode::Strict).unwrap();
-            accumulate(&grid.eval_imgs, acc_params(&grid), ParityMode::Strict).unwrap()
+            accumulate_grid(&grid, ladder, ParityMode::Strict).unwrap()
         }
         Some(pool) => pool.install(|| {
             let grid =
                 evaluate_bbox_parallel(black_box(&gt), black_box(&dt), params, ParityMode::Strict)
                     .unwrap();
-            accumulate_parallel(&grid.eval_imgs, acc_params(&grid), ParityMode::Strict).unwrap()
+            accumulate_grid_parallel(&grid, ladder, ParityMode::Strict).unwrap()
         }),
     });
 }
