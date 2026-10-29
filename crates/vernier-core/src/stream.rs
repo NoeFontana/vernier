@@ -1028,7 +1028,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             self.parity_mode,
             &self.kernel,
         )?;
-        self.gt_only_cells = Some(grid.eval_imgs);
+        self.gt_only_cells = Some(grid.into_eval_imgs());
         Ok(())
     }
 

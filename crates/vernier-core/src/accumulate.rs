@@ -321,6 +321,63 @@ pub fn accumulate_parallel(
     })
 }
 
+/// Accumulate an [`crate::evaluate::EvalGrid`] into precision / recall /
+/// scores tensors — the grid-level entry point, and the one to call.
+///
+/// Today it reads [`crate::evaluate::EvalGrid::eval_imgs`] and is
+/// identical to [`accumulate`]; ADR-0066 moves the grid to a packed
+/// layout in 0.6, where this entry point reads that layout directly and
+/// the per-cell slice stops being stored. Calling it now makes that
+/// change invisible.
+///
+/// # Errors
+///
+/// Same validation as [`accumulate`], plus
+/// [`EvalError::DimensionMismatch`] when `p`'s `(K, A, I)` axes are not
+/// the grid's own.
+pub fn accumulate_grid(
+    grid: &crate::evaluate::EvalGrid,
+    p: AccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
+    check_grid_axes(grid, &p)?;
+    accumulate(&grid.eval_imgs(), p, parity_mode)
+}
+
+/// `p` must describe this grid. The slice validation alone checks only
+/// the product `K·A·I`, which two transposed axes satisfy.
+fn check_grid_axes(
+    grid: &crate::evaluate::EvalGrid,
+    p: &AccumulateParams<'_>,
+) -> Result<(), EvalError> {
+    let grid_axes = (grid.n_categories, grid.n_area_ranges, grid.n_images);
+    let param_axes = (p.n_categories, p.n_area_ranges, p.n_images);
+    if grid_axes == param_axes {
+        return Ok(());
+    }
+    Err(EvalError::DimensionMismatch {
+        detail: format!(
+            "AccumulateParams axes (K, A, I) = {param_axes:?} disagree with the grid's {grid_axes:?}"
+        ),
+    })
+}
+
+/// Rayon sibling of [`accumulate_grid`]; bit-identical to it. Callers on
+/// the sequential path (`num_threads ∈ {None, 1}`) call
+/// [`accumulate_grid`] and never enter rayon (ADR-0047).
+///
+/// # Errors
+///
+/// Same validation as [`accumulate_grid`].
+pub fn accumulate_grid_parallel(
+    grid: &crate::evaluate::EvalGrid,
+    p: AccumulateParams<'_>,
+    parity_mode: ParityMode,
+) -> Result<Accumulated, EvalError> {
+    check_grid_axes(grid, &p)?;
+    accumulate_parallel(&grid.eval_imgs(), p, parity_mode)
+}
+
 /// One score-descending permutation, shared by every `(area range,
 /// max-det)` cell of a category (ADR-0052).
 ///
