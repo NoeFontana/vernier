@@ -975,6 +975,42 @@ impl EvalGrid {
     }
 }
 
+/// Per-grid-image LVIS `(neg_category_ids, not_exhaustive_category_ids)`
+/// references, resolved once per pass rather than once per cell — the
+/// cell loop hits each image `n_k` times, and the hash probes dominate on
+/// long-tail datasets (1203 cats × 19809 images is ~24M redundant probes
+/// on full LVIS val). Empty off-LVIS and under `use_cats=false`, where
+/// the eval falls back to COCO semantics (the L4 `k = 0` collapse never
+/// carries federated state). On a subset pass only the subset is
+/// resolved.
+pub(crate) fn federated_lookup<'g>(
+    gt: &'g CocoDataset,
+    images: &[&ImageMeta],
+    use_cats: bool,
+    image_subset: Option<&[usize]>,
+) -> Vec<Option<(&'g HashSet<CategoryId>, &'g HashSet<CategoryId>)>> {
+    let Some(fed) = gt.federated().filter(|_| use_cats) else {
+        return Vec::new();
+    };
+    let lookup = |im: &ImageMeta| {
+        let neg = fed.neg_category_ids.get(&im.id)?;
+        let nel = fed.not_exhaustive_category_ids.get(&im.id)?;
+        Some((neg, nel))
+    };
+    match image_subset {
+        None => images.iter().map(|im| lookup(im)).collect(),
+        Some(subset) => {
+            let mut out = vec![None; images.len()];
+            for &i in subset {
+                if let (Some(slot), Some(im)) = (out.get_mut(i), images.get(i)) {
+                    *slot = lookup(im);
+                }
+            }
+            out
+        }
+    }
+}
+
 /// Run the per-image evaluation pass with the given [`EvalKernel`].
 ///
 /// Iterates `(image, category)` cells, computes the IoU matrix once per
@@ -1001,6 +1037,23 @@ pub fn evaluate_with<K: EvalKernel>(
     params: EvaluateParams<'_>,
     parity_mode: ParityMode,
     kernel: &K,
+) -> Result<EvalGrid, EvalError> {
+    evaluate_subset_with(gt, dt, params, parity_mode, kernel, None)
+}
+
+/// [`evaluate_with`] restricted to the grid images in `image_subset`
+/// (indices into the id-ascending `I` axis), or every image when `None`.
+///
+/// Cells of other images stay `None`. Matching cost is proportional to
+/// the subset — what lets [`crate::stream::StreamingEvaluator::update`]
+/// match only the batch it was handed.
+pub(crate) fn evaluate_subset_with<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+    image_subset: Option<&[usize]>,
 ) -> Result<EvalGrid, EvalError> {
     // Image and category ordering: id-ascending, deterministic across runs.
     let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
@@ -1033,27 +1086,8 @@ pub fn evaluate_with<K: EvalKernel>(
             None
         };
 
-    // ADR-0026 federated metadata is consumed only when `use_cats=true`;
-    // LVIS evaluation is per-category by construction. With
-    // `use_cats=false` the federated maps are intentionally ignored
-    // and the eval falls back to COCO semantics (the L4 `k=0` collapse
-    // never carries federated state). Pre-resolve the per-image
-    // (neg, not_exhaustive) set references once — the inner cell
-    // loop hits this `n_k` times per image, and the HashMap lookups
-    // dominate runtime on long-tail datasets (1203 cats * 19809 images
-    // = ~24M redundant probes on full LVIS val).
-    let federated_per_image: Vec<Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>> =
-        match (params.use_cats, gt.federated()) {
-            (true, Some(fed)) => images
-                .iter()
-                .map(|im| {
-                    let neg = fed.neg_category_ids.get(&im.id)?;
-                    let nel = fed.not_exhaustive_category_ids.get(&im.id)?;
-                    Some((neg, nel))
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
+    // ADR-0026 federated metadata, consumed only when `use_cats=true`.
+    let federated_per_image = federated_lookup(gt, &images, params.use_cats, image_subset);
 
     // Pre-grown scratch shared across every `(k, i)` cell. `clear()`
     // + `extend()` per cell amortizes the ~14k allocator round-trips
@@ -1093,7 +1127,8 @@ pub fn evaluate_with<K: EvalKernel>(
     // `crate::cell_occupancy`.
     let image_ids: Vec<ImageId> = images.iter().map(|im| im.id).collect();
     let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
-    let occupied = cell_occupancy::by_category(&image_ids, n_k, gt, dt, &bucket_index);
+    let occupied =
+        cell_occupancy::by_category(&image_ids, image_subset, n_k, gt, dt, &bucket_index);
 
     for (k, cat) in category_buckets.iter().enumerate() {
         let nk = k * n_a * n_i;
