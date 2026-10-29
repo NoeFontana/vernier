@@ -2398,12 +2398,41 @@ impl CocoDetections {
 
 /// COCO JSON uses `0`/`1` ints for `iscrowd` / `ignore`, but a
 /// permissive reader also accepts bool literals. Shared between the
-/// required and optional flag deserializers below.
-#[derive(Deserialize)]
-#[serde(untagged)]
+/// required and optional flag deserializers below. Dispatched by JSON
+/// type, not `#[serde(untagged)]`, which buffers each value first.
 enum BoolOrInt {
     Bool(bool),
     Int(i64),
+}
+
+impl<'de> Deserialize<'de> for BoolOrInt {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct FlagVisitor;
+
+        impl serde::de::Visitor<'_> for FlagVisitor {
+            type Value = BoolOrInt;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a bool or an integer")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<BoolOrInt, E> {
+                Ok(BoolOrInt::Bool(v))
+            }
+
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<BoolOrInt, E> {
+                Ok(BoolOrInt::Int(v))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<BoolOrInt, E> {
+                i64::try_from(v)
+                    .map(BoolOrInt::Int)
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Unsigned(v), &self))
+            }
+        }
+
+        de.deserialize_any(FlagVisitor)
+    }
 }
 
 impl BoolOrInt {

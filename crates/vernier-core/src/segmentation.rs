@@ -36,9 +36,12 @@
 //!   [`EvalError::DimensionMismatch`] instead of silently emitting an
 //!   empty `0x0` RLE the way pycocotools does.
 
+use std::fmt;
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use serde::de::value::{MapAccessDeserializer, SeqAccessDeserializer};
+use serde::de::{MapAccess, SeqAccess, Visitor};
+use serde::{Deserialize, Deserializer, Serialize};
 use vernier_mask::Rle;
 
 use crate::error::EvalError;
@@ -46,7 +49,12 @@ use crate::error::EvalError;
 /// One COCO `segmentation` field, in any of the three shapes
 /// pycocotools accepts. The dataset stores this verbatim;
 /// [`Self::to_rle`] normalizes to a single [`Rle`] at eval time.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// Deserialization dispatches on the JSON shape (an array is polygons,
+/// an object is RLE) rather than through `#[serde(untagged)]`, which
+/// buffers the whole value into an intermediate tree before trying each
+/// variant: on COCO val2017 that buffering was 80% of the GT parse.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Segmentation {
     /// Multi-polygon shape (`[[x0, y0, x1, y1, …], …]`). Each inner
@@ -74,7 +82,9 @@ pub struct SegmentationRle {
 /// Counts payload of [`SegmentationRle`]. JSON shapes the variants
 /// disambiguate untagged: a string parses as [`Self::Compressed`], a
 /// number array as [`Self::Uncompressed`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Deserialized by JSON shape, for the reason given on [`Segmentation`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum SegmentationRleCounts {
     /// Compressed 6-bit char string per ADR-0002 / quirk **G1–G3**.
@@ -82,20 +92,63 @@ pub enum SegmentationRleCounts {
     /// Raw run-length array. Stored as [`Arc<[u32]>`] so the
     /// dataset-cached value can be cloned cheaply into the per-eval
     /// [`Rle`] without an O(N) memcpy.
-    Uncompressed(#[serde(with = "arc_u32_serde")] Arc<[u32]>),
+    Uncompressed(#[serde(serialize_with = "serialize_arc_u32")] Arc<[u32]>),
 }
 
-mod arc_u32_serde {
-    use std::sync::Arc;
+fn serialize_arc_u32<S: serde::Serializer>(value: &Arc<[u32]>, ser: S) -> Result<S::Ok, S::Error> {
+    value.as_ref().serialize(ser)
+}
 
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+impl<'de> Deserialize<'de> for Segmentation {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct ShapeVisitor;
 
-    pub(super) fn serialize<S: Serializer>(value: &Arc<[u32]>, ser: S) -> Result<S::Ok, S::Error> {
-        value.as_ref().serialize(ser)
+        impl<'de> Visitor<'de> for ShapeVisitor {
+            type Value = Segmentation;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a list of polygons or an RLE object")
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Segmentation, A::Error> {
+                Vec::deserialize(SeqAccessDeserializer::new(seq)).map(Segmentation::Polygons)
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, map: A) -> Result<Segmentation, A::Error> {
+                SegmentationRle::deserialize(MapAccessDeserializer::new(map)).map(Segmentation::Rle)
+            }
+        }
+
+        de.deserialize_any(ShapeVisitor)
     }
+}
 
-    pub(super) fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Arc<[u32]>, D::Error> {
-        Vec::<u32>::deserialize(de).map(Arc::from)
+impl<'de> Deserialize<'de> for SegmentationRleCounts {
+    fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct CountsVisitor;
+
+        impl<'de> Visitor<'de> for CountsVisitor {
+            type Value = SegmentationRleCounts;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a compressed counts string or an array of run lengths")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(SegmentationRleCounts::Compressed(v.to_owned()))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
+                Ok(SegmentationRleCounts::Compressed(v))
+            }
+
+            fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
+                Vec::<u32>::deserialize(SeqAccessDeserializer::new(seq))
+                    .map(|counts| SegmentationRleCounts::Uncompressed(Arc::from(counts)))
+            }
+        }
+
+        de.deserialize_any(CountsVisitor)
     }
 }
 
@@ -169,6 +222,41 @@ mod tests {
 
     fn parse(json: &str) -> Segmentation {
         serde_json::from_str(json).unwrap()
+    }
+
+    /// The shape dispatch accepts what the untagged derive did — integer
+    /// coordinates, mixed int/float, empty lists, both counts forms —
+    /// round-trips through `Serialize`, and refuses the shapes neither
+    /// variant fits.
+    #[test]
+    fn shape_dispatch_round_trips_and_refuses_other_shapes() {
+        for json in [
+            r#"[[1, 2.5, 3, 4, 5e1, 6]]"#,
+            r#"[]"#,
+            r#"[[]]"#,
+            r#"{"size": [2, 3], "counts": "04"}"#,
+            r#"{"counts": [1, 5], "size": [2, 3]}"#,
+            r#"{"size": [2, 3], "counts": []}"#,
+        ] {
+            let seg = parse(json);
+            let again: Segmentation =
+                serde_json::from_str(&serde_json::to_string(&seg).unwrap()).unwrap();
+            assert_eq!(seg, again, "{json}");
+        }
+        assert_eq!(
+            parse("[[1, 2, 3, 4, 5, 6]]"),
+            Segmentation::Polygons(vec![vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]])
+        );
+        for bad in [
+            r#""04""#,
+            r#"7"#,
+            r#"[[1, "x"]]"#,
+            r#"{"size": [2, 3], "counts": 4}"#,
+            r#"{"size": [2, 3], "counts": [-1]}"#,
+            r#"{"counts": "04"}"#,
+        ] {
+            assert!(serde_json::from_str::<Segmentation>(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

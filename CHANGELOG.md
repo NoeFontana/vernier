@@ -74,6 +74,15 @@ additive / perf / docs".
   the same sweep (ADR-0068). One thread, COCO val2017: RF-DETR Nano 132 → 52 ms
   (−60%), jittered 37.5 → 17 ms (−55%); a two-slice partitioned
   evaluation of RF-DETR Nano 1056 → 726 ms (−31%). Bit-identical output.
+- **`segmentation` parses without serde's untagged buffering.** The
+  field (and the `iscrowd` / `ignore` flags) dispatch on the JSON shape
+  instead of `#[serde(untagged)]`, which copied every polygon
+  coordinate and RLE string into an intermediate tree before trying
+  each variant. COCO val2017 GT parse: 95 → 57 ms (−40%), on every IoU
+  type. RF-DETR Seg-Nano results, one thread, end to end: bbox
+  768 → 587 ms (−24%), segm 1941 → 1783 ms (−8%). A malformed
+  `segmentation` now reports what it expected instead of "data did not
+  match any variant of untagged enum".
 
 ## [0.5.5] - 2026-10-29
 
