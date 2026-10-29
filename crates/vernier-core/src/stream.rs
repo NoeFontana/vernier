@@ -514,19 +514,29 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // additive — each cell is built once, so finalize() is
         // bit-identical to a batch run — and makes the per-batch federated
         // cap exact (ADR-0065).
-        let mut batch_image_ids: HashSet<i64> = HashSet::new();
-        for image_id in detections.distinct_image_ids() {
+        // The error names the repeat that comes first in the batch's input
+        // order, so it does not depend on the index's hash order.
+        let distinct = detections.distinct_image_ids();
+        let mut batch_image_ids: Vec<i64> = Vec::with_capacity(distinct.len());
+        let mut first_repeat: Option<(usize, i64)> = None;
+        for image_id in distinct {
             let id = image_id.0;
             if self.seen_images.contains(&id) {
-                return Err(EvalError::InvalidAnnotation {
-                    detail: format!(
-                        "image_id={id} was already submitted in a prior update(); \
-                         StreamingEvaluator does not silently merge — submit all \
-                         detections for an image in a single batch"
-                    ),
-                });
+                let row = detections.indices_for_image(image_id)[0];
+                if first_repeat.is_none_or(|(first, _)| row < first) {
+                    first_repeat = Some((row, id));
+                }
             }
-            batch_image_ids.insert(id);
+            batch_image_ids.push(id);
+        }
+        if let Some((_, id)) = first_repeat {
+            return Err(EvalError::InvalidAnnotation {
+                detail: format!(
+                    "image_id={id} was already submitted in a prior update(); \
+                     StreamingEvaluator does not silently merge — submit all \
+                     detections for an image in a single batch"
+                ),
+            });
         }
         // Ids are taken before the cap, so an image capped to nothing is
         // still marked seen.
@@ -552,7 +562,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     fn merge_batch_grid(
         &mut self,
         detections: &CocoDetections,
-        batch_image_ids: &HashSet<i64>,
+        batch_image_ids: &[i64],
         grid: &mut crate::evaluate::EvalGrid,
     ) -> Result<UpdateReport, EvalError> {
         // Map batch image_ids to their I-axis indices so we can keep
@@ -1486,6 +1496,46 @@ mod tests {
         // State unchanged: still one image seen, original counters intact.
         assert_eq!(ev.images_seen(), 1);
         assert_eq!(ev.detections_seen(), 1);
+    }
+
+    /// With several resubmitted images, the error names the one that comes
+    /// first in the batch — not whichever the index's (seeded) hash order
+    /// yields first.
+    #[test]
+    fn duplicate_error_names_the_first_repeat_in_input_order() {
+        let images: Vec<ImageMeta> = (1..=6).map(|i| img(i, 100, 100)).collect();
+        let ds = CocoDataset::from_parts(images, Vec::new(), vec![cat(1, "thing")]).unwrap();
+        let mut ev = StreamingEvaluator::new(
+            ds,
+            BboxIou,
+            default_params(),
+            ParityMode::Strict,
+            MemoryBudget::auto_default(),
+        )
+        .unwrap();
+        let det = |image: i64| {
+            format!(
+                r#"{{"image_id": {image}, "category_id": 1, "score": 0.5, "bbox": [0, 0, 5, 5]}}"#
+            )
+        };
+        let batch = |ids: &[i64]| {
+            format!(
+                "[{}]",
+                ids.iter().map(|&i| det(i)).collect::<Vec<_>>().join(",")
+            )
+        };
+        ev.update(batch(&[2, 3, 4, 5, 6]).as_bytes()).unwrap();
+        for order in [[6, 1, 3, 5], [3, 6, 5, 1], [5, 1, 6, 3]] {
+            let err = ev.update(batch(&order).as_bytes()).unwrap_err();
+            let EvalError::InvalidAnnotation { detail } = err else {
+                panic!("expected InvalidAnnotation");
+            };
+            let first = if order[0] == 1 { order[1] } else { order[0] };
+            assert!(
+                detail.starts_with(&format!("image_id={first} ")),
+                "order {order:?}: {detail}"
+            );
+        }
     }
 
     #[test]

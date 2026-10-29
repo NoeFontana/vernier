@@ -47,7 +47,6 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::{Arc, OnceLock};
 
-use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::error::EvalError;
@@ -55,17 +54,23 @@ use crate::parity::ParityMode;
 use crate::segmentation::{Segmentation, SegmentationRleCounts};
 
 /// Compressed-sparse-row (CSR) index mapping keys `K` to contiguous
-/// `&[usize]` row-index slices in two flat allocations (`offsets` +
-/// `indices`) instead of one heap `Vec<usize>` per distinct key.
+/// `&[usize]` row-index slices, in one flat allocation (`indices`) plus a
+/// key → row-range map, instead of one heap `Vec<usize>` per distinct key.
+///
+/// Rows within a group are ascending (the push order of the per-key `Vec`s
+/// it replaces). A lookup is one hash probe and one slice. Keys are
+/// user-controlled ids, so the map is seeded per instance
+/// (`foldhash::fast::RandomState`): an unkeyed hash would let a crafted
+/// results file collide every key and make the build quadratic.
 ///
 /// Wrapped in an `Arc` so cloning `CocoDataset` or `CocoDetections` is
-/// `O(1)`. Built in two linear passes with a 1-entry `(last_key,
-/// last_slot)` run-length cache in Pass 1 (avoiding hash lookups on
-/// contiguous per-image runs) and zero hash lookups in Pass 2.
+/// `O(1)`. Built in two linear passes; pass 1 keeps a one-entry
+/// `(last_key, last_slot)` cache so contiguous per-image runs skip the
+/// hash, pass 2 does no hashing.
 #[derive(Debug)]
 struct CsrIndexInner<K> {
-    slots: FxHashMap<K, usize>,
-    offsets: Vec<usize>,
+    /// Key → `start..end` into `indices`.
+    ranges: HashMap<K, (usize, usize), foldhash::fast::RandomState>,
     indices: Vec<usize>,
     max_group_len: usize,
 }
@@ -84,62 +89,68 @@ impl<K> Clone for CsrIndex<K> {
 }
 
 impl<K: Copy + Eq + std::hash::Hash> CsrIndex<K> {
+    /// Index rows `0..len` by `key_at(row)`. `group_capacity_hint` sizes
+    /// the key map up front; an over-estimate is trimmed after the build.
     pub(crate) fn build(
         len: usize,
         group_capacity_hint: usize,
         mut key_at: impl FnMut(usize) -> K,
     ) -> Self {
-        let mut slots: FxHashMap<K, usize> =
-            FxHashMap::with_capacity_and_hasher(group_capacity_hint, Default::default());
-        let mut offsets: Vec<usize> = Vec::with_capacity(group_capacity_hint.saturating_add(1));
-        offsets.push(0);
+        // Pass 1: assign each distinct key a dense slot (stored in the
+        // range map's `.0` until the prefix sum turns it into a range)
+        // and count its rows.
+        let mut ranges: HashMap<K, (usize, usize), foldhash::fast::RandomState> =
+            HashMap::with_capacity_and_hasher(group_capacity_hint, Default::default());
+        let mut counts: Vec<usize> = Vec::with_capacity(group_capacity_hint);
         let mut row_slots: Vec<usize> = Vec::with_capacity(len);
         let mut last: Option<(K, usize)> = None;
-
-        for row_idx in 0..len {
-            let key = key_at(row_idx);
+        for row in 0..len {
+            let key = key_at(row);
             let slot = match last {
                 Some((prev_key, prev_slot)) if prev_key == key => prev_slot,
                 _ => {
-                    let next_slot = offsets.len() - 1;
-                    let resolved = match slots.entry(key) {
-                        std::collections::hash_map::Entry::Occupied(entry) => *entry.get(),
-                        std::collections::hash_map::Entry::Vacant(entry) => {
-                            offsets.push(0);
-                            entry.insert(next_slot);
-                            next_slot
-                        }
-                    };
-                    last = Some((key, resolved));
-                    resolved
+                    let next_slot = counts.len();
+                    let slot = ranges.entry(key).or_insert((next_slot, 0)).0;
+                    if slot == next_slot {
+                        counts.push(0);
+                    }
+                    last = Some((key, slot));
+                    slot
                 }
             };
-            offsets[slot + 1] += 1;
+            counts[slot] += 1;
             row_slots.push(slot);
         }
 
-        let n_groups = offsets.len() - 1;
-        let mut max_group_len = 0usize;
-        for slot in 0..n_groups {
-            let count = offsets[slot + 1];
-            if count > max_group_len {
-                max_group_len = count;
-            }
-            offsets[slot + 1] = offsets[slot] + count;
+        // Prefix sum into per-slot start offsets; ranges follow from them.
+        let mut heads: Vec<usize> = Vec::with_capacity(counts.len());
+        let mut start = 0;
+        for &n in &counts {
+            heads.push(start);
+            start += n;
+        }
+        let max_group_len = counts.iter().copied().max().unwrap_or(0);
+        for range in ranges.values_mut() {
+            let slot = range.0;
+            *range = (heads[slot], heads[slot] + counts[slot]);
         }
 
-        let mut write_heads = offsets.clone();
+        // Pass 2: scatter rows in ascending order behind each slot's head.
         let mut indices = vec![0usize; len];
-        for (row_idx, &slot) in row_slots.iter().enumerate() {
-            let dst = write_heads[slot];
-            write_heads[slot] = dst + 1;
-            indices[dst] = row_idx;
+        for (row, &slot) in row_slots.iter().enumerate() {
+            indices[heads[slot]] = row;
+            heads[slot] += 1;
+        }
+        // The hint is sized for the common shape; trim a gross
+        // over-estimate (one image, one category) rather than hold it for
+        // the life of the dataset.
+        if ranges.capacity() > 2 * ranges.len() + 16 {
+            ranges.shrink_to_fit();
         }
 
         Self {
             inner: Arc::new(CsrIndexInner {
-                slots,
-                offsets,
+                ranges,
                 indices,
                 max_group_len,
             }),
@@ -148,12 +159,10 @@ impl<K: Copy + Eq + std::hash::Hash> CsrIndex<K> {
 
     #[inline]
     pub(crate) fn get(&self, key: &K) -> &[usize] {
-        let Some(&slot) = self.inner.slots.get(key) else {
-            return &[];
-        };
-        let start = self.inner.offsets[slot];
-        let end = self.inner.offsets[slot + 1];
-        &self.inner.indices[start..end]
+        match self.inner.ranges.get(key) {
+            Some(&(start, end)) => &self.inner.indices[start..end],
+            None => &[],
+        }
     }
 
     #[inline]
@@ -161,9 +170,10 @@ impl<K: Copy + Eq + std::hash::Hash> CsrIndex<K> {
         self.inner.max_group_len
     }
 
+    /// Distinct keys, in unspecified (per-instance) order.
     #[inline]
-    pub(crate) fn keys(&self) -> std::collections::hash_map::Keys<'_, K, usize> {
-        self.inner.slots.keys()
+    pub(crate) fn keys(&self) -> impl ExactSizeIterator<Item = &K> + '_ {
+        self.inner.ranges.keys()
     }
 }
 
@@ -729,32 +739,44 @@ impl CocoDataset {
         annotations: Vec<CocoAnnotation>,
         categories: Vec<CategoryMeta>,
     ) -> Result<Self, EvalError> {
-        let known_images: HashSet<ImageId> = images.iter().map(|i| i.id).collect();
-        let known_categories: HashSet<CategoryId> = categories.iter().map(|c| c.id).collect();
-
-        for ann in &annotations {
-            if !known_images.contains(&ann.image_id) {
-                return Err(EvalError::InvalidAnnotation {
-                    detail: format!(
-                        "annotation id={} references unknown image_id={}",
-                        ann.id.0, ann.image_id.0
-                    ),
-                });
-            }
-            if !known_categories.contains(&ann.category_id) {
-                return Err(EvalError::InvalidAnnotation {
-                    detail: format!(
-                        "annotation id={} references unknown category_id={}",
-                        ann.id.0, ann.category_id.0
-                    ),
-                });
-            }
-        }
-
         let n_anns = annotations.len();
         let by_image = CsrIndex::build(n_anns, images.len(), |idx| annotations[idx].image_id);
         let by_category =
             CsrIndex::build(n_anns, categories.len(), |idx| annotations[idx].category_id);
+
+        // Every annotation must name a known image and category. Checked
+        // over the indexes' distinct keys — `O(images + categories)`
+        // probes rather than two per annotation — and reported for the
+        // first offending annotation in input order, image before
+        // category, exactly as a per-annotation scan would.
+        let known_images: HashSet<ImageId> = images.iter().map(|i| i.id).collect();
+        let known_categories: HashSet<CategoryId> = categories.iter().map(|c| c.id).collect();
+        let first_row = |rows: &[usize]| rows.first().copied().unwrap_or(usize::MAX);
+        let bad_image = by_image
+            .keys()
+            .filter(|id| !known_images.contains(id))
+            .map(|id| first_row(by_image.get(id)))
+            .min();
+        let bad_category = by_category
+            .keys()
+            .filter(|id| !known_categories.contains(id))
+            .map(|id| first_row(by_category.get(id)))
+            .min();
+        if let Some(row) = bad_image.into_iter().chain(bad_category).min() {
+            let ann = &annotations[row];
+            let (field, value) = if known_images.contains(&ann.image_id) {
+                ("category_id", ann.category_id.0)
+            } else {
+                ("image_id", ann.image_id.0)
+            };
+            return Err(EvalError::InvalidAnnotation {
+                detail: format!(
+                    "annotation id={} references unknown {field}={value}",
+                    ann.id.0
+                ),
+            });
+        }
+
         let by_image_cat = CsrIndex::build(n_anns, n_anns / 2, |idx| {
             (annotations[idx].image_id, annotations[idx].category_id)
         });
@@ -1778,8 +1800,8 @@ impl CocoDetections {
     /// invariant — vernier's parity claim covers both sites.
     pub fn lvis_trim(&self, max_dets: i64) -> CocoDetections {
         if max_dets < 0 {
-            // AC5: negative cap disables the trim. Cheap clone — the
-            // detections `Arc` is shared, only the index maps allocate.
+            // AC5: negative cap disables the trim. The clone is `O(1)`:
+            // the detections and both indexes are `Arc`-shared.
             return self.clone();
         }
         let cap = max_dets as usize;
@@ -1979,6 +2001,85 @@ mod tests {
             }
             other => panic!("expected InvalidAnnotation, got {other:?}"),
         }
+    }
+
+    /// Validation reports the first offending annotation in input order —
+    /// image checked before category — whatever the index's key order.
+    #[test]
+    fn rejects_the_first_offending_annotation_in_input_order() {
+        const BAD: &str = r#"{
+            "images": [{"id": 1, "width": 10, "height": 10}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 2, "image_id": 1, "category_id": 7,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 3, "image_id": 99, "category_id": 8,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 4, "image_id": 98, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "thing"}]
+        }"#;
+        let EvalError::InvalidAnnotation { detail } =
+            CocoDataset::from_json_bytes(BAD.as_bytes()).unwrap_err()
+        else {
+            panic!("expected InvalidAnnotation");
+        };
+        assert_eq!(detail, "annotation id=2 references unknown category_id=7");
+        // An annotation wrong on both counts reports its image.
+        let both = BAD.replacen(
+            r#""image_id": 1, "category_id": 7"#,
+            r#""image_id": 5, "category_id": 7"#,
+            1,
+        );
+        let EvalError::InvalidAnnotation { detail } =
+            CocoDataset::from_json_bytes(both.as_bytes()).unwrap_err()
+        else {
+            panic!("expected InvalidAnnotation");
+        };
+        assert_eq!(detail, "annotation id=2 references unknown image_id=5");
+    }
+
+    /// `distinct_image_ids` is exactly the set of detection image ids, and
+    /// `trim_for` trims a federated set only past the per-image cap.
+    #[test]
+    fn distinct_image_ids_and_the_trim_boundary() {
+        let det = |image: i64, score: f64| DetectionInput {
+            id: None,
+            image_id: ImageId(image),
+            category_id: CategoryId(1),
+            score,
+            bbox: Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            area: None,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+        };
+        // Image 1 carries 3 detections, image 2 carries 1.
+        let inputs = vec![det(1, 0.9), det(2, 0.8), det(1, 0.7), det(1, 0.6)];
+        let dt = CocoDetections::from_inputs(inputs).unwrap();
+        let mut ids: Vec<i64> = dt.distinct_image_ids().map(|i| i.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2]);
+
+        let lvis = CocoDataset::from_lvis_json_bytes(LVIS_MIN_VALID.as_bytes()).unwrap();
+        assert_eq!(
+            dt.clone().trim_for(&lvis, 3).detections().len(),
+            4,
+            "at the cap"
+        );
+        let trimmed = dt.clone().trim_for(&lvis, 2);
+        assert_eq!(trimmed.detections().len(), 3, "one past the cap");
+        assert_eq!(trimmed.indices_for_image(ImageId(1)).len(), 2);
+        // Off-LVIS, nothing is trimmed whatever the cap.
+        let coco = load_crowd_region();
+        assert_eq!(dt.trim_for(&coco, 1).detections().len(), 4);
     }
 
     #[test]

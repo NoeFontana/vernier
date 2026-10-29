@@ -114,6 +114,12 @@ crc32fast = "1"
 # overkill for hot-path histograms over `(u32, u32)` keys that never
 # touch user-controlled input.
 rustc-hash = "2"
+# Seeded (per-map random) fast hash for indexes keyed by ids that *do*
+# come from user input — detection/annotation `image_id` / `category_id`
+# in `CsrIndex`. Unkeyed FxHash there would let a crafted results file
+# collide every key and make index construction quadratic. Already in
+# the lock through hashbrown; Zlib-licensed.
+foldhash = "0.1"
 # CSV parser used by the manifest CSV adapter (ADR-0046 §D2). Spreadsheet-
 # native attribute tables are the primary input for the robotics user;
 # the parser converts to the canonical JSON-records shape at parse time
