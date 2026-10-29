@@ -656,21 +656,69 @@ def test_buffer_counts_are_refused_instead_of_read_as_run_lengths(wrap: Any) -> 
         _segm_grid(dt)
 
 
-def test_segmentation_is_not_read_on_the_bbox_grid_by_any_route() -> None:
-    """``segmentation`` is skipped under ``iou_type='bbox'``, on every route.
+_BAD_SEGMENTATION = {"counts": [1, 2, 3], "size": [64]}
+_BAD_KEYPOINTS = {"keypoints": "bad", "num_keypoints": 2.5}
 
-    pycocotools' bbox path never reads a result's mask, and the file route
-    skips it unparsed (``DetectionFields::Boxes``) — most of the bytes of a
-    mask-carrying results file. The list route must agree, or it would
-    refuse a payload the file route evaluates: that is the route
-    divergence ADR-0057 exists to avoid. So a structurally wrong
-    ``segmentation`` changes nothing on either route.
+
+def _with_bad_fields(**fields: Any) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The dict-list payload clean, and with ``fields`` malformed on entry 1."""
+    clean = _as_dict_list()
+    dirty = _as_dict_list()
+    dirty[1].update(fields)
+    return clean, dirty
+
+
+def test_segmentation_is_not_read_on_the_bbox_grid_by_any_route() -> None:
+    """A field the kernel never reads is skipped on every route.
+
+    pycocotools' bbox path never reads a result's mask or keypoints, and
+    the file route skips them unparsed (``DetectionFields::Boxes``) — most
+    of the bytes of a mask-carrying results file. The list route must
+    agree, or it would refuse a payload the file route evaluates: the
+    route divergence ADR-0057 exists to avoid. So structurally wrong
+    ``segmentation`` / ``keypoints`` / ``num_keypoints`` change nothing on
+    either route.
     """
-    dicts = _as_dict_list()
-    expected = _grid(json.dumps(dicts).encode())
-    dicts[1]["segmentation"] = {"counts": [1, 2, 3], "size": [64]}
-    for got in (_grid(json.dumps(dicts).encode()), _grid(dicts)):
-        assert _normalize(got.eval_imgs()) == _normalize(expected.eval_imgs())
+    clean, dirty = _with_bad_fields(segmentation=_BAD_SEGMENTATION, **_BAD_KEYPOINTS)
+    expected = _normalize(_grid(json.dumps(clean).encode()).eval_imgs())
+    for got in (_grid(json.dumps(dirty).encode()), _grid(dirty)):
+        assert _normalize(got.eval_imgs()) == expected
+
+
+def test_keypoints_are_not_read_on_the_segm_grid_by_any_route() -> None:
+    """The mask kernels read ``segmentation``, never the keypoint fields."""
+    dicts = _segm_detections("polygons")
+    expected = _normalize(_segm_grid(json.dumps(dicts).encode()).eval_imgs())
+    for d in dicts:
+        d.update(_BAD_KEYPOINTS)
+    for got in (_segm_grid(json.dumps(dicts).encode()), _segm_grid(dicts)):
+        assert _normalize(got.eval_imgs()) == expected
+
+
+def test_a_streaming_bbox_update_skips_masks_on_every_route() -> None:
+    """The streaming path (``ParsedDetections<BboxIou>``) skips them too."""
+    clean, dirty = _with_bad_fields(segmentation=_BAD_SEGMENTATION, **_BAD_KEYPOINTS)
+
+    def finalize(payload: Any) -> list[float]:
+        ev = _core.BackgroundEvaluator(GT_BYTES, iou_type="bbox")
+        ev.submit(payload)
+        return list(ev.finalize().stats)
+
+    expected = finalize(json.dumps(clean).encode())
+    assert finalize(json.dumps(dirty).encode()) == expected
+    assert finalize(dirty) == expected
+
+
+def test_a_bbox_diagnostic_skips_masks_on_every_route() -> None:
+    """Diagnostics realize ``dt`` with their kernel's fields as well."""
+    clean, dirty = _with_bad_fields(segmentation=_BAD_SEGMENTATION, **_BAD_KEYPOINTS)
+
+    def matrix(payload: Any) -> Any:
+        return _core.confusion_matrix_bbox(GT_BYTES, payload, "strict", 0.5, 100, True)
+
+    expected = matrix(json.dumps(clean).encode())
+    assert matrix(json.dumps(dirty).encode()) == expected
+    assert matrix(dirty) == expected
 
 
 # --- a route with no segmentation under segm means J2 -----------------------

@@ -131,25 +131,25 @@ pub(crate) fn ann_dicts_to_columns<'py>(
             _ => None,
         };
 
-        // `segmentation` is optional on every `iou_type`, exactly as it
+        // Each field outside what the kernel reads is not read at all, as
+        // the file route skips it unparsed (`ArrayIouType::detection_fields`):
+        // reading one here would make this route refuse a payload that one
+        // accepts (ADR-0057).
+        let fields = iou_type.detection_fields();
+
+        // `segmentation` is optional under every mask kernel, exactly as it
         // is in a results *file*: `serde_json` leaves the field `None`
         // and quirk **J2** decides what that means downstream (strict
         // synthesizes a rectangle from the bbox; corrected refuses,
         // naming the detection). Requiring it here would make the list
         // route reject a bbox-only payload the file route evaluates.
-        //
-        // Under `bbox` it is not read at all, as `keypoints` is not read
-        // outside `keypoints`: the file route parses bbox results with
-        // `DetectionFields::Boxes`, which skips both unparsed, so reading
-        // one here would make this route refuse a payload that one
-        // accepts.
-        let segmentation = match iou_type {
-            ArrayIouType::Bbox => None,
-            _ => dict
-                .get_item(k_segmentation)?
+        let segmentation = if fields.segmentation() {
+            dict.get_item(k_segmentation)?
                 .filter(|v| !v.is_none())
                 .map(|obj| extract_segmentation(&obj, i, ctx))
-                .transpose()?,
+                .transpose()?
+        } else {
+            None
         };
 
         let keypoints = match iou_type {
@@ -160,13 +160,17 @@ pub(crate) fn ann_dicts_to_columns<'py>(
             _ => None,
         };
 
-        let num_keypoints = match dict.get_item(k_num_keypoints)? {
-            Some(v) if !v.is_none() => Some(
-                v.extract()
-                    .map_err(|e| field_err(i, "num_keypoints", &format!("expected int: {e}")))?,
-            ),
-            _ => None,
-        };
+        let num_keypoints =
+            if fields.keypoints() {
+                match dict.get_item(k_num_keypoints)? {
+                    Some(v) if !v.is_none() => Some(v.extract().map_err(|e| {
+                        field_err(i, "num_keypoints", &format!("expected int: {e}"))
+                    })?),
+                    _ => None,
+                }
+            } else {
+                None
+            };
 
         // Carried, not dropped: `from_columns_with_area` ignores it unless
         // the detections are built with `DetectionArea::Supplied`, and

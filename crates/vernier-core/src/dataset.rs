@@ -1542,23 +1542,44 @@ pub enum DetectionArea {
 
 /// Which optional per-detection payloads a JSON load materializes.
 ///
-/// pycocotools' bbox evaluation never reads a result's `segmentation`
-/// or `keypoints`. Under [`DetectionFields::Boxes`] the parser skips
-/// them unparsed, which is most of the bytes in a mask-carrying results
-/// file; a malformed value there is skipped too, not reported.
+/// Each kernel reads one subset (`KernelKind::detection_fields`): bbox
+/// never reads `segmentation` or `keypoints`, the mask kernels never read
+/// `keypoints`, OKS never reads `segmentation`. A field outside the set is
+/// skipped unparsed — on a mask-carrying results file under bbox that is
+/// most of the bytes — and a malformed value there is skipped too, not
+/// reported, as pycocotools never reads it either.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DetectionFields {
     /// Every field, so any kernel or table can read the result.
     #[default]
     All,
-    /// Only what the bbox kernel reads: ids, score, `bbox`, `area`.
+    /// What the bbox kernel reads: ids, score, `bbox`, `area`.
     Boxes,
+    /// [`Self::Boxes`] plus `segmentation`: the segm and boundary kernels.
+    Masks,
+    /// [`Self::Boxes`] plus `keypoints` and `num_keypoints`: OKS.
+    Keypoints,
 }
 
-/// [`DetectionInput`] without the payloads only the mask and keypoint
-/// kernels read. An undeclared field is skipped by serde's
-/// `IgnoredAny`, which scans it without allocating or converting
-/// numbers.
+impl DetectionFields {
+    /// Whether `segmentation` is materialized.
+    #[must_use]
+    pub const fn segmentation(self) -> bool {
+        matches!(self, Self::All | Self::Masks)
+    }
+
+    /// Whether `keypoints` and `num_keypoints` are materialized.
+    #[must_use]
+    pub const fn keypoints(self) -> bool {
+        matches!(self, Self::All | Self::Keypoints)
+    }
+}
+
+// Row types for the [`DetectionFields`] subsets: [`DetectionInput`] without
+// the fields the subset drops. serde skips an undeclared field with
+// `IgnoredAny`, which scans it without allocating or converting numbers.
+// No `#[serde(flatten)]`: that would buffer every row.
+
 #[derive(Deserialize)]
 struct BoxDetectionInput {
     #[serde(default)]
@@ -1583,6 +1604,68 @@ impl From<BoxDetectionInput> for DetectionInput {
             segmentation: None,
             keypoints: None,
             num_keypoints: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct MaskDetectionInput {
+    #[serde(default)]
+    id: Option<AnnId>,
+    image_id: ImageId,
+    category_id: CategoryId,
+    score: f64,
+    bbox: Bbox,
+    #[serde(default)]
+    area: Option<f64>,
+    #[serde(default)]
+    segmentation: Option<Segmentation>,
+}
+
+impl From<MaskDetectionInput> for DetectionInput {
+    fn from(row: MaskDetectionInput) -> Self {
+        Self {
+            id: row.id,
+            image_id: row.image_id,
+            category_id: row.category_id,
+            score: row.score,
+            bbox: row.bbox,
+            area: row.area,
+            segmentation: row.segmentation,
+            keypoints: None,
+            num_keypoints: None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct KeypointDetectionInput {
+    #[serde(default)]
+    id: Option<AnnId>,
+    image_id: ImageId,
+    category_id: CategoryId,
+    score: f64,
+    bbox: Bbox,
+    #[serde(default)]
+    area: Option<f64>,
+    #[serde(default)]
+    keypoints: Option<Vec<f64>>,
+    #[serde(default)]
+    num_keypoints: Option<u32>,
+}
+
+impl From<KeypointDetectionInput> for DetectionInput {
+    fn from(row: KeypointDetectionInput) -> Self {
+        Self {
+            id: row.id,
+            image_id: row.image_id,
+            category_id: row.category_id,
+            score: row.score,
+            bbox: row.bbox,
+            area: row.area,
+            segmentation: None,
+            keypoints: row.keypoints,
+            num_keypoints: row.num_keypoints,
         }
     }
 }
@@ -1673,33 +1756,36 @@ impl DetectionColumnsInput {
     }
 }
 
-/// Deserializes a JSON array of [`DetectionInput`] straight into
-/// [`DetectionColumnsInput`], with no row-major intermediate. A supplied
-/// `area` is dropped unless `keep_area`: only a [`DetectionArea::Supplied`]
-/// build reads it (quirk **J3**). `fields` picks the row shape.
-#[derive(Clone, Copy)]
-struct DetectionColumnsSeed {
+/// Appends one detection to `cols`. A supplied `area` is dropped unless
+/// `keep_area`: only a [`DetectionArea::Supplied`] build reads it
+/// (quirk **J3**).
+fn push_detection(cols: &mut DetectionColumnsInput, mut row: DetectionInput, keep_area: bool) {
+    if !keep_area {
+        row.area = None;
+    }
+    cols.push(row);
+}
+
+/// Deserializes a JSON array of row type `R` (a [`DetectionFields`]
+/// subset) straight into [`DetectionColumnsInput`], with no row-major
+/// intermediate.
+struct DetectionColumnsSeed<R> {
     keep_area: bool,
-    fields: DetectionFields,
+    _row: std::marker::PhantomData<fn() -> R>,
 }
 
-impl DetectionColumnsSeed {
-    fn new(area: DetectionArea, fields: DetectionFields) -> Self {
+impl<R> DetectionColumnsSeed<R> {
+    fn new(keep_area: bool) -> Self {
         Self {
-            keep_area: matches!(area, DetectionArea::Supplied),
-            fields,
+            keep_area,
+            _row: std::marker::PhantomData,
         }
-    }
-
-    fn push(self, cols: &mut DetectionColumnsInput, mut row: DetectionInput) {
-        if !self.keep_area {
-            row.area = None;
-        }
-        cols.push(row);
     }
 }
 
-impl<'de> serde::de::DeserializeSeed<'de> for DetectionColumnsSeed {
+impl<'de, R: Deserialize<'de> + Into<DetectionInput>> serde::de::DeserializeSeed<'de>
+    for DetectionColumnsSeed<R>
+{
     type Value = DetectionColumnsInput;
 
     fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
@@ -1707,7 +1793,9 @@ impl<'de> serde::de::DeserializeSeed<'de> for DetectionColumnsSeed {
     }
 }
 
-impl<'de> serde::de::Visitor<'de> for DetectionColumnsSeed {
+impl<'de, R: Deserialize<'de> + Into<DetectionInput>> serde::de::Visitor<'de>
+    for DetectionColumnsSeed<R>
+{
     type Value = DetectionColumnsInput;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1717,17 +1805,8 @@ impl<'de> serde::de::Visitor<'de> for DetectionColumnsSeed {
 
     fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
         let mut cols = DetectionColumnsInput::with_capacity(seq.size_hint().unwrap_or(0));
-        match self.fields {
-            DetectionFields::All => {
-                while let Some(row) = seq.next_element::<DetectionInput>()? {
-                    self.push(&mut cols, row);
-                }
-            }
-            DetectionFields::Boxes => {
-                while let Some(row) = seq.next_element::<BoxDetectionInput>()? {
-                    self.push(&mut cols, row.into());
-                }
-            }
+        while let Some(row) = seq.next_element::<R>()? {
+            push_detection(&mut cols, row.into(), self.keep_area);
         }
         Ok(cols)
     }
@@ -1963,30 +2042,15 @@ impl CocoDetections {
     ///
     /// # Errors
     ///
-    /// Same as [`Self::from_json_bytes`].
+    /// Same as [`Self::from_json_bytes`], plus [`EvalError::InvalidConfig`]
+    /// for [`DetectionArea::Mask`] with a `fields` that drops
+    /// `segmentation`, the one field that area is read from.
     pub fn from_json_bytes_with(
         bytes: &[u8],
         area: DetectionArea,
         fields: DetectionFields,
     ) -> Result<Self, EvalError> {
-        #[cfg(feature = "bench-timings")]
-        let t0 = std::time::Instant::now();
-        let seed = DetectionColumnsSeed::new(area, fields);
-        let mut de = serde_json::Deserializer::from_slice(bytes);
-        let columns = serde::de::DeserializeSeed::deserialize(seed, &mut de)?;
-        de.end()?;
-        #[cfg(feature = "bench-timings")]
-        let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        #[cfg(feature = "bench-timings")]
-        let t1 = std::time::Instant::now();
-        let result = Self::from_columns_with_area(columns, area);
-        #[cfg(feature = "bench-timings")]
-        {
-            let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
-            dataset_timings::COUNTERS.add(dataset_timings::DT_PARSE_NS, parse_ns);
-            dataset_timings::COUNTERS.add(dataset_timings::DT_FROM_INPUTS_NS, from_inputs_ns);
-        }
-        result
+        Self::load_json(bytes, None, area, fields)
     }
 
     /// Parallel sibling of [`Self::from_json_bytes`] (ADR-0054).
@@ -2031,62 +2095,103 @@ impl CocoDetections {
     ///
     /// # Errors
     ///
-    /// Same as [`Self::from_json_bytes`].
+    /// Same as [`Self::from_json_bytes_with`].
     pub fn from_json_bytes_parallel_with(
         bytes: &[u8],
         threads: usize,
         area: DetectionArea,
         fields: DetectionFields,
     ) -> Result<Self, EvalError> {
-        if threads < crate::json_split::MIN_THREADS_TO_SPLIT {
-            return Self::from_json_bytes_with(bytes, area, fields);
+        Self::load_json(bytes, Some(threads), area, fields)
+    }
+
+    /// Every JSON detection loader: refuses a contradictory
+    /// `(area, fields)` pair, then parses the subset's row type.
+    fn load_json(
+        bytes: &[u8],
+        threads: Option<usize>,
+        area: DetectionArea,
+        fields: DetectionFields,
+    ) -> Result<Self, EvalError> {
+        if area == DetectionArea::Mask && !fields.segmentation() {
+            return Err(EvalError::InvalidConfig {
+                detail: format!(
+                    "DetectionArea::Mask reads each detection's segmentation, which \
+                     DetectionFields::{fields:?} does not load"
+                ),
+            });
         }
+        match fields {
+            DetectionFields::All => Self::load_json_rows::<DetectionInput>(bytes, threads, area),
+            DetectionFields::Boxes => {
+                Self::load_json_rows::<BoxDetectionInput>(bytes, threads, area)
+            }
+            DetectionFields::Masks => {
+                Self::load_json_rows::<MaskDetectionInput>(bytes, threads, area)
+            }
+            DetectionFields::Keypoints => {
+                Self::load_json_rows::<KeypointDetectionInput>(bytes, threads, area)
+            }
+        }
+    }
+
+    /// Parses rows of type `R` into columns, then resolves them.
+    ///
+    /// With a budget of at least `MIN_THREADS_TO_SPLIT` the array is split
+    /// at element boundaries and the chunks parse in parallel, in input
+    /// order — which matters beyond parity: auto-ids are positional
+    /// (quirk **J1**). Anything the splitter does not plainly recognize
+    /// falls back to the serial parse, which also reports the canonical
+    /// error for malformed input. The area source applies after the
+    /// parse, so the result is independent of the budget.
+    fn load_json_rows<R>(
+        bytes: &[u8],
+        threads: Option<usize>,
+        area: DetectionArea,
+    ) -> Result<Self, EvalError>
+    where
+        R: serde::de::DeserializeOwned + Into<DetectionInput>,
+    {
+        let keep_area = area == DetectionArea::Supplied;
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
-        let seed = DetectionColumnsSeed::new(area, fields);
-        let parsed = crate::json_split::document_object_array(bytes).and_then(|elements| {
-            let n_chunks = crate::json_split::chunks_for(threads);
-            let init = DetectionColumnsInput::with_capacity;
-            match fields {
-                DetectionFields::All => crate::json_split::parse_elements_parallel_into(
+        let split = threads
+            .filter(|&n| n >= crate::json_split::MIN_THREADS_TO_SPLIT)
+            .and_then(|n| {
+                let elements = crate::json_split::document_object_array(bytes)?;
+                crate::json_split::parse_elements_parallel_into(
                     bytes,
                     &elements,
-                    n_chunks,
-                    init,
-                    |cols, row: DetectionInput| seed.push(cols, row),
-                ),
-                DetectionFields::Boxes => crate::json_split::parse_elements_parallel_into(
-                    bytes,
-                    &elements,
-                    n_chunks,
-                    init,
-                    |cols, row: BoxDetectionInput| seed.push(cols, row.into()),
-                ),
+                    crate::json_split::chunks_for(n),
+                    DetectionColumnsInput::with_capacity,
+                    |cols, row: R| push_detection(cols, row.into(), keep_area),
+                )
+                .ok()
+            });
+        let columns = match split {
+            Some(parts) => DetectionColumnsInput::concat(parts),
+            None => {
+                let mut de = serde_json::Deserializer::from_slice(bytes);
+                let columns = serde::de::DeserializeSeed::deserialize(
+                    DetectionColumnsSeed::<R>::new(keep_area),
+                    &mut de,
+                )?;
+                de.end()?;
+                columns
             }
-            .ok()
-        });
+        };
         #[cfg(feature = "bench-timings")]
         let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
-        match parsed {
-            Some(parts) => {
-                #[cfg(feature = "bench-timings")]
-                let t1 = std::time::Instant::now();
-                let result =
-                    Self::from_columns_with_area(DetectionColumnsInput::concat(parts), area);
-                #[cfg(feature = "bench-timings")]
-                {
-                    let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
-                    dataset_timings::COUNTERS.add(dataset_timings::DT_PARSE_NS, parse_ns);
-                    dataset_timings::COUNTERS
-                        .add(dataset_timings::DT_FROM_INPUTS_NS, from_inputs_ns);
-                }
-                result
-            }
-            // As on the GT side: the fallback's own instrumentation is
-            // the only one that fires, so the abandoned scan is not
-            // added to `DT_PARSE_NS` a second time.
-            None => Self::from_json_bytes_with(bytes, area, fields),
+        #[cfg(feature = "bench-timings")]
+        let t1 = std::time::Instant::now();
+        let result = Self::from_columns_with_area(columns, area);
+        #[cfg(feature = "bench-timings")]
+        {
+            let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            dataset_timings::COUNTERS.add(dataset_timings::DT_PARSE_NS, parse_ns);
+            dataset_timings::COUNTERS.add(dataset_timings::DT_FROM_INPUTS_NS, from_inputs_ns);
         }
+        result
     }
 
     /// Builds a [`CocoDetections`] directly from columnar inputs
@@ -2219,10 +2324,10 @@ impl CocoDetections {
         inputs: Vec<DetectionInput>,
         area: DetectionArea,
     ) -> Result<Self, EvalError> {
-        let seed = DetectionColumnsSeed::new(area, DetectionFields::All);
+        let keep_area = area == DetectionArea::Supplied;
         let mut columns = DetectionColumnsInput::with_capacity(inputs.len());
         for input in inputs {
-            seed.push(&mut columns, input);
+            push_detection(&mut columns, input, keep_area);
         }
         Self::from_columns_with_area(columns, area)
     }
@@ -3083,34 +3188,40 @@ mod tests {
         }
     }
 
-    /// [`DetectionFields::Boxes`] keeps every column the bbox kernel
-    /// reads, bit-for-bit, and drops the mask and keypoint payloads —
-    /// malformed ones included, as pycocotools' bbox path never reads
-    /// them — on the serial and the parallel loader alike.
+    /// Each [`DetectionFields`] subset keeps its columns bit for bit and
+    /// drops the rest — malformed values there included, which `All`
+    /// refuses — on the serial and the parallel loader alike; a malformed
+    /// value inside the subset is still refused; and `DetectionArea::Mask`
+    /// is refused with a subset that does not load `segmentation`.
     #[test]
-    fn boxes_only_dt_loader_skips_mask_and_keypoint_payloads() {
-        let mut json = String::from("[");
-        for i in 0..120 {
-            if i > 0 {
-                json.push(',');
-            }
-            let extra = match i % 4 {
-                0 => r#", "segmentation": [[0, 0, 4, 0, 4, 4]]"#,
-                1 => {
-                    r#", "segmentation": {"size": [4, 4], "counts": "04L4"}, "keypoints": [1, 2, 2]"#
+    fn field_subsets_keep_their_columns_and_skip_the_rest() {
+        const BAD_SEGM: &str = r#", "segmentation": {"counts": 17}"#;
+        const BAD_KPTS: &str = r#", "keypoints": "bad", "num_keypoints": -1"#;
+        let rows = |bad: &str| {
+            let mut json = String::from("[");
+            for i in 0..120 {
+                if i > 0 {
+                    json.push(',');
                 }
-                2 => r#", "segmentation": {"counts": 17}, "keypoints": "bad""#,
-                _ => "",
-            };
-            json.push_str(&format!(
-                r#"{{"image_id": {}, "category_id": 3, "bbox": [1.5,0,{},2], "score": 0.{}, "area": 9.0{extra}}}"#,
-                i % 7,
-                i + 1,
-                i % 9 + 1
-            ));
-        }
-        json.push(']');
-        let boxes_of = |d: &CocoDetections| {
+                let extra = match i % 4 {
+                    0 => {
+                        r#", "segmentation": [[0, 0, 4, 0, 4, 4]], "keypoints": [1, 2, 2], "num_keypoints": 1"#
+                    }
+                    1 => r#", "segmentation": {"size": [4, 4], "counts": "04L4"}"#,
+                    2 => bad,
+                    _ => "",
+                };
+                json.push_str(&format!(
+                    r#"{{"image_id": {}, "category_id": 3, "bbox": [1.5,0,{},2], "score": 0.{}, "area": 9.0{extra}}}"#,
+                    i % 7,
+                    i + 1,
+                    i % 9 + 1
+                ));
+            }
+            json.push(']');
+            json
+        };
+        let columns_of = |d: &CocoDetections, fields: DetectionFields| {
             (0..d.len())
                 .map(|i| {
                     (
@@ -3118,36 +3229,102 @@ mod tests {
                         d.score_at(i).to_bits(),
                         d.bbox_at(i),
                         d.area_at(i).to_bits(),
+                        fields
+                            .segmentation()
+                            .then(|| d.segmentation_at(i).cloned())
+                            .flatten(),
+                        fields
+                            .keypoints()
+                            .then(|| d.keypoints_at(i).map(<[f64]>::to_vec))
+                            .flatten(),
+                        fields.keypoints().then(|| d.num_keypoints_at(i)).flatten(),
                     )
                 })
                 .collect::<Vec<_>>()
         };
-
-        // `All` refuses the malformed rows; `Boxes` never looks at them.
-        assert!(CocoDetections::from_json_bytes(json.as_bytes()).is_err());
-        for area in [DetectionArea::FromBbox, DetectionArea::Supplied] {
-            let serial =
-                CocoDetections::from_json_bytes_with(json.as_bytes(), area, DetectionFields::Boxes)
-                    .expect("serial");
-            assert_eq!(serial.len(), 120);
-            assert!((0..120).all(|i| serial.segmentation_at(i).is_none()));
-            assert!((0..120).all(|i| serial.keypoints_at(i).is_none()));
-            let well_formed: String = json.replace(
-                r#", "segmentation": {"counts": 17}, "keypoints": "bad""#,
-                "",
+        let well_formed = rows("");
+        for (fields, skipped_bad, kept_bad) in [
+            (
+                DetectionFields::Boxes,
+                format!("{BAD_SEGM}{BAD_KPTS}"),
+                None,
+            ),
+            (DetectionFields::Masks, BAD_KPTS.to_owned(), Some(BAD_SEGM)),
+            (
+                DetectionFields::Keypoints,
+                BAD_SEGM.to_owned(),
+                Some(BAD_KPTS),
+            ),
+        ] {
+            let json = rows(&skipped_bad);
+            assert!(
+                CocoDetections::from_json_bytes(json.as_bytes()).is_err(),
+                "{fields:?}"
             );
-            let all = CocoDetections::from_json_bytes_with_area(well_formed.as_bytes(), area)
-                .expect("all");
-            assert_eq!(boxes_of(&serial), boxes_of(&all), "area={area:?}");
-            for threads in [3usize, 8] {
-                let parallel = CocoDetections::from_json_bytes_parallel_with(
+            for area in [DetectionArea::FromBbox, DetectionArea::Supplied] {
+                let all = CocoDetections::from_json_bytes_with_area(well_formed.as_bytes(), area)
+                    .expect("all");
+                let serial = CocoDetections::from_json_bytes_with(json.as_bytes(), area, fields)
+                    .expect("serial");
+                assert_eq!(
+                    columns_of(&serial, fields),
+                    columns_of(&all, fields),
+                    "{fields:?} {area:?}"
+                );
+                for d in 0..serial.len() {
+                    assert!(fields.segmentation() || serial.segmentation_at(d).is_none());
+                    assert!(fields.keypoints() || serial.keypoints_at(d).is_none());
+                }
+                for threads in [3usize, 8] {
+                    let parallel = CocoDetections::from_json_bytes_parallel_with(
+                        json.as_bytes(),
+                        threads,
+                        area,
+                        fields,
+                    )
+                    .expect("par");
+                    assert_eq!(
+                        columns_of(&parallel, fields),
+                        columns_of(&serial, fields),
+                        "threads={threads}"
+                    );
+                }
+            }
+            if let Some(bad) = kept_bad {
+                let json = rows(bad);
+                assert!(CocoDetections::from_json_bytes_with(
                     json.as_bytes(),
-                    threads,
-                    area,
-                    DetectionFields::Boxes,
+                    DetectionArea::FromBbox,
+                    fields
                 )
-                .expect("par");
-                assert_eq!(boxes_of(&serial), boxes_of(&parallel), "threads={threads}");
+                .is_err());
+                assert!(CocoDetections::from_json_bytes_parallel_with(
+                    json.as_bytes(),
+                    8,
+                    DetectionArea::FromBbox,
+                    fields
+                )
+                .is_err());
+            }
+        }
+        for fields in [DetectionFields::Boxes, DetectionFields::Keypoints] {
+            for result in [
+                CocoDetections::from_json_bytes_with(
+                    well_formed.as_bytes(),
+                    DetectionArea::Mask,
+                    fields,
+                ),
+                CocoDetections::from_json_bytes_parallel_with(
+                    well_formed.as_bytes(),
+                    8,
+                    DetectionArea::Mask,
+                    fields,
+                ),
+            ] {
+                assert!(
+                    matches!(result, Err(EvalError::InvalidConfig { .. })),
+                    "{fields:?}"
+                );
             }
         }
     }

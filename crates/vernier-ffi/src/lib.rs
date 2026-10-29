@@ -737,10 +737,7 @@ impl EvalIouType {
     /// The detection fields this kernel reads, so a JSON payload skips
     /// the rest unparsed.
     fn dt_fields(&self) -> DetectionFields {
-        match self {
-            Self::Bbox => DetectionFields::Boxes,
-            Self::Segm | Self::Boundary { .. } | Self::Keypoints { .. } => DetectionFields::All,
-        }
+        array_ingest::ArrayIouType::from(self).detection_fields()
     }
 
     fn run(
@@ -917,7 +914,7 @@ fn evaluate_grid_impl(
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
         let (gt, dt) =
-            parse_gt_dt_with_policy(&gt_bytes, dt_payload, (dt_area, dt_fields), thread_policy)?;
+            parse_gt_dt_with_policy(&gt_bytes, dt_payload, dt_area, dt_fields, thread_policy)?;
         let params = EvaluateParams {
             iou_thresholds: &iou_for_run,
             area_ranges: &area,
@@ -963,7 +960,8 @@ fn evaluate_grid_impl(
 fn parse_gt_dt_with_policy(
     gt_bytes: &[u8],
     dt_payload: UpdatePayload,
-    (dt_area, dt_fields): (DetectionArea, DetectionFields),
+    dt_area: DetectionArea,
+    dt_fields: DetectionFields,
     thread_policy: threads::ThreadPolicy,
 ) -> PyResult<(CocoDataset, CocoDetections)> {
     match thread_policy.thread_count() {
@@ -1465,7 +1463,8 @@ fn evaluate_summary_impl(
         let (gt, dt) = parse_gt_dt_with_policy(
             &gt_bytes,
             dt_payload,
-            (DetectionArea::FromBbox, iou_type.dt_fields()),
+            DetectionArea::FromBbox,
+            iou_type.dt_fields(),
             thread_policy,
         )?;
         run_pipeline(
@@ -2398,6 +2397,8 @@ pub(crate) fn prepare_dt_payload<'py>(
 pub(crate) struct DiagnosticInputs {
     gt: dataset::GtPayload,
     dt: UpdatePayload,
+    /// What the diagnostic's kernel reads, for a JSON `dt`.
+    dt_fields: DetectionFields,
 }
 
 impl DiagnosticInputs {
@@ -2417,6 +2418,7 @@ impl DiagnosticInputs {
         Ok(Self {
             gt: gt_payload,
             dt: dt_payload,
+            dt_fields: kernel.detection_fields(),
         })
     }
 
@@ -2427,7 +2429,7 @@ impl DiagnosticInputs {
     /// knob. The snapshot carries the GT caches the mask kernels reuse.
     pub(crate) fn realize(self) -> PyResult<(dataset::DatasetSnapshot, CocoDetections)> {
         let gt = self.gt.realize()?;
-        let dt = realize_dt(self.dt, DetectionArea::FromBbox, DetectionFields::All)?;
+        let dt = realize_dt(self.dt, DetectionArea::FromBbox, self.dt_fields)?;
         Ok((gt, dt))
     }
 }
