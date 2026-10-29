@@ -583,8 +583,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         for &i in &batch_image_indices {
             for k in 0..n_k {
                 for a in 0..n_a {
-                    let flat = k * n_a * n_i + a * n_i + i;
-                    if let Some(cell) = grid.eval_imgs.get(flat).and_then(|opt| opt.as_deref()) {
+                    if let Some(cell) = grid.cell(k, a, i) {
                         let cost = cell_cost(cell, n_t);
                         cost_total = cost_total.add(cost);
                         staged.push((k, a, i, cell.clone(), cost));
@@ -1016,7 +1015,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             self.parity_mode,
             &self.kernel,
         )?;
-        self.gt_only_cells = Some(grid.eval_imgs);
+        self.gt_only_cells = Some(grid.into_eval_imgs());
         Ok(())
     }
 

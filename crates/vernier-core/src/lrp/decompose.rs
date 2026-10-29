@@ -133,7 +133,9 @@ pub(crate) fn decompose_class(
     // non-ignore GTs and the crowd flags per cell.
     let gt_anns = gt.annotations();
 
-    for (i, image) in image_order.iter().enumerate() {
+    // Only populated cells contribute (an unpopulated one has neither
+    // GTs nor DTs), so walk the category's populated cells in image order.
+    for (i, cell) in grid.category_cells(k, 0) {
         // ADR-0046 partitioned LRP: skip cells whose image index is
         // not in the slice. Filter applies uniformly to the n_pos_gt
         // count and the per-cell matching emission below — both must
@@ -144,10 +146,7 @@ pub(crate) fn decompose_class(
                 continue;
             }
         }
-        let cell = match grid.cell(k, 0, i) {
-            Some(c) => c,
-            None => continue,
-        };
+        let image = image_order[i];
         // cell_meta presence is a precondition for cell presence; skip
         // defensively so a streaming-evaluator desync can never panic
         // the LRP pass.
@@ -196,7 +195,7 @@ pub(crate) fn decompose_class(
 
         run_cell_matching(
             &iou_view,
-            cell,
+            &cell,
             gt_indices,
             gt_anns,
             parity_mode,
