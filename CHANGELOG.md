@@ -128,6 +128,14 @@ additive / perf / docs".
   walk 176 → 136 ms (−23%); Seg-Nano segm evaluate −6.6%. Malformed
   strings still fail with the same error.
 
+- **Parallel evaluation balances by work.** Each category's images are
+  cut into tasks of about equal cost — `(detections + 1) × (ground truths
+  + 1)` per cell — instead of equal image counts, and every task is its
+  own stealable job. Before, the `person` chunks (30–40 ms each against a
+  few ms for most categories) all sat at the front of the order and one
+  worker ran them back to back while the rest idled. COCO val2017, eight
+  threads, parse + evaluate: jittered segm −31%, RF-DETR Seg-Nano segm
+  −15%. Bit-identical output.
 ## [0.5.5] - 2026-10-29
 
 ### Added
