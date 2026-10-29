@@ -205,7 +205,10 @@ fn evaluate_instance_partitioned_impl(
     let summary = py
         .detach(
             move || -> Result<PartitionedSummary, vernier_core::EvalError> {
-                evaluate_partitioned(&grid_inner.eval_imgs(), dims, &spec, &iou_thr, parity, plan)
+                // Materialized here, off the GIL: on a packed grid this is
+                // the per-cell unpack, not a borrow.
+                let eval_imgs = grid_inner.eval_imgs();
+                evaluate_partitioned(&eval_imgs, dims, &spec, &iou_thr, parity, plan)
             },
         )
         .map_err(|e| PyValueError::new_err(format!("{e}")))?;

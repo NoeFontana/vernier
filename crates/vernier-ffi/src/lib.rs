@@ -337,13 +337,11 @@ impl PyEvalGrid {
                  retain_meta=True",
             ));
         }
+        // Unpacking the packed grid is pure Rust: do it off the GIL.
+        let grid = &self.inner;
+        let cells = py.detach(|| grid.eval_imgs());
         let list = PyList::empty(py);
-        for (cell, meta) in self
-            .inner
-            .eval_imgs()
-            .iter()
-            .zip(self.inner.eval_imgs_meta.iter())
-        {
+        for (cell, meta) in cells.iter().zip(self.inner.eval_imgs_meta.iter()) {
             match (cell, meta) {
                 (Some(cell), Some(meta)) => list.append(eval_img_dict(py, cell, meta)?)?,
                 _ => list.append(py.None())?,
