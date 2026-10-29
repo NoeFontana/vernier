@@ -35,6 +35,13 @@ Objects365 at about 30 GiB. Run such cells per impl
 
 | cell | report | verdict |
 |---|---|---|
-| `coco_val2017_jittered` bbox | [coco_val2017_jittered-bbox.md](coco_val2017_jittered-bbox.md) | fail, 84/85 checks pass. faster-coco-eval's evaluate stage is about 10% cheaper on the twin (stable across re-runs), so a cost driver for its matcher is still missing from the profile. |
-| `objects365_val_jittered` bbox (faster-coco-eval excluded: OOM) | [objects365_val_jittered-bbox.md](objects365_val_jittered-bbox.md) | inconclusive. Every CPU-time and memory check passes, as do both rankings. The wall-time checks need a quiet host: two runs failed their IQR gate, and pycocotools ran a single rep. |
+| `coco_val2017_jittered` bbox | [coco_val2017_jittered-bbox.md](coco_val2017_jittered-bbox.md) | **fail, 82/84 checks pass.** In total CPU: pycocotools −1.8%, hotcoco −1.3%, vernier +2.4%. faster-coco-eval's evaluate stage is −10% in every run, so a cost driver of its matcher is still missing from the profile. |
+| `objects365_val_jittered` bbox (faster-coco-eval excluded: OOM) | [objects365_val_jittered-bbox.md](objects365_val_jittered-bbox.md) | **fail, 66/68 checks pass.** vernier's accumulate stage is +10–14% in all three runs. Likely cause: cell sizes are drawn independently of category, so per-category detection totals (what accumulate sorts) differ. Next profile dimension: `(g, d)` conditioned on category rank. |
+
+**Measure real and twin back to back.** On a shared host, speed drifts by about 10%
+between runs a few minutes apart, which is as large as the tolerance. A sequential
+`--impl all` pass, real then twin, has produced both spurious failures and failed
+IQR gates. `just bench-twin-check` interleaves the two per impl, and the COCO report
+above was measured that way: all eight IQR gates passed. The Objects365 report is
+from a sequential run.
 | `coco_val2017_jittered` segm / boundary | — | not yet: GT mask complexity is 7.6% low, beyond the 3% structural limit |

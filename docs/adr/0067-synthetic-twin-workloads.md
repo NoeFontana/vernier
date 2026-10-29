@@ -87,7 +87,10 @@ the following hold:
    and CPU time are within 10% (or 20 ms), and the peak RSS is within 10%
    (or 16 MiB). This uses `bench run --mode release` results for both
    workloads from the same commit and machine, under the ADR-0049 CPU
-   budget.
+   budget. Each implementation runs on the real workload and the twin back
+   to back: on a shared host, speed drifts by about the tolerance between
+   runs minutes apart. A cell that failed its IQR gate fails the check as
+   unstable, rather than counting as evidence either way.
 3. **Ranking.** Each implementation's CPU-time ratio to vernier is within
    10% of the real ratio, so no published comparison would change.
 
