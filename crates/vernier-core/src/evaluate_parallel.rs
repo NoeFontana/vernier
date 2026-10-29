@@ -760,6 +760,96 @@ mod tests {
         assert!(short.cell(1, 0, 0).is_none());
     }
 
+    proptest::proptest! {
+        #![proptest_config(proptest::prelude::ProptestConfig::with_cases(96))]
+        /// Every production accumulator — packed sequential, packed
+        /// parallel, dense — against pycocotools' own `accumulate`
+        /// transcribed line by line (`accumulate::reference`), over random
+        /// grids: crowds, every area range, tied scores, `maxDet`
+        /// truncation, both flag layouts, and recall grids on and off the
+        /// public contract.
+        #[test]
+        fn accumulators_match_pycocotools_on_random_grids(
+            gts in proptest::collection::vec(
+                (0_i64..4, 1_i64..4, (0.0..80.0_f64, 0.0..80.0_f64, 1.0..120.0_f64, 1.0..120.0_f64), 0_u8..6),
+                0..40,
+            ),
+            dts in proptest::collection::vec(
+                (0_i64..4, 1_i64..4, 0_u8..6, (0.0..80.0_f64, 0.0..80.0_f64, 1.0..120.0_f64, 1.0..120.0_f64)),
+                0..120,
+            ),
+            general in proptest::bool::ANY,
+            custom_recall in proptest::bool::ANY,
+        ) {
+            let images = (0..4).map(|i| img(i, 200, 200)).collect();
+            let cats = vec![cat(1, "a"), cat(2, "b"), cat(3, "c")];
+            let anns = gts
+                .iter()
+                .enumerate()
+                .map(|(i, &(im, c, b, crowd))| {
+                    let mut a = ann(i64::try_from(i).expect("id") + 1, im, c, b);
+                    a.is_crowd = crowd == 0;
+                    a
+                })
+                .collect();
+            let gt = CocoDataset::from_parts(images, anns, cats).expect("dataset");
+            let dt = CocoDetections::from_inputs(
+                dts.iter()
+                    .map(|&(im, c, score, b)| dt_input(im, c, f64::from(score) / 5.0, b))
+                    .collect(),
+            )
+            .expect("detections");
+
+            let iou: Vec<f64> = if general {
+                (0..20).map(|t| 0.05 + 0.0475 * f64::from(t)).collect()
+            } else {
+                iou_thresholds().to_vec()
+            };
+            let recall: Vec<f64> = if custom_recall {
+                vec![f64::NAN, -0.5, 0.0, 0.1, 1.0 / 3.0, 0.5, 0.99, 1.0, 1.5, f64::INFINITY]
+            } else {
+                recall_thresholds().to_vec()
+            };
+            let area = AreaRange::coco_default();
+            let params = EvaluateParams {
+                iou_thresholds: &iou,
+                area_ranges: &area,
+                max_dets_per_image: 100,
+                use_cats: true,
+                retain_iou: false,
+                retain_meta: false,
+            };
+            let grid = evaluate_with(&gt, &dt, params, ParityMode::Strict, &BboxIou).expect("grid");
+            let pool = rayon::ThreadPoolBuilder::new().num_threads(3).build().expect("pool");
+            for max_dets in [&[1_usize, 10, 100][..], &[2, 3]] {
+                let ladder = crate::accumulate::GridAccumulateParams {
+                    iou_thresholds: &iou,
+                    recall_thresholds: &recall,
+                    max_dets,
+                };
+                let dense_view = grid.eval_imgs();
+                let want = crate::accumulate::reference::accumulate_pycocotools(
+                    &dense_view,
+                    ladder.for_grid(&grid),
+                )
+                .expect("pycocotools");
+                for got in [
+                    accumulate(&dense_view, ladder.for_grid(&grid), ParityMode::Strict)
+                        .expect("dense"),
+                    crate::accumulate::accumulate_grid(&grid, ladder, ParityMode::Strict).expect("packed"),
+                    pool.install(|| {
+                        crate::accumulate::accumulate_grid_parallel(&grid, ladder, ParityMode::Strict)
+                    })
+                    .expect("packed parallel"),
+                ] {
+                    proptest::prop_assert_eq!(&got.precision, &want.precision);
+                    proptest::prop_assert_eq!(&got.recall, &want.recall);
+                    proptest::prop_assert_eq!(&got.scores, &want.scores);
+                }
+            }
+        }
+    }
+
     /// More than 16 IoU thresholds take the general `bool` flag layout
     /// instead of the 16-bit words: the empty-GT fill, the matched-cell
     /// gather, the parallel chunk concat and the accumulator sweep all

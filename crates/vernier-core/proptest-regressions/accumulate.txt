@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0fedd79c946482f7c3eb01920e708db90307c47ddc9bddec2de01fb4c9492a79 # shrinks to lanes = [[(false, false), (true, false), (true, false)], [(false, false), (false, false), (false, false)]], npig_delta = 9, grid = 0
+cc ba7ea358f38bf600f3eb43517c4a10a1a17464b87e848d077c9ff86b1dfff93d # shrinks to lanes = [[(false, false)]], npig_delta = 0, grid = 2
