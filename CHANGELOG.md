@@ -110,11 +110,14 @@ additive / perf / docs".
   753 → 525 ms end to end (−30%). A malformed value in a skipped field no
   longer fails the evaluation, matching pycocotools, which never reads it
   there, and both routes accept the same payloads (ADR-0057).
-- **Detection JSON parses in parallel when the GT is a `CocoDataset`.**
-  The grid and summary entry points that take a pre-parsed dataset
-  parsed the detection payload on one thread at any `num_threads`.
-  RF-DETR Nano on COCO val2017, eight threads: parse + evaluate
-  240 → 133 ms (−45%); Seg-Nano segm 800 → 616 ms (−23%).
+- **Detection JSON parses in parallel when the GT is a `CocoDataset`,
+  in one pool per call.** The grid and summary entry points that take a
+  pre-parsed dataset parsed the detection payload on one thread at any
+  `num_threads`. Each instance entry point now installs one scoped pool
+  that its parse, evaluate and accumulate stages share, instead of each
+  stage building and joining its own. RF-DETR Nano on COCO val2017,
+  eight threads, parse + evaluate: 252 → 133 ms (−47%); Seg-Nano segm
+  722 → 587 ms (−19%).
 
 ## [0.5.5] - 2026-10-29
 
