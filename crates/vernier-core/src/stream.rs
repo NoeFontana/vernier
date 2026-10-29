@@ -515,8 +515,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // bit-identical to a batch run — and makes the per-batch federated
         // cap exact (ADR-0065).
         let mut batch_image_ids: HashSet<i64> = HashSet::new();
-        for dt in detections.detections() {
-            let id = dt.image_id.0;
+        for image_id in detections.distinct_image_ids() {
+            let id = image_id.0;
             if self.seen_images.contains(&id) {
                 return Err(EvalError::InvalidAnnotation {
                     detail: format!(
