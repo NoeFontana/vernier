@@ -440,6 +440,7 @@ fn same_class_match_one_category(
         dt_matches: dt_matches_pos,
         gt_matches: gt_matches_pos,
         dt_ignore,
+        ..
     } = match_image(
         iou.view(),
         &gt_ignore,

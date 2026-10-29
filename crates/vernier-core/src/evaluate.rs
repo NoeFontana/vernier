@@ -92,7 +92,7 @@ use crate::dataset::{
     ImageId, ImageMeta,
 };
 use crate::error::EvalError;
-use crate::matching::{match_image_with_perm, MatchResult};
+use crate::matching::{cell_prefilter, match_image_with_perm, MatchResult};
 use crate::parity::ParityMode;
 use crate::segmentation::Segmentation;
 use crate::similarity::{
@@ -1191,6 +1191,7 @@ pub fn evaluate_with<K: EvalKernel>(
                 iou: iou_view,
                 not_exhaustive: not_exhaustive_for_cell,
             };
+            let prefilter = cell_prefilter(&mut scratch.column_maxima, iou_view);
             for (a, area) in params.area_ranges.iter().enumerate() {
                 let (cell, meta) = evaluate_cell(
                     &mut scratch.gt_ignore_buf,
@@ -1199,6 +1200,7 @@ pub fn evaluate_with<K: EvalKernel>(
                     params.iou_thresholds,
                     parity_mode,
                     builds_meta,
+                    prefilter,
                 )?;
                 let flat = nk + a * n_i + i;
                 eval_imgs[flat] = Some(Box::new(cell));
@@ -1795,6 +1797,9 @@ pub(crate) struct CellScratch {
     /// passing through scratch elides one `Vec<bool>` allocation per
     /// area-range pass).
     pub(crate) gt_ignore_buf: Vec<bool>,
+    /// The cell's matcher prefilter (IoU column maxima), computed once
+    /// per `(category, image)` and shared by its area ranges.
+    pub(crate) column_maxima: Vec<f64>,
 }
 
 impl CellScratch {
@@ -1842,6 +1847,8 @@ pub(crate) struct CellBuffers<'a> {
     pub(crate) not_exhaustive: bool,
 }
 
+/// `column_maxima` is the cell's [`crate::matching::cell_prefilter`],
+/// computed once per `(category, image)` and shared by its area ranges.
 pub(crate) fn evaluate_cell(
     gt_ignore_buf: &mut Vec<bool>,
     buf: &CellBuffers<'_>,
@@ -1849,6 +1856,7 @@ pub(crate) fn evaluate_cell(
     iou_thresholds: &[f64],
     parity_mode: ParityMode,
     build_meta: bool,
+    column_maxima: Option<&[f64]>,
 ) -> Result<(PerImageEval, Option<EvalImageMeta>), EvalError> {
     // D3 + D6/D7: per-call ignore = base | out-of-area. Filled into a
     // scratch buffer owned by the caller — this Vec is the same length
@@ -1880,6 +1888,7 @@ pub(crate) fn evaluate_cell(
         dt_matches: dt_matches_pos,
         gt_matches: gt_matches_pos,
         mut dt_ignore,
+        n_unignored,
     } = match_image_with_perm(
         buf.iou,
         gt_ignore,
@@ -1887,6 +1896,7 @@ pub(crate) fn evaluate_cell(
         dt_identity_perm,
         iou_thresholds,
         parity_mode,
+        column_maxima,
     )?;
 
     let n_t = iou_thresholds.len();
@@ -1894,7 +1904,8 @@ pub(crate) fn evaluate_cell(
     let n_g = gt_ignore.len();
 
     let dt_scores_sorted: Vec<f64> = dt_perm.iter().map(|&k| buf.dt_scores[k]).collect();
-    let gt_ignore_sorted: Vec<bool> = gt_perm.iter().map(|&k| gt_ignore[k]).collect();
+    // A4: sorted GTs `n_unignored..` are exactly the ignored ones.
+    let gt_ignore_sorted: Vec<bool> = (0..n_g).map(|k| k >= n_unignored).collect();
 
     let mut dt_matched = Array2::<bool>::default((n_t, n_d));
     // d-outer / t-inner reorders the original loop so the per-d
