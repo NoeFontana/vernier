@@ -302,19 +302,19 @@ impl PyEvalGrid {
     /// `K`: number of categories evaluated (`1` when `use_cats=False`).
     #[getter]
     fn n_categories(&self) -> usize {
-        self.inner.n_categories
+        self.inner.n_categories()
     }
 
     /// `A`: number of area ranges (`4` for the COCO default grid).
     #[getter]
     fn n_area_ranges(&self) -> usize {
-        self.inner.n_area_ranges
+        self.inner.n_area_ranges()
     }
 
     /// `I`: number of images (every image in the GT dataset).
     #[getter]
     fn n_images(&self) -> usize {
-        self.inner.n_images
+        self.inner.n_images()
     }
 
     /// Dataset handle the grid was built against. Returns the snapshot
@@ -430,7 +430,9 @@ impl PyEvalGrid {
     fn __repr__(&self) -> String {
         format!(
             "EvalGrid(n_categories={}, n_area_ranges={}, n_images={})",
-            self.inner.n_categories, self.inner.n_area_ranges, self.inner.n_images
+            self.inner.n_categories(),
+            self.inner.n_area_ranges(),
+            self.inner.n_images()
         )
     }
 }

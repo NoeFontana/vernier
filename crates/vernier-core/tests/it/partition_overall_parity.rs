@@ -58,9 +58,9 @@ fn overall_matches_unpartitioned_eval() {
     let (gt, dt) = load_fixture("all_perfect");
     let grid = run_bbox(&gt, &dt);
     let dims = GridDims {
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
+        n_categories: grid.n_categories(),
+        n_area_ranges: grid.n_area_ranges(),
+        n_images: grid.n_images(),
     };
     let id_map = image_id_to_idx(&gt);
 
@@ -121,9 +121,9 @@ fn two_axis_manifest_with_unassigned_smokes_through() {
     let (gt, dt) = load_fixture("all_perfect");
     let grid = run_bbox(&gt, &dt);
     let dims = GridDims {
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
+        n_categories: grid.n_categories(),
+        n_area_ranges: grid.n_area_ranges(),
+        n_images: grid.n_images(),
     };
     let id_map = image_id_to_idx(&gt);
 
@@ -182,9 +182,9 @@ fn manifest_with_only_unknown_keys_yields_overall_only_spec() {
     let (gt, dt) = load_fixture("all_perfect");
     let grid = run_bbox(&gt, &dt);
     let dims = GridDims {
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
+        n_categories: grid.n_categories(),
+        n_area_ranges: grid.n_area_ranges(),
+        n_images: grid.n_images(),
     };
     let id_map = image_id_to_idx(&gt);
 

@@ -988,7 +988,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
 
     /// Compute the GT-only packed grid once and cache it. Subsequent
     /// snapshots reuse it; GT is immutable, so it never goes stale.
-    fn ensure_gt_only_cells(&mut self) -> Result<&PackedEvalGrid, EvalError> {
+    fn ensure_gt_only_cells(&mut self) -> Result<(), EvalError> {
         if self.gt_only_cells.is_none() {
             let empty_dt = CocoDetections::from_inputs(Vec::new())?;
             // Summary-only pass: the overlay contributes no detections, so
@@ -1008,11 +1008,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             )?;
             self.gt_only_cells = Some(pass.packed);
         }
-        self.gt_only_cells
-            .as_ref()
-            .ok_or_else(|| EvalError::InvalidConfig {
-                detail: "gt_only_cells cache missing after init".into(),
-            })
+        Ok(())
     }
 
     fn compute_summary_and_cells(&mut self) -> Result<SnapshotWithCells, EvalError> {
@@ -1061,10 +1057,19 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         }
 
         // Occupied `(k, i)` of the store; every area range of an occupied
-        // pair is present, so area 0 enumerates them.
+        // pair is present, so area 0 enumerates them. The store may hold
+        // cells merged from partials, so its keys are checked, not trusted.
         let mut seen_by_k: Vec<Vec<u32>> = vec![Vec::new(); n_k];
         for &(k, a, i) in self.cells.as_map().keys() {
-            if a == 0 && k < n_k {
+            if k >= n_k || a >= n_a || i >= n_i {
+                return Err(EvalError::DimensionMismatch {
+                    detail: format!(
+                        "streaming cell ({k}, {a}, {i}) is outside the (K={n_k}, A={n_a}, \
+                         I={n_i}) grid"
+                    ),
+                });
+            }
+            if a == 0 {
                 // `GridPlan::new` refused grids whose `I` exceeds u32.
                 seen_by_k[k].push(i as u32);
             }
@@ -1082,14 +1087,13 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         for (k, mut seen) in seen_by_k.into_iter().enumerate() {
             seen.sort_unstable();
             let overlay = self.gt_only_cells.as_ref().map(|g| &g.categories[k]);
-            // Overlay cells (occupancy positions) of never-seen images.
+            // Overlay cells (occupancy positions) the store does not cover.
+            // A seen image has every occupied cell in the store, so this is
+            // exactly the never-seen images; testing the store itself keeps
+            // the two sources disjoint even for an inconsistent merge.
             let unseen: Vec<usize> = overlay.map_or_else(Vec::new, |cat| {
                 (0..cat.occupied_images.len())
-                    .filter(|&occ| {
-                        !self
-                            .seen_image_indices
-                            .contains(&(cat.occupied_images[occ] as usize))
-                    })
+                    .filter(|&occ| seen.binary_search(&cat.occupied_images[occ]).is_err())
                     .collect()
             });
             let mut out = PackedCategory::with_capacity(n_a, n_t, seen.len() + unseen.len(), 0);
@@ -1105,7 +1109,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                         let first = stored(k, 0, i)?;
                         out.begin_cell(i as u32, first.gt_ignore.len(), &first.dt_scores);
                         for a in 0..n_a {
-                            out.push_from_per_image_eval(a, stored(k, a, i)?);
+                            out.push_from_per_image_eval(a, stored(k, a, i)?)?;
                         }
                         s += 1;
                     }
@@ -1116,6 +1120,17 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                     // Unreachable: the loop condition leaves one side live.
                     (_, None) => break,
                 }
+            }
+            // Offsets are u32: `GridPlan::new` bounds one batch, not the
+            // detections a stream accumulates per category.
+            if u32::try_from(out.dt_scores.len()).is_err() {
+                return Err(EvalError::InvalidConfig {
+                    detail: format!(
+                        "category {k} holds {} streamed detections; the packed grid indexes at \
+                         most u32::MAX per category",
+                        out.dt_scores.len()
+                    ),
+                });
             }
             categories.push(out);
         }

@@ -907,14 +907,11 @@ pub struct EvalGrid {
     /// grid, recorded rather than inferred. Read it through
     /// [`Self::has_meta`].
     pub builds_meta: bool,
-    /// `K` axis size: the number of categories used for evaluation, or
-    /// `1` when `use_cats=false`.
-    pub n_categories: usize,
-    /// `A` axis size: equal to `params.area_ranges.len()`.
-    pub n_area_ranges: usize,
-    /// `I` axis size: number of images iterated over (every image in the
-    /// GT dataset, in deterministic id-ascending order).
-    pub n_images: usize,
+    // Read-only outside the crate: the packed arena carries the same
+    // axes, and the accessors index it on the strength of these.
+    pub(crate) n_categories: usize,
+    pub(crate) n_area_ranges: usize,
+    pub(crate) n_images: usize,
     /// Per-`(category, image)` IoU matrices retained when the caller
     /// passed [`EvaluateParams::retain_iou`] = `true`. `None` on the
     /// default no-retention path; one discriminant byte wide there.
@@ -960,6 +957,23 @@ impl EvalGrid {
             builds_meta,
             retained_ious,
         }
+    }
+
+    /// `K` axis size: the number of categories used for evaluation, or
+    /// `1` when `use_cats=false`.
+    pub fn n_categories(&self) -> usize {
+        self.n_categories
+    }
+
+    /// `A` axis size: equal to `params.area_ranges.len()`.
+    pub fn n_area_ranges(&self) -> usize {
+        self.n_area_ranges
+    }
+
+    /// `I` axis size: number of images iterated over (every image in the
+    /// GT dataset, in deterministic id-ascending order).
+    pub fn n_images(&self) -> usize {
+        self.n_images
     }
 
     /// The packed arena, when the grid has one (every evaluator output).
@@ -1394,10 +1408,19 @@ pub(crate) fn evaluate_category_slice<K: EvalKernel>(
     let category_id = cat.map_or(COLLAPSED_CATEGORY_SENTINEL, |c| c.0);
     let dt_scores_col = dt.scores();
 
-    let cap_dts = if dt.is_empty() {
+    // Exact upper bound on the slice's detection stream: one CSR lookup
+    // per image, so the score and flag arenas never regrow mid-pass.
+    let cap_dts: usize = if dt.is_empty() {
         0
     } else {
-        img_indices.len().saturating_mul(4)
+        img_indices
+            .iter()
+            .map(|&i| {
+                raw_dt_indices_for_cell(dt, images.get(i as usize).id, cat)
+                    .len()
+                    .min(params.max_dets_per_image)
+            })
+            .sum()
     };
     let mut packed_cat = PackedCategory::with_capacity(n_a, n_t, img_indices.len(), cap_dts);
 
@@ -1544,7 +1567,6 @@ pub(crate) fn evaluate_category_slice<K: EvalKernel>(
                         &scratch.gt_iscrowd,
                         &scratch.dt_unmatched_ignore_buf,
                         params.iou_thresholds,
-                        parity_mode,
                         &mut by_area[a],
                     )?,
                     PackedCategoryFlags::General { matched, ignore } => match_scratch
@@ -1554,7 +1576,6 @@ pub(crate) fn evaluate_category_slice<K: EvalKernel>(
                             &scratch.gt_iscrowd,
                             &scratch.dt_unmatched_ignore_buf,
                             params.iou_thresholds,
-                            parity_mode,
                             &mut matched[a],
                             &mut ignore[a],
                         )?,
@@ -1592,7 +1613,7 @@ pub(crate) fn evaluate_category_slice<K: EvalKernel>(
                     true,
                     match_scratch.prefilter(),
                 )?;
-                packed_cat.push_from_per_image_eval(a, &cell);
+                packed_cat.push_from_per_image_eval(a, &cell)?;
                 if let (Some(sink), Some(meta)) = (meta_out.as_deref_mut(), meta) {
                     sink.push((a * n_i + i, Box::new(meta)));
                 }

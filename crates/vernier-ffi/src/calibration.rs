@@ -509,8 +509,8 @@ pub(crate) fn cells_from_grid(py: Python<'_>, grid: &crate::PyEvalGrid) -> PyRes
     let cells: Vec<Option<Box<PerImageEval>>> = py.detach(|| inner.eval_imgs().into_owned());
     Ok(EvalCells::new(
         cells,
-        inner.n_categories,
-        inner.n_area_ranges,
+        inner.n_categories(),
+        inner.n_area_ranges(),
         grid.iou_thresholds().to_vec(),
         grid.parity_mode(),
     ))

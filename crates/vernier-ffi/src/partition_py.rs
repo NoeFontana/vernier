@@ -193,9 +193,9 @@ fn evaluate_instance_partitioned_impl(
     let iou_thr = grid.iou_thresholds_vec();
     let grid_inner = grid.eval_grid_ref();
     let dims = GridDims {
-        n_categories: grid_inner.n_categories,
-        n_area_ranges: grid_inner.n_area_ranges,
-        n_images: grid_inner.n_images,
+        n_categories: grid_inner.n_categories(),
+        n_area_ranges: grid_inner.n_area_ranges(),
+        n_images: grid_inner.n_images(),
     };
     // Read off the grid rather than taken as a parameter: this function
     // already receives the `EvalIouType` that built it, so a separate

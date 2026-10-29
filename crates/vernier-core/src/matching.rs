@@ -803,7 +803,6 @@ impl MatchScratch {
         gt_iscrowd: &[bool],
         dt_unmatched_ignore: &[bool],
         iou_thresholds: &[f64],
-        _parity_mode: ParityMode,
         out_flags: &mut Vec<u32>,
     ) -> Result<usize, EvalError> {
         let n_g = gt_ignore.len();
@@ -843,7 +842,6 @@ impl MatchScratch {
         gt_iscrowd: &[bool],
         dt_unmatched_ignore: &[bool],
         iou_thresholds: &[f64],
-        _parity_mode: ParityMode,
         out_matched: &mut Vec<bool>,
         out_ignore: &mut Vec<bool>,
     ) -> Result<usize, EvalError> {
@@ -1509,7 +1507,6 @@ mod tests {
                                 &gt_iscrowd,
                                 &unmatched_ignore,
                                 thresholds,
-                                ParityMode::Strict,
                                 &mut flags,
                             )
                             .unwrap();
@@ -1531,7 +1528,6 @@ mod tests {
                             &gt_iscrowd,
                             &unmatched_ignore,
                             thresholds,
-                            ParityMode::Strict,
                             &mut matched,
                             &mut ignore,
                         )

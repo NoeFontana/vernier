@@ -411,13 +411,14 @@ pub fn accumulate_grid_parallel(
 /// derived streams from the cap permutation they filter, and Claim 2's
 /// "restriction of a stable order" argument only holds while every cell
 /// of the category is ordered by the same key.
-struct SortPlan {
+struct SortPlan<'s> {
     /// Largest `maxDet` this plan was built for.
     cap: usize,
     /// Per-cell take at `cap`, in cell order.
     takes: Vec<usize>,
-    /// Concatenated cap-stream scores.
-    scores: Vec<f64>,
+    /// Concatenated cap-stream scores. Borrowed from a packed category
+    /// whose stored stream already is the cap stream; owned otherwise.
+    scores: std::borrow::Cow<'s, [f64]>,
     /// Stable score-descending permutation of `scores` (quirk **A1**).
     perm: Vec<usize>,
     /// Whether the cap stream carries a `NaN`.
@@ -432,7 +433,7 @@ struct SortPlan {
     has_nan: bool,
 }
 
-impl SortPlan {
+impl SortPlan<'_> {
     /// Build the cap stream for `cells` and sort it once.
     fn build(cells: &[&PerImageEval], cap: usize) -> Self {
         let mut takes: Vec<usize> = Vec::with_capacity(cells.len());
@@ -451,7 +452,7 @@ impl SortPlan {
         Self {
             cap,
             takes,
-            scores,
+            scores: std::borrow::Cow::Owned(scores),
             perm,
             has_nan,
         }
@@ -533,7 +534,7 @@ impl DerivedStream {
     /// stream sorts to. When `plan.has_nan` is set this sorts the
     /// derived stream directly instead — the pre-ADR-0052 path, which
     /// is by definition what that `(a, m)` cell would have produced.
-    fn fill_from(&mut self, plan: &SortPlan, max_det: usize) {
+    fn fill_from(&mut self, plan: &SortPlan<'_>, max_det: usize) {
         let Self {
             takes,
             scores,
@@ -612,7 +613,7 @@ fn accumulate_category(
     // A2 keeps `max_dets` ascending, so the cap is the last entry; take
     // the max anyway rather than depend on it here.
     let cap = p.max_dets.iter().copied().max().unwrap_or(0);
-    let mut plan: Option<SortPlan> = None;
+    let mut plan: Option<SortPlan<'_>> = None;
     let mut derived = DerivedStream::default();
     let mut cells: Vec<&PerImageEval> = Vec::with_capacity(n_i);
 
@@ -740,42 +741,19 @@ fn accumulate_cell(
             pr[out_idx] = tp / (tp + fp + PARITY_EPS);
         }
 
-        // C4: terminal cumulative recall.
-        recall[(t, a, m)] = rc[n_d - 1];
-
-        // C2: right-to-left running max on precision (envelope).
-        for j in (1..n_d).rev() {
-            if pr[j] > pr[j - 1] {
-                pr[j - 1] = pr[j];
-            }
-        }
-
-        // C1 + C3: searchsorted-left + bounds-check. Past the curve,
-        // slots are filled with 0.0 — overwriting the -1 sentinel so the
-        // summarizer's `s > -1` filter keeps them.
-        let mut p_lane = precision
-            .index_axis_mut(Axis(0), t)
-            .index_axis_move(Axis(1), a)
-            .index_axis_move(Axis(1), m);
-        let mut s_lane = scores
-            .index_axis_mut(Axis(0), t)
-            .index_axis_move(Axis(1), a)
-            .index_axis_move(Axis(1), m);
-        let mut last_pi = 0usize;
-        let mut prev_target = f64::NEG_INFINITY;
-        for (ri, &target) in recall_thresholds.iter().enumerate() {
-            let lo = if target >= prev_target { last_pi } else { 0 };
-            let pi = lo + rc[lo..].partition_point(|&v| v < target);
-            last_pi = pi;
-            prev_target = target;
-            if pi < n_d {
-                p_lane[ri] = pr[pi];
-                s_lane[ri] = stream.scores[stream.perm[pi]];
-            } else {
-                p_lane[ri] = 0.0;
-                s_lane[ri] = 0.0;
-            }
-        }
+        finish_threshold_curve(
+            &rc,
+            &mut pr,
+            stream.scores,
+            stream.perm,
+            recall_thresholds,
+            t,
+            a,
+            m,
+            precision,
+            recall,
+            scores,
+        );
     }
 }
 
@@ -975,11 +953,47 @@ impl PackedCategory {
         Ok(())
     }
 
-    pub(crate) fn push_from_per_image_eval(&mut self, a: usize, cell: &PerImageEval) {
+    /// Append area range `a` of the cell opened by [`Self::begin_cell`],
+    /// from its dense form.
+    ///
+    /// # Errors
+    ///
+    /// [`EvalError::DimensionMismatch`] if `cell` disagrees with the open
+    /// cell: its detections (scores are stored once, for every area
+    /// range), its GT count, or its `(n_t, n_d)` flag matrices. A cell
+    /// store assembled from partials is refused here rather than
+    /// shifting every later cell's flags.
+    pub(crate) fn push_from_per_image_eval(
+        &mut self,
+        a: usize,
+        cell: &PerImageEval,
+    ) -> Result<(), EvalError> {
+        let n_t = self.n_t;
+        let n_d = cell.dt_scores.len();
+        let open_scores = match self.dt_offsets.len() {
+            0 | 1 => None,
+            len => Some(&self.dt_scores[self.dt_offsets[len - 2] as usize..]),
+        };
+        let consistent = open_scores == Some(cell.dt_scores.as_slice())
+            && self.n_gts.last().map(|&g| g as usize) == Some(cell.gt_ignore.len())
+            && cell.dt_matched.dim() == (n_t, n_d)
+            && cell.dt_ignore.dim() == (n_t, n_d)
+            && self.n_unignored_by_area.get(a).map(Vec::len)
+                == Some(self.occupied_images.len() - 1);
+        if !consistent {
+            return Err(EvalError::DimensionMismatch {
+                detail: format!(
+                    "cell for area range {a} (n_t={}, n_d={n_d}, G={}) does not match the open \
+                     packed cell (n_t={n_t}, n_d={}, G={:?})",
+                    cell.dt_matched.nrows(),
+                    cell.gt_ignore.len(),
+                    open_scores.map_or(0, <[f64]>::len),
+                    self.n_gts.last(),
+                ),
+            });
+        }
         let n_unignored = cell.gt_ignore.iter().filter(|&&ig| !ig).count();
         self.push_matched_cell_area(a, n_unignored);
-        let n_d = cell.dt_scores.len();
-        let n_t = self.n_t;
         match &mut self.dt_flags {
             PackedCategoryFlags::Bits16(by_area) => {
                 by_area[a].reserve(n_d);
@@ -1008,6 +1022,7 @@ impl PackedCategory {
                 }
             }
         }
+        Ok(())
     }
 
     /// Concatenate image-ascending chunks of one category, in order.
@@ -1188,25 +1203,25 @@ fn validate_packed_grid(
     n_a: usize,
     n_i: usize,
 ) -> Result<(), EvalError> {
-    let actual_len = packed.n_categories * packed.n_area_ranges * packed.n_images;
-    let expected = n_k * n_a * n_i;
-    if packed.n_categories != n_k
-        || packed.n_area_ranges != n_a
-        || packed.n_images != n_i
-        || actual_len != expected
+    if (packed.n_categories, packed.n_area_ranges, packed.n_images) != (n_k, n_a, n_i)
+        || packed.categories.len() != n_k
     {
         return Err(EvalError::DimensionMismatch {
             detail: format!(
-                "eval_imgs len {} != n_categories({}) * n_area_ranges({}) * n_images({}) = {}",
-                actual_len, n_k, n_a, n_i, expected
+                "packed grid is (K={}, A={}, I={}) with {} category arenas; expected \
+                 (K={n_k}, A={n_a}, I={n_i})",
+                packed.n_categories,
+                packed.n_area_ranges,
+                packed.n_images,
+                packed.categories.len(),
             ),
         });
     }
     if packed.has_any_cell() && packed.n_t != n_t {
         return Err(EvalError::DimensionMismatch {
             detail: format!(
-                "PerImageEval row count {} != iou_thresholds len {}",
-                packed.n_t, n_t
+                "packed grid holds {} IoU thresholds, iou_thresholds has {n_t}",
+                packed.n_t
             ),
         });
     }
@@ -1306,14 +1321,14 @@ pub(crate) fn accumulate_packed_parallel(
     })
 }
 
-fn build_packed_sort_plan(cat: &PackedCategory, cap: usize) -> SortPlan {
+fn build_packed_sort_plan(cat: &PackedCategory, cap: usize) -> SortPlan<'_> {
     let m_occ = cat.occupied_images.len();
     let mut takes = Vec::with_capacity(m_occ);
     let scores = if cap >= cat.max_cell_dts {
         for occ in 0..m_occ {
             takes.push((cat.dt_offsets[occ + 1] - cat.dt_offsets[occ]) as usize);
         }
-        cat.dt_scores.clone()
+        std::borrow::Cow::Borrowed(cat.dt_scores.as_slice())
     } else {
         let mut total = 0usize;
         for occ in 0..m_occ {
@@ -1326,7 +1341,7 @@ fn build_packed_sort_plan(cat: &PackedCategory, cap: usize) -> SortPlan {
             let start = cat.dt_offsets[occ] as usize;
             gathered.extend_from_slice(&cat.dt_scores[start..start + take]);
         }
-        gathered
+        std::borrow::Cow::Owned(gathered)
     };
     let perm = argsort_score_desc(&scores);
     let has_nan = scores.iter().any(|s| s.is_nan());
@@ -1354,14 +1369,19 @@ fn finish_threshold_curve(
     scores: &mut ArrayViewMut4<'_, f64>,
 ) {
     let n_d = rc.len();
+    // C4: terminal cumulative recall.
     recall[(t, a, m)] = rc[n_d - 1];
 
+    // C2: right-to-left running max on precision (envelope).
     for j in (1..n_d).rev() {
         if pr[j] > pr[j - 1] {
             pr[j - 1] = pr[j];
         }
     }
 
+    // C1 + C3: searchsorted-left + bounds-check. Past the curve, slots are
+    // filled with 0.0 — overwriting the -1 sentinel so the summarizer's
+    // `s > -1` filter keeps them.
     let mut p_lane = precision
         .index_axis_mut(Axis(0), t)
         .index_axis_move(Axis(1), a)

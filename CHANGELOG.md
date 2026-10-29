@@ -33,8 +33,10 @@ additive / perf / docs".
   `Cow<[Option<Box<PerImageEval>>]>` (the dense view, built on demand),
   not a field; `EvalGrid::cell` returns `Option<Cow<PerImageEval>>`; an
   `EvalGrid` is built with `EvalGrid::from_eval_imgs`, not a struct
-  literal. `accumulate_grid`, `category_cells` and `into_eval_imgs` work
-  on either storage.
+  literal; its axis sizes are read through `n_categories()`,
+  `n_area_ranges()` and `n_images()` instead of public fields.
+  `accumulate_grid`, `category_cells` and `into_eval_imgs` work on either
+  storage.
 
 ### Added
 

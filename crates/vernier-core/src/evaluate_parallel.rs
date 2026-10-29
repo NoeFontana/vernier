@@ -759,4 +759,60 @@ mod tests {
         assert_eq!(short.category_cells(1, 0).count(), 0);
         assert!(short.cell(1, 0, 0).is_none());
     }
+
+    /// More than 16 IoU thresholds take the general `bool` flag layout
+    /// instead of the 16-bit words: the empty-GT fill, the matched-cell
+    /// gather, the parallel chunk concat and the accumulator sweep all
+    /// have a separate arm for it. Pinned against `accumulate` over the
+    /// dense view, sequential and parallel.
+    #[test]
+    fn general_flag_layout_agrees_with_the_dense_view() {
+        let (gt, dt) = tiny_grid_inputs();
+        let area = AreaRange::coco_default();
+        let thresholds: Vec<f64> = (0..20).map(|t| 0.05 + 0.0475 * f64::from(t)).collect();
+        let params = EvaluateParams {
+            iou_thresholds: &thresholds,
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+            retain_meta: false,
+        };
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .expect("pool");
+        let seq = evaluate_with(&gt, &dt, params, ParityMode::Strict, &BboxIou).expect("seq");
+        let par = pool
+            .install(|| evaluate_with_parallel(&gt, &dt, params, ParityMode::Strict, &BboxIou))
+            .expect("par");
+        assert_eq!(seq.packed().map(|p| p.n_t), Some(20), "general layout");
+        let dense: Vec<Option<Box<PerImageEval>>> = seq.eval_imgs().into_owned();
+        assert!(
+            dense.iter().any(Option::is_some),
+            "fixture must populate cells"
+        );
+        assert_eq!(format!("{dense:?}"), format!("{:?}", par.eval_imgs()));
+
+        let ladder = crate::accumulate::GridAccumulateParams {
+            iou_thresholds: &thresholds,
+            recall_thresholds: recall_thresholds(),
+            max_dets: &[1, 10, 100],
+        };
+        let via_slice =
+            accumulate(&dense, ladder.for_grid(&seq), ParityMode::Strict).expect("slice");
+        for grid in [&seq, &par] {
+            for via_grid in [
+                crate::accumulate::accumulate_grid(grid, ladder, ParityMode::Strict).expect("grid"),
+                pool.install(|| {
+                    crate::accumulate::accumulate_grid_parallel(grid, ladder, ParityMode::Strict)
+                })
+                .expect("grid parallel"),
+            ] {
+                assert_eq!(via_grid.precision, via_slice.precision);
+                assert_eq!(via_grid.recall, via_slice.recall);
+                assert_eq!(via_grid.scores, via_slice.scores);
+            }
+        }
+    }
 }
