@@ -14,6 +14,8 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-10-29
+
 ### Added
 
 - **`vernier.instance.DetectionsBatch`** (ADR-0066): every image's
@@ -23,6 +25,14 @@ additive / perf / docs".
   `iou_type="segm"` / `"boundary"` exactly as on `Detections`; quirk
   **J2**'s bbox-rectangle fallback stays with the `loadRes`-shaped routes
   (JSON bytes, result dicts, the `(N, 7)` matrix).
+
+- **Grid-level accessors ahead of the packed `EvalGrid`** (ADR-0066):
+  `vernier_core::accumulate::accumulate_grid` /
+  `accumulate_grid_parallel` with `GridAccumulateParams` (the `(K, A, I)`
+  axes come from the grid), `EvalGrid::eval_imgs()`,
+  `EvalGrid::into_eval_imgs()` and `EvalGrid::category_cells(k, a)`.
+  Prefer them to the `EvalGrid.eval_imgs` field, which 0.6 removes.
+- `CocoDetections::distinct_image_ids`.
 
 ### Changed
 
@@ -35,60 +45,50 @@ additive / perf / docs".
   masked ground truth are refused by a segm pass, and `coco_metrics`
   names the side missing masks before running any pass.
 
-## [0.5.4] - 2026-09-24
-
-### Added
-
-- **The parsed pair on every instance surface** (ADR-0064). TIDE
-  (`error_decomposition`), LRP (`optimal_lrp`, including its
-  `manifest=` form), `confusion_matrix`, `fp_iou_histogram` and
-  `Evaluator.evaluate`'s `tables=` / `manifest=` paths now take a
-  `CocoDataset` handle for `gt` and the whole `DetectionsInput` union
-  for `dt`, like `Evaluator.evaluate` and `evaluate_*_grid`. So the
-  `(CocoDataset, DetectionsInput)` pair from `coco_inputs` reaches every
-  instance surface without a COCO file. The four standalone diagnostics
-  gain `cast_inputs` (default `False`, as on `Evaluator`).
-
-  Those four refuse LVIS federated ground truth (a
-  `CocoDataset.from_lvis_json` handle) with `NotImplementedError`: they
-  have no federated disposition.
 
 ### Fixed
 
-- `BackgroundEvaluator` / `Evaluator.background` (and the core
-  `StreamingEvaluator`) now apply the ADR-0026 AC2 per-image detection
-  cap to a federated `CocoDataset`, per `submit()` (ADR-0065). This is
-  exact because an image's detections must arrive in one batch. A
-  streamed LVIS evaluation previously matched uncapped and could
-  disagree with the batch evaluator and lvis-api.
-- `Evaluator.evaluate(lvis_handle, dt)` — neither `tables=` nor
-  `manifest=` — now applies the ADR-0026 AC2 per-image detection cap, as
-  the grid path always has. It matched a federated handle untrimmed, so
-  an image carrying more detections than the largest `max_dets` scored
-  differently from `tables=`, `manifest=`, `evaluate_*_grid` and
-  lvis-api.
+- `StreamingEvaluator` / `BackgroundEvaluator`: a detection on an image
+  id absent from the ground truth no longer counts as covering a GT
+  image. One stray id could make the stream look fully covered, skip the
+  GT-only cells of a GT image that never got a detection, and report a
+  higher recall than the batch evaluator; `images_pending()` overcounted
+  the same way.
 
 ### Performance
 
-- The segm / boundary diagnostics reuse a `CocoDataset` handle's GT
-  caches, shared with `Evaluator.evaluate`, and TIDE shares one cache
-  across its eight passes on either `gt` spelling. On 500 val2017
-  images, boundary TIDE runs ~27% faster, and boundary LRP / confusion
-  matrix / FP-IoU histogram ~33% faster on a warm handle. Results are
-  bit-identical. The `vernier-core` per-kernel diagnostic wrappers
-  switch to the scratch-reusing mask kernels too.
-- The `gt` bytes path borrows the payload across the GIL release rather
-  than copying it (~20 MB per call on val2017), on `evaluate_*_summary`
-  as well as the diagnostics. `BackgroundEvaluator` now parses bytes GT
-  off the GIL.
-- `manifest=` (partitioned AP and LRP) validates the manifest before
-  running the evaluation or reading the detections.
+- **Streaming matches only the batch's images.** `StreamingEvaluator.update`
+  / `BackgroundEvaluator.submit` used to run the matching pass over the
+  whole ground truth on every call; 625 updates × 8 images against a
+  5,000-image GT go from 29.1 s to 3.6 s, with `finalize()` bit-identical
+  to the batch evaluation.
+- **Faster greedy matcher.** Dense cells gather each detection's IoU
+  column once for all thresholds, the prefilter's column maxima are
+  computed once per `(category, image)` instead of once per area range,
+  and quirk B3's test leaves the inner loop — −30 to −36 % on dense-cell
+  evaluation, COCO-shaped unchanged. Bit-identical output, pinned against
+  an independent pycocotools transliteration.
+- **Seeded flat CSR indexes** for annotation and detection lookups:
+  2.4× faster detection-index build and 3× faster per-cell lookups at
+  1.5M detections; the GT id validation probes distinct keys rather than
+  every annotation. The hash is seeded per map, so crafted ids cannot
+  degrade index construction.
+- The evaluation grid's image order is computed once per `CocoDataset`
+  and shared by every evaluator, table builder and diagnostic.
+- `DetectionsBatch` from the adapters: `coco_inputs_from_columns` on
+  1.5M detections 46.6 → 26.5 ms; float32 `xyxy` boxes are widened and
+  converted in place.
+- The `(N, 7)` matrix route checks its id columns inline instead of
+  through `libm::trunc`.
+- `vernier eval --threads N` accumulates in parallel, in the same rayon
+  pool as evaluation.
 
 ## Released versions
 
 Frozen history, newest first, in [`docs/changelog/`](docs/changelog/); leave it
 out of searches and sweeps.
 
+- [0.5.4](docs/changelog/0.5.4.md) — 2026-09-24
 - [0.5.3](docs/changelog/0.5.3.md) — 2026-09-23
 - [0.5.2](docs/changelog/0.5.2.md) — 2026-09-22
 - [0.5.1](docs/changelog/0.5.1.md) — 2026-09-19
@@ -103,5 +103,5 @@ out of searches and sweeps.
 - [0.0.2](docs/changelog/0.0.2.md) — 2026-05-12
 - [0.0.1](docs/changelog/0.0.1.md) — 2026-04-30
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.4...HEAD
-[0.5.4]: https://github.com/NoeFontana/vernier/compare/v0.5.3...v0.5.4
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.5...HEAD
+[0.5.5]: https://github.com/NoeFontana/vernier/compare/v0.5.4...v0.5.5
