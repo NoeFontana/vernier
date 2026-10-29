@@ -108,8 +108,6 @@ impl Rle {
         // Y-boundary downsample directly into column-major flat indices.
         let h64 = u64::from(h);
         let w64 = u64::from(w);
-        let w_max = f64::from(w - 1);
-        let h_max = f64::from(h);
         let mut a: Vec<u64> = Vec::with_capacity(u.len() + 1);
         for j in 1..u.len() {
             if u[j] == u[j - 1] {
@@ -117,20 +115,14 @@ impl Rle {
             }
             // x: direction-aware (cell the boundary just left), per `mc:219`.
             let xd_super = if u[j] < u[j - 1] { u[j] } else { u[j] - 1 };
-            let xd = (f64::from(xd_super) + 0.5) / SUPERSAMPLE_SCALE - 0.5;
-            // Quirk H5: only crossings exactly on an integer pixel boundary
-            // survive; out-of-image crossings are dropped.
-            if xd.fract() != 0.0 || xd < 0.0 || xd > w_max {
+            let Some(xd) = boundary_column(xd_super, w) else {
                 continue;
-            }
+            };
             // y: minimum of the two endpoints regardless of direction —
-            // quirk H4 asymmetry. Clamp to `[0, h]` then `ceil`.
-            let yd_super = v[j].min(v[j - 1]);
-            let yd = (f64::from(yd_super) + 0.5) / SUPERSAMPLE_SCALE - 0.5;
-            let yd = yd.clamp(0.0, h_max).ceil();
-            // xd is a non-negative integer ≤ w-1, yd ∈ [0, h]; product +
-            // sum fits u64 since h, w are u32.
-            a.push((xd as u64) * h64 + yd as u64);
+            // quirk H4 asymmetry.
+            let yd = boundary_row(v[j].min(v[j - 1]), h);
+            // xd ≤ w-1 and yd ≤ h, so the product + sum fits u64.
+            a.push(xd * h64 + yd);
         }
         // Sentinel `h*w` extends the final run to mask end.
         a.push(h64 * w64);
@@ -222,6 +214,41 @@ fn supersample(v: f64) -> i32 {
     raw.clamp(-SUPERSAMPLE_COORD_BOUND, SUPERSAMPLE_COORD_BOUND)
 }
 
+/// [`SUPERSAMPLE_SCALE`] as an integer, for the downsample's exact forms.
+const SUPERSAMPLE_SCALE_INT: i64 = 5;
+
+/// Image column of a supersampled boundary crossing, or `None` when the C
+/// code drops it (quirk **H5**: off an integer pixel boundary, or outside
+/// `[0, w-1]`).
+///
+/// The C computes `xd = (xd_super + 0.5) / 5 - 0.5` and keeps it when
+/// `floor(xd) == xd`. That value is `(xd_super - 2) / 5`, an integer
+/// exactly when `xd_super ≡ 2 (mod 5)`; at `|xd_super| ≤ i32::MAX / 4` the
+/// f64 evaluation is exact on that residue and stays ≥ 0.2 from an integer
+/// off it, so the integer test is the same predicate. It also keeps
+/// `floor`, which the x86-64 baseline lowers to a libm call, out of the
+/// loop.
+fn boundary_column(xd_super: i32, w: u32) -> Option<u64> {
+    let num = i64::from(xd_super) - 2;
+    if num.rem_euclid(SUPERSAMPLE_SCALE_INT) != 0 {
+        return None;
+    }
+    let xd = num.div_euclid(SUPERSAMPLE_SCALE_INT);
+    (0..i64::from(w)).contains(&xd).then_some(xd.unsigned_abs())
+}
+
+/// Image row of a supersampled boundary crossing: the C's
+/// `ceil(clamp((yd_super + 0.5) / 5 - 0.5, 0, h))` (quirk **H4**), as the
+/// integer `ceil((yd_super - 2) / 5)` clamped to `[0, h]`. Exact for the
+/// reason given on [`boundary_column`]; `clamp` and `ceil` commute because
+/// both bounds are integers.
+fn boundary_row(yd_super: i32, h: u32) -> u64 {
+    let num = i64::from(yd_super) - 2;
+    let ceil = num.div_euclid(SUPERSAMPLE_SCALE_INT)
+        + i64::from(num.rem_euclid(SUPERSAMPLE_SCALE_INT) != 0);
+    ceil.clamp(0, i64::from(h)).unsigned_abs()
+}
+
 fn densify_edge(
     mut xs: i32,
     mut xe: i32,
@@ -252,18 +279,16 @@ fn densify_edge(
         } else {
             f64::from(ye - ys) / f64::from(dx)
         };
-        for d in 0..=dx {
-            let t = if flip { dx - d } else { d };
-            u.push(t + xs);
-            v.push((f64::from(ys) + s * f64::from(t) + 0.5) as i32);
-        }
+        // `extend` over a `Range` map is TrustedLen: one reservation, no
+        // per-point capacity check.
+        let t_at = move |d: i32| if flip { dx - d } else { d };
+        u.extend((0..=dx).map(|d| t_at(d) + xs));
+        v.extend((0..=dx).map(|d| (f64::from(ys) + s * f64::from(t_at(d)) + 0.5) as i32));
     } else {
         let s = f64::from(xe - xs) / f64::from(dy);
-        for d in 0..=dy {
-            let t = if flip { dy - d } else { d };
-            v.push(t + ys);
-            u.push((f64::from(xs) + s * f64::from(t) + 0.5) as i32);
-        }
+        let t_at = move |d: i32| if flip { dy - d } else { d };
+        v.extend((0..=dy).map(|d| t_at(d) + ys));
+        u.extend((0..=dy).map(|d| (f64::from(xs) + s * f64::from(t_at(d)) + 0.5) as i32));
     }
 }
 
@@ -271,6 +296,39 @@ fn densify_edge(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// The C's f64 downsample (`mc:219-224`), kept as the oracle for
+    /// [`boundary_column`] / [`boundary_row`].
+    fn c_boundary(xd_super: i32, yd_super: i32, h: u32, w: u32) -> (Option<u64>, u64) {
+        let xd = (f64::from(xd_super) + 0.5) / SUPERSAMPLE_SCALE - 0.5;
+        let col = (xd.floor() == xd && xd >= 0.0 && xd <= f64::from(w) - 1.0).then_some(xd as u64);
+        let yd = (f64::from(yd_super) + 0.5) / SUPERSAMPLE_SCALE - 0.5;
+        (col, yd.clamp(0.0, f64::from(h)).ceil() as u64)
+    }
+
+    #[test]
+    fn integer_boundary_matches_c_float_form_near_the_image() {
+        for s in -2_000..12_000 {
+            for (h, w) in [(1, 1), (480, 640), (2_000, 1_000)] {
+                let (col, row) = c_boundary(s, s, h, w);
+                assert_eq!(boundary_column(s, w), col, "xd_super={s} w={w}");
+                assert_eq!(boundary_row(s, h), row, "yd_super={s} h={h}");
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn integer_boundary_matches_c_float_form_at_any_coordinate(
+            s in -SUPERSAMPLE_COORD_BOUND..=SUPERSAMPLE_COORD_BOUND,
+            h in 0_u32..=u32::MAX,
+            w in 1_u32..=u32::MAX,
+        ) {
+            let (col, row) = c_boundary(s, s, h, w);
+            prop_assert_eq!(boundary_column(s, w), col);
+            prop_assert_eq!(boundary_row(s, h), row);
+        }
+    }
 
     #[test]
     fn rejects_odd_coordinate_count() {
