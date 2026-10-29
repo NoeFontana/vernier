@@ -88,8 +88,8 @@ use ndarray::{Array2, ArrayView2, ArrayViewMut2};
 use crate::accumulate::{PackedCategory, PackedCategoryFlags, PackedEvalGrid, PerImageEval};
 use crate::cell_occupancy;
 use crate::dataset::{
-    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetections, EvalDataset, GridImages,
-    ImageId, ImageMeta,
+    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetections, DetectionFields, EvalDataset,
+    GridImages, ImageId, ImageMeta,
 };
 use crate::error::EvalError;
 use crate::matching::{match_image_with_perm, MatchResult, MatchScratch};
@@ -371,6 +371,16 @@ impl KernelKind {
             Self::Keypoints => 3,
         }
     }
+
+    /// The detection fields this kernel reads, so a JSON load can skip the
+    /// rest unparsed (see [`DetectionFields`]).
+    pub const fn detection_fields(self) -> DetectionFields {
+        match self {
+            Self::Bbox => DetectionFields::Boxes,
+            Self::Segm | Self::Boundary => DetectionFields::Masks,
+            Self::Keypoints => DetectionFields::Keypoints,
+        }
+    }
 }
 
 /// `build_gt_anns` / `build_dt_anns` call counter, gated on `bench-timings`.
@@ -405,6 +415,12 @@ pub trait EvalKernel: Similarity {
     /// (ADR-0031) so heterogeneous partials are refused at merge time.
     /// Required (no default): every kernel must declare its kind.
     fn kind(&self) -> KernelKind;
+
+    /// The detection fields this kernel reads — [`KernelKind::detection_fields`]
+    /// of its kind — for loaders that know only the kernel's type
+    /// ([`crate::stream::ParsedDetections`]). Defaults to every field,
+    /// the safe choice for a kernel that reads something unforeseen.
+    const DETECTION_FIELDS: DetectionFields = DetectionFields::All;
 
     /// Build the kernel's GT annotation slice for one `(image, category)`
     /// cell. `indices` selects from `gt_anns` in the order the cell
@@ -511,6 +527,8 @@ pub trait EvalKernel: Similarity {
 }
 
 impl EvalKernel for BboxIou {
+    const DETECTION_FIELDS: DetectionFields = KernelKind::Bbox.detection_fields();
+
     fn kind(&self) -> KernelKind {
         KernelKind::Bbox
     }
@@ -587,6 +605,8 @@ impl EvalKernel for BboxIou {
 }
 
 impl EvalKernel for SegmIou {
+    const DETECTION_FIELDS: DetectionFields = KernelKind::Segm.detection_fields();
+
     fn kind(&self) -> KernelKind {
         KernelKind::Segm
     }
@@ -612,6 +632,8 @@ impl EvalKernel for SegmIou {
 }
 
 impl EvalKernel for BoundaryIou {
+    const DETECTION_FIELDS: DetectionFields = KernelKind::Boundary.detection_fields();
+
     fn kind(&self) -> KernelKind {
         KernelKind::Boundary
     }
@@ -637,6 +659,8 @@ impl EvalKernel for BoundaryIou {
 }
 
 impl EvalKernel for OksSimilarity {
+    const DETECTION_FIELDS: DetectionFields = KernelKind::Keypoints.detection_fields();
+
     fn kind(&self) -> KernelKind {
         KernelKind::Keypoints
     }
@@ -1805,6 +1829,8 @@ impl Similarity for SegmIouCached<'_> {
 }
 
 impl EvalKernel for SegmIouCached<'_> {
+    const DETECTION_FIELDS: DetectionFields = KernelKind::Segm.detection_fields();
+
     fn kind(&self) -> KernelKind {
         KernelKind::Segm
     }
@@ -1973,6 +1999,8 @@ impl Similarity for BoundaryIouCached<'_> {
 }
 
 impl EvalKernel for BoundaryIouCached<'_> {
+    const DETECTION_FIELDS: DetectionFields = KernelKind::Boundary.detection_fields();
+
     fn kind(&self) -> KernelKind {
         KernelKind::Boundary
     }

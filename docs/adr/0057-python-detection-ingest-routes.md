@@ -74,9 +74,9 @@ cannot drift from a rule it does not contain.
 
 ### The list route
 
-`result_ingest::ann_dicts_to_inputs` reads eight keys — `image_id`,
+`result_ingest::ann_dicts_to_columns` reads up to eight keys — `image_id`,
 `category_id`, `bbox`, `score`, `id`, `segmentation`, `keypoints`,
-`num_keypoints` — with PyO3's `intern!`, hoisted out of the loop. The
+`num_keypoints`, the last three per kernel (below) — with PyO3's `intern!`, hoisted out of the loop. The
 claim that fresh key strings dominate per-annotation cost was checked,
 not assumed: an otherwise identical build using plain `&str` keys runs
 the same 500 000 annotations in **271.4 ms against 162.9 ms**, a 1.67x
@@ -109,6 +109,16 @@ The field is **optional on every `iou_type`**, exactly as it is in a
 file, where `serde_json` simply leaves it `None`. What an absent
 `segmentation` means under `segm`/`boundary` is quirk **J2**, decided
 once in core — see below.
+
+**Each route reads only the fields its kernel reads.** Core names that
+set once per kernel (`KernelKind::detection_fields`): `bbox` reads
+neither `segmentation` nor `keypoints` / `num_keypoints`, `segm` and
+`boundary` read `segmentation` but not the keypoint fields, `keypoints`
+reads the keypoint fields but not `segmentation`. The file route parses
+only that subset (fields outside it are skipped unparsed), and the list
+route does not read the others either, so a field the kernel ignores —
+malformed or not — never makes one route refuse what the other accepts.
+pycocotools never reads those fields on that kernel's path either.
 
 ### The matrix route
 

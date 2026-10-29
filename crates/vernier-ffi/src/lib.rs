@@ -47,7 +47,7 @@ use pyo3::types::{PyAny, PyBytes, PyDict, PyList};
 use vernier_core::accumulate::{
     accumulate_grid, accumulate_grid_parallel, sort_max_dets, GridAccumulateParams, PerImageEval,
 };
-use vernier_core::dataset::{CategoryId, DetectionArea, DetectionColumnsInput};
+use vernier_core::dataset::{CategoryId, DetectionArea, DetectionColumnsInput, DetectionFields};
 use vernier_core::evaluate::{
     evaluate_boundary_cached, evaluate_segm_cached, BoundaryIouCached, EvalImageMeta, EvalKernel,
     OwnedEvaluateParams, SegmIouCached,
@@ -673,8 +673,9 @@ fn parse_dt_parallel(
     bytes: &[u8],
     threads: usize,
     area: DetectionArea,
+    fields: DetectionFields,
 ) -> PyResult<CocoDetections> {
-    CocoDetections::from_json_bytes_parallel_with_area(bytes, threads, area)
+    CocoDetections::from_json_bytes_parallel_with(bytes, threads, area, fields)
         .map_err(coco_load_error_to_pyerr)
 }
 
@@ -733,6 +734,12 @@ pub(crate) enum EvalIouType {
 }
 
 impl EvalIouType {
+    /// The detection fields this kernel reads, so a JSON payload skips
+    /// the rest unparsed.
+    fn dt_fields(&self) -> DetectionFields {
+        array_ingest::ArrayIouType::from(self).detection_fields()
+    }
+
     fn run(
         &self,
         gt: &CocoDataset,
@@ -902,10 +909,12 @@ fn evaluate_grid_impl(
     // `UserWarning` can fire to Python before we detach.
     let thread_policy = threads::resolve_threads(py, num_threads);
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
+    let dt_fields = iou_type.dt_fields();
     type GridParts = (EvalGrid, Option<CocoDetections>, dataset::DatasetSnapshot);
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt, retained_dataset) = py.detach(move || -> PyResult<GridParts> {
-        let (gt, dt) = parse_gt_dt_with_policy(&gt_bytes, dt_payload, dt_area, thread_policy)?;
+        let (gt, dt) =
+            parse_gt_dt_with_policy(&gt_bytes, dt_payload, dt_area, dt_fields, thread_policy)?;
         let params = EvaluateParams {
             iou_thresholds: &iou_for_run,
             area_ranges: &area,
@@ -952,12 +961,13 @@ fn parse_gt_dt_with_policy(
     gt_bytes: &[u8],
     dt_payload: UpdatePayload,
     dt_area: DetectionArea,
+    dt_fields: DetectionFields,
     thread_policy: threads::ThreadPolicy,
 ) -> PyResult<(CocoDataset, CocoDetections)> {
     match thread_policy.thread_count() {
         None => {
             let gt = parse_gt(gt_bytes)?;
-            let dt = realize_dt(dt_payload, dt_area)?;
+            let dt = realize_dt(dt_payload, dt_area, dt_fields)?;
             Ok((gt, dt))
         }
         // The full budget, not two threads: since ADR-0054 each payload
@@ -970,7 +980,7 @@ fn parse_gt_dt_with_policy(
                 let (gt, dt) = pool.install(|| {
                     rayon::join(
                         || parse_gt_parallel(gt_bytes, budget),
-                        || realize_dt_parallel(dt_payload, dt_area, budget),
+                        || realize_dt_parallel(dt_payload, dt_area, dt_fields, budget),
                     )
                 });
                 Ok((gt?, dt?))
@@ -978,7 +988,7 @@ fn parse_gt_dt_with_policy(
             // Pool build failure is not a reason to fail a parse.
             Err(_) => {
                 let gt = parse_gt(gt_bytes)?;
-                let dt = realize_dt(dt_payload, dt_area)?;
+                let dt = realize_dt(dt_payload, dt_area, dt_fields)?;
                 Ok((gt, dt))
             }
         },
@@ -1076,10 +1086,12 @@ fn evaluate_grid_with_dataset_impl(
     let thread_policy = threads::resolve_threads(py, num_threads);
     let retained_dataset = snapshot.clone();
     let dt_payload = prepare_dt_payload(py, dt, &iou_type, cast_inputs)?;
+    let dt_fields = iou_type.dt_fields();
     let iou_for_run = iou_thr.clone();
     let (grid, retained_dt) =
         py.detach(move || -> PyResult<(EvalGrid, Option<CocoDetections>)> {
-            let dt = realize_dt(dt_payload, dt_area)?.trim_for(&snapshot.gt, max_dets_per_image);
+            let dt = realize_dt(dt_payload, dt_area, dt_fields)?
+                .trim_for(&snapshot.gt, max_dets_per_image);
             let caches = snapshot.caches();
             let params = EvaluateParams {
                 iou_thresholds: &iou_for_run,
@@ -1452,6 +1464,7 @@ fn evaluate_summary_impl(
             &gt_bytes,
             dt_payload,
             DetectionArea::FromBbox,
+            iou_type.dt_fields(),
             thread_policy,
         )?;
         run_pipeline(
@@ -1622,7 +1635,7 @@ fn evaluate_summary_with_dataset_impl(
             &iou_type,
             &snapshot.gt,
             snapshot.caches(),
-            realize_dt(dt_payload, DetectionArea::FromBbox)?,
+            realize_dt(dt_payload, DetectionArea::FromBbox, iou_type.dt_fields())?,
             parity,
             &max_dets,
             use_cats,
@@ -2316,10 +2329,14 @@ pub(crate) fn build_update_payload<'py>(
 /// [`CocoDetections`] the foreground pipeline takes by reference.
 /// `Bytes` is parsed via `from_json_bytes`; `Columns` runs `from_columns`
 /// — both happen without the GIL.
-pub(crate) fn realize_dt(payload: UpdatePayload, area: DetectionArea) -> PyResult<CocoDetections> {
+pub(crate) fn realize_dt(
+    payload: UpdatePayload,
+    area: DetectionArea,
+    fields: DetectionFields,
+) -> PyResult<CocoDetections> {
     match payload {
         UpdatePayload::Bytes(b) => {
-            CocoDetections::from_json_bytes_with_area(&b, area).map_err(coco_load_error_to_pyerr)
+            CocoDetections::from_json_bytes_with(&b, area, fields).map_err(coco_load_error_to_pyerr)
         }
         // `Columns` may or may not carry a per-detection `areas` column, and
         // `from_columns_with_area` reads it only under `Supplied`
@@ -2338,10 +2355,11 @@ pub(crate) fn realize_dt(payload: UpdatePayload, area: DetectionArea) -> PyResul
 fn realize_dt_parallel(
     payload: UpdatePayload,
     area: DetectionArea,
+    fields: DetectionFields,
     threads: usize,
 ) -> PyResult<CocoDetections> {
     match payload {
-        UpdatePayload::Bytes(b) => parse_dt_parallel(&b, threads, area),
+        UpdatePayload::Bytes(b) => parse_dt_parallel(&b, threads, area, fields),
         UpdatePayload::Columns(cols) => CocoDetections::from_columns_with_area(cols, area)
             .map_err(|e| PyValueError::new_err(format!("detections array ingest: {e}"))),
     }
@@ -2379,6 +2397,8 @@ pub(crate) fn prepare_dt_payload<'py>(
 pub(crate) struct DiagnosticInputs {
     gt: dataset::GtPayload,
     dt: UpdatePayload,
+    /// What the diagnostic's kernel reads, for a JSON `dt`.
+    dt_fields: DetectionFields,
 }
 
 impl DiagnosticInputs {
@@ -2398,6 +2418,7 @@ impl DiagnosticInputs {
         Ok(Self {
             gt: gt_payload,
             dt: dt_payload,
+            dt_fields: kernel.detection_fields(),
         })
     }
 
@@ -2408,7 +2429,7 @@ impl DiagnosticInputs {
     /// knob. The snapshot carries the GT caches the mask kernels reuse.
     pub(crate) fn realize(self) -> PyResult<(dataset::DatasetSnapshot, CocoDetections)> {
         let gt = self.gt.realize()?;
-        let dt = realize_dt(self.dt, DetectionArea::FromBbox)?;
+        let dt = realize_dt(self.dt, DetectionArea::FromBbox, self.dt_fields)?;
         Ok((gt, dt))
     }
 }

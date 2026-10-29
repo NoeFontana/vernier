@@ -265,15 +265,19 @@ impl<K: EvalKernel> ParsedDetections<K> {
         }
     }
 
-    /// Parse detections from the `loadRes`-shaped JSON byte slice.
+    /// Parse detections from the `loadRes`-shaped JSON byte slice,
+    /// materializing only the fields kernel `K` reads
+    /// ([`EvalKernel::DETECTION_FIELDS`]).
     ///
     /// # Errors
     ///
     /// Propagates [`EvalError::Json`] / [`EvalError::NonFinite`] from
-    /// the underlying [`CocoDetections::from_json_bytes`].
+    /// the underlying [`CocoDetections::from_json_bytes_with`].
     pub fn from_json_bytes(bytes: &[u8]) -> Result<Self, EvalError> {
-        Ok(Self::from_detections(CocoDetections::from_json_bytes(
+        Ok(Self::from_detections(CocoDetections::from_json_bytes_with(
             bytes,
+            crate::dataset::DetectionArea::FromBbox,
+            K::DETECTION_FIELDS,
         )?))
     }
 }

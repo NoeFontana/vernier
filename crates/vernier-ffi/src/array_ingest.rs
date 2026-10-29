@@ -232,6 +232,24 @@ pub(crate) enum ArrayIouType {
 }
 
 impl ArrayIouType {
+    /// The core kernel this IoU type evaluates with.
+    pub(crate) fn kernel_kind(self) -> vernier_core::evaluate::KernelKind {
+        use vernier_core::evaluate::KernelKind;
+        match self {
+            Self::Bbox => KernelKind::Bbox,
+            Self::Segm => KernelKind::Segm,
+            Self::Boundary => KernelKind::Boundary,
+            Self::Keypoints => KernelKind::Keypoints,
+        }
+    }
+
+    /// The detection fields that kernel reads. Every ingest route — JSON
+    /// bytes, result dicts — reads exactly these, so the routes accept
+    /// the same payloads (ADR-0057).
+    pub(crate) fn detection_fields(self) -> vernier_core::dataset::DetectionFields {
+        self.kernel_kind().detection_fields()
+    }
+
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Bbox => "bbox",
