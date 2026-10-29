@@ -8,8 +8,18 @@ together.
 
 ## Index
 
+* [2026-10-release-0.5.5-round.md](./2026-10-release-0.5.5-round.md)
+  — **current headline snapshot for every paradigm.** Full release-mode
+  re-measurement for the 0.5.5 tag. It is the first round to render the real
+  RF-DETR cells directly, and the first to measure the competitor thread
+  columns on the same SHA. On real RF-DETR Nano bbox, vernier is 23.8× /
+  5.7× / 2.4× faster than pycocotools / faster-coco-eval / hotcoco. LVIS is
+  −7.2 % and Objects365 −7.2 % / −10.7 % (1 / 8 CPUs), with the competitor
+  controls flat. Records a kernel update that changed the host fingerprint
+  and made pycocotools 17.5 % slower on jittered COCO bbox.
 * [2026-09-rfdetr-real-predictions.md](./2026-09-rfdetr-real-predictions.md)
-  — **current headline snapshot for bbox / segm.** Release-mode cells
+  — superseded by the 0.5.5 round for bbox / segm numbers; still the
+  source for the real ViTPose keypoints row. Release-mode cells
   against real RF-DETR `Nano` and `SegNano` predictions on COCO
   val2017 (513,808 and 430,516 detections) — the first segm cell
   measured on real predicted masks, and the first rf-detr round after
@@ -20,7 +30,7 @@ together.
   boundary (a release-mode cell is a multi-hour job) or thread
   scaling.
 * [2026-09-release-0.4.0-round.md](./2026-09-release-0.4.0-round.md)
-  — **current headline snapshot for the remaining paradigms.** Full release-mode re-measurement for
+  — superseded by the 0.5.5 round. Full release-mode re-measurement for
   the 0.4.0 tag, same host as the two rounds below. Objects365 8.771 s →
   6.60 s at one CPU and 4.702 s → 3.20 s at eight, with both competitor
   arms flat within 2 % as controls; LVIS 80.98× over lvis-api and
@@ -132,6 +142,20 @@ for iou in bbox segm boundary; do
 done
 just bench-run --impl vernier --workload coco_val2017_keypoints_jittered_seed0 \
     --iou keypoints --num-threads 1,2,4,8 --mode release --no-parity
+# The competitor columns. README's thread table quotes their nt=8
+# ratios, and the renderer draws one SHA, so skipping them silently drops
+# those columns from docs/benchmarks.md. pycocotools is single-threaded
+# and boundary has no hotcoco arm.
+for impl in hotcoco faster-coco-eval; do
+  for iou in bbox segm; do
+    just bench-run --impl "$impl" --workload coco_val2017_jittered_seed0 \
+        --iou "$iou" --num-threads 1,2,4,8 --mode release --no-parity
+  done
+  just bench-run --impl "$impl" --workload coco_val2017_keypoints_jittered_seed0 \
+      --iou keypoints --num-threads 1,2,4,8 --mode release --no-parity
+done
+just bench-run --impl faster-coco-eval --workload coco_val2017_jittered_seed0 \
+    --iou boundary --num-threads 1,2,4,8 --mode release --no-parity
 
 # --- real predictions: the headline bbox / segm rows ------------------
 # These back README's bbox and segm rows. The caches are populated by
@@ -166,6 +190,11 @@ for impl in vernier hotcoco pycocotools; do
   just bench-run --impl "$impl" --workload objects365_val_jittered_seed0 \
       --iou bbox --mode dev --no-parity
 done
+# README's Objects365 row also quotes the 8-CPU figure.
+for impl in vernier hotcoco; do
+  just bench-run --impl "$impl" --workload objects365_val_jittered_seed0 \
+      --iou bbox --num-threads 8 --mode dev --no-parity
+done
 
 python tools/render_benchmarks.py
 ```
@@ -175,14 +204,14 @@ files hand-mirror numbers from it and have to be updated in the same
 commit, or they drift — which is how `docs/comparison.md` came to claim
 `~57×` against lvis-api while `README.md` claimed `73.1×`:
 
-`render_benchmarks.py` renders one SHA at a time, and the
-real-prediction cells above are **not** in it — the rf-detr rows in
-README and `docs/comparison.md` are mirrored from the dated snapshot
-instead. Keep both sources straight when refreshing.
+`render_benchmarks.py` renders one SHA at a time. The rf-detr cells
+above are in it, so README's bbox / segm rows mirror `docs/benchmarks.md`
+like the others. The real ViTPose keypoints row is still not in it, and
+stays mirrored from the 2026-09 rf-detr snapshot.
 
 | file | what it mirrors |
 | --- | --- |
-| `README.md` (tagline, headline table, thread table, host footer) | instance + panoptic + semantic + LVIS cells, version pins; bbox / segm rows from the rf-detr snapshot |
+| `README.md` (tagline, headline table, thread table, host footer) | instance + panoptic + semantic + LVIS + rf-detr cells, version pins; keypoints row from the 2026-09 rf-detr snapshot |
 | `docs/comparison.md` ("At a glance", per-library sections) | per-library ratios and peak-RSS figures |
 | `docs/index.md` | the thread-scaling headline |
 | `docs/migrate/from-faster-coco-eval.md` | boundary and segm ratios at 1 and 8 CPUs |
