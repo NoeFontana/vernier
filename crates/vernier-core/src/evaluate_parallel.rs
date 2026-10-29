@@ -60,6 +60,18 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     parity_mode: ParityMode,
     kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
+    evaluate_subset_with_parallel(gt, dt, params, parity_mode, kernel, None)
+}
+
+/// Parallel sibling of [`crate::evaluate::evaluate_subset_with`].
+pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
+    gt: &CocoDataset,
+    dt: &CocoDetections,
+    params: EvaluateParams<'_>,
+    parity_mode: ParityMode,
+    kernel: &K,
+    image_subset: Option<&[usize]>,
+) -> Result<EvalGrid, EvalError> {
     let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
     let n_i = images.len();
     let n_a = params.area_ranges.len();
@@ -73,18 +85,8 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     };
     let n_k = category_buckets.len();
 
-    let federated_per_image: Vec<Option<(&HashSet<CategoryId>, &HashSet<CategoryId>)>> =
-        match (params.use_cats, gt.federated()) {
-            (true, Some(fed)) => images
-                .iter()
-                .map(|im| {
-                    let neg = fed.neg_category_ids.get(&im.id)?;
-                    let nel = fed.not_exhaustive_category_ids.get(&im.id)?;
-                    Some((neg, nel))
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
+    let federated_per_image =
+        crate::evaluate::federated_lookup(gt, &images, params.use_cats, image_subset);
 
     let strict_lvis_zero_area_filter =
         matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
@@ -109,7 +111,7 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
 
     let image_ids: Vec<ImageId> = images.iter().map(|im| im.id).collect();
     let bucket_index = cell_occupancy::BucketIndex::new(&category_buckets);
-    let occupied = cell_occupancy::by_image(&image_ids, gt, dt, &bucket_index);
+    let occupied = cell_occupancy::by_image(&image_ids, image_subset, gt, dt, &bucket_index);
 
     type CellOutput = (
         u32,
@@ -664,6 +666,73 @@ mod tests {
         ])
         .expect("detections");
         (gt, dts)
+    }
+
+    /// A subset pass (the streaming `update`) is the full pass restricted
+    /// to the subset's images: identical cells there, `None` elsewhere —
+    /// sequential and parallel, with an unsorted, repeated, out-of-range
+    /// subset.
+    #[test]
+    fn subset_pass_is_the_full_pass_restricted_to_its_images() {
+        let (gt, dt) = tiny_grid_inputs();
+        let area = AreaRange::coco_default();
+        let params = EvaluateParams {
+            iou_thresholds: iou_thresholds(),
+            area_ranges: &area,
+            max_dets_per_image: 100,
+            use_cats: true,
+            retain_iou: false,
+            retain_meta: false,
+        };
+        let full = evaluate_with(&gt, &dt, params, ParityMode::Strict, &BboxIou).expect("full");
+        let subset = [2_usize, 0, 2, 99];
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(3)
+            .build()
+            .expect("pool");
+        let seq = crate::evaluate::evaluate_subset_with(
+            &gt,
+            &dt,
+            params,
+            ParityMode::Strict,
+            &BboxIou,
+            Some(&subset),
+        )
+        .expect("seq subset");
+        let par = pool
+            .install(|| {
+                evaluate_subset_with_parallel(
+                    &gt,
+                    &dt,
+                    params,
+                    ParityMode::Strict,
+                    &BboxIou,
+                    Some(&subset),
+                )
+            })
+            .expect("par subset");
+        let n_i = full.n_images;
+        for grid in [&seq, &par] {
+            assert_eq!(grid.eval_imgs.len(), full.eval_imgs.len());
+            for (flat, (got, want)) in grid.eval_imgs.iter().zip(&full.eval_imgs).enumerate() {
+                let in_subset = subset.contains(&(flat % n_i));
+                match (got, want, in_subset) {
+                    (None, _, false) | (None, None, true) => {}
+                    (Some(g), Some(w), true) => {
+                        assert_eq!(g.dt_scores, w.dt_scores, "flat={flat}");
+                        assert_eq!(g.dt_matched, w.dt_matched, "flat={flat}");
+                        assert_eq!(g.dt_ignore, w.dt_ignore, "flat={flat}");
+                        assert_eq!(g.gt_ignore, w.gt_ignore, "flat={flat}");
+                    }
+                    _ => panic!("presence mismatch at flat={flat} (in subset: {in_subset})"),
+                }
+            }
+        }
+        assert!(full
+            .eval_imgs
+            .iter()
+            .enumerate()
+            .any(|(f, c)| c.is_some() && f % n_i == 1));
     }
 
     #[test]
