@@ -1,13 +1,13 @@
 #![no_main]
 #![allow(clippy::unwrap_used, clippy::panic)]
 
-//! Fuzz the untagged `Segmentation` enum deserializer.
+//! Fuzz the `Segmentation` deserializer.
 //!
-//! `Segmentation` is defined at
-//! `crates/vernier-core/src/segmentation.rs:49` and re-exported via
-//! the module path. It's an untagged enum (polygons vs RLE), so the
-//! fuzzer exercises serde's discrimination logic as well as each
-//! variant's body.
+//! `vernier_core::segmentation::Segmentation` reads by JSON shape through
+//! hand-written visitors (an array is polygons, an object is RLE; counts
+//! are a string or a run-length array), so the fuzzer exercises that
+//! dispatch as well as each variant's body. It must never panic, only
+//! accept or refuse.
 
 use libfuzzer_sys::fuzz_target;
 use vernier_core::segmentation::Segmentation;
