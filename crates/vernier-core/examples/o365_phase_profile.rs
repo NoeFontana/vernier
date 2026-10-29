@@ -130,7 +130,7 @@ fn main() {
         "{} images · {} categories · {} detections",
         gt.images().len(),
         gt.categories().len(),
-        dt.detections().len()
+        dt.len()
     );
     for (name, ms) in [
         ("read GT+DT", read_gt_ms + read_dt_ms),

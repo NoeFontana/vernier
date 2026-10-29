@@ -962,10 +962,8 @@ pub fn build_per_detection(
     // Detection ids are stable (auto-assigned when absent), so the
     // matching engine's sorted-DT order resolves uniquely back to a
     // single detection by id.
-    let det_index: HashMap<i64, &crate::dataset::CocoDetection> = detections
-        .detections()
-        .iter()
-        .map(|d| (d.id.0, d))
+    let det_index: HashMap<i64, usize> = (0..detections.len())
+        .map(|idx| (detections.id_at(idx).0, idx))
         .collect();
 
     let with_geometry = config.per_detection_with_geometry;
@@ -993,12 +991,11 @@ pub fn build_per_detection(
                 category_id.push(meta.category_id);
                 score.push(cell.dt_scores[d]);
 
-                let det = det_index.get(&dt_id);
-                area.push(det.map(|d| d.area).unwrap_or(f64::NAN));
+                let det_idx = det_index.get(&dt_id).copied();
+                area.push(det_idx.map_or(f64::NAN, |idx| detections.area_at(idx)));
                 if with_geometry {
-                    let b = det
-                        .map(|d| d.bbox)
-                        .unwrap_or_else(|| Bbox::from([f64::NAN; 4]));
+                    let b = det_idx
+                        .map_or_else(|| Bbox::from([f64::NAN; 4]), |idx| detections.bbox_at(idx));
                     bbox_xywh.push([b.x, b.y, b.w, b.h]);
                 }
 

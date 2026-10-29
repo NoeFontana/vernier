@@ -78,7 +78,7 @@ fn main() {
         "GT: {} images, {} categories; DT: {} detections",
         gt.images().len(),
         gt.categories().len(),
-        dt.detections().len(),
+        dt.len(),
     );
 
     let area = AreaRange::coco_default();

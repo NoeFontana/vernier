@@ -165,11 +165,11 @@ fn occupied_pairs(
     buckets: &BucketIndex,
 ) -> Vec<(u32, u32)> {
     let gt_anns = gt.annotations();
-    let dt_anns = dt.detections();
+    let dt_cats = dt.category_ids();
     // Sized for the whole GT only on a full pass; a subset pass pushes its
     // own images' pairs and grows from empty.
     let mut pairs: Vec<(u32, u32)> = match image_subset {
-        None => Vec::with_capacity(gt_anns.len() + dt_anns.len()),
+        None => Vec::with_capacity(gt_anns.len() + dt_cats.len()),
         Some(_) => Vec::new(),
     };
     // Hoisted: empty for every well-formed dataset, so the hot loop
@@ -194,7 +194,7 @@ fn occupied_pairs(
             push(&mut pairs, i, gt_anns[j].category_id);
         }
         for &j in dt.indices_for_image(image_id) {
-            push(&mut pairs, i, dt_anns[j].category_id);
+            push(&mut pairs, i, dt_cats[j]);
         }
     };
     match image_subset {

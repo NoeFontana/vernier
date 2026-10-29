@@ -92,7 +92,6 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
         matches!(parity_mode, ParityMode::Strict) && gt.federated().is_some();
 
     let gt_anns = gt.annotations();
-    let dt_anns = dt.detections();
 
     // Per-image rayon tasks emit only the cells they actually filled,
     // then a single pass scatters them into the canonical `(k, a, i)`
@@ -168,7 +167,6 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
                         gt,
                         gt_anns,
                         dt,
-                        dt_anns,
                         params,
                         parity_mode,
                         kernel,
@@ -313,7 +311,6 @@ fn process_one_cell_into<K: EvalKernel>(
     gt: &CocoDataset,
     gt_anns: &[crate::dataset::CocoAnnotation],
     dt: &CocoDetections,
-    dt_anns: &[crate::dataset::CocoDetection],
     params: EvaluateParams<'_>,
     parity_mode: ParityMode,
     kernel: &K,
@@ -358,9 +355,10 @@ fn process_one_cell_into<K: EvalKernel>(
 
     dt_top_indices_for_cell_into(
         &mut scratch.dt_indices,
+        &mut scratch.dt_scores,
         &mut scratch.dt_score_buf,
         &mut scratch.dt_perm_buf,
-        dt_anns,
+        dt.scores(),
         raw_dt_indices,
         params.max_dets_per_image,
     );
@@ -383,18 +381,8 @@ fn process_one_cell_into<K: EvalKernel>(
     scratch
         .gt_ids
         .extend(gt_indices.iter().map(|&j| gt_anns[j].id.0));
-    scratch.dt_areas.clear();
-    scratch
-        .dt_areas
-        .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].area));
-    scratch.dt_scores.clear();
-    scratch
-        .dt_scores
-        .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].score));
-    scratch.dt_ids.clear();
-    scratch
-        .dt_ids
-        .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].id.0));
+    dt.gather_areas_into(&scratch.dt_indices, &mut scratch.dt_areas);
+    dt.gather_ids_into(&scratch.dt_indices, &mut scratch.dt_ids);
 
     #[cfg(feature = "bench-timings")]
     {
@@ -404,7 +392,7 @@ fn process_one_cell_into<K: EvalKernel>(
     kernel.build_gt_anns_into(&mut kernel_scratch.gt, gt_anns, gt_indices, image)?;
     kernel.build_dt_anns_into(
         &mut kernel_scratch.dt,
-        dt_anns,
+        dt,
         &scratch.dt_indices,
         image,
         parity_mode,

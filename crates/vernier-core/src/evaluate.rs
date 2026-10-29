@@ -88,8 +88,7 @@ use ndarray::{Array2, ArrayView2, ArrayViewMut2};
 use crate::accumulate::PerImageEval;
 use crate::cell_occupancy;
 use crate::dataset::{
-    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, EvalDataset,
-    ImageId, ImageMeta,
+    Bbox, CategoryId, CocoAnnotation, CocoDataset, CocoDetections, EvalDataset, ImageId, ImageMeta,
 };
 use crate::error::EvalError;
 use crate::matching::{cell_prefilter, match_image_with_perm, MatchResult};
@@ -417,7 +416,7 @@ pub trait EvalKernel: Similarity {
     ) -> Result<Vec<Self::Annotation>, EvalError>;
 
     /// Build the kernel's DT annotation slice for one `(image, category)`
-    /// cell, in score-descending sorted order matching `dt_indices`.
+    /// cell, in score-descending sorted order matching `indices`.
     ///
     /// `parity_mode` is threaded through so kernels with parity-aware
     /// fallbacks (segm's J2 bbox→polygon synthesis under
@@ -425,7 +424,7 @@ pub trait EvalKernel: Similarity {
     /// up the call stack.
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
@@ -461,12 +460,12 @@ pub trait EvalKernel: Similarity {
     fn build_dt_anns_into(
         &self,
         buf: &mut Vec<Self::Annotation>,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<(), EvalError> {
-        *buf = self.build_dt_anns(dt_anns, indices, image, parity_mode)?;
+        *buf = self.build_dt_anns(dt, indices, image, parity_mode)?;
         Ok(())
     }
 
@@ -519,16 +518,17 @@ impl EvalKernel for BboxIou {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         _image: &ImageMeta,
         _parity_mode: ParityMode,
     ) -> Result<Vec<BboxAnn>, EvalError> {
         // E2/J4: DT never carries crowd.
+        let bboxes = dt.bboxes();
         Ok(indices
             .iter()
             .map(|&j| BboxAnn {
-                bbox: dt_anns[j].bbox,
+                bbox: bboxes[j],
                 is_crowd: false,
             })
             .collect())
@@ -552,15 +552,16 @@ impl EvalKernel for BboxIou {
     fn build_dt_anns_into(
         &self,
         buf: &mut Vec<BboxAnn>,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         _image: &ImageMeta,
         _parity_mode: ParityMode,
     ) -> Result<(), EvalError> {
         // E2/J4: DT never carries crowd.
+        let bboxes = dt.bboxes();
         buf.clear();
         buf.extend(indices.iter().map(|&j| BboxAnn {
-            bbox: dt_anns[j].bbox,
+            bbox: bboxes[j],
             is_crowd: false,
         }));
         Ok(())
@@ -583,12 +584,12 @@ impl EvalKernel for SegmIou {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -608,12 +609,12 @@ impl EvalKernel for BoundaryIou {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -652,7 +653,7 @@ impl EvalKernel for OksSimilarity {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         _image: &ImageMeta,
         _parity_mode: ParityMode,
@@ -664,20 +665,20 @@ impl EvalKernel for OksSimilarity {
         indices
             .iter()
             .map(|&j| {
-                let dt = &dt_anns[j];
+                let ann_id = dt.id_at(j).0;
+                let image_id = dt.image_id_at(j).0;
                 let kps = dt
-                    .keypoints
-                    .as_deref()
-                    .ok_or_else(|| missing_keypoints_err("DT", dt.id.0, dt.image_id.0))?;
+                    .keypoints_at(j)
+                    .ok_or_else(|| missing_keypoints_err("DT", ann_id, image_id))?;
                 let num_keypoints = dt
-                    .num_keypoints
+                    .num_keypoints_at(j)
                     .unwrap_or_else(|| count_visible_keypoints(kps));
                 Ok(OksAnn {
-                    category_id: dt.category_id.0,
+                    category_id: dt.category_id_at(j).0,
                     keypoints: kps.to_vec(),
                     num_keypoints,
-                    bbox: dt.bbox.into(),
-                    area: dt.area,
+                    bbox: dt.bbox_at(j).into(),
+                    area: dt.area_at(j),
                 })
             })
             .collect()
@@ -745,7 +746,7 @@ fn build_segm_gt_anns(
 }
 
 fn build_segm_dt_anns(
-    dt_anns: &[CocoDetection],
+    dt: &CocoDetections,
     indices: &[usize],
     image: &ImageMeta,
     parity_mode: ParityMode,
@@ -753,8 +754,8 @@ fn build_segm_dt_anns(
     indices
         .iter()
         .map(|&j| {
-            let dt = &dt_anns[j];
-            let rle = match (&dt.segmentation, parity_mode) {
+            let ann_id = dt.id_at(j).0;
+            let rle = match (dt.segmentation_at(j), parity_mode) {
                 (Some(seg), _) => seg.to_rle(image.height, image.width)?,
                 // J2 (`strict`): pycocotools' coco.py:341 synthesizes
                 // a rectangular polygon `[[x1,y1, x1,y2, x2,y2, x2,y1]]`
@@ -763,7 +764,7 @@ fn build_segm_dt_anns(
                 // bit-for-bit so strict-mode parity covers bbox-only
                 // result files.
                 (None, ParityMode::Strict) => {
-                    synthesize_dt_segm_from_bbox(&dt.bbox, image.height, image.width)?
+                    synthesize_dt_segm_from_bbox(&dt.bbox_at(j), image.height, image.width)?
                 }
                 // J2 (`corrected`) + J6 (`corrected`): silent coercion
                 // of bbox results to rectangle masks is a footgun.
@@ -773,13 +774,13 @@ fn build_segm_dt_anns(
                 // error rather than the first-entry-decides dispatch
                 // pycocotools follows.
                 (None, ParityMode::Corrected) => {
-                    return Err(missing_segmentation_err("DT", dt.id.0, image.id.0));
+                    return Err(missing_segmentation_err("DT", ann_id, image.id.0));
                 }
             };
             Ok(SegmAnn {
                 rle,
                 is_crowd: false,
-                ann_id: dt.id.0,
+                ann_id,
             })
         })
         .collect()
@@ -1098,7 +1099,6 @@ pub(crate) fn evaluate_subset_with<K: EvalKernel>(
     // for every cell after — see [`KernelScratch`].
     let mut kernel_scratch = KernelScratch::<K::Annotation>::default();
     let gt_anns = gt.annotations();
-    let dt_anns = dt.detections();
 
     // Quirk **AG6** (strict, ADR-0026): the LVIS oracle's
     // `LVIS.get_ann_ids` applies a strict `area > 0` filter
@@ -1175,9 +1175,10 @@ pub(crate) fn evaluate_subset_with<K: EvalKernel>(
             // reusing `dt_score_buf` and `dt_perm_buf` across cells.
             dt_top_indices_for_cell_into(
                 &mut scratch.dt_indices,
+                &mut scratch.dt_scores,
                 &mut scratch.dt_score_buf,
                 &mut scratch.dt_perm_buf,
-                dt_anns,
+                dt.scores(),
                 raw_dt_indices,
                 params.max_dets_per_image,
             );
@@ -1205,18 +1206,8 @@ pub(crate) fn evaluate_subset_with<K: EvalKernel>(
             scratch
                 .gt_ids
                 .extend(gt_indices.iter().map(|&j| gt_anns[j].id.0));
-            scratch.dt_areas.clear();
-            scratch
-                .dt_areas
-                .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].area));
-            scratch.dt_scores.clear();
-            scratch
-                .dt_scores
-                .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].score));
-            scratch.dt_ids.clear();
-            scratch
-                .dt_ids
-                .extend(scratch.dt_indices.iter().map(|&j| dt_anns[j].id.0));
+            dt.gather_areas_into(&scratch.dt_indices, &mut scratch.dt_areas);
+            dt.gather_ids_into(&scratch.dt_indices, &mut scratch.dt_ids);
 
             #[cfg(feature = "bench-timings")]
             {
@@ -1226,7 +1217,7 @@ pub(crate) fn evaluate_subset_with<K: EvalKernel>(
             kernel.build_gt_anns_into(&mut kernel_scratch.gt, gt_anns, gt_indices, image)?;
             kernel.build_dt_anns_into(
                 &mut kernel_scratch.dt,
-                dt_anns,
+                dt,
                 &scratch.dt_indices,
                 image,
                 parity_mode,
@@ -1498,12 +1489,12 @@ impl EvalKernel for SegmIouCached<'_> {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -1666,12 +1657,12 @@ impl EvalKernel for BoundaryIouCached<'_> {
 
     fn build_dt_anns(
         &self,
-        dt_anns: &[CocoDetection],
+        dt: &CocoDetections,
         indices: &[usize],
         image: &ImageMeta,
         parity_mode: ParityMode,
     ) -> Result<Vec<SegmAnn>, EvalError> {
-        build_segm_dt_anns(dt_anns, indices, image, parity_mode)
+        build_segm_dt_anns(dt, indices, image, parity_mode)
     }
 }
 
@@ -1796,13 +1787,15 @@ pub(crate) fn dt_top_indices_for_cell(
 ) -> Vec<usize> {
     let raw_indices = raw_dt_indices_for_cell(dt, image, cat);
     let mut out = Vec::new();
+    let mut scores_out = Vec::new();
     let mut score_buf = Vec::new();
     let mut perm_buf = Vec::new();
     dt_top_indices_for_cell_into(
         &mut out,
+        &mut scores_out,
         &mut score_buf,
         &mut perm_buf,
-        dt.detections(),
+        dt.scores(),
         raw_indices,
         max_dets,
     );
@@ -1810,22 +1803,51 @@ pub(crate) fn dt_top_indices_for_cell(
 }
 
 /// Allocation-free counterpart to [`dt_top_indices_for_cell`]. Fills
-/// `out` with the top-`max_dets` DT input indices ordered by descending
-/// score (stable mergesort, quirk **A1**), reusing `score_buf` and
-/// `perm_buf` across calls. The hot per-cell loop in [`evaluate_with`]
-/// would otherwise pay three allocator round-trips per `(image,
-/// category)` cell — across val2017's 14k non-empty cells that
-/// dominates the score-sort wall time.
+/// `out` and `scores_out` with the top-`max_dets` DT input indices and
+/// descending scores (stable mergesort, quirk **A1**), reusing `score_buf`
+/// and `perm_buf` across calls.
 pub(crate) fn dt_top_indices_for_cell_into(
     out: &mut Vec<usize>,
+    scores_out: &mut Vec<f64>,
     score_buf: &mut Vec<f64>,
     perm_buf: &mut Vec<usize>,
-    dts: &[CocoDetection],
+    dt_scores: &[f64],
     raw_indices: &[usize],
     max_dets: usize,
 ) {
+    out.clear();
+    scores_out.clear();
+    if max_dets == 0 || raw_indices.is_empty() {
+        return;
+    }
+    if raw_indices.len() == 1 {
+        let idx = raw_indices[0];
+        out.push(idx);
+        scores_out.push(dt_scores[idx]);
+        return;
+    }
+    if raw_indices.len() == 2 {
+        let i0 = raw_indices[0];
+        let i1 = raw_indices[1];
+        let s0 = dt_scores[i0];
+        let s1 = dt_scores[i1];
+        // Stable tiebreak + NaN preservation: swap `[0, 1]` iff `s1 > s0`.
+        let (first_i, first_s, second_i, second_s) = if s1 > s0 {
+            (i1, s1, i0, s0)
+        } else {
+            (i0, s0, i1, s1)
+        };
+        out.push(first_i);
+        scores_out.push(first_s);
+        if max_dets >= 2 {
+            out.push(second_i);
+            scores_out.push(second_s);
+        }
+        return;
+    }
+
     score_buf.clear();
-    score_buf.extend(raw_indices.iter().map(|&i| dts[i].score));
+    score_buf.extend(raw_indices.iter().map(|&i| dt_scores[i]));
     perm_buf.clear();
     perm_buf.extend(0..score_buf.len());
     // Stable mergesort tiebreak (quirk A1) — must match
@@ -1835,16 +1857,19 @@ pub(crate) fn dt_top_indices_for_cell_into(
             .partial_cmp(&score_buf[a])
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    out.clear();
-    out.extend(perm_buf.iter().take(max_dets).map(|&k| raw_indices[k]));
+    let keep = perm_buf.len().min(max_dets);
+    out.reserve(keep);
+    scores_out.reserve(keep);
+    for &k in &perm_buf[..keep] {
+        out.push(raw_indices[k]);
+        scores_out.push(score_buf[k]);
+    }
 }
 
 /// Per-cell scratch buffers reused across the `(image, category)` loop
 /// in [`evaluate_with`]. All `Vec` fields are `clear()`-ed and re-grown
 /// each cell so allocator round-trips are paid once per buffer at most
-/// (subsequent cells stay within the high-water capacity). On val2017
-/// this elides ~11 allocations per cell × 14k cells = ~154k allocator
-/// round-trips.
+/// (subsequent cells stay within the high-water capacity).
 #[derive(Default)]
 pub(crate) struct CellScratch {
     /// Cell-level GT gathers — sized to `gt_indices.len()` per cell.
