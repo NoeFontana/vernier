@@ -8,6 +8,11 @@ committed manifest, bench-data.json, pins the dataset commit and every
 artifact's SHA-256, and `pull` verifies both. A directory travels as one
 deterministic tar. Needs a token for the private repo (HF_TOKEN or
 `hf auth login`).
+
+The artifacts are not part of vernier and not under its license: this
+repo commits only their hashes, and each file keeps the terms of the data
+and model it came from (the dataset card lists them). Never vendor one
+into the tree, a fixture, or a wheel.
 """
 
 from __future__ import annotations
