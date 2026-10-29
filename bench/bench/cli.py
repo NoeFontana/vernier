@@ -3,7 +3,8 @@
 ``run`` fans out across the impls supported for the requested
 (paradigm, workload, metric) cell, then runs the cross-impl parity
 check unless ``--no-parity`` is passed. Skipped cells are silent for
-``--impl all`` and loud for an explicit ``--impl <name>``. Release mode
+``--impl all`` and loud for an explicit ``--impl <name>``; ``--impl`` repeats
+to run a chosen subset in one interleaved cell. Release mode
 adds a CPU governor pre-flight and an IQR-relative-to-median gate;
 profile mode defaults to skipping parity (instrumentation perturbs
 measurement).
@@ -90,10 +91,16 @@ def main() -> None:
 @main.command("run")
 @click.option(
     "--impl",
+    "impls_opt",
     type=click.Choice(["all", *ALL_IMPLS]),
-    default="vernier",
+    multiple=True,
+    default=("vernier",),
     show_default=True,
-    help="Implementation to run, or 'all' to fan out across the (impl, iou) matrix.",
+    help=(
+        "Implementation to run, or 'all' to fan out across the (impl, iou) matrix. "
+        "Repeat to run several in one cell: their reps interleave and the "
+        "parity tiers between them run."
+    ),
 )
 @click.option(
     "--workload",
@@ -152,7 +159,7 @@ def main() -> None:
     ),
 )
 def run_cmd(
-    impl: str,
+    impls_opt: tuple[str, ...],
     workload: str,
     paradigm: str,
     iou_type: str,
@@ -169,6 +176,12 @@ def run_cmd(
         raise click.ClickException(str(e)) from e
     iou = cast(IouType, iou_type)
     mode_typed = cast(Mode, mode)
+    # ``None`` = every registered impl; otherwise the requested ones, in
+    # order, without repeats.
+    impl_filter: tuple[str, ...] | None = (
+        None if "all" in impls_opt else tuple(dict.fromkeys(impls_opt))
+    )
+    impl_label = ", ".join(impls_opt)
 
     if num_threads_spec is not None and num_threads_spec != "default":
         try:
@@ -211,12 +224,11 @@ def run_cmd(
                 f"workload {workload!r} resolved to {type(workload_obj).__name__}, "
                 f"but --paradigm panoptic requires a PanopticWorkload."
             )
-        impl_filter = None if impl == "all" else (impl,)
         impls = impls_for_metric("panoptic", "pq", impl_filter=impl_filter)
         if not impls:
             choices = sorted(IMPL_PARADIGM_SUPPORT["panoptic"])
             raise click.ClickException(
-                f"impl {impl!r} is not registered for paradigm=panoptic; choices: {choices}"
+                f"impl {impl_label!r} is not registered for paradigm=panoptic; choices: {choices}"
             )
         do_parity = not no_parity and mode_typed != "profile"
         for nt in workload_obj.num_threads:
@@ -254,12 +266,11 @@ def run_cmd(
                 f"workload {workload!r} resolved to {type(workload_obj).__name__}, "
                 f"but --paradigm semantic requires a SemanticWorkload."
             )
-        impl_filter = None if impl == "all" else (impl,)
         impls = impls_for_metric("semantic", "miou", impl_filter=impl_filter)
         if not impls:
             choices = sorted(IMPL_PARADIGM_SUPPORT["semantic"])
             raise click.ClickException(
-                f"impl {impl!r} is not registered for paradigm=semantic; choices: {choices}"
+                f"impl {impl_label!r} is not registered for paradigm=semantic; choices: {choices}"
             )
         # No oracle for semantic yet (S3-B mmseg env pending) — skip
         # parity even if --no-parity wasn't passed. Profile mode also
@@ -306,12 +317,11 @@ def run_cmd(
             raise click.ClickException(
                 f"workload {workload!r} does not support --iou {iou_type}; supported: {supported}"
             )
-        impl_filter = None if impl == "all" else (impl,)
         impls = impls_for_metric("lvis", iou, impl_filter=impl_filter)
         if not impls:
             choices = sorted(IMPL_PARADIGM_SUPPORT["lvis"])
             raise click.ClickException(
-                f"impl {impl!r} is not registered for paradigm=lvis with --iou {iou_type}; "
+                f"impl {impl_label!r} is not registered for paradigm=lvis with --iou {iou_type}; "
                 f"choices: {choices}"
             )
         do_parity = not no_parity and mode_typed != "profile"
@@ -367,20 +377,21 @@ def run_cmd(
             f"workload {workload!r} does not support --iou {iou_type}; supported: {supported}"
         )
 
-    if impl == "all":
+    if impl_filter is None:
         impls = impls_for_iou(iou)
         if not impls:
             raise click.ClickException(f"no impl in the matrix supports --iou {iou_type}")
     else:
         # Same ``ALL_IMPLS``-wider-than-``IMPL_IOU_SUPPORT`` guard as in
         # ``impls_for_iou`` — see that helper for the rationale.
-        impl_ious = IMPL_IOU_SUPPORT.get(impl, frozenset())
-        if iou not in impl_ious:
-            supported = ", ".join(sorted(impl_ious))
-            raise click.ClickException(
-                f"impl {impl!r} does not support --iou {iou_type}; supported: {supported}"
-            )
-        impls = [impl]
+        for impl in impl_filter:
+            impl_ious = IMPL_IOU_SUPPORT.get(impl, frozenset())
+            if iou not in impl_ious:
+                supported = ", ".join(sorted(impl_ious))
+                raise click.ClickException(
+                    f"impl {impl!r} does not support --iou {iou_type}; supported: {supported}"
+                )
+        impls = list(impl_filter)
 
     # Profile mode skips parity by default per ADR-0017 §"Run modes":
     # instrumentation perturbs which code paths warm up.

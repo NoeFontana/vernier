@@ -636,6 +636,18 @@ pub(crate) struct GridImages<'a> {
 }
 
 impl<'a> GridImages<'a> {
+    /// Number of images, `I`.
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        self.order.len()
+    }
+
+    /// Image at grid index `i`.
+    #[inline]
+    pub(crate) fn get(&self, i: usize) -> &'a ImageMeta {
+        &self.metas[self.order[i]]
+    }
+
     /// Images in grid order.
     pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &'a ImageMeta> + Clone + 'a {
         let metas = self.metas;

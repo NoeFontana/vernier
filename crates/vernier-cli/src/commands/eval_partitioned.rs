@@ -76,9 +76,9 @@ pub(crate) fn run(args: &EvalArgs) -> Result<(), CliError> {
     };
 
     let dims = GridDims {
-        n_categories: grid.n_categories,
-        n_area_ranges: grid.n_area_ranges,
-        n_images: grid.n_images,
+        n_categories: grid.n_categories(),
+        n_area_ranges: grid.n_area_ranges(),
+        n_images: grid.n_images(),
     };
     let partitioned = partition::evaluate_partitioned(
         &grid.eval_imgs(),

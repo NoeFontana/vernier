@@ -19,20 +19,17 @@
 //! produced `None`, and `None` is what an unvisited slot already holds.
 //!
 //! Storage is CSR (`offsets` + `values`) rather than `Vec<Vec<_>>`: one
-//! allocation per direction instead of one per row, and the rows stay
-//! contiguous for the iteration order each caller needs.
-//!
-//! - [`OccupiedCells::by_image`] — rows are images, values are category
-//!   buckets. The parallel path fans out per image.
-//! - [`OccupiedCells::by_category`] — rows are category buckets, values
-//!   are images. The sequential path walks `(k, i)` in canonical order.
+//! allocation instead of one per row. Rows are category buckets and
+//! values are image indices — the category-major order both evaluate
+//! paths walk and the packed grid stores (ADR-0066); the parallel path
+//! fans out over chunks of a row.
 //!
 //! Values within a row are ascending and deduplicated, so callers visit
 //! cells in the same order the exhaustive loop did.
 
 use rustc_hash::FxHashMap;
 
-use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, ImageId};
+use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, GridImages};
 
 /// Occupied cells in compressed-sparse-row form.
 pub(crate) struct OccupiedCells {
@@ -47,47 +44,6 @@ impl OccupiedCells {
         let start = self.offsets[row] as usize;
         let end = self.offsets[row + 1] as usize;
         &self.values[start..end]
-    }
-
-    /// Build from `(row, column)` pairs already counted per row.
-    fn from_pairs(n_rows: usize, mut pairs: Vec<(u32, u32)>) -> Self {
-        // Counting sort into CSR, then per-row sort+dedup. Rows are
-        // short (a val2017 image holds ~7 categories, an Objects365 one
-        // ~8), so the per-row sort is cheap next to the fan-out it saves.
-        let mut offsets = vec![0_u32; n_rows + 1];
-        for &(row, _) in &pairs {
-            offsets[row as usize + 1] += 1;
-        }
-        for i in 0..n_rows {
-            offsets[i + 1] += offsets[i];
-        }
-        let mut values = vec![0_u32; pairs.len()];
-        let mut cursor = offsets.clone();
-        for (row, col) in pairs.drain(..) {
-            let slot = &mut cursor[row as usize];
-            values[*slot as usize] = col;
-            *slot += 1;
-        }
-        let mut compacted: Vec<u32> = Vec::with_capacity(values.len());
-        let mut new_offsets = vec![0_u32; n_rows + 1];
-        for row in 0..n_rows {
-            let start = offsets[row] as usize;
-            let end = offsets[row + 1] as usize;
-            let slice = &mut values[start..end];
-            slice.sort_unstable();
-            let mut last: Option<u32> = None;
-            for &v in slice.iter() {
-                if last != Some(v) {
-                    compacted.push(v);
-                    last = Some(v);
-                }
-            }
-            new_offsets[row + 1] = u32::try_from(compacted.len()).unwrap_or(u32::MAX);
-        }
-        OccupiedCells {
-            offsets: new_offsets,
-            values: compacted,
-        }
     }
 }
 
@@ -154,95 +110,119 @@ impl BucketIndex {
     }
 }
 
-/// Collect `(image_index, bucket)` pairs for every annotation and
-/// detection on `images` — or only on the grid indices in `image_subset`
-/// when given, so a subset pass costs its own images rather than `I`.
-fn occupied_pairs(
-    images: &[ImageId],
-    image_subset: Option<&[usize]>,
-    gt: &CocoDataset,
-    dt: &CocoDetections,
-    buckets: &BucketIndex,
-) -> Vec<(u32, u32)> {
-    let gt_anns = gt.annotations();
-    let dt_cats = dt.category_ids();
-    // Sized for the whole GT only on a full pass; a subset pass pushes its
-    // own images' pairs and grows from empty.
-    let mut pairs: Vec<(u32, u32)> = match image_subset {
-        None => Vec::with_capacity(gt_anns.len() + dt_cats.len()),
-        Some(_) => Vec::new(),
-    };
-    // Hoisted: empty for every well-formed dataset, so the hot loop
-    // below keeps a predictable branch instead of a second lookup.
-    let repeats = buckets.repeats();
-    let push = |pairs: &mut Vec<(u32, u32)>, i: u32, cat: CategoryId| {
-        if let Some(k) = buckets.bucket_of(cat) {
-            pairs.push((i, k));
-        }
-        if !repeats.is_empty() {
-            for &(repeat_cat, k) in repeats {
-                if repeat_cat == cat {
-                    pairs.push((i, k));
-                }
-            }
-        }
-    };
-    let mut visit = |i: usize| {
-        let image_id = images[i];
-        let i = u32::try_from(i).unwrap_or(u32::MAX);
-        for &j in gt.ann_indices_for_image(image_id) {
-            push(&mut pairs, i, gt_anns[j].category_id);
-        }
-        for &j in dt.indices_for_image(image_id) {
-            push(&mut pairs, i, dt_cats[j]);
-        }
-    };
-    match image_subset {
-        None => (0..images.len()).for_each(&mut visit),
-        // Out-of-range indices name no image and are skipped; the rows
-        // are sorted and deduplicated downstream, so the subset's own
-        // order and repeats do not matter.
-        Some(subset) => subset
-            .iter()
-            .copied()
-            .filter(|&i| i < images.len())
-            .for_each(&mut visit),
-    }
-    pairs
-}
-
-/// Rows are images, values are category buckets.
-pub(crate) fn by_image(
-    images: &[ImageId],
-    image_subset: Option<&[usize]>,
-    gt: &CocoDataset,
-    dt: &CocoDetections,
-    buckets: &BucketIndex,
-) -> OccupiedCells {
-    let pairs = occupied_pairs(images, image_subset, gt, dt, buckets);
-    OccupiedCells::from_pairs(images.len(), pairs)
-}
-
-/// Rows are category buckets, values are images.
+/// Rows are category buckets, values are image indices restricted to
+/// `image_subset` (when `Some`) or `0..images.len()` (when `None`).
+///
+/// Cost is proportional to the visited images' annotations and
+/// detections plus `O(K)`, never to the whole `I` axis on a subset.
 pub(crate) fn by_category(
-    images: &[ImageId],
+    images: GridImages<'_>,
     image_subset: Option<&[usize]>,
     n_buckets: usize,
     gt: &CocoDataset,
     dt: &CocoDetections,
     buckets: &BucketIndex,
 ) -> OccupiedCells {
-    let pairs: Vec<(u32, u32)> = occupied_pairs(images, image_subset, gt, dt, buckets)
-        .into_iter()
-        .map(|(i, k)| (k, i))
-        .collect();
-    OccupiedCells::from_pairs(n_buckets, pairs)
+    let gt_anns = gt.annotations();
+    let dt_cats = dt.category_ids();
+    let repeats = buckets.repeats();
+
+    let mut seen_stamp = vec![u32::MAX; n_buckets];
+    let mut offsets = vec![0_u32; n_buckets + 1];
+
+    let cap_hint = match image_subset {
+        Some(sub) => sub.len().saturating_mul(n_buckets.min(16)),
+        None => (gt_anns.len() + dt_cats.len()).min(images.len().saturating_mul(n_buckets)),
+    };
+    let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(cap_hint);
+
+    let mut visit_cat = |i: u32, cat: CategoryId| {
+        if let Some(k) = buckets.bucket_of(cat) {
+            let ku = k as usize;
+            if ku < n_buckets && seen_stamp[ku] != i {
+                seen_stamp[ku] = i;
+                offsets[ku + 1] += 1;
+                pairs.push((k, i));
+            }
+        }
+        if !repeats.is_empty() {
+            for &(repeat_cat, k) in repeats {
+                if repeat_cat == cat {
+                    let ku = k as usize;
+                    if ku < n_buckets && seen_stamp[ku] != i {
+                        seen_stamp[ku] = i;
+                        offsets[ku + 1] += 1;
+                        pairs.push((k, i));
+                    }
+                }
+            }
+        }
+    };
+
+    match image_subset {
+        None => {
+            for (idx, image) in images.iter().enumerate() {
+                // `GridPlan::new` refused grids whose `I` exceeds u32.
+                let i = idx as u32;
+                let image_id = image.id;
+                for &j in gt.ann_indices_for_image(image_id) {
+                    visit_cat(i, gt_anns[j].category_id);
+                }
+                for &j in dt.indices_for_image(image_id) {
+                    visit_cat(i, dt_cats[j]);
+                }
+            }
+        }
+        Some(subset) => {
+            let mut sorted_cow: Vec<usize> = Vec::new();
+            let ordered: &[usize] = if subset.windows(2).all(|w| w[0] < w[1]) {
+                subset
+            } else {
+                sorted_cow.extend_from_slice(subset);
+                sorted_cow.sort_unstable();
+                sorted_cow.dedup();
+                &sorted_cow
+            };
+            for &idx in ordered {
+                if idx >= images.len() {
+                    continue;
+                }
+                let i = idx as u32;
+                let image_id = images.get(idx).id;
+                for &j in gt.ann_indices_for_image(image_id) {
+                    visit_cat(i, gt_anns[j].category_id);
+                }
+                for &j in dt.indices_for_image(image_id) {
+                    visit_cat(i, dt_cats[j]);
+                }
+            }
+        }
+    }
+
+    for k in 0..n_buckets {
+        offsets[k + 1] += offsets[k];
+    }
+    let mut values = vec![0_u32; pairs.len()];
+    let mut cursor = offsets.clone();
+    // Because `i` was visited in strictly ascending order and
+    // deduplicated via `seen_stamp`, scattering in insertion order
+    // produces each category row already sorted ascending with no
+    // duplicates.
+    for &(k, i) in &pairs {
+        let slot = &mut cursor[k as usize];
+        values[*slot as usize] = i;
+        *slot += 1;
+    }
+
+    OccupiedCells { offsets, values }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataset::{AnnId, Bbox, CategoryMeta, CocoAnnotation, DetectionInput, ImageMeta};
+    use crate::dataset::{
+        AnnId, Bbox, CategoryMeta, CocoAnnotation, DetectionInput, ImageId, ImageMeta,
+    };
 
     fn img(id: i64) -> ImageMeta {
         ImageMeta {
@@ -302,62 +282,68 @@ mod tests {
 
     /// GT on (img 1, cat 1) twice and (img 2, cat 2); DT adds
     /// (img 1, cat 2) plus a category the GT never declares.
-    fn fixture() -> (
-        Vec<ImageId>,
-        CocoDataset,
-        CocoDetections,
-        Vec<Option<CategoryId>>,
-    ) {
+    fn fixture() -> (CocoDataset, CocoDetections, Vec<Option<CategoryId>>) {
         let gt = CocoDataset::from_parts(
-            vec![img(1), img(2)],
+            vec![img(2), img(1)],
             vec![ann(1, 1, 1), ann(2, 1, 1), ann(3, 2, 2)],
             vec![cat(1), cat(2)],
         )
         .expect("gt");
         let dt = CocoDetections::from_inputs(vec![dt_input(1, 2), dt_input(1, 99)]).expect("dt");
-        (
-            vec![ImageId(1), ImageId(2)],
-            gt,
-            dt,
-            vec![Some(CategoryId(1)), Some(CategoryId(2))],
-        )
+        (gt, dt, vec![Some(CategoryId(1)), Some(CategoryId(2))])
+    }
+
+    fn occupancy(
+        gt: &CocoDataset,
+        dt: &CocoDetections,
+        buckets: &[Option<CategoryId>],
+        subset: Option<&[usize]>,
+    ) -> OccupiedCells {
+        let index = BucketIndex::new(buckets);
+        by_category(gt.grid_images(), subset, buckets.len(), gt, dt, &index)
     }
 
     #[test]
     fn rows_are_ascending_deduplicated_and_cover_gt_and_dt() {
-        let (images, gt, dt, buckets) = fixture();
-        let index = BucketIndex::new(&buckets);
-
-        // Image 1: two GTs in bucket 0 collapse to one entry; the DT
-        // adds bucket 1. Image 2: GT in bucket 1 only.
-        let by_img = by_image(&images, None, &gt, &dt, &index);
-        assert_eq!(by_img.row(0), &[0, 1]);
-        assert_eq!(by_img.row(1), &[1]);
-
-        // Same cells, transposed.
-        let by_cat = by_category(&images, None, buckets.len(), &gt, &dt, &index);
+        let (gt, dt, buckets) = fixture();
+        // Grid order is id-ascending whatever the declaration order:
+        // image 1 is index 0. Its two GTs in bucket 0 collapse to one
+        // entry; the DT adds bucket 1. Image 2 (index 1): bucket 1 only.
+        let by_cat = occupancy(&gt, &dt, &buckets, None);
         assert_eq!(by_cat.row(0), &[0]);
         assert_eq!(by_cat.row(1), &[0, 1]);
+    }
+
+    #[test]
+    fn a_subset_visits_only_its_images() {
+        let (gt, dt, buckets) = fixture();
+        let only_second = occupancy(&gt, &dt, &buckets, Some(&[1]));
+        assert!(only_second.row(0).is_empty());
+        assert_eq!(only_second.row(1), &[1]);
+        // Unsorted, duplicated and out-of-range entries are normalized.
+        let messy = occupancy(&gt, &dt, &buckets, Some(&[1, 0, 1, 9]));
+        let full = occupancy(&gt, &dt, &buckets, None);
+        for k in 0..buckets.len() {
+            assert_eq!(messy.row(k), full.row(k), "bucket {k}");
+        }
     }
 
     #[test]
     fn detection_category_absent_from_gt_has_no_cell() {
         // `dt_input(1, 99)` names a category with no bucket. The
         // evaluate loop could never visit such a cell, so it must not
-        // appear as a candidate either.
-        let (images, gt, dt, buckets) = fixture();
-        let index = BucketIndex::new(&buckets);
-        let by_img = by_image(&images, None, &gt, &dt, &index);
-        assert!(by_img.row(0).iter().all(|&k| (k as usize) < buckets.len()));
+        // appear as a candidate either: only the two real rows exist.
+        let (gt, dt, buckets) = fixture();
+        let by_cat = occupancy(&gt, &dt, &buckets, None);
+        assert_eq!(by_cat.offsets.len(), buckets.len() + 1);
+        assert_eq!(by_cat.values.len(), 3);
     }
 
     #[test]
     fn collapsed_buckets_put_every_category_in_bucket_zero() {
-        let (images, gt, dt, _) = fixture();
-        let index = BucketIndex::new(&[None]);
-        let by_img = by_image(&images, None, &gt, &dt, &index);
-        assert_eq!(by_img.row(0), &[0]);
-        assert_eq!(by_img.row(1), &[0]);
+        let (gt, dt, _) = fixture();
+        let by_cat = occupancy(&gt, &dt, &[None], None);
+        assert_eq!(by_cat.row(0), &[0, 1]);
     }
 
     #[test]
@@ -365,11 +351,8 @@ mod tests {
         let gt = CocoDataset::from_parts(vec![img(1), img(7)], vec![ann(1, 1, 1)], vec![cat(1)])
             .expect("gt");
         let dt = CocoDetections::from_inputs(vec![]).expect("dt");
-        let images = vec![ImageId(1), ImageId(7)];
-        let index = BucketIndex::new(&[Some(CategoryId(1))]);
-        let by_img = by_image(&images, None, &gt, &dt, &index);
-        assert_eq!(by_img.row(0), &[0]);
-        assert!(by_img.row(1).is_empty());
+        let by_cat = occupancy(&gt, &dt, &[Some(CategoryId(1))], None);
+        assert_eq!(by_cat.row(0), &[0]);
     }
 
     /// A GT whose `categories` array repeats an id produces two buckets
@@ -381,23 +364,22 @@ mod tests {
         let gt = CocoDataset::from_parts(vec![img(1)], vec![ann(1, 1, 1)], vec![cat(1), cat(1)])
             .expect("gt");
         let dt = CocoDetections::from_inputs(vec![]).expect("dt");
-        let images = vec![ImageId(1)];
-        let index = BucketIndex::new(&[Some(CategoryId(1)), Some(CategoryId(1))]);
-        let by_img = by_image(&images, None, &gt, &dt, &index);
-        assert_eq!(by_img.row(0), &[0, 1]);
+        let by_cat = occupancy(&gt, &dt, &[Some(CategoryId(1)), Some(CategoryId(1))], None);
+        assert_eq!(by_cat.row(0), &[0]);
+        assert_eq!(by_cat.row(1), &[0]);
     }
 
-    /// The occupancy index is now the *only* thing deciding which cells
+    /// The occupancy index is the *only* thing deciding which cells
     /// either evaluate path visits, so "parallel matches sequential"
-    /// can no longer catch a bug in it — both walks would skip the same
-    /// cell. Pin it against a brute-force enumeration of the predicate
-    /// the per-cell body actually applies
+    /// cannot catch a bug in it — both walks would skip the same cell.
+    /// Pin it against a brute-force enumeration of the predicate the
+    /// per-cell body actually applies
     /// (`gt_indices.is_empty() && raw_dt_indices.is_empty()`), over a
     /// federated (LVIS-shaped) dataset with crowd, zero-area and
-    /// DT-only cells.
+    /// DT-only cells, on the full grid and on a subset.
     #[test]
     fn matches_brute_force_enumeration_on_a_federated_dataset() {
-        let images: Vec<ImageMeta> = (1..=6).map(img).collect();
+        let images: Vec<ImageMeta> = (1..=6).rev().map(img).collect();
         let categories: Vec<CategoryMeta> = (1..=5).map(cat).collect();
         let mut anns = Vec::new();
         let mut next = 1_i64;
@@ -423,29 +405,28 @@ mod tests {
         ])
         .expect("dt");
 
-        let image_ids: Vec<ImageId> = (1..=6).map(ImageId).collect();
         let buckets: Vec<Option<CategoryId>> = (1..=5).map(|c| Some(CategoryId(c))).collect();
-        let index = BucketIndex::new(&buckets);
-        let by_img = by_image(&image_ids, None, &gt, &dt, &index);
-        let by_cat = by_category(&image_ids, None, buckets.len(), &gt, &dt, &index);
+        let subset = [1_usize, 2, 5];
+        let full = occupancy(&gt, &dt, &buckets, None);
+        let partial = occupancy(&gt, &dt, &buckets, Some(&subset));
 
-        for (i, image_id) in image_ids.iter().enumerate() {
+        for i in 0..6_usize {
+            let image_id = ImageId(i as i64 + 1);
             for (k, bucket) in buckets.iter().enumerate() {
                 let occupied_by_predicate = !gt
-                    .ann_indices_for(*image_id, bucket.expect("cat"))
+                    .ann_indices_for(image_id, bucket.expect("cat"))
                     .is_empty()
-                    || !dt.indices_for(*image_id, bucket.expect("cat")).is_empty();
-                let k32 = u32::try_from(k).expect("k fits");
+                    || !dt.indices_for(image_id, bucket.expect("cat")).is_empty();
                 let i32_ = u32::try_from(i).expect("i fits");
                 assert_eq!(
-                    by_img.row(i).contains(&k32),
+                    full.row(k).contains(&i32_),
                     occupied_by_predicate,
-                    "by_image disagrees at (image {i}, category {k})"
+                    "full grid disagrees at (image {i}, category {k})"
                 );
                 assert_eq!(
-                    by_cat.row(k).contains(&i32_),
-                    occupied_by_predicate,
-                    "by_category disagrees at (image {i}, category {k})"
+                    partial.row(k).contains(&i32_),
+                    occupied_by_predicate && subset.contains(&i),
+                    "subset disagrees at (image {i}, category {k})"
                 );
             }
         }

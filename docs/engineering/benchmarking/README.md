@@ -146,7 +146,7 @@ just bench-run --impl vernier --workload coco_val2017_keypoints_jittered_seed0 \
 # ratios, and the renderer draws one SHA, so skipping them silently drops
 # those columns from docs/benchmarks.md. pycocotools is single-threaded
 # and boundary has no hotcoco arm.
-for impl in hotcoco faster-coco-eval; do
+for impl in hotcoco ufcoco faster-coco-eval; do
   for iou in bbox segm; do
     just bench-run --impl "$impl" --workload coco_val2017_jittered_seed0 \
         --iou "$iou" --num-threads 1,2,4,8 --mode release --no-parity
@@ -154,8 +154,10 @@ for impl in hotcoco faster-coco-eval; do
   just bench-run --impl "$impl" --workload coco_val2017_keypoints_jittered_seed0 \
       --iou keypoints --num-threads 1,2,4,8 --mode release --no-parity
 done
-just bench-run --impl faster-coco-eval --workload coco_val2017_jittered_seed0 \
-    --iou boundary --num-threads 1,2,4,8 --mode release --no-parity
+for impl in ufcoco faster-coco-eval; do
+  just bench-run --impl "$impl" --workload coco_val2017_jittered_seed0 \
+      --iou boundary --num-threads 1,2,4,8 --mode release --no-parity
+done
 
 # --- real predictions: the headline bbox / segm rows ------------------
 # These back README's bbox and segm rows. The caches are populated by
@@ -186,12 +188,12 @@ just bench-run --impl all --workload coco_val2017_semantic_perfect --mode releas
 # Per-impl, and `dev` on purpose: one rep takes minutes, and a runner
 # that OOMs (faster-coco-eval, ~30 GiB) aborts its whole cell, so one
 # OOM must not take the others with it.
-for impl in vernier hotcoco pycocotools; do
+for impl in vernier hotcoco ufcoco pycocotools; do
   just bench-run --impl "$impl" --workload objects365_val_jittered_seed0 \
       --iou bbox --mode dev --no-parity
 done
 # README's Objects365 row also quotes the 8-CPU figure.
-for impl in vernier hotcoco; do
+for impl in vernier hotcoco ufcoco; do
   just bench-run --impl "$impl" --workload objects365_val_jittered_seed0 \
       --iou bbox --num-threads 8 --mode dev --no-parity
 done
