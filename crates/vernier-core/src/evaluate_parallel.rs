@@ -762,13 +762,14 @@ mod tests {
 
     proptest::proptest! {
         #![proptest_config(proptest::prelude::ProptestConfig::with_cases(96))]
-        /// The packed accumulator's true-positive sweep against the dense
-        /// `accumulate`, which still draws the full curve: random cells with
-        /// crowds, every area range, tied scores, both flag layouts, and
-        /// recall thresholds off the default grid (negative, zero, NaN,
-        /// above one), sequential and parallel.
+        /// Every production accumulator — packed sequential, packed
+        /// parallel, dense — against pycocotools' own `accumulate`
+        /// transcribed line by line (`accumulate::reference`), over random
+        /// grids: crowds, every area range, tied scores, `maxDet`
+        /// truncation, both flag layouts, and recall grids on and off the
+        /// public contract.
         #[test]
-        fn packed_sweep_matches_the_dense_curve(
+        fn accumulators_match_pycocotools_on_random_grids(
             gts in proptest::collection::vec(
                 (0_i64..4, 1_i64..4, (0.0..80.0_f64, 0.0..80.0_f64, 1.0..120.0_f64, 1.0..120.0_f64), 0_u8..6),
                 0..40,
@@ -805,7 +806,7 @@ mod tests {
                 iou_thresholds().to_vec()
             };
             let recall: Vec<f64> = if custom_recall {
-                vec![f64::NAN, -0.5, 0.0, 0.1, 1.0 / 3.0, 0.5, 0.99, 1.0, 1.5]
+                vec![f64::NAN, -0.5, 0.0, 0.1, 1.0 / 3.0, 0.5, 0.99, 1.0, 1.5, f64::INFINITY]
             } else {
                 recall_thresholds().to_vec()
             };
@@ -826,18 +827,24 @@ mod tests {
                     recall_thresholds: &recall,
                     max_dets,
                 };
-                let dense = accumulate(&grid.eval_imgs(), ladder.for_grid(&grid), ParityMode::Strict)
-                    .expect("dense");
-                for packed in [
+                let dense_view = grid.eval_imgs();
+                let want = crate::accumulate::reference::accumulate_pycocotools(
+                    &dense_view,
+                    ladder.for_grid(&grid),
+                )
+                .expect("pycocotools");
+                for got in [
+                    accumulate(&dense_view, ladder.for_grid(&grid), ParityMode::Strict)
+                        .expect("dense"),
                     crate::accumulate::accumulate_grid(&grid, ladder, ParityMode::Strict).expect("packed"),
                     pool.install(|| {
                         crate::accumulate::accumulate_grid_parallel(&grid, ladder, ParityMode::Strict)
                     })
                     .expect("packed parallel"),
                 ] {
-                    proptest::prop_assert_eq!(&packed.precision, &dense.precision);
-                    proptest::prop_assert_eq!(&packed.recall, &dense.recall);
-                    proptest::prop_assert_eq!(&packed.scores, &dense.scores);
+                    proptest::prop_assert_eq!(&got.precision, &want.precision);
+                    proptest::prop_assert_eq!(&got.recall, &want.recall);
+                    proptest::prop_assert_eq!(&got.scores, &want.scores);
                 }
             }
         }

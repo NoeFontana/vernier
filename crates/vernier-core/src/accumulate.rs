@@ -14,13 +14,15 @@
 //!   `np.argsort(kind='mergesort')` on the concatenated stream.
 //! - **C1** (`strict`): recall lookup uses `searchsorted(rc, t,
 //!   side='left')` semantics — the leftmost cumulative-recall index
-//!   with `rc[i] >= t`.
+//!   with `rc[i] >= t`. `rc` only moves at a true positive, so that
+//!   index is resolved as a true-positive count (ADR-0068).
 //! - **C2** (`strict`): right-to-left running max on the precision
 //!   array enforces the monotonic precision envelope before
-//!   integration.
+//!   integration. Precision only peaks at a true positive, so the max
+//!   is taken over those points alone (ADR-0068).
 //! - **C3** (`corrected` implementation, `strict` outputs): the
 //!   `try/except` around `dtScoresSorted[pi]` becomes an explicit
-//!   bounds check (`pi < n_d`); past the curve we leave `q[ri]` and
+//!   bounds check (`k <= n_tp`); past the curve we leave `q[ri]` and
 //!   `ss[ri]` at `0.0`, matching the silent-skip pycocotools does in
 //!   the `except: pass` branch.
 //! - **C4** (`strict`): "AR" stored in `recall` is terminal cumulative
@@ -616,6 +618,7 @@ fn accumulate_category(
     let mut plan: Option<SortPlan<'_>> = None;
     let mut derived = DerivedStream::default();
     let mut cells: Vec<&PerImageEval> = Vec::with_capacity(n_i);
+    let mut scratch = DenseScratch::default();
 
     for a in 0..n_a {
         let na = a * n_i;
@@ -639,6 +642,12 @@ fn accumulate_category(
             plan = None;
         }
         let plan = plan.get_or_insert_with(|| SortPlan::build(&cells, cap));
+        recall_targets(
+            p.recall_thresholds,
+            npig,
+            plan.scores.len(),
+            &mut scratch.targets,
+        );
 
         for (m, &max_det) in p.max_dets.iter().enumerate() {
             let stream = if max_det >= cap {
@@ -657,12 +666,12 @@ fn accumulate_category(
             };
             accumulate_cell(
                 &cells,
-                stream,
+                &stream,
                 npig,
                 n_t,
                 p.recall_thresholds,
-                a,
-                m,
+                (a, m),
+                &mut scratch,
                 precision,
                 recall,
                 scores,
@@ -671,19 +680,50 @@ fn accumulate_category(
     }
 }
 
+/// Scratch for [`accumulate_cell`], owned per category and reused across
+/// its area ranges and `maxDet`s.
+#[derive(Default)]
+struct DenseScratch {
+    /// [`recall_targets`] for the current area range.
+    targets: Vec<usize>,
+    lanes: Vec<TpEvents>,
+    /// Per-detection 16-bit flag words, stream order, then score order.
+    flags: Vec<u32>,
+    sorted: Vec<u32>,
+    /// Per-threshold flags for the general (> 16 thresholds) layout.
+    dtm: Vec<bool>,
+    dtg: Vec<bool>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn accumulate_cell(
     cells: &[&PerImageEval],
-    stream: StreamView<'_>,
+    stream: &StreamView<'_>,
     npig: usize,
     n_t: usize,
     recall_thresholds: &[f64],
-    a: usize,
-    m: usize,
+    (a, m): (usize, usize),
+    scratch: &mut DenseScratch,
     precision: &mut ArrayViewMut4<'_, f64>,
     recall: &mut ArrayViewMut3<'_, f64>,
     scores: &mut ArrayViewMut4<'_, f64>,
 ) {
+    #[cfg(test)]
+    if reference::DRAW_PYCOCOTOOLS_CURVE.with(std::cell::Cell::get) {
+        reference::pycocotools_cell(
+            cells,
+            stream,
+            npig,
+            n_t,
+            recall_thresholds,
+            (a, m),
+            precision,
+            recall,
+            scores,
+        );
+        return;
+    }
+
     let n_d = stream.scores.len();
     if n_d == 0 {
         // No detections, but npig > 0. Pycocotools (cocoeval.py:442-465)
@@ -708,12 +748,45 @@ fn accumulate_cell(
         return;
     }
 
-    let mut targets = Vec::with_capacity(recall_thresholds.len());
-    recall_targets(recall_thresholds, npig, &mut targets);
-    let mut events = TpEvents::default();
-    let mut dtm = vec![false; n_d];
-    let mut dtg = vec![false; n_d];
+    let DenseScratch {
+        targets,
+        lanes,
+        flags,
+        sorted,
+        dtm,
+        dtg,
+    } = scratch;
+    if n_t <= 16 {
+        // The packed grid's word (bit `t` matched, bit `t + 16` ignored,
+        // C7), so every threshold is swept in one pass. Built row by row:
+        // each `(t, ·)` row of a cell is contiguous.
+        flags.clear();
+        for (cell, &take) in cells.iter().zip(stream.takes) {
+            let base = flags.len();
+            flags.resize(base + take, 0);
+            let words = &mut flags[base..];
+            for t in 0..n_t {
+                let (m_row, g_row) = (cell.dt_matched.row(t), cell.dt_ignore.row(t));
+                for (d, word) in words.iter_mut().enumerate() {
+                    *word |= u32::from(m_row[d]) << t | u32::from(g_row[d]) << (t + 16);
+                }
+            }
+        }
+        sorted.clear();
+        sorted.extend(stream.perm.iter().map(|&src| flags[src]));
+        lanes.resize_with(n_t, TpEvents::default);
+        let lanes = &mut lanes[..n_t];
+        TpEvents::sweep_bits16(lanes, sorted);
+        for (t, events) in lanes.iter().enumerate() {
+            events.finish(targets, npig, stream, (t, a, m), precision, recall, scores);
+        }
+        return;
+    }
 
+    lanes.resize_with(1, TpEvents::default);
+    let events = &mut lanes[0];
+    dtm.resize(n_d, false);
+    dtg.resize(n_d, false);
     for t in 0..n_t {
         let mut cursor = 0;
         for (cell, &take) in cells.iter().zip(stream.takes) {
@@ -725,18 +798,9 @@ fn accumulate_cell(
                 cursor += 1;
             }
         }
-
         // C7: cumulative TP/FP exclude ignore-tagged DTs.
         events.sweep(stream.perm.iter().map(|&src| (dtm[src], dtg[src])));
-        events.finish(
-            &targets,
-            npig,
-            &stream,
-            (t, a, m),
-            precision,
-            recall,
-            scores,
-        );
+        events.finish(targets, npig, stream, (t, a, m), precision, recall, scores);
     }
 }
 
@@ -1356,39 +1420,50 @@ fn copy_saturated_max_det_lane(
     }
 }
 
-/// Where a recall threshold lands on a PR curve, as a true-positive count.
+/// Where each recall threshold lands on a PR curve, as a true-positive
+/// count (quirk **C1**).
 ///
-/// `rc[j]` (quirk **C1**'s searchsorted target) only changes at a true
-/// positive, to `k / npig` after the `k`-th one, so the first `j` with
-/// `rc[j] >= r` is the position of the `k`-th true positive for the
-/// smallest `k` whose `k / npig` reaches `r`. That `k` depends on `npig`
-/// alone, so it is resolved once per `(category, area)` and shared by
-/// every threshold and `maxDet` lane.
-fn recall_targets(recall_thresholds: &[f64], npig: usize, out: &mut Vec<usize>) {
+/// pycocotools takes `searchsorted(rc, recThrs, side='left')`: the first
+/// position `j` with `rc[j] >= r`. `rc` only changes at a true positive,
+/// to `k / npig` after the `k`-th one, so for `r > 0` that position is
+/// the `k`-th true positive for the smallest `k` with `k / npig >= r`
+/// under the same f64 division. `k` depends on `npig` alone, so it is
+/// resolved once per `(category, area)` and shared by every threshold and
+/// `maxDet` lane. `r <= 0` lands on position 0 whatever is there
+/// ([`RECALL_AT_START`]); `NaN` compares false everywhere, so it lands
+/// past the curve, as numpy sorts it.
+///
+/// `max_tp` bounds the true positives any lane of the category can hold
+/// (its longest stream). A `k` above it is past every lane's curve
+/// (**C3**), so the search stops there: exact for any input, including a
+/// hand-built cell with more true positives than `npig`.
+fn recall_targets(recall_thresholds: &[f64], npig: usize, max_tp: usize, out: &mut Vec<usize>) {
     #[allow(clippy::cast_precision_loss)]
     let npig_f = npig as f64;
     #[allow(clippy::cast_precision_loss)]
     let reaches = |k: usize, r: f64| k as f64 / npig_f >= r;
+    let past = max_tp + 1;
     out.clear();
     out.extend(recall_thresholds.iter().map(|&r| {
-        // `rc[0] >= r` holds for any `r <= 0`, and `v < NaN` is false,
-        // so both land on position 0 whether or not it is a true
-        // positive: `RECALL_AT_START`.
-        if r.is_nan() || r <= 0.0 {
+        if r <= 0.0 {
             return RECALL_AT_START;
         }
-        // `k / npig` is monotone in `k`, so step from the real-valued
-        // estimate to the exact boundary of the f64 comparison.
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let mut k = ((r * npig_f) as usize).clamp(1, npig + 1);
-        while k > 1 && reaches(k - 1, r) {
-            k -= 1;
+        if r.is_nan() {
+            return past;
         }
-        while k <= npig && !reaches(k, r) {
+        // Step up from `floor(r * npig)`: `k / npig` is monotone in `k`,
+        // and the estimate never overshoots the boundary of the f64
+        // comparison (that would need `r * npig >= 2^51`, far past the
+        // `past` clamp), so the loop runs once or twice.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let mut k = ((r * npig_f) as usize).clamp(1, past);
+        while k < past && !reaches(k, r) {
             k += 1;
         }
-        // `k > npig` is never reached: a lane has at most `npig` true
-        // positives.
+        debug_assert!(
+            k == 1 || !reaches(k - 1, r),
+            "estimate overshot k for r={r}"
+        );
         k
     }));
 }
@@ -1398,7 +1473,7 @@ const RECALL_AT_START: usize = 0;
 
 /// True positives of one `(t, a, m)` lane: stream position of each, and
 /// the precision just after it.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct TpEvents {
     pos: Vec<usize>,
     pr: Vec<f64>,
@@ -1419,6 +1494,7 @@ impl TpEvents {
         self.pr.clear();
         let mut fp = 0_u32;
         for (j, (matched, ignored)) in lane.enumerate() {
+            // C7: an ignored detection is neither a true nor a false positive.
             fp += u32::from(!matched & !ignored);
             if matched & !ignored {
                 self.push(j, fp);
@@ -1449,11 +1525,15 @@ impl TpEvents {
             lane.pos.clear();
             lane.pr.clear();
         }
-        let lane_mask = u32::MAX >> (32 - n_t.max(1));
+        let lane_mask = (1_u32 << n_t) - 1;
         let mut fp = [0_u32; 16];
         for (j, &flag) in sorted_flags.iter().enumerate() {
+            // C7: an ignored lane is neither a true nor a false positive.
             let live = !(flag >> 16) & lane_mask;
             let miss = !flag & live;
+            // All 16 lanes, not `n_t`: a fixed-width, branch-free add the
+            // compiler vectorizes (mask, compare, subtract); lanes past
+            // `n_t` never see a bit.
             for (t, count) in fp.iter_mut().enumerate() {
                 *count += u32::from(miss & (1 << t) != 0);
             }
@@ -1510,6 +1590,8 @@ impl TpEvents {
             .index_axis_move(Axis(1), a)
             .index_axis_move(Axis(1), m);
         let score_at = |pos: usize| stream.scores[stream.perm[pos]];
+        // C1 + C3: each threshold's searchsorted position, as the k-th
+        // true positive (`recall_targets`); 0.0 past the curve.
         for (ri, &k) in targets.iter().enumerate() {
             let (p, sc) = if k == RECALL_AT_START {
                 // Position 0: the envelope there is the curve's maximum.
@@ -1547,13 +1629,20 @@ fn accumulate_packed_category(
     let plan = build_packed_sort_plan(cat, cap);
     let mut derived = DerivedStream::default();
     let max_n_d = plan.scores.len();
+    // Scratch is reused across area ranges and `maxDet`s, and only the
+    // layout's own is ever filled: an empty `Vec` does not allocate.
     let mut raw_flags_u32: Vec<u32> = Vec::new();
-    let mut sorted_flags_u32: Vec<u32> = Vec::with_capacity(max_n_d);
+    let mut sorted_flags_u32: Vec<u32> = Vec::new();
     let mut dtm_general: Vec<bool> = Vec::new();
     let mut dtg_general: Vec<bool> = Vec::new();
-    let mut events = TpEvents::default();
+    // One event buffer per threshold swept at once: every lane of a
+    // 16-bit word, or one threshold at a time for the general layout.
+    let n_lanes = match &cat.dt_flags {
+        PackedCategoryFlags::Bits16(_) => n_t,
+        PackedCategoryFlags::General { .. } => 1,
+    };
     let mut lanes: Vec<TpEvents> = std::iter::repeat_with(TpEvents::default)
-        .take(n_t.min(16))
+        .take(n_lanes)
         .collect();
     let mut targets: Vec<usize> = Vec::with_capacity(p.recall_thresholds.len());
     let n_r = p.recall_thresholds.len();
@@ -1563,7 +1652,7 @@ fn accumulate_packed_category(
         if npig == 0 {
             continue;
         }
-        recall_targets(p.recall_thresholds, npig, &mut targets);
+        recall_targets(p.recall_thresholds, npig, max_n_d, &mut targets);
         let mut saturated_m: Option<usize> = None;
 
         for (m, &max_det) in p.max_dets.iter().enumerate() {
@@ -1634,6 +1723,7 @@ fn accumulate_packed_category(
                 PackedCategoryFlags::General { matched, ignore } => {
                     let m_area = &matched[a];
                     let g_area = &ignore[a];
+                    let events = &mut lanes[0];
                     dtm_general.resize(n_d, false);
                     dtg_general.resize(n_d, false);
                     for t in 0..n_t {
@@ -1669,163 +1759,239 @@ fn accumulate_packed_category(
     }
 }
 
+/// The pycocotools `accumulate` lane, transcribed line by line — the
+/// oracle the production sweep is tested against.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use ndarray::{array, Array3};
+pub(crate) mod reference {
+    use std::cell::Cell;
 
-    #[allow(clippy::too_many_arguments)]
-    fn finish_threshold_curve(
-        rc: &[f64],
-        pr: &mut [f64],
-        stream_scores: &[f64],
-        stream_perm: &[usize],
-        recall_thresholds: &[f64],
-        t: usize,
-        a: usize,
-        m: usize,
-        precision: &mut ArrayViewMut4<'_, f64>,
-        recall: &mut ArrayViewMut3<'_, f64>,
-        scores: &mut ArrayViewMut4<'_, f64>,
-    ) {
-        let n_d = rc.len();
-        // C4: terminal cumulative recall.
-        recall[(t, a, m)] = rc[n_d - 1];
+    use super::{
+        accumulate, AccumulateParams, Accumulated, ArrayViewMut3, ArrayViewMut4, Axis, EvalError,
+        ParityMode, PerImageEval, StreamView, PARITY_EPS,
+    };
 
-        // C2: right-to-left running max on precision (envelope).
-        for j in (1..n_d).rev() {
-            if pr[j] > pr[j - 1] {
-                pr[j - 1] = pr[j];
-            }
-        }
-
-        // C1 + C3: searchsorted-left + bounds-check. Past the curve, slots are
-        // filled with 0.0 — overwriting the -1 sentinel so the summarizer's
-        // `s > -1` filter keeps them.
-        let mut p_lane = precision
-            .index_axis_mut(Axis(0), t)
-            .index_axis_move(Axis(1), a)
-            .index_axis_move(Axis(1), m);
-        let mut s_lane = scores
-            .index_axis_mut(Axis(0), t)
-            .index_axis_move(Axis(1), a)
-            .index_axis_move(Axis(1), m);
-        let mut last_pi = 0usize;
-        let mut prev_target = f64::NEG_INFINITY;
-        for (ri, &target) in recall_thresholds.iter().enumerate() {
-            let lo = if target >= prev_target { last_pi } else { 0 };
-            let pi = lo + rc[lo..].partition_point(|&v| v < target);
-            last_pi = pi;
-            prev_target = target;
-            if pi < n_d {
-                p_lane[ri] = pr[pi];
-                s_lane[ri] = stream_scores[stream_perm[pi]];
-            } else {
-                p_lane[ri] = 0.0;
-                s_lane[ri] = 0.0;
-            }
-        }
+    thread_local! {
+        /// Routes the dense [`super::accumulate_cell`] through
+        /// [`pycocotools_cell`] on this thread.
+        pub(super) static DRAW_PYCOCOTOOLS_CURVE: Cell<bool> = const { Cell::new(false) };
     }
 
-    /// The C1–C4 curve as pycocotools draws it — `rc` and `pr` at every
-    /// detection, C2's running max over the whole curve, a binary search
-    /// per recall threshold — kept as the oracle for [`TpEvents`].
-    #[allow(clippy::too_many_arguments)]
-    fn reference_lane(
+    /// `cocoeval.py` `accumulate`, one `(t, k, a, m)` lane, for detections
+    /// already in score order (`lane[j] = (matched, ignored)`):
+    ///
+    /// ```text
+    /// tps = dtm & ~dtIg; fps = ~dtm & ~dtIg
+    /// tp, fp = cumsum(tps), cumsum(fps)
+    /// rc = tp / npig; pr = tp / (fp + tp + eps)
+    /// recall = rc[-1] if nd else 0
+    /// for i in range(nd - 1, 0, -1): if pr[i] > pr[i - 1]: pr[i - 1] = pr[i]
+    /// inds = searchsorted(rc, recThrs, side='left')
+    /// q[ri], ss[ri] = pr[pi], dtScoresSorted[pi]   (0 where pi == nd)
+    /// ```
+    ///
+    /// `searchsorted` is a linear scan for the first `rc[j] >= r`. Per
+    /// quirk **C3**'s disposition an unreachable threshold leaves its own
+    /// slot at 0 rather than aborting the rest of the lane.
+    pub(crate) fn pycocotools_lane(
         lane: &[(bool, bool)],
+        sorted_scores: &[f64],
         npig: usize,
-        stream_scores: &[f64],
-        stream_perm: &[usize],
         recall_thresholds: &[f64],
     ) -> (Vec<f64>, f64, Vec<f64>) {
-        let n_r = recall_thresholds.len();
-        let mut precision = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
-        let mut recall = Array3::<f64>::from_elem((1, 1, 1), -1.0);
-        let mut scores = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
         #[allow(clippy::cast_precision_loss)]
         let npig_f = npig as f64;
         let (mut tp, mut fp) = (0.0_f64, 0.0_f64);
         let mut rc = Vec::with_capacity(lane.len());
         let mut pr = Vec::with_capacity(lane.len());
         for &(matched, ignored) in lane {
-            if !ignored {
-                if matched {
-                    tp += 1.0;
-                } else {
-                    fp += 1.0;
-                }
-            }
+            tp += f64::from(u8::from(matched && !ignored));
+            fp += f64::from(u8::from(!matched && !ignored));
             rc.push(tp / npig_f);
-            pr.push(tp / (tp + fp + PARITY_EPS));
+            pr.push(tp / (fp + tp + PARITY_EPS));
         }
-        finish_threshold_curve(
-            &rc,
-            &mut pr,
-            stream_scores,
-            stream_perm,
-            recall_thresholds,
-            0,
-            0,
-            0,
-            &mut precision.view_mut(),
-            &mut recall.view_mut(),
-            &mut scores.view_mut(),
-        );
-        (
-            precision.iter().copied().collect(),
-            recall[(0, 0, 0)],
-            scores.iter().copied().collect(),
-        )
+        let recall = rc.last().copied().unwrap_or(0.0);
+        for i in (1..pr.len()).rev() {
+            if pr[i] > pr[i - 1] {
+                pr[i - 1] = pr[i];
+            }
+        }
+        let mut q = vec![0.0; recall_thresholds.len()];
+        let mut ss = vec![0.0; recall_thresholds.len()];
+        for (ri, &r) in recall_thresholds.iter().enumerate() {
+            if let Some(pi) = rc.iter().position(|&v| v >= r) {
+                q[ri] = pr[pi];
+                ss[ri] = sorted_scores[pi];
+            }
+        }
+        (q, recall, ss)
+    }
+
+    /// The dense `accumulate_cell` as pycocotools computes it.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn pycocotools_cell(
+        cells: &[&PerImageEval],
+        stream: &StreamView<'_>,
+        npig: usize,
+        n_t: usize,
+        recall_thresholds: &[f64],
+        (a, m): (usize, usize),
+        precision: &mut ArrayViewMut4<'_, f64>,
+        recall: &mut ArrayViewMut3<'_, f64>,
+        scores: &mut ArrayViewMut4<'_, f64>,
+    ) {
+        let sorted_scores: Vec<f64> = stream.perm.iter().map(|&src| stream.scores[src]).collect();
+        for t in 0..n_t {
+            let in_stream: Vec<(bool, bool)> = cells
+                .iter()
+                .zip(stream.takes)
+                .flat_map(|(cell, &take)| {
+                    (0..take).map(move |d| (cell.dt_matched[(t, d)], cell.dt_ignore[(t, d)]))
+                })
+                .collect();
+            let lane: Vec<(bool, bool)> = stream.perm.iter().map(|&src| in_stream[src]).collect();
+            let (q, rc_last, ss) = pycocotools_lane(&lane, &sorted_scores, npig, recall_thresholds);
+            recall[(t, a, m)] = rc_last;
+            let mut p_lane = precision
+                .index_axis_mut(Axis(0), t)
+                .index_axis_move(Axis(1), a)
+                .index_axis_move(Axis(1), m);
+            let mut s_lane = scores
+                .index_axis_mut(Axis(0), t)
+                .index_axis_move(Axis(1), a)
+                .index_axis_move(Axis(1), m);
+            for ri in 0..q.len() {
+                p_lane[ri] = q[ri];
+                s_lane[ri] = ss[ri];
+            }
+        }
+    }
+
+    /// [`accumulate`] with every lane computed by [`pycocotools_lane`].
+    pub(crate) fn accumulate_pycocotools(
+        eval_imgs: &[Option<Box<PerImageEval>>],
+        p: AccumulateParams<'_>,
+    ) -> Result<Accumulated, EvalError> {
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                DRAW_PYCOCOTOOLS_CURVE.with(|on| on.set(false));
+            }
+        }
+        DRAW_PYCOCOTOOLS_CURVE.with(|on| on.set(true));
+        let _reset = Reset;
+        accumulate(eval_imgs, p, ParityMode::Strict)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::{array, Array3};
+
+    /// C1: [`recall_targets`] lands where `searchsorted(rc, r, 'left')` does,
+    /// for every reachable `npig` — on the COCO grid, at exact multiples
+    /// `k / npig` (where the f64 division decides), and off the grid —
+    /// including lanes with more true positives than `npig`.
+    #[test]
+    fn recall_targets_match_searchsorted_left() {
+        let mut targets = Vec::new();
+        for npig in 1..=400_usize {
+            let n_tp = npig + 3;
+            #[allow(clippy::cast_precision_loss)]
+            let rc: Vec<f64> = (1..=n_tp).map(|k| k as f64 / npig as f64).collect();
+            let mut thresholds = crate::parity::recall_thresholds().to_vec();
+            thresholds.extend(rc.iter().copied());
+            thresholds.extend(rc.iter().map(|&v| f64::from_bits(v.to_bits() + 1)));
+            thresholds.extend(rc.iter().map(|&v| f64::from_bits(v.to_bits() - 1)));
+            thresholds.extend([-0.5, 0.0, f64::NAN, 1.0e300, f64::INFINITY]);
+            recall_targets(&thresholds, npig, n_tp, &mut targets);
+            for (&r, &k) in thresholds.iter().zip(&targets) {
+                // Position on a lane whose `j`-th detection is the `j+1`-th
+                // true positive, so position `j` ↔ `k = j + 1`.
+                let want = if r <= 0.0 {
+                    RECALL_AT_START
+                } else {
+                    rc.iter().position(|&v| v >= r).map_or(n_tp + 1, |j| j + 1)
+                };
+                assert_eq!(k, want, "npig={npig} r={r:e}");
+            }
+        }
     }
 
     proptest::proptest! {
-        /// [`TpEvents`] reproduces the drawn curve bit for bit: random
-        /// lanes (true / false positives, ignored detections), any `npig`
-        /// the lane can reach, the COCO recall grid or thresholds off it
-        /// (NaN, negative, zero, above one).
+        /// [`TpEvents`] reproduces [`reference::pycocotools_lane`] bit for
+        /// bit — precision, terminal recall and score at every threshold —
+        /// over random lanes (true / false positives, ignored detections),
+        /// any `npig` including fewer than the lane's true positives, both
+        /// sweeps (per threshold and the 16-bit fused one), and recall
+        /// grids on and off the public contract.
         #[test]
-        fn tp_events_match_the_drawn_curve(
-            lane in proptest::collection::vec((proptest::bool::ANY, proptest::bool::weighted(0.2)), 1..300),
-            extra_gt in 0_usize..20,
-            custom_recall in proptest::bool::ANY,
+        fn tp_events_match_pycocotools(
+            lanes in proptest::collection::vec(
+                proptest::collection::vec((proptest::bool::ANY, proptest::bool::weighted(0.2)), 1..200),
+                1..=16,
+            ),
+            npig_delta in -3_i64..20,
+            grid in 0_u8..3,
         ) {
-            let n_tp = lane.iter().filter(|&&(m, g)| m && !g).count();
-            let npig = (n_tp + extra_gt).max(1);
-            let recall_grid: Vec<f64> = if custom_recall {
-                vec![f64::NAN, -0.5, 0.0, 0.1, 1.0 / 3.0, 0.5, 0.99, 1.0, 1.5]
-            } else {
-                crate::parity::recall_thresholds().to_vec()
+            let n_d = lanes.iter().map(Vec::len).min().unwrap_or(0);
+            let lanes: Vec<Vec<(bool, bool)>> = lanes.into_iter().map(|l| l[..n_d].to_vec()).collect();
+            let max_tp = lanes
+                .iter()
+                .map(|l| l.iter().filter(|&&(m, g)| m && !g).count())
+                .max()
+                .unwrap_or(0);
+            let npig = usize::try_from((i64::try_from(max_tp).unwrap_or(0) + npig_delta).max(1)).unwrap_or(1);
+            let recall_grid: Vec<f64> = match grid {
+                0 => crate::parity::recall_thresholds().to_vec(),
+                1 => vec![0.0, 0.1, 1.0 / 3.0, 0.5, 0.99, 1.0],
+                _ => vec![f64::NAN, -0.5, 0.0, 0.25, 1.0, 1.5, f64::INFINITY],
             };
             #[allow(clippy::cast_precision_loss)]
-            let stream_scores: Vec<f64> = (0..lane.len()).map(|d| 1.0 - d as f64 * 1e-3).collect();
-            let perm: Vec<usize> = (0..lane.len()).rev().collect();
-            let sorted: Vec<(bool, bool)> = perm.iter().map(|&src| lane[src]).collect();
-            let (want_p, want_r, want_s) =
-                reference_lane(&sorted, npig, &stream_scores, &perm, &recall_grid);
-
-            let n_r = recall_grid.len();
-            let mut precision = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
-            let mut recall = Array3::<f64>::from_elem((1, 1, 1), -1.0);
-            let mut scores = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
-            let mut targets = Vec::new();
-            recall_targets(&recall_grid, npig, &mut targets);
-            let takes = [lane.len()];
+            let stream_scores: Vec<f64> = (0..n_d).map(|d| 1.0 - d as f64 * 1e-3).collect();
+            // Score order is the reverse of stream order.
+            let perm: Vec<usize> = (0..n_d).rev().collect();
+            let sorted_scores: Vec<f64> = perm.iter().map(|&src| stream_scores[src]).collect();
+            let takes = [n_d];
             let stream = StreamView { takes: &takes, scores: &stream_scores, perm: &perm };
-            let mut events = TpEvents::default();
-            events.sweep(sorted.iter().copied());
-            events.finish(
-                &targets,
-                npig,
-                &stream,
-                (0, 0, 0),
-                &mut precision.view_mut(),
-                &mut recall.view_mut(),
-                &mut scores.view_mut(),
-            );
-            let bits = |v: &[f64]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
-            proptest::prop_assert_eq!(bits(&precision.iter().copied().collect::<Vec<_>>()), bits(&want_p));
-            proptest::prop_assert_eq!(recall[(0, 0, 0)].to_bits(), want_r.to_bits());
-            proptest::prop_assert_eq!(bits(&scores.iter().copied().collect::<Vec<_>>()), bits(&want_s));
+            let mut targets = Vec::new();
+            recall_targets(&recall_grid, npig, n_d, &mut targets);
+
+            let n_t = lanes.len();
+            let n_r = recall_grid.len();
+            let mut fused = vec![TpEvents::default(); n_t];
+            let words: Vec<u32> = (0..n_d)
+                .map(|j| {
+                    lanes.iter().enumerate().fold(0_u32, |w, (t, l)| {
+                        w | u32::from(l[j].0) << t | u32::from(l[j].1) << (t + 16)
+                    })
+                })
+                .collect();
+            TpEvents::sweep_bits16(&mut fused, &words);
+            for (t, lane) in lanes.iter().enumerate() {
+                let (want_p, want_r, want_s) =
+                    reference::pycocotools_lane(lane, &sorted_scores, npig, &recall_grid);
+                let mut single = TpEvents::default();
+                single.sweep(lane.iter().copied());
+                for events in [&single, &fused[t]] {
+                    let mut precision = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
+                    let mut recall = Array3::<f64>::from_elem((1, 1, 1), -1.0);
+                    let mut scores = Array4::<f64>::from_elem((1, n_r, 1, 1), -1.0);
+                    events.finish(
+                        &targets,
+                        npig,
+                        &stream,
+                        (0, 0, 0),
+                        &mut precision.view_mut(),
+                        &mut recall.view_mut(),
+                        &mut scores.view_mut(),
+                    );
+                    let bits = |v: &mut dyn Iterator<Item = f64>| v.map(f64::to_bits).collect::<Vec<_>>();
+                    proptest::prop_assert_eq!(bits(&mut precision.iter().copied()), bits(&mut want_p.iter().copied()));
+                    proptest::prop_assert_eq!(recall[(0, 0, 0)].to_bits(), want_r.to_bits());
+                    proptest::prop_assert_eq!(bits(&mut scores.iter().copied()), bits(&mut want_s.iter().copied()));
+                }
+            }
         }
     }
 
@@ -1993,18 +2159,6 @@ mod tests {
     }
 
     #[test]
-    fn partition_point_matches_numpy_searchsorted_left() {
-        // Pinning the stdlib semantics so a future swap (e.g., to a
-        // SIMD search) keeps `np.searchsorted(..., side='left')` parity.
-        let haystack = [0.1, 0.3, 0.3, 0.7];
-        let lookup = |t: f64| haystack.partition_point(|&v| v < t);
-        assert_eq!(lookup(0.0), 0);
-        assert_eq!(lookup(0.3), 1); // leftmost equal
-        assert_eq!(lookup(0.5), 3);
-        assert_eq!(lookup(1.0), 4); // past end
-    }
-
-    #[test]
     fn merged_sort_breaks_ties_by_input_order() {
         // A1 over the merged stream: two images with one DT each at
         // score 0.7. With stable sort, image-0 DT comes first.
@@ -2101,96 +2255,6 @@ mod tests {
                 assert!(detail.contains("n_area_ranges(3)"), "msg: {detail}");
             }
             other => panic!("expected DimensionMismatch, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn vectorized_inner_sweep_matches_naive_reference() {
-        // C6: the inner recall-threshold sweep is vectorized via
-        // partition_point + an in-place right-to-left envelope. Pin it
-        // against a naive reference that mirrors pycocotools' Python
-        // `for ri, pi in enumerate(inds): q[ri] = pr[pi]` line by line.
-        //
-        // Three hand-crafted PR curves cover the edge cases:
-        //  - monotonic-decreasing precision (no envelope work);
-        //  - non-monotonic precision (envelope rewrites multiple cells);
-        //  - all-1.0 precision with the recall curve ending at 0.5 so
-        //    half the recall thresholds fall past the curve (C3 path).
-        //
-        // Only the precision lane is compared — both implementations
-        // share the same recall-index lookup, so the score lane would
-        // trivially agree.
-        let recall_thresholds: Vec<f64> = (0..=10).map(|i| (i as f64) / 10.0).collect();
-
-        // Naive reference: explicit right-to-left running max + linear
-        // searchsorted-left scan.
-        fn naive_sweep(rc: &[f64], pr: &[f64], rec_thr: &[f64]) -> Vec<f64> {
-            let n = pr.len();
-            let mut env = pr.to_vec();
-            for j in (1..n).rev() {
-                if env[j] > env[j - 1] {
-                    env[j - 1] = env[j];
-                }
-            }
-            let mut q = vec![0.0_f64; rec_thr.len()];
-            for (ri, &target) in rec_thr.iter().enumerate() {
-                let mut pi = n;
-                for (j, &r) in rc.iter().enumerate() {
-                    if r >= target {
-                        pi = j;
-                        break;
-                    }
-                }
-                if pi < n {
-                    q[ri] = env[pi];
-                }
-            }
-            q
-        }
-
-        // Vectorized reference: same shape as `accumulate_cell`'s inner
-        // sweep, callable on hand-crafted curves without rebuilding the
-        // whole `(T, R, K, A, M)` tensor. Drift between this body and
-        // the production sweep is what the test exists to catch.
-        fn vectorized_sweep(rc: &[f64], pr: &[f64], rec_thr: &[f64]) -> Vec<f64> {
-            let n = pr.len();
-            let mut env = pr.to_vec();
-            for j in (1..n).rev() {
-                if env[j] > env[j - 1] {
-                    env[j - 1] = env[j];
-                }
-            }
-            let mut q = vec![0.0_f64; rec_thr.len()];
-            for (ri, &target) in rec_thr.iter().enumerate() {
-                let pi = rc.partition_point(|&v| v < target);
-                if pi < n {
-                    q[ri] = env[pi];
-                }
-            }
-            q
-        }
-
-        let curves: &[(&[f64], &[f64])] = &[
-            // Monotonic-decreasing precision; recall reaches 1.0.
-            (&[0.1, 0.3, 0.5, 0.7, 1.0], &[1.0, 0.9, 0.7, 0.5, 0.3]),
-            // Non-monotonic precision: envelope rewrites cells 1 and 3.
-            (&[0.2, 0.4, 0.6, 0.8, 1.0], &[1.0, 0.4, 0.6, 0.2, 0.5]),
-            // All-1.0 precision; recall caps at 0.5 → recall thresholds
-            // > 0.5 fall past the curve (C3 silent-skip path → 0.0).
-            (&[0.1, 0.2, 0.3, 0.4, 0.5], &[1.0, 1.0, 1.0, 1.0, 1.0]),
-        ];
-
-        for (i, (rc, pr)) in curves.iter().enumerate() {
-            let q_naive = naive_sweep(rc, pr, &recall_thresholds);
-            let q_vec = vectorized_sweep(rc, pr, &recall_thresholds);
-            assert_eq!(q_naive.len(), q_vec.len(), "curve {i}");
-            for (ri, (a, b)) in q_naive.iter().zip(q_vec.iter()).enumerate() {
-                assert_eq!(
-                    a.to_bits(),
-                    b.to_bits(),
-                    "curve {i}, recall threshold index {ri}: naive={a}, vec={b}"
-                );
-            }
         }
     }
 

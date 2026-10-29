@@ -147,6 +147,7 @@ else is detail.
 | [0065](0065-federated-cap-on-the-streaming-evaluators.md) | Apply the LVIS per-image cap per streaming batch (`StreamingEvaluator`, `BackgroundEvaluator`) | proposed |
 | [0066](0066-columnar-detections-and-packed-eval-grid.md) | Columnar detection storage, `DetectionsBatch` ingest, and packed evaluation grids | proposed |
 | [0067](0067-synthetic-twin-workloads.md) | Gate synthetic twins of real bench workloads on measured equivalence | accepted |
+| [0068](0068-accumulate-from-true-positive-events.md) | Accumulate PR curves from their true-positive events | proposed |
 
 ### TIDE design package — proposed cluster
 

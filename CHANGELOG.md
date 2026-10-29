@@ -71,9 +71,9 @@ additive / perf / docs".
   thresholds at once) and reads the 101 recall points off them: no
   per-detection division, curve stores or binary searches. The dense
   per-cell accumulator (partitioned evaluation, non-packed grids) runs
-  the same sweep. One thread, COCO val2017: RF-DETR Nano 132 → 52 ms
+  the same sweep (ADR-0068). One thread, COCO val2017: RF-DETR Nano 132 → 52 ms
   (−60%), jittered 37.5 → 17 ms (−55%); a two-slice partitioned
-  evaluation of RF-DETR Nano 1010 → 778 ms (−23%). Bit-identical output.
+  evaluation of RF-DETR Nano 1056 → 726 ms (−31%). Bit-identical output.
 
 ## [0.5.5] - 2026-10-29
 
