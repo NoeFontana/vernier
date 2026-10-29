@@ -169,22 +169,31 @@ def _boxes(
     boxes = np.reshape(casted, (-1, 4))
     if box_format == "xywh":
         return np.ascontiguousarray(boxes)
-    converted = np.empty_like(boxes)
     if box_format == "xyxy":
+        # `np.asarray(a, dtype)` returns `a` itself unless it must convert,
+        # and converting always copies — so `casted is not array` means
+        # `casted` is this call's own buffer (a float32 model output
+        # widened to float64, the common case), never the caller's, and
+        # `w, h` can be written over `x2, y2` in place.
+        if casted is not array and boxes.flags.c_contiguous:
+            np.subtract(boxes[:, 2:4], boxes[:, 0:2], out=boxes[:, 2:4])
+            return boxes
+        converted = np.empty_like(boxes)
         converted[:, 0:2] = boxes[:, 0:2]
-        converted[:, 2:4] = boxes[:, 2:4] - boxes[:, 0:2]
-    elif box_format == "cxcywh":
+        np.subtract(boxes[:, 2:4], boxes[:, 0:2], out=converted[:, 2:4])
+        return converted
+    if box_format == "cxcywh":
+        converted = np.empty_like(boxes)
         converted[:, 2:4] = boxes[:, 2:4]
         converted[:, 0:2] = boxes[:, 0:2] - boxes[:, 2:4] / 2.0
-    else:
-        # Never fall through to a default layout. ADR-0063 refuses to
-        # auto-detect `box_format` because a wrong guess yields plausible,
-        # wrong AP rather than an error; silently treating an unrecognised
-        # spelling as one of the three would reintroduce exactly that.
-        raise ValueError(
-            f"{field}: unknown box_format {box_format!r}; expected 'xywh', 'xyxy' or 'cxcywh'"
-        )
-    return converted
+        return converted
+    # Never fall through to a default layout. ADR-0063 refuses to
+    # auto-detect `box_format` because a wrong guess yields plausible,
+    # wrong AP rather than an error; silently treating an unrecognised
+    # spelling as one of the three would reintroduce exactly that.
+    raise ValueError(
+        f"{field}: unknown box_format {box_format!r}; expected 'xywh', 'xyxy' or 'cxcywh'"
+    )
 
 
 def _record_boxes(
