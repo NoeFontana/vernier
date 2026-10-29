@@ -25,13 +25,17 @@ import json
 import math
 import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 from pycocotools import mask as mask_utils
 
+from bench.harness.migrations import upgrade as upgrade_schema
 from bench.harness.paths import BENCH_ROOT, bench_cache_root
+from bench.harness.schema import BenchResult
+from bench.harness.stats import aggregate_stage
 
 PROFILE_VERSION = 1
 # Bump when generation changes, so cached twins regenerate.
@@ -155,8 +159,15 @@ def _record_template(records: list[dict[str, Any]], semantic: frozenset[str]) ->
     return {"order": order, "extras": extras}
 
 
+def _seg_kind(segmentation: Any) -> str:
+    if isinstance(segmentation, list):
+        return "polygon"
+    return "rle" if isinstance(segmentation, dict) else "none"
+
+
 def _separators(path: Path) -> tuple[str, str]:
-    head = path.read_bytes()[:4096].decode("utf-8", "replace")
+    with path.open("rb") as f:
+        head = f.read(4096).decode("utf-8", "replace")
     item = ", " if re.search(r'[\]}"\d], "', head) else ","
     key = ": " if '": ' in head else ":"
     return item, key
@@ -234,14 +245,7 @@ def extract(gt_path: Path, dt_path: Path, *, masks: bool, source: str) -> dict[s
 
     gt_boxes = np.array([a["bbox"] for a in anns], dtype=np.float64).reshape(-1, 4)
     bbox_area = np.maximum(gt_boxes[:, 2] * gt_boxes[:, 3], 1e-6)
-    seg_kinds = Counter(
-        "polygon"
-        if isinstance(a.get("segmentation"), list)
-        else "rle"
-        if isinstance(a.get("segmentation"), dict)
-        else "none"
-        for a in anns
-    )
+    seg_kinds = Counter(_seg_kind(a.get("segmentation")) for a in anns)
     polygons = [a["segmentation"] for a in anns if isinstance(a.get("segmentation"), list)]
     crowd_rles = [a["segmentation"] for a in anns if isinstance(a.get("segmentation"), dict)]
     coord_sample = [c for poly in polygons[:5000] for part in poly for c in part][:200000]
@@ -280,16 +284,7 @@ def extract(gt_path: Path, dt_path: Path, *, masks: bool, source: str) -> dict[s
         "dt_score_unmatched": _continuous(unmatched_scores, _UNIT_EDGES),
         # Per-record kinds: the jitterer gives only its false positives a
         # rectangle polygon (and `area`), real detectors an RLE per record.
-        "dt_segmentation": dict(
-            Counter(
-                "rle"
-                if isinstance(d.get("segmentation"), dict)
-                else "polygon"
-                if isinstance(d.get("segmentation"), list)
-                else "none"
-                for d in dts
-            )
-        ),
+        "dt_segmentation": dict(Counter(_seg_kind(d.get("segmentation")) for d in dts)),
         "dt_area_share": float(np.mean(["area" in d for d in dts])) if dts else 0.0,
         "digits": {
             "gt_bbox": _discrete(_frac_digits(v) for v in gt_boxes.ravel()[:200000]),
@@ -326,31 +321,26 @@ def extract(gt_path: Path, dt_path: Path, *, masks: bool, source: str) -> dict[s
         },
     }
     if masks:
-        gt_rle = [
-            (_rle_len(a.get("segmentation"), *size_of[a["image_id"]]), a["bbox"][2])
-            for a in anns
-            if not a.get("iscrowd")
-        ]
+        gt_rle: list[tuple[int, float]] = []
         # Per vertex-count bucket: a 6-vertex outline cannot carry the RLE of
         # a 60-vertex one, so GT complexity is drawn conditional on it.
         by_bucket: dict[int, list[float]] = defaultdict(list)
         for a in anns:
             seg = a.get("segmentation")
-            if a.get("iscrowd") or not isinstance(seg, list) or not seg:
+            if a.get("iscrowd") or not (n := _rle_len(seg, *size_of[a["image_id"]])):
                 continue
-            n = _rle_len(seg, *size_of[a["image_id"]]) or 0
-            vertices = sum(len(part) // 2 for part in seg)
-            by_bucket[_vertex_bucket(vertices)].append(n / max(a["bbox"][2], 1.0))
+            gt_rle.append((n, a["bbox"][2]))
+            if isinstance(seg, list):
+                vertices = sum(len(part) // 2 for part in seg)
+                by_bucket[_vertex_bucket(vertices)].append(n / max(a["bbox"][2], 1.0))
         profile["gt_rle_per_column_by_vertices"] = {
             str(b): _continuous(v, _PER_COLUMN_EDGES) for b, v in sorted(by_bucket.items())
         }
         dt_rle = [
-            (_rle_len(d["segmentation"], *size_of[d["image_id"]]), d["bbox"][2])
+            (n, d["bbox"][2])
             for d in dts
-            if "segmentation" in d
+            if (n := _rle_len(d.get("segmentation"), *size_of[d["image_id"]]))
         ]
-        gt_rle = [(n, w) for n, w in gt_rle if n]
-        dt_rle = [(n, w) for n, w in dt_rle if n]
         # RLE length grows with the columns a mask spans; generation draws
         # chars-per-column and multiplies by the generated box's width.
         profile["gt_rle_per_column"] = _continuous(
@@ -465,9 +455,8 @@ def generate(profile: dict[str, Any], seed: int) -> tuple[dict[str, Any], list[d
     n_dt = len(dt_cell)
     dt_img = cell_image[dt_cell]
     gt_start = np.concatenate([[0], np.cumsum(g_per_cell)])[:-1]
-    iou_p = _norm(profile["dt_best_iou"])
-    iou_bin = _allocate(iou_p, n_dt, rng)
-    target = rng.uniform(_IOU_EDGES[iou_bin], _IOU_EDGES[iou_bin + 1])
+    iou_bin = _allocate(np.asarray(profile["dt_best_iou"], dtype=np.float64), n_dt, rng)
+    iou_target = rng.uniform(_IOU_EDGES[iou_bin], _IOU_EDGES[iou_bin + 1])
     # Anchor on non-crowd GT only: the profile's IoU is measured against those.
     by_cell_noncrowd_first = np.lexsort((crowd, gt_cell))
     cell_nc = np.bincount(gt_cell[~crowd], minlength=len(cell_image))[dt_cell]
@@ -477,7 +466,7 @@ def generate(profile: dict[str, Any], seed: int) -> tuple[dict[str, Any], list[d
     base = gt_box[pick] if n_gt else np.zeros((n_dt, 4))
     sign = np.where(rng.random(n_dt) < 0.5, -1.0, 1.0)
     shifted = base.copy()
-    shifted[:, 0] += sign * base[:, 2] * (1 - target) / (1 + target)
+    shifted[:, 0] += sign * base[:, 2] * (1 - iou_target) / (1 + iou_target)
     free_side = np.sqrt(
         np.exp(_sample_continuous(profile["gt_log_area"], _LOG_AREA_EDGES, n_dt, rng))
     )
@@ -493,7 +482,7 @@ def generate(profile: dict[str, Any], seed: int) -> tuple[dict[str, Any], list[d
         axis=1,
     )
     dt_box = np.where(overlaps[:, None], shifted, free)
-    matched = overlaps & (target >= 0.5)
+    matched = overlaps & (iou_target >= 0.5)
     score = np.where(
         matched,
         _sample_continuous(profile["dt_score_matched"], _UNIT_EDGES, n_dt, rng),
@@ -534,9 +523,9 @@ def generate(profile: dict[str, Any], seed: int) -> tuple[dict[str, Any], list[d
         elif has_polygon[j]:
             verts, per_column = next(polygon_specs)
             n_parts = len(verts)
-            target = per_column * gw[j] / n_parts
+            rle_target = per_column * gw[j] / n_parts
             polygons = [
-                _shape(_part(gt_box[j], p, n_parts), int(verts[p]), target, h, w, rng)
+                _shape(_part(gt_box[j], p, n_parts), int(verts[p]), rle_target, h, w, rng)[0]
                 for p in range(n_parts)
             ]
             ann["segmentation"] = [fmt.many("gt_polygon", np.asarray(c)).tolist() for c in polygons]
@@ -545,11 +534,11 @@ def generate(profile: dict[str, Any], seed: int) -> tuple[dict[str, Any], list[d
     # Segmentation kinds in the source's exact shares; polygons (the
     # jitterer's false positives) go to non-overlapping detections first,
     # and `area` to records that carry a segmentation first.
-    kinds = profile["dt_segmentation"]
-    total_kinds = max(sum(kinds.values()), 1)
+    dt_kinds = profile["dt_segmentation"]
+    total_kinds = max(sum(dt_kinds.values()), 1)
     order = np.lexsort((rng.random(n_dt), overlaps))
-    n_poly_dt = round(kinds.get("polygon", 0) / total_kinds * n_dt)
-    n_rle_dt = round(kinds.get("rle", 0) / total_kinds * n_dt)
+    n_poly_dt = round(dt_kinds.get("polygon", 0) / total_kinds * n_dt)
+    n_rle_dt = round(dt_kinds.get("rle", 0) / total_kinds * n_dt)
     dt_kind = np.zeros(n_dt, dtype=np.int8)  # 0 none, 1 polygon, 2 rle
     dt_kind[order[:n_poly_dt]] = 1
     dt_kind[order[n_poly_dt : n_poly_dt + n_rle_dt]] = 2
@@ -574,9 +563,7 @@ def generate(profile: dict[str, Any], seed: int) -> tuple[dict[str, Any], list[d
             det["segmentation"] = [[x, y, x + bw, y, x + bw, y + bh, x, y + bh]]
         elif dt_kind[j] == 2:
             h, w = int(sizes[dt_img[j], 0]), int(sizes[dt_img[j], 1])
-            target = next(dt_per_column) * dt_box[j, 2]
-            polygon = _shape(dt_box[j], 32, target, h, w, rng)
-            rle = _rle(polygon, h, w)
+            _, rle = _shape(dt_box[j], 32, next(dt_per_column) * dt_box[j, 2], h, w, rng)
             det["segmentation"] = {"size": [h, w], "counts": rle["counts"].decode()}
         dts.append(_ordered(det, templates["detection"], rng, j + 1))
 
@@ -609,11 +596,6 @@ class _Formatter:
         for i, (x, d) in enumerate(zip(values.tolist(), counts.tolist(), strict=True)):
             out[i] = _render(x, d)
         return out
-
-
-def _norm(counts: list[int]) -> np.ndarray:
-    p = np.asarray(counts, dtype=np.float64)
-    return p / p.sum()
 
 
 def _rle(polygon: list[float], h: int, w: int) -> dict[str, Any]:
@@ -680,8 +662,11 @@ def _part(box: np.ndarray, index: int, parts: int) -> np.ndarray:
 _ROUGHNESS = tuple(np.linspace(0.0, 0.95, 12).tolist())
 
 
-def _shape(box: np.ndarray, n: int, target: float, h: int, w: int, rng) -> list[float]:
-    """An `n`-vertex polygon in `box` whose RLE length is nearest `target`.
+def _shape(
+    box: np.ndarray, n: int, target: float, h: int, w: int, rng
+) -> tuple[list[float], dict[str, Any]]:
+    """An `n`-vertex polygon in `box` whose RLE length is nearest `target`,
+    with that RLE.
 
     Mask cost scales with run count, which a smooth ellipse underestimates
     against real object outlines; radial roughness adds runs until the
@@ -693,16 +678,17 @@ def _shape(box: np.ndarray, n: int, target: float, h: int, w: int, rng) -> list[
     # Alternate deep and shallow vertices (a star): concavities put several
     # runs in one column, which is what makes real outlines expensive.
     jitter = 0.5 * rng.random(n) + 0.5 * (np.arange(n) % 2)
-    best: list[float] = []
+    best: tuple[list[float], dict[str, Any]] = ([], {})
     best_gap = math.inf
     for roughness in _ROUGHNESS:
         r = 1 - roughness * jitter
         xs = bx + bw / 2 * (1 + r * np.cos(t))
         ys = by + bh / 2 * (1 + r * np.sin(t))
         polygon = np.stack([xs, ys], axis=1).ravel().tolist()
-        length = len(_rle(polygon, h, w)["counts"])
+        rle = _rle(polygon, h, w)
+        length = len(rle["counts"])
         if abs(length - target) < best_gap:
-            best, best_gap = polygon, abs(length - target)
+            best, best_gap = (polygon, rle), abs(length - target)
         if length >= target:
             break
     return best
@@ -713,7 +699,7 @@ def _crowd_counts(box: np.ndarray, length: int, h: int, w: int, rng) -> list[int
     lo = int(box[0]) * h
     hi = max(min(math.ceil(box[0] + box[2]), w) * h, lo + 2)
     k = max(min(length - 1, hi - lo - 1), 1)
-    cuts = np.sort(rng.choice(np.arange(lo + 1, hi), size=k, replace=False))
+    cuts = np.sort(lo + 1 + rng.choice(hi - lo - 1, size=k, replace=False))
     return np.diff(np.concatenate([[0], cuts, [h * w]])).astype(int).tolist()
 
 
@@ -726,6 +712,16 @@ def profile_path(name: str) -> Path:
     return PROFILE_DIR / f"{name}.json"
 
 
+def load_profile(name: str) -> dict[str, Any]:
+    profile = json.loads(profile_path(name).read_text())
+    if (version := profile.get("profile_version")) != PROFILE_VERSION:
+        raise ValueError(
+            f"{profile_path(name)} is profile v{version}, this code reads v{PROFILE_VERSION}; "
+            "re-run `bench twin profile`"
+        )
+    return profile
+
+
 def parse_workload(workload_name: str) -> tuple[str, int] | None:
     """``twin:<profile>[,seed=N]`` -> (profile, seed)."""
     if not workload_name.startswith(TWIN_PREFIX):
@@ -735,62 +731,95 @@ def parse_workload(workload_name: str) -> tuple[str, int] | None:
     return name, seed
 
 
-def workload_id(name: str, seed: int) -> str:
-    return f"twin_{name}_s{seed}"
+@dataclass(frozen=True)
+class Twin:
+    """A generated twin. Its id carries the content digest, so results of a
+    re-profiled or regenerated twin never land in an older one's cell."""
+
+    workload_id: str
+    gt_path: Path
+    dt_path: Path
+    profile: dict[str, Any]
+    measured_profile_path: Path
+
+    def measured_profile(self) -> dict[str, Any]:
+        """The twin's own statistics, extracted once and cached beside it."""
+        if self.measured_profile_path.exists():
+            return json.loads(self.measured_profile_path.read_text())
+        measured = extract(
+            self.gt_path, self.dt_path, masks=self.profile["masks"], source=self.workload_id
+        )
+        self.measured_profile_path.write_text(json.dumps(measured))
+        return measured
 
 
-def paths(name: str, seed: int) -> tuple[Path, Path, dict[str, Any]]:
-    """Materialize (or reuse) the twin's GT/DT files; return them and the profile."""
-    profile = json.loads(profile_path(name).read_text())
+def materialize(name: str, seed: int) -> Twin:
+    """Generate the twin's GT/DT files unless cached."""
+    profile = load_profile(name)
     digest = hashlib.sha256(
         json.dumps(profile, sort_keys=True).encode() + f"{seed}:{TWIN_VERSION}".encode()
     ).hexdigest()[:12]
-    cache = bench_cache_root() / "twin"
-    gt_out = cache / f"{name}_s{seed}_{digest}_gt.json"
-    dt_out = cache / f"{name}_s{seed}_{digest}_dt.json"
+    stem = bench_cache_root() / "twin" / f"{name}_s{seed}_{digest}"
+    gt_out, dt_out = Path(f"{stem}_gt.json"), Path(f"{stem}_dt.json")
     if not (gt_out.exists() and dt_out.exists()):
         gt, dts = generate(profile, seed)
-        cache.mkdir(parents=True, exist_ok=True)
-        item, key = profile["json"]["gt_separators"]
-        gt_out.write_text(json.dumps(gt, separators=(item, key)))
-        item, key = profile["json"]["dt_separators"]
-        dt_out.write_text(json.dumps(dts, separators=(item, key)))
-    return gt_out, dt_out, profile
+        gt_out.parent.mkdir(parents=True, exist_ok=True)
+        gt_out.write_text(json.dumps(gt, separators=tuple(profile["json"]["gt_separators"])))
+        dt_out.write_text(json.dumps(dts, separators=tuple(profile["json"]["dt_separators"])))
+    return Twin(
+        workload_id=f"twin_{name}_s{seed}_{digest}",
+        gt_path=gt_out,
+        dt_path=dt_out,
+        profile=profile,
+        measured_profile_path=Path(f"{stem}_profile.json"),
+    )
 
 
 SCALAR_TOLERANCE = 0.03
 HISTOGRAM_TOLERANCE = 0.05
+_MASK_IOUS = frozenset({"segm", "boundary"})
+# What the structural gate compares, and for which IoU types (None: all).
+# Mask complexity gates only mask cells: bbox evaluation never rasterizes a
+# segmentation, so there it shows up only as JSON bytes, gated for every type.
+_GATED_HISTOGRAMS: dict[str, frozenset[str] | None] = {
+    "cells_per_image": None,
+    "cell_gd": None,
+    "category_cells": None,
+    "gt_log_area": None,
+    "gt_log_aspect": None,
+    "gt_fill": None,
+    "gt_segmentation": None,
+    "gt_polygon_parts": None,
+    "gt_polygon_vertices": None,
+    "gt_crowd_counts_len": None,
+    "dt_best_iou": None,
+    "dt_score_matched": None,
+    "dt_score_unmatched": None,
+    "dt_segmentation": None,
+    "gt_rle_len": _MASK_IOUS,
+    "dt_rle_len": _MASK_IOUS,
+}
+_MASK_TOTALS = frozenset({"gt_rle_chars", "dt_rle_chars"})
 
 
 def compare_profiles(
     real: dict[str, Any], twin: dict[str, Any], iou: str
 ) -> list[tuple[str, str, bool]]:
-    """Structural checks for an `iou` cell: (name, detail, passed).
-
-    Mask complexity only gates mask cells: bbox evaluation never decodes a
-    segmentation, so there it matters only as JSON bytes, checked anyway.
-    """
+    """Structural checks for an `iou` cell: (name, detail, passed)."""
     checks: list[tuple[str, str, bool]] = []
     for key, value in real["totals"].items():
-        if "rle" in key and iou == "bbox":
+        if key in _MASK_TOTALS and iou not in _MASK_IOUS:
             continue
         other = twin["totals"].get(key, 0)
         rel = (other - value) / max(abs(value), 1)
         checks.append(
             (f"total {key}", f"{value} vs {other} ({rel:+.1%})", abs(rel) <= SCALAR_TOLERANCE)
         )
-    for key in sorted(real):
-        a, b = real[key], twin.get(key)
-        # `*per_column*` are generation inputs the mask-shape search only
-        # approximates; the cost-relevant RLE totals and lengths are checked.
-        skip = key in ("totals", "json", "digits", "image_sizes", "category_ids_by_rank")
-        skip = skip or "per_column" in key
-        skip = skip or ("rle" in key and iou == "bbox")
-        if skip or not isinstance(a, (list, dict)):
+    for key, ious in _GATED_HISTOGRAMS.items():
+        if key not in real or (ious is not None and iou not in ious):
             continue
-        if isinstance(a, list) and a and not isinstance(a[0], int):
-            continue
-        tv = _total_variation(a, b if b is not None else type(a)())
+        a = real[key]
+        tv = _total_variation(a, twin.get(key) or type(a)())
         checks.append((f"hist {key}", f"TV {tv:.3f}", tv <= HISTOGRAM_TOLERANCE))
     return checks
 
@@ -802,17 +831,27 @@ _TIME_FLOOR_NS = 20_000_000
 _MEMORY_FLOOR_BYTES = 16 << 20
 
 
-def _cell_stats(path: Path) -> dict[str, float]:
+def _load_result(path: Path) -> BenchResult:
+    return BenchResult.model_validate(upgrade_schema(json.loads(path.read_bytes())))
+
+
+def _cell_stats(result: BenchResult) -> dict[str, float]:
     """Median over measured reps of each stage's wall, CPU and peak RSS."""
-    reps = [r for r in json.loads(path.read_text())["reps"] if not r["warmup"]]
+    reps = [r for r in result.reps if not r.warmup]
     out: dict[str, float] = {}
-    for stage in reps[0]["stages"]:
+    for stage in reps[0].stages:
         for field in ("wall_ns", "cpu_ns", "peak_rss_bytes"):
-            values = [r["stages"][stage].get(field) for r in reps if stage in r["stages"]]
+            values = [getattr(r.stages[stage], field) for r in reps if stage in r.stages]
             values = [v for v in values if v is not None]
             if values:
-                out[f"{stage}.{field}"] = float(np.median(values))
+                out[f"{stage}.{field}"] = float(aggregate_stage(values).median_ns)
     return out
+
+
+def _unstable(result: BenchResult) -> bool:
+    """Failed release mode's IQR gate: measured on a busy host."""
+    gate = result.aggregation.iqr_gate if result.aggregation else None
+    return gate is not None and not gate.passed
 
 
 def compare_results(real_dir: Path, twin_dir: Path) -> list[tuple[str, str, bool]]:
@@ -825,20 +864,12 @@ def compare_results(real_dir: Path, twin_dir: Path) -> list[tuple[str, str, bool
         if not twin_file.exists():
             checks.append((f"{impl}", "no twin result", False))
             continue
-        # A cell that failed release mode's IQR gate was measured on a busy
-        # host; its medians cannot confirm or refute equivalence.
-        unstable = [
-            side
-            for side, path in (("real", real_file), ("twin", twin_file))
-            if ((json.loads(path.read_text()).get("aggregation") or {}).get("iqr_gate") or {}).get(
-                "passed"
-            )
-            is False
-        ]
-        if unstable:
+        results = {"real": _load_result(real_file), "twin": _load_result(twin_file)}
+        # Unstable medians can neither confirm nor refute equivalence.
+        if unstable := [side for side, r in results.items() if _unstable(r)]:
             detail = f"IQR gate failed on {' and '.join(unstable)}: re-run on a quiet host"
             checks.append((f"{impl} stable measurement", detail, False))
-        real, other = _cell_stats(real_file), _cell_stats(twin_file)
+        real, other = _cell_stats(results["real"]), _cell_stats(results["twin"])
         for key, a in sorted(real.items()):
             if key not in other:
                 continue

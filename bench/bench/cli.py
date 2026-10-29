@@ -25,6 +25,7 @@ from typing import cast, get_args
 
 import click
 
+from bench.harness import machine
 from bench.harness.matrix import (
     ALL_IMPLS,
     IMPL_IOU_SUPPORT,
@@ -33,7 +34,7 @@ from bench.harness.matrix import (
     impls_for_metric,
 )
 from bench.harness.migrations.v1_to_v2_tree import migrate_tree
-from bench.harness.orchestrate import CellSpec, run_cell
+from bench.harness.orchestrate import CellSpec, result_dir, run_cell
 from bench.harness.paths import BENCH_ROOT, REPO_ROOT
 from bench.harness.platform_check import UnsupportedPlatformError, ensure_linux
 from bench.harness.schema import IouType, Mode, Paradigm
@@ -730,10 +731,6 @@ def migrate_v1_to_v2_cmd(keep_v1_paths: bool, results_root: str | None) -> None:
         click.echo(f"removed {stats.v1_paths_removed} v1 cell director(y/ies)")
 
 
-if __name__ == "__main__":
-    sys.exit(main())
-
-
 @main.group("twin")
 def twin_grp() -> None:
     """Synthetic twins of real workloads (ADR-0067)."""
@@ -760,7 +757,10 @@ def twin_profile_cmd(workload: str, name: str, masks: bool) -> None:
 @click.argument("twin_workload")
 @click.option("--iou", type=click.Choice(_IOU_CHOICES), default="bbox", show_default=True)
 @click.option("--output", type=click.Path(dir_okay=False), default=None)
-def twin_compare_cmd(real: str, twin_workload: str, iou: str, output: str | None) -> None:
+@click.option("--sha", "git_sha", default=None, help="Results commit (default: HEAD).")
+def twin_compare_cmd(
+    real: str, twin_workload: str, iou: str, output: str | None, git_sha: str | None
+) -> None:
     """Gate TWIN_WORKLOAD against REAL: structure, then measured cost.
 
     Cost compares the newest `bench run` results of both workloads that
@@ -769,29 +769,24 @@ def twin_compare_cmd(real: str, twin_workload: str, iou: str, output: str | None
     spec = twin.parse_workload(twin_workload)
     if spec is None:
         raise click.UsageError("TWIN_WORKLOAD must be twin:<name>[,seed=N]")
-    name, _ = spec
-    real_wl, twin_wl = resolve(real, REPO_ROOT), resolve(twin_workload, REPO_ROOT)
-    if not (isinstance(real_wl, InstanceWorkload) and isinstance(twin_wl, InstanceWorkload)):
+    real_wl, made = resolve(real, REPO_ROOT), twin.materialize(*spec)
+    if not isinstance(real_wl, InstanceWorkload):
         raise click.UsageError("twins cover instance workloads only")
-    stored = json.loads(twin.profile_path(name).read_text())
-    twin_profile = twin.extract(
-        twin_wl.gt_path, twin_wl.dt_path, masks=stored["masks"], source=twin_workload
-    )
-    checks = twin.compare_profiles(stored, twin_profile, iou)
+    checks = twin.compare_profiles(made.profile, made.measured_profile(), iou)
 
-    results = BENCH_ROOT / "results"
-    real_dirs = sorted(
-        results.glob(f"*/*/instance/{real_wl.workload_id}/{iou}"),
-        key=lambda p: p.stat().st_mtime,
+    sha = git_sha or machine.git_sha(REPO_ROOT)
+    cell = tuple(
+        result_dir(
+            results_root=BENCH_ROOT / "results",
+            git_sha=sha,
+            machine_fp=machine.fingerprint(),
+            workload_id=workload_id,
+            iou_type=cast(IouType, iou),
+        )
+        for workload_id in (real_wl.workload_id, made.workload_id)
     )
-    cell = None
-    for real_dir in reversed(real_dirs):
-        twin_dir = real_dir.parents[1] / twin_wl.workload_id / iou
-        if twin_dir.is_dir():
-            cell = (real_dir, twin_dir)
-            break
-    if cell is None:
-        checks.append(("cost", "no results for both workloads at one SHA/machine", False))
+    if not all(d.is_dir() for d in cell):
+        checks.append(("cost", f"no results for both workloads at {sha} on this machine", False))
     else:
         checks.extend(twin.compare_results(*cell))
 
@@ -812,3 +807,7 @@ def twin_compare_cmd(real: str, twin_workload: str, iou: str, output: str | None
         Path(output).write_text(md)
     click.echo(md, nl=False)
     sys.exit(0 if passed else 1)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -403,14 +403,13 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
 
     # ADR-0067 synthetic twin of a profiled real workload.
     if (spec := twin.parse_workload(workload_name)) is not None:
-        name, seed = spec
-        gt, dt, profile = twin.paths(name, seed)
+        made = twin.materialize(*spec)
         return InstanceWorkload(
-            workload_id=twin.workload_id(name, seed),
-            gt_path=gt,
-            dt_path=dt,
+            workload_id=made.workload_id,
+            gt_path=made.gt_path,
+            dt_path=made.dt_path,
             supported_iou_types=frozenset(
-                {"bbox", "segm", "boundary"} if profile["masks"] else {"bbox"}
+                {"bbox", "segm", "boundary"} if made.profile["masks"] else {"bbox"}
             ),
         )
 
