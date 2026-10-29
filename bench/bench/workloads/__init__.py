@@ -78,6 +78,7 @@ from bench.workloads import (
     smoke,
     synthetic,
     synthetic_semantic,
+    twin,
 )
 
 # Streaming workload modules import this module's StreamingWorkload —
@@ -398,6 +399,18 @@ def resolve(workload_name: str, repo_root: Path) -> Workload:
             gt_path=gt,
             dt_path=dt,
             supported_iou_types=frozenset({"segm", "boundary"}),
+        )
+
+    # ADR-0067 synthetic twin of a profiled real workload.
+    if (spec := twin.parse_workload(workload_name)) is not None:
+        made = twin.materialize(*spec)
+        return InstanceWorkload(
+            workload_id=made.workload_id,
+            gt_path=made.gt_path,
+            dt_path=made.dt_path,
+            supported_iou_types=frozenset(
+                {"bbox", "segm", "boundary"} if made.profile["masks"] else {"bbox"}
+            ),
         )
 
     if workload_name.startswith(_SYNTHETIC_PREFIX):

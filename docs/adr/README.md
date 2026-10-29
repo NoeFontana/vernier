@@ -146,6 +146,7 @@ else is detail.
 | [0064](0064-dataset-handle-on-diagnostic-surfaces.md) | The parsed pair (`CocoDataset` + `DetectionsInput`) on every instance surface — TIDE, LRP, confusion matrix, FP-IoU histogram, `tables=` / `manifest=` | proposed |
 | [0065](0065-federated-cap-on-the-streaming-evaluators.md) | Apply the LVIS per-image cap per streaming batch (`StreamingEvaluator`, `BackgroundEvaluator`) | proposed |
 | [0066](0066-columnar-detections-and-packed-eval-grid.md) | Columnar detection storage, `DetectionsBatch` ingest, and packed evaluation grids | proposed |
+| [0067](0067-synthetic-twin-workloads.md) | Gate synthetic twins of real bench workloads on measured equivalence | accepted |
 
 ### TIDE design package — proposed cluster
 

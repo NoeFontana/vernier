@@ -18,6 +18,7 @@ populated ``IMPL_PARADIGM_SUPPORT``.
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from typing import cast, get_args
 
 import click
 
+from bench.harness import machine
 from bench.harness.matrix import (
     ALL_IMPLS,
     IMPL_IOU_SUPPORT,
@@ -33,7 +35,7 @@ from bench.harness.matrix import (
     impls_for_metric,
 )
 from bench.harness.migrations.v1_to_v2_tree import migrate_tree
-from bench.harness.orchestrate import CellSpec, run_cell
+from bench.harness.orchestrate import CellSpec, result_dir, run_cell
 from bench.harness.paths import BENCH_ROOT, REPO_ROOT
 from bench.harness.platform_check import UnsupportedPlatformError, ensure_linux
 from bench.harness.schema import IouType, Mode, Paradigm
@@ -54,6 +56,7 @@ from bench.workloads import (
     PanopticWorkload,
     SemanticWorkload,
     resolve,
+    twin,
 )
 from bench.workloads.synthetic import SCALING_AXES
 
@@ -737,6 +740,84 @@ def migrate_v1_to_v2_cmd(keep_v1_paths: bool, results_root: str | None) -> None:
     )
     if not keep_v1_paths:
         click.echo(f"removed {stats.v1_paths_removed} v1 cell director(y/ies)")
+
+
+@main.group("twin")
+def twin_grp() -> None:
+    """Synthetic twins of real workloads (ADR-0067)."""
+
+
+@twin_grp.command("profile")
+@click.argument("workload")
+@click.option("--name", required=True, help="Profile name; the twin is `twin:<name>`.")
+@click.option("--masks/--no-masks", default=False, help="Also profile mask complexity.")
+def twin_profile_cmd(workload: str, name: str, masks: bool) -> None:
+    """Write the statistics profile of a real instance WORKLOAD."""
+    resolved = resolve(workload, REPO_ROOT)
+    if not isinstance(resolved, InstanceWorkload):
+        raise click.UsageError("twins cover instance workloads only")
+    profile = twin.extract(resolved.gt_path, resolved.dt_path, masks=masks, source=workload)
+    out = twin.profile_path(name)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(profile, indent=1) + "\n")
+    click.echo(f"twin: wrote {out}")
+
+
+@twin_grp.command("compare")
+@click.argument("real")
+@click.argument("twin_workload")
+@click.option("--iou", type=click.Choice(_IOU_CHOICES), default="bbox", show_default=True)
+@click.option("--output", type=click.Path(dir_okay=False), default=None)
+@click.option("--sha", "git_sha", default=None, help="Results commit (default: HEAD).")
+def twin_compare_cmd(
+    real: str, twin_workload: str, iou: str, output: str | None, git_sha: str | None
+) -> None:
+    """Gate TWIN_WORKLOAD against REAL: structure, then measured cost.
+
+    Cost compares the newest `bench run` results of both workloads that
+    share a git SHA and machine; run every impl on both first.
+    """
+    spec = twin.parse_workload(twin_workload)
+    if spec is None:
+        raise click.UsageError("TWIN_WORKLOAD must be twin:<name>[,seed=N]")
+    real_wl, made = resolve(real, REPO_ROOT), twin.materialize(*spec)
+    if not isinstance(real_wl, InstanceWorkload):
+        raise click.UsageError("twins cover instance workloads only")
+    checks = twin.compare_profiles(made.profile, made.measured_profile(), iou)
+
+    sha = git_sha or machine.git_sha(REPO_ROOT)
+    cell = tuple(
+        result_dir(
+            results_root=BENCH_ROOT / "results",
+            git_sha=sha,
+            machine_fp=machine.fingerprint(),
+            workload_id=workload_id,
+            iou_type=cast(IouType, iou),
+        )
+        for workload_id in (real_wl.workload_id, made.workload_id)
+    )
+    if not all(d.is_dir() for d in cell):
+        checks.append(("cost", f"no results for both workloads at {sha} on this machine", False))
+    else:
+        checks.extend(twin.compare_results(*cell))
+
+    passed = all(ok for _, _, ok in checks)
+    lines = [
+        f"# Twin check: `{twin_workload}` vs `{real}` ({iou})",
+        "",
+        f"**{'PASS' if passed else 'FAIL'}**: {sum(ok for *_, ok in checks)}/{len(checks)} checks",
+        "",
+        "| check | detail | ok |",
+        "|---|---|---|",
+        *(f"| {n} | {d} | {'✅' if ok else '❌'} |" for n, d, ok in checks),
+    ]
+    if cell is not None:
+        lines += ["", f"Results: `{cell[0]}` vs `{cell[1]}`"]
+    md = "\n".join(lines) + "\n"
+    if output:
+        Path(output).write_text(md)
+    click.echo(md, nl=False)
+    sys.exit(0 if passed else 1)
 
 
 if __name__ == "__main__":
