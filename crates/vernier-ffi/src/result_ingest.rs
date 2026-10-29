@@ -482,7 +482,25 @@ pub(crate) fn matrix_to_inputs<'py>(
 }
 
 /// Exact-integer round-trip check for a float64 id column.
+///
+/// Hot path uses inline IEEE-754 integer conversion (`cvttsd2si` +
+/// `cvtsi2sd` on x86_64 SSE2) instead of `f64::fract` (which lowers to an
+/// external `libm::trunc` call on baseline x86_64 builds without SSE4.1).
+#[inline]
 fn exact_int(v: f64, col: usize, row: usize) -> PyResult<i64> {
+    if v.abs() <= MAX_EXACT_INT_F64 {
+        let i = v as i64;
+        #[allow(clippy::cast_precision_loss, clippy::float_cmp)]
+        if (i as f64) == v {
+            return Ok(i);
+        }
+    }
+    exact_int_cold(v, col, row)
+}
+
+#[cold]
+#[inline(never)]
+fn exact_int_cold(v: f64, col: usize, row: usize) -> PyResult<i64> {
     let name = COL_NAMES[col];
     if !v.is_finite() {
         return Err(PyValueError::new_err(format!(
@@ -495,14 +513,11 @@ fn exact_int(v: f64, col: usize, row: usize) -> PyResult<i64> {
              the (N, 7) float64 route will not truncate an id"
         )));
     }
-    if v.abs() > MAX_EXACT_INT_F64 {
-        return Err(PyValueError::new_err(format!(
-            "detections[{row}].{name}: {v} exceeds 2^53, beyond which float64 \
-             cannot represent every integer exactly; pass this dataset as a \
-             list of result dicts or as JSON"
-        )));
-    }
-    Ok(v as i64)
+    Err(PyValueError::new_err(format!(
+        "detections[{row}].{name}: {v} exceeds 2^53, beyond which float64 \
+         cannot represent every integer exactly; pass this dataset as a \
+         list of result dicts or as JSON"
+    )))
 }
 
 /// Is this object plausibly the `(N, 7)` matrix rather than a sequence
@@ -521,9 +536,11 @@ mod tests {
     #[test]
     fn exact_int_accepts_integral_values() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(exact_int(0.0, 0, 0)?, 0);
+        assert_eq!(exact_int(-0.0, 0, 0)?, 0);
         assert_eq!(exact_int(42.0, 6, 0)?, 42);
         assert_eq!(exact_int(-7.0, 0, 0)?, -7);
         assert_eq!(exact_int(MAX_EXACT_INT_F64, 0, 0)?, 9_007_199_254_740_992);
+        assert_eq!(exact_int(-MAX_EXACT_INT_F64, 0, 0)?, -9_007_199_254_740_992);
         Ok(())
     }
 
@@ -541,6 +558,8 @@ mod tests {
 
     #[test]
     fn exact_int_rejects_beyond_two_pow_53() {
+        assert!(exact_int(MAX_EXACT_INT_F64 + 2.0, 0, 0).is_err());
+        assert!(exact_int(-MAX_EXACT_INT_F64 - 2.0, 0, 0).is_err());
         assert!(exact_int(MAX_EXACT_INT_F64 * 4.0, 0, 0).is_err());
         assert!(exact_int(-MAX_EXACT_INT_F64 * 4.0, 0, 0).is_err());
     }
