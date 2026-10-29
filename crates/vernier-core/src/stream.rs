@@ -19,14 +19,16 @@
 use std::collections::{HashMap, HashSet};
 use std::mem::size_of;
 
-use crate::accumulate::{accumulate, AccumulateParams, Accumulated, PerImageEval};
+use crate::accumulate::{
+    accumulate_packed, AccumulateParams, Accumulated, PackedCategory, PackedEvalGrid, PerImageEval,
+};
 use crate::dataset::{
     AnnId, CategoryId, CocoDataset, CocoDetection, CocoDetections, DetectionInput, EvalDataset,
     ImageId,
 };
 use crate::error::EvalError;
 use crate::evaluate::{
-    evaluate_subset_with, evaluate_with, EvalImageMeta, EvalKernel, OwnedEvaluateParams,
+    evaluate_subset_with, EvalImageMeta, EvalKernel, OwnedEvaluateParams, PackedPass,
 };
 use crate::evaluate_parallel::evaluate_subset_with_parallel;
 use crate::parity::{recall_thresholds, ParityMode};
@@ -280,7 +282,7 @@ impl<K: EvalKernel> ParsedDetections<K> {
 ///
 /// Holds a [`CocoDataset`] plus a sparse store of [`PerImageEval`] cells
 /// produced by per-batch `match_image` calls. [`Self::snapshot`] runs
-/// [`accumulate`] + summarize over the current store at any time;
+/// [`accumulate_grid`](crate::accumulate::accumulate_grid) + summarize over the current store at any time;
 /// [`Self::finalize`] consumes the evaluator and returns the same
 /// [`Summary`]. Bit-identical to a batch run over the union of all
 /// `update()` batches submitted in order.
@@ -316,11 +318,12 @@ pub struct StreamingEvaluator<K: EvalKernel> {
     /// incrementally so `compute_summary` can decide which GT-only
     /// cells to overlay without re-walking `seen_images` every call.
     seen_image_indices: HashSet<usize>,
-    /// Lazily-built GT-only `(K, A, I)` grid used by `compute_summary`
-    /// to file cells for images that have not yet received any
-    /// detection. GT is immutable, so the grid is computed at most
-    /// once across the evaluator's lifetime.
-    gt_only_cells: Option<Vec<Option<Box<PerImageEval>>>>,
+    /// Lazily-built GT-only packed grid used by snapshots to file cells
+    /// for images that have not yet received any detection. Packed, so
+    /// it costs the occupied GT cells rather than a `K·A·I` pointer grid.
+    /// GT is immutable, so it is computed at most once across the
+    /// evaluator's lifetime.
+    gt_only_cells: Option<PackedEvalGrid>,
     n_detections: usize,
     /// Monotonic DT-id counter. Reserved for the strict-mode
     /// `(score, stream_position)` tiebreak (ADR-0013 §Determinism); not
@@ -463,7 +466,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// # Errors
     ///
     /// Propagates [`EvalError`] from the parse path, the underlying
-    /// batch evaluation (the [`evaluate_with`] pass restricted to the
+    /// batch evaluation (the [`evaluate_with`](crate::evaluate::evaluate_with) pass restricted to the
     /// batch's images), and the budget check
     /// ([`EvalError::OutOfBudget`]). On any error the evaluator state
     /// is unchanged and remains usable.
@@ -483,7 +486,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     /// - [`EvalError::OutOfBudget`] if the projected post-insert total
     ///   crosses [`MemoryBudget::bytes`]. State is unchanged on error.
     /// - Any [`EvalError`] from the underlying batch evaluation (the
-    ///   [`evaluate_with`] pass restricted to the batch's images).
+    ///   [`evaluate_with`](crate::evaluate::evaluate_with) pass restricted to the batch's images).
     pub fn update_parsed(
         &mut self,
         parsed: ParsedDetections<K>,
@@ -519,7 +522,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             ParityMode,
             &K,
             Option<&[usize]>,
-        ) -> Result<crate::evaluate::EvalGrid, EvalError>,
+        ) -> Result<PackedPass, EvalError>,
     ) -> Result<UpdateReport, EvalError> {
         // Reject any image_id seen in a prior batch. This keeps update()
         // additive — each cell is built once, so finalize() is
@@ -550,10 +553,9 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             });
         }
         // The batch's grid indices, sorted: the matching pass visits only
-        // these images, so an update's matching costs its own images, not
-        // the whole GT (the dense `K·A·I` result grid it still allocates
-        // goes away with ADR-0066's packed grid). Unknown image ids name no
-        // grid image and produce no cells.
+        // these images, and emits a packed grid plus sparse side outputs,
+        // so an update costs its own images, never the whole GT. Unknown
+        // image ids name no grid image and produce no cells.
         let mut batch_image_indices: Vec<usize> = batch_image_ids
             .iter()
             .filter_map(|&id| self.grid_meta.image_id_to_idx.get(&ImageId(id)).copied())
@@ -564,7 +566,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // still marked seen.
         let detections = detections.trim_for(&self.dataset, self.params.max_dets_per_image);
 
-        let mut grid = evaluate(
+        let pass = evaluate(
             &self.dataset,
             &detections,
             self.params.borrow(),
@@ -572,45 +574,38 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             &self.kernel,
             Some(&batch_image_indices),
         )?;
-        self.merge_batch_grid(
-            &detections,
-            &batch_image_ids,
-            &batch_image_indices,
-            &mut grid,
-        )
+        self.merge_batch_pass(&detections, &batch_image_ids, &batch_image_indices, pass)
     }
 
     /// Shared post-matching bookkeeping for [`Self::update_parsed`] and
-    /// [`Self::update_parsed_parallel`]. Moves the batch images' cells out
-    /// of the per-batch grid, runs the budget check, and commits them into
-    /// the streaming store.
-    fn merge_batch_grid(
+    /// [`Self::update_parsed_parallel`]. Unpacks the batch's populated
+    /// cells into the `(k, a, i)` store (the ADR-0013 / ADR-0031 cell
+    /// format), runs the budget check, and commits. Everything here is
+    /// proportional to the batch: the subset pass emits sparse metadata
+    /// and retained IoUs, and never a `K·A·I` grid.
+    fn merge_batch_pass(
         &mut self,
         detections: &CocoDetections,
         batch_image_ids: &[i64],
         batch_image_indices: &[usize],
-        grid: &mut crate::evaluate::EvalGrid,
+        pass: PackedPass,
     ) -> Result<UpdateReport, EvalError> {
-        // Pre-compute insertion cost. Iterate batch images first so the
-        // walk is `O(batch_size * K * A)` instead of `O(I * K * A)` —
-        // critical at COCO scale where `I` is in the thousands but a
-        // typical training-loop batch covers tens of images.
         let n_t = self.params.iou_thresholds.len();
-        let n_k = grid.n_categories;
-        let n_a = grid.n_area_ranges;
-        let n_i = grid.n_images;
+        let PackedPass {
+            packed,
+            meta,
+            retained,
+        } = pass;
+        let n_a = packed.n_area_ranges;
         let mut staged: Vec<(usize, usize, usize, PerImageEval, CellCost)> = Vec::new();
         let mut cost_total = CellCost::default();
-        for &i in batch_image_indices {
-            for k in 0..n_k {
+        for (k, cat) in packed.categories.iter().enumerate() {
+            for (occ, &i) in cat.occupied_images.iter().enumerate() {
                 for a in 0..n_a {
-                    let flat = k * n_a * n_i + a * n_i + i;
-                    // The grid is this batch's alone: move, don't clone.
-                    if let Some(cell) = grid.eval_imgs.get_mut(flat).and_then(Option::take) {
-                        let cost = cell_cost(&cell, n_t);
-                        cost_total = cost_total.add(cost);
-                        staged.push((k, a, i, *cell, cost));
-                    }
+                    let cell = cat.extract_cell(a, occ);
+                    let cost = cell_cost(&cell, n_t);
+                    cost_total = cost_total.add(cost);
+                    staged.push((k, a, i as usize, cell, cost));
                 }
             }
         }
@@ -649,10 +644,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // are exactly the batch's: move them all, no `(k, i)` probing.
         // Streaming rejects duplicate image_ids earlier, so each (k, i)
         // entry is inserted at most once across all `update()` calls.
-        if let (Some(store), Some(per_batch)) =
-            (self.retained_ious.as_mut(), grid.retained_ious.take())
-        {
-            for ((k, i), iou) in per_batch.into_entries() {
+        if let (Some(store), Some(per_batch)) = (self.retained_ious.as_mut(), retained) {
+            for ((k, i), iou) in per_batch {
                 store.insert(k, i, iou);
             }
         }
@@ -661,20 +654,8 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         // is on — both are needed by per_detection / per_pair table
         // builders. Cells without retention skip this work entirely.
         if self.params.retain_iou {
-            for &i in batch_image_indices {
-                for k in 0..n_k {
-                    for a in 0..n_a {
-                        let flat = k * n_a * n_i + a * n_i + i;
-                        if let Some(meta) = grid
-                            .eval_imgs_meta
-                            .get_mut(flat)
-                            .and_then(Option::take)
-                            .map(|b| *b)
-                        {
-                            self.meta_cells.insert((k, a, i), meta);
-                        }
-                    }
-                }
+            for (key, m) in meta.into_iter().flatten() {
+                self.meta_cells.insert(key, *m);
             }
             self.dets_seen.extend(detections.records());
         }
@@ -715,7 +696,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// # Errors
     ///
-    /// Propagates [`EvalError`] from the underlying [`accumulate`] or
+    /// Propagates [`EvalError`] from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) or
     /// summarize call.
     pub fn snapshot(&mut self) -> Result<Summary, EvalError> {
         self.compute_summary()
@@ -725,7 +706,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// # Errors
     ///
-    /// Propagates [`EvalError`] from the underlying [`accumulate`] or
+    /// Propagates [`EvalError`] from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) or
     /// summarize call.
     pub fn finalize(mut self) -> Result<Summary, EvalError> {
         self.compute_summary()
@@ -752,7 +733,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// # Errors
     ///
-    /// Propagates [`EvalError`] from the underlying [`accumulate`] or
+    /// Propagates [`EvalError`] from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) or
     /// summarize call.
     pub fn snapshot_with_cells(&mut self) -> Result<SnapshotWithCells, EvalError> {
         self.compute_summary_and_cells()
@@ -773,7 +754,7 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     ///
     /// - [`EvalError::NotImplemented`] when `request.per_detection` or
     ///   `request.per_pair` is set.
-    /// - Any error from the underlying [`accumulate`] / summarize /
+    /// - Any error from the underlying [`accumulate_grid`](crate::accumulate::accumulate_grid) / summarize /
     ///   [`crate::tables::build_per_image`] / [`crate::tables::build_per_class`] calls.
     pub fn finalize_with_tables(
         mut self,
@@ -811,50 +792,35 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             });
         }
 
-        // Build a synthetic EvalGrid from the cells store + GT-only
-        // overlay, identical in shape to what `evaluate_with` would
-        // have produced for the union of all submitted batches. The
-        // dense `eval_imgs` slice fully drives `build_per_image` /
-        // `build_per_class`; `eval_imgs_meta` is densified from
-        // `meta_cells` for per_detection / per_pair, and
-        // `retained_ious` is cloned from the streaming store. GT-only
-        // overlay images leave `eval_imgs_meta[flat]` at None — they
-        // contribute no detections, so per_detection / per_pair skip them.
-        let eval_imgs = self.densify_with_gt_overlay()?;
+        // A synthetic EvalGrid over the cells store + GT-only overlay,
+        // identical in content to what `evaluate_with` would have produced
+        // for the union of all submitted batches, and packed like it: the
+        // table builders walk occupied cells only. `eval_imgs_meta` is
+        // densified from `meta_cells` only under `retain_iou` (the
+        // builders that read it are refused above otherwise); GT-only
+        // overlay images leave it `None` — they contribute no detections,
+        // so per_detection / per_pair skip them.
+        let packed = self.packed_snapshot()?;
+        let (summary, accumulated) = self.summarize_packed(&packed)?;
         let n_k = self.grid_meta.n_categories;
         let n_a = self.grid_meta.n_area_ranges;
         let n_i = self.grid_meta.n_images;
-        let total = n_k * n_a * n_i;
         let eval_imgs_meta: Vec<Option<Box<EvalImageMeta>>> = if self.params.retain_iou {
-            let mut out: Vec<Option<Box<EvalImageMeta>>> = Vec::with_capacity(total);
-            for k in 0..n_k {
-                for a in 0..n_a {
-                    for i in 0..n_i {
-                        out.push(self.meta_cells.get(&(k, a, i)).cloned().map(Box::new));
-                    }
-                }
+            let mut out: Vec<Option<Box<EvalImageMeta>>> = vec![None; n_k * n_a * n_i];
+            for (&(k, a, i), m) in &self.meta_cells {
+                out[(k * n_a + a) * n_i + i] = Some(Box::new(m.clone()));
             }
             out
         } else {
-            vec![None; total]
+            Vec::new()
         };
-
-        let synthetic_grid = crate::evaluate::EvalGrid {
-            eval_imgs,
+        let synthetic_grid = crate::evaluate::EvalGrid::from_packed(
+            packed,
             eval_imgs_meta,
-            // Dense either way — the non-`retain_iou` branch above fills
-            // `total` `None`s rather than leaving the vec empty — and the
-            // builders that read cell metadata are already refused above
-            // unless `retain_iou` is on.
-            builds_meta: true,
-            n_categories: n_k,
-            n_area_ranges: n_a,
-            n_images: n_i,
-            retained_ious: self.retained_ious.clone(),
-        };
-
+            self.params.retain_iou,
+            self.retained_ious.clone(),
+        );
         let max_dets: [usize; 3] = [1, 10, 100];
-        let (summary, accumulated) = self.summarize_dense(&synthetic_grid.eval_imgs())?;
 
         // Build a fresh `CocoDetections` view over every detection seen
         // so far when per_detection is requested; cheaper tables don't
@@ -1020,31 +986,37 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
         Ok(())
     }
 
-    /// Compute the GT-only `(K, A, I)` grid once and cache it. Subsequent
-    /// snapshots reuse the cached grid; GT is immutable, so the
-    /// underlying `evaluate_with` result never goes stale.
+    /// Compute the GT-only packed grid once and cache it. Subsequent
+    /// snapshots reuse it; GT is immutable, so it never goes stale.
     fn ensure_gt_only_cells(&mut self) -> Result<(), EvalError> {
-        if self.gt_only_cells.is_some() {
-            return Ok(());
+        if self.gt_only_cells.is_none() {
+            let empty_dt = CocoDetections::from_inputs(Vec::new())?;
+            // Summary-only pass: the overlay contributes no detections, so
+            // it has no metadata or IoU matrices worth retaining.
+            let params = crate::evaluate::EvaluateParams {
+                retain_iou: false,
+                retain_meta: false,
+                ..self.params.borrow()
+            };
+            let pass = evaluate_subset_with(
+                &self.dataset,
+                &empty_dt,
+                params,
+                self.parity_mode,
+                &self.kernel,
+                None,
+            )?;
+            self.gt_only_cells = Some(pass.packed);
         }
-        let empty_dt = CocoDetections::from_inputs(Vec::new())?;
-        let grid = evaluate_with(
-            &self.dataset,
-            &empty_dt,
-            self.params.borrow(),
-            self.parity_mode,
-            &self.kernel,
-        )?;
-        self.gt_only_cells = Some(grid.into_eval_imgs());
         Ok(())
     }
 
     fn compute_summary_and_cells(&mut self) -> Result<SnapshotWithCells, EvalError> {
-        let eval_imgs = self.densify_with_gt_overlay()?;
-        let (summary, _accumulated) = self.summarize_dense(&eval_imgs)?;
+        let packed = self.packed_snapshot()?;
+        let (summary, _accumulated) = self.summarize_packed(&packed)?;
         Ok(SnapshotWithCells {
             summary,
-            eval_imgs,
+            eval_imgs: packed.materialize_eval_imgs(),
             n_categories: self.grid_meta.n_categories,
             n_area_ranges: self.grid_meta.n_area_ranges,
             iou_thresholds: self.params.iou_thresholds.clone(),
@@ -1053,62 +1025,134 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
     }
 
     fn compute_summary(&mut self) -> Result<Summary, EvalError> {
-        let eval_imgs = self.densify_with_gt_overlay()?;
-        let (summary, _accumulated) = self.summarize_dense(&eval_imgs)?;
+        let packed = self.packed_snapshot()?;
+        let (summary, _accumulated) = self.summarize_packed(&packed)?;
         Ok(summary)
     }
 
-    /// Densify the per-image cell store with the GT-only overlay for
-    /// images that never received a detection across the stream.
-    /// Without this overlay, streaming `finalize().stats` diverges
-    /// from `Evaluator.evaluate(...).stats` whenever GT contains
-    /// images with no DTs anywhere — see ADR-0013 §"Per-image cell
-    /// coverage". Mutates `self` only to populate the lazy
-    /// `gt_only_cells` cache on first call.
-    fn densify_with_gt_overlay(&mut self) -> Result<Vec<Option<Box<PerImageEval>>>, EvalError> {
-        let mut eval_imgs = self.cells.flatten(&self.grid_meta);
-        // GT images covered, not ids seen: an id outside the GT would
-        // otherwise count toward "every image seen" and drop the overlay
-        // for a GT image that never got a detection, inflating recall.
-        if self.images_pending() == 0 {
-            return Ok(eval_imgs);
-        }
-        self.ensure_gt_only_cells()?;
+    /// Pack the per-image cell store, with the GT-only overlay for images
+    /// that never received a detection, into the grid a batch
+    /// `evaluate_with` over the union of every submitted batch produces.
+    ///
+    /// Without the overlay, streaming `finalize().stats` diverges from
+    /// `Evaluator.evaluate(...).stats` whenever GT contains images with no
+    /// DTs anywhere — see ADR-0013 §"Per-image cell coverage". A seen
+    /// image's cells all come from the store (its batch pass visited
+    /// every category it has GT or DT in); an unseen image's come from
+    /// the overlay. Each category is rebuilt image-ascending — the order
+    /// accumulation's stable score sort breaks ties by — so the result is
+    /// the batch grid cell for cell. Costs `O(C log C)` in the occupied
+    /// cells `C`, never `O(K·A·I)`. Mutates `self` only to populate the
+    /// lazy overlay on first call.
+    fn packed_snapshot(&mut self) -> Result<PackedEvalGrid, EvalError> {
         let n_k = self.grid_meta.n_categories;
         let n_a = self.grid_meta.n_area_ranges;
         let n_i = self.grid_meta.n_images;
-        let gt_only = self
-            .gt_only_cells
-            .as_ref()
-            .ok_or_else(|| EvalError::InvalidConfig {
-                detail: "gt_only_cells cache missing after init".into(),
-            })?;
-        for i in 0..n_i {
-            if self.seen_image_indices.contains(&i) {
-                continue;
+        let n_t = self.params.iou_thresholds.len();
+        // GT images covered, not ids seen: an id outside the GT would
+        // otherwise count toward "every image seen" and drop the overlay
+        // for a GT image that never got a detection, inflating recall.
+        if self.images_pending() > 0 {
+            self.ensure_gt_only_cells()?;
+        }
+
+        // Occupied `(k, i)` of the store; every area range of an occupied
+        // pair is present, so area 0 enumerates them. The store may hold
+        // cells merged from partials, so its keys are checked, not trusted.
+        let mut seen_by_k: Vec<Vec<u32>> = vec![Vec::new(); n_k];
+        for &(k, a, i) in self.cells.as_map().keys() {
+            if k >= n_k || a >= n_a || i >= n_i {
+                return Err(EvalError::DimensionMismatch {
+                    detail: format!(
+                        "streaming cell ({k}, {a}, {i}) is outside the (K={n_k}, A={n_a}, \
+                         I={n_i}) grid"
+                    ),
+                });
             }
-            for k in 0..n_k {
-                for a in 0..n_a {
-                    let flat = k * n_a * n_i + a * n_i + i;
-                    if let Some(cell) = gt_only.get(flat).and_then(|opt| opt.as_ref()) {
-                        eval_imgs[flat] = Some(cell.clone());
-                    }
-                }
+            if a == 0 {
+                // `GridPlan::new` refused grids whose `I` exceeds u32.
+                seen_by_k[k].push(i as u32);
             }
         }
-        Ok(eval_imgs)
+
+        let store = self.cells.as_map();
+        let stored = |k: usize, a: usize, i: usize| {
+            store
+                .get(&(k, a, i))
+                .ok_or_else(|| EvalError::InvalidConfig {
+                    detail: format!("streaming cell store is missing cell ({k}, {a}, {i})"),
+                })
+        };
+        let mut categories = Vec::with_capacity(n_k);
+        for (k, mut seen) in seen_by_k.into_iter().enumerate() {
+            seen.sort_unstable();
+            let overlay = self.gt_only_cells.as_ref().map(|g| &g.categories[k]);
+            // Overlay cells (occupancy positions) the store does not cover.
+            // A seen image has every occupied cell in the store, so this is
+            // exactly the never-seen images; testing the store itself keeps
+            // the two sources disjoint even for an inconsistent merge.
+            let unseen: Vec<usize> = overlay.map_or_else(Vec::new, |cat| {
+                (0..cat.occupied_images.len())
+                    .filter(|&occ| seen.binary_search(&cat.occupied_images[occ]).is_err())
+                    .collect()
+            });
+            let mut out = PackedCategory::with_capacity(n_a, n_t, seen.len() + unseen.len(), 0);
+            // Two-way merge by image index; the sources are disjoint.
+            let (mut s, mut u) = (0, 0);
+            while s < seen.len() || u < unseen.len() {
+                let next_unseen = overlay.zip(unseen.get(u)).map(|(cat, &occ)| (cat, occ));
+                match (seen.get(s), next_unseen) {
+                    (Some(&i), next)
+                        if next.is_none_or(|(cat, occ)| i < cat.occupied_images[occ]) =>
+                    {
+                        let i = i as usize;
+                        let first = stored(k, 0, i)?;
+                        out.begin_cell(i as u32, first.gt_ignore.len(), &first.dt_scores);
+                        for a in 0..n_a {
+                            out.push_from_per_image_eval(a, stored(k, a, i)?)?;
+                        }
+                        s += 1;
+                    }
+                    (_, Some((cat, occ))) => {
+                        out.push_cell_from(cat, occ)?;
+                        u += 1;
+                    }
+                    // Unreachable: the loop condition leaves one side live.
+                    (_, None) => break,
+                }
+            }
+            // Offsets are u32: `GridPlan::new` bounds one batch, not the
+            // detections a stream accumulates per category.
+            if u32::try_from(out.dt_scores.len()).is_err() {
+                return Err(EvalError::InvalidConfig {
+                    detail: format!(
+                        "category {k} holds {} streamed detections; the packed grid indexes at \
+                         most u32::MAX per category",
+                        out.dt_scores.len()
+                    ),
+                });
+            }
+            categories.push(out);
+        }
+        Ok(PackedEvalGrid {
+            categories,
+            n_categories: n_k,
+            n_area_ranges: n_a,
+            n_images: n_i,
+            n_t,
+        })
     }
 
-    /// Accumulate-and-summarize over a pre-densified `eval_imgs` slice
-    /// at the parity-pinned COCO `max_dets=[1,10,100]` ladder, with the
-    /// ADR-0012 keypoints fork (single-rung `[20]` ladder + 10-stat
-    /// plan). Returns `(Summary, Accumulated)` so callers that need the
-    /// intermediate accumulator (table builders) can reuse it without
-    /// re-running. The returned `Accumulated` is always the default-
-    /// ladder one — the keypoints kp-ladder accumulator is internal.
-    fn summarize_dense(
+    /// Accumulate-and-summarize a packed snapshot at the parity-pinned
+    /// COCO `max_dets=[1,10,100]` ladder, with the ADR-0012 keypoints fork
+    /// (single-rung `[20]` ladder + 10-stat plan). Returns `(Summary,
+    /// Accumulated)` so callers that need the intermediate accumulator
+    /// (table builders) can reuse it without re-running. The returned
+    /// `Accumulated` is always the default-ladder one — the keypoints
+    /// kp-ladder accumulator is internal.
+    fn summarize_packed(
         &self,
-        eval_imgs: &[Option<Box<PerImageEval>>],
+        packed: &PackedEvalGrid,
     ) -> Result<(Summary, Accumulated), EvalError> {
         let max_dets: [usize; 3] = [1, 10, 100];
         let accum_params = AccumulateParams {
@@ -1119,18 +1163,14 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
             n_area_ranges: self.grid_meta.n_area_ranges,
             n_images: self.grid_meta.n_images,
         };
-        let accumulated = accumulate(eval_imgs, accum_params, self.parity_mode)?;
+        let accumulated = accumulate_packed(packed, accum_params, self.parity_mode)?;
         let summary = if self.kernel.is_keypoints() {
             let kp_max_dets: [usize; 1] = [20];
             let accum_params_kp = AccumulateParams {
-                iou_thresholds: &self.params.iou_thresholds,
-                recall_thresholds: recall_thresholds(),
                 max_dets: &kp_max_dets,
-                n_categories: self.grid_meta.n_categories,
-                n_area_ranges: self.grid_meta.n_area_ranges,
-                n_images: self.grid_meta.n_images,
+                ..accum_params
             };
-            let accumulated_kp = accumulate(eval_imgs, accum_params_kp, self.parity_mode)?;
+            let accumulated_kp = accumulate_packed(packed, accum_params_kp, self.parity_mode)?;
             let plan = StatRequest::coco_keypoints_default();
             summarize_with(
                 &accumulated_kp,
