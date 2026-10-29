@@ -54,7 +54,7 @@
 //!   both / dupe / bkg) at `t_f` simultaneously.
 
 use crate::dataset::{
-    CocoAnnotation, CocoDataset, CocoDetection, CocoDetections, DetectionInput, EvalDataset,
+    CocoAnnotation, CocoDataset, CocoDetections, DetectionColumnsInput, DetectionInput, EvalDataset,
 };
 use crate::error::EvalError;
 
@@ -150,10 +150,11 @@ pub fn apply_fix(
     // enforces this contract: any future fix-kind that mutates GTs
     // AND calls `resolve_target` would trip the assert under
     // `cargo test`.
-    let mut new_dts: Vec<DetectionInput> = Vec::with_capacity(dt.detections().len());
+    let mut new_dts = DetectionColumnsInput::with_capacity(dt.len());
     let original_anns = gt.annotations();
-    for (dt_input_idx, det) in dt.detections().iter().enumerate() {
-        let key = (det.image_id.0, dt_input_idx);
+    for dt_input_idx in 0..dt.len() {
+        let image_id = dt.image_id_at(dt_input_idx);
+        let key = (image_id.0, dt_input_idx);
         let label = assignment.dt_labels.get(&key).copied();
 
         // Build the GT-input-index list for this image so we can
@@ -167,12 +168,13 @@ pub fn apply_fix(
                  original_anns positions. Snapshot per-image targets BEFORE filtering, or stop \
                  dereferencing original_anns through new_gt's local index space."
             );
-            let local_indices = new_gt.ann_indices_for_image(det.image_id);
+            let local_indices = new_gt.ann_indices_for_image(image_id);
             let target_usize =
                 usize::try_from(target).map_err(|_| EvalError::InvalidAnnotation {
                     detail: format!(
                         "rewrite: invalid target_gt_local_idx={target} for DT id={} on image {}",
-                        det.id.0, det.image_id.0
+                        dt.id_at(dt_input_idx).0,
+                        image_id.0
                     ),
                 })?;
             local_indices
@@ -182,7 +184,7 @@ pub fn apply_fix(
                     detail: format!(
                         "rewrite: target_gt_local_idx={target} out of range \
                          for image {} (have {} GTs)",
-                        det.image_id.0,
+                        image_id.0,
                         local_indices.len()
                     ),
                 })
@@ -204,15 +206,8 @@ pub fn apply_fix(
             (FixKind::Cls, Some(lbl)) if lbl.bin == DtBin::Cls => {
                 let target = resolve_target(lbl.target_gt_local_idx)?;
                 new_dts.push(DetectionInput {
-                    id: Some(det.id),
-                    image_id: det.image_id,
                     category_id: target.category_id,
-                    score: det.score,
-                    bbox: det.bbox,
-                    area: None,
-                    segmentation: det.segmentation.clone(),
-                    keypoints: det.keypoints.clone(),
-                    num_keypoints: det.num_keypoints,
+                    ..passthrough_input(dt, dt_input_idx)
                 });
             }
             // LOC: snap Loc-binned DT's geometry (bbox AND segmentation)
@@ -223,16 +218,17 @@ pub fn apply_fix(
             // `oracle.py::_apply_fix` ("loc" branch).
             (FixKind::Loc, Some(lbl)) if lbl.bin == DtBin::Loc => {
                 let target = resolve_target(lbl.target_gt_local_idx)?;
+                // The DT's own mask is replaced, so it is never cloned.
                 new_dts.push(DetectionInput {
-                    id: Some(det.id),
-                    image_id: det.image_id,
-                    category_id: det.category_id,
-                    score: det.score,
+                    id: Some(dt.id_at(dt_input_idx)),
+                    image_id,
+                    category_id: dt.category_id_at(dt_input_idx),
+                    score: dt.score_at(dt_input_idx),
                     bbox: target.bbox,
                     area: None,
                     segmentation: target.segmentation.clone(),
-                    keypoints: det.keypoints.clone(),
-                    num_keypoints: det.num_keypoints,
+                    keypoints: dt.keypoints_at(dt_input_idx).map(<[f64]>::to_vec),
+                    num_keypoints: dt.num_keypoints_at(dt_input_idx),
                 });
             }
             // BOTH / DUPE / BKG: drop the DT.
@@ -247,32 +243,32 @@ pub fn apply_fix(
             // - Missed fix on the DT side: untouched (the GT side
             //   handled it above).
             _ => {
-                new_dts.push(passthrough_input(det));
+                new_dts.push(passthrough_input(dt, dt_input_idx));
             }
         }
     }
 
-    let new_dt = CocoDetections::from_inputs(new_dts)?;
+    let new_dt = CocoDetections::from_columns(new_dts)?;
     Ok((new_gt, new_dt))
 }
 
-/// Rebuild a [`DetectionInput`] from an already-resolved
-/// [`CocoDetection`], preserving its id and bbox verbatim. Used in the
+/// Rebuild a [`DetectionInput`] from row `idx` of an already-resolved
+/// [`CocoDetections`], preserving its id and bbox verbatim. Used in the
 /// rewrite layer's pass-through branch so the corrected detections list
 /// keeps the original input ordering and ids — which matters for the
 /// downstream `evaluate_with` cell ordering only insofar as scores
 /// determine the in-cell sort, but ids being preserved makes the
 /// rewrite output debug-printable side-by-side with the input.
-fn passthrough_input(det: &CocoDetection) -> DetectionInput {
+fn passthrough_input(dt: &CocoDetections, idx: usize) -> DetectionInput {
     DetectionInput {
-        id: Some(det.id),
-        image_id: det.image_id,
-        category_id: det.category_id,
-        score: det.score,
-        bbox: det.bbox,
+        id: Some(dt.id_at(idx)),
+        image_id: dt.image_id_at(idx),
+        category_id: dt.category_id_at(idx),
+        score: dt.score_at(idx),
+        bbox: dt.bbox_at(idx),
         area: None,
-        segmentation: det.segmentation.clone(),
-        keypoints: det.keypoints.clone(),
-        num_keypoints: det.num_keypoints,
+        segmentation: dt.segmentation_at(idx).cloned(),
+        keypoints: dt.keypoints_at(idx).map(<[f64]>::to_vec),
+        num_keypoints: dt.num_keypoints_at(idx),
     }
 }

@@ -14,6 +14,34 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Changed (BREAKING - pre-1.0)
+
+- **`CocoDetections` is Structure-of-Arrays** (ADR-0066, Rust API only;
+  the Python API is unchanged). Detections live in private dense columns.
+  Ids are derived as `1..=N` under quirk **J1** unless supplied. Areas are
+  `w·h` from the bbox under **J3** unless supplied. The segmentation and
+  keypoint columns are allocated only when present.
+  `CocoDetections::detections() -> &[CocoDetection]` is removed; use
+  `len`, `record_at`, `records()` (an exact-size iterator of
+  `CocoDetection` by value) and the column accessors `image_ids`,
+  `category_ids`, `scores`, `bboxes`, `area_at`, `bbox_at` and `id_at`.
+  `EvalKernel::build_dt_anns` / `build_dt_anns_into` take
+  `&CocoDetections` instead of `&[CocoDetection]`.
+
+### Added
+
+- `CocoDetections::from_columns` / `from_columns_with_area` and
+  `DetectionColumnsInput` (`with_capacity`, `push`). Every ingest route
+  converges on this one constructor, which owns **J1**, **J3**,
+  **E2**/**J4** and non-finite score rejection.
+
+### Performance
+
+- Detection ingest writes straight into columns, with no per-detection
+  intermediate. 1.5M rows, input build included: 311.6 → 80.7 ms (3.9×).
+  The `Detections` and `DetectionsBatch` FFI routes share one column
+  extractor.
+
 ## [0.5.5] - 2026-10-29
 
 ### Added

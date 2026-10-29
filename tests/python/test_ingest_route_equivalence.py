@@ -740,6 +740,12 @@ def test_detections_batch_without_rles_is_refused_under_segm(parity_mode: str) -
     with pytest.raises(ValueError, match="requires a 'rles' field"):
         _segm_grid(batch, parity_mode)
 
+    # Row counts are checked before the masks: a batch wrong on both
+    # reports `counts`, without decoding (here, asking for) any mask.
+    wrong_counts = {**batch, "counts": np.full(len(dicts), 2, dtype=np.int64)}
+    with pytest.raises(ValueError, match=r"counts: sum"):
+        _segm_grid(wrong_counts, parity_mode)
+
 
 @pytest.mark.parametrize("route", [0, 1, 2], ids=["file", "list", "matrix"])
 def test_bbox_only_under_segm_is_refused_in_corrected_mode(route: int) -> None:

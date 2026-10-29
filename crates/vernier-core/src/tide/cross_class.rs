@@ -76,7 +76,7 @@ pub fn compute_cross_class_ious<K: EvalKernel>(
         .collect();
 
     let gt_anns = gt.annotations();
-    let dt_anns = dt.detections();
+    let dt_cats = dt.category_ids();
     let mut store = CrossClassIous::new();
 
     for (image_idx, image) in images.iter().enumerate() {
@@ -95,8 +95,8 @@ pub fn compute_cross_class_ious<K: EvalKernel>(
         let dt_classes: Vec<usize> = dt_indices
             .iter()
             .map(|&i| {
-                let cat = dt_anns[i].category_id;
-                lookup_category_index(&category_index, cat, "DT", dt_anns[i].id.0, image_id.0)
+                let cat = dt_cats[i];
+                lookup_category_index(&category_index, cat, "DT", dt.id_at(i).0, image_id.0)
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -109,7 +109,7 @@ pub fn compute_cross_class_ious<K: EvalKernel>(
             .collect::<Result<Vec<_>, _>>()?;
 
         let gt_kernel = kernel.build_gt_anns(gt_anns, gt_indices, image)?;
-        let dt_kernel = kernel.build_dt_anns(dt_anns, &dt_indices, image, parity_mode)?;
+        let dt_kernel = kernel.build_dt_anns(dt, &dt_indices, image, parity_mode)?;
 
         let mut iou = Array2::<f64>::zeros((gt_kernel.len(), dt_kernel.len()));
         if !gt_kernel.is_empty() && !dt_kernel.is_empty() {

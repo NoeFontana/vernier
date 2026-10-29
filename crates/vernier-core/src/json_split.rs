@@ -321,8 +321,8 @@ pub(crate) fn top_level_object_arrays(
     found.into_iter().collect()
 }
 
-/// Deserialize every element of one chunk, in order, appending to
-/// `out`.
+/// Deserialize every element of one chunk, in order, handing each to
+/// `sink`.
 ///
 /// Each element goes through `serde_json` exactly as on the serial
 /// path. `StreamDeserializer::byte_offset` reports where the value
@@ -333,13 +333,13 @@ pub(crate) fn top_level_object_arrays(
 /// than a silently truncated chunk.
 fn parse_chunk<T: DeserializeOwned>(
     slice: &[u8],
-    out: &mut Vec<T>,
+    mut sink: impl FnMut(T),
 ) -> Result<(), serde_json::Error> {
     let mut pos = 0usize;
     while pos < slice.len() {
         let mut stream = serde_json::Deserializer::from_slice(&slice[pos..]).into_iter::<T>();
         match stream.next() {
-            Some(Ok(value)) => out.push(value),
+            Some(Ok(value)) => sink(value),
             Some(Err(err)) => return Err(err),
             None => break,
         }
@@ -368,6 +368,31 @@ pub(crate) fn parse_elements_parallel<T>(
 where
     T: DeserializeOwned + Send,
 {
+    let parts =
+        parse_elements_parallel_into(bytes, elements, n_chunks, Vec::with_capacity, Vec::push)?;
+    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
+    for part in parts {
+        out.extend(part);
+    }
+    Ok(out)
+}
+
+/// [`parse_elements_parallel`] into caller-chosen per-chunk accumulators:
+/// `init(count)` makes one for a chunk of `count` elements, `push`
+/// appends an element to it, and the accumulators come back in document
+/// order. Lets a caller build columns straight from the parse, with no
+/// row-major intermediate.
+pub(crate) fn parse_elements_parallel_into<T, A>(
+    bytes: &[u8],
+    elements: &[Range<usize>],
+    n_chunks: usize,
+    init: impl Fn(usize) -> A + Sync,
+    push: impl Fn(&mut A, T) + Sync,
+) -> Result<Vec<A>, serde_json::Error>
+where
+    T: DeserializeOwned,
+    A: Send,
+{
     if elements.is_empty() {
         return Ok(Vec::new());
     }
@@ -392,20 +417,13 @@ where
         }
     }
 
-    let parsed: Result<Vec<Vec<T>>, serde_json::Error> = chunks
+    chunks
         .into_par_iter()
         .map(|(count, range)| {
-            let mut out = Vec::with_capacity(count);
-            parse_chunk(&bytes[range], &mut out).map(|()| out)
+            let mut acc = init(count);
+            parse_chunk(&bytes[range], |value| push(&mut acc, value)).map(|()| acc)
         })
-        .collect();
-    parsed.map(|parts| {
-        let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
-        for part in parts {
-            out.extend(part);
-        }
-        out
-    })
+        .collect()
 }
 
 /// Chunk count for a thread budget. More chunks than threads, because

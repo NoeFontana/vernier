@@ -1528,10 +1528,286 @@ pub enum DetectionArea {
     Mask,
 }
 
+/// Columnar caller-side input for a batch of detections (ADR-0066).
+///
+/// Columnar sibling of `Vec<DetectionInput>`: required columns
+/// (`image_ids`, `category_ids`, `scores`, `bboxes`) are dense arrays
+/// of equal length `N`, while optional columns (`ids`, `areas`,
+/// `segmentations`, `keypoints`, `num_keypoints`) are `None` when
+/// omitted for the whole batch (zero allocation for bbox-only / auto-id
+/// / bbox-area callers) or `Some(vec)` of length `N` when supplied.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DetectionColumnsInput {
+    /// Optional per-row user-supplied annotation ids (quirk **J1**).
+    /// `None` auto-assigns `1..=N` in `O(1)` memory.
+    pub ids: Option<Vec<Option<AnnId>>>,
+    /// Per-detection image id (`len == N`).
+    pub image_ids: Vec<ImageId>,
+    /// Per-detection category id (`len == N`).
+    pub category_ids: Vec<CategoryId>,
+    /// Per-detection confidence score (`len == N`).
+    pub scores: Vec<f64>,
+    /// Per-detection `[x, y, w, h]` bounding box (`len == N`).
+    pub bboxes: Vec<Bbox>,
+    /// Optional per-row supplied areas (`len == N` when `Some`; quirk **J3**).
+    pub areas: Option<Vec<Option<f64>>>,
+    /// Optional per-row segmentation predictions (`len == N` when `Some`).
+    pub segmentations: Option<Vec<Option<Segmentation>>>,
+    /// Optional per-row keypoint triplets (`len == N` when `Some`).
+    pub keypoints: Option<Vec<Option<Vec<f64>>>>,
+    /// Optional per-row visible-keypoint counts (`len == N` when `Some`).
+    pub num_keypoints: Option<Vec<Option<u32>>>,
+}
+
+impl DetectionColumnsInput {
+    /// Empty columns with room for `n` rows.
+    pub fn with_capacity(n: usize) -> Self {
+        Self {
+            image_ids: Vec::with_capacity(n),
+            category_ids: Vec::with_capacity(n),
+            scores: Vec::with_capacity(n),
+            bboxes: Vec::with_capacity(n),
+            ..Self::default()
+        }
+    }
+
+    /// Append one row.
+    ///
+    /// The optional fields stay sparse: an optional column is not
+    /// allocated until a row first supplies a value, and earlier rows are
+    /// then back-filled with `None` — so a bbox-only, auto-id batch never
+    /// allocates them at all. The one owner of that rule for every row-wise
+    /// producer (typed inputs here, result dicts at the FFI).
+    pub fn push(&mut self, row: DetectionInput) {
+        let idx = self.image_ids.len();
+        let cap = self.image_ids.capacity();
+        push_sparse_opt(&mut self.ids, idx, cap, row.id);
+        push_sparse_opt(&mut self.areas, idx, cap, row.area);
+        push_sparse_opt(&mut self.segmentations, idx, cap, row.segmentation);
+        push_sparse_opt(&mut self.keypoints, idx, cap, row.keypoints);
+        push_sparse_opt(&mut self.num_keypoints, idx, cap, row.num_keypoints);
+        self.image_ids.push(row.image_id);
+        self.category_ids.push(row.category_id);
+        self.scores.push(row.score);
+        self.bboxes.push(row.bbox);
+    }
+
+    /// `parts` joined in order, keeping [`Self::push`]'s sparse rule: an
+    /// optional column absent from every part stays unallocated.
+    fn concat(parts: Vec<Self>) -> Self {
+        let total = parts.iter().map(|part| part.image_ids.len()).sum();
+        let mut out = Self::with_capacity(total);
+        for part in parts {
+            let idx = out.image_ids.len();
+            let rows = part.image_ids.len();
+            append_sparse(&mut out.ids, idx, rows, total, part.ids);
+            append_sparse(&mut out.areas, idx, rows, total, part.areas);
+            append_sparse(&mut out.segmentations, idx, rows, total, part.segmentations);
+            append_sparse(&mut out.keypoints, idx, rows, total, part.keypoints);
+            append_sparse(&mut out.num_keypoints, idx, rows, total, part.num_keypoints);
+            out.image_ids.extend(part.image_ids);
+            out.category_ids.extend(part.category_ids);
+            out.scores.extend(part.scores);
+            out.bboxes.extend(part.bboxes);
+        }
+        out
+    }
+}
+
+/// Deserializes a JSON array of [`DetectionInput`] straight into
+/// [`DetectionColumnsInput`], with no row-major intermediate. A supplied
+/// `area` is dropped unless `keep_area`: only a [`DetectionArea::Supplied`]
+/// build reads it (quirk **J3**).
+#[derive(Clone, Copy)]
+struct DetectionColumnsSeed {
+    keep_area: bool,
+}
+
+impl DetectionColumnsSeed {
+    fn push(self, cols: &mut DetectionColumnsInput, mut row: DetectionInput) {
+        if !self.keep_area {
+            row.area = None;
+        }
+        cols.push(row);
+    }
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for DetectionColumnsSeed {
+    type Value = DetectionColumnsInput;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        de.deserialize_seq(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for DetectionColumnsSeed {
+    type Value = DetectionColumnsInput;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `Vec<T>`'s own wording, so error text is unchanged by the switch.
+        f.write_str("a sequence")
+    }
+
+    fn visit_seq<S: serde::de::SeqAccess<'de>>(self, mut seq: S) -> Result<Self::Value, S::Error> {
+        let mut cols = DetectionColumnsInput::with_capacity(seq.size_hint().unwrap_or(0));
+        while let Some(row) = seq.next_element()? {
+            self.push(&mut cols, row);
+        }
+        Ok(cols)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum IdColumn {
+    /// Auto-assigned sequential ids `start + idx as i64` (`start = 1`
+    /// for `from_columns` / `from_inputs`). Zero heap bytes.
+    Sequential { start: i64 },
+    /// Resolved per-row ids when user-supplied ids are present or after
+    /// index subsetting (`lvis_trim`, `from_records`).
+    Explicit(Vec<AnnId>),
+}
+
+impl IdColumn {
+    #[inline]
+    fn id_at(&self, idx: usize) -> AnnId {
+        match self {
+            Self::Sequential { start } => {
+                AnnId(start.saturating_add(i64::try_from(idx).unwrap_or(i64::MAX)))
+            }
+            Self::Explicit(ids) => ids[idx],
+        }
+    }
+
+    /// Raw ids at `kept` into `out`, replacing its contents. The storage
+    /// kind is matched once, so each arm is a branch-free loop.
+    fn gather_into(&self, kept: &[usize], out: &mut Vec<i64>) {
+        out.clear();
+        match self {
+            Self::Sequential { start } => out.extend(
+                kept.iter()
+                    .map(|&idx| start.saturating_add(i64::try_from(idx).unwrap_or(i64::MAX))),
+            ),
+            Self::Explicit(ids) => out.extend(kept.iter().map(|&idx| ids[idx].0)),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum AreaColumn {
+    /// Derived on the fly as `bbox.w * bbox.h` (quirk **J3** default).
+    /// Zero heap bytes and bit-identical IEEE-754 product.
+    FromBbox,
+    /// Pre-resolved per-row areas (`DetectionArea::Supplied` with
+    /// explicit areas, `DetectionArea::Mask` RLE pixel counts, or
+    /// `from_records`).
+    Explicit(Vec<f64>),
+}
+
+impl AreaColumn {
+    #[inline]
+    fn area_at(&self, idx: usize, bboxes: &[Bbox]) -> f64 {
+        match self {
+            Self::FromBbox => {
+                let b = bboxes[idx];
+                b.w * b.h
+            }
+            Self::Explicit(areas) => areas[idx],
+        }
+    }
+
+    /// [`IdColumn::gather_into`] for areas.
+    fn gather_into(&self, kept: &[usize], bboxes: &[Bbox], out: &mut Vec<f64>) {
+        out.clear();
+        match self {
+            Self::FromBbox => out.extend(kept.iter().map(|&idx| {
+                let b = bboxes[idx];
+                b.w * b.h
+            })),
+            Self::Explicit(areas) => out.extend(kept.iter().map(|&idx| areas[idx])),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct DetectionColumns {
+    ids: IdColumn,
+    image_ids: Vec<ImageId>,
+    category_ids: Vec<CategoryId>,
+    scores: Vec<f64>,
+    bboxes: Vec<Bbox>,
+    areas: AreaColumn,
+    segmentations: Option<Vec<Option<Segmentation>>>,
+    keypoints: Option<Vec<Option<Vec<f64>>>>,
+    num_keypoints: Option<Vec<Option<u32>>>,
+}
+
+impl DetectionColumns {
+    fn gather(&self, kept: &[usize]) -> Self {
+        Self {
+            ids: IdColumn::Explicit(kept.iter().map(|&idx| self.ids.id_at(idx)).collect()),
+            image_ids: gather(&self.image_ids, kept),
+            category_ids: gather(&self.category_ids, kept),
+            scores: gather(&self.scores, kept),
+            bboxes: gather(&self.bboxes, kept),
+            areas: match &self.areas {
+                AreaColumn::FromBbox => AreaColumn::FromBbox,
+                AreaColumn::Explicit(src) => AreaColumn::Explicit(gather(src, kept)),
+            },
+            segmentations: self.segmentations.as_ref().map(|src| gather(src, kept)),
+            keypoints: self.keypoints.as_ref().map(|src| gather(src, kept)),
+            num_keypoints: self.num_keypoints.as_ref().map(|src| gather(src, kept)),
+        }
+    }
+}
+
+/// `src[kept[0]], src[kept[1]], ...` as a new column.
+fn gather<T: Clone>(src: &[T], kept: &[usize]) -> Vec<T> {
+    kept.iter().map(|&idx| src[idx].clone()).collect()
+}
+
+/// [`push_sparse_opt`] for a run of `rows` rows starting at `idx`.
+fn append_sparse<T>(
+    slot: &mut Option<Vec<Option<T>>>,
+    idx: usize,
+    rows: usize,
+    total: usize,
+    part: Option<Vec<Option<T>>>,
+) {
+    match (slot, part) {
+        (Some(vec), Some(part)) => vec.extend(part),
+        (Some(vec), None) => vec.resize_with(idx + rows, || None),
+        (slot @ None, Some(part)) => {
+            let mut vec = Vec::with_capacity(total);
+            vec.resize_with(idx, || None);
+            vec.extend(part);
+            *slot = Some(vec);
+        }
+        (None, None) => {}
+    }
+}
+
+#[inline]
+fn push_sparse_opt<T>(slot: &mut Option<Vec<Option<T>>>, idx: usize, total: usize, val: Option<T>) {
+    match (slot, val) {
+        (Some(vec), v) => vec.push(v),
+        (slot @ None, Some(v)) => {
+            let mut vec = Vec::with_capacity(total);
+            vec.resize_with(idx, || None);
+            vec.push(Some(v));
+            *slot = Some(vec);
+        }
+        (None, None) => {}
+    }
+}
+
 /// [`DetectionArea::Mask`]: the RLE foreground area of a detection.
-fn mask_area(input: &DetectionInput, id: AnnId) -> Result<f64, EvalError> {
-    let area = match &input.segmentation {
-        Some(segmentation) => segmentation.rle_area()?,
+fn mask_area_from_seg(
+    segmentation: Option<&Segmentation>,
+    image_id: ImageId,
+    id: AnnId,
+) -> Result<f64, EvalError> {
+    let area = match segmentation {
+        Some(seg) => seg.rle_area()?,
         None => None,
     };
     // Exact: a pixel count stays far below 2^53.
@@ -1542,8 +1818,8 @@ fn mask_area(input: &DetectionInput, id: AnnId) -> Result<f64, EvalError> {
                 "DT id={} on image {}: dt_area=\"mask\" requires an RLE `segmentation` \
                  (maskUtils.area does not take {})",
                 id.0,
-                input.image_id.0,
-                if input.segmentation.is_some() {
+                image_id.0,
+                if segmentation.is_some() {
                     "polygons"
                 } else {
                     "a missing segmentation"
@@ -1552,16 +1828,44 @@ fn mask_area(input: &DetectionInput, id: AnnId) -> Result<f64, EvalError> {
         })
 }
 
-/// COCO detections collection — flat storage plus `(image, category)`-
-/// and per-image indices for the per-cell gather.
+fn check_col_len(name: &str, actual: usize, expected: usize) -> Result<(), EvalError> {
+    if actual != expected {
+        return Err(EvalError::InvalidAnnotation {
+            detail: format!(
+                "detection column `{name}` length {actual} does not match `scores` length {expected}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// COCO detections collection — pure Struct-of-Arrays (SoA) columnar
+/// storage plus CSR `(image, category)`- and per-image indices for the
+/// per-cell gather (ADR-0066).
 #[derive(Debug, Clone)]
 pub struct CocoDetections {
-    detections: Arc<Vec<CocoDetection>>,
+    columns: Arc<DetectionColumns>,
     by_image_cat: CsrIndex<(ImageId, CategoryId)>,
     by_image: CsrIndex<ImageId>,
 }
 
 impl CocoDetections {
+    fn from_resolved_columns(columns: DetectionColumns) -> Self {
+        let len = columns.scores.len();
+        let by_image_cat = CsrIndex::build(len, len / 4, |idx| {
+            (columns.image_ids[idx], columns.category_ids[idx])
+        });
+        // ~64 detections per image: COCO-shaped sets cap at 100, so this
+        // seeds above the distinct-image count and the key map never grows;
+        // a gross over-estimate is trimmed by the index's `shrink_to_fit`.
+        let by_image = CsrIndex::build(len, len / 64, |idx| columns.image_ids[idx]);
+        Self {
+            columns: Arc::new(columns),
+            by_image_cat,
+            by_image,
+        }
+    }
+
     /// Loads detections from the JSON array shape pycocotools'
     /// `loadRes` consumes (a list of objects with `image_id`,
     /// `category_id`, `bbox`, `score`, optional `id`).
@@ -1578,12 +1882,17 @@ impl CocoDetections {
     pub fn from_json_bytes_with_area(bytes: &[u8], area: DetectionArea) -> Result<Self, EvalError> {
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
-        let raw: Vec<DetectionInput> = serde_json::from_slice(bytes)?;
+        let seed = DetectionColumnsSeed {
+            keep_area: matches!(area, DetectionArea::Supplied),
+        };
+        let mut de = serde_json::Deserializer::from_slice(bytes);
+        let columns = serde::de::DeserializeSeed::deserialize(seed, &mut de)?;
+        de.end()?;
         #[cfg(feature = "bench-timings")]
         let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
         #[cfg(feature = "bench-timings")]
         let t1 = std::time::Instant::now();
-        let result = Self::from_inputs_with_area(raw, area);
+        let result = Self::from_columns_with_area(columns, area);
         #[cfg(feature = "bench-timings")]
         {
             let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -1632,21 +1941,27 @@ impl CocoDetections {
         }
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
+        let seed = DetectionColumnsSeed {
+            keep_area: matches!(area, DetectionArea::Supplied),
+        };
         let parsed = crate::json_split::document_object_array(bytes).and_then(|elements| {
-            crate::json_split::parse_elements_parallel::<DetectionInput>(
+            crate::json_split::parse_elements_parallel_into(
                 bytes,
                 &elements,
                 crate::json_split::chunks_for(threads),
+                DetectionColumnsInput::with_capacity,
+                |cols, row| seed.push(cols, row),
             )
             .ok()
         });
         #[cfg(feature = "bench-timings")]
         let parse_ns = u64::try_from(t0.elapsed().as_nanos()).unwrap_or(u64::MAX);
         match parsed {
-            Some(inputs) => {
+            Some(parts) => {
                 #[cfg(feature = "bench-timings")]
                 let t1 = std::time::Instant::now();
-                let result = Self::from_inputs_with_area(inputs, area);
+                let result =
+                    Self::from_columns_with_area(DetectionColumnsInput::concat(parts), area);
                 #[cfg(feature = "bench-timings")]
                 {
                     let from_inputs_ns = u64::try_from(t1.elapsed().as_nanos()).unwrap_or(u64::MAX);
@@ -1663,6 +1978,124 @@ impl CocoDetections {
         }
     }
 
+    /// Builds a [`CocoDetections`] directly from columnar inputs
+    /// (ADR-0066), using [`DetectionArea::FromBbox`].
+    pub fn from_columns(cols: DetectionColumnsInput) -> Result<Self, EvalError> {
+        Self::from_columns_with_area(cols, DetectionArea::FromBbox)
+    }
+
+    /// [`Self::from_columns`] with an explicit [`DetectionArea`] source.
+    pub fn from_columns_with_area(
+        cols: DetectionColumnsInput,
+        area: DetectionArea,
+    ) -> Result<Self, EvalError> {
+        let n = cols.scores.len();
+        check_col_len("image_ids", cols.image_ids.len(), n)?;
+        check_col_len("category_ids", cols.category_ids.len(), n)?;
+        check_col_len("bboxes", cols.bboxes.len(), n)?;
+        if let Some(ids) = &cols.ids {
+            check_col_len("ids", ids.len(), n)?;
+        }
+        if let Some(areas) = &cols.areas {
+            check_col_len("areas", areas.len(), n)?;
+        }
+        if let Some(segs) = &cols.segmentations {
+            check_col_len("segmentations", segs.len(), n)?;
+        }
+        if let Some(kps) = &cols.keypoints {
+            check_col_len("keypoints", kps.len(), n)?;
+        }
+        if let Some(nkps) = &cols.num_keypoints {
+            check_col_len("num_keypoints", nkps.len(), n)?;
+        }
+
+        // Resolve ids (quirk J1) in input order.
+        let ids = match cols.ids {
+            None => IdColumn::Sequential { start: 1 },
+            Some(raw_ids) if raw_ids.iter().all(Option::is_none) => {
+                IdColumn::Sequential { start: 1 }
+            }
+            Some(raw_ids) => {
+                let mut next_auto = 1i64;
+                let mut resolved = Vec::with_capacity(n);
+                for opt_id in raw_ids {
+                    let id = match opt_id {
+                        Some(id) => id,
+                        None => {
+                            let id = AnnId(next_auto);
+                            next_auto += 1;
+                            id
+                        }
+                    };
+                    resolved.push(id);
+                }
+                IdColumn::Explicit(resolved)
+            }
+        };
+
+        // Validate finite scores and resolve areas (quirk J3), preserving
+        // exact row-by-row error precedence when `DetectionArea::Mask`
+        // validates segmentation RLEs alongside scores.
+        // `Mask` checks scores row by row inside its loop instead, so a
+        // non-finite score and a bad mask report in row order.
+        if !matches!(area, DetectionArea::Mask) && cols.scores.iter().any(|s| !s.is_finite()) {
+            return Err(EvalError::NonFinite {
+                context: "detection score",
+            });
+        }
+        let areas = match area {
+            DetectionArea::FromBbox => AreaColumn::FromBbox,
+            DetectionArea::Supplied => match cols.areas {
+                None => AreaColumn::FromBbox,
+                Some(raw_areas) if raw_areas.iter().all(Option::is_none) => AreaColumn::FromBbox,
+                Some(raw_areas) => {
+                    let mut resolved = Vec::with_capacity(n);
+                    for (idx, opt_area) in raw_areas.into_iter().enumerate() {
+                        let b = cols.bboxes[idx];
+                        resolved.push(opt_area.unwrap_or(b.w * b.h));
+                    }
+                    AreaColumn::Explicit(resolved)
+                }
+            },
+            DetectionArea::Mask => {
+                let mut resolved = Vec::with_capacity(n);
+                for idx in 0..n {
+                    if !cols.scores[idx].is_finite() {
+                        return Err(EvalError::NonFinite {
+                            context: "detection score",
+                        });
+                    }
+                    let seg = cols
+                        .segmentations
+                        .as_ref()
+                        .and_then(|segs| segs[idx].as_ref());
+                    resolved.push(mask_area_from_seg(
+                        seg,
+                        cols.image_ids[idx],
+                        ids.id_at(idx),
+                    )?);
+                }
+                AreaColumn::Explicit(resolved)
+            }
+        };
+
+        let segmentations = cols.segmentations.filter(|v| v.iter().any(Option::is_some));
+        let keypoints = cols.keypoints.filter(|v| v.iter().any(Option::is_some));
+        let num_keypoints = cols.num_keypoints.filter(|v| v.iter().any(Option::is_some));
+
+        Ok(Self::from_resolved_columns(DetectionColumns {
+            ids,
+            image_ids: cols.image_ids,
+            category_ids: cols.category_ids,
+            scores: cols.scores,
+            bboxes: cols.bboxes,
+            areas,
+            segmentations,
+            keypoints,
+            num_keypoints,
+        }))
+    }
+
     /// Builds a [`CocoDetections`] from typed inputs. Auto-assigns ids
     /// (quirk **J1**) for inputs that did not supply one, validates
     /// finite scores, and derives areas (quirk **J3**).
@@ -1675,84 +2108,208 @@ impl CocoDetections {
         inputs: Vec<DetectionInput>,
         area: DetectionArea,
     ) -> Result<Self, EvalError> {
-        let mut detections = Vec::with_capacity(inputs.len());
-        let mut next_auto = 1i64;
+        let seed = DetectionColumnsSeed {
+            keep_area: matches!(area, DetectionArea::Supplied),
+        };
+        let mut columns = DetectionColumnsInput::with_capacity(inputs.len());
         for input in inputs {
-            if !input.score.is_finite() {
-                return Err(EvalError::NonFinite {
-                    context: "detection score",
-                });
-            }
-            let id = match input.id {
-                Some(id) => id,
-                None => {
-                    let id = AnnId(next_auto);
-                    next_auto += 1;
-                    id
-                }
-            };
-            detections.push(CocoDetection {
-                id,
-                image_id: input.image_id,
-                category_id: input.category_id,
-                score: input.score,
-                bbox: input.bbox,
-                area: match (area, input.area) {
-                    (DetectionArea::Supplied, Some(supplied)) => supplied,
-                    (DetectionArea::Mask, _) => mask_area(&input, id)?,
-                    _ => input.bbox.w * input.bbox.h,
-                },
-                segmentation: input.segmentation,
-                keypoints: input.keypoints,
-                num_keypoints: input.num_keypoints,
-            });
+            seed.push(&mut columns, input);
         }
-
-        Ok(Self::from_records(detections))
+        Self::from_columns_with_area(columns, area)
     }
 
     /// Build from already-resolved records, preserving their ids and
-    /// fields verbatim. Used by the streaming evaluator to assemble a
-    /// `CocoDetections` view across batches at finalize/snapshot time
-    /// without re-running the auto-id and area-derivation logic in
-    /// [`Self::from_inputs`].
+    /// fields verbatim. Used by the streaming evaluator and tests to
+    /// assemble a `CocoDetections` view without re-running the auto-id
+    /// and area-derivation logic in [`Self::from_inputs`].
     pub fn from_records(records: Vec<CocoDetection>) -> Self {
         let n = records.len();
-        let by_image_cat = CsrIndex::build(n, n / 4, |idx| {
-            (records[idx].image_id, records[idx].category_id)
-        });
-        let by_image = CsrIndex::build(n, n / 64, |idx| records[idx].image_id);
-        Self {
-            detections: Arc::new(records),
-            by_image_cat,
-            by_image,
+        let mut ids = Vec::with_capacity(n);
+        let mut areas = Vec::with_capacity(n);
+        // Ids and areas are already resolved, so they bypass the input's
+        // sparse `Option` columns; everything else goes through `push`.
+        let mut cols = DetectionColumnsInput::with_capacity(n);
+        for rec in records {
+            ids.push(rec.id);
+            areas.push(rec.area);
+            cols.push(DetectionInput {
+                id: None,
+                image_id: rec.image_id,
+                category_id: rec.category_id,
+                score: rec.score,
+                bbox: rec.bbox,
+                area: None,
+                segmentation: rec.segmentation,
+                keypoints: rec.keypoints,
+                num_keypoints: rec.num_keypoints,
+            });
+        }
+
+        Self::from_resolved_columns(DetectionColumns {
+            ids: IdColumn::Explicit(ids),
+            image_ids: cols.image_ids,
+            category_ids: cols.category_ids,
+            scores: cols.scores,
+            bboxes: cols.bboxes,
+            areas: AreaColumn::Explicit(areas),
+            segmentations: cols.segmentations,
+            keypoints: cols.keypoints,
+            num_keypoints: cols.num_keypoints,
+        })
+    }
+
+    /// Total number of detections in the collection.
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.columns.scores.len()
+    }
+
+    /// `true` when the collection contains zero detections.
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.columns.scores.is_empty()
+    }
+
+    /// Resolved annotation id at flat row `idx` (`O(1)`).
+    #[inline]
+    pub fn id_at(&self, idx: usize) -> AnnId {
+        self.columns.ids.id_at(idx)
+    }
+
+    /// Image id at flat row `idx`.
+    #[inline]
+    pub fn image_id_at(&self, idx: usize) -> ImageId {
+        self.columns.image_ids[idx]
+    }
+
+    /// Dense slice of per-detection image ids (`len == self.len()`).
+    #[inline]
+    pub fn image_ids(&self) -> &[ImageId] {
+        &self.columns.image_ids
+    }
+
+    /// Distinct image ids that carry at least one detection.
+    pub fn distinct_image_ids(&self) -> impl ExactSizeIterator<Item = ImageId> + '_ {
+        self.by_image.keys().copied()
+    }
+
+    /// Category id at flat row `idx`.
+    #[inline]
+    pub fn category_id_at(&self, idx: usize) -> CategoryId {
+        self.columns.category_ids[idx]
+    }
+
+    /// Dense slice of per-detection category ids (`len == self.len()`).
+    #[inline]
+    pub fn category_ids(&self) -> &[CategoryId] {
+        &self.columns.category_ids
+    }
+
+    /// Confidence score at flat row `idx`.
+    #[inline]
+    pub fn score_at(&self, idx: usize) -> f64 {
+        self.columns.scores[idx]
+    }
+
+    /// Dense slice of per-detection confidence scores (`len == self.len()`).
+    #[inline]
+    pub fn scores(&self) -> &[f64] {
+        &self.columns.scores
+    }
+
+    /// Bounding box at flat row `idx`.
+    #[inline]
+    pub fn bbox_at(&self, idx: usize) -> Bbox {
+        self.columns.bboxes[idx]
+    }
+
+    /// Dense slice of per-detection bounding boxes (`len == self.len()`).
+    #[inline]
+    pub fn bboxes(&self) -> &[Bbox] {
+        &self.columns.bboxes
+    }
+
+    /// Pixel area at flat row `idx` (`O(1)`, derived from bbox when
+    /// built with [`DetectionArea::FromBbox`]).
+    #[inline]
+    pub fn area_at(&self, idx: usize) -> f64 {
+        self.columns.areas.area_at(idx, &self.columns.bboxes)
+    }
+
+    /// Raw annotation ids of rows `kept` into `out`, replacing its
+    /// contents — the per-cell bulk form of [`Self::id_at`].
+    #[inline]
+    pub fn gather_ids_into(&self, kept: &[usize], out: &mut Vec<i64>) {
+        self.columns.ids.gather_into(kept, out);
+    }
+
+    /// Areas of rows `kept` into `out`, replacing its contents — the
+    /// per-cell bulk form of [`Self::area_at`].
+    #[inline]
+    pub fn gather_areas_into(&self, kept: &[usize], out: &mut Vec<f64>) {
+        self.columns
+            .areas
+            .gather_into(kept, &self.columns.bboxes, out);
+    }
+
+    /// Optional segmentation prediction at flat row `idx`.
+    #[inline]
+    pub fn segmentation_at(&self, idx: usize) -> Option<&Segmentation> {
+        self.columns
+            .segmentations
+            .as_ref()
+            .and_then(|segs| segs[idx].as_ref())
+    }
+
+    /// Optional keypoint triplets at flat row `idx`.
+    #[inline]
+    pub fn keypoints_at(&self, idx: usize) -> Option<&[f64]> {
+        self.columns
+            .keypoints
+            .as_ref()
+            .and_then(|kps| kps[idx].as_deref())
+    }
+
+    /// Optional `num_keypoints` count at flat row `idx`.
+    #[inline]
+    pub fn num_keypoints_at(&self, idx: usize) -> Option<u32> {
+        self.columns.num_keypoints.as_ref().and_then(|nk| nk[idx])
+    }
+
+    /// Reconstructs one [`CocoDetection`] record by value from the
+    /// underlying SoA columns. Intended for cold diagnostic, table, and
+    /// test surfaces; hot evaluation paths read the columnar accessors.
+    pub fn record_at(&self, idx: usize) -> CocoDetection {
+        CocoDetection {
+            id: self.id_at(idx),
+            image_id: self.image_id_at(idx),
+            category_id: self.category_id_at(idx),
+            score: self.score_at(idx),
+            bbox: self.bbox_at(idx),
+            area: self.area_at(idx),
+            segmentation: self.segmentation_at(idx).cloned(),
+            keypoints: self.keypoints_at(idx).map(<[f64]>::to_vec),
+            num_keypoints: self.num_keypoints_at(idx),
         }
     }
 
-    /// Flat slice of every detection.
-    pub fn detections(&self) -> &[CocoDetection] {
-        &self.detections
+    /// Cold iterator yielding reconstructed [`CocoDetection`] records
+    /// in flat row order (`0..self.len()`).
+    pub fn records(&self) -> impl ExactSizeIterator<Item = CocoDetection> + '_ {
+        (0..self.len()).map(|idx| self.record_at(idx))
     }
 
-    /// Indices into [`Self::detections`] for one `(image, category)`
-    /// cell. Empty slice when the cell is empty (no detections of that
-    /// category on that image).
+    /// Flat row indices for one `(image, category)` cell. Empty slice
+    /// when the cell is empty (no detections of that category on that
+    /// image).
     pub fn indices_for(&self, image: ImageId, cat: CategoryId) -> &[usize] {
         self.by_image_cat.get(&(image, cat))
     }
 
-    /// Indices into [`Self::detections`] for every detection on an
-    /// image, regardless of category. Path used when `useCats=false`
-    /// (quirk **L4**).
+    /// Flat row indices for every detection on an image, regardless of
+    /// category. Path used when `useCats=false` (quirk **L4**).
     pub fn indices_for_image(&self, image: ImageId) -> &[usize] {
         self.by_image.get(&image)
-    }
-
-    /// Distinct image ids that carry at least one detection, in
-    /// unspecified order. `O(distinct images)`: read off the index, not
-    /// a scan of the detections.
-    pub fn distinct_image_ids(&self) -> impl ExactSizeIterator<Item = ImageId> + '_ {
-        self.by_image.keys().copied()
     }
 
     /// [`Self::lvis_trim`] to `max_dets` when `gt` is federated and some
@@ -1786,65 +2343,40 @@ impl CocoDetections {
     /// edge case the upstream allows but isn't useful in practice.
     ///
     /// The output preserves DT ids and per-detection fields verbatim;
-    /// only the membership of the flat detections vector and the
-    /// per-cell index maps change. The original [`CocoDetections`] is
-    /// untouched (the inner `Arc<Vec<CocoDetection>>` is *not* shared
-    /// with the result — the trim copies the surviving entries into a
-    /// fresh allocation).
+    /// only the membership of the flat detections columns and the
+    /// per-cell CSR indices change.
     ///
     /// Within each image's group, ties on `score` resolve in input
     /// order: Rust's `slice::sort_by` is stable, matching Python's
-    /// `sorted(_, reverse=True)` Timsort behavior. The fact that the
-    /// matching path's `argsort_score_desc` is *also* stable
-    /// (`np.argsort(-scores, kind="mergesort")`, AC4) is a separate
-    /// invariant — vernier's parity claim covers both sites.
+    /// `sorted(_, reverse=True)` Timsort behavior.
     pub fn lvis_trim(&self, max_dets: i64) -> CocoDetections {
         if max_dets < 0 {
-            // AC5: negative cap disables the trim. The clone is `O(1)`:
-            // the detections and both indexes are `Arc`-shared.
+            // AC5: negative cap disables the trim. `Arc::clone` on both
+            // `columns` and CSR indices makes this O(1).
             return self.clone();
         }
-        let cap = max_dets as usize;
-        // Iterate images in id-ascending order so the output's flat
-        // detections vector is deterministic — the LVIS oracle's
-        // `LVISResults.dataset['annotations']` is a dict-iteration
-        // order (image insertion order), which Python's `dict` keeps
-        // stable since 3.7. Rebuilding the order from id-ascending
-        // here matches the shape vernier's later FFI consumers
-        // expect; the per-image trim itself is order-invariant.
+        let cap = usize::try_from(max_dets).unwrap_or(usize::MAX);
         let mut image_ids: Vec<ImageId> = self.by_image.keys().copied().collect();
         image_ids.sort_unstable_by_key(|i| i.0);
 
-        // Tight upper bound on the post-trim count: input length is
-        // always an upper bound on the result, and `cap * n_images`
-        // only beats it when the input is dense enough to hit the
-        // cap on every image. Take the smaller of the two so we
-        // never over-allocate by a factor of 5x on typical evals
-        // (most images carry far fewer than `max_dets` detections).
-        let upper_bound = self
-            .detections
-            .len()
-            .min(cap.saturating_mul(image_ids.len()));
-        let mut out: Vec<CocoDetection> = Vec::with_capacity(upper_bound);
+        let upper_bound = self.len().min(cap.saturating_mul(image_ids.len()));
+        let mut kept: Vec<usize> = Vec::with_capacity(upper_bound);
         let mut group: Vec<usize> = Vec::with_capacity(self.by_image.max_group_len());
+        let scores = self.scores();
         for image_id in image_ids {
             group.clear();
-            group.extend_from_slice(self.by_image.get(&image_id));
+            group.extend_from_slice(self.indices_for_image(image_id));
             // Stable sort by score descending. `partial_cmp` returns
-            // `None` only on NaN; `from_inputs` rejects NaN scores
-            // upstream (quirk **AD3** corrected), so `Equal` is the
-            // only fallback we need to consider.
+            // `None` only on NaN; `from_columns` rejects NaN scores
+            // upstream (quirk **AD3** corrected).
             group.sort_by(|&a, &b| {
-                self.detections[b]
-                    .score
-                    .partial_cmp(&self.detections[a].score)
+                scores[b]
+                    .partial_cmp(&scores[a])
                     .unwrap_or(std::cmp::Ordering::Equal)
             });
-            for &idx in group.iter().take(cap) {
-                out.push(self.detections[idx].clone());
-            }
+            kept.extend(group.iter().copied().take(cap));
         }
-        CocoDetections::from_records(out)
+        Self::from_resolved_columns(self.columns.gather(&kept))
     }
 }
 
@@ -2003,85 +2535,6 @@ mod tests {
         }
     }
 
-    /// Validation reports the first offending annotation in input order —
-    /// image checked before category — whatever the index's key order.
-    #[test]
-    fn rejects_the_first_offending_annotation_in_input_order() {
-        const BAD: &str = r#"{
-            "images": [{"id": 1, "width": 10, "height": 10}],
-            "annotations": [
-                {"id": 1, "image_id": 1, "category_id": 1,
-                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
-                {"id": 2, "image_id": 1, "category_id": 7,
-                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
-                {"id": 3, "image_id": 99, "category_id": 8,
-                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
-                {"id": 4, "image_id": 98, "category_id": 1,
-                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0}
-            ],
-            "categories": [{"id": 1, "name": "thing"}]
-        }"#;
-        let EvalError::InvalidAnnotation { detail } =
-            CocoDataset::from_json_bytes(BAD.as_bytes()).unwrap_err()
-        else {
-            panic!("expected InvalidAnnotation");
-        };
-        assert_eq!(detail, "annotation id=2 references unknown category_id=7");
-        // An annotation wrong on both counts reports its image.
-        let both = BAD.replacen(
-            r#""image_id": 1, "category_id": 7"#,
-            r#""image_id": 5, "category_id": 7"#,
-            1,
-        );
-        let EvalError::InvalidAnnotation { detail } =
-            CocoDataset::from_json_bytes(both.as_bytes()).unwrap_err()
-        else {
-            panic!("expected InvalidAnnotation");
-        };
-        assert_eq!(detail, "annotation id=2 references unknown image_id=5");
-    }
-
-    /// `distinct_image_ids` is exactly the set of detection image ids, and
-    /// `trim_for` trims a federated set only past the per-image cap.
-    #[test]
-    fn distinct_image_ids_and_the_trim_boundary() {
-        let det = |image: i64, score: f64| DetectionInput {
-            id: None,
-            image_id: ImageId(image),
-            category_id: CategoryId(1),
-            score,
-            bbox: Bbox {
-                x: 0.0,
-                y: 0.0,
-                w: 1.0,
-                h: 1.0,
-            },
-            area: None,
-            segmentation: None,
-            keypoints: None,
-            num_keypoints: None,
-        };
-        // Image 1 carries 3 detections, image 2 carries 1.
-        let inputs = vec![det(1, 0.9), det(2, 0.8), det(1, 0.7), det(1, 0.6)];
-        let dt = CocoDetections::from_inputs(inputs).unwrap();
-        let mut ids: Vec<i64> = dt.distinct_image_ids().map(|i| i.0).collect();
-        ids.sort_unstable();
-        assert_eq!(ids, [1, 2]);
-
-        let lvis = CocoDataset::from_lvis_json_bytes(LVIS_MIN_VALID.as_bytes()).unwrap();
-        assert_eq!(
-            dt.clone().trim_for(&lvis, 3).detections().len(),
-            4,
-            "at the cap"
-        );
-        let trimmed = dt.clone().trim_for(&lvis, 2);
-        assert_eq!(trimmed.detections().len(), 3, "one past the cap");
-        assert_eq!(trimmed.indices_for_image(ImageId(1)).len(), 2);
-        // Off-LVIS, nothing is trimmed whatever the cap.
-        let coco = load_crowd_region();
-        assert_eq!(dt.trim_for(&coco, 1).detections().len(), 4);
-    }
-
     #[test]
     fn round_trips_through_json() {
         let ds = load_crowd_region();
@@ -2195,7 +2648,7 @@ mod tests {
             dt_input(1, 1, 0.8, (0.0, 0.0, 1.0, 1.0)),
         ])
         .unwrap();
-        let ids: Vec<AnnId> = dts.detections().iter().map(|d| d.id).collect();
+        let ids: Vec<AnnId> = dts.records().map(|d| d.id).collect();
         assert_eq!(ids, vec![AnnId(1), AnnId(2)]);
     }
 
@@ -2206,7 +2659,7 @@ mod tests {
         let mut b = dt_input(1, 1, 0.8, (0.0, 0.0, 1.0, 1.0));
         b.id = Some(AnnId(7));
         let dts = CocoDetections::from_inputs(vec![a, b]).unwrap();
-        let ids: Vec<AnnId> = dts.detections().iter().map(|d| d.id).collect();
+        let ids: Vec<AnnId> = dts.records().map(|d| d.id).collect();
         assert_eq!(ids, vec![AnnId(42), AnnId(7)]);
     }
 
@@ -2214,14 +2667,14 @@ mod tests {
     fn j3_derives_area_from_bbox() {
         let dts =
             CocoDetections::from_inputs(vec![dt_input(1, 1, 0.5, (10.0, 10.0, 4.0, 5.0))]).unwrap();
-        assert_eq!(dts.detections()[0].area, 20.0);
+        assert_eq!(dts.area_at(0), 20.0);
     }
 
     #[test]
     fn j3_ignores_supplied_area_by_default() {
         let json = br#"[{"image_id": 1, "category_id": 1, "score": 0.5, "bbox": [0, 0, 4, 5], "area": 99.0}]"#;
         let dts = CocoDetections::from_json_bytes(json).unwrap();
-        assert_eq!(dts.detections()[0].area, 20.0);
+        assert_eq!(dts.area_at(0), 20.0);
     }
 
     #[test]
@@ -2231,8 +2684,8 @@ mod tests {
             {"image_id": 1, "category_id": 1, "score": 0.4, "bbox": [0, 0, 4, 5]}
         ]"#;
         let dts = CocoDetections::from_json_bytes_with_area(json, DetectionArea::Supplied).unwrap();
-        assert_eq!(dts.detections()[0].area, 99.0);
-        assert_eq!(dts.detections()[1].area, 20.0);
+        assert_eq!(dts.area_at(0), 99.0);
+        assert_eq!(dts.area_at(1), 20.0);
     }
 
     fn rle_input(counts: SegmentationRleCounts) -> DetectionInput {
@@ -2260,8 +2713,8 @@ mod tests {
             DetectionArea::Mask,
         )
         .unwrap();
-        assert_eq!(dts.detections()[0].area, 11.0);
-        assert_eq!(dts.detections()[1].area, 11.0);
+        assert_eq!(dts.area_at(0), 11.0);
+        assert_eq!(dts.area_at(1), 11.0);
     }
 
     #[test]
@@ -2403,14 +2856,73 @@ mod tests {
         json.push(']');
 
         let serial = CocoDetections::from_json_bytes(json.as_bytes()).expect("serial");
+        let serial_recs: Vec<CocoDetection> = serial.records().collect();
         for threads in [1usize, 3, 8] {
             let parallel =
                 CocoDetections::from_json_bytes_parallel(json.as_bytes(), threads).expect("par");
             assert_eq!(
-                format!("{:?}", serial.detections()),
-                format!("{:?}", parallel.detections()),
+                format!("{:?}", serial_recs),
+                format!("{:?}", parallel.records().collect::<Vec<_>>()),
                 "threads={threads}"
             );
+        }
+    }
+
+    /// The parallel loader parses into one column set per chunk; an
+    /// optional field first seen in a late chunk must still land on its
+    /// own row once the chunks are joined.
+    #[test]
+    fn parallel_dt_loader_aligns_sparse_columns_across_chunks() {
+        let mut json = String::from("[");
+        for i in 0..200 {
+            if i > 0 {
+                json.push(',');
+            }
+            let id = if i % 50 == 49 {
+                format!(r#""id": {}, "#, 1000 + i)
+            } else {
+                String::new()
+            };
+            let area = if i == 150 { r#", "area": 7.5"# } else { "" };
+            let seg = if i >= 180 && i % 3 == 0 {
+                r#", "segmentation": {"size": [4, 4], "counts": [0, 16]}"#
+            } else {
+                ""
+            };
+            json.push_str(&format!(
+                r#"{{{id}"image_id": {}, "category_id": 3, "bbox": [0,0,{},2], "score": 0.5{area}{seg}}}"#,
+                i % 7,
+                i + 1
+            ));
+        }
+        json.push(']');
+
+        for area in [DetectionArea::FromBbox, DetectionArea::Supplied] {
+            let serial =
+                CocoDetections::from_json_bytes_with_area(json.as_bytes(), area).expect("serial");
+            assert_eq!(serial.id_at(49), AnnId(1049));
+            assert!(serial.segmentation_at(183).is_some());
+            assert!(serial.segmentation_at(184).is_none());
+            let expected_area = if area == DetectionArea::Supplied {
+                7.5
+            } else {
+                302.0
+            };
+            assert_eq!(serial.area_at(150), expected_area);
+            let serial_recs = format!("{:?}", serial.records().collect::<Vec<_>>());
+            for threads in [3usize, 8] {
+                let parallel = CocoDetections::from_json_bytes_parallel_with_area(
+                    json.as_bytes(),
+                    threads,
+                    area,
+                )
+                .expect("par");
+                assert_eq!(
+                    serial_recs,
+                    format!("{:?}", parallel.records().collect::<Vec<_>>()),
+                    "threads={threads} area={area:?}"
+                );
+            }
         }
     }
 
@@ -2558,8 +3070,12 @@ mod tests {
             for threads in [1usize, 2, 3, 8] {
                 let parallel = CocoDetections::from_json_bytes_parallel(case.as_bytes(), threads);
                 assert_outcomes_match(
-                    serial.as_ref().map(|d| format!("{:?}", d.detections())),
-                    parallel.as_ref().map(|d| format!("{:?}", d.detections())),
+                    serial
+                        .as_ref()
+                        .map(|d| format!("{:?}", d.records().collect::<Vec<_>>())),
+                    parallel
+                        .as_ref()
+                        .map(|d| format!("{:?}", d.records().collect::<Vec<_>>())),
                     &format!("threads={threads} case={case}"),
                 );
             }
@@ -2625,8 +3141,12 @@ mod tests {
             let serial = CocoDetections::from_json_bytes(&bytes);
             let parallel = CocoDetections::from_json_bytes_parallel(&bytes, threads);
             assert_outcomes_match(
-                serial.as_ref().map(|d| format!("{:?}", d.detections())),
-                parallel.as_ref().map(|d| format!("{:?}", d.detections())),
+                serial
+                    .as_ref()
+                    .map(|d| format!("{:?}", d.records().collect::<Vec<_>>())),
+                parallel
+                    .as_ref()
+                    .map(|d| format!("{:?}", d.records().collect::<Vec<_>>())),
                 &format!("threads={threads} at={at} byte={byte}"),
             );
         }
@@ -2667,7 +3187,7 @@ mod tests {
              "bbox": [1, 1, 1, 1]}
         ]"#;
         let dts = CocoDetections::from_json_bytes(JSON.as_bytes()).unwrap();
-        let ds = dts.detections();
+        let ds: Vec<CocoDetection> = dts.records().collect();
         assert_eq!(ds[0].id, AnnId(1)); // auto-assigned
         assert_eq!(ds[0].area, 6.0); // J3
         assert_eq!(ds[1].id, AnnId(7)); // user-supplied (J1)
@@ -2746,7 +3266,7 @@ mod tests {
              "segmentation": {"size": [4, 4], "counts": "04L4"}}
         ]"#;
         let dts = CocoDetections::from_json_bytes(JSON.as_bytes()).unwrap();
-        assert!(dts.detections()[0].segmentation.is_some());
+        assert!(dts.segmentation_at(0).is_some());
     }
 
     #[test]
@@ -2755,7 +3275,7 @@ mod tests {
             {"image_id": 1, "category_id": 1, "score": 0.9, "bbox": [0, 0, 1, 1]}
         ]"#;
         let dts = CocoDetections::from_json_bytes(JSON.as_bytes()).unwrap();
-        assert!(dts.detections()[0].segmentation.is_none());
+        assert!(dts.segmentation_at(0).is_none());
     }
 
     // -- Property: index invariants hold across arbitrary datasets --------
@@ -2802,28 +3322,6 @@ mod tests {
             keypoints: None,
             num_keypoints: None,
         }
-    }
-
-    /// Each group lists its rows in ascending order — the push order the
-    /// per-key `Vec<usize>` maps had, which matching's stable tie-breaks
-    /// rely on — including when a key's runs are interleaved with others
-    /// (the run-length cache's miss path).
-    #[test]
-    fn csr_index_groups_rows_in_ascending_order() {
-        let keys = [3_i64, 3, 1, 3, 2, 2, 1, 3];
-        let index = CsrIndex::build(keys.len(), 0, |i| keys[i]);
-        assert_eq!(index.get(&3), &[0, 1, 3, 7]);
-        assert_eq!(index.get(&1), &[2, 6]);
-        assert_eq!(index.get(&2), &[4, 5]);
-        assert!(index.get(&9).is_empty());
-        assert_eq!(index.max_group_len(), 4);
-        let mut distinct: Vec<i64> = index.keys().copied().collect();
-        distinct.sort_unstable();
-        assert_eq!(distinct, [1, 2, 3]);
-
-        let empty = CsrIndex::<i64>::build(0, 0, |_| 0);
-        assert!(empty.get(&0).is_empty());
-        assert_eq!(empty.max_group_len(), 0);
     }
 
     proptest! {
@@ -3126,9 +3624,9 @@ mod tests {
         )
         .unwrap();
         let trimmed = dts.lvis_trim(300);
-        assert_eq!(trimmed.detections().len(), 300);
+        assert_eq!(trimmed.len(), 300);
         // Scores must be descending and start at 1.0.
-        let scores: Vec<f64> = trimmed.detections().iter().map(|d| d.score).collect();
+        let scores: Vec<f64> = trimmed.scores().to_vec();
         for w in scores.windows(2) {
             assert!(
                 w[0] >= w[1],
@@ -3168,19 +3666,19 @@ mod tests {
         let dts = CocoDetections::from_inputs(inputs).unwrap();
         let trimmed = dts.lvis_trim(300);
         // AC3: top-300 total — not per-class.
-        assert_eq!(trimmed.detections().len(), 300);
+        assert_eq!(trimmed.len(), 300);
         // Counts per category in the trim — cat-2 has higher overall
         // scores so most of the trim is cat-2; cat-1's top entries
         // (score 0.5 ≥ 0.302) also make the cut.
         let n_cat1 = trimmed
-            .detections()
+            .category_ids()
             .iter()
-            .filter(|d| d.category_id == CategoryId(1))
+            .filter(|&&c| c == CategoryId(1))
             .count();
         let n_cat2 = trimmed
-            .detections()
+            .category_ids()
             .iter()
-            .filter(|d| d.category_id == CategoryId(2))
+            .filter(|&&c| c == CategoryId(2))
             .count();
         // cat-2 scores >= 0.5 are i in 0..=250; cat-1 scores >= 0.302
         // are i in 0..=99. The exact mix is determined by the sort
@@ -3204,10 +3702,10 @@ mod tests {
         )
         .unwrap();
         let trimmed = dts.lvis_trim(-1);
-        assert_eq!(trimmed.detections().len(), 50);
+        assert_eq!(trimmed.len(), 50);
         // No reordering — the AC5 path doesn't even sort.
-        for (i, dt) in trimmed.detections().iter().enumerate() {
-            assert!((dt.score - (i as f64 / 100.0)).abs() < 1e-12);
+        for (i, &score) in trimmed.scores().iter().enumerate() {
+            assert!((score - (i as f64 / 100.0)).abs() < 1e-12);
         }
     }
 
@@ -3224,7 +3722,7 @@ mod tests {
         )
         .unwrap();
         let trimmed = dts.lvis_trim(100);
-        assert_eq!(trimmed.detections().len(), 10);
+        assert_eq!(trimmed.len(), 10);
     }
 
     #[test]
@@ -3240,7 +3738,7 @@ mod tests {
         b.id = Some(AnnId(200));
         let dts = CocoDetections::from_inputs(vec![a, b]).unwrap();
         let trimmed = dts.lvis_trim(2);
-        let ids: Vec<AnnId> = trimmed.detections().iter().map(|d| d.id).collect();
+        let ids: Vec<AnnId> = trimmed.records().map(|d| d.id).collect();
         assert_eq!(
             ids,
             vec![AnnId(100), AnnId(200)],
@@ -3263,13 +3761,13 @@ mod tests {
         }
         let dts = CocoDetections::from_inputs(inputs).unwrap();
         let trimmed = dts.lvis_trim(2);
-        assert_eq!(trimmed.detections().len(), 6);
+        assert_eq!(trimmed.len(), 6);
         // 2 per image:
         for img in 1..=3i64 {
             let n = trimmed
-                .detections()
+                .image_ids()
                 .iter()
-                .filter(|d| d.image_id == ImageId(img))
+                .filter(|&&im| im == ImageId(img))
                 .count();
             assert_eq!(n, 2, "image {img} must trim to 2");
         }
@@ -3283,7 +3781,54 @@ mod tests {
         ])
         .unwrap();
         let trimmed = dts.lvis_trim(0);
-        assert!(trimmed.detections().is_empty());
+        assert!(trimmed.is_empty());
+    }
+
+    #[test]
+    fn from_columns_matches_from_inputs_and_rejects_mismatched_lengths() {
+        let cols = DetectionColumnsInput {
+            ids: None,
+            image_ids: vec![ImageId(1), ImageId(1), ImageId(2)],
+            category_ids: vec![CategoryId(3), CategoryId(3), CategoryId(5)],
+            scores: vec![0.9, 0.4, 0.7],
+            bboxes: vec![
+                Bbox {
+                    x: 1.0,
+                    y: 2.0,
+                    w: 3.0,
+                    h: 4.0,
+                },
+                Bbox {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 5.0,
+                    h: 6.0,
+                },
+                Bbox {
+                    x: 2.0,
+                    y: 3.0,
+                    w: 1.0,
+                    h: 2.0,
+                },
+            ],
+            areas: None,
+            segmentations: None,
+            keypoints: None,
+            num_keypoints: None,
+        };
+        let dts = CocoDetections::from_columns(cols.clone()).unwrap();
+        assert_eq!(dts.len(), 3);
+        assert_eq!(dts.id_at(0), AnnId(1));
+        assert_eq!(dts.id_at(2), AnnId(3));
+        assert_eq!(dts.area_at(0), 12.0);
+        assert_eq!(dts.area_at(1), 30.0);
+        assert_eq!(dts.indices_for(ImageId(1), CategoryId(3)), &[0, 1]);
+        assert_eq!(dts.indices_for(ImageId(2), CategoryId(5)), &[2]);
+
+        let mut bad = cols;
+        bad.category_ids.pop();
+        let err = CocoDetections::from_columns(bad).unwrap_err();
+        assert!(matches!(err, EvalError::InvalidAnnotation { .. }));
     }
 
     #[test]
@@ -3314,40 +3859,6 @@ mod tests {
         let a = load_crowd_region();
         let b = load_crowd_region();
         assert_eq!(a.dataset_hash(), b.dataset_hash());
-    }
-
-    /// The grid `I` axis is id-ascending whatever the declaration order,
-    /// keeps declaration order among repeated ids (stable), and is
-    /// computed once and shared by clones.
-    #[test]
-    fn grid_images_are_id_ascending_stable_and_shared() {
-        let img = |id: i64, width: u32| ImageMeta {
-            id: ImageId(id),
-            file_name: None,
-            width,
-            height: 1,
-        };
-        let ds = CocoDataset::from_parts(
-            vec![img(7, 1), img(2, 2), img(7, 3), img(-1, 4)],
-            Vec::new(),
-            vec![CategoryMeta {
-                id: CategoryId(1),
-                name: "x".into(),
-                supercategory: None,
-            }],
-        )
-        .unwrap();
-        let order: Vec<(i64, u32)> = ds.grid_images().iter().map(|m| (m.id.0, m.width)).collect();
-        assert_eq!(order, [(-1, 4), (2, 2), (7, 1), (7, 3)]);
-        let clone = ds.clone();
-        assert!(std::ptr::eq(
-            ds.grid_images().iter().next().unwrap(),
-            clone.grid_images().iter().next().unwrap()
-        ));
-        assert!(Arc::ptr_eq(
-            &ds.cached_image_order,
-            &clone.cached_image_order
-        ));
     }
 
     #[test]
@@ -3532,5 +4043,136 @@ mod tests {
         let mut b = a.clone();
         b.use_cats = false;
         assert_ne!(a.params_hash().unwrap(), b.params_hash().unwrap());
+    }
+
+    /// Each group lists its rows in ascending order — the push order the
+    /// per-key `Vec<usize>` maps had, which matching's stable tie-breaks
+    /// rely on — including when a key's runs are interleaved with others
+    /// (the run-length cache's miss path).
+    #[test]
+    fn csr_index_groups_rows_in_ascending_order() {
+        let keys = [3_i64, 3, 1, 3, 2, 2, 1, 3];
+        let index = CsrIndex::build(keys.len(), 0, |i| keys[i]);
+        assert_eq!(index.get(&3), &[0, 1, 3, 7]);
+        assert_eq!(index.get(&1), &[2, 6]);
+        assert_eq!(index.get(&2), &[4, 5]);
+        assert!(index.get(&9).is_empty());
+        assert_eq!(index.max_group_len(), 4);
+        let mut distinct: Vec<i64> = index.keys().copied().collect();
+        distinct.sort_unstable();
+        assert_eq!(distinct, [1, 2, 3]);
+
+        let empty = CsrIndex::<i64>::build(0, 0, |_| 0);
+        assert!(empty.get(&0).is_empty());
+        assert_eq!(empty.max_group_len(), 0);
+    }
+
+    /// `distinct_image_ids` is exactly the set of detection image ids, and
+    /// `trim_for` trims a federated set only past the per-image cap.
+    #[test]
+    fn distinct_image_ids_and_the_trim_boundary() {
+        let det = |image: i64, score: f64| DetectionInput {
+            id: None,
+            image_id: ImageId(image),
+            category_id: CategoryId(1),
+            score,
+            bbox: Bbox {
+                x: 0.0,
+                y: 0.0,
+                w: 1.0,
+                h: 1.0,
+            },
+            area: None,
+            segmentation: None,
+            keypoints: None,
+            num_keypoints: None,
+        };
+        // Image 1 carries 3 detections, image 2 carries 1.
+        let inputs = vec![det(1, 0.9), det(2, 0.8), det(1, 0.7), det(1, 0.6)];
+        let dt = CocoDetections::from_inputs(inputs).unwrap();
+        let mut ids: Vec<i64> = dt.distinct_image_ids().map(|i| i.0).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, [1, 2]);
+
+        let lvis = CocoDataset::from_lvis_json_bytes(LVIS_MIN_VALID.as_bytes()).unwrap();
+        assert_eq!(dt.clone().trim_for(&lvis, 3).len(), 4, "at the cap");
+        let trimmed = dt.clone().trim_for(&lvis, 2);
+        assert_eq!(trimmed.len(), 3, "one past the cap");
+        assert_eq!(trimmed.indices_for_image(ImageId(1)).len(), 2);
+        // Off-LVIS, nothing is trimmed whatever the cap.
+        let coco = load_crowd_region();
+        assert_eq!(dt.trim_for(&coco, 1).len(), 4);
+    }
+
+    /// The grid `I` axis is id-ascending whatever the declaration order,
+    /// keeps declaration order among repeated ids (stable), and is
+    /// computed once and shared by clones.
+    #[test]
+    fn grid_images_are_id_ascending_stable_and_shared() {
+        let img = |id: i64, width: u32| ImageMeta {
+            id: ImageId(id),
+            file_name: None,
+            width,
+            height: 1,
+        };
+        let ds = CocoDataset::from_parts(
+            vec![img(7, 1), img(2, 2), img(7, 3), img(-1, 4)],
+            Vec::new(),
+            vec![CategoryMeta {
+                id: CategoryId(1),
+                name: "x".into(),
+                supercategory: None,
+            }],
+        )
+        .unwrap();
+        let order: Vec<(i64, u32)> = ds.grid_images().iter().map(|m| (m.id.0, m.width)).collect();
+        assert_eq!(order, [(-1, 4), (2, 2), (7, 1), (7, 3)]);
+        let clone = ds.clone();
+        assert!(std::ptr::eq(
+            ds.grid_images().iter().next().unwrap(),
+            clone.grid_images().iter().next().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &ds.cached_image_order,
+            &clone.cached_image_order
+        ));
+    }
+
+    /// Validation reports the first offending annotation in input order —
+    /// image checked before category — whatever the index's key order.
+    #[test]
+    fn rejects_the_first_offending_annotation_in_input_order() {
+        const BAD: &str = r#"{
+            "images": [{"id": 1, "width": 10, "height": 10}],
+            "annotations": [
+                {"id": 1, "image_id": 1, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 2, "image_id": 1, "category_id": 7,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 3, "image_id": 99, "category_id": 8,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0},
+                {"id": 4, "image_id": 98, "category_id": 1,
+                 "bbox": [0, 0, 1, 1], "area": 1, "iscrowd": 0}
+            ],
+            "categories": [{"id": 1, "name": "thing"}]
+        }"#;
+        let EvalError::InvalidAnnotation { detail } =
+            CocoDataset::from_json_bytes(BAD.as_bytes()).unwrap_err()
+        else {
+            panic!("expected InvalidAnnotation");
+        };
+        assert_eq!(detail, "annotation id=2 references unknown category_id=7");
+        // An annotation wrong on both counts reports its image.
+        let both = BAD.replacen(
+            r#""image_id": 1, "category_id": 7"#,
+            r#""image_id": 5, "category_id": 7"#,
+            1,
+        );
+        let EvalError::InvalidAnnotation { detail } =
+            CocoDataset::from_json_bytes(both.as_bytes()).unwrap_err()
+        else {
+            panic!("expected InvalidAnnotation");
+        };
+        assert_eq!(detail, "annotation id=2 references unknown image_id=5");
     }
 }

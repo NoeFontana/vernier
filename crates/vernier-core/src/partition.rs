@@ -514,9 +514,9 @@ pub fn evaluate_partitioned_lrp<K: EvalKernel>(
     let image_id_to_idx_map = image_id_to_idx(gt);
     let mut slice_n_detections: Vec<u64> = vec![0; spec.slices.len()];
     let mut overall_n_detections: u64 = 0;
-    for d in dt.detections() {
+    for &img_id in dt.image_ids() {
         overall_n_detections = overall_n_detections.saturating_add(1);
-        let Some(&i) = image_id_to_idx_map.get(&d.image_id) else {
+        let Some(&i) = image_id_to_idx_map.get(&img_id) else {
             continue;
         };
         for (slice_idx, slice) in spec.slices.iter().enumerate() {

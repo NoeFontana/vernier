@@ -676,11 +676,10 @@ impl<K: EvalKernel> StreamingEvaluator<K> {
                     }
                 }
             }
-            self.dets_seen
-                .extend(detections.detections().iter().cloned());
+            self.dets_seen.extend(detections.records());
         }
 
-        let n_detections_accepted = detections.detections().len();
+        let n_detections_accepted = detections.len();
         self.n_detections += n_detections_accepted;
         self.next_dt_id = self.next_dt_id.saturating_add(n_detections_accepted as i64);
         for id in batch_image_ids {
