@@ -133,7 +133,14 @@ its own numbers, on an uncontended box.
 
 - Quirks **B1** (threshold seed), **B2** (non-strict comparison),
   **B3** (ignore-ordering break), **B4** (crowd re-match) in
-  `docs/engineering/pycocotools-quirks.md` — all preserved verbatim in
-  `run_ladder`.
+  `docs/engineering/pycocotools-quirks.md` — all preserved in
+  `run_ladder` / `ladder_step` (`matching.rs`). B3's `break` is
+  structural there: the A4-partitioned ignore tail is scanned only when
+  the non-ignore block produced no match, the same set of outcomes. The
+  ladder is pinned against an independent pycocotools transliteration
+  (`matching::tests::ladder_matches_pycocotools_on_random_cells`).
+- The column maxima this ADR introduces are computed once per
+  `(category, image)` cell and shared by its area ranges
+  (`matching::cell_prefilter`), not once per area range.
 - The `NaN` reachability argument depends on [ADR-0030](0030-buffer-protocol.md).
 - Measurements: `crates/vernier-core/benches/evaluate_bbox.rs`.

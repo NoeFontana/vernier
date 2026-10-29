@@ -431,6 +431,7 @@ fn process_one_cell_into<K: EvalKernel>(
         not_exhaustive: not_exhaustive_for_cell,
     };
 
+    let prefilter = crate::matching::cell_prefilter(&mut scratch.column_maxima, iou_view);
     for (a, area) in params.area_ranges.iter().enumerate() {
         let (cell, meta) = evaluate_cell(
             &mut scratch.gt_ignore_buf,
@@ -439,6 +440,7 @@ fn process_one_cell_into<K: EvalKernel>(
             params.iou_thresholds,
             parity_mode,
             params.builds_meta(),
+            prefilter,
         )?;
         eval_slice[a] = Some(Box::new(cell));
         meta_slice[a] = meta.map(Box::new);
