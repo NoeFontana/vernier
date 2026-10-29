@@ -1171,13 +1171,11 @@ fn build_grid_meta(dataset: &CocoDataset, params: &OwnedEvaluateParams) -> EvalG
     let n_area_ranges = params.area_ranges.len();
     let n_images = dataset.images().len();
 
-    // Image ids: same id-ascending sort the batch orchestrator uses, so
-    // I-axis indices match between the two paths.
-    let mut image_ids: Vec<ImageId> = dataset.images().iter().map(|im| im.id).collect();
-    image_ids.sort_unstable_by_key(|id| id.0);
+    // The dataset's grid order — the one the batch orchestrator indexes —
+    // so I-axis indices match between the two paths.
     let mut image_id_to_idx: HashMap<ImageId, usize> = HashMap::with_capacity(n_images);
-    for (i, id) in image_ids.into_iter().enumerate() {
-        image_id_to_idx.insert(id, i);
+    for (i, im) in dataset.grid_images().iter().enumerate() {
+        image_id_to_idx.insert(im.id, i);
     }
 
     let (n_categories, category_id_to_idx) = if params.use_cats {

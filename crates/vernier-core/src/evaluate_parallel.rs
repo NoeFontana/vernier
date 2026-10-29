@@ -60,8 +60,7 @@ pub fn evaluate_with_parallel<K: EvalKernel>(
     parity_mode: ParityMode,
     kernel: &K,
 ) -> Result<EvalGrid, EvalError> {
-    let mut images: Vec<&ImageMeta> = gt.images().iter().collect();
-    images.sort_unstable_by_key(|im| im.id.0);
+    let images: Vec<&ImageMeta> = gt.grid_images().iter().collect();
     let n_i = images.len();
     let n_a = params.area_ranges.len();
 

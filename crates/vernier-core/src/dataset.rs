@@ -496,6 +496,28 @@ pub struct CocoDataset {
     /// the existing Arc-shared layout for `images` / `categories` /
     /// `annotations`.
     cached_hash: Arc<OnceLock<[u8; 32]>>,
+    /// Positions into `images` in id-ascending order: the `I` axis of
+    /// every evaluation grid. Built on first use and shared by clones, so
+    /// repeated evaluations (and every [`crate::stream::StreamingEvaluator`]
+    /// `update`) do not re-sort the whole image list.
+    cached_image_order: Arc<OnceLock<Box<[usize]>>>,
+}
+
+/// The images of a [`CocoDataset`] in grid order (id-ascending) — the
+/// one definition of the `I` axis every evaluator, table builder and
+/// diagnostic indexes. A borrowed view: no per-call gather or sort.
+#[derive(Clone, Copy)]
+pub(crate) struct GridImages<'a> {
+    metas: &'a [ImageMeta],
+    order: &'a [usize],
+}
+
+impl<'a> GridImages<'a> {
+    /// Images in grid order.
+    pub(crate) fn iter(&self) -> impl ExactSizeIterator<Item = &'a ImageMeta> + Clone + 'a {
+        let metas = self.metas;
+        self.order.iter().map(move |&p| &metas[p])
+    }
 }
 
 impl CocoDataset {
@@ -637,7 +659,25 @@ impl CocoDataset {
             by_image_cat,
             federated: None,
             cached_hash: Arc::new(OnceLock::new()),
+            cached_image_order: Arc::new(OnceLock::new()),
         })
+    }
+
+    /// The images in grid order (id-ascending), computed once per dataset.
+    ///
+    /// Stable by id, so a (malformed) repeated image id keeps declaration
+    /// order; every grid consumer reads this one order, so their `I` axes
+    /// agree whatever the input.
+    pub(crate) fn grid_images(&self) -> GridImages<'_> {
+        let order = self.cached_image_order.get_or_init(|| {
+            let mut order: Vec<usize> = (0..self.images.len()).collect();
+            order.sort_by_key(|&p| self.images[p].id.0);
+            order.into_boxed_slice()
+        });
+        GridImages {
+            metas: &self.images,
+            order,
+        }
     }
 
     /// Loads an LVIS v1 ground-truth dataset from a JSON byte slice.
@@ -3059,6 +3099,40 @@ mod tests {
         let a = load_crowd_region();
         let b = load_crowd_region();
         assert_eq!(a.dataset_hash(), b.dataset_hash());
+    }
+
+    /// The grid `I` axis is id-ascending whatever the declaration order,
+    /// keeps declaration order among repeated ids (stable), and is
+    /// computed once and shared by clones.
+    #[test]
+    fn grid_images_are_id_ascending_stable_and_shared() {
+        let img = |id: i64, width: u32| ImageMeta {
+            id: ImageId(id),
+            file_name: None,
+            width,
+            height: 1,
+        };
+        let ds = CocoDataset::from_parts(
+            vec![img(7, 1), img(2, 2), img(7, 3), img(-1, 4)],
+            Vec::new(),
+            vec![CategoryMeta {
+                id: CategoryId(1),
+                name: "x".into(),
+                supercategory: None,
+            }],
+        )
+        .unwrap();
+        let order: Vec<(i64, u32)> = ds.grid_images().iter().map(|m| (m.id.0, m.width)).collect();
+        assert_eq!(order, [(-1, 4), (2, 2), (7, 1), (7, 3)]);
+        let clone = ds.clone();
+        assert!(std::ptr::eq(
+            ds.grid_images().iter().next().unwrap(),
+            clone.grid_images().iter().next().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &ds.cached_image_order,
+            &clone.cached_image_order
+        ));
     }
 
     #[test]
