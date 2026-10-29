@@ -13,9 +13,11 @@
 //!    in-range inputs.
 //! 2. **Densify.** Each edge is walked along its major axis with
 //!    a Bresenham-like loop, producing one supersampled point per
-//!    minor-axis unit.
+//!    minor-axis unit. The C buffers every point; vernier walks each
+//!    edge in place and visits only the steps that can survive stage 3
+//!    (see `edge_crossings`).
 //! 3. **Y-boundary downsample (quirks H4, H5).** A "vertical step"
-//!    in the dense buffer (`u[j] != u[j-1]`) becomes one
+//!    between consecutive points (`u[j] != u[j-1]`) becomes one
 //!    image-coord boundary crossing. The x-coord is selected
 //!    direction-aware (the column the boundary just left) and must
 //!    land *exactly* on an integer pixel boundary; the y-coord is
@@ -30,8 +32,18 @@
 use crate::error::{MalformedPolygonReason, MalformedRleReason, MaskError};
 use crate::rle::Rle;
 
-/// Supersampling factor. Pinned at `5.0` to match `rleFrPoly`.
-const SUPERSAMPLE_SCALE: f64 = 5.0;
+/// Supersampling factor. Pinned at `5` to match `rleFrPoly`; the one
+/// source for the f64 upsample and the integer downsample.
+const SUPERSAMPLE_SCALE_INT: u32 = 5;
+#[allow(clippy::cast_lossless)]
+const SUPERSAMPLE_SCALE: f64 = SUPERSAMPLE_SCALE_INT as f64;
+
+/// The downsample maps supersampled `s` to `(s + 0.5) / scale - 0.5 =
+/// (s - BOUNDARY_OFFSET) / scale` image units, an integer exactly when
+/// `s ≡ BOUNDARY_OFFSET (mod scale)`. Needs an odd scale.
+#[allow(clippy::cast_possible_wrap)]
+const BOUNDARY_OFFSET: i32 = (SUPERSAMPLE_SCALE_INT as i32 - 1) / 2;
+const _: () = assert!(SUPERSAMPLE_SCALE_INT % 2 == 1);
 
 /// Minimum vertex count vernier accepts. Quirk **K1** disposition
 /// `corrected`: the C code happily rasterizes 1- and 2-vertex
@@ -90,40 +102,9 @@ impl Rle {
         sx.push(sx[0]);
         sy.push(sy[0]);
 
-        // Densify. Capacity = sum of per-edge `max(|dx|, |dy|) + 1` matches
-        // the C `m` accumulator in `mc:201`.
-        let total_dense: usize = (0..k)
-            .map(|j| {
-                let dx = (sx[j + 1] - sx[j]).unsigned_abs();
-                let dy = (sy[j + 1] - sy[j]).unsigned_abs();
-                dx.max(dy) as usize + 1
-            })
-            .sum();
-        let mut u: Vec<i32> = Vec::with_capacity(total_dense);
-        let mut v: Vec<i32> = Vec::with_capacity(total_dense);
-        for j in 0..k {
-            densify_edge(sx[j], sx[j + 1], sy[j], sy[j + 1], &mut u, &mut v);
-        }
-
-        // Y-boundary downsample directly into column-major flat indices.
+        let mut a = polygon_crossings(&sx, &sy, h, w);
         let h64 = u64::from(h);
         let w64 = u64::from(w);
-        let mut a: Vec<u64> = Vec::with_capacity(u.len() + 1);
-        for j in 1..u.len() {
-            if u[j] == u[j - 1] {
-                continue;
-            }
-            // x: direction-aware (cell the boundary just left), per `mc:219`.
-            let xd_super = if u[j] < u[j - 1] { u[j] } else { u[j] - 1 };
-            let Some(xd) = boundary_column(xd_super, w) else {
-                continue;
-            };
-            // y: minimum of the two endpoints regardless of direction —
-            // quirk H4 asymmetry.
-            let yd = boundary_row(v[j].min(v[j - 1]), h);
-            // xd ≤ w-1 and yd ≤ h, so the product + sum fits u64.
-            a.push(xd * h64 + yd);
-        }
         // Sentinel `h*w` extends the final run to mask end.
         a.push(h64 * w64);
         a.sort_unstable();
@@ -214,81 +195,132 @@ fn supersample(v: f64) -> i32 {
     raw.clamp(-SUPERSAMPLE_COORD_BOUND, SUPERSAMPLE_COORD_BOUND)
 }
 
-/// [`SUPERSAMPLE_SCALE`] as an integer, for the downsample's exact forms.
-const SUPERSAMPLE_SCALE_INT: i64 = 5;
-
 /// Image column of a supersampled boundary crossing, or `None` when the C
 /// code drops it (quirk **H5**: off an integer pixel boundary, or outside
 /// `[0, w-1]`).
 ///
-/// The C computes `xd = (xd_super + 0.5) / 5 - 0.5` and keeps it when
-/// `floor(xd) == xd`. That value is `(xd_super - 2) / 5`, an integer
-/// exactly when `xd_super ≡ 2 (mod 5)`; at `|xd_super| ≤ i32::MAX / 4` the
-/// f64 evaluation is exact on that residue and stays ≥ 0.2 from an integer
-/// off it, so the integer test is the same predicate. It also keeps
-/// `floor`, which the x86-64 baseline lowers to a libm call, out of the
-/// loop.
+/// The C keeps `xd = (xd_super + 0.5) / 5 - 0.5` when `floor(xd) == xd`.
+/// That value is `(xd_super - 2) / 5`, an integer exactly when
+/// `xd_super ≡ 2 (mod 5)`: for `|xd_super| ≤ i32::MAX / 4 + 1` the f64
+/// evaluation is exact on that residue and stays ≥ 0.2 from an integer
+/// off it, so the integer test is the same predicate, without the
+/// `trunc` / `ceil` the x86-64 baseline lowers to libm calls. A negative
+/// `xd` is dropped either way, so the unsigned form needs no sign fix-up.
 fn boundary_column(xd_super: i32, w: u32) -> Option<u64> {
-    let num = i64::from(xd_super) - 2;
-    if num.rem_euclid(SUPERSAMPLE_SCALE_INT) != 0 {
-        return None;
-    }
-    let xd = num.div_euclid(SUPERSAMPLE_SCALE_INT);
-    (0..i64::from(w)).contains(&xd).then_some(xd.unsigned_abs())
+    let n = u32::try_from(xd_super - BOUNDARY_OFFSET).ok()?;
+    let col = n / SUPERSAMPLE_SCALE_INT;
+    (n % SUPERSAMPLE_SCALE_INT == 0 && col < w).then_some(u64::from(col))
 }
 
 /// Image row of a supersampled boundary crossing: the C's
-/// `ceil(clamp((yd_super + 0.5) / 5 - 0.5, 0, h))` (quirk **H4**), as the
-/// integer `ceil((yd_super - 2) / 5)` clamped to `[0, h]`. Exact for the
-/// reason given on [`boundary_column`]; `clamp` and `ceil` commute because
-/// both bounds are integers.
+/// `ceil(clamp((yd_super + 0.5) / 5 - 0.5, 0, h))` (quirk **H4**), i.e.
+/// `ceil((yd_super - 2) / 5)` clamped to `[0, h]` — exact for the reason
+/// given on [`boundary_column`], and `clamp` / `ceil` commute because both
+/// bounds are integers. A non-positive numerator ceils to at most 0.
 fn boundary_row(yd_super: i32, h: u32) -> u64 {
-    let num = i64::from(yd_super) - 2;
-    let ceil = num.div_euclid(SUPERSAMPLE_SCALE_INT)
-        + i64::from(num.rem_euclid(SUPERSAMPLE_SCALE_INT) != 0);
-    ceil.clamp(0, i64::from(h)).unsigned_abs()
+    let n = u32::try_from(yd_super - BOUNDARY_OFFSET).unwrap_or(0);
+    let ceil = n.div_ceil(SUPERSAMPLE_SCALE_INT);
+    u64::from(ceil.min(h))
 }
 
-fn densify_edge(
+/// Boundary crossings (quirks **H4**, **H5**) of the closed supersampled
+/// polygon `(sx, sy)` (closing vertex repeated), as column-major flat
+/// indices, unsorted; one slot is left spare for the end sentinel.
+fn polygon_crossings(sx: &[i32], sy: &[i32], h: u32, w: u32) -> Vec<u64> {
+    let edges = || sx.windows(2).zip(sy.windows(2));
+    // At most one crossing in five steps along an x-major edge, at most
+    // one per column step along a y-major one.
+    let estimate: usize = edges()
+        .map(|(x, y)| {
+            let dx = x[1].abs_diff(x[0]) as usize;
+            let dy = y[1].abs_diff(y[0]) as usize;
+            if dx >= dy {
+                dx / SUPERSAMPLE_SCALE_INT as usize + 1
+            } else {
+                dx + 1
+            }
+        })
+        .sum();
+    let mut out = Vec::with_capacity(estimate + 1);
+    for (x, y) in edges() {
+        edge_crossings(x[0], x[1], y[0], y[1], h, w, &mut out);
+    }
+    out
+}
+
+/// Appends the boundary crossings of one polygon edge, as column-major
+/// flat indices `col * h + row`, to `out`.
+///
+/// The C densifies every edge into a point buffer (`mc:199-216`) and scans
+/// consecutive points for a column change (`mc:217-226`). Every crossing it
+/// keeps comes from a pair inside one edge: consecutive edges meet at the
+/// same point except where a negative coordinate truncates differently,
+/// and such a pair sits left of column 0, which H5 drops. The pairs are
+/// unordered for the result (crossings are sorted; `yd` takes the minimum),
+/// so each edge is walked in its rotated frame, with the C's own `t`
+/// expressions — the same bits — and nothing is buffered.
+fn edge_crossings(
     mut xs: i32,
     mut xe: i32,
     mut ys: i32,
     mut ye: i32,
-    u: &mut Vec<i32>,
-    v: &mut Vec<i32>,
+    h: u32,
+    w: u32,
+    out: &mut Vec<u64>,
 ) {
     let dx = (xe - xs).unsigned_abs() as i32;
     let dy = (ys - ye).unsigned_abs() as i32;
-    // The C `flip` rotates each edge so densification always walks
-    // forward along the major axis; the original direction is
-    // restored when stamping `t = flip ? major-d : d`. Without this,
-    // shared edges between adjacent polygons would emit boundary
-    // points in different orders and fail to cancel under H6
-    // compaction.
+    // The C `flip` rotates each edge so densification walks forward along
+    // the major axis, which is what makes shared edges between adjacent
+    // polygons produce identical points and cancel under H6 compaction.
     let flip = (dx >= dy && xs > xe) || (dx < dy && ys > ye);
     if flip {
         std::mem::swap(&mut xs, &mut xe);
         std::mem::swap(&mut ys, &mut ye);
     }
+    let h64 = u64::from(h);
     if dx >= dy {
-        // Degenerate edge (dx == dy == 0): C computes 0/0 = NaN
-        // and casts to int (UB). Vernier emits the single-vertex
-        // collapse `(xs, ys)` deterministically.
+        // x-major: point `t` sits at column `xs + t`, so every pair
+        // `(t, t + 1)` crosses, at `min = xs + t`. H5 keeps only
+        // `xs + t = 5c + 2` with `0 <= c < w`: one pair in five, visited
+        // directly. Degenerate edge (dx == dy == 0): no pair.
         let s = if dx == 0 {
             0.0
         } else {
             f64::from(ye - ys) / f64::from(dx)
         };
-        // `extend` over a `Range` map is TrustedLen: one reservation, no
-        // per-point capacity check.
-        let t_at = move |d: i32| if flip { dx - d } else { d };
-        u.extend((0..=dx).map(|d| t_at(d) + xs));
-        v.extend((0..=dx).map(|d| (f64::from(ys) + s * f64::from(t_at(d)) + 0.5) as i32));
+        let v_at = |t: i64| {
+            #[allow(clippy::cast_precision_loss)]
+            let t = t as f64;
+            (f64::from(ys) + s * t + 0.5) as i32
+        };
+        let scale = i64::from(SUPERSAMPLE_SCALE_INT);
+        let offset = i64::from(BOUNDARY_OFFSET);
+        let lo = i64::from(xs).max(offset);
+        let hi = (i64::from(xs) + i64::from(dx) - 1).min(scale * (i64::from(w) - 1) + offset);
+        let mut x = lo + (offset - lo).rem_euclid(scale);
+        while x <= hi {
+            let t = x - i64::from(xs);
+            let col = (x - offset) / scale;
+            let row = boundary_row(v_at(t).min(v_at(t + 1)), h);
+            out.push(col.unsigned_abs() * h64 + row);
+            x += scale;
+        }
     } else {
+        // y-major: point `t` sits at row `ys + t`; the column moves by at
+        // most one per step, and only a move is a crossing.
         let s = f64::from(xe - xs) / f64::from(dy);
-        let t_at = move |d: i32| if flip { dy - d } else { d };
-        v.extend((0..=dy).map(|d| t_at(d) + ys));
-        u.extend((0..=dy).map(|d| (f64::from(xs) + s * f64::from(t_at(d)) + 0.5) as i32));
+        let u_at = |t: i32| (f64::from(xs) + s * f64::from(t) + 0.5) as i32;
+        let mut prev = u_at(0);
+        for t in 1..=dy {
+            let cur = u_at(t);
+            if cur != prev {
+                if let Some(col) = boundary_column(cur.min(prev), w) {
+                    out.push(col * h64 + boundary_row(ys + t - 1, h));
+                }
+                prev = cur;
+            }
+        }
     }
 }
 
@@ -306,6 +338,86 @@ mod tests {
         (col, yd.clamp(0.0, f64::from(h)).ceil() as u64)
     }
 
+    /// `rleFrPoly`'s densify + downsample (`mc:199-226`) as the C writes
+    /// it: every edge densified into a point buffer, every consecutive
+    /// pair scanned, the f64 boundary forms. The oracle for
+    /// [`polygon_crossings`], which skips the buffer.
+    fn c_crossings(sx: &[i32], sy: &[i32], h: u32, w: u32) -> Vec<u64> {
+        let (mut u, mut v) = (Vec::new(), Vec::new());
+        for j in 0..sx.len() - 1 {
+            let (mut xs, mut xe, mut ys, mut ye) = (sx[j], sx[j + 1], sy[j], sy[j + 1]);
+            let dx = (xe - xs).abs();
+            let dy = (ys - ye).abs();
+            let flip = (dx >= dy && xs > xe) || (dx < dy && ys > ye);
+            if flip {
+                std::mem::swap(&mut xs, &mut xe);
+                std::mem::swap(&mut ys, &mut ye);
+            }
+            if dx >= dy {
+                let s = if dx == 0 {
+                    0.0
+                } else {
+                    f64::from(ye - ys) / f64::from(dx)
+                };
+                for d in 0..=dx {
+                    let t = if flip { dx - d } else { d };
+                    u.push(t + xs);
+                    v.push((f64::from(ys) + s * f64::from(t) + 0.5) as i32);
+                }
+            } else {
+                let s = f64::from(xe - xs) / f64::from(dy);
+                for d in 0..=dy {
+                    let t = if flip { dy - d } else { d };
+                    v.push(t + ys);
+                    u.push((f64::from(xs) + s * f64::from(t) + 0.5) as i32);
+                }
+            }
+        }
+        let mut a = Vec::new();
+        for j in 1..u.len() {
+            if u[j] == u[j - 1] {
+                continue;
+            }
+            let xd_super = if u[j] < u[j - 1] { u[j] } else { u[j] - 1 };
+            let (col, row) = c_boundary(xd_super, v[j].min(v[j - 1]), h, w);
+            if let Some(col) = col {
+                a.push(col * u64::from(h) + row);
+            }
+        }
+        a
+    }
+
+    proptest! {
+        /// Edge-by-edge crossings are the C's dense scan, as a multiset:
+        /// random polygons with vertices left of, above, inside and past
+        /// the image (negative coordinates truncate differently at
+        /// joins), duplicate vertices, axis-aligned and degenerate edges.
+        #[test]
+        fn edge_crossings_match_the_dense_scan(
+            vertices in proptest::collection::vec(
+                (-30.0_f64..90.0, -30.0_f64..90.0, proptest::bool::weighted(0.15)),
+                3..14,
+            ),
+            h in 1_u32..70,
+            w in 1_u32..70,
+        ) {
+            let mut sx: Vec<i32> = Vec::new();
+            let mut sy: Vec<i32> = Vec::new();
+            for &(x, y, snap) in &vertices {
+                let (x, y) = if snap { (x.round(), y.round()) } else { (x, y) };
+                sx.push(supersample(x));
+                sy.push(supersample(y));
+            }
+            sx.push(sx[0]);
+            sy.push(sy[0]);
+            let mut got = polygon_crossings(&sx, &sy, h, w);
+            let mut want = c_crossings(&sx, &sy, h, w);
+            got.sort_unstable();
+            want.sort_unstable();
+            prop_assert_eq!(got, want);
+        }
+    }
+
     #[test]
     fn integer_boundary_matches_c_float_form_near_the_image() {
         for s in -2_000..12_000 {
@@ -320,7 +432,7 @@ mod tests {
     proptest! {
         #[test]
         fn integer_boundary_matches_c_float_form_at_any_coordinate(
-            s in -SUPERSAMPLE_COORD_BOUND..=SUPERSAMPLE_COORD_BOUND,
+            s in -SUPERSAMPLE_COORD_BOUND - 1..=SUPERSAMPLE_COORD_BOUND,
             h in 0_u32..=u32::MAX,
             w in 1_u32..=u32::MAX,
         ) {

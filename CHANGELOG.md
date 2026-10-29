@@ -87,12 +87,15 @@ additive / perf / docs".
   match any variant of untagged enum", and the positional-array RLE
   (`[[h, w], counts]`) that serde's derive admitted is refused, as
   pycocotools reads any list as polygons.
-- **Polygon rasterizer.** The H4/H5 boundary downsample uses exact
-  integer forms instead of `fract()` / `ceil()`, which the x86-64
-  baseline the wheel targets lowers to libm calls, and edge
-  densification reserves once per edge. One thread, COCO val2017,
-  evaluate stage: jittered segm −23.5%, RF-DETR Seg-Nano segm −9.5%,
-  jittered boundary −5.8%. Bit-identical output.
+- **Polygon rasterizer.** Boundary crossings are generated edge by edge
+  instead of densifying every edge into a point buffer and scanning it:
+  an x-major edge visits only the one step in five that can land on a
+  pixel boundary (quirk H5), with the C's own per-step expressions. The
+  H4/H5 downsample uses exact integer forms instead of `fract()` /
+  `ceil()`, which the x86-64 baseline the wheel targets lowers to libm
+  calls. One thread, COCO val2017, evaluate stage: jittered segm −37%,
+  RF-DETR Seg-Nano segm −17%, jittered boundary −6%. Bit-identical
+  output.
 
 ## [0.5.5] - 2026-10-29
 
