@@ -80,9 +80,13 @@ additive / perf / docs".
   coordinate and RLE string into an intermediate tree before trying
   each variant. COCO val2017 GT parse: 95 → 57 ms (−40%), on every IoU
   type. RF-DETR Seg-Nano results, one thread, end to end: bbox
-  768 → 587 ms (−24%), segm 1941 → 1783 ms (−8%). A malformed
+  768 → 587 ms (−24%), segm 1941 → 1783 ms (−8%). Every shape a COCO
+  file carries reads as before, and byte-string RLE counts (from a format
+  with a byte type) read as the compressed form. A malformed
   `segmentation` now reports what it expected instead of "data did not
-  match any variant of untagged enum".
+  match any variant of untagged enum", and the positional-array RLE
+  (`[[h, w], counts]`) that serde's derive admitted is refused, as
+  pycocotools reads any list as polygons.
 
 ## [0.5.5] - 2026-10-29
 

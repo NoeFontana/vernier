@@ -2396,38 +2396,45 @@ impl CocoDetections {
 // serde glue
 // ---------------------------------------------------------------------------
 
-/// COCO JSON uses `0`/`1` ints for `iscrowd` / `ignore`, but a
-/// permissive reader also accepts bool literals. Shared between the
-/// required and optional flag deserializers below. Dispatched by JSON
-/// type, not `#[serde(untagged)]`, which buffers each value first.
-enum BoolOrInt {
-    Bool(bool),
-    Int(i64),
-}
+/// A COCO `iscrowd` / `ignore` flag: `0` or `1`, or a bool literal for
+/// permissive writers. The visitor dispatches on the JSON type and yields
+/// the `bool` directly — `#[serde(untagged)]` would buffer each value and
+/// try the variants in turn.
+struct CocoFlag(bool);
 
-impl<'de> Deserialize<'de> for BoolOrInt {
+impl<'de> Deserialize<'de> for CocoFlag {
     fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
         struct FlagVisitor;
 
+        impl FlagVisitor {
+            fn from_int<E: serde::de::Error>(v: impl Into<i128>) -> Result<CocoFlag, E> {
+                match v.into() {
+                    0 => Ok(CocoFlag(false)),
+                    1 => Ok(CocoFlag(true)),
+                    other => Err(E::custom(format!(
+                        "expected 0 or 1 for COCO bool field, got {other}"
+                    ))),
+                }
+            }
+        }
+
         impl serde::de::Visitor<'_> for FlagVisitor {
-            type Value = BoolOrInt;
+            type Value = CocoFlag;
 
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a bool or an integer")
+                f.write_str("0 or 1 (or a bool) for a COCO bool field")
             }
 
-            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<BoolOrInt, E> {
-                Ok(BoolOrInt::Bool(v))
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<CocoFlag, E> {
+                Ok(CocoFlag(v))
             }
 
-            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<BoolOrInt, E> {
-                Ok(BoolOrInt::Int(v))
+            fn visit_i64<E: serde::de::Error>(self, v: i64) -> Result<CocoFlag, E> {
+                Self::from_int(v)
             }
 
-            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<BoolOrInt, E> {
-                i64::try_from(v)
-                    .map(BoolOrInt::Int)
-                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Unsigned(v), &self))
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<CocoFlag, E> {
+                Self::from_int(v)
             }
         }
 
@@ -2435,38 +2442,50 @@ impl<'de> Deserialize<'de> for BoolOrInt {
     }
 }
 
-impl BoolOrInt {
-    fn into_bool<E: serde::de::Error>(self) -> Result<bool, E> {
-        match self {
-            Self::Bool(b) => Ok(b),
-            Self::Int(0) => Ok(false),
-            Self::Int(1) => Ok(true),
-            Self::Int(other) => Err(E::custom(format!(
-                "expected 0 or 1 for COCO bool field, got {other}"
-            ))),
-        }
-    }
-}
-
 fn deserialize_bool_int<'de, D>(de: D) -> Result<bool, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    BoolOrInt::deserialize(de)?.into_bool()
+    CocoFlag::deserialize(de).map(|flag| flag.0)
 }
 
 fn deserialize_opt_bool_int<'de, D>(de: D) -> Result<Option<bool>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    Option::<BoolOrInt>::deserialize(de)?
-        .map(BoolOrInt::into_bool)
-        .transpose()
+    Option::<CocoFlag>::deserialize(de).map(|flag| flag.map(|f| f.0))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `iscrowd` / `ignore` take `0`, `1` and bool literals — the
+    /// non-negative ints arrive through serde_json's `visit_u64` — and
+    /// refuse every other value with one message.
+    #[test]
+    fn coco_flags_take_zero_one_and_bools_only() {
+        let ann = |flag: &str| {
+            format!(
+                r#"{{"id": 1, "image_id": 1, "category_id": 1, "area": 1.0, "bbox": [0, 0, 1, 1], "iscrowd": {flag}, "ignore": {flag}}}"#
+            )
+        };
+        for (flag, want) in [("0", false), ("1", true), ("false", false), ("true", true)] {
+            let a: CocoAnnotation = serde_json::from_str(&ann(flag)).unwrap();
+            assert_eq!((a.is_crowd, a.ignore_flag), (want, Some(want)), "{flag}");
+        }
+        for flag in ["2", "-1", "18446744073709551615", "1.0", r#""1""#] {
+            let err = serde_json::from_str::<CocoAnnotation>(&ann(flag))
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("0 or 1"), "{flag}: {err}");
+        }
+        let absent: CocoAnnotation = serde_json::from_str(
+            r#"{"id": 1, "image_id": 1, "category_id": 1, "area": 1.0, "bbox": [0, 0, 1, 1], "ignore": null}"#,
+        )
+        .unwrap();
+        assert_eq!((absent.is_crowd, absent.ignore_flag), (false, None));
+    }
     use proptest::prelude::*;
 
     const CROWD_REGION_GT: &str = r#"{

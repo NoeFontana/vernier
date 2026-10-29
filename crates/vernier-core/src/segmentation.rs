@@ -50,10 +50,17 @@ use crate::error::EvalError;
 /// pycocotools accepts. The dataset stores this verbatim;
 /// [`Self::to_rle`] normalizes to a single [`Rle`] at eval time.
 ///
-/// Deserialization dispatches on the JSON shape (an array is polygons,
-/// an object is RLE) rather than through `#[serde(untagged)]`, which
-/// buffers the whole value into an intermediate tree before trying each
-/// variant: on COCO val2017 that buffering was 80% of the GT parse.
+/// Deserialization is hand-written and dispatches on the JSON shape: an
+/// array is polygons, an object is RLE. `#[serde(untagged)]` (kept below
+/// for `Serialize` only — it does not derive the reader) buffered every
+/// value into an intermediate tree before trying each variant, a
+/// heap node per polygon coordinate; dropping it took the COCO val2017
+/// GT parse from 95 to 57 ms. A new variant needs an arm in the visitor.
+///
+/// The shapes are the three a COCO file carries. serde's derive also
+/// let an RLE arrive as a positional array (`[[h, w], counts]`) once the
+/// polygon reading failed; pycocotools reads any list as polygons, so
+/// that form is refused.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum Segmentation {
@@ -79,11 +86,10 @@ pub struct SegmentationRle {
     pub counts: SegmentationRleCounts,
 }
 
-/// Counts payload of [`SegmentationRle`]. JSON shapes the variants
-/// disambiguate untagged: a string parses as [`Self::Compressed`], a
-/// number array as [`Self::Uncompressed`].
-///
-/// Deserialized by JSON shape, for the reason given on [`Segmentation`].
+/// Counts payload of [`SegmentationRle`]: a string (or a byte string,
+/// from a format that has one) is [`Self::Compressed`], a number array
+/// [`Self::Uncompressed`]. Deserialized by shape for the reason given on
+/// [`Segmentation`]; `#[serde(untagged)]` governs `Serialize` only.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(untagged)]
 pub enum SegmentationRleCounts {
@@ -140,6 +146,23 @@ impl<'de> Deserialize<'de> for SegmentationRleCounts {
 
             fn visit_string<E: serde::de::Error>(self, v: String) -> Result<Self::Value, E> {
                 Ok(SegmentationRleCounts::Compressed(v))
+            }
+
+            // pycocotools' own counts are `bytes`; a self-describing format
+            // that keeps them (MessagePack, CBOR) hands them over as such.
+            // Decoded as UTF-8, as `String` itself would (quirk K3).
+            fn visit_bytes<E: serde::de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+                std::str::from_utf8(v)
+                    .map(|s| SegmentationRleCounts::Compressed(s.to_owned()))
+                    .map_err(|_| E::invalid_value(serde::de::Unexpected::Bytes(v), &self))
+            }
+
+            fn visit_byte_buf<E: serde::de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+                String::from_utf8(v)
+                    .map(SegmentationRleCounts::Compressed)
+                    .map_err(|e| {
+                        E::invalid_value(serde::de::Unexpected::Bytes(e.as_bytes()), &self)
+                    })
             }
 
             fn visit_seq<A: SeqAccess<'de>>(self, seq: A) -> Result<Self::Value, A::Error> {
@@ -224,10 +247,25 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    /// The shape dispatch accepts what the untagged derive did — integer
-    /// coordinates, mixed int/float, empty lists, both counts forms —
-    /// round-trips through `Serialize`, and refuses the shapes neither
-    /// variant fits.
+    /// Byte-string counts — pycocotools' own `bytes`, as a format with a
+    /// byte type delivers them — read as the compressed form; bytes that
+    /// are not UTF-8 are refused, as `String` would refuse them.
+    #[test]
+    fn byte_string_counts_read_as_compressed() {
+        use serde::de::value::{BytesDeserializer, Error};
+        let counts =
+            SegmentationRleCounts::deserialize(BytesDeserializer::<Error>::new(b"04L4")).unwrap();
+        assert_eq!(counts, SegmentationRleCounts::Compressed("04L4".to_owned()));
+        assert!(
+            SegmentationRleCounts::deserialize(BytesDeserializer::<Error>::new(&[0xff, 0x30]))
+                .is_err()
+        );
+    }
+
+    /// The shape dispatch accepts every shape a COCO file carries —
+    /// integer coordinates, mixed int/float, empty lists, both counts
+    /// forms — round-trips through `Serialize`, and refuses the rest,
+    /// including the positional-array RLE serde's derive used to admit.
     #[test]
     fn shape_dispatch_round_trips_and_refuses_other_shapes() {
         for json in [
@@ -254,6 +292,7 @@ mod tests {
             r#"{"size": [2, 3], "counts": 4}"#,
             r#"{"size": [2, 3], "counts": [-1]}"#,
             r#"{"counts": "04"}"#,
+            r#"[[2, 3], "04"]"#,
         ] {
             assert!(serde_json::from_str::<Segmentation>(bad).is_err(), "{bad}");
         }
