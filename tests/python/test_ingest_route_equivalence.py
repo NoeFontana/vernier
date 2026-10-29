@@ -1004,3 +1004,33 @@ def test_detections_batch_validation_errors() -> None:
 
     with pytest.raises(ValueError, match="DetectionsBatch dict directly"):
         _grid([_as_batch()])
+
+
+def test_detections_batch_routing_edges() -> None:
+    """A batch anywhere in a list is named; ``None`` ids mean "absent"."""
+    per_image = {k: v for k, v in _as_batch().items() if k != "image_ids"}
+    first = {**per_image, "image_id": 1}
+    with pytest.raises(ValueError, match=r"detections\[1\]: got 'image_ids' inside a sequence"):
+        _grid([first, _as_batch()])
+    # `image_ids: None` beside a real `image_id` is a per-image dict, not
+    # an ambiguous one; it evaluates like the same dict without the key.
+    with_none = {**first, "image_ids": None}
+    assert _normalize(_grid(with_none).eval_imgs()) == _normalize(_grid(first).eval_imgs())
+
+
+@pytest.mark.parametrize("route", ["batch", "per-image"])
+def test_rles_none_is_a_missing_mask_column_on_both_array_routes(route: str) -> None:
+    """``rles=None`` reads as "no masks" on both array routes, with one message."""
+    _, dicts, _ = _bbox_only_under_segm()
+    columns: dict[str, Any] = {
+        "boxes": np.array([d["bbox"] for d in dicts], dtype=np.float64),
+        "scores": np.array([d["score"] for d in dicts], dtype=np.float64),
+        "labels": np.array([d["category_id"] for d in dicts], dtype=np.int64),
+        "rles": None,
+    }
+    if route == "batch":
+        dt: Any = {**columns, "image_ids": np.array([d["image_id"] for d in dicts], np.int64)}
+    else:
+        dt = {**columns, "image_id": dicts[0]["image_id"]}
+    with pytest.raises(ValueError, match="requires a 'rles' field"):
+        _segm_grid(dt)

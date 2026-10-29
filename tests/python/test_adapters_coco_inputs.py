@@ -857,6 +857,24 @@ def test_masked_ground_truth_beside_box_only_detections() -> None:
     assert float(coco_metrics(predictions, targets, iou_type="bbox")["map"]) > 0
 
 
+def test_coco_metrics_names_the_side_missing_masks_before_any_pass() -> None:
+    """``coco_metrics`` refuses a segm run up front, naming the unmasked side."""
+    predicted, actual = _discs()
+    box = np.array([[6.0, 6.0, 13.0, 13.0]])
+    masked_targets: list[Target] = [{"boxes": box, "labels": np.array([0]), "masks": actual[0]}]
+    box_targets: list[Target] = [{"boxes": box, "labels": np.array([0])}]
+    box_preds: list[Prediction] = [
+        {"boxes": box, "scores": np.array([0.9]), "labels": np.array([0])}
+    ]
+    masked_preds: list[Prediction] = [
+        {"boxes": box, "scores": np.array([0.9]), "labels": np.array([0]), "masks": predicted[0]}
+    ]
+    with pytest.raises(ValueError, match="needs masks on the predictions"):
+        coco_metrics(box_preds, masked_targets, iou_type=("bbox", "segm"))
+    with pytest.raises(ValueError, match="needs masks on the targets"):
+        coco_metrics(masked_preds, box_targets, iou_type="segm")
+
+
 @pytest.mark.parametrize("parity_mode", ["strict", "corrected"])
 def test_box_only_detections_are_refused_by_a_segm_pass(parity_mode: str) -> None:
     """Masked ground truth does not make box-only predictions mask-evaluable.

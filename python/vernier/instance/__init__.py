@@ -525,12 +525,15 @@ class Evaluator:
     ) -> Summary | EvalResult:
         """Run the evaluation pipeline against a GT/DT pair.
 
-        ``dt`` accepts any of four shapes, all of which evaluate
+        ``dt`` accepts any of five shapes, all of which evaluate
         identically for the same logical detections:
 
         - the COCO ``loadRes``-shaped JSON payload as ``bytes``;
         - the array-form :class:`Detections` shapes introduced by
           ADR-0030 — a single per-image dict or a sequence of them;
+        - a :class:`DetectionsBatch` — every image's detections in one
+          set of columns, with per-detection ``image_ids`` or per-image
+          ``image_ids`` + ``counts`` (ADR-0066);
         - a list of per-annotation :class:`ResultAnnotation` dicts, the
           shape ``pycocotools.COCO.loadRes`` consumes and the one a
           TorchMetrics-style caller already holds (ADR-0057);

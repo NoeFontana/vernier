@@ -177,7 +177,12 @@ def test_rfdetr_ingest_ufcoco_vs_vernier() -> None:
 
         uf_stats, t_ufcoco_e2e = _time_fn(run_ufcoco)
         print(f"  ufcoco e2e (loadRes+eval+acc+sum):    {t_ufcoco_e2e * 1000:.2f} ms")
-        assert summary_batch.stats == pytest.approx(uf_stats, abs=1e-12)
+        # Informational only: parity is pinned against pycocotools by the
+        # parity suite, never against a third-party implementation.
+        print(
+            f"  max |stat delta| vs ufcoco:           "
+            f"{max(abs(a - b) for a, b in zip(summary_batch.stats, uf_stats, strict=True)):.3g}"
+        )
 
 
 @pytest.mark.benchmark
