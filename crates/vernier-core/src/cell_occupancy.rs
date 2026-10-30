@@ -35,15 +35,28 @@ use crate::dataset::{CategoryId, CocoDataset, CocoDetections, EvalDataset, GridI
 pub(crate) struct OccupiedCells {
     offsets: Vec<u32>,
     values: Vec<u32>,
+    /// `[ground truths, detections]` per row, counted in the same pass —
+    /// two increments into a row-sized array per annotation — so a
+    /// scheduler can weigh rows without probing the indexes again.
+    /// Detections are uncapped by `maxDet`.
+    totals: Vec<[u64; 2]>,
 }
 
 impl OccupiedCells {
     /// Cells of row `row`, ascending. Empty when the row has none.
     #[inline]
     pub(crate) fn row(&self, row: usize) -> &[u32] {
-        let start = self.offsets[row] as usize;
-        let end = self.offsets[row + 1] as usize;
-        &self.values[start..end]
+        &self.values[self.span(row)]
+    }
+
+    /// `[ground truths, detections]` across row `row`'s cells.
+    #[inline]
+    pub(crate) fn row_totals(&self, row: usize) -> [u64; 2] {
+        self.totals.get(row).copied().unwrap_or([0, 0])
+    }
+
+    fn span(&self, row: usize) -> std::ops::Range<usize> {
+        self.offsets[row] as usize..self.offsets[row + 1] as usize
     }
 }
 
@@ -135,25 +148,29 @@ pub(crate) fn by_category(
         None => (gt_anns.len() + dt_cats.len()).min(images.len().saturating_mul(n_buckets)),
     };
     let mut pairs: Vec<(u32, u32)> = Vec::with_capacity(cap_hint);
+    let mut totals = vec![[0_u64; 2]; n_buckets];
 
-    let mut visit_cat = |i: u32, cat: CategoryId| {
-        if let Some(k) = buckets.bucket_of(cat) {
+    // `side`: 0 for a ground truth, 1 for a detection.
+    let mut visit_cat = |i: u32, cat: CategoryId, side: usize| {
+        let mut visit_bucket = |k: u32| {
             let ku = k as usize;
-            if ku < n_buckets && seen_stamp[ku] != i {
+            if ku >= n_buckets {
+                return;
+            }
+            if seen_stamp[ku] != i {
                 seen_stamp[ku] = i;
                 offsets[ku + 1] += 1;
                 pairs.push((k, i));
             }
+            totals[ku][side] += 1;
+        };
+        if let Some(k) = buckets.bucket_of(cat) {
+            visit_bucket(k);
         }
         if !repeats.is_empty() {
             for &(repeat_cat, k) in repeats {
                 if repeat_cat == cat {
-                    let ku = k as usize;
-                    if ku < n_buckets && seen_stamp[ku] != i {
-                        seen_stamp[ku] = i;
-                        offsets[ku + 1] += 1;
-                        pairs.push((k, i));
-                    }
+                    visit_bucket(k);
                 }
             }
         }
@@ -166,10 +183,10 @@ pub(crate) fn by_category(
                 let i = idx as u32;
                 let image_id = image.id;
                 for &j in gt.ann_indices_for_image(image_id) {
-                    visit_cat(i, gt_anns[j].category_id);
+                    visit_cat(i, gt_anns[j].category_id, 0);
                 }
                 for &j in dt.indices_for_image(image_id) {
-                    visit_cat(i, dt_cats[j]);
+                    visit_cat(i, dt_cats[j], 1);
                 }
             }
         }
@@ -190,10 +207,10 @@ pub(crate) fn by_category(
                 let i = idx as u32;
                 let image_id = images.get(idx).id;
                 for &j in gt.ann_indices_for_image(image_id) {
-                    visit_cat(i, gt_anns[j].category_id);
+                    visit_cat(i, gt_anns[j].category_id, 0);
                 }
                 for &j in dt.indices_for_image(image_id) {
-                    visit_cat(i, dt_cats[j]);
+                    visit_cat(i, dt_cats[j], 1);
                 }
             }
         }
@@ -214,7 +231,11 @@ pub(crate) fn by_category(
         *slot += 1;
     }
 
-    OccupiedCells { offsets, values }
+    OccupiedCells {
+        offsets,
+        values,
+        totals,
+    }
 }
 
 #[cfg(test)]
@@ -312,6 +333,11 @@ mod tests {
         let by_cat = occupancy(&gt, &dt, &buckets, None);
         assert_eq!(by_cat.row(0), &[0]);
         assert_eq!(by_cat.row(1), &[0, 1]);
+        // `[gts, dets]` per row: cat 1 holds both GTs of image 1; cat 2
+        // the detection of image 1 and the GT of image 2. The detection in
+        // an undeclared category counts nowhere.
+        assert_eq!(by_cat.row_totals(0), [2, 0]);
+        assert_eq!(by_cat.row_totals(1), [1, 1]);
     }
 
     #[test]

@@ -1,7 +1,8 @@
 //! Parallel sibling of [`crate::evaluate::evaluate_with`] (ADR-0047).
 //!
-//! Each category's occupied images are cut into image-ascending chunks,
-//! dispatched via `par_iter` against a per-worker `CellScratch`, and
+//! Each category's occupied images are cut into image-ascending tasks of
+//! about equal estimated work ([`chunk_width`]), each its own
+//! stealable rayon job running against its worker's reused scratch, and
 //! collected in task order — category-major, image-ascending — then
 //! concatenated per category.
 //!
@@ -25,8 +26,8 @@ use crate::accumulate::{PackedCategory, PackedEvalGrid};
 use crate::dataset::{CocoDataset, CocoDetections};
 use crate::error::EvalError;
 use crate::evaluate::{
-    evaluate_category_slice, gt_indices_for_cell, raw_dt_indices_for_cell, CellScratch, EvalGrid,
-    EvalImageMeta, EvalKernel, EvaluateParams, GridPlan, KernelScratch, PackedPass,
+    evaluate_category_slice, CellScratch, EvalGrid, EvalImageMeta, EvalKernel, EvaluateParams,
+    GridPlan, KernelScratch, PackedPass,
 };
 use crate::matching::MatchScratch;
 use crate::parity::ParityMode;
@@ -93,49 +94,32 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
     let builds_meta = params.builds_meta();
 
     // Partition each category's occupied images into tasks of about equal
-    // *work*. A cell costs about `(dets + 1) * (gts + 1)`: the detection
-    // and ground-truth annotation builds (decode, rasterize) plus the IoU
-    // pairs. Equal image counts are not equal work — on COCO, `person`
+    // *work*. Equal image counts are not equal work: on COCO, `person`
     // chunks ran 30-40 ms against a few ms for most categories, and since
     // they all sit at the front of the category-major order, one worker
-    // ran them back to back while the rest idled. `chunk_tasks` stays
-    // category-major and image-ascending, so the in-order `collect` below
-    // is already canonical.
-    let max_dets = params.max_dets_per_image;
-    let cell_cost = |k: usize, i: u32| -> usize {
-        let image = plan.images.get(i as usize).id;
-        let cat = plan.category_buckets[k];
-        let n_dt = raw_dt_indices_for_cell(dt, image, cat).len().min(max_dets);
-        let n_gt = gt_indices_for_cell(gt, image, cat).len();
-        (n_dt + 1) * (n_gt + 1)
+    // ran them back to back while the rest idled. The imbalance is between
+    // categories, so a category is weighed as a whole, from the totals the
+    // occupancy pass counted on its way: `C` cells holding `G` ground
+    // truths and `D` detections cost about `C · (D/C + 1)(G/C + 1)` — each
+    // cell's annotation builds plus its IoU pairs, at the category's mean.
+    // Its cells are then cut into chunks of about `target` cost each.
+    let threads = rayon::current_num_threads().max(1);
+    let row_cost = |k: usize| -> f64 {
+        let cells = plan.occupied.row(k).len() as f64;
+        let [gts, dets] = plan.occupied.row_totals(k);
+        (dets as f64 + cells) * (gts as f64 + cells) / cells.max(1.0)
     };
-    let costs: Vec<Vec<usize>> = (0..n_k)
-        .map(|k| {
-            plan.occupied
-                .row(k)
-                .iter()
-                .map(|&i| cell_cost(k, i))
-                .collect()
-        })
-        .collect();
-    let total_cost: usize = costs.iter().flatten().sum();
-    let target = total_cost
-        .div_ceil(rayon::current_num_threads() * TASKS_PER_THREAD)
-        .max(1);
+    let total_cost: f64 = (0..n_k).map(row_cost).sum();
+    let target = total_cost / (threads * TASKS_PER_THREAD) as f64;
     let mut chunk_tasks: Vec<(usize, &[u32])> = Vec::new();
-    for (k, row_costs) in costs.iter().enumerate() {
+    for k in 0..n_k {
         let row = plan.occupied.row(k);
-        let (mut start, mut acc) = (0usize, 0usize);
-        for (j, &cost) in row_costs.iter().enumerate() {
-            acc += cost;
-            if acc >= target || j + 1 - start == MAX_CHUNK_IMAGES {
-                chunk_tasks.push((k, &row[start..=j]));
-                (start, acc) = (j + 1, 0);
-            }
+        if row.is_empty() {
+            continue;
         }
-        if start < row.len() {
-            chunk_tasks.push((k, &row[start..]));
-        }
+        let per_cell = row_cost(k) / row.len() as f64;
+        let width = chunk_width(target, per_cell, MAX_CHUNK_IMAGES);
+        chunk_tasks.extend(row.chunks(width).map(|chunk| (k, chunk)));
     }
 
     struct ChunkOutput {
@@ -147,44 +131,56 @@ pub(crate) fn evaluate_subset_with_parallel<K: EvalKernel>(
 
     // One rayon job per task: the adaptive splitter otherwise hands each
     // worker a contiguous run of tasks to walk serially, which nothing can
-    // steal once started.
+    // steal once started. `map_init` would then build scratch per task, so
+    // each worker keeps its cell and matcher scratch — the IoU, permutation
+    // and matcher buffers that grow to the largest cell — in a slot:
+    // uncontended, since a worker runs one task at a time. A slot found
+    // busy (a task that waits inside rayon and steals another) gets fresh
+    // scratch, not a wait. The kernel's annotation buffers are refilled
+    // per cell anyway and stay per task, which keeps `K::Annotation` free
+    // of a `Send` bound.
+    let slots: Vec<std::sync::Mutex<Option<(CellScratch, MatchScratch)>>> = (0
+        ..rayon::current_num_threads())
+        .map(|_| std::sync::Mutex::new(None))
+        .collect();
     let chunk_outputs: Vec<ChunkOutput> = chunk_tasks
         .into_par_iter()
         .with_max_len(1)
-        .map_init(
-            || {
-                (
-                    CellScratch::new(),
-                    KernelScratch::<K::Annotation>::default(),
-                    MatchScratch::default(),
-                )
-            },
-            |(scratch, kernel_scratch, match_scratch), (k, img_chunk)| {
-                let mut meta = Vec::new();
-                let mut retained = Vec::new();
-                let packed = evaluate_category_slice(
-                    scratch,
-                    kernel_scratch,
-                    match_scratch,
-                    plan.category_buckets[k],
-                    img_chunk,
-                    &plan,
-                    gt,
-                    dt,
-                    params,
-                    parity_mode,
-                    kernel,
-                    builds_meta.then_some(&mut meta),
-                    params.retain_iou.then_some(&mut retained),
-                )?;
-                Ok::<ChunkOutput, EvalError>(ChunkOutput {
-                    k,
-                    packed,
-                    meta,
-                    retained,
-                })
-            },
-        )
+        .map(|(k, img_chunk)| {
+            let worker = rayon::current_thread_index().unwrap_or(0);
+            let mut guard = slots.get(worker).and_then(|slot| slot.try_lock().ok());
+            let mut local = None;
+            let (scratch, match_scratch) = match guard.as_deref_mut() {
+                Some(slot) => {
+                    slot.get_or_insert_with(|| (CellScratch::new(), MatchScratch::default()))
+                }
+                None => local.insert((CellScratch::new(), MatchScratch::default())),
+            };
+            let kernel_scratch = &mut KernelScratch::<K::Annotation>::default();
+            let mut meta = Vec::new();
+            let mut retained = Vec::new();
+            let packed = evaluate_category_slice(
+                scratch,
+                kernel_scratch,
+                match_scratch,
+                plan.category_buckets[k],
+                img_chunk,
+                &plan,
+                gt,
+                dt,
+                params,
+                parity_mode,
+                kernel,
+                builds_meta.then_some(&mut meta),
+                params.retain_iou.then_some(&mut retained),
+            )?;
+            Ok::<ChunkOutput, EvalError>(ChunkOutput {
+                k,
+                packed,
+                meta,
+                retained,
+            })
+        })
         .collect::<Result<Vec<_>, _>>()?;
 
     #[cfg(feature = "bench-timings")]
@@ -351,6 +347,18 @@ pub fn evaluate_keypoints_parallel(
     sigmas: HashMap<i64, Vec<f64>>,
 ) -> Result<EvalGrid, EvalError> {
     evaluate_with_parallel(gt, dt, params, parity_mode, &OksSimilarity::new(sigmas))
+}
+
+/// Cells per task for a category whose cells cost `per_cell` each, so a
+/// task costs about `target`: at least one cell, at most `max_cells`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+fn chunk_width(target: f64, per_cell: f64, max_cells: usize) -> usize {
+    let width = (target / per_cell.max(f64::MIN_POSITIVE)).round();
+    if width.is_finite() {
+        (width as usize).clamp(1, max_cells.max(1))
+    } else {
+        max_cells.max(1)
+    }
 }
 
 #[cfg(test)]
@@ -790,6 +798,19 @@ mod tests {
         let short = EvalGrid::from_eval_imgs(vec![None; 3], Vec::new(), false, 2, 1, 3, None);
         assert_eq!(short.category_cells(1, 0).count(), 0);
         assert!(short.cell(1, 0, 0).is_none());
+    }
+
+    /// `chunk_width` gives a task about `target` cost, never fewer than one
+    /// cell nor more than the cap, whatever the per-cell cost — zero, tiny,
+    /// huge or non-finite.
+    #[test]
+    fn chunk_width_is_target_over_cost_within_bounds() {
+        assert_eq!(chunk_width(100.0, 10.0, 512), 10);
+        assert_eq!(chunk_width(100.0, 1_000.0, 512), 1);
+        assert_eq!(chunk_width(1e9, 1.0, 512), 512);
+        assert_eq!(chunk_width(100.0, 0.0, 512), 512);
+        assert_eq!(chunk_width(f64::NAN, 1.0, 512), 512);
+        assert_eq!(chunk_width(100.0, 10.0, 0), 1);
     }
 
     proptest::proptest! {
