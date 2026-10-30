@@ -119,6 +119,15 @@ additive / perf / docs".
   eight threads, parse + evaluate: 252 → 133 ms (−47%); Seg-Nano segm
   722 → 587 ms (−19%).
 
+- **Faster RLE decoding and mask walks.** Compressed counts decode on a
+  select-based path for one- and two-char runs (99% of runs on real
+  masks), so the run length no longer steers a mispredicted branch, into
+  a reused buffer copied once into the mask's shared storage. The
+  foreground walk that derives each mask's runs, area and bbox takes
+  column and row by an exact multiply-shift instead of two 64-bit
+  divisions per run. 430k RF-DETR Seg-Nano masks, one thread: decode
+  222 → 173 ms (−22%), walk 176 → 137 ms (−22%); Seg-Nano segm evaluate
+  −5%. Malformed strings still fail with the same error.
 ## [0.5.5] - 2026-10-29
 
 ### Added

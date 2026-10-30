@@ -6,7 +6,7 @@
 
 use std::sync::{Arc, LazyLock};
 
-use crate::codec::{decode_counts, encode_counts};
+use crate::codec::{decode_counts_shared, encode_counts};
 use crate::error::MaskError;
 
 /// A run-length-encoded binary mask of shape `(h, w)`.
@@ -70,7 +70,11 @@ impl Rle {
     /// validate that `counts` sums to `h * w`, matching pycocotools'
     /// behavior.
     pub fn from_string_bytes(bytes: &[u8], h: u32, w: u32) -> Result<Self, MaskError> {
-        Ok(Self::from_counts(h, w, decode_counts(bytes)?))
+        Ok(Self {
+            h,
+            w,
+            counts: decode_counts_shared(bytes)?,
+        })
     }
 }
 

@@ -19,6 +19,47 @@ pub use erode::{erode_bbox_into_scratch, erode_chebyshev_ball, ErodeScratch};
 use crate::error::{MalformedRleReason, MaskError};
 use crate::rle::Rle;
 
+/// Column and row of a column-major pixel index, `(idx / h, idx % h)`.
+///
+/// Every foreground run needs both for its start and its end, and a 64-bit
+/// division costs more than the rest of the run's work. When `h * w` fits
+/// in 32 bits — every real image — the pair comes from multiplications
+/// instead (Lemire, Kaser & Kurz 2019, *Faster remainder by direct
+/// computation*): with `M = ⌊(2⁶⁴ − 1) / h⌋ + 1`, `idx / h = ⌊M·idx / 2⁶⁴⌋`
+/// and `idx % h = ⌊(M·idx mod 2⁶⁴)·h / 2⁶⁴⌋`, exact for every 32-bit `idx`
+/// and `h ≥ 2`. `h = 1` wraps `M` to 0 and larger images keep the
+/// division; both are rare and the branch predicts.
+#[derive(Clone, Copy)]
+struct ColumnMajor {
+    h: u64,
+    m: u64,
+    fast: bool,
+}
+
+impl ColumnMajor {
+    fn new(h: u32, w: u32) -> Self {
+        let h = u64::from(h);
+        Self {
+            h,
+            m: (u64::MAX / h.max(1)).wrapping_add(1),
+            fast: h >= 2 && h * u64::from(w) <= 1 << 32,
+        }
+    }
+
+    /// `(idx / h, idx % h)` for `idx < h * w`.
+    #[inline]
+    fn col_row(self, idx: u64) -> (u32, u32) {
+        if self.fast {
+            let low = self.m.wrapping_mul(idx);
+            let col = (u128::from(self.m) * u128::from(idx)) >> 64;
+            let row = (u128::from(low) * u128::from(self.h)) >> 64;
+            (col as u32, row as u32)
+        } else {
+            ((idx / self.h) as u32, (idx % self.h) as u32)
+        }
+    }
+}
+
 impl Rle {
     /// Foreground area in pixels. Per quirk **G5**, foreground runs
     /// sit at odd indices.
@@ -50,7 +91,7 @@ impl Rle {
         }
         let h = self.h;
         let w = self.w;
-        let h64 = h as u64;
+        let grid = ColumnMajor::new(h, w);
         let mut xs = w;
         let mut ys = h;
         let mut xe: u32 = 0;
@@ -63,10 +104,8 @@ impl Rle {
             if j % 2 == 0 || len == 0 {
                 continue;
             }
-            let y_start = (start % h64) as u32;
-            let x_start = (start / h64) as u32;
-            let y_end = ((cc - 1) % h64) as u32;
-            let x_end = ((cc - 1) / h64) as u32;
+            let (x_start, y_start) = grid.col_row(start);
+            let (x_end, y_end) = grid.col_row(cc - 1);
 
             xs = xs.min(x_start);
             xe = xe.max(x_end);
@@ -319,7 +358,7 @@ impl SegmentTable {
             return ([0; 4], 0);
         }
         let h = rle.h;
-        let h64 = u64::from(h);
+        let grid = ColumnMajor::new(h, rle.w);
         let mut xs = rle.w;
         let mut ys = h;
         let mut xe: u32 = 0;
@@ -337,10 +376,8 @@ impl SegmentTable {
             self.flat.push(start);
             self.flat.push(cum);
             area += len;
-            let y_start = (start % h64) as u32;
-            let x_start = (start / h64) as u32;
-            let y_end = ((cum - 1) % h64) as u32;
-            let x_end = ((cum - 1) / h64) as u32;
+            let (x_start, y_start) = grid.col_row(start);
+            let (x_end, y_end) = grid.col_row(cum - 1);
             xs = xs.min(x_start);
             xe = xe.max(x_end);
             if x_start < x_end {
@@ -678,6 +715,34 @@ fn merge_pair(a: &[u32], b: &[u32], intersect: bool) -> Result<Vec<u32>, MaskErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ColumnMajor` agrees with `/` and `%` on every image height that
+    /// takes the multiply path, at both ends of the index range and in
+    /// between, and on the heights that keep the division.
+    #[test]
+    fn column_major_matches_division() {
+        let heights = (1..=600_u32).chain([1023, 1024, 4095, 65_535, 65_536, 1 << 20, u32::MAX]);
+        for h in heights {
+            for w in [1_u32, 7, 640, 1 << 12, u32::MAX / h.max(1), u32::MAX] {
+                let grid = ColumnMajor::new(h, w);
+                let last = u64::from(h) * u64::from(w) - 1;
+                let probes = [
+                    0,
+                    1,
+                    u64::from(h) - 1,
+                    u64::from(h),
+                    last / 3,
+                    last / 2 + 1,
+                    last,
+                ];
+                for idx in probes.into_iter().chain((0..64).map(|i| last / 64 * i)) {
+                    let idx = idx.min(last);
+                    let want = ((idx / u64::from(h)) as u32, (idx % u64::from(h)) as u32);
+                    assert_eq!(grid.col_row(idx), want, "h={h} w={w} idx={idx}");
+                }
+            }
+        }
+    }
     use proptest::prelude::*;
 
     #[test]
