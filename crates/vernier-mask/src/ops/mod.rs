@@ -17,7 +17,56 @@ pub use boundary::{boundary_band, boundary_band_segments_into, dilation_pixels};
 pub use erode::{erode_bbox_into_scratch, erode_chebyshev_ball, ErodeScratch};
 
 use crate::error::{MalformedRleReason, MaskError};
+use crate::grid::ColumnMajor;
 use crate::rle::Rle;
+
+/// One walk of `rle`'s foreground runs: hands each non-empty run's
+/// `[start, end)` to `each_run` and returns the tight bbox `[x, y, w, h]`
+/// and the area — [`Rle::bbox`] and [`Rle::area`] in one pass. A mask with
+/// no foreground, or of zero size, yields `([0; 4], 0)`.
+fn fg_bbox_area(rle: &Rle, mut each_run: impl FnMut(u64, u64)) -> ([u32; 4], u64) {
+    if rle.h == 0 || rle.w == 0 {
+        return ([0; 4], 0);
+    }
+    let h = rle.h;
+    let grid = ColumnMajor::new(h);
+    let (mut xs, mut ys, mut xe, mut ye) = (rle.w, h, 0_u32, 0_u32);
+    let mut found = false;
+    let mut cum = 0_u64;
+    let mut area = 0_u64;
+    for (j, &c) in rle.counts.iter().enumerate() {
+        let start = cum;
+        let len = u64::from(c);
+        cum += len;
+        if j % 2 == 0 || len == 0 {
+            continue;
+        }
+        each_run(start, cum);
+        area += len;
+        let (x_start, y_start) = grid.col_row(start);
+        let (x_end, y_end) = grid.col_row(cum - 1);
+        let (x_start, y_start, x_end, y_end) =
+            (x_start as u32, y_start as u32, x_end as u32, y_end as u32);
+        xs = xs.min(x_start);
+        xe = xe.max(x_end);
+        if x_start < x_end {
+            // Run spans columns: covers the full y range in those columns.
+            ys = 0;
+            ye = h - 1;
+        } else {
+            // Same column: y_start <= y_end is guaranteed.
+            ys = ys.min(y_start);
+            ye = ye.max(y_end);
+        }
+        found = true;
+    }
+    let bbox = if found {
+        [xs, ys, xe - xs + 1, ye - ys + 1]
+    } else {
+        [0; 4]
+    };
+    (bbox, area)
+}
 
 impl Rle {
     /// Foreground area in pixels. Per quirk **G5**, foreground runs
@@ -45,46 +94,7 @@ impl Rle {
     /// this corner case; vernier returns an explicit empty bbox
     /// (disposition: `corrected` for safety).
     pub fn bbox(&self) -> [u32; 4] {
-        if self.h == 0 || self.w == 0 {
-            return [0; 4];
-        }
-        let h = self.h;
-        let w = self.w;
-        let h64 = h as u64;
-        let mut xs = w;
-        let mut ys = h;
-        let mut xe: u32 = 0;
-        let mut ye: u32 = 0;
-        let mut found = false;
-        let mut cc: u64 = 0;
-        for (j, &len) in self.counts.iter().enumerate() {
-            let start = cc;
-            cc += len as u64;
-            if j % 2 == 0 || len == 0 {
-                continue;
-            }
-            let y_start = (start % h64) as u32;
-            let x_start = (start / h64) as u32;
-            let y_end = ((cc - 1) % h64) as u32;
-            let x_end = ((cc - 1) / h64) as u32;
-
-            xs = xs.min(x_start);
-            xe = xe.max(x_end);
-            if x_start < x_end {
-                // Run spans columns: covers full y range in those cols.
-                ys = 0;
-                ye = h - 1;
-            } else {
-                // Same column: y_start <= y_end is guaranteed.
-                ys = ys.min(y_start);
-                ye = ye.max(y_end);
-            }
-            found = true;
-        }
-        if !found {
-            return [0; 4];
-        }
-        [xs, ys, xe - xs + 1, ye - ys + 1]
+        fg_bbox_area(self, |_, _| {}).0
     }
 
     /// Foreground intersection area of two RLEs sharing `(h, w)`.
@@ -314,51 +324,12 @@ impl SegmentTable {
     /// [`Rle::bbox`] / [`Rle::area`] respectively. An empty mask
     /// returns `([0; 4], 0)`.
     pub fn push_with_bbox_and_area(&mut self, rle: &Rle) -> ([u32; 4], u64) {
-        if rle.h == 0 || rle.w == 0 || rle.counts.is_empty() {
-            self.idx.push(self.flat.len());
-            return ([0; 4], 0);
-        }
-        let h = rle.h;
-        let h64 = u64::from(h);
-        let mut xs = rle.w;
-        let mut ys = h;
-        let mut xe: u32 = 0;
-        let mut ye: u32 = 0;
-        let mut found = false;
-        let mut cum: u64 = 0;
-        let mut area: u64 = 0;
-        for (j, &c) in rle.counts.iter().enumerate() {
-            let start = cum;
-            let len = u64::from(c);
-            cum += len;
-            if j % 2 == 0 || len == 0 {
-                continue;
-            }
+        let out = fg_bbox_area(rle, |start, end| {
             self.flat.push(start);
-            self.flat.push(cum);
-            area += len;
-            let y_start = (start % h64) as u32;
-            let x_start = (start / h64) as u32;
-            let y_end = ((cum - 1) % h64) as u32;
-            let x_end = ((cum - 1) / h64) as u32;
-            xs = xs.min(x_start);
-            xe = xe.max(x_end);
-            if x_start < x_end {
-                ys = 0;
-                ye = h - 1;
-            } else {
-                ys = ys.min(y_start);
-                ye = ye.max(y_end);
-            }
-            found = true;
-        }
+            self.flat.push(end);
+        });
         self.idx.push(self.flat.len());
-        let bbox = if found {
-            [xs, ys, xe - xs + 1, ye - ys + 1]
-        } else {
-            [0; 4]
-        };
-        (bbox, area)
+        out
     }
 
     /// Appends one row by walking a column-major byte raster: fg-byte
@@ -678,6 +649,7 @@ fn merge_pair(a: &[u32], b: &[u32], intersect: bool) -> Result<Vec<u32>, MaskErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use proptest::prelude::*;
 
     #[test]

@@ -24,6 +24,7 @@
 
 pub mod codec;
 pub mod error;
+mod grid;
 pub mod ops;
 pub mod polygon;
 pub mod raster;
@@ -31,7 +32,7 @@ pub mod rle;
 
 // Lib root mirrors the pycocotools.mask split (codec + RLE type);
 // kernels live at one path under `ops::*`.
-pub use codec::{decode_counts, encode_counts};
+pub use codec::{decode_area, decode_counts, encode_counts};
 pub use error::MaskError;
 pub use rle::Rle;
 

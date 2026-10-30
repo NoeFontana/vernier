@@ -22,6 +22,9 @@
 //! Rust formulation `!0_i64 << shift` which is the same bit pattern
 //! in two's complement (quirk **G3** disposition: `strict`).
 
+use std::cell::RefCell;
+use std::sync::Arc;
+
 use crate::error::{MalformedRleReason, MaskError};
 
 const SHIFT_CHUNK: u32 = 5;
@@ -71,6 +74,123 @@ pub fn encode_counts(counts: &[u32]) -> Vec<u8> {
 /// mid-run (continuation bit set on the final byte), or on a
 /// decoded run length that does not fit in `u32`.
 pub fn decode_counts(s: &[u8]) -> Result<Vec<u32>, MaskError> {
+    with_decoded(s, <[u32]>::to_vec)
+}
+
+/// Foreground pixel count of a COCO 6-bit char string — the sum of its
+/// odd-indexed runs (quirk **G5**), pycocotools' `maskUtils.area` — without
+/// materializing the counts. Errors as [`decode_counts`].
+pub fn decode_area(s: &[u8]) -> Result<u64, MaskError> {
+    with_decoded(s, |counts| {
+        counts
+            .iter()
+            .skip(1)
+            .step_by(2)
+            .map(|&c| u64::from(c))
+            .sum()
+    })
+}
+
+/// [`decode_counts`] into the shared buffer [`crate::Rle`] keeps.
+pub(crate) fn decode_counts_shared(s: &[u8]) -> Result<Arc<[u32]>, MaskError> {
+    with_decoded(s, |counts| Arc::from(counts))
+}
+
+/// Decode buffer entries a thread keeps between calls. A string that grew
+/// it past this — rare, or hostile — gives the memory back afterwards.
+const SCRATCH_KEEP: usize = 1 << 16;
+
+thread_local! {
+    /// The decode buffer, reused across calls: a mask costs one exact
+    /// allocation (whatever `f` builds) instead of a growable one plus a
+    /// copy.
+    static DECODE_SCRATCH: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Decodes `s` into the thread's scratch and hands the runs to `f`; the
+/// checked decoder reports anything not well formed.
+fn with_decoded<R>(s: &[u8], f: impl FnOnce(&[u32]) -> R) -> Result<R, MaskError> {
+    DECODE_SCRATCH.with_borrow_mut(|scratch| {
+        // At most one run per byte.
+        if scratch.len() < s.len() {
+            scratch.resize(s.len(), 0);
+        }
+        let out = match decode_fast(s, scratch) {
+            Some(n) => Ok(f(&scratch[..n])),
+            None => decode_checked(s).map(|counts| f(&counts)),
+        };
+        if scratch.len() > SCRATCH_KEEP {
+            *scratch = Vec::new();
+        }
+        out
+    })
+}
+
+/// Decodes a well-formed string into `out` (at least one slot per byte)
+/// and returns the run count; `None` for anything else, which
+/// [`decode_checked`] then reports with its canonical error.
+///
+/// Runs `i > 2` carry the difference to the run two back, which is small:
+/// on RF-DETR masks 74% of runs are one char, 24.5% two, 1.4% longer. The
+/// one- and two-char cases share one path: `byte - 0x30 < 0x20` both
+/// rejects anything below the wire alphabet and says the run ends there,
+/// and a 5-bit value sign-extends with two shifts. Longer runs take the
+/// general loop. Runs are written by index with a local count, so the loop
+/// carries no capacity check or length reload.
+///
+/// The 1-or-2 advance is deliberately a branch. A branch-free advance (the
+/// length selected by mask) measured 2.73 ns/byte against 1.64 on 430k
+/// RF-DETR masks: it chains each run's position to the previous run's
+/// loaded bytes, while a predicted branch lets the next run's loads start
+/// early — worth more than the mispredictions it costs at a 3:1 mix.
+fn decode_fast(s: &[u8], out: &mut [u32]) -> Option<usize> {
+    // Quirk G3: the sign bit of a run's last char extends.
+    let sext5 = |c: u8| (i64::from(c) << 59) >> 59;
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while i < s.len() {
+        let c0 = s[i].wrapping_sub(WIRE_MIN);
+        let c1 = s.get(i + 1).map_or(u8::MAX, |b| b.wrapping_sub(WIRE_MIN));
+        let one = c0 < CONT_MASK as u8;
+        let mut x = if one || (c0 <= (DATA_MASK | CONT_MASK) as u8 && c1 < CONT_MASK as u8) {
+            let two = (i64::from(c0) & DATA_MASK) | (sext5(c1) << SHIFT_CHUNK);
+            i += if one { 1 } else { 2 };
+            if one {
+                sext5(c0)
+            } else {
+                two
+            }
+        } else {
+            let mut x = 0_i64;
+            let mut shift = 0_u32;
+            loop {
+                let c = i64::from(s.get(i)?.wrapping_sub(WIRE_MIN));
+                if c > DATA_MASK | CONT_MASK || shift >= SHIFT_CHUNK * MAX_CHARS_PER_RUN {
+                    return None;
+                }
+                i += 1;
+                x |= (c & DATA_MASK) << shift;
+                shift += SHIFT_CHUNK;
+                if c & CONT_MASK == 0 {
+                    if c & SIGN_MASK != 0 {
+                        x |= !0_i64 << shift;
+                    }
+                    break x;
+                }
+            }
+        };
+        if n > 2 {
+            x += i64::from(out[n - 2]);
+        }
+        *out.get_mut(n)? = u32::try_from(x).ok()?;
+        n += 1;
+    }
+    Some(n)
+}
+
+/// The checked byte-at-a-time decode: every condition tested where it
+/// arises, so a malformed string reports the error the format defines.
+fn decode_checked(s: &[u8]) -> Result<Vec<u32>, MaskError> {
     let mut counts = Vec::with_capacity(s.len() / 2 + 1);
     let mut iter = s.iter().copied();
     while let Some(mut byte) = iter.next() {
@@ -115,6 +235,53 @@ pub fn decode_counts(s: &[u8]) -> Result<Vec<u32>, MaskError> {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    proptest! {
+        /// The fast path decodes exactly what the checked decoder does and
+        /// errs exactly where it errs — the same reason — on any byte string:
+        /// round-tripped counts (one-, two- and long-char runs), near-wire
+        /// noise (out-of-alphabet bytes, over-long and truncated runs, `u32`
+        /// overflow), and the empty string; and the shared-buffer decode
+        /// [`crate::Rle`] uses agrees with both.
+        #[test]
+        fn fast_decode_agrees_with_the_checked_decoder(
+            counts in proptest::collection::vec(prop_oneof![0_u32..40, any::<u32>()], 0..60),
+            noise in proptest::collection::vec(0x2e_u8..0x72, 0..80),
+            splice in any::<bool>(),
+        ) {
+            let mut wire = encode_counts(&counts);
+            if splice {
+                wire.extend_from_slice(&noise);
+            }
+            for s in [&wire[..], &noise[..]] {
+                let checked = format!("{:?}", decode_checked(s));
+                prop_assert_eq!(format!("{:?}", decode_counts(s)), checked.clone());
+                prop_assert_eq!(
+                    format!("{:?}", decode_counts_shared(s).map(|a| a.to_vec())),
+                    checked.clone()
+                );
+                let area = decode_checked(s)
+                    .map(|c| c.iter().skip(1).step_by(2).map(|&v| u64::from(v)).sum::<u64>());
+                prop_assert_eq!(format!("{:?}", decode_area(s)), format!("{area:?}"));
+            }
+            prop_assert_eq!(decode_counts(&encode_counts(&counts)).unwrap(), counts);
+        }
+    }
+
+    /// A run past seven chars is refused on the fast path too, even when
+    /// its value would fit — `P` is a continuation char carrying zero.
+    #[test]
+    fn an_over_long_run_is_refused_even_when_its_value_fits() {
+        for wire in [&b"PPPPPPP0"[..], &b"0PPPPPPPP0"[..]] {
+            assert!(matches!(
+                decode_counts(wire),
+                Err(MaskError::MalformedRle(
+                    MalformedRleReason::ChunkLimitExceeded
+                ))
+            ));
+        }
+        assert_eq!(decode_counts(b"PPPPPP0").unwrap(), vec![0]);
+    }
 
     #[test]
     fn empty_round_trip() {
