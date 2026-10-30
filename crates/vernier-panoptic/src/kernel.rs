@@ -33,6 +33,7 @@ use crate::boundary::{build_boundary_map, BoundaryConfig, BoundaryMap, BoundaryS
 use crate::dataset::{CategoryId, ImageEntry, ImageId};
 use crate::error::PanopticError;
 use crate::parity::{PANOPTIC_IOU_THRESHOLD, PANOPTIC_VOID};
+use crate::runs::pair_runs;
 
 /// Cap on the dense `id → row/col` lookup-table size before falling
 /// back to a hashmap-backed remap. COCO panoptic encodes segment ids
@@ -265,6 +266,15 @@ pub fn pq_image_at_threshold_with_boundary(
     )
 }
 
+/// A run length as an intersection count. Counts are `u32`, as the
+/// per-pixel `+= 1` they replace was: at most one image's pixels.
+#[inline]
+#[allow(clippy::cast_possible_truncation)]
+fn run_count(len: usize) -> u32 {
+    debug_assert!(u32::try_from(len).is_ok());
+    len as u32
+}
+
 fn pq_image_at_threshold_inner(
     image_id: ImageId,
     gt: &ImageEntry,
@@ -440,16 +450,10 @@ fn build_dense_boundary_intersections(
     let gt_sentinel = gt_boundary.boundary_id;
     let dt_sentinel = dt_boundary.boundary_id;
 
-    // Same adjacent-pixel cache as the sparse branch of
-    // `build_dense_intersections` (see commentary there). Boundary
-    // band pixels are themselves spatially clustered, so the cache
-    // hit rate is similarly high under the sparse `SegmentRemap`
-    // backend that COCO panoptic exercises.
-    let mut last_g = u32::MAX;
-    let mut last_d = u32::MAX;
-    let mut last_gi = u32::MAX;
-    let mut last_di = u32::MAX;
-    for (&g, &d) in gt_boundary.ids.iter().zip(dt_boundary.ids.iter()) {
+    // Lookups only when a side's id changes, as in the mask fold.
+    let (mut last_g, mut last_gi) = (u32::MAX, u32::MAX);
+    let (mut last_d, mut last_di) = (u32::MAX, u32::MAX);
+    for (g, d, len) in pair_runs(&gt_boundary.ids, &dt_boundary.ids) {
         if g == gt_sentinel || d == dt_sentinel {
             continue;
         }
@@ -457,17 +461,13 @@ fn build_dense_boundary_intersections(
             last_d = d;
             last_di = intersections.dt_remap.lookup(d);
         }
-        if last_di == u32::MAX {
-            continue;
-        }
         if g != last_g {
             last_g = g;
             last_gi = intersections.gt_remap.lookup(g);
         }
-        if last_gi == u32::MAX {
-            continue;
+        if last_gi != u32::MAX && last_di != u32::MAX {
+            counts[last_gi as usize * n_dt + last_di as usize] += run_count(len);
         }
-        counts[last_gi as usize * n_dt + last_di as usize] += 1;
     }
 
     counts
@@ -527,19 +527,12 @@ fn build_dense_intersections(gt: &ImageEntry, dt: &ImageEntry) -> DenseIntersect
             dt_lookup[id as usize] = idx as u32;
         }
 
-        // No adjacent-pixel cache here — `Vec::get` is cheap enough
-        // that the cache miss overhead regresses `coco_jittered`.
-        // See the sparse branch below for the reverse trade-off.
-        for (g, d) in gt.label_map.iter().zip(dt.label_map.iter()) {
-            let di = dt_lookup.get(*d as usize).copied().unwrap_or(u32::MAX);
-            if di == u32::MAX {
-                continue;
+        for (g, d, len) in pair_runs(&gt.label_map, &dt.label_map) {
+            let di = dt_lookup.get(d as usize).copied().unwrap_or(u32::MAX);
+            let gi = gt_lookup.get(g as usize).copied().unwrap_or(u32::MAX);
+            if di != u32::MAX && gi != u32::MAX {
+                counts[gi as usize * n_dt + di as usize] += run_count(len);
             }
-            let gi = gt_lookup.get(*g as usize).copied().unwrap_or(u32::MAX);
-            if gi == u32::MAX {
-                continue;
-            }
-            counts[gi as usize * n_dt + di as usize] += 1;
         }
 
         (
@@ -565,34 +558,23 @@ fn build_dense_intersections(gt: &ImageEntry, dt: &ImageEntry) -> DenseIntersect
             dt_map.insert(id, idx as u32);
         }
 
-        // Adjacent-pixel locality cache. Panoptic segments are
-        // spatially contiguous (an object covers a run of pixels), so
-        // consecutive `(g, d)` pairs are usually identical — every
-        // hit skips two `FxHashMap::get` calls. On COCO val2017 the
-        // average run length per segment is in the thousands of
-        // pixels, so the hit rate sits well above 99%. The dense
-        // branch above doesn't get this treatment — `Vec::get` is too
-        // cheap to amortize the cache overhead under jitter.
-        let mut last_g = u32::MAX;
-        let mut last_d = u32::MAX;
-        let mut last_gi = u32::MAX;
-        let mut last_di = u32::MAX;
-        for (&g, &d) in gt.label_map.iter().zip(dt.label_map.iter()) {
+        // One pair of hash lookups per run of identical `(g, d)`, not per
+        // pixel, and none when a side repeats the previous run's id — as a
+        // noisy map's short runs mostly do.
+        let (mut last_g, mut last_gi) = (u32::MAX, u32::MAX);
+        let (mut last_d, mut last_di) = (u32::MAX, u32::MAX);
+        for (g, d, len) in pair_runs(&gt.label_map, &dt.label_map) {
             if d != last_d {
                 last_d = d;
                 last_di = dt_map.get(&d).copied().unwrap_or(u32::MAX);
-            }
-            if last_di == u32::MAX {
-                continue;
             }
             if g != last_g {
                 last_g = g;
                 last_gi = gt_map.get(&g).copied().unwrap_or(u32::MAX);
             }
-            if last_gi == u32::MAX {
-                continue;
+            if last_gi != u32::MAX && last_di != u32::MAX {
+                counts[last_gi as usize * n_dt + last_di as usize] += run_count(len);
             }
-            counts[last_gi as usize * n_dt + last_di as usize] += 1;
         }
 
         (SegmentRemap::Sparse(gt_map), SegmentRemap::Sparse(dt_map))
