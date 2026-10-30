@@ -149,6 +149,7 @@ else is detail.
 | [0067](0067-synthetic-twin-workloads.md) | Gate synthetic twins of real bench workloads on measured equivalence | accepted |
 | [0068](0068-accumulate-from-true-positive-events.md) | Accumulate PR curves from their true-positive events | proposed |
 | [0069](0069-label-map-png-fast-path.md) | Decode label-map PNGs through a fast path, the `png` crate as fallback | proposed |
+| [0070](0070-mimalloc-extension-allocator.md) | Ship mimalloc as the Python extension's global allocator | proposed |
 
 ### TIDE design package — proposed cluster
 
