@@ -147,6 +147,7 @@ additive / perf / docs".
   concatenated and the detection indexes built concurrently. COCO
   val2017, eight threads, parse + evaluate: RF-DETR Seg-Nano bbox −34%,
   Nano bbox −19%. Bit-identical output.
+
 ## [0.5.5] - 2026-10-29
 
 ### Added
