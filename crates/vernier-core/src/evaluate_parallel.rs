@@ -1,7 +1,7 @@
 //! Parallel sibling of [`crate::evaluate::evaluate_with`] (ADR-0047).
 //!
 //! Each category's occupied images are cut into image-ascending tasks of
-//! about equal estimated work ([`chunk_width`]), each its own
+//! about equal estimated work (`chunk_width`), each its own
 //! stealable rayon job running against its worker's reused scratch, and
 //! collected in task order — category-major, image-ascending — then
 //! concatenated per category.
