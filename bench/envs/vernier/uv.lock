@@ -737,7 +737,7 @@ wheels = [
 
 [[package]]
 name = "vernier"
-version = "0.5.1"
+version = "0.6.0"
 source = { directory = "../../../" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -754,11 +754,15 @@ requires-dist = [
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=6.0" },
     { name = "polars", marker = "extra == 'tables'", specifier = ">=1.0" },
     { name = "pyarrow", specifier = ">=15" },
-    { name = "rfdetr", marker = "extra == 'real-models'", specifier = "==1.6.5.post0" },
+    { name = "rfdetr", marker = "extra == 'real-models'", specifier = "==1.11.2" },
     { name = "timm", marker = "extra == 'real-models'", specifier = ">=1.0" },
-    { name = "torch", marker = "extra == 'real-models'", specifier = ">=2.4" },
-    { name = "torch", marker = "extra == 'torch'", specifier = ">=2.4" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'real-models'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "sys_platform == 'linux' and extra == 'torch'", specifier = ">=2.4", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'real-models'", specifier = ">=2.4" },
+    { name = "torch", marker = "sys_platform != 'linux' and extra == 'torch'", specifier = ">=2.4" },
     { name = "torchmetrics", marker = "extra == 'real-models'", specifier = ">=1.5" },
+    { name = "torchvision", marker = "sys_platform == 'linux' and extra == 'real-models'", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "torchvision", marker = "sys_platform != 'linux' and extra == 'real-models'" },
     { name = "transformers", marker = "extra == 'real-models'", specifier = ">=5.1" },
 ]
 provides-extras = ["torch", "viz", "tables", "real-models"]
@@ -767,13 +771,14 @@ provides-extras = ["torch", "viz", "tables", "real-models"]
 dev = [
     { name = "lvis", specifier = "==0.5.3" },
     { name = "maturin", specifier = ">=1.13,<2.0" },
-    { name = "opencv-python", specifier = "==4.10.0.84" },
+    { name = "opencv-python", specifier = "==5.0.0.93" },
     { name = "pillow", specifier = "==12.2.0" },
     { name = "polars", specifier = ">=1.0" },
     { name = "pycocotools", specifier = "==2.0.11" },
     { name = "pyright", specifier = ">=1.1.409" },
     { name = "pytest", specifier = ">=9" },
     { name = "pytest-benchmark", specifier = ">=5" },
+    { name = "pytest-xdist", specifier = ">=3.5" },
     { name = "ruff", specifier = ">=0.15" },
     { name = "vernier-ade20k-val-cache", editable = "../../../tools/ade20k_val_cache" },
     { name = "vernier-coco-val-cache", editable = "../../../tools/coco_val_cache" },

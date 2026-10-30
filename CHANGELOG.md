@@ -14,6 +14,8 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-30
+
 ### Changed (BREAKING - pre-1.0)
 
 - **`CocoDetections` is Structure-of-Arrays** (ADR-0066, Rust API only;
@@ -149,80 +151,12 @@ additive / perf / docs".
   RF-DETR Seg-Nano bbox −43% / −16%, Nano bbox −24% / −10%, Seg-Nano
   segm −20% / −5%. Bit-identical output.
 
-## [0.5.5] - 2026-10-29
-
-### Added
-
-- **`vernier.instance.DetectionsBatch`** (ADR-0066): every image's
-  detections in one set of columns — `boxes`, `scores`, `labels`, and
-  `image_ids` per detection or per image with `counts` — accepted by
-  every `DetectionsInput` entry point. `rles` is required under
-  `iou_type="segm"` / `"boundary"` exactly as on `Detections`; quirk
-  **J2**'s bbox-rectangle fallback stays with the `loadRes`-shaped routes
-  (JSON bytes, result dicts, the `(N, 7)` matrix).
-
-- **Grid-level accessors ahead of the packed `EvalGrid`** (ADR-0066):
-  `vernier_core::accumulate::accumulate_grid` /
-  `accumulate_grid_parallel` with `GridAccumulateParams` (the `(K, A, I)`
-  axes come from the grid), `EvalGrid::eval_imgs()`,
-  `EvalGrid::into_eval_imgs()` and `EvalGrid::category_cells(k, a)`.
-  Prefer them to the `EvalGrid.eval_imgs` field, which 0.6 removes.
-- `CocoDetections::distinct_image_ids`.
-
-### Changed
-
-- **`vernier.adapters.coco_inputs` / `coco_inputs_from_columns` return a
-  `DetectionsBatch`** on both `bbox` and `segm`, instead of an `(N, 7)`
-  matrix (bbox) or a list of per-image `Detections` (segm). The declared
-  return type (`DetectionsInput`) and every documented consumer are
-  unchanged; a caller that inspected the concrete value — e.g.
-  `np.asarray(detections)` — now gets a dict. Box-only predictions beside
-  masked ground truth are refused by a segm pass, and `coco_metrics`
-  names the side missing masks before running any pass.
-
-
-### Fixed
-
-- `StreamingEvaluator` / `BackgroundEvaluator`: a detection on an image
-  id absent from the ground truth no longer counts as covering a GT
-  image. One stray id could make the stream look fully covered, skip the
-  GT-only cells of a GT image that never got a detection, and report a
-  higher recall than the batch evaluator; `images_pending()` overcounted
-  the same way.
-
-### Performance
-
-- **Streaming matches only the batch's images.** `StreamingEvaluator.update`
-  / `BackgroundEvaluator.submit` used to run the matching pass over the
-  whole ground truth on every call; 625 updates × 8 images against a
-  5,000-image GT go from 29.1 s to 3.6 s, with `finalize()` bit-identical
-  to the batch evaluation.
-- **Faster greedy matcher.** Dense cells gather each detection's IoU
-  column once for all thresholds, the prefilter's column maxima are
-  computed once per `(category, image)` instead of once per area range,
-  and quirk B3's test leaves the inner loop — −30 to −36 % on dense-cell
-  evaluation, COCO-shaped unchanged. Bit-identical output, pinned against
-  an independent pycocotools transliteration.
-- **Seeded flat CSR indexes** for annotation and detection lookups:
-  2.4× faster detection-index build and 3× faster per-cell lookups at
-  1.5M detections; the GT id validation probes distinct keys rather than
-  every annotation. The hash is seeded per map, so crafted ids cannot
-  degrade index construction.
-- The evaluation grid's image order is computed once per `CocoDataset`
-  and shared by every evaluator, table builder and diagnostic.
-- `DetectionsBatch` from the adapters: `coco_inputs_from_columns` on
-  1.5M detections 46.6 → 26.5 ms; float32 `xyxy` boxes are widened and
-  converted in place.
-- The `(N, 7)` matrix route checks its id columns inline instead of
-  through `libm::trunc`.
-- `vernier eval --threads N` accumulates in parallel, in the same rayon
-  pool as evaluation.
-
 ## Released versions
 
 Frozen history, newest first, in [`docs/changelog/`](docs/changelog/); leave it
 out of searches and sweeps.
 
+- [0.5.5](docs/changelog/0.5.5.md) — 2026-10-29
 - [0.5.4](docs/changelog/0.5.4.md) — 2026-09-24
 - [0.5.3](docs/changelog/0.5.3.md) — 2026-09-23
 - [0.5.2](docs/changelog/0.5.2.md) — 2026-09-22
@@ -238,5 +172,5 @@ out of searches and sweeps.
 - [0.0.2](docs/changelog/0.0.2.md) — 2026-05-12
 - [0.0.1](docs/changelog/0.0.1.md) — 2026-04-30
 
-[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.5.5...HEAD
-[0.5.5]: https://github.com/NoeFontana/vernier/compare/v0.5.4...v0.5.5
+[Unreleased]: https://github.com/NoeFontana/vernier/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/NoeFontana/vernier/compare/v0.5.5...v0.6.0

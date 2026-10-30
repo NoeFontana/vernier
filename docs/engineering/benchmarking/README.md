@@ -8,8 +8,17 @@ together.
 
 ## Index
 
-* [2026-10-release-0.5.5-round.md](./2026-10-release-0.5.5-round.md)
+* [2026-10-release-0.6.0-round.md](./2026-10-release-0.6.0-round.md)
   — **current headline snapshot for every paradigm.** Full release-mode
+  re-measurement for the 0.6.0 tag, same host fingerprint as 0.5.5, and the
+  first round with ufcoco (`ultrafast-pycocotools`) as a baseline. On real
+  RF-DETR Nano bbox, vernier is 47.4× / 11.2× / 4.7× / 1.09× faster than
+  pycocotools / faster-coco-eval / hotcoco / ufcoco (954.6 → 492.5 ms); LVIS
+  −45 %, Objects365 −52 % / −57 % (1 / 8 CPUs). ufcoco wins one cell,
+  jittered bbox at one CPU (0.95×). Adds a replay of RF-DETR's own validation
+  `compute()`: 2.6× (det) and 5.3× (seg) faster than ufcoco.
+* [2026-10-release-0.5.5-round.md](./2026-10-release-0.5.5-round.md)
+  — superseded by the 0.6.0 round. Full release-mode
   re-measurement for the 0.5.5 tag. It is the first round to render the real
   RF-DETR cells directly, and the first to measure the competitor thread
   columns on the same SHA. On real RF-DETR Nano bbox, vernier is 23.8× /
@@ -18,7 +27,7 @@ together.
   controls flat. Records a kernel update that changed the host fingerprint
   and made pycocotools 17.5 % slower on jittered COCO bbox.
 * [2026-09-rfdetr-real-predictions.md](./2026-09-rfdetr-real-predictions.md)
-  — superseded by the 0.5.5 round for bbox / segm numbers; still the
+  — superseded by the 0.6.0 round for bbox / segm numbers; still the
   source for the real ViTPose keypoints row. Release-mode cells
   against real RF-DETR `Nano` and `SegNano` predictions on COCO
   val2017 (513,808 and 430,516 detections) — the first segm cell
