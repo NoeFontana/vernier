@@ -16,7 +16,7 @@ package with a Rust core, a Python API, and a standalone CLI.
   Same constructor, same `params` mutations, same `eval` / `evalImgs` /
   `ious` / `stats` read back off the instance ([what carries
   over](docs/migrate/from-pycocotools.md#params-what-the-shim-honors-and-what-it-rejects)).
-- **4–24× faster** than faster-coco-eval and pycocotools at equal CPU budget,
+- **7–47× faster** than faster-coco-eval and pycocotools at equal CPU budget,
   measured on real detector output rather than jittered ground truth
   ([benchmarks](#performance)).
 - **Built for real pipelines**: training-loop evaluation, multi-rank
@@ -200,47 +200,49 @@ labelled as such rather than presented as equivalent.
      docs/engineering/benchmarking/2026-09-rfdetr-real-predictions.md.
      After a bench round, re-run the renderer, then update these numbers. -->
 
-| Workload | DT source | vernier | vs pycocotools | vs faster-coco-eval | vs hotcoco |
-| --- | --- | ---: | ---: | ---: | ---: |
-| bbox AP | RF-DETR Nano | 955 ms | 23.8× | 5.7× | 2.4× |
-| segm AP | RF-DETR Seg-Nano | 2.34 s | 9.5× | 4.3× | 2.1× |
-| keypoints AP | ViTPose-B | 129 ms | 18.6× | 6.1× | 1.6× |
-| boundary AP | jittered GT | 3.12 s | 19.1× ¹ | 17.1× | — |
-| Panoptic PQ | perfect DT | 10.5 s | 3.3× ² | — | — |
-| Semantic mIoU | perfect DT | 2.86 s | 13.9× ³ | — | — |
-| LVIS v1 bbox AP | jittered GT | 2.32 s | 84.3× ⁴ | — | 1.7× |
+| Workload | DT source | vernier | vs pycocotools | vs faster-coco-eval | vs hotcoco | vs ufcoco |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| bbox AP | RF-DETR Nano | 492 ms | 47.4× | 11.2× | 4.7× | 1.09× |
+| segm AP | RF-DETR Seg-Nano | 1.43 s | 16.1× | 7.1× | 3.4× | 1.25× |
+| keypoints AP | ViTPose-B ⁵ | 129 ms | 18.6× | 6.1× | 1.6× | — |
+| boundary AP | jittered GT | 2.76 s | 21.6× ¹ | 19.3× | — | 77.6× |
+| Panoptic PQ | perfect DT | 10.6 s | 3.4× ² | — | — | — |
+| Semantic mIoU | perfect DT | 2.89 s | 14.3× ³ | — | — | — |
+| LVIS v1 bbox AP | jittered GT | 1.28 s | 171.5× ⁴ | — | 3.2× | — |
 
-¹ boundary-iou-api · ² panopticapi · ³ mmsegmentation · ⁴ lvis-api, with 14.8× lower peak memory (1.02 vs 15.08 GiB)
+¹ boundary-iou-api · ² panopticapi · ³ mmsegmentation · ⁴ lvis-api, with 20× lower peak memory (771 MiB vs 15.08 GiB); lvis-api's reps failed the 5% IQR gate (9.4%), so read the ratio as approximate · ⁵ from the 2026-09 real-predictions snapshot, not re-run in this round
 
 A second real detector on the same kernel and GT gives a different point
 estimate: RF-DETR Seg-Nano's bbox output (16% fewer detections, higher AP)
-measures 16.7× / 4.2× / 2.0×. Treat a single-workload speedup as a point
-estimate, not a property of the library — the
-[release snapshot](docs/engineering/benchmarking/2026-10-release-0.5.5-round.md)
-gives per-stage breakdowns, including the one cell where hotcoco's evaluate
-kernel is faster than vernier's.
+measures 37.2× / 9.5× / 4.5× / 1.10×. Treat a single-workload speedup as a
+point estimate, not a property of the library — the
+[release snapshot](docs/engineering/benchmarking/2026-10-release-0.6.0-round.md)
+gives per-stage breakdowns. ufcoco is the closest competitor: vernier leads it
+on every real-prediction cell, but on one thread its matching kernel is the
+faster one, and it wins the synthetic jittered bbox cell (157 ms against
+165 ms, see the thread table).
 
-Peak RSS on the real bbox cell is 390 MiB, against 997 MiB (hotcoco),
-1384 MiB (faster-coco-eval) and 1429 MiB (pycocotools) — a 2.6–3.7×
-advantage. Every implementation's working set grows with real detection
-density, but not by the same factor: against hotcoco the gap widens from
-1.4× on the synthetic cell to 2.6× here, because hotcoco's per-detection
-Python-object overhead scales with detection count while vernier's binary
-ingest does not.
+Peak RSS on the real bbox cell is 257 MiB, against 997 MiB (hotcoco),
+1384 MiB (faster-coco-eval) and 1429 MiB (pycocotools) — a 3.9–5.6×
+advantage — and 225 MiB for ufcoco, which is the leanest. Every
+implementation's working set grows with real detection density, but not by
+the same factor: against hotcoco the gap widens from 1.7× on the synthetic
+cell to 3.9× here, because hotcoco's per-detection Python-object overhead
+scales with detection count while vernier's columnar ingest does not.
 
 <details>
 <summary>Thread scaling (<code>num_threads</code>, 8-vCPU host)</summary>
 
-faster-coco-eval ≥ 1.8 and hotcoco are multi-threaded by default, so each
-column compares equal CPU budgets.
+faster-coco-eval ≥ 1.8, hotcoco and ufcoco are multi-threaded by default, so
+each column compares equal CPU budgets.
 
-| Workload | 1 | 2 | 4 | 8 | vs hotcoco @ 8 | vs faster-coco-eval @ 8 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| bbox | 293 ms | 213 ms | 141 ms | 125 ms | 2.9× | 11.9× |
-| segm | 886 ms | 514 ms | 292 ms | 234 ms | 2.3× | 14.8× |
-| boundary | 3.10 s | 1.64 s | 853 ms | 703 ms | — | 24.0× |
-| keypoints | 134 ms | 87 ms | 59 ms | 50 ms | 3.2× | 15.2× |
-| bbox, Objects365 (1.06M dets) † | 6.1 s | — | — | 2.9 s | 2.9× | OOM at ~30 GiB |
+| Workload | 1 | 2 | 4 | 8 | vs hotcoco @ 8 | vs faster-coco-eval @ 8 | vs ufcoco @ 1 / 8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| bbox | 164 ms | 117 ms | 79 ms | 78 ms | 4.7× | 19.2× | 0.94× / 1.40× |
+| segm | 507 ms | 293 ms | 174 ms | 141 ms | 3.9× | 25.1× | 1.45× / 1.60× |
+| boundary | 2.76 s | 1.41 s | 758 ms | 634 ms | — | 26.9× | 82.1× / 79.6× |
+| keypoints | 113 ms | 75 ms | 46 ms | 39 ms | 4.1× | 20.2× | 1.06× / 1.80× |
+| bbox, Objects365 (1.06M dets) † | 2.9 s | — | — | 1.2 s | 7.1× | OOM at ~30 GiB | 1.21× / 1.62× |
 
 Strict-mode results are bit-identical across thread counts.
 † Single-rep dev run; pycocotools takes ~6 min per rep at this size. The
@@ -253,10 +255,11 @@ mid-round.
 AMD EPYC-Milan KVM VPS (4 cores x 2 threads = 8 logical CPUs), harness
 mode `release` (N=10 measurement reps + 2 warmup, randomised impl order,
 5% relative-IQR gate), against `hotcoco==1.0.1`,
-`faster-coco-eval==1.8.0` and `pycocotools==2.0.11`. Full methodology,
+`ultrafast-pycocotools==0.1.14`, `faster-coco-eval==1.8.0` and
+`pycocotools==2.0.11`. Full methodology,
 every baseline pin and the complete results:
 [`docs/benchmarks.md`](docs/benchmarks.md) for every timed row except keypoints,
-[the release snapshot](docs/engineering/benchmarking/2026-10-release-0.5.5-round.md)
+[the release snapshot](docs/engineering/benchmarking/2026-10-release-0.6.0-round.md)
 for the round's narrative.
 
 ## Documentation
