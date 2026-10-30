@@ -17,12 +17,20 @@ permissions:
 jobs:
   linux:
     name: linux ${{ matrix.target }} ${{ matrix.manylinux }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         target: [x86_64, aarch64]
         manylinux: [auto, musllinux_1_2]
+        # aarch64 builds natively: the cross image's GCC 4.8 cannot compile
+        # mimalloc (ADR-0070); pypa's native manylinux2014 image has a
+        # current GCC and the same glibc 2.17 floor.
+        include:
+          - target: x86_64
+            runner: ubuntu-latest
+          - target: aarch64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
@@ -117,35 +125,79 @@ jobs:
           name: sdist
           path: dist/*.tar.gz
 
-  # Per blueprint section 5: install the built wheel into a fresh venv and
-  # run a basic script. Catches FFI bridge / dynamic linker breakage that
-  # cargo and pytest don't see.
+  # Per blueprint section 5: install each built wheel that the runner can
+  # execute into a fresh environment and run tools/dev/wheel_smoke.py —
+  # load, evaluate sequentially and threaded, and on Linux fork while a
+  # thread evaluates (the allocator, ADR-0070). Catches FFI bridge /
+  # dynamic linker / allocator breakage that cargo and pytest don't see.
   smoke:
-    name: smoke wheel
+    name: smoke ${{ matrix.wheel }}
     needs: [linux]
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - wheel: linux-x86_64-auto
+            runner: ubuntu-latest
+          - wheel: linux-aarch64-auto
+            runner: ubuntu-24.04-arm
+          - wheel: linux-x86_64-musllinux_1_2
+            runner: ubuntu-latest
+            image: python:3.13-alpine
+          - wheel: linux-aarch64-musllinux_1_2
+            runner: ubuntu-24.04-arm
+            image: python:3.13-alpine
     steps:
+      - uses: actions/checkout@v7
       - uses: actions/download-artifact@v8
         with:
-          pattern: wheels-linux-x86_64-auto
-          merge-multiple: true
+          name: wheels-${{ matrix.wheel }}
+          path: dist
+      - uses: actions/setup-python@v7
+        if: matrix.image == ''
+        with:
+          python-version: "3.14"
+      - name: smoke (glibc)
+        if: matrix.image == ''
+        run: |
+          python -m venv /tmp/smoke
+          /tmp/smoke/bin/pip install dist/vernier-*.whl
+          /tmp/smoke/bin/python tools/dev/wheel_smoke.py
+      - name: smoke (musl)
+        if: matrix.image != ''
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w ${{ matrix.image }} \
+            sh -c 'pip install dist/vernier-*.whl && python tools/dev/wheel_smoke.py'
+
+  smoke-desktop:
+    name: smoke ${{ matrix.wheel }}
+    needs: [macos, windows]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - wheel: macos-aarch64
+            runner: macos-latest
+          - wheel: windows-x64
+            runner: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: wheels-${{ matrix.wheel }}
           path: dist
       - uses: actions/setup-python@v7
         with:
           python-version: "3.14"
-      - name: install built wheel into fresh venv
+      - name: smoke
+        shell: bash
         run: |
-          python -m venv /tmp/smoke
-          /tmp/smoke/bin/pip install --upgrade pip
-          /tmp/smoke/bin/pip install dist/vernier-*-cp310-abi3-manylinux*_x86_64.whl
-      - name: run smoke script
-        run: |
-          /tmp/smoke/bin/python -c "
-          import vernier
-          v = vernier.version()
-          print(f'vernier {v} loaded successfully')
-          assert isinstance(v, str) and v
-          "
+          python -m venv smoke
+          bin=smoke/bin; [ -d smoke/Scripts ] && bin=smoke/Scripts
+          "$bin/python" -m pip install dist/vernier-*.whl
+          "$bin/python" tools/dev/wheel_smoke.py
 
   # Tag-gated guard: refuse to publish a vX.Y.Z tag that doesn't match
   # workspace.package.version (Cargo.toml) and project.version
@@ -185,7 +237,7 @@ jobs:
   # environment protections.
   publish-pypi:
     name: publish to PyPI
-    needs: [linux, macos, windows, smoke, sdist, verify-tag]
+    needs: [linux, macos, windows, smoke, smoke-desktop, sdist, verify-tag]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -241,7 +293,7 @@ jobs:
   # §"One-off: the first release that includes the facade".
   publish-crates-io:
     name: publish to crates.io
-    needs: [linux, macos, windows, smoke, verify-tag]
+    needs: [linux, macos, windows, smoke, smoke-desktop, verify-tag]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

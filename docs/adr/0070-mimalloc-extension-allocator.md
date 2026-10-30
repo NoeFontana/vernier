@@ -40,25 +40,30 @@ as glibc, so this is where the gain comes from.
 ## Considered options
 
 1. **Keep the system allocator.**
-2. **Document `GLIBC_TUNABLES=glibc.malloc.hugetlb=1`** for users who
+2. **Allocate less, or reuse buffers** in the kernels instead of changing
+   allocator.
+3. **Document `GLIBC_TUNABLES=glibc.malloc.hugetlb=1`** for users who
    want the speedup.
-3. **mimalloc v3** (the `mimalloc` crate's default) as the global
+4. **mimalloc v3** (the `mimalloc` crate's default) as the global
    allocator of the extension module.
-4. **mimalloc v2** as the global allocator of the extension module.
+5. **mimalloc v2** as the global allocator of the extension module.
 
 ## Decision outcome
 
-Chosen option: **4**. The `mimalloc` feature of `vernier-ffi` is on by
+Chosen option: **5**. The `mimalloc` feature of `vernier-ffi` is on by
 default, so every build of `vernier._core` — the wheels, `uv run`'s
 development build, the nextest binaries — runs the allocator it ships
-with; `--no-default-features` gives the system allocator back for an A/B.
-It uses mimalloc v2 with default options and `local_dynamic_tls`: the
-extension is loaded with `dlopen`, where initial-exec TLS draws on a
-fixed static-TLS reserve that other extensions share. The allocator
-applies to Rust allocations only; Python's own objects stay on
-`pymalloc`/libc. Nothing crosses allocators: numpy arrays and Arrow
-buffers built from Rust memory are released through Rust's own drop, and
-DLPack input is only borrowed.
+with; `--no-default-features` gives the system allocator back for an A/B,
+and CI checks that build compiles. It uses mimalloc v2 with default
+options and `local_dynamic_tls`: the extension is loaded with `dlopen`,
+where initial-exec TLS draws on a fixed static-TLS reserve that other
+extensions share and can exhaust ("cannot allocate memory in static TLS
+block"). Measured against initial-exec, local-dynamic costs nothing
+visible (all four one-CPU cells below within 1 %). The allocator applies
+to Rust allocations only; Python's own objects stay on `pymalloc`/libc.
+Nothing crosses allocators: numpy arrays and Arrow buffers built from
+Rust memory are released through Rust's own drop, and DLPack input is
+only borrowed.
 
 Measured on Linux x86_64 (THP `madvise`, the Ubuntu default), fresh
 process per run, CPUs pinned, median of five:
@@ -81,22 +86,46 @@ at 345–394 MiB against glibc's 421–428 MiB.
 The one-CPU jittered bbox cell is the one ufcoco won at 0.6.0 (157 ms
 there; 160 ms in this run).
 
+**Fork.** glibc malloc registers `pthread_atfork` handlers; mimalloc does
+not, so a child forked while another thread holds one of mimalloc's few
+locks (taken on thread exit and segment reclaim, not on the allocation
+fast path) would deadlock on its first allocation that needs it. Training
+loops fork (`DataLoader` workers, `multiprocessing`) while vernier may be
+evaluating on a pool. `tools/dev/wheel_smoke.py` forks children that each
+evaluate while a thread keeps evaluating with a per-call pool, so pool
+threads start, allocate and exit throughout; 2,000 forks completed with
+no hang. It runs on every pull request (`tests/python/test_wheel_smoke.py`)
+and against each Linux wheel at release. pydantic-core ships the same
+allocator into the same fork-heavy settings (pre-fork servers).
+
 ### Consequences
 
-- **Positive:** cold evaluation is 10–16 % faster at one CPU and 14–21 % at four,
-  with no change to results, API or `unsafe` code. In a warm process the
-  speed is unchanged and steady-state RSS is lower than glibc's (it
-  fragments less across repeated evaluations).
-- **Negative:** peak RSS of a one-shot run rises, from huge-page
-  granularity and from freed memory mimalloc keeps for reuse. The wheels
-  compile ~10k lines of C (MIT), so the build needs a C compiler on
-  every target, which maturin's images already provide. vernier owns one
-  more native dependency to keep current.
-- **Neutral:** the gain is Linux THP. With THP set to `never` mimalloc is
-  as fast as glibc; macOS and Windows have no THP advice, and their
-  numbers are not measured here. The `vernier` CLI keeps the system
-  allocator: ADR-0015 keeps its dependency tree pure Rust, and changing
-  that is its own decision.
+- **Positive:** cold evaluation is 10–16 % faster at one CPU and 14–21 %
+  at four, with no change to results, API or `unsafe` code. In a warm
+  process the speed is unchanged and steady-state RSS is lower than
+  glibc's (it fragments less across repeated evaluations).
+- **Negative:** peak RSS of a one-shot run rises by 8–60 MiB, from
+  huge-page granularity and from freed memory mimalloc keeps for reuse.
+  Building the extension compiles ~10k lines of C (MIT); a machine that
+  builds it from the sdist already has a C toolchain, since Rust links
+  through `cc` on Linux and macOS and through the MSVC build tools on
+  Windows. The aarch64 manylinux wheel now builds on a native arm64 runner:
+  the cross image's GCC 4.8 rejects a flag `libmimalloc-sys` passes,
+  while pypa's native `manylinux2014` image has a current GCC and the
+  same glibc 2.17 floor. Tools that hook `malloc` (heaptrack, memray's
+  native mode, valgrind memcheck) no longer see vernier's Rust heap
+  allocation by allocation; build with `--no-default-features` to profile
+  it. vernier owns one more native dependency to keep current.
+- **Neutral:** the gain is Linux THP. Where THP is off — `never`, a
+  container runtime's `PR_SET_THP_DISABLE`, or `MIMALLOC_ALLOW_THP=0` —
+  mimalloc is as fast as glibc and keeps only the RSS cost. Under THP
+  `always`, glibc's own large mappings can get huge pages too, so the gap
+  is likely smaller; that setting, macOS and Windows are not measured
+  here. Every wheel the release runners can execute (Linux glibc and musl
+  on both architectures, macOS arm64, Windows x64) runs the smoke script
+  before publishing. The `vernier` CLI keeps the system allocator:
+  ADR-0015 keeps its dependency tree pure Rust, and changing that is its
+  own decision.
 
 ## Pros and cons of the options
 
@@ -107,26 +136,39 @@ there; 160 ms in this run).
 
 ### Option 2
 
+- 👍 Helps every platform and allocator, and memory too.
+- 👎 Does not reach this cost. In a fresh process every page is touched
+  for the first time whichever allocator hands it out, and the output
+  tensors (precision, scores) must exist at full size. Only fault
+  granularity changes the count: with THP disabled, mimalloc's reuse of
+  freed memory alone is as slow as glibc. Allocating less remains worth
+  doing kernel by kernel, and compounds with this.
+
+### Option 3
+
 - 👍 No dependency; also covers Python's own allocations (it speeds up
   reading the input files).
 - 👎 Process-wide, set before Python starts, glibc only, and only for
   users who find it.
 
-### Option 3
+### Option 4
 
 - 👍 The crate's default line.
-- 👎 Same speed as v2 here, with 20–90 MB more peak RSS than glibc
+- 👎 Same speed as v2 here, with 21–90 MiB more peak RSS than glibc
   against v2's 8–60.
 
-### Option 4 (chosen)
+### Option 5 (chosen)
 
 - 👍 The speedup with the smallest peak-RSS increase of the mimalloc
   lines.
-- 👎 A C dependency in the wheel build.
+- 👎 A C dependency in the wheel build, and an allocator with no
+  `pthread_atfork` handling, covered by a fork test rather than by
+  design.
 
 ## Links and references
 
-- Related ADRs: [ADR-0006](0006-threading-model.md) (threading model), [ADR-0015](0015-vernier-cli.md) (pure-Rust CLI),
+- Related ADRs: [ADR-0006](0006-threading-model.md) (threading model),
+  [ADR-0015](0015-vernier-cli.md) (pure-Rust CLI),
   [ADR-0047](0047-threading-model.md) (`num_threads`).
 - mimalloc: <https://github.com/microsoft/mimalloc>; `local_dynamic_tls`
   in the `mimalloc` crate's features.
