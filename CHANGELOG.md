@@ -14,6 +14,14 @@ additive / perf / docs".
 
 ## [Unreleased]
 
+### Performance
+
+- **Polygon rasterization finds crossings by threshold.** The y-major edge
+  walk locates each kept column move directly instead of stepping every
+  supersampled row, and crossings are counting-sorted by column.
+  Rasterizing COCO val2017 ground truth is 1.7× faster; jittered segm
+  evaluation 20 % faster. Bit-exact against pycocotools.
+
 ## [0.6.0] - 2026-10-30
 
 ### Changed (BREAKING - pre-1.0)

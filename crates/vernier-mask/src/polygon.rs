@@ -24,7 +24,8 @@
 //!    always the smaller of the two endpoints, clamped to `[0, h]`,
 //!    and ceiled. The asymmetry is what makes shared polygon edges
 //!    cancel cleanly under [`Rle::merge`].
-//! 4. **Encode (quirk H6).** Crossings are sorted, differential-
+//! 4. **Encode (quirk H6).** Crossings are sorted (a counting sort on
+//!    the column; see `sorted_flat_indices`), differential-
 //!    encoded, and zero-length runs are folded back into the
 //!    previous run — that's how duplicated edges (a polygon's two
 //!    sides crossing the same supersampled cell) cancel out.
@@ -102,12 +103,9 @@ impl Rle {
         sx.push(sx[0]);
         sy.push(sy[0]);
 
-        let mut a = polygon_crossings(&sx, &sy, h, w);
-        let h64 = u64::from(h);
-        let w64 = u64::from(w);
+        let mut a = sorted_flat_indices(polygon_crossings(&sx, &sy, h, w), h);
         // Sentinel `h*w` extends the final run to mask end.
-        a.push(h64 * w64);
-        a.sort_unstable();
+        a.push(u64::from(h) * u64::from(w));
 
         let mut prev: u64 = 0;
         for slot in a.iter_mut() {
@@ -199,13 +197,11 @@ fn supersample(v: f64) -> i32 {
 /// code drops it (quirk **H5**: off an integer pixel boundary, or outside
 /// `[0, w-1]`).
 ///
-/// The C keeps `xd = (xd_super + 0.5) / 5 - 0.5` when `floor(xd) == xd`.
-/// That value is `(xd_super - 2) / 5`, an integer exactly when
-/// `xd_super ≡ 2 (mod 5)`: for `|xd_super| ≤ i32::MAX / 4 + 1` the f64
-/// evaluation is exact on that residue and stays ≥ 0.2 from an integer
-/// off it, so the integer test is the same predicate, without the
-/// `trunc` / `ceil` the x86-64 baseline lowers to libm calls. A negative
+/// The predicate both branches of [`edge_crossings`] enumerate directly
+/// (kept columns `5c + 2`; see [`boundary_row`] for why the integer form is
+/// exact), kept for the tests that tie it to the C's float form. A negative
 /// `xd` is dropped either way, so the unsigned form needs no sign fix-up.
+#[cfg(test)]
 fn boundary_column(xd_super: i32, w: u32) -> Option<u64> {
     let n = u32::try_from(xd_super - BOUNDARY_OFFSET).ok()?;
     let col = n / SUPERSAMPLE_SCALE_INT;
@@ -214,32 +210,110 @@ fn boundary_column(xd_super: i32, w: u32) -> Option<u64> {
 
 /// Image row of a supersampled boundary crossing: the C's
 /// `ceil(clamp((yd_super + 0.5) / 5 - 0.5, 0, h))` (quirk **H4**), i.e.
-/// `ceil((yd_super - 2) / 5)` clamped to `[0, h]` — exact for the reason
-/// given on [`boundary_column`], and `clamp` / `ceil` commute because both
-/// bounds are integers. A non-positive numerator ceils to at most 0.
+/// `ceil((yd_super - 2) / 5)` clamped to `[0, h]`, and `clamp` / `ceil`
+/// commute because both bounds are integers. A non-positive numerator ceils
+/// to at most 0.
+///
+/// Exact, and so is the column rule both branches of [`edge_crossings`]
+/// enumerate (the C keeps `xd = (xd_super + 0.5) / 5 - 0.5` when
+/// `floor(xd) == xd`, that is `xd_super ≡ 2 (mod 5)`): for
+/// `|xd_super| ≤ i32::MAX / 4 + 1` the f64 evaluation of `(s - 2) / 5` is
+/// exact on that residue and stays ≥ 0.2 from an integer off it, so the
+/// integer forms are the same predicates, without the `trunc` / `ceil` the
+/// x86-64 baseline lowers to libm calls.
 fn boundary_row(yd_super: i32, h: u32) -> u64 {
     let n = u32::try_from(yd_super - BOUNDARY_OFFSET).unwrap_or(0);
     let ceil = n.div_ceil(SUPERSAMPLE_SCALE_INT);
     u64::from(ceil.min(h))
 }
 
+/// A boundary crossing at image `(col, row)`, packed as `col << 32 | row`.
+///
+/// Packed order agrees with column-major flat order `col * h + row`: rows
+/// run `0..=h`, so the flat index ties only `(c, h)` with `(c + 1, 0)` —
+/// equal values, whose relative order the run encoding cannot see.
+#[inline]
+fn pack(col: u64, row: u64) -> u64 {
+    col << 32 | row
+}
+
+/// Sorts packed crossings into ascending column-major flat indices, with one
+/// slot spare for the end sentinel.
+///
+/// The crossings of one polygon fall in its column span, and few share a
+/// column — two per column for a convex outline. So a counting sort on the
+/// column, over the span, scatters each crossing straight to its flat index
+/// and leaves disorder only inside a column: `O(n + span)`, where the
+/// comparison sort it replaces was half of rasterizing COCO's ground truth.
+/// Within a column flat order is row order. Shallow columns are finished by
+/// one insertion pass; if any column is deep (a comb or zigzag outline can
+/// stack thousands of crossings in one), each column is sorted on its own
+/// instead, so no input shape is quadratic. Small or sparse sets, where the
+/// counts array would not pay, take the comparison sort.
+fn sorted_flat_indices(mut keys: Vec<u64>, h: u32) -> Vec<u64> {
+    const MIN_COUNTING: usize = 64;
+    /// Deepest column the insertion pass takes.
+    const MAX_INSERTION_DEPTH: usize = 16;
+    let h = u64::from(h);
+    let flat = |k: u64| (k >> 32) * h + (k & u64::from(u32::MAX));
+    let (lo, hi) = keys.iter().fold((u64::MAX, 0), |(lo, hi), &k| {
+        (lo.min(k >> 32), hi.max(k >> 32))
+    });
+    let span = usize::try_from(hi.saturating_sub(lo)).map_or(usize::MAX, |s| s + 1);
+    if keys.len() < MIN_COUNTING || span > 2 * keys.len() {
+        keys.sort_unstable();
+        for k in &mut keys {
+            *k = flat(*k);
+        }
+        return keys;
+    }
+    let column = |k: u64| (k >> 32).abs_diff(lo) as usize;
+    // `starts[c]` is where column `lo + c` begins in the output.
+    let mut starts = vec![0usize; span + 1];
+    for &k in &keys {
+        starts[column(k) + 1] += 1;
+    }
+    let deepest = starts.iter().copied().max().unwrap_or(0);
+    for c in 1..=span {
+        starts[c] += starts[c - 1];
+    }
+    let mut out = vec![0u64; keys.len() + 1];
+    out.truncate(keys.len());
+    for &k in &keys {
+        let slot = &mut starts[column(k)];
+        out[*slot] = flat(k);
+        *slot += 1;
+    }
+    if deepest <= MAX_INSERTION_DEPTH {
+        for i in 1..out.len() {
+            let k = out[i];
+            let mut j = i;
+            while j > 0 && out[j - 1] > k {
+                out[j] = out[j - 1];
+                j -= 1;
+            }
+            out[j] = k;
+        }
+    } else {
+        // After the scatter, `starts[c]` is where column `c` ends.
+        let mut begin = 0;
+        for &end in &starts[..span] {
+            out[begin..end].sort_unstable();
+            begin = end;
+        }
+    }
+    out
+}
+
 /// Boundary crossings (quirks **H4**, **H5**) of the closed supersampled
-/// polygon `(sx, sy)` (closing vertex repeated), as column-major flat
-/// indices, unsorted; one slot is left spare for the end sentinel.
+/// polygon `(sx, sy)` (closing vertex repeated), [packed](pack) and unsorted;
+/// one slot is left spare for the end sentinel.
 fn polygon_crossings(sx: &[i32], sy: &[i32], h: u32, w: u32) -> Vec<u64> {
     let edges = || sx.windows(2).zip(sy.windows(2));
-    // At most one crossing in five steps along an x-major edge, at most
-    // one per column step along a y-major one.
+    // H5 keeps one column in five: at most `dx / 5 + 1` crossings per edge,
+    // whichever axis is major.
     let estimate: usize = edges()
-        .map(|(x, y)| {
-            let dx = x[1].abs_diff(x[0]) as usize;
-            let dy = y[1].abs_diff(y[0]) as usize;
-            if dx >= dy {
-                dx / SUPERSAMPLE_SCALE_INT as usize + 1
-            } else {
-                dx + 1
-            }
-        })
+        .map(|(x, _)| x[1].abs_diff(x[0]) as usize / SUPERSAMPLE_SCALE_INT as usize + 1)
         .sum();
     let mut out = Vec::with_capacity(estimate + 1);
     for (x, y) in edges() {
@@ -248,8 +322,8 @@ fn polygon_crossings(sx: &[i32], sy: &[i32], h: u32, w: u32) -> Vec<u64> {
     out
 }
 
-/// Appends the boundary crossings of one polygon edge, as column-major
-/// flat indices `col * h + row`, to `out`.
+/// Appends the boundary crossings of one polygon edge, [packed](pack), to
+/// `out`.
 ///
 /// The C densifies every edge into a point buffer (`mc:199-216`) and scans
 /// consecutive points for a column change (`mc:217-226`). Every crossing it
@@ -278,7 +352,6 @@ fn edge_crossings(
         std::mem::swap(&mut xs, &mut xe);
         std::mem::swap(&mut ys, &mut ye);
     }
-    let h64 = u64::from(h);
     if dx >= dy {
         // x-major: point `t` sits at column `xs + t`, so every pair
         // `(t, t + 1)` crosses, at `min = xs + t`. H5 keeps only
@@ -303,23 +376,59 @@ fn edge_crossings(
             let t = x - i64::from(xs);
             let col = (x - offset) / scale;
             let row = boundary_row(v_at(t).min(v_at(t + 1)), h);
-            out.push(col.unsigned_abs() * h64 + row);
+            out.push(pack(col.unsigned_abs(), row));
             x += scale;
         }
     } else {
-        // y-major: point `t` sits at row `ys + t`; the column moves by at
-        // most one per step, and only a move is a crossing.
+        // y-major: point `t` sits at row `ys + t`, column `u(t)`, and only a
+        // move of the column is a crossing. H5 keeps a move only when its
+        // smaller column is `k = 5c + 2` with `0 <= c < w`: one in five. The
+        // C walks all `dy` steps (most of a COCO rasterization, at five steps
+        // per pixel row); here each kept move is found directly. Every
+        // operation in `u` is monotone in `t`, so `u` is, and the step at
+        // which it passes `k` is a threshold: estimated from the real-valued
+        // solution, then settled by evaluating `u` itself, so the result is
+        // the C's own arithmetic, not the estimate's.
         let s = f64::from(xe - xs) / f64::from(dy);
         let u_at = |t: i32| (f64::from(xs) + s * f64::from(t) + 0.5) as i32;
-        let mut prev = u_at(0);
-        for t in 1..=dy {
-            let cur = u_at(t);
-            if cur != prev {
-                if let Some(col) = boundary_column(cur.min(prev), w) {
-                    out.push(col * h64 + boundary_row(ys + t - 1, h));
-                }
-                prev = cur;
+        // For the estimate only: the walk below settles `t` exactly.
+        let inv_s = 1.0 / s;
+        let (u0, u1) = (u_at(0), u_at(dy));
+        if u0 == u1 {
+            return;
+        }
+        let rising = u1 > u0;
+        // Past `k` means above it when rising, at or below it when falling;
+        // false at `t = 0`, true at `t = dy`.
+        let past = |t: i32, k: i32| if rising { u_at(t) > k } else { u_at(t) <= k };
+        let scale = i64::from(SUPERSAMPLE_SCALE_INT);
+        let offset = i64::from(BOUNDARY_OFFSET);
+        let lo = i64::from(u0.min(u1)).max(offset);
+        let hi = (i64::from(u0.max(u1)) - 1).min(scale * (i64::from(w) - 1) + offset);
+        let mut k = lo + (offset - lo).rem_euclid(scale);
+        while k <= hi {
+            // In range: `k` lies between `u0` and `u1`, both `i32`.
+            let k32 = k as i32;
+            #[allow(clippy::cast_possible_truncation)] // clamped to `1..=dy`
+            let mut t = ((f64::from(k32) + 0.5 - f64::from(xs)) * inv_s)
+                .ceil()
+                .clamp(1.0, f64::from(dy)) as i32;
+            while t > 1 && past(t - 1, k32) {
+                t -= 1;
             }
+            while !past(t, k32) {
+                t += 1;
+            }
+            // The move at `t` is `u(t - 1) -> u(t)`. Its column is the
+            // smaller of the two — the C's choice for a one-column move in
+            // either walking direction, and `|s| < 1` keeps moves to one
+            // column short of rounding at ~1e8-pixel coordinates. Kept only
+            // if that column is `k` itself.
+            if u_at(t - 1).min(u_at(t)) == k32 {
+                let col = (k - offset) / scale;
+                out.push(pack(col.unsigned_abs(), boundary_row(ys + t - 1, h)));
+            }
+            k += scale;
         }
     }
 }
@@ -387,8 +496,30 @@ mod tests {
         a
     }
 
+    /// Edge-by-edge crossings, sorted, against the C's dense scan.
+    fn crossings_match_dense_scan(
+        vertices: &[(f64, f64, bool)],
+        h: u32,
+        w: u32,
+    ) -> Result<(), TestCaseError> {
+        let mut sx: Vec<i32> = Vec::new();
+        let mut sy: Vec<i32> = Vec::new();
+        for &(x, y, snap) in vertices {
+            let (x, y) = if snap { (x.round(), y.round()) } else { (x, y) };
+            sx.push(supersample(x));
+            sy.push(supersample(y));
+        }
+        sx.push(sx[0]);
+        sy.push(sy[0]);
+        let got = sorted_flat_indices(polygon_crossings(&sx, &sy, h, w), h);
+        let mut want = c_crossings(&sx, &sy, h, w);
+        want.sort_unstable();
+        prop_assert_eq!(got, want);
+        Ok(())
+    }
+
     proptest! {
-        /// Edge-by-edge crossings are the C's dense scan, as a multiset:
+        /// Edge-by-edge crossings are the C's dense scan:
         /// random polygons with vertices left of, above, inside and past
         /// the image (negative coordinates truncate differently at
         /// joins), duplicate vertices, axis-aligned and degenerate edges.
@@ -401,20 +532,56 @@ mod tests {
             h in 1_u32..70,
             w in 1_u32..70,
         ) {
-            let mut sx: Vec<i32> = Vec::new();
-            let mut sy: Vec<i32> = Vec::new();
-            for &(x, y, snap) in &vertices {
-                let (x, y) = if snap { (x.round(), y.round()) } else { (x, y) };
-                sx.push(supersample(x));
-                sy.push(supersample(y));
-            }
-            sx.push(sx[0]);
-            sy.push(sy[0]);
-            let mut got = polygon_crossings(&sx, &sy, h, w);
-            let mut want = c_crossings(&sx, &sy, h, w);
-            got.sort_unstable();
+            crossings_match_dense_scan(&vertices, h, w)?;
+        }
+
+        /// The same at COCO scale: long, steep edges, where the y-major
+        /// threshold search replaces hundreds of steps.
+        #[test]
+        fn edge_crossings_match_the_dense_scan_at_image_scale(
+            vertices in proptest::collection::vec(
+                (-60.0_f64..760.0, -60.0_f64..760.0, proptest::bool::weighted(0.15)),
+                3..30,
+            ),
+            h in 1_u32..700,
+            w in 1_u32..700,
+        ) {
+            crossings_match_dense_scan(&vertices, h, w)?;
+        }
+
+        /// The counting sort orders exactly as a comparison sort of the
+        /// flat indices, on dense, sparse, tied and row-`h` crossings.
+        #[test]
+        fn counting_sort_matches_comparison_sort(
+            cells in proptest::collection::vec((0_u64..300, 0_u64..=40), 0..400),
+            spread in 1_u64..8,
+        ) {
+            let h = 40_u32;
+            let keys: Vec<u64> = cells.iter().map(|&(c, r)| pack(c * spread, r)).collect();
+            let mut want: Vec<u64> = keys
+                .iter()
+                .map(|&k| (k >> 32) * u64::from(h) + (k & u64::from(u32::MAX)))
+                .collect();
             want.sort_unstable();
-            prop_assert_eq!(got, want);
+            prop_assert_eq!(sorted_flat_indices(keys, h), want);
+        }
+
+        /// A few deep columns — a comb or zigzag outline — take the
+        /// per-column sort and still order exactly.
+        #[test]
+        fn deep_columns_sort_exactly(
+            rows in proptest::collection::vec(0_u64..=500, 64..600),
+            cols in 1_u64..4,
+        ) {
+            let h = 500_u32;
+            let keys: Vec<u64> =
+                rows.iter().enumerate().map(|(i, &r)| pack(i as u64 % cols, r)).collect();
+            let mut want: Vec<u64> = keys
+                .iter()
+                .map(|&k| (k >> 32) * u64::from(h) + (k & u64::from(u32::MAX)))
+                .collect();
+            want.sort_unstable();
+            prop_assert_eq!(sorted_flat_indices(keys, h), want);
         }
     }
 
