@@ -22,6 +22,8 @@ use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
+use vernier_mask::label_png::{decode_label_png, LabelColor};
+
 use crate::error::{ImageId, SemanticError};
 use crate::kernel::{accumulate_confusion, ConfusionMatrix};
 use crate::parity::ParityMode;
@@ -50,11 +52,12 @@ pub fn decode_grayscale8(
 /// caller-supplied `buf`, growing it only when the current capacity is
 /// insufficient.
 ///
-/// `buf.resize(n_pixels, 0)` zero-fills only the *extension* when the
-/// buffer grows; in steady state (val2017's ~640×480 dominant
-/// geometry repeats per image) this is a no-op after the first call.
-/// libpng's `next_frame` overwrites the full slice regardless of its
-/// prior contents, so the existing bytes never need clearing.
+/// Label maps decode through `vernier_mask::label_png` (ADR-0069), which
+/// inflates and unfilters in `buf` itself; any file it refuses decodes
+/// with the `png` crate's `next_frame`. Either way `buf` only grows (a
+/// resize zero-fills just the extension), so in steady state — val2017's
+/// ~640×480 geometry repeats per image — reuse costs no allocation, and
+/// the existing bytes never need clearing.
 ///
 /// This is the buffer-reuse path that [`evaluate_from_pngs`] hoists
 /// out of its per-image loop to drop ~10 000 allocator calls plus the
@@ -65,6 +68,15 @@ pub fn decode_grayscale8_into(
     bytes: &[u8],
     buf: &mut Vec<u8>,
 ) -> Result<(u32, u32), SemanticError> {
+    // Label maps take `vernier_mask::label_png`'s fast path, straight into
+    // `buf`; anything it refuses goes to the `png` crate below, which also
+    // owns every error.
+    if let Some(png) = decode_label_png(bytes, LabelColor::Gray8, buf) {
+        let dims = (png.height(), png.width());
+        png.into_pixels();
+        return Ok(dims);
+    }
+
     let decoder = png::Decoder::new(Cursor::new(bytes));
     let mut reader = decoder.read_info().map_err(|e| SemanticError::PngDecode {
         path: format!("image_id={image_id}"),

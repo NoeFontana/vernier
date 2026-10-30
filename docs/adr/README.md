@@ -148,6 +148,7 @@ else is detail.
 | [0066](0066-columnar-detections-and-packed-eval-grid.md) | Columnar detection storage, `DetectionsBatch` ingest, and packed evaluation grids | proposed |
 | [0067](0067-synthetic-twin-workloads.md) | Gate synthetic twins of real bench workloads on measured equivalence | accepted |
 | [0068](0068-accumulate-from-true-positive-events.md) | Accumulate PR curves from their true-positive events | proposed |
+| [0069](0069-label-map-png-fast-path.md) | Decode label-map PNGs through a fast path, the `png` crate as fallback | proposed |
 
 ### TIDE design package — proposed cluster
 
