@@ -30,6 +30,13 @@ additive / perf / docs".
   ground-truth field pycocotools does not read for the iouType (a malformed
   mask or keypoint list under `bbox`, an unserializable custom field) no
   longer fails the evaluation.
+- **Panoptic folds walk label maps run by run.** DT area marginals, the
+  GT × DT intersection matrices and boundary PQ's segment boxes count runs
+  of identical ids, found 64 pixels at a time (a constant compare for a
+  block inside a run, a boundary bitmask otherwise), instead of bumping a
+  counter and doing a lookup per pixel. COCO panoptic val2017 on one CPU:
+  ~35 % faster; the per-image kernel is 5–6× faster on smooth maps and
+  1.5× on noisy ones.
 
 ## [0.6.0] - 2026-10-30
 

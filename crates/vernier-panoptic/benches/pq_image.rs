@@ -206,6 +206,18 @@ fn coco_like_rgb(bencher: Bencher) {
     bencher.bench_local(|| pq_image_with_id(black_box(0), black_box(&gt), black_box(&dt)).unwrap());
 }
 
+/// `coco_like_rgb` with `coco_jittered`'s noise: the production hash-map
+/// path on a fragmented prediction, where most spans are one pixel long.
+#[divan::bench]
+fn coco_jittered_rgb(bencher: Bencher) {
+    let (mut gt, mut dt) = build_pair(COCO_JITTERED);
+    rgb_pack_label_map(&mut gt.label_map);
+    rgb_pack_label_map(&mut dt.label_map);
+    gt.segments = rgb_pack_segments(gt.segments);
+    dt.segments = rgb_pack_segments(dt.segments);
+    bencher.bench_local(|| pq_image_with_id(black_box(0), black_box(&gt), black_box(&dt)).unwrap());
+}
+
 /// `ImageEntry::from_components` walks every DT pixel for the
 /// known-segment-id check. With 5000 images × 300k pixels = 1.5B
 /// HashMap lookups, the hasher choice dominates the streaming

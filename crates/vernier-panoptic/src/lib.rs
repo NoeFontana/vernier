@@ -41,6 +41,9 @@ pub mod tables;
 // PNG decode path. Crate-private; the only consumer is `decode.rs`.
 mod pixel_pack;
 
+// Run scanning shared by the per-pixel folds (areas, intersections).
+mod runs;
+
 // Each item lives at exactly one path — its home module. Adding a
 // re-export here widens the headline; treat it as a deliberate
 // decision, not a default for new pub items.

@@ -29,6 +29,7 @@ use vernier_mask::ops::{dilation_pixels, erode_bbox_into_scratch, ErodeScratch};
 
 use crate::dataset::{ImageEntry, SegmentInfo};
 use crate::parity::{ParityMode, PANOPTIC_VOID};
+use crate::runs::runs;
 
 /// Default Chebyshev-ball dilation ratio for boundary panoptic quality.
 ///
@@ -325,29 +326,22 @@ fn compute_segment_bboxes(
         // accumulate max-by-self-update before converting to (bw, bh).
         out.insert(seg.id, ([u32::MAX, u32::MAX, 0, 0], 0));
     }
+    // One lookup per run of an id down a column, not per pixel.
     let h_usize = h as usize;
-    for x in 0..(w as usize) {
-        let col_base = x * h_usize;
-        for y in 0..h_usize {
-            let Some(entry) = out.get_mut(&pan[col_base + y]) else {
+    for (x, column) in pan.chunks_exact(h_usize).take(w as usize).enumerate() {
+        let xu = x as u32;
+        let mut y = 0u32;
+        for (id, len) in runs(column) {
+            let (y0, y1) = (y, y + len as u32 - 1);
+            y += len as u32;
+            let Some((bbox, count)) = out.get_mut(&id) else {
                 continue;
             };
-            let (bbox, count) = entry;
-            *count += 1;
-            let xu = x as u32;
-            let yu = y as u32;
-            if xu < bbox[0] {
-                bbox[0] = xu;
-            }
-            if yu < bbox[1] {
-                bbox[1] = yu;
-            }
-            if xu > bbox[2] {
-                bbox[2] = xu;
-            }
-            if yu > bbox[3] {
-                bbox[3] = yu;
-            }
+            *count += len as u64;
+            bbox[0] = bbox[0].min(xu);
+            bbox[1] = bbox[1].min(y0);
+            bbox[2] = bbox[2].max(xu);
+            bbox[3] = bbox[3].max(y1);
         }
     }
     for (bbox, count) in out.values_mut() {

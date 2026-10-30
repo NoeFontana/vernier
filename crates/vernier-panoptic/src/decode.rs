@@ -18,7 +18,6 @@
 //! **S4**, and PNG-id-not-in-segments_info is silently ignored per
 //! quirk **S8**.
 
-use std::cell::RefCell;
 use std::io::Cursor;
 
 use rustc_hash::FxHashMap;
@@ -26,31 +25,7 @@ use rustc_hash::FxHashMap;
 use crate::dataset::{ImageEntry, ImageId, SegmentInfo};
 use crate::error::PanopticError;
 use crate::parity::PANOPTIC_VOID;
-
-/// Cap on the dense `id → segment_index` lookup table size before
-/// falling back to a hashmap. 1 M entries × 4 bytes = 4 MiB scratch
-/// per image — well within streaming-runner RSS limits, comfortably
-/// covers every realistic panoptic dataset (COCO ids fit in ≤6 digits;
-/// the encoded space is 256³ but no real dataset uses more than a
-/// small fraction).
-const DENSE_LOOKUP_MAX_ID: u32 = 1_000_000;
-
-thread_local! {
-    /// Per-thread reusable buffer for the DT-side `id → segment_index`
-    /// dense lookup. Sized at most `DENSE_LOOKUP_MAX_ID + 1` (~4 MiB);
-    /// in practice COCO panoptic images cap out around max_id ≈ 200K
-    /// (~800 KB). Reusing the allocation across calls saves the
-    /// `Vec::resize(_, u32::MAX)` zero pass per call (~50 µs at memory
-    /// bandwidth limits) — the per-call cost otherwise sits on the
-    /// hot path.
-    ///
-    /// Thread-local is the right scope: `submit_png` and `update_png`
-    /// are called from the FFI thread; the kernel worker thread (in
-    /// the Background path) consumes the resulting `ImageEntry` but
-    /// does not call `decode_panoptic_png`. Each thread gets its own
-    /// buffer, no synchronization needed.
-    static DT_LOOKUP_SCRATCH: RefCell<Vec<u32>> = const { RefCell::new(Vec::new()) };
-}
+use crate::runs::runs;
 
 /// Decode a panoptic-encoded RGB PNG and build an [`ImageEntry`] in a
 /// single pass. `segments_list` carries the segments_info JSON for
@@ -178,21 +153,15 @@ fn pack_rgb_row(row_bytes: &[u8], out: &mut Vec<u32>) {
 }
 
 /// DT-side decode: the full validation + S3 area marginal pass, also
-/// row-streaming. Per pixel we (a) push id, (b) skip VOID, (c) look
-/// up in the segment remap, (d) bump per-segment area + mark seen.
-/// After the walk we check S11 (every declared id was seen) and
-/// overwrite each segment's `area` with the PNG marginal (S3).
+/// row-streaming. Each row is packed to ids like the GT side, then walked
+/// run by run (see `runs`): a run of one id is skipped if VOID, looked
+/// up in the segment remap unless it repeats the last id, and adds its
+/// length to that segment's area. After the walk we check S11 (every
+/// declared id was seen) and overwrite each segment's `area` with the PNG
+/// marginal (S3).
 ///
-/// Two fully-inlined inner-loop variants dispatch on `max_id`:
-/// - **Dense** (`max_id <= DENSE_LOOKUP_MAX_ID`): direct `Vec<u32>`
-///   lookup, branch-free on the per-pixel hot path. The common case
-///   for COCO panoptic.
-/// - **Sparse** (rare): `FxHashMap` lookup for datasets whose encoded
-///   id space exceeds the dense cap.
-///
-/// Hoisting the dispatch out of the inner loop lets LLVM specialize
-/// each variant; the enum dispatch otherwise sits in the per-pixel
-/// path.
+/// Lookups are per change of id, not per pixel, so a hash map serves every
+/// id space, with no dense table to size.
 fn decode_dt(
     image_id: ImageId,
     bytes: &[u8],
@@ -205,94 +174,45 @@ fn decode_dt(
     } = init_reader(image_id, bytes)?;
     let n_pixels = (height as usize) * (width as usize);
     let n_segments = segments_list.len();
-    let max_id = segments_list.iter().map(|s| s.id).max().unwrap_or(0);
     let mut areas: Vec<u64> = vec![0; n_segments];
     let mut seen: Vec<bool> = vec![false; n_segments];
     let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
 
-    if max_id <= DENSE_LOOKUP_MAX_ID {
-        // Build the dense `id → idx` table from the thread-local
-        // scratch. Duplicate-id check is the only S7 source on this
-        // path.
-        let cap_needed = (max_id as usize) + 1;
-        DT_LOOKUP_SCRATCH.with(|cell| -> Result<(), PanopticError> {
-            let mut table = cell.borrow_mut();
-            table.clear();
-            table.resize(cap_needed, u32::MAX);
-            for (idx, seg) in segments_list.iter().enumerate() {
-                let slot = &mut table[seg.id as usize];
-                if *slot != u32::MAX {
-                    return Err(PanopticError::DuplicateSegmentId {
-                        image_id,
-                        segment_id: seg.id,
-                        side: "dt",
-                    });
-                }
-                *slot = idx as u32;
+    let mut index: FxHashMap<u32, usize> =
+        FxHashMap::with_capacity_and_hasher(n_segments, Default::default());
+    for (idx, seg) in segments_list.iter().enumerate() {
+        if index.insert(seg.id, idx).is_some() {
+            return Err(PanopticError::DuplicateSegmentId {
+                image_id,
+                segment_id: seg.id,
+                side: "dt",
+            });
+        }
+    }
+    // The last id looked up, and its segment index: a noisy map's short
+    // runs mostly repeat it.
+    let mut last = (PANOPTIC_VOID, 0usize);
+    while let Some(row) = reader
+        .next_row()
+        .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
+    {
+        let start = label_map.len();
+        pack_rgb_row(row.data(), &mut label_map);
+        for (id, len) in runs(&label_map[start..]) {
+            if id == PANOPTIC_VOID {
+                continue;
             }
-            while let Some(row) = reader
-                .next_row()
-                .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
-            {
-                for chunk in row.data().chunks_exact(3) {
-                    let id =
-                        (chunk[0] as u32) | ((chunk[1] as u32) << 8) | ((chunk[2] as u32) << 16);
-                    label_map.push(id);
-                    if id == PANOPTIC_VOID {
-                        continue;
-                    }
-                    let i = id as usize;
-                    if i < table.len() {
-                        let v = table[i];
-                        if v != u32::MAX {
-                            areas[v as usize] += 1;
-                            seen[v as usize] = true;
-                            continue;
-                        }
-                    }
+            if id != last.0 {
+                let Some(&idx) = index.get(&id) else {
                     return Err(PanopticError::UnknownPredSegmentId {
                         image_id,
                         segment_id: id,
                     });
-                }
+                };
+                last = (id, idx);
             }
-            Ok(())
-        })?;
-    } else {
-        let mut map: FxHashMap<u32, u32> =
-            FxHashMap::with_capacity_and_hasher(n_segments, Default::default());
-        for (idx, seg) in segments_list.iter().enumerate() {
-            if map.insert(seg.id, idx as u32).is_some() {
-                return Err(PanopticError::DuplicateSegmentId {
-                    image_id,
-                    segment_id: seg.id,
-                    side: "dt",
-                });
-            }
-        }
-        while let Some(row) = reader
-            .next_row()
-            .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
-        {
-            for chunk in row.data().chunks_exact(3) {
-                let id = (chunk[0] as u32) | ((chunk[1] as u32) << 8) | ((chunk[2] as u32) << 16);
-                label_map.push(id);
-                if id == PANOPTIC_VOID {
-                    continue;
-                }
-                match map.get(&id) {
-                    Some(&v) => {
-                        areas[v as usize] += 1;
-                        seen[v as usize] = true;
-                    }
-                    None => {
-                        return Err(PanopticError::UnknownPredSegmentId {
-                            image_id,
-                            segment_id: id,
-                        });
-                    }
-                }
-            }
+            areas[last.1] += len as u64;
+            seen[last.1] = true;
         }
     }
 
@@ -509,11 +429,11 @@ mod tests {
     }
 
     #[test]
-    fn sparse_lookup_path_handles_high_ids() {
-        // Force the Sparse path with an id above DENSE_LOOKUP_MAX_ID.
-        // Encode a 1x2 image with that high id at one pixel, VOID at
-        // the other. DT side, area = 1 expected.
-        let high_id: u32 = DENSE_LOOKUP_MAX_ID + 1;
+    fn high_ids_decode() {
+        // Ids span the whole 24-bit RGB space. Encode a 1x2 image with
+        // the top id at one pixel, VOID at the other. DT side, area = 1
+        // expected.
+        let high_id: u32 = 0x00FF_FFFF;
         let h = 1u32;
         let w = 2u32;
         let lm = vec![high_id, 0u32];
