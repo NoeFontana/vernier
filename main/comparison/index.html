@@ -588,6 +588,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ultrafast-pycocotools-ufcoco" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        ultrafast-pycocotools (ufcoco)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#panopticapi" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2105,49 +2116,56 @@ provide. For mechanical "rewrite my imports" instructions, see the
 <td><code>pycocotools</code></td>
 <td>instance (bbox / segm / keypoints)</td>
 <td>The reference</td>
-<td>~9.5–23.8× slower on real detector output</td>
+<td>~16–47× slower on real detector output</td>
 <td>You need the literal pycocotools printed table for an external system that scrapes it</td>
 </tr>
 <tr>
 <td><code>faster-coco-eval</code></td>
 <td>instance (bbox / segm / keypoints / boundary)</td>
 <td>"Faster, mostly compatible" — quirks chosen silently</td>
-<td>~4.3–5.7× slower per CPU on real bbox / segm; 17.1× on boundary</td>
+<td>~7.1–11.2× slower per CPU on real bbox / segm; 19.3× on boundary</td>
 <td>You're already running it in production and don't need vernier's auditable parity surface</td>
 </tr>
 <tr>
 <td><code>hotcoco</code></td>
 <td>instance (bbox / segm / keypoints / OBB), LVIS, Open Images</td>
 <td>"Same numbers to double precision" — no published quirk dispositions</td>
-<td>~2.1–2.4× slower per CPU on real COCO bbox / segm; ~1.7× on LVIS; ~2.9× at Objects365 scale</td>
+<td>~3.4–4.7× slower per CPU on real COCO bbox / segm; ~3.2× on LVIS; ~5.5× at Objects365 scale</td>
 <td>You want TIDE / confusion matrices / dataset browser in one package and don't need bit-exactness or panoptic / semantic</td>
+</tr>
+<tr>
+<td><code>ultrafast-pycocotools</code> (ufcoco)</td>
+<td>instance (bbox / segm / keypoints / boundary)</td>
+<td>Reproduces pycocotools' evaluator arrays; no published quirk dispositions</td>
+<td>~1.09–1.25× slower per CPU on real COCO bbox / segm, 1.4–1.8× at eight threads; faster on synthetic bbox at one CPU; ~78× on boundary</td>
+<td>You want a pycocotools-object-model drop-in with the smallest bbox memory footprint, and measure one-thread bbox latency</td>
 </tr>
 <tr>
 <td><code>panopticapi</code></td>
 <td>panoptic</td>
 <td>The reference</td>
-<td>~3.3× slower on val2017 perfect-DT</td>
+<td>~3.4× slower on val2017 perfect-DT</td>
 <td>You explicitly need the <code>pq_compute_*</code> script outputs unchanged</td>
 </tr>
 <tr>
 <td><code>lvis-api</code></td>
 <td>LVIS federated</td>
 <td>The reference</td>
-<td>~84× slower on full v1 val · 14.8× lower peak RSS on vernier (1.02 GiB vs 15.08 GiB)</td>
+<td>~170× slower on full v1 val · 20× lower peak RSS on vernier (771 MiB vs 15.08 GiB)</td>
 <td>Your tooling depends on the <code>LVISEval</code> instance attributes</td>
 </tr>
 <tr>
 <td><code>boundary-iou-api</code></td>
 <td>boundary IoU only</td>
 <td>The reference</td>
-<td>~19.1× slower on val2017 jittered DT</td>
+<td>~21.6× slower on val2017 jittered DT</td>
 <td>You're running an external evaluation script that loads <code>boundary_iou.coco_instance_api.COCOeval</code> by name</td>
 </tr>
 <tr>
 <td><code>mmsegmentation</code></td>
 <td>semantic</td>
 <td>One of three references vernier targets</td>
-<td>~13.9× slower on val2017 perfect-DT (<code>mmseg.IoUMetric</code> only — vernier-semantic vs vendored oracle, ADR-0036)</td>
+<td>~14.3× slower on val2017 perfect-DT (<code>mmseg.IoUMetric</code> only — vernier-semantic vs vendored oracle, ADR-0036)</td>
 <td>You need the full <code>mmseg.evaluation</code> registry surface (it's a training framework, not just an evaluator)</td>
 </tr>
 </tbody>
@@ -2168,7 +2186,7 @@ matches — is filed in
 as either <code>strict</code> (bit-equal output) or <code>corrected</code> (opt-in opinionated
 fix). The full table lives in
 <a href="https://github.com/NoeFontana/vernier/blob/main/docs/engineering/pycocotools-quirks.md"><code>docs/engineering/pycocotools-quirks.md</code></a>.</p>
-<p>vernier is ~9.5–23.8× faster on val2017 on real RF-DETR bbox / segm output
+<p>vernier is ~16–47× faster on val2017 on real RF-DETR bbox / segm output
 and 18.6× on real ViTPose keypoints (see the <a href="../benchmarks/">benchmarks</a>). The drop-in shim
 (<a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0007-patch-pycocotools-policy.md">ADR-0007</a>)
 keeps <code>from pycocotools.cocoeval import COCOeval</code> working in existing
@@ -2192,8 +2210,8 @@ why and where.</p>
 <p>vernier targets the same drop-in pattern but with auditable parity. Every
 quirk has a row in the disposition table; strict mode reproduces
 pycocotools bit-for-bit; corrected fixes are listed and opt-in. The
-performance gap is real on val2017 — per CPU, vernier is 4.3× (segm),
-5.7× (bbox) and 6.1× (keypoints) faster on real predictions, and 17.1×
+performance gap is real on val2017 — per CPU, vernier is 7.1× (segm),
+11.2× (bbox) and 6.1× (keypoints) faster on real predictions, and 19.3×
 (boundary) on jittered DT — but the
 headline benefit is "you can prove what your numbers mean".</p>
 <p>Version 1.8.0 (2026-08) made faster-coco-eval multi-threaded by default:
@@ -2226,19 +2244,45 @@ reporting AP, but it is a different guarantee.</p>
 hotcoco's per-cell precision differs by up to 8.0e-3 and AP by 4.9e-5, on both
 GT-as-DT and jittered detections (so it is not score-tie handling), while
 vernier is bit-equal to the reference on both.</p>
-<p>On speed, per CPU, vernier is 2.1–2.4× faster on real RF-DETR COCO bbox /
-segm, 1.6× on real ViTPose keypoints and 1.7× on LVIS, using less memory
-in every cell (real COCO bbox peak 390 MiB vs 997 MiB). At Objects365 scale the gap is widest:
-6.1 s vs 15.2 s on one CPU and 2.9 s vs 8.3 s at eight threads, because
-hotcoco spends 6.2 s of its 8.3 s total in serial JSON parsing while
-vernier's ingest is threaded (ADR-0054) and takes 0.27 s.</p>
+<p>On speed, per CPU, vernier is 3.4–4.7× faster on real RF-DETR COCO bbox /
+segm, 1.6× on real ViTPose keypoints and 3.2× on LVIS, using less memory
+in every cell (real COCO bbox peak 257 MiB vs 997 MiB). At Objects365 scale the gap is widest:
+2.9 s vs 16.2 s on one CPU and 1.2 s vs 8.7 s at eight threads, because
+hotcoco spends 6.5 s of its 8.7 s total in serial JSON parsing while
+vernier's ingest is threaded (ADR-0054) and its load stage takes 0.33 s.</p>
 <p>An earlier round had this ranking inverted at Objects365 scale
 (hotcoco 7.8 s vs vernier 8.8 s at eight threads); ADR-0050 and
-ADR-0051 closed that gap and the current round puts vernier 2.9× ahead.</p>
+ADR-0051 closed that gap and the current round puts vernier 7.1× ahead.</p>
 <p><strong>Pick <code>hotcoco</code> instead</strong> when you want its diagnostic and dataset tooling in
 one dependency, or need OBB / Open Images evaluation. <strong>Pick vernier</strong> when you
 need bit-exact reproduction of a pinned reference, panoptic or semantic
 paradigms, or the lowest single-CPU latency and memory.</p>
+<h2 id="ultrafast-pycocotools-ufcoco"><code>ultrafast-pycocotools</code> (ufcoco)</h2>
+<p><a href="https://github.com/developer0hye/ultrafast-pycocotools">ultrafast-pycocotools</a>
+is a Rust/PyO3 evaluator on rayon that keeps pycocotools' Python-side object
+model: <code>COCO</code> with its <code>dataset</code> / <code>createIndex()</code> / <code>loadRes()</code>, and a
+<code>COCOeval</code> that reproduces pycocotools' precision, recall and score arrays. It
+covers bbox, segm, keypoints and boundary IoU; it has no panoptic, semantic or
+LVIS evaluator. Its boundary output differs from <code>boundary-iou-api</code>'s, so the
+benchmarks pair it with vernier at a float tolerance rather than bit-equality.</p>
+<p>It is the closest competitor on speed. Per CPU on real RF-DETR predictions,
+vernier is 1.09× faster on bbox (492 ms vs 539 ms) and 1.25× on segm
+(1.43 s vs 1.79 s); vernier's lead there is its ingest, while ufcoco's
+matching kernel is the faster one on a single thread. On synthetic jittered
+bbox at one CPU ufcoco wins (157 ms vs 165 ms). With more threads vernier
+pulls ahead on every instance metric — at eight, 1.4× on bbox, 1.6× on segm,
+1.8× on keypoints and 1.6× at Objects365 scale — and boundary IoU is ~78×
+apart at any thread count. ufcoco has the smaller bbox working set (225 MiB
+vs 257 MiB peak on the real bbox cell).</p>
+<p>Inside a training loop the gap is wider than in these file-based cells:
+replaying RF-DETR's own validation <code>compute()</code>, vernier is 2.6× faster on
+detection (1.5M unthresholded detections) and 5.3× on detection plus masks
+(see the <a href="https://github.com/NoeFontana/vernier/blob/main/docs/engineering/benchmarking/2026-10-release-0.6.0-round.md">release snapshot</a>).</p>
+<p><strong>Pick ufcoco instead</strong> when your code reaches into pycocotools' <code>COCO</code>
+object model beyond what vernier's shim honors, or when single-thread bbox
+latency and memory on synthetic-like detections are what you optimize.
+<strong>Pick vernier</strong> for real detector output, multi-threaded evaluation,
+masks and boundary IoU, or a documented quirk-by-quirk parity contract.</p>
 <h2 id="panopticapi"><code>panopticapi</code></h2>
 <p><a href="https://github.com/cocodataset/panopticapi">panopticapi</a> is the reference
 panoptic-quality (PQ) evaluator. It ships <code>pq_compute_single_core</code> and
@@ -2251,7 +2295,7 @@ data models — the architectural firewall keeps the two folds from drifting
 toward each other (see
 <a href="https://github.com/NoeFontana/vernier/blob/main/docs/adr/0025-panoptic-api.md">ADR-0025</a>).
 Strict-mode parity is bit-equal at per-class TP/FP/FN counts.</p>
-<p>vernier-panoptic is ~3.3× faster than panopticapi on val2017 perfect-DT
+<p>vernier-panoptic is ~3.4× faster than panopticapi on val2017 perfect-DT
 (post-#260 sparse-remap cache + SSSE3 RGB→u32 pack — see the
 <a href="../benchmarks/">panoptic cell of the benchmarks</a>). The gap is still
 not the headline — panopticapi is already efficient and PNG decode

@@ -2117,11 +2117,11 @@ strict-mode bit-equality preserved across thread counts.
 faster-coco-eval 1.8 is also multi-threaded (RLE IoU on a Python
 thread pool, image evaluation and accumulation on C++ pools with no
 user knob), so the comparison is per equal CPU budget. On val2017
-boundary IoU, vernier is 17.1× faster at 1 CPU (3.10 s vs 53.1 s)
-and 24.0× at 8 (703 ms vs 16.9 s). On <code>segm</code> and <code>keypoints</code>
+boundary IoU, vernier is 19.4× faster at 1 CPU (2.76 s vs 53.6 s)
+and 26.9× at 8 (634 ms vs 17.1 s). On <code>segm</code> and <code>keypoints</code>
 faster-coco-eval's wall time is flat across thread counts while
-vernier's falls, so the gap widens with cores: segm goes from 3.9×
-at 1 CPU to 14.8× at 8. See <a href="../../benchmarks/"><code>benchmarks.md</code></a>
+vernier's falls, so the gap widens with cores: segm goes from 7.0×
+at 1 CPU to 25.1× at 8. See <a href="../../benchmarks/"><code>benchmarks.md</code></a>
 §"Thread scaling" for the full table.</p>
 <h2 id="drop-in-via-patch_pycocotools">Drop-in via <code>patch_pycocotools</code></h2>
 <div class="language-python highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="kn">from</span><span class="w"> </span><span class="nn">vernier</span><span class="w"> </span><span class="kn">import</span> <span class="n">patch_pycocotools</span>
