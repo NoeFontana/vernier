@@ -18,7 +18,7 @@ import copy
 import io
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import numpy as np
 import pytest
@@ -1615,3 +1615,74 @@ def test_route_equivalence_harness_fails_on_a_perturbed_payload(
     gt, dt = route_equivalence_coco
     with pytest.raises(AssertionError):
         _assert_routes_agree(gt, dt, iou_type, reference_type=_ScoreReversedBytesRouteCOCOeval)
+
+
+def _evaluate_both(
+    gt: dict[str, Any], dt: dict[str, Any], iou_type: Literal["bbox", "keypoints"]
+) -> tuple[PycocotoolsCOCOeval, PycocotoolsReferenceCOCOeval, bool]:
+    """Evaluate with the shim and with pycocotools; the flag says whether
+    the shim left its ground-truth annotations untouched."""
+    gt_coco = _coco(gt)
+    before = [dict(ann) for ann in gt_coco.dataset["annotations"]]
+    shim = PycocotoolsCOCOeval(gt_coco, _coco(dt), iouType=iou_type)
+    ref = PycocotoolsReferenceCOCOeval(_coco(gt), _coco(dt), iouType=iou_type)
+    for e in (shim, ref):
+        with contextlib.redirect_stdout(io.StringIO()):
+            e.evaluate()
+            e.accumulate()
+            e.summarize()
+    return shim, ref, [dict(ann) for ann in gt_coco.dataset["annotations"]] == before
+
+
+@pytest.mark.parametrize("unread", ["segmentation", "keypoints", "extra"])
+def test_bbox_ignores_ground_truth_fields_pycocotools_does_not_read(unread: str) -> None:
+    # The shim serializes only the GT fields the bbox kernel reads, so a
+    # field pycocotools never reads under `bbox` cannot fail the evaluation
+    # (here: one vernier could not parse, or could not even serialize), and
+    # the caller's dataset is left as it was.
+    images = [{"id": 1, "width": 128, "height": 128}]
+    categories = [{"id": 1, "name": "a"}]
+    junk: dict[str, Any] = {
+        "segmentation": {"segmentation": "not a mask"},
+        "keypoints": {"keypoints": [1, None, "x"], "num_keypoints": -2.5},
+        "extra": {"extra": object()},
+    }[unread]
+    gt_anns = [
+        _mask_ann(1, 1, slice(10, 40), slice(10, 50), iscrowd=0),
+        {**_mask_ann(2, 1, slice(60, 90), slice(20, 70), iscrowd=0), **junk},
+    ]
+    dt_anns = [
+        {**_mask_ann(1, 1, slice(12, 40), slice(10, 48)), "score": 0.9},
+        {**_mask_ann(2, 1, slice(60, 95), slice(25, 70)), "score": 0.7},
+    ]
+    gt = {"images": images, "categories": categories, "annotations": gt_anns}
+    dt = {"images": images, "categories": categories, "annotations": dt_anns}
+    shim, ref, untouched = _evaluate_both(gt, dt, "bbox")
+    np.testing.assert_array_equal(shim.stats, ref.stats)
+    assert untouched
+
+
+def test_keypoints_ignores_ground_truth_masks(perfect_match_kp_coco: tuple[COCO, COCO]) -> None:
+    # Keypoints reads `keypoints` / `num_keypoints`, never a GT mask.
+    gt_coco, dt_coco = perfect_match_kp_coco
+    gt: dict[str, Any] = copy.deepcopy(cast(dict[str, Any], gt_coco.dataset))
+    for ann in gt["annotations"]:
+        ann["segmentation"] = "not a mask"
+    dt = {
+        "images": gt["images"],
+        "categories": gt["categories"],
+        "annotations": copy.deepcopy(dt_coco.dataset["annotations"]),
+    }
+    shim, ref, _ = _evaluate_both(gt, dt, "keypoints")
+    np.testing.assert_array_equal(shim.stats, ref.stats)
+
+
+def test_lazy_tables_keep_the_evaluated_iou_type(perfect_match_coco: tuple[COCO, COCO]) -> None:
+    # `evalImgs` is built on first read; the ground truth was prepared for
+    # the iouType `evaluate()` ran, so a later `params.iouType` change must
+    # not send it to another kernel.
+    gt, dt = perfect_match_coco
+    e = PycocotoolsCOCOeval(gt, dt, iouType="bbox")
+    e.evaluate()
+    e.params.iouType = "segm"
+    assert e.evalImgs is not None

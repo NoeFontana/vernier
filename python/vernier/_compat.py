@@ -293,6 +293,10 @@ class PycocotoolsCOCOeval:
         # cannot drift from what `self._grid` actually holds.
         self._grid_level: int = _RETAIN_NONE
         self._gt_bytes: bytes = b""
+        # The iouType `_gt_bytes` was prepared for: it carries only that
+        # kernel's fields, so a lazy re-evaluation (`evalImgs`, `ious`)
+        # must run that kernel even if `params.iouType` changed since.
+        self._gt_iou_type: str = self.params.iouType
         # The detections, held as the caller's own list of result dicts
         # (ADR-0057's list route) rather than serialized JSON. A
         # reference, not a copy: `params.catIds` filtering builds a new
@@ -308,6 +312,7 @@ class PycocotoolsCOCOeval:
             raise RuntimeError("evaluate requires both cocoGt and cocoDt")
         self._validate_supported_params()
         self._gt_bytes, self._dt_anns = self._prepare_inputs()
+        self._gt_iou_type = self.params.iouType
         # No optional retention: `accumulate` reads the matched cells,
         # not the pycocotools-shaped bookkeeping, and `evalImgs` /
         # `ious` re-evaluate on first read (see :meth:`_grid_for`).
@@ -423,7 +428,8 @@ class PycocotoolsCOCOeval:
             "retain_meta": level >= _RETAIN_META,
             "retain_iou": level >= _RETAIN_IOU,
         }
-        if self.params.iouType == IOU_BBOX:
+        iou_type = self._gt_iou_type
+        if iou_type == IOU_BBOX:
             grid = evaluate_bbox_grid(
                 self._gt_bytes,
                 dt,
@@ -432,7 +438,7 @@ class PycocotoolsCOCOeval:
                 use_cats=use_cats,
                 **grid_options,
             )
-        elif self.params.iouType == IOU_SEGM:
+        elif iou_type == IOU_SEGM:
             grid = evaluate_segm_grid(
                 self._gt_bytes,
                 dt,
@@ -441,7 +447,7 @@ class PycocotoolsCOCOeval:
                 use_cats=use_cats,
                 **grid_options,
             )
-        elif self.params.iouType == IOU_BOUNDARY:
+        elif iou_type == IOU_BOUNDARY:
             grid = evaluate_boundary_grid(
                 self._gt_bytes,
                 dt,
@@ -451,7 +457,7 @@ class PycocotoolsCOCOeval:
                 dilation_ratio=self._dilation_ratio,
                 **grid_options,
             )
-        elif self.params.iouType == IOU_KEYPOINTS:
+        elif iou_type == IOU_KEYPOINTS:
             grid = evaluate_keypoints_grid(
                 self._gt_bytes,
                 dt,
@@ -462,7 +468,7 @@ class PycocotoolsCOCOeval:
                 **grid_options,
             )
         else:
-            raise NotImplementedError(f"unsupported iouType {self.params.iouType!r}")
+            raise NotImplementedError(f"unsupported iouType {iou_type!r}")
         self._grid = grid
         self._grid_level = level
         return grid
@@ -488,8 +494,8 @@ class PycocotoolsCOCOeval:
         dt_dataset: Mapping[str, Any] = self.cocoDt.dataset
         dt_anns: Sequence[Any] = dt_dataset.get("annotations", [])
         selected = self._selected_category_ids()
+        gt_dataset = _gt_for_kernel(gt_dataset, self.params.iouType, selected)
         if selected is not None:
-            gt_dataset = _with_categories(gt_dataset, selected)
             dt_anns = _anns_in_categories(dt_anns, set(selected))
         if self.params.iouType in (IOU_BBOX, IOU_KEYPOINTS):
             gt_dataset = with_placeholder_image_sizes(gt_dataset)
@@ -590,7 +596,7 @@ class PycocotoolsCOCOeval:
         if sorted(self.params.imgIds) != sorted(self.cocoGt.getImgIds()):
             _raise_unsupported("imgIds", "subsetting; evaluate the full dataset")
         # `params.catIds` subsetting *is* supported — see
-        # `_selected_category_ids` / `_with_categories`. It is how
+        # `_selected_category_ids` / `_gt_for_kernel`. It is how
         # TorchMetrics' `class_metrics=True` drives one evaluator around
         # a per-class loop.
 
@@ -621,6 +627,47 @@ class PycocotoolsCOCOeval:
 _IouMatrix = NDArray[np.float64] | list[Any]
 
 
+# The ground-truth annotation fields vernier's GT loader reads, per
+# iouType: the GT-side twin of the Rust `DetectionFields`. pycocotools never
+# reads any other field for that iouType either.
+_GT_BASE_FIELDS: Final = ("id", "image_id", "category_id", "area", "iscrowd", "ignore", "bbox")
+_GT_FIELDS: Final[dict[str, tuple[str, ...]]] = {
+    IOU_BBOX: _GT_BASE_FIELDS,
+    IOU_KEYPOINTS: (*_GT_BASE_FIELDS, "keypoints", "num_keypoints"),
+    IOU_SEGM: (*_GT_BASE_FIELDS, "segmentation"),
+    IOU_BOUNDARY: (*_GT_BASE_FIELDS, "segmentation"),
+}
+
+
+def _gt_for_kernel(
+    dataset: Mapping[str, Any], iou_type: str, selected: Sequence[int] | None
+) -> Mapping[str, Any]:
+    """``dataset`` as the kernel for ``iou_type`` reads it, in one pass.
+
+    Each annotation keeps only the fields the evaluator reads for this
+    iouType (:data:`_GT_FIELDS`), and, under a ``params.catIds`` subset,
+    only the annotations in a requested category. Serializing
+    the rest was most of :meth:`PycocotoolsCOCOeval.evaluate`: under
+    ``bbox`` it printed every polygon coordinate (~1.8M floats on COCO
+    val2017, ~80 % of the call) for the evaluator to parse back. Nothing is
+    lost: pycocotools reads none of it for that iouType, and a field it
+    would not read can no longer fail the evaluation.
+
+    A shallow copy; the caller's dictionaries are never mutated.
+    """
+    fields = _GT_FIELDS[iou_type]
+    keep = None if selected is None else set(selected)
+    annotations = [
+        {k: ann[k] for k in fields if k in ann}
+        for ann in dataset.get("annotations", [])
+        if keep is None or int(ann["category_id"]) in keep
+    ]
+    out = {**dataset, "annotations": annotations}
+    if selected is not None:
+        out["categories"] = _selected_categories(dataset, selected)
+    return out
+
+
 class _GridOptions(TypedDict):
     iou_thresholds: list[float] | None
     recall_thresholds: list[float] | None
@@ -646,25 +693,21 @@ def _anns_in_categories(anns: Iterable[Any], selected: AbstractSet[int]) -> list
     return [ann for ann in anns if int(ann["category_id"]) in selected]
 
 
-def _with_categories(dataset: Mapping[str, Any], selected: Sequence[int]) -> Mapping[str, Any]:
+def _selected_categories(dataset: Mapping[str, Any], selected: Sequence[int]) -> list[Any]:
     # `COCOeval._prepare` loads only the annotations `getAnnIds(imgIds=
     # p.imgIds, catIds=p.catIds)` returns, so a subset `params.catIds`
-    # evaluates a dataset that holds nothing else — which is exactly
-    # what this builds, on a shallow copy. Restricting `categories` in
-    # step keeps vernier's K axis the length pycocotools' is (its own
-    # K axis is `len(p.catIds)`), and vernier rejects an annotation
-    # that names a category the dataset does not declare.
+    # evaluates a dataset that holds nothing else (:func:`_gt_for_kernel`
+    # drops the other annotations). Restricting `categories` in step keeps
+    # vernier's K axis the length pycocotools' is (its own K axis is
+    # `len(p.catIds)`), and vernier rejects an annotation that names a
+    # category the dataset does not declare.
     #
     # A requested category the dataset never declared is kept as an
     # empty one rather than dropped: pycocotools evaluates it to a row
     # of -1s, and a shorter K axis here would silently renumber the
     # rest.
     declared = {int(category["id"]): category for category in dataset.get("categories", [])}
-    return {
-        **dataset,
-        "categories": [declared.get(cat, {"id": cat, "name": str(cat)}) for cat in selected],
-        "annotations": _anns_in_categories(dataset.get("annotations", []), set(selected)),
-    }
+    return [declared.get(cat, {"id": cat, "name": str(cat)}) for cat in selected]
 
 
 def _raise_unsupported(name: str, detail: str = "") -> None:
