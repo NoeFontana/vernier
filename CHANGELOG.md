@@ -21,6 +21,15 @@ additive / perf / docs".
   supersampled row, and crossings are counting-sorted by column.
   Rasterizing COCO val2017 ground truth is 1.7× faster; jittered segm
   evaluation 20 % faster. Bit-exact against pycocotools.
+- **`COCOeval` serializes only the ground-truth fields its kernel reads.**
+  Each annotation is projected to the fields the evaluator reads for the
+  iouType (`segmentation` only for `segm` / `boundary`, `keypoints` only for
+  `keypoints`), in the same pass as the `params.catIds` filter. Printing
+  every polygon coordinate through `json.dumps` was ~80 % of a bbox
+  `evaluate()`: COCO val2017 jittered bbox drops from ~750 to ~155 ms. A
+  ground-truth field pycocotools does not read for the iouType (a malformed
+  mask or keypoint list under `bbox`, an unserializable custom field) no
+  longer fails the evaluation.
 
 ## [0.6.0] - 2026-10-30
 
