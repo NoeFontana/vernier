@@ -196,9 +196,7 @@ impl Segmentation {
         match self {
             Self::Polygons(_) => Ok(None),
             Self::Rle(rle) => Ok(Some(match &rle.counts {
-                SegmentationRleCounts::Compressed(s) => {
-                    foreground(&vernier_mask::decode_counts(s.as_bytes())?)
-                }
+                SegmentationRleCounts::Compressed(s) => vernier_mask::decode_area(s.as_bytes())?,
                 SegmentationRleCounts::Uncompressed(counts) => foreground(counts),
             })),
         }

@@ -18,6 +18,7 @@
 use std::ops::Range;
 
 use crate::error::{MalformedRleReason, MaskError};
+use crate::grid::ColumnMajor;
 use crate::rle::Rle;
 
 /// Initial capacity for the encoder's `counts` vec. Eliminates the
@@ -181,6 +182,7 @@ impl Rle {
     /// into the cropped buffer.
     pub fn decode_bbox_into(&self, buf: &mut Vec<u8>, bbox: [u32; 4]) {
         let h = self.h as usize;
+        let grid = ColumnMajor::new(self.h);
         let bx = bbox[0] as usize;
         let by = bbox[1] as usize;
         let bw = bbox[2] as usize;
@@ -206,7 +208,7 @@ impl Rle {
             let mut idx = cum;
             let run_end = cum + run_len;
             while idx < run_end {
-                let x = idx / h;
+                let x = grid.col_row(idx as u64).0 as usize;
                 let col_end_flat = (x + 1) * h;
                 let chunk_end = run_end.min(col_end_flat);
                 if x < bx || x >= bx + bw {
@@ -250,6 +252,7 @@ impl Rle {
     /// set to `1`.
     pub fn to_row_major_raster_bytes_into(&self, buf: &mut Vec<u8>) {
         let h = self.h as usize;
+        let grid = ColumnMajor::new(self.h);
         let w = self.w as usize;
         let total = h.saturating_mul(w);
         buf.clear();
@@ -266,8 +269,9 @@ impl Rle {
             if !is_fg || run_len == 0 {
                 if run_len > 0 {
                     let total_y = curr_y + run_len;
-                    curr_x += total_y / h;
-                    curr_y = total_y % h;
+                    let (dx, y) = grid.col_row(total_y as u64);
+                    curr_x += dx as usize;
+                    curr_y = y as usize;
                     if curr_x >= w {
                         break;
                     }
@@ -312,6 +316,7 @@ impl Rle {
     /// foreground pixels inside the bbox are overwritten with `1`.
     pub fn decode_bbox_row_major_into(&self, buf: &mut Vec<u8>, bbox: [u32; 4]) {
         let h = self.h as usize;
+        let grid = ColumnMajor::new(self.h);
         let w = self.w as usize;
         let bx = bbox[0] as usize;
         let by = bbox[1] as usize;
@@ -331,8 +336,9 @@ impl Rle {
             if !is_fg || run_len == 0 {
                 if run_len > 0 {
                     let total_y = curr_y + run_len;
-                    curr_x += total_y / h;
-                    curr_y = total_y % h;
+                    let (dx, y) = grid.col_row(total_y as u64);
+                    curr_x += dx as usize;
+                    curr_y = y as usize;
                     if curr_x >= w {
                         break;
                     }
@@ -393,6 +399,7 @@ impl Rle {
         F: FnMut(u32, Range<u32>),
     {
         let h = self.h as usize;
+        let grid = ColumnMajor::new(self.h);
         let w = self.w as usize;
         if h == 0 || w == 0 {
             return;
@@ -406,8 +413,9 @@ impl Rle {
             if !is_fg || run_len == 0 {
                 if run_len > 0 {
                     let total_y = curr_y + run_len;
-                    curr_x += total_y / h;
-                    curr_y = total_y % h;
+                    let (dx, y) = grid.col_row(total_y as u64);
+                    curr_x += dx as usize;
+                    curr_y = y as usize;
                     if curr_x >= w {
                         break;
                     }

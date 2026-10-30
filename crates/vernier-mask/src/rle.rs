@@ -70,6 +70,9 @@ impl Rle {
     /// validate that `counts` sums to `h * w`, matching pycocotools'
     /// behavior.
     pub fn from_string_bytes(bytes: &[u8], h: u32, w: u32) -> Result<Self, MaskError> {
+        if bytes.is_empty() {
+            return Ok(Self::empty(h, w));
+        }
         Ok(Self {
             h,
             w,
