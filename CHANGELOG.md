@@ -37,6 +37,12 @@ additive / perf / docs".
   counter and doing a lookup per pixel. COCO panoptic val2017 on one CPU:
   ~35 % faster; the per-image kernel is 5–6× faster on smooth maps and
   1.5× on noisy ones.
+- **Label-map PNGs decode through a fast path** (ADR-0069). Panoptic RGB
+  and semantic grayscale label maps unfilter zero-residual spans as copies
+  (Paeth in step with the row above) or repeats (Sub); the `png` crate's
+  streaming decoder still parses and inflates the file, and anything
+  outside 8-bit gray / RGB decodes with the `png` crate as before.
+  Decoding COCO val2017 label maps: panoptic 2.3×, semantic 2.2× faster.
 
 ## [0.6.0] - 2026-10-30
 

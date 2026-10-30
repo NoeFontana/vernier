@@ -17,6 +17,9 @@
 //!
 //! See `docs/engineering/pycocotools-quirks.md` for the G/H/I/K
 //! quirk rows this crate dispositions.
+//!
+//! With the `png` feature, `label_png` decodes label-map PNGs for the
+//! panoptic and semantic crates (ADR-0069).
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -25,6 +28,11 @@
 pub mod codec;
 pub mod error;
 mod grid;
+// The panoptic and semantic crates' PNG fast path (ADR-0069): public for
+// them, not a stable API.
+#[cfg(feature = "png")]
+#[doc(hidden)]
+pub mod label_png;
 pub mod ops;
 pub mod polygon;
 pub mod raster;

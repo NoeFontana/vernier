@@ -90,6 +90,8 @@ arrow-schema = { version = "60", default-features = false, features = ["ffi"] }
 # PNG decoder used by `vernier-panoptic::dataset::from_files` (ADR-0025
 # axis E2). Single-format decoder (~150 KB), no umbrella `image` crate.
 png = "0.18"
+# Builds raw PNG streams in vernier-mask's `label_png` tests; png 0.18 inflates with it.
+fdeflate = "0.3"
 # Zero-copy archive format for the partial wire format (ADR-0031). The
 # default features include `bytecheck` so `rkyv::access` performs full
 # structural validation on deserialize — load-bearing for cross-process

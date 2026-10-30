@@ -18,9 +18,11 @@
 //! **S4**, and PNG-id-not-in-segments_info is silently ignored per
 //! quirk **S8**.
 
+use std::cell::RefCell;
 use std::io::Cursor;
 
 use rustc_hash::FxHashMap;
+use vernier_mask::label_png::{decode_label_png, LabelColor, LabelRows};
 
 use crate::dataset::{ImageEntry, ImageId, SegmentInfo};
 use crate::error::PanopticError;
@@ -56,15 +58,69 @@ pub fn decode_panoptic_png(
     }
 }
 
-/// Validated 8-bit-RGB row-streaming reader plus image dimensions.
+/// Row-streaming reader for an 8-bit RGB panoptic PNG, plus its
+/// validated dimensions.
+///
+/// Label maps go through `vernier_mask::label_png`, which unfilters a
+/// piecewise-constant image about twice as fast as a general decoder and
+/// takes every PNG a label-map writer produces. Anything it refuses — a
+/// layout it does not handle, or a damaged file — goes to the `png` crate,
+/// which also reports every decode error. When the fast path accepts a file
+/// it has already validated all of it, so its rows cannot fail.
 struct PngStream<'a> {
     height: u32,
     width: u32,
-    reader: png::Reader<Cursor<&'a [u8]>>,
+    rows: RowSource<'a>,
 }
 
-/// Initialize a row-streaming PNG reader for an 8-bit RGB panoptic
-/// image. Returns the reader plus the validated dimensions. Other
+enum RowSource<'a> {
+    Label(LabelRows<'a>),
+    General(Box<png::Reader<Cursor<&'a [u8]>>>),
+}
+
+impl PngStream<'_> {
+    fn next_row(&mut self, image_id: ImageId) -> Result<Option<&[u8]>, PanopticError> {
+        match &mut self.rows {
+            RowSource::Label(rows) => Ok(rows.next()),
+            RowSource::General(reader) => reader
+                .next_row()
+                .map(|row| row.map(|r| r.data()))
+                .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}"))),
+        }
+    }
+}
+
+thread_local! {
+    /// The fast path's image buffer (`H × (1 + 3W)` bytes), reused across
+    /// the images a thread decodes.
+    static INFLATE_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Runs `f` over an 8-bit RGB panoptic PNG's row stream: the label-map fast
+/// path, decoded into this thread's scratch buffer, when it takes the file;
+/// the `png` crate otherwise.
+fn with_png<T>(
+    image_id: ImageId,
+    bytes: &[u8],
+    f: impl FnOnce(PngStream<'_>) -> Result<T, PanopticError>,
+) -> Result<T, PanopticError> {
+    // The buffer keeps the largest map the thread has decoded: less than
+    // the `4 × W × H` label map each decode allocates anyway, and a dataset
+    // of large maps would otherwise reallocate and fault it in per image.
+    INFLATE_SCRATCH.with_borrow_mut(|scratch| {
+        match decode_label_png(bytes, LabelColor::Rgb8, scratch) {
+            Some(png) => f(PngStream {
+                height: png.height(),
+                width: png.width(),
+                rows: RowSource::Label(png.into_rows()),
+            }),
+            None => init_reader(image_id, bytes).and_then(f),
+        }
+    })
+}
+
+/// Initialize the `png` crate's row-streaming reader for an 8-bit RGB
+/// panoptic image. Returns the reader plus the validated dimensions. Other
 /// color types (Grayscale / Indexed / GrayscaleAlpha / RGBA) are
 /// rejected at the FFI boundary per quirk **R2**.
 fn init_reader(image_id: ImageId, bytes: &[u8]) -> Result<PngStream<'_>, PanopticError> {
@@ -86,12 +142,13 @@ fn init_reader(image_id: ImageId, bytes: &[u8]) -> Result<PngStream<'_>, Panopti
     Ok(PngStream {
         height,
         width,
-        reader,
+        rows: RowSource::General(Box::new(reader)),
     })
 }
 
-/// GT-side decode: RGB→id straight into `label_map`, row by row,
-/// without ever materializing the full `3 * H * W` RGB buffer. No
+/// GT-side decode: RGB→id straight into `label_map`, row by row. The
+/// fast path holds the inflated image (`H × (1 + 3W)` bytes) in the
+/// thread's scratch buffer; the `png` crate fallback streams. No
 /// segment-id lookup, no per-pixel area accumulation, no S1/S11
 /// validation — quirk **S8** is "GT JSON-extras silently kept;
 /// matching iterates the histogram, not the dict", and quirk **S4**
@@ -106,20 +163,16 @@ fn decode_gt(
     bytes: &[u8],
     segments_list: Vec<SegmentInfo>,
 ) -> Result<ImageEntry, PanopticError> {
-    let PngStream {
-        height,
-        width,
-        mut reader,
-    } = init_reader(image_id, bytes)?;
-    let n_pixels = (height as usize) * (width as usize);
-    let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
+    let (height, width, label_map) = with_png(image_id, bytes, |mut png| {
+        let (height, width) = (png.height, png.width);
+        let n_pixels = (height as usize) * (width as usize);
+        let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
 
-    while let Some(row) = reader
-        .next_row()
-        .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
-    {
-        pack_rgb_row(row.data(), &mut label_map);
-    }
+        while let Some(row) = png.next_row(image_id)? {
+            pack_rgb_row(row, &mut label_map);
+        }
+        Ok((height, width, label_map))
+    })?;
 
     let mut segments: FxHashMap<u32, SegmentInfo> =
         FxHashMap::with_capacity_and_hasher(segments_list.len(), Default::default());
@@ -152,13 +205,13 @@ fn pack_rgb_row(row_bytes: &[u8], out: &mut Vec<u32>) {
     crate::pixel_pack::pack_rgb_row(row_bytes, &mut out[start..]);
 }
 
-/// DT-side decode: the full validation + S3 area marginal pass, also
-/// row-streaming. Each row is packed to ids like the GT side, then walked
-/// run by run (see `runs`): a run of one id is skipped if VOID, looked
-/// up in the segment remap unless it repeats the last id, and adds its
-/// length to that segment's area. After the walk we check S11 (every
-/// declared id was seen) and overwrite each segment's `area` with the PNG
-/// marginal (S3).
+/// DT-side decode: the full validation + S3 area marginal pass, row by
+/// row over the same reader as the GT side. Each row is packed to ids,
+/// then walked run by run (see `runs`): a run of one id is skipped if
+/// VOID, looked up in the segment remap unless it repeats the last id, and
+/// adds its length to that segment's area. After the walk we check S11
+/// (every declared id was seen) and overwrite each segment's `area` with
+/// the PNG marginal (S3).
 ///
 /// Lookups are per change of id, not per pixel, so a hash map serves every
 /// id space, with no dense table to size.
@@ -167,54 +220,50 @@ fn decode_dt(
     bytes: &[u8],
     segments_list: Vec<SegmentInfo>,
 ) -> Result<ImageEntry, PanopticError> {
-    let PngStream {
-        height,
-        width,
-        mut reader,
-    } = init_reader(image_id, bytes)?;
-    let n_pixels = (height as usize) * (width as usize);
     let n_segments = segments_list.len();
-    let mut areas: Vec<u64> = vec![0; n_segments];
-    let mut seen: Vec<bool> = vec![false; n_segments];
-    let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
+    let (height, width, label_map, areas, seen) = with_png(image_id, bytes, |mut png| {
+        let (height, width) = (png.height, png.width);
+        let n_pixels = (height as usize) * (width as usize);
+        let mut areas: Vec<u64> = vec![0; n_segments];
+        let mut seen: Vec<bool> = vec![false; n_segments];
+        let mut label_map: Vec<u32> = Vec::with_capacity(n_pixels);
 
-    let mut index: FxHashMap<u32, usize> =
-        FxHashMap::with_capacity_and_hasher(n_segments, Default::default());
-    for (idx, seg) in segments_list.iter().enumerate() {
-        if index.insert(seg.id, idx).is_some() {
-            return Err(PanopticError::DuplicateSegmentId {
-                image_id,
-                segment_id: seg.id,
-                side: "dt",
-            });
-        }
-    }
-    // The last id looked up, and its segment index: a noisy map's short
-    // runs mostly repeat it.
-    let mut last = (PANOPTIC_VOID, 0usize);
-    while let Some(row) = reader
-        .next_row()
-        .map_err(|e| PanopticError::Png(format!("image_id={image_id}: next_row: {e}")))?
-    {
-        let start = label_map.len();
-        pack_rgb_row(row.data(), &mut label_map);
-        for (id, len) in runs(&label_map[start..]) {
-            if id == PANOPTIC_VOID {
-                continue;
+        let mut index: FxHashMap<u32, usize> =
+            FxHashMap::with_capacity_and_hasher(n_segments, Default::default());
+        for (idx, seg) in segments_list.iter().enumerate() {
+            if index.insert(seg.id, idx).is_some() {
+                return Err(PanopticError::DuplicateSegmentId {
+                    image_id,
+                    segment_id: seg.id,
+                    side: "dt",
+                });
             }
-            if id != last.0 {
-                let Some(&idx) = index.get(&id) else {
-                    return Err(PanopticError::UnknownPredSegmentId {
-                        image_id,
-                        segment_id: id,
-                    });
-                };
-                last = (id, idx);
-            }
-            areas[last.1] += len as u64;
-            seen[last.1] = true;
         }
-    }
+        // The last id looked up, and its segment index: a noisy map's short
+        // runs mostly repeat it.
+        let mut last = (PANOPTIC_VOID, 0usize);
+        while let Some(row) = png.next_row(image_id)? {
+            let start = label_map.len();
+            pack_rgb_row(row, &mut label_map);
+            for (id, len) in runs(&label_map[start..]) {
+                if id == PANOPTIC_VOID {
+                    continue;
+                }
+                if id != last.0 {
+                    let Some(&idx) = index.get(&id) else {
+                        return Err(PanopticError::UnknownPredSegmentId {
+                            image_id,
+                            segment_id: id,
+                        });
+                    };
+                    last = (id, idx);
+                }
+                areas[last.1] += len as u64;
+                seen[last.1] = true;
+            }
+        }
+        Ok((height, width, label_map, areas, seen))
+    })?;
 
     for (idx, seg) in segments_list.iter().enumerate() {
         if !seen[idx] {

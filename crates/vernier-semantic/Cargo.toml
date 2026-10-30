@@ -28,6 +28,8 @@ serde_json = { workspace = true }
 # asymmetry vs vernier-panoptic ⊥ vernier-core; the ADR justifies it
 # as concrete reuse rather than philosophical isolation.
 vernier-core = { path = "../vernier-core", version = "0.6.0" }
+# Label-map PNG fast path (`label_png`), taken before the `png` crate.
+vernier-mask = { path = "../vernier-mask", version = "0.6.0", features = ["png"] }
 # Shared partial wire envelope and merge policy (ADR-0032). Carries
 # magic + version + framing + the five typed errors used by every
 # paradigm. vernier-semantic plugs its `WireSemanticBody` into the
