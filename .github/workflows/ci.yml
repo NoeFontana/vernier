@@ -48,6 +48,10 @@ jobs:
       # decaying into a comment.
       - name: cargo hack (facade feature powerset)
         run: cargo hack --feature-powerset check -p vernier
+      # The extension's system-allocator build (ADR-0070): the default
+      # `mimalloc` feature off, as an allocator A/B builds it.
+      - name: cargo check (vernier-ffi, system allocator)
+        run: cargo check -p vernier-ffi --no-default-features
       # Check that all library crates compile cleanly for wasm32-unknown-unknown.
       # vernier-cli (clap binary) and vernier-ffi (PyO3 cdylib) are excluded.
       - name: cargo check (wasm32-unknown-unknown)

@@ -168,9 +168,11 @@ lint-rust: check-features check-wasm
 
 # Feature-powerset check for the `vernier` facade (ADR-0048). Its three
 # features are additive and re-export-only, so every combination must
-# compile and none may be empty. Mirrors CI's lint-rust step.
+# compile and none may be empty. Also builds the extension on the system
+# allocator (ADR-0070). Mirrors CI's lint-rust steps.
 check-features:
     cargo hack --feature-powerset check -p vernier
+    cargo check -p vernier-ffi --no-default-features
 
 # Check that all workspace library crates compile cleanly for wasm32.
 # vernier-cli (clap binary) and vernier-ffi (PyO3 cdylib) are excluded.

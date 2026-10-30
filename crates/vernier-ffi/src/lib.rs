@@ -28,8 +28,10 @@
 //!   any scheduling syscall failure surfaces as a one-shot `UserWarning`
 //!   on the constructing thread.
 
-// Allocator A/B knob (`mimalloc-global` feature); see Cargo.toml.
-#[cfg(feature = "mimalloc-global")]
+// mimalloc asks Linux for transparent huge pages on its arenas, so a fresh
+// process faults its working set in 2 MiB at a time instead of 4 KiB
+// (ADR-0070).
+#[cfg(feature = "mimalloc")]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

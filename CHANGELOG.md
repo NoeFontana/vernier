@@ -43,6 +43,16 @@ additive / perf / docs".
   streaming decoder still parses and inflates the file, and anything
   outside 8-bit gray / RGB decodes with the `png` crate as before.
   Decoding COCO val2017 label maps: panoptic 2.3×, semantic 2.2× faster.
+- **The Python extension allocates through mimalloc** (ADR-0070). On
+  Linux with transparent huge pages enabled (`madvise`, the common
+  default), its arenas are huge-page backed, so a fresh process faults its
+  working set in 2 MiB at a time instead of 4 KiB. One-shot COCO val2017
+  evaluation is 10–16 % faster at one CPU (jittered bbox 168 → 141 ms)
+  and 14–21 % at four, for 8–60 MiB more peak RSS; a warm process runs at
+  the same speed and settles at a lower RSS. Where THP is disabled the
+  speed matches the system allocator. Tools that hook `malloc` no longer
+  see the extension's allocations; build with `--no-default-features` to
+  profile them.
 
 ## [0.6.0] - 2026-10-30
 

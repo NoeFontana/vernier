@@ -20,7 +20,7 @@ workspace = true
 # `python/vernier/_core.pyi` by design. They are allowlisted in
 # `_FEATURE_GATED_FUNCTIONS` / `_FEATURE_GATED_MEMBERS` in
 # tests/python/test_core_stub_conformance.py — update both when adding one.
-default = []
+default = ["mimalloc"]
 # Enabled by maturin during wheel builds. We keep it opt-in so that
 # `cargo test -p vernier-ffi` still links (extension-module breaks
 # linking against libpython on most platforms).
@@ -48,12 +48,11 @@ _test-counter = []
 # `Vec<K::Annotation>` allocations. Off by default; never compiled
 # into shipped wheels.
 bench-timings = ["vernier-core/bench-timings"]
-# Stage-0 allocator A/B for the bbox-scaling investigation: swaps the
-# process-global allocator to `mimalloc` to bound the contribution of
-# glibc-arena contention to the parallel-region scaling shortfall. Off
-# by default; the wheel ships with the system allocator unless this
-# flag is explicitly set at build time.
-mimalloc-global = ["dep:mimalloc"]
+# mimalloc as the extension's global allocator (ADR-0070). On by
+# default so every build of the extension — wheels, `uv run`, nextest —
+# runs the shipped allocator; `--no-default-features` gives the system
+# allocator back for an A/B.
+mimalloc = ["dep:mimalloc"]
 
 [dependencies]
 vernier-core = { path = "../vernier-core", version = "0.6.0" }
@@ -94,10 +93,11 @@ serde_json = { workspace = true }
 # `[workspace.dependencies]` (only one consumer).
 thread-priority = "3"
 core_affinity = "0.8"
-# Allocator A/B for the bbox-scaling investigation (`mimalloc-global`
-# feature). Optional and crate-local; do NOT promote to
-# `[workspace.dependencies]` (only one consumer, opt-in only).
-mimalloc = { version = "0.1", default-features = false, optional = true }
+# Global allocator (ADR-0070). v2: as fast as v3 here with a smaller
+# peak working set. `local_dynamic_tls`: the extension is dlopen'd, so
+# initial-exec TLS could exhaust the loader's static TLS reserve. Crate-
+# local; do NOT promote to `[workspace.dependencies]` (one consumer).
+mimalloc = { version = "0.1", default-features = false, optional = true, features = ["local_dynamic_tls", "v2"] }
 # Opt-in `num_threads` parallelism (ADR-0047). Used at the FFI
 # boundary to build scoped per-call pools (batch path) and at
 # `BackgroundEvaluator` construction to build the per-worker pool.
