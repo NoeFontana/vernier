@@ -7,9 +7,14 @@
 //! the only thing between that pass and the rest of the thread budget
 //! is knowing where each element starts.
 //!
-//! This module finds those boundaries with **one** structural scan — no
+//! This module finds those boundaries with a structural scan — no
 //! values are built, only brackets, quotes and escapes are tracked —
-//! and hands back byte ranges. Each range is then deserialized by
+//! and hands back byte ranges. A ground-truth object is walked serially
+//! in **one** pass that finds its arrays and their elements together
+//! ([`top_level_object_arrays`]); a detection array, which is the whole
+//! document, is cut into segments scanned in parallel, each once for both
+//! possible string states, and composed into one boundary per run
+//! ([`document_object_array_chunks`]). Each range is then deserialized by
 //! exactly the same `serde_json` element deserializer the serial path
 //! uses, in input order. The parsed values are bit-identical, not
 //! merely equivalent: nothing here reimplements number parsing, string
@@ -41,13 +46,18 @@
 //! rules out: errors on malformed input keep their text and their byte
 //! offsets.
 //!
-//! Two rules close that gap, and both resolve towards the serial
+//! These rules close that gap, and all resolve towards the serial
 //! loader rather than towards a second error-reporting implementation:
 //!
-//! - **Nothing may follow the document.** Both entry points require
+//! - **Nothing may follow the document.** Every entry point requires
 //!   the bytes after the closing bracket to be whitespace, so
 //!   `[{…}][{…}]` and `{…}}}}garbage` fall back and get serde's
 //!   `trailing characters` error at serde's offset.
+//! - **Separators are checked where nothing walked them.** The parallel
+//!   detection splitter never steps over the commas between elements, so
+//!   each run's parse requires exactly one between two elements, and a
+//!   trailing one exactly where the run was cut ([`parse_run`]); the
+//!   serially scanned runs pass the same check.
 //! - **A skipped member is skipped by `serde_json` itself.**
 //!   [`skip_ignored_member`] runs the same `IgnoredAny` deserializer a
 //!   derived `Deserialize` impl uses for an unknown field, which both
@@ -253,6 +263,7 @@ fn scan_object_array(bytes: &[u8], i: usize) -> Option<(Vec<Range<usize>>, usize
 /// The array must *be* the document: anything but whitespace after its
 /// closing bracket falls back, so `trailing characters` stays an error
 /// instead of becoming a silent truncation.
+#[cfg(test)]
 pub(crate) fn document_object_array(bytes: &[u8]) -> Option<Vec<Range<usize>>> {
     let start = skip_ws(bytes, 0);
     let (elements, end) = scan_object_array(bytes, start)?;
@@ -321,307 +332,28 @@ pub(crate) fn top_level_object_arrays(
     found.into_iter().collect()
 }
 
-/// Deserialize every element of one chunk, in order, handing each to
+/// A run of whole array elements parsed as one task: at least `count` of
+/// them (exact unless a cut fell inside an element nested deeper than
+/// `MAX_CUT_DEPTH`; a capacity hint, never trusted), separated by single commas,
+/// with one trailing comma when `trailing_comma` (a run cut before the
+/// next one's first element) and none otherwise.
+pub(crate) struct ElementRun {
+    range: Range<usize>,
+    count: usize,
+    trailing_comma: bool,
+}
+
+/// Deserialize one [`ElementRun`], in order, handing each element to
 /// `sink`.
 ///
-/// Each element goes through `serde_json` exactly as on the serial
-/// path. `StreamDeserializer::byte_offset` reports where the value
-/// stopped, so the separating commas are stepped over without
-/// re-scanning. Anything other than a comma between two values is left
-/// in place for the next `next()` to choke on, turning a splitter bug
-/// into a parse error — and so into the caller's fallback — rather
-/// than a silently truncated chunk.
-fn parse_chunk<T: DeserializeOwned>(
-    slice: &[u8],
-    mut sink: impl FnMut(T),
-) -> Result<(), serde_json::Error> {
-    let mut pos = 0usize;
-    while pos < slice.len() {
-        let mut stream = serde_json::Deserializer::from_slice(&slice[pos..]).into_iter::<T>();
-        match stream.next() {
-            Some(Ok(value)) => sink(value),
-            Some(Err(err)) => return Err(err),
-            None => break,
-        }
-        pos = skip_ws(slice, pos + stream.byte_offset());
-        if pos < slice.len() && slice[pos] == b',' {
-            pos = skip_ws(slice, pos + 1);
-        }
-    }
-    Ok(())
-}
-
-/// Deserialize pre-scanned elements in parallel.
-///
-/// Elements are grouped into `n_chunks` byte-balanced runs; a run is
-/// one contiguous slice, so the commas between its elements come along
-/// for free. `Some(Err(..))` means a chunk failed and the caller should
-/// fall back to the serial loader, which reports the error against the
-/// whole document at the right offset.
-///
-/// Must be called with a rayon pool installed.
-pub(crate) fn parse_elements_parallel<T>(
-    bytes: &[u8],
-    elements: &[Range<usize>],
-    n_chunks: usize,
-) -> Result<Vec<T>, serde_json::Error>
-where
-    T: DeserializeOwned + Send,
-{
-    let parts =
-        parse_elements_parallel_into(bytes, elements, n_chunks, Vec::with_capacity, Vec::push)?;
-    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
-    for part in parts {
-        out.extend(part);
-    }
-    Ok(out)
-}
-
-/// [`parse_elements_parallel`] into caller-chosen per-chunk accumulators:
-/// `init(count)` makes one for a chunk of `count` elements, `push`
-/// appends an element to it, and the accumulators come back in document
-/// order. Lets a caller build columns straight from the parse, with no
-/// row-major intermediate.
-pub(crate) fn parse_elements_parallel_into<T, A>(
-    bytes: &[u8],
-    elements: &[Range<usize>],
-    n_chunks: usize,
-    init: impl Fn(usize) -> A + Sync,
-    push: impl Fn(&mut A, T) + Sync,
-) -> Result<Vec<A>, serde_json::Error>
-where
-    T: DeserializeOwned,
-    A: Send,
-{
-    if elements.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Group by bytes, not by element count: an annotation carrying a
-    // polygon mask is an order of magnitude larger than a bare bbox, so
-    // equal element counts would not be equal work.
-    let total: usize = elements.iter().map(std::ops::Range::len).sum();
-    let target = total.div_ceil(n_chunks.max(1)).max(1);
-    let mut chunks: Vec<(usize, Range<usize>)> = Vec::with_capacity(n_chunks);
-    let mut first = 0usize;
-    let mut bytes_in_chunk = 0usize;
-    for (idx, element) in elements.iter().enumerate() {
-        bytes_in_chunk += element.len();
-        let last = idx + 1 == elements.len();
-        if bytes_in_chunk >= target || last {
-            // The chunk spans from the *first* element's start, not the
-            // previous chunk's end: starting at the end would put the
-            // separating comma at byte 0 of the slice.
-            chunks.push((idx + 1 - first, elements[first].start..element.end));
-            first = idx + 1;
-            bytes_in_chunk = 0;
-        }
-    }
-
-    chunks
-        .into_par_iter()
-        .map(|(count, range)| {
-            let mut acc = init(count);
-            parse_chunk(&bytes[range], |value| push(&mut acc, value)).map(|()| acc)
-        })
-        .collect()
-}
-
-/// Deepest brace nesting at a cut that [`document_object_array_chunks`]
-/// still resolves an element start for. A cut deeper than this is not
-/// an error: that segment yields no boundary and its bytes join the
-/// previous chunk. COCO results nest three deep.
-const MAX_CUT_DEPTH: usize = 8;
-
-/// One segment of a document, scanned under one assumption about the
-/// string state at its first byte.
-#[derive(Clone, Copy)]
-struct SegmentScan {
-    /// Whether the segment ends inside a string.
-    end_in_string: bool,
-    /// Net brace depth change across the segment.
-    delta: i64,
-    /// `first_open[d]`: the first `{` outside strings reached at brace
-    /// depth `-d` relative to the segment start — the first element
-    /// start for a segment entered at absolute depth `d`.
-    first_open: [Option<usize>; MAX_CUT_DEPTH + 1],
-}
-
-/// Index just past the closing quote of a string whose body starts at
-/// `pos`, within `..end`; `None` when the string runs past `end`.
-///
-/// [`skip_string`]'s two rules — an escape consumes the next byte, a
-/// bare quote ends the string — with its byte-loop / `memchr2` split.
-fn string_end(bytes: &[u8], mut pos: usize, end: usize) -> Option<usize> {
-    let gate = (pos + STRING_SCALAR_GATE).min(end);
-    while pos < gate {
-        match bytes[pos] {
-            b'\\' => pos += 2,
-            b'"' => return Some(pos + 1),
-            _ => pos += 1,
-        }
-    }
-    loop {
-        let rel = memchr::memchr2(b'\\', b'"', bytes.get(pos..end)?)?;
-        let at = pos + rel;
-        if bytes[at] == b'"' {
-            return Some(at + 1);
-        }
-        pos = at + 2;
-    }
-}
-
-/// Scan `range` for string state and brace depth, starting inside a
-/// string when `in_string`.
-///
-/// Cuts never fall right after a backslash, so an escape and the byte it
-/// consumes are in the same segment. Under the wrong assumption the
-/// result is meaningless but harmless: [`document_object_array_chunks`]
-/// only reads the scan of the assumption the previous segment proved.
-fn scan_segment(bytes: &[u8], range: Range<usize>, mut in_string: bool) -> SegmentScan {
-    let end = range.end;
-    let mut pos = range.start;
-    let mut depth = 0_i64;
-    let mut first_open = [None; MAX_CUT_DEPTH + 1];
-    while pos < end {
-        if in_string {
-            match string_end(bytes, pos, end) {
-                Some(after) => {
-                    in_string = false;
-                    pos = after;
-                }
-                None => break,
-            }
-            continue;
-        }
-        let Some(rel) = memchr::memchr3(b'"', b'{', b'}', &bytes[pos..end]) else {
-            break;
-        };
-        let at = pos + rel;
-        match bytes[at] {
-            b'"' => in_string = true,
-            b'{' => {
-                if let Ok(d) = usize::try_from(-depth) {
-                    if let Some(slot) = first_open.get_mut(d) {
-                        slot.get_or_insert(at);
-                    }
-                }
-                depth += 1;
-            }
-            _ => depth -= 1,
-        }
-        pos = at + 1;
-    }
-    SegmentScan {
-        end_in_string: in_string,
-        delta: depth,
-        first_open,
-    }
-}
-
-/// Chunks of a whole-document array of objects, for parallel parsing:
-/// byte ranges that each start at an element and run up to the next
-/// chunk's first element (the last one up to the closing bracket).
-///
-/// [`document_object_array`] walks the document serially to find every
-/// element, which at 186 MB of RLE results costs 83 ms — the serial floor
-/// under the parallel parse. The parse only needs about one boundary per
-/// chunk, and those can be found in parallel without guessing:
-///
-/// 1. Cut the array body into `n_chunks` segments, never right after a
-///    backslash, so no escape spans a cut.
-/// 2. Scan every segment twice in parallel — once assuming it starts
-///    outside a string, once inside. (A string's state never
-///    resynchronizes, so both are needed.)
-/// 3. Compose sequentially: the document starts outside any string at
-///    brace depth 0, and each segment's proven scan gives the next
-///    segment's entry state, and its own first element start: the first
-///    `{` outside strings at brace depth 0.
-///
-/// The ranges carry the separating commas; [`parse_chunks_parallel_into`]
-/// checks them. `None` for anything not plainly an array of objects
-/// followed by whitespace, as [`document_object_array`].
-///
-/// Must be called with a rayon pool installed.
-pub(crate) fn document_object_array_chunks(
-    bytes: &[u8],
-    n_chunks: usize,
-) -> Option<Vec<Range<usize>>> {
-    let open = skip_ws(bytes, 0);
-    if bytes.get(open)? != &b'[' {
-        return None;
-    }
-    let close = bytes
-        .iter()
-        .rposition(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))?;
-    if close <= open || bytes[close] != b']' {
-        return None;
-    }
-    let first = skip_ws(bytes, open + 1);
-    if first == close {
-        return Some(Vec::new());
-    }
-    if bytes[first] != b'{' {
-        return None;
-    }
-
-    let body = close - first;
-    let n = n_chunks.max(1);
-    let mut cuts: Vec<usize> = Vec::with_capacity(n + 1);
-    cuts.push(first);
-    for c in 1..n {
-        let mut cut = first + body * c / n;
-        while cut < close && bytes[cut - 1] == b'\\' {
-            cut += 1;
-        }
-        if cut > *cuts.last()? && cut < close {
-            cuts.push(cut);
-        }
-    }
-    cuts.push(close);
-
-    let scans: Vec<[SegmentScan; 2]> = cuts
-        .par_windows(2)
-        .map(|w| {
-            let (outside, inside) = rayon::join(
-                || scan_segment(bytes, w[0]..w[1], false),
-                || scan_segment(bytes, w[0]..w[1], true),
-            );
-            [outside, inside]
-        })
-        .collect();
-
-    let mut starts: Vec<usize> = Vec::with_capacity(scans.len());
-    let (mut in_string, mut depth) = (false, 0_i64);
-    for scan in &scans {
-        let scan = &scan[usize::from(in_string)];
-        if let Some(start) = usize::try_from(depth)
-            .ok()
-            .and_then(|d| scan.first_open.get(d).copied().flatten())
-        {
-            starts.push(start);
-        }
-        in_string = scan.end_in_string;
-        depth += scan.delta;
-        if depth < 0 {
-            return None;
-        }
-    }
-    if in_string || depth != 0 || starts.first() != Some(&first) {
-        return None;
-    }
-    let mut chunks: Vec<Range<usize>> = starts.windows(2).map(|w| w[0]..w[1]).collect();
-    chunks.push(*starts.last()?..close);
-    Some(chunks)
-}
-
-/// Deserialize a run of comma-separated elements, in order, handing each
-/// to `sink`: one chunk of [`document_object_array_chunks`].
-///
-/// Stricter than [`parse_chunk`], because no serial scan has checked the
-/// separators: exactly one comma between two elements, and the run ends
-/// with one (`trailing_comma`) unless it is the array's last. Anything
-/// else is an error, and so the caller's fallback to the serial loader.
-fn parse_comma_run<T: DeserializeOwned>(
+/// Each element goes through `serde_json` exactly as on the serial path;
+/// `StreamDeserializer::byte_offset` reports where it stopped. Separators
+/// are checked here — exactly one comma between two elements, and a
+/// trailing one exactly when `trailing_comma` — because the parallel
+/// splitter never walks them: anything else is an error, and so the
+/// caller's fallback to the serial loader, which reports it at serde's
+/// offset.
+fn parse_run<T: DeserializeOwned>(
     slice: &[u8],
     trailing_comma: bool,
     mut sink: impl FnMut(T),
@@ -658,33 +390,262 @@ fn parse_comma_run<T: DeserializeOwned>(
     }
 }
 
-/// Deserialize [`document_object_array_chunks`]'s chunks in parallel into
-/// caller-chosen accumulators (`init` makes one, `push` appends an
-/// element), returned in document order.
+/// Deserialize `runs` in parallel into caller-chosen accumulators —
+/// `init(count)` makes one for a run of `count` elements, `push` appends
+/// an element — returned in document order. Lets a caller build columns
+/// straight from the parse, with no row-major intermediate.
 ///
-/// Must be called with a rayon pool installed.
-pub(crate) fn parse_chunks_parallel_into<T, A>(
+/// Runs on the current rayon pool: install one (ADR-0047).
+pub(crate) fn parse_runs_parallel_into<T, A>(
     bytes: &[u8],
-    chunks: &[Range<usize>],
-    init: impl Fn() -> A + Sync,
+    runs: &[ElementRun],
+    init: impl Fn(usize) -> A + Sync,
     push: impl Fn(&mut A, T) + Sync,
 ) -> Result<Vec<A>, serde_json::Error>
 where
     T: DeserializeOwned,
     A: Send,
 {
-    let last = chunks.len().saturating_sub(1);
-    chunks
-        .par_iter()
-        .enumerate()
-        .map(|(c, range)| {
-            let mut acc = init();
-            parse_comma_run(&bytes[range.clone()], c != last, |value| {
-                push(&mut acc, value)
+    runs.par_iter()
+        .map(|run| {
+            let mut acc = init(run.count);
+            parse_run(&bytes[run.range.clone()], run.trailing_comma, |value| {
+                push(&mut acc, value);
             })
             .map(|()| acc)
         })
         .collect()
+}
+
+/// Deserialize pre-scanned elements in parallel.
+///
+/// Elements are grouped into `n_chunks` byte-balanced runs; a run is one
+/// contiguous slice, so the commas between its elements come along for
+/// free. `Err` means a run failed and the caller should fall back to the
+/// serial loader, which reports the error against the whole document at
+/// the right offset.
+///
+/// Runs on the current rayon pool: install one (ADR-0047).
+pub(crate) fn parse_elements_parallel<T>(
+    bytes: &[u8],
+    elements: &[Range<usize>],
+    n_chunks: usize,
+) -> Result<Vec<T>, serde_json::Error>
+where
+    T: DeserializeOwned + Send,
+{
+    let runs = element_runs(elements, n_chunks);
+    let parts = parse_runs_parallel_into(bytes, &runs, Vec::with_capacity, Vec::push)?;
+    let mut out = Vec::with_capacity(parts.iter().map(Vec::len).sum());
+    for part in parts {
+        out.extend(part);
+    }
+    Ok(out)
+}
+
+/// Group pre-scanned elements into `n_chunks` byte-balanced runs — by
+/// bytes, not by count: an annotation carrying a polygon mask is an order
+/// of magnitude larger than a bare bbox, so equal counts would not be
+/// equal work.
+fn element_runs(elements: &[Range<usize>], n_chunks: usize) -> Vec<ElementRun> {
+    let total: usize = elements.iter().map(Range::len).sum();
+    let target = total.div_ceil(n_chunks.max(1)).max(1);
+    let mut runs = Vec::with_capacity(n_chunks);
+    let (mut first, mut bytes_in_run) = (0usize, 0usize);
+    for (idx, element) in elements.iter().enumerate() {
+        bytes_in_run += element.len();
+        if bytes_in_run >= target || idx + 1 == elements.len() {
+            // From the *first* element's start, not the previous run's
+            // end, which would put the separating comma at byte 0.
+            runs.push(ElementRun {
+                range: elements[first].start..element.end,
+                count: idx + 1 - first,
+                trailing_comma: false,
+            });
+            (first, bytes_in_run) = (idx + 1, 0);
+        }
+    }
+    runs
+}
+
+/// Deepest brace nesting at a cut that [`document_object_array_chunks`]
+/// still resolves an element start for. A cut deeper than this is not
+/// an error: that segment yields no boundary and its bytes join the
+/// previous run. COCO results nest three deep.
+const MAX_CUT_DEPTH: usize = 8;
+
+/// A segment's structure under one assumption about the string state at
+/// its first byte.
+#[derive(Clone, Copy, Default)]
+struct SegmentView {
+    /// Whether the segment ends inside a string.
+    end_in_string: bool,
+    /// Net brace depth change across the segment.
+    delta: i64,
+    /// For an entry at brace depth `d`: the first element start (a `{`
+    /// at absolute depth 0) ...
+    first_start: [Option<usize>; MAX_CUT_DEPTH + 1],
+    /// ... and how many elements start in the segment.
+    starts: [usize; MAX_CUT_DEPTH + 1],
+}
+
+/// Both views of a segment — entered outside a string, entered inside —
+/// from one pass.
+///
+/// Whether a quote is escaped does not depend on the string state: in
+/// valid JSON a backslash occurs only inside a string, so a quote is real
+/// exactly when the backslash run before it is even (simdjson's stage 1
+/// rests on the same fact). Counting real quotes gives a parity whose two
+/// readings are the two views, complementary byte for byte: a byte is
+/// outside a string under "entered outside" when the parity is even, and
+/// under "entered inside" when it is odd, so each brace belongs to exactly
+/// one view. The pass stops only at quotes and braces — never inside an
+/// RLE string, whose alphabet holds neither — and cuts never fall right
+/// after a backslash, so no backslash run crosses the segment start. A
+/// backslash outside a string (invalid JSON) mislabels quotes; the run
+/// parse then fails and the caller falls back.
+fn scan_segment(bytes: &[u8], range: Range<usize>) -> [SegmentView; 2] {
+    let mut views = [SegmentView::default(); 2];
+    let mut depth = [0_i64; 2];
+    let mut parity = 0usize;
+    let mut pos = range.start;
+    while let Some(rel) = memchr::memchr3(b'"', b'{', b'}', &bytes[pos..range.end]) {
+        let at = pos + rel;
+        match bytes[at] {
+            b'"' => {
+                let run = bytes[range.start..at]
+                    .iter()
+                    .rev()
+                    .take_while(|&&b| b == b'\\')
+                    .count();
+                parity ^= usize::from(run % 2 == 0);
+            }
+            brace => {
+                // The view this brace is outside a string in.
+                let view = parity;
+                if brace == b'{' {
+                    let entry_depth = usize::try_from(-depth[view]).ok();
+                    if let Some(d) = entry_depth.filter(|&d| d <= MAX_CUT_DEPTH) {
+                        let v = &mut views[view];
+                        v.first_start[d].get_or_insert(at);
+                        v.starts[d] += 1;
+                    }
+                    depth[view] += 1;
+                } else {
+                    depth[view] -= 1;
+                }
+            }
+        }
+        pos = at + 1;
+    }
+    for (view, (v, d)) in views.iter_mut().zip(depth).enumerate() {
+        v.end_in_string = parity != view;
+        v.delta = d;
+    }
+    views
+}
+
+/// Runs of a whole-document array of objects, found in parallel, for
+/// [`parse_runs_parallel_into`]: each starts at an element and reaches the
+/// next run's first element (the last one, the closing bracket).
+///
+/// The serial `document_object_array` (kept as the tests' oracle) found every
+/// element first, which at 186 MB of RLE results cost 83 ms — the serial floor
+/// under the parallel parse. The parse needs about one boundary per run,
+/// and those can be found in parallel, exactly:
+///
+/// 1. Cut the array body into `n_chunks` segments, never right after a
+///    backslash.
+/// 2. Scan every segment once, in parallel, for both string-state views
+///    ([`scan_segment`]).
+/// 3. Compose sequentially: the document starts outside any string at
+///    brace depth 0, and each segment's proven view gives the next
+///    segment's entry state, its own first element start (the first `{`
+///    outside strings at brace depth 0) and its element count.
+///
+/// `None` for anything not plainly an array of objects followed by
+/// whitespace.
+///
+/// Runs on the current rayon pool: install one (ADR-0047).
+pub(crate) fn document_object_array_chunks(
+    bytes: &[u8],
+    n_chunks: usize,
+) -> Option<Vec<ElementRun>> {
+    let open = skip_ws(bytes, 0);
+    if bytes.get(open)? != &b'[' {
+        return None;
+    }
+    let close = bytes
+        .iter()
+        .rposition(|b| !matches!(b, b' ' | b'\t' | b'\r' | b'\n'))?;
+    if close <= open || bytes[close] != b']' {
+        return None;
+    }
+    let first = skip_ws(bytes, open + 1);
+    if first == close {
+        return Some(Vec::new());
+    }
+    if bytes[first] != b'{' {
+        return None;
+    }
+
+    let body = close - first;
+    let n = n_chunks.max(1);
+    let mut cuts: Vec<usize> = Vec::with_capacity(n + 1);
+    cuts.push(first);
+    for c in 1..n {
+        let mut cut = first + body * c / n;
+        while cut < close && bytes[cut - 1] == b'\\' {
+            cut += 1;
+        }
+        if cut > *cuts.last()? && cut < close {
+            cuts.push(cut);
+        }
+    }
+    cuts.push(close);
+
+    let views: Vec<[SegmentView; 2]> = cuts
+        .par_windows(2)
+        .map(|w| scan_segment(bytes, w[0]..w[1]))
+        .collect();
+
+    // `(start, count)` per run: the run's first element and how many
+    // elements it holds.
+    let mut starts: Vec<(usize, usize)> = Vec::with_capacity(views.len());
+    let (mut in_string, mut depth) = (false, 0_i64);
+    for segment in &views {
+        let view = &segment[usize::from(in_string)];
+        if let Some(d) = usize::try_from(depth).ok().filter(|&d| d <= MAX_CUT_DEPTH) {
+            match (view.first_start[d], starts.last_mut()) {
+                (Some(start), _) => starts.push((start, view.starts[d])),
+                (None, Some(run)) => run.1 += view.starts[d],
+                (None, None) => {}
+            }
+        }
+        in_string = view.end_in_string;
+        depth += view.delta;
+        if depth < 0 {
+            return None;
+        }
+    }
+    if in_string || depth != 0 || starts.first().map(|s| s.0) != Some(first) {
+        return None;
+    }
+    let mut runs: Vec<ElementRun> = starts
+        .windows(2)
+        .map(|w| ElementRun {
+            range: w[0].0..w[1].0,
+            count: w[0].1,
+            trailing_comma: true,
+        })
+        .collect();
+    let (last_start, last_count) = *starts.last()?;
+    runs.push(ElementRun {
+        range: last_start..close,
+        count: last_count,
+        trailing_comma: false,
+    });
+    Some(runs)
 }
 
 /// Chunk count for a thread budget. More chunks than threads, because
@@ -693,16 +654,6 @@ where
 pub(crate) fn chunks_for(threads: usize) -> usize {
     threads.max(1).saturating_mul(4)
 }
-
-/// Smallest thread budget at which [`document_object_array_chunks`]'s
-/// parallel scan beats [`document_object_array`]'s serial one.
-///
-/// The parallel scan does twice the work — every segment under both
-/// string-state assumptions — so it needs threads to spare. Measured on
-/// COCO val2017 results, parse + evaluate, parallel ÷ serial scan
-/// (< 1 is a speedup): RF-DETR Nano bbox 1.06 / 0.94 / 0.89 and Seg-Nano
-/// bbox 0.99 / 0.77 / 0.65 at 2 / 4 / 8 threads.
-pub(crate) const PARALLEL_SCAN_MIN_THREADS: usize = 4;
 
 /// Smallest thread budget at which splitting beats parsing serially.
 ///
@@ -775,10 +726,15 @@ mod tests {
                 json.push_str(if i % 3 == 0 { ",\n " } else { "," });
             }
             let name = names[i % names.len()];
-            let nested = if i % 5 == 0 {
-                r#", "extra": {"a": [{"b": "}"}], "c": {}}"#
+            // Every 5th element nests a little; every 11th nests past
+            // `MAX_CUT_DEPTH`, so cuts inside it find no boundary at their
+            // depth and their bytes join the previous run.
+            let nested = if i % 11 == 0 {
+                format!(r#", "deep": {}0{}"#, r#"{"d":"#.repeat(12), "}".repeat(12))
+            } else if i % 5 == 0 {
+                r#", "extra": {"a": [{"b": "}"}], "c": {}}"#.to_owned()
             } else {
-                ""
+                String::new()
             };
             json.push_str(&format!(
                 r#"{{"id":{i},"name":"{name}","score":0.{i}{nested}}}"#
@@ -801,10 +757,20 @@ mod tests {
             let chunks = pool
                 .install(|| document_object_array_chunks(bytes, n))
                 .expect("chunks");
-            assert!(chunks.iter().all(|c| starts.contains(&c.start)), "n={n}");
+            assert!(
+                chunks.iter().all(|c| starts.contains(&c.range.start)),
+                "n={n}"
+            );
             let parts: Vec<Vec<Item>> = pool
-                .install(|| parse_chunks_parallel_into(bytes, &chunks, Vec::new, Vec::push))
+                .install(|| parse_runs_parallel_into(bytes, &chunks, Vec::with_capacity, Vec::push))
                 .expect("parse");
+            for (run, part) in chunks.iter().zip(&parts) {
+                // A lower bound, exact unless a cut fell inside a deep element.
+                assert!(
+                    run.count <= part.len(),
+                    "n={n}: a run's count is a lower bound"
+                );
+            }
             assert_eq!(
                 parts.into_iter().flatten().collect::<Vec<_>>(),
                 reference,
@@ -845,7 +811,7 @@ mod tests {
             for n in 1..=8 {
                 let parallel = pool.install(|| {
                     let chunks = document_object_array_chunks(doc.as_bytes(), n)?;
-                    parse_chunks_parallel_into(doc.as_bytes(), &chunks, Vec::new, Vec::push)
+                    parse_runs_parallel_into(doc.as_bytes(), &chunks, Vec::with_capacity, Vec::push)
                         .ok()
                         .map(|parts: Vec<Vec<Item>>| {
                             parts.into_iter().flatten().collect::<Vec<_>>()

@@ -693,7 +693,9 @@ impl CocoDataset {
     /// `num_threads=None` path never calls this; it stays on
     /// [`Self::from_json_bytes`] and never enters rayon. A budget below
     /// `MIN_THREADS_TO_SPLIT` also stays serial — the structural scan is
-    /// only worth its cost once there are threads to spend it on.
+    /// only worth its cost once there are threads to spend it on. Above
+    /// it, the work runs on the current rayon pool: install one sized to
+    /// `threads`, or it lands on the global pool.
     ///
     /// # Errors
     ///
@@ -1736,9 +1738,9 @@ impl DetectionColumnsInput {
 
     /// `parts` joined in order, keeping [`Self::push`]'s sparse rule: an
     /// optional column absent from every part stays unallocated.
-    /// Concatenates per-chunk columns in document order. Only the
-    /// parallel loader calls it, inside its pool, and the columns are
-    /// independent, so they are joined concurrently.
+    ///
+    /// The columns are independent, so they are joined concurrently on
+    /// the current rayon pool; the parallel loader is the only caller.
     fn concat(parts: Vec<Self>) -> Self {
         let n = parts.len();
         let rows: Vec<usize> = parts.iter().map(|part| part.image_ids.len()).collect();
@@ -1974,7 +1976,6 @@ fn gather<T: Clone>(src: &[T], kept: &[usize]) -> Vec<T> {
     kept.iter().map(|&idx| src[idx].clone()).collect()
 }
 
-/// [`push_sparse_opt`] for a run of `rows` rows starting at `idx`.
 /// One dense column of [`DetectionColumnsInput::concat`].
 fn concat_dense<T>(parts: Vec<Vec<T>>, total: usize) -> Vec<T> {
     let mut out = Vec::with_capacity(total);
@@ -2135,7 +2136,9 @@ impl CocoDetections {
     /// auto-ids by position (quirk **J1**).
     ///
     /// A budget below `MIN_THREADS_TO_SPLIT` stays on the serial loader;
-    /// see that constant for the crossover measurement.
+    /// see that constant for the crossover measurement. Above it, the
+    /// work runs on the current rayon pool: install one sized to
+    /// `threads` (ADR-0047), or it lands on the global pool.
     ///
     /// # Errors
     ///
@@ -2228,33 +2231,20 @@ impl CocoDetections {
         let keep_area = area == DetectionArea::Supplied;
         #[cfg(feature = "bench-timings")]
         let t0 = std::time::Instant::now();
-        let push = |cols: &mut DetectionColumnsInput, row: R| {
-            push_detection(cols, row.into(), keep_area);
-        };
         let split = threads
             .filter(|&n| n >= crate::json_split::MIN_THREADS_TO_SPLIT)
             .and_then(|n| {
-                let n_chunks = crate::json_split::chunks_for(n);
-                if n >= crate::json_split::PARALLEL_SCAN_MIN_THREADS {
-                    let chunks = crate::json_split::document_object_array_chunks(bytes, n_chunks)?;
-                    crate::json_split::parse_chunks_parallel_into(
-                        bytes,
-                        &chunks,
-                        DetectionColumnsInput::default,
-                        push,
-                    )
-                    .ok()
-                } else {
-                    let elements = crate::json_split::document_object_array(bytes)?;
-                    crate::json_split::parse_elements_parallel_into(
-                        bytes,
-                        &elements,
-                        n_chunks,
-                        DetectionColumnsInput::with_capacity,
-                        push,
-                    )
-                    .ok()
-                }
+                let runs = crate::json_split::document_object_array_chunks(
+                    bytes,
+                    crate::json_split::chunks_for(n),
+                )?;
+                crate::json_split::parse_runs_parallel_into(
+                    bytes,
+                    &runs,
+                    DetectionColumnsInput::with_capacity,
+                    |cols, row: R| push_detection(cols, row.into(), keep_area),
+                )
+                .ok()
             });
         let columns = match split {
             Some(parts) => DetectionColumnsInput::concat(parts),
