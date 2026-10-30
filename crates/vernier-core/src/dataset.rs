@@ -693,7 +693,9 @@ impl CocoDataset {
     /// `num_threads=None` path never calls this; it stays on
     /// [`Self::from_json_bytes`] and never enters rayon. A budget below
     /// `MIN_THREADS_TO_SPLIT` also stays serial — the structural scan is
-    /// only worth its cost once there are threads to spend it on.
+    /// only worth its cost once there are threads to spend it on. Above
+    /// it, the work runs on the current rayon pool: install one sized to
+    /// `threads`, or it lands on the global pool.
     ///
     /// # Errors
     ///
@@ -1736,23 +1738,77 @@ impl DetectionColumnsInput {
 
     /// `parts` joined in order, keeping [`Self::push`]'s sparse rule: an
     /// optional column absent from every part stays unallocated.
+    ///
+    /// The columns are independent, so they are joined concurrently on
+    /// the current rayon pool; the parallel loader is the only caller.
     fn concat(parts: Vec<Self>) -> Self {
-        let total = parts.iter().map(|part| part.image_ids.len()).sum();
-        let mut out = Self::with_capacity(total);
+        let n = parts.len();
+        let rows: Vec<usize> = parts.iter().map(|part| part.image_ids.len()).collect();
+        let total: usize = rows.iter().sum();
+        let mut image_ids = Vec::with_capacity(n);
+        let mut category_ids = Vec::with_capacity(n);
+        let mut scores = Vec::with_capacity(n);
+        let mut bboxes = Vec::with_capacity(n);
+        let mut ids = Vec::with_capacity(n);
+        let mut areas = Vec::with_capacity(n);
+        let mut segmentations = Vec::with_capacity(n);
+        let mut keypoints = Vec::with_capacity(n);
+        let mut num_keypoints = Vec::with_capacity(n);
         for part in parts {
-            let idx = out.image_ids.len();
-            let rows = part.image_ids.len();
-            append_sparse(&mut out.ids, idx, rows, total, part.ids);
-            append_sparse(&mut out.areas, idx, rows, total, part.areas);
-            append_sparse(&mut out.segmentations, idx, rows, total, part.segmentations);
-            append_sparse(&mut out.keypoints, idx, rows, total, part.keypoints);
-            append_sparse(&mut out.num_keypoints, idx, rows, total, part.num_keypoints);
-            out.image_ids.extend(part.image_ids);
-            out.category_ids.extend(part.category_ids);
-            out.scores.extend(part.scores);
-            out.bboxes.extend(part.bboxes);
+            image_ids.push(part.image_ids);
+            category_ids.push(part.category_ids);
+            scores.push(part.scores);
+            bboxes.push(part.bboxes);
+            ids.push(part.ids);
+            areas.push(part.areas);
+            segmentations.push(part.segmentations);
+            keypoints.push(part.keypoints);
+            num_keypoints.push(part.num_keypoints);
         }
-        out
+        let ((image_ids, category_ids), (scores, bboxes)) = rayon::join(
+            || {
+                rayon::join(
+                    || concat_dense(image_ids, total),
+                    || concat_dense(category_ids, total),
+                )
+            },
+            || {
+                rayon::join(
+                    || concat_dense(scores, total),
+                    || concat_dense(bboxes, total),
+                )
+            },
+        );
+        let ((ids, areas), (segmentations, (keypoints, num_keypoints))) = rayon::join(
+            || {
+                rayon::join(
+                    || concat_sparse(ids, &rows, total),
+                    || concat_sparse(areas, &rows, total),
+                )
+            },
+            || {
+                rayon::join(
+                    || concat_sparse(segmentations, &rows, total),
+                    || {
+                        rayon::join(
+                            || concat_sparse(keypoints, &rows, total),
+                            || concat_sparse(num_keypoints, &rows, total),
+                        )
+                    },
+                )
+            },
+        );
+        Self {
+            ids,
+            image_ids,
+            category_ids,
+            scores,
+            bboxes,
+            areas,
+            segmentations,
+            keypoints,
+            num_keypoints,
+        }
     }
 }
 
@@ -1920,25 +1976,33 @@ fn gather<T: Clone>(src: &[T], kept: &[usize]) -> Vec<T> {
     kept.iter().map(|&idx| src[idx].clone()).collect()
 }
 
-/// [`push_sparse_opt`] for a run of `rows` rows starting at `idx`.
-fn append_sparse<T>(
-    slot: &mut Option<Vec<Option<T>>>,
-    idx: usize,
-    rows: usize,
-    total: usize,
-    part: Option<Vec<Option<T>>>,
-) {
-    match (slot, part) {
-        (Some(vec), Some(part)) => vec.extend(part),
-        (Some(vec), None) => vec.resize_with(idx + rows, || None),
-        (slot @ None, Some(part)) => {
-            let mut vec = Vec::with_capacity(total);
-            vec.resize_with(idx, || None);
-            vec.extend(part);
-            *slot = Some(vec);
-        }
-        (None, None) => {}
+/// One dense column of [`DetectionColumnsInput::concat`].
+fn concat_dense<T>(parts: Vec<Vec<T>>, total: usize) -> Vec<T> {
+    let mut out = Vec::with_capacity(total);
+    for part in parts {
+        out.extend(part);
     }
+    out
+}
+
+/// One optional column of [`DetectionColumnsInput::concat`]: `None` while
+/// no chunk carried it, else `None`-padded where a chunk did not.
+fn concat_sparse<T>(
+    parts: Vec<Option<Vec<Option<T>>>>,
+    rows: &[usize],
+    total: usize,
+) -> Option<Vec<Option<T>>> {
+    if parts.iter().all(Option::is_none) {
+        return None;
+    }
+    let mut out = Vec::with_capacity(total);
+    for (part, &n) in parts.into_iter().zip(rows) {
+        match part {
+            Some(part) => out.extend(part),
+            None => out.resize_with(out.len() + n, || None),
+        }
+    }
+    Some(out)
 }
 
 #[inline]
@@ -2007,13 +2071,23 @@ pub struct CocoDetections {
 impl CocoDetections {
     fn from_resolved_columns(columns: DetectionColumns) -> Self {
         let len = columns.scores.len();
-        let by_image_cat = CsrIndex::build(len, len / 4, |idx| {
-            (columns.image_ids[idx], columns.category_ids[idx])
-        });
+        let build_by_image_cat = || {
+            CsrIndex::build(len, len / 4, |idx| {
+                (columns.image_ids[idx], columns.category_ids[idx])
+            })
+        };
         // ~64 detections per image: COCO-shaped sets cap at 100, so this
         // seeds above the distinct-image count and the key map never grows;
         // a gross over-estimate is trimmed by the index's `shrink_to_fit`.
-        let by_image = CsrIndex::build(len, len / 64, |idx| columns.image_ids[idx]);
+        let build_by_image = || CsrIndex::build(len, len / 64, |idx| columns.image_ids[idx]);
+        // The two indexes are independent; build them concurrently when a
+        // pool is installed. Outside one (`num_threads=None`, ADR-0047) the
+        // global pool is never touched.
+        let (by_image_cat, by_image) = if rayon::current_thread_index().is_some() {
+            rayon::join(build_by_image_cat, build_by_image)
+        } else {
+            (build_by_image_cat(), build_by_image())
+        };
         Self {
             columns: Arc::new(columns),
             by_image_cat,
@@ -2062,7 +2136,9 @@ impl CocoDetections {
     /// auto-ids by position (quirk **J1**).
     ///
     /// A budget below `MIN_THREADS_TO_SPLIT` stays on the serial loader;
-    /// see that constant for the crossover measurement.
+    /// see that constant for the crossover measurement. Above it, the
+    /// work runs on the current rayon pool: install one sized to
+    /// `threads` (ADR-0047), or it lands on the global pool.
     ///
     /// # Errors
     ///
@@ -2158,11 +2234,13 @@ impl CocoDetections {
         let split = threads
             .filter(|&n| n >= crate::json_split::MIN_THREADS_TO_SPLIT)
             .and_then(|n| {
-                let elements = crate::json_split::document_object_array(bytes)?;
-                crate::json_split::parse_elements_parallel_into(
+                let runs = crate::json_split::document_object_array_chunks(
                     bytes,
-                    &elements,
                     crate::json_split::chunks_for(n),
+                )?;
+                crate::json_split::parse_runs_parallel_into(
+                    bytes,
+                    &runs,
                     DetectionColumnsInput::with_capacity,
                     |cols, row: R| push_detection(cols, row.into(), keep_area),
                 )

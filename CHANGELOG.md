@@ -138,6 +138,17 @@ additive / perf / docs".
   evaluate: jittered segm −30%, RF-DETR Seg-Nano segm −15%; Objects365
   unchanged. Bit-identical output.
 
+- **Detection JSON splits in parallel.** The parallel loader no longer
+  walks the whole array serially to find every element before parsing:
+  it cuts the array into segments and scans each once, in parallel, for
+  both possible string states — an escaped quote is told apart without
+  knowing the state — then composes the true state to find one element
+  start and count per run, exactly. Runs parse with strict separator
+  checks, then their columns concatenate and the detection indexes build
+  concurrently. COCO val2017, parse + evaluate, eight / two threads:
+  RF-DETR Seg-Nano bbox −43% / −16%, Nano bbox −24% / −10%, Seg-Nano
+  segm −20% / −5%. Bit-identical output.
+
 ## [0.5.5] - 2026-10-29
 
 ### Added
