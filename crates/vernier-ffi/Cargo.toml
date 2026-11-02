@@ -108,4 +108,4 @@ rayon = { workspace = true }
 
 [build-dependencies]
 # libpython rpath for the test binaries (see build.rs).
-pyo3-build-config = "0.29"
+pyo3-build-config = "0.30"
