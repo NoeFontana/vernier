@@ -43,7 +43,6 @@ pub(crate) enum BreakdownInner {
 
 /// Python wrapper around [`Breakdown`] / [`ClassGroupBreakdown`].
 #[pyclass(module = "vernier._core", name = "Breakdown", frozen, eq)]
-#[pyo3(skip_from_py_object)]
 #[derive(Debug, Clone, PartialEq)]
 pub struct PyBreakdown {
     pub(crate) inner: BreakdownInner,
