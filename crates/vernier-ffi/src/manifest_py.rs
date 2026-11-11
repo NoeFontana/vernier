@@ -21,7 +21,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use arrow_array::ffi::{from_ffi, FFI_ArrowArray, FFI_ArrowSchema};
-use arrow_array::ffi_stream::{ArrowArrayStreamReader, FFI_ArrowArrayStream};
+use arrow_array::ffi_stream::{FFI_ArrowArrayStream, RecordBatchStreamReader};
 use arrow_array::{
     array::{
         Int32Array, Int64Array, LargeStringArray, StringArray, StringViewArray, UInt32Array,
@@ -166,7 +166,7 @@ fn arrow_stream_to_json_bytes(
     let cap_any = manifest.call_method0("__arrow_c_stream__")?;
     let cap: Bound<'_, PyCapsule> = cap_any.extract()?;
     let stream = unsafe { take_capsule::<FFI_ArrowArrayStream>(&cap)? };
-    let reader = ArrowArrayStreamReader::try_new(stream)
+    let reader = RecordBatchStreamReader::try_new(stream)
         .map_err(|e| PyValueError::new_err(format!("arrow stream import failed: {e}")))?;
     let mut batches: Vec<RecordBatch> = Vec::new();
     for batch in reader {
