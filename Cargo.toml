@@ -121,7 +121,7 @@ rustc-hash = "2"
 # in `CsrIndex`. Unkeyed FxHash there would let a crafted results file
 # collide every key and make index construction quadratic. Already in
 # the lock through hashbrown; Zlib-licensed.
-foldhash = "0.1"
+foldhash = "0.2"
 # CSV parser used by the manifest CSV adapter (ADR-0046 §D2). Spreadsheet-
 # native attribute tables are the primary input for the robotics user;
 # the parser converts to the canonical JSON-records shape at parse time
