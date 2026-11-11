@@ -158,12 +158,7 @@ fn parse_label_remap(remap: Option<&Bound<'_, PyDict>>) -> PyResult<Option<HashM
 /// NaN-vs-0.0 disposition for zero-support classes (quirk **AL2**) is
 /// already baked in by the time the row reaches Python; the Python
 /// side reads the values as-is.
-#[pyclass(
-    module = "vernier._core",
-    name = "ClassSemanticStats",
-    frozen,
-    skip_from_py_object
-)]
+#[pyclass(module = "vernier._core", name = "ClassSemanticStats", frozen)]
 #[derive(Clone, Copy)]
 pub(crate) struct PyClassSemanticStats {
     inner: ClassSemanticStats,
@@ -216,12 +211,7 @@ impl PyClassSemanticStats {
 /// only when the caller passes `class_grouping=` to
 /// `evaluate_semantic_from_arrays`; reachable from Python via
 /// `SemanticSummary.per_group`.
-#[pyclass(
-    module = "vernier._core",
-    name = "GroupSemanticStats",
-    frozen,
-    skip_from_py_object
-)]
+#[pyclass(module = "vernier._core", name = "GroupSemanticStats", frozen)]
 #[derive(Clone)]
 pub(crate) struct PyGroupSemanticStats {
     inner: GroupSemanticStats,

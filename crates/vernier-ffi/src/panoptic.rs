@@ -338,12 +338,7 @@ impl PyPanopticPredictions {
 }
 
 /// Per-class PQ row exposed to Python (W8 strict-superset shape).
-#[pyclass(
-    module = "vernier._core",
-    name = "ClassPanopticStats",
-    frozen,
-    skip_from_py_object
-)]
+#[pyclass(module = "vernier._core", name = "ClassPanopticStats", frozen)]
 #[derive(Clone, Copy)]
 pub(crate) struct PyClassPanopticStats {
     inner: ClassPanopticStats,
@@ -398,12 +393,7 @@ impl PyClassPanopticStats {
 ///
 /// Mirrors [`vernier_panoptic::GroupPanopticStats`] one-to-one. Built
 /// only when `class_grouping=` is passed to `evaluate_panoptic`.
-#[pyclass(
-    module = "vernier._core",
-    name = "GroupPanopticStats",
-    frozen,
-    skip_from_py_object
-)]
+#[pyclass(module = "vernier._core", name = "GroupPanopticStats", frozen)]
 #[derive(Clone)]
 pub(crate) struct PyGroupPanopticStats {
     inner: GroupPanopticStats,
