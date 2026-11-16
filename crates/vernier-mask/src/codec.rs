@@ -255,10 +255,10 @@ mod tests {
             }
             for s in [&wire[..], &noise[..]] {
                 let checked = format!("{:?}", decode_checked(s));
-                prop_assert_eq!(format!("{:?}", decode_counts(s)), checked.clone());
+                prop_assert_eq!(format!("{:?}", decode_counts(s)), checked.as_str());
                 prop_assert_eq!(
                     format!("{:?}", decode_counts_shared(s).map(|a| a.to_vec())),
-                    checked.clone()
+                    checked.as_str()
                 );
                 let area = decode_checked(s)
                     .map(|c| c.iter().skip(1).step_by(2).map(|&v| u64::from(v)).sum::<u64>());
