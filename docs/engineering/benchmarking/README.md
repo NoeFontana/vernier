@@ -8,8 +8,20 @@ together.
 
 ## Index
 
-* [2026-10-release-0.6.0-round.md](./2026-10-release-0.6.0-round.md)
+* [2026-11-hotcoco-1.5-fce-1.8.1-round.md](./2026-11-hotcoco-1.5-fce-1.8.1-round.md)
   — **current headline snapshot for every paradigm.** Full release-mode
+  re-measurement at `b7b160d56be0` updating actively developed baselines
+  (`hotcoco` `1.0.1` → `1.5.0`, `faster-coco-eval` `1.8.0` → `1.8.1`;
+  `ufcoco` still at `0.1.14`) and adding `hotcoco_panoptic`. `vernier` at HEAD
+  (with mimalloc + PNG fast path) now wins every cell including 1-CPU
+  jittered bbox (`134.3 ms` vs `ufcoco` `154.7 ms`), panoptic drops to `3.68 s`
+  (`1.92×` faster than `hotcoco_panoptic` `7.07 s`, `9.61×` faster than
+  `panopticapi`), and semantic drops to `1.56 s` (`28.60×` faster than
+  `mmsegmentation`). `hotcoco 1.5.0` cuts COCO/Objects365 latency ~64–84% and
+  reduces its LVIS tensor divergences from 7,069 to 629 cells (still failing
+  float-tolerance).
+* [2026-10-release-0.6.0-round.md](./2026-10-release-0.6.0-round.md)
+  — superseded by the 2026-11 round. Full release-mode
   re-measurement for the 0.6.0 tag, same host fingerprint as 0.5.5, and the
   first round with ufcoco (`ultrafast-pycocotools`) as a baseline. On real
   RF-DETR Nano bbox, vernier is 47.4× / 11.2× / 4.7× / 1.09× faster than
