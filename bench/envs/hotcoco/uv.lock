@@ -27,20 +27,20 @@ wheels = [
 
 [[package]]
 name = "hotcoco"
-version = "1.0.1"
+version = "1.5.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version == '3.11.*'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/0d/25/1a4dbaf75486129d99ec50a6c4a847b4223b66023363807d4cb3a3618110/hotcoco-1.0.1.tar.gz", hash = "sha256:edc3c449be7dccb35735deccc1683f7f366f946604878293e7776dfddfb9008c", size = 1596055, upload-time = "2026-09-13T04:29:38.921Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/61/f8/daf2b35290c0edf17cc35d658d219c7292c149f82d53bb3f426008e9e560/hotcoco-1.5.0.tar.gz", hash = "sha256:f1450e143890881f32b08ee16a2f219a90d3b9a19b4878b733ea4a6dbb5685f0", size = 1966083, upload-time = "2026-11-23T05:27:46.102Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/40/06/f293909bd6d9e08620326a3acf39c38af4d6c6de701845ce6cab69f48e98/hotcoco-1.0.1-cp39-abi3-macosx_10_12_x86_64.whl", hash = "sha256:f9f3b7c4691391bf2ecdabeb14e88f5222c6c370bff102ee27b67e61e276b07b", size = 2163903, upload-time = "2026-09-13T04:29:31.928Z" },
-    { url = "https://files.pythonhosted.org/packages/c5/e1/e5f198319fe95630526830c877d0cdedf2de263b0c620d8cd3463853eb3f/hotcoco-1.0.1-cp39-abi3-macosx_11_0_arm64.whl", hash = "sha256:ae500565bfb490d08c9eb5f4ab5d526937420931a6ef72d156075a31b4807d2f", size = 2104084, upload-time = "2026-09-13T04:29:33.646Z" },
-    { url = "https://files.pythonhosted.org/packages/fb/5a/8816fad5203a0e41e1e2b07081ea9124f7f90e3fe5988d8495995648c09f/hotcoco-1.0.1-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c4d5ff99b5c9f27082bffb95aae9000bdee5d8bb3b22ade7f61d5dad1c92c92a", size = 2210721, upload-time = "2026-09-13T04:29:34.995Z" },
-    { url = "https://files.pythonhosted.org/packages/cc/4a/8293acf91207cf19d068717d0e7e28c0ebc0d32c6fd55cd20fbbc77d4f7b/hotcoco-1.0.1-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:79871ea045fad08a98c67186538e03994c8771c1aa2611ccbcfc67654aef6b65", size = 2249360, upload-time = "2026-09-13T04:29:36.26Z" },
-    { url = "https://files.pythonhosted.org/packages/35/e4/3f1035d900a90dd844cb53b23d894c1f82836db069e66a4c114d2f7e88fa/hotcoco-1.0.1-cp39-abi3-win_amd64.whl", hash = "sha256:9b7a1b12d7179b4d0f42925c8773f83777626d2ab489ab1c4928d017f5ab81c7", size = 2028789, upload-time = "2026-09-13T04:29:37.76Z" },
+    { url = "https://files.pythonhosted.org/packages/35/92/f37b85e3790e479c4a932e9e1d1af7e601bf9ff5b9e164503917d2fa529e/hotcoco-1.5.0-cp310-abi3-macosx_10_12_x86_64.whl", hash = "sha256:5acd52e7aec3f0d6b792130399e21cd4665e74505aa8b7874d51d494579dd664", size = 3331374, upload-time = "2026-11-23T05:27:39.109Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/51/e6559789304e7d469d99af68cf06db5902c53f7536c9f9ecd06e0724ba19/hotcoco-1.5.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:8b1835fe108731d4ab44adf3f1b64ab0d42e2afeaf5c1ebba333a26414eed4e1", size = 3234685, upload-time = "2026-11-23T05:27:40.482Z" },
+    { url = "https://files.pythonhosted.org/packages/44/9e/923b8f4fffafd9d1c1150cbb4a41d62f8580fcde798c3b359e936afb4ef2/hotcoco-1.5.0-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:2f1bba085587dc57e85ad4ec85beccb1220e9a845ff569958a1d3c7cc4d4b201", size = 3432843, upload-time = "2026-11-23T05:27:41.754Z" },
+    { url = "https://files.pythonhosted.org/packages/72/69/1bd2e5c7d5d6bd970845a50e4d5da2709ce0b670e7bfb5951d65ef334e8a/hotcoco-1.5.0-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:99c76eae24c39ef4dcba0019db7fabc3f0186401bf926c08afd6fa69d4d69a33", size = 3461415, upload-time = "2026-11-23T05:27:43.463Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/ce/eadca475428a083a8ecc2f5bac2d9b86830038489ae6e43018ea631dd49e/hotcoco-1.5.0-cp310-abi3-win_amd64.whl", hash = "sha256:1715b78564e663eb69fa2f5b5abb8e50d4de2d64e4914d47166f82ce8b8f88c5", size = 3185538, upload-time = "2026-11-23T05:27:44.732Z" },
 ]
 
 [[package]]
@@ -904,7 +904,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "hotcoco", specifier = "==1.0.1" },
+    { name = "hotcoco", specifier = "==1.5.0" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "pydantic", specifier = ">=2.0" },
     { name = "vernier-bench", editable = "../../" },

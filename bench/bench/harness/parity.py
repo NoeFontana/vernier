@@ -675,6 +675,7 @@ def _panoptic_canonical_hash(snap: PanopticSnapshot) -> str:
 _PANOPTIC_TIER_PAIRS: tuple[tuple[Tier, str, str, float], ...] = (
     ("bit-equal", "vernier_panoptic", "panopticapi", 0.0),
     ("float-tolerance", "vernier_panoptic", "panopticapi", PANOPTIC_PARITY_EPS),
+    ("float-tolerance", "vernier_panoptic", "hotcoco_panoptic", PANOPTIC_PARITY_EPS),
 )
 
 

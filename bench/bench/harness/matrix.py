@@ -27,6 +27,7 @@ ALL_IMPLS: tuple[str, ...] = (
     # ``impls_for_metric`` filters each per-paradigm dict separately, so
     # widening the tuple never grows the matrix.
     "vernier_panoptic",
+    "hotcoco_panoptic",
     "panopticapi",
     "vernier_semantic",
     "mmsegmentation",
@@ -53,6 +54,7 @@ IMPL_PARADIGM_SUPPORT: dict[Paradigm, dict[str, frozenset[Metric]]] = {
     },
     "panoptic": {
         "vernier_panoptic": frozenset({"pq"}),
+        "hotcoco_panoptic": frozenset({"pq"}),
         "panopticapi": frozenset({"pq"}),
     },
     # Semantic paradigm: vernier_semantic + the vendored
@@ -112,6 +114,7 @@ IMPL_TO_ENV_NAME: dict[str, str] = {
     "ufcoco": "ufcoco",
     "boundary-iou-api": "boundary-iou-api",
     "vernier_panoptic": "panopticapi",
+    "hotcoco_panoptic": "hotcoco",
     "panopticapi": "panopticapi",
     # vernier_semantic runs in the vernier env so it can import
     # vernier.semantic directly. mmsegmentation gets its own env —

@@ -799,6 +799,7 @@ def run(spec: RunSpec) -> Path:
         iqr_threshold=DEFAULT_IQR_RELATIVE_THRESHOLD,
         paradigm=spec.paradigm,
     )
+    shutil.rmtree(intermediate_dir, ignore_errors=True)
     return out_json
 
 
@@ -1085,6 +1086,8 @@ def run_cell(
             )
         if parity_report is not None and not parity_report.passed:
             divergence_report_path = write_report(parity_report, out_dir)
+
+    shutil.rmtree(intermediate_dir, ignore_errors=True)
 
     return CellRun(
         impl_jsons=impl_jsons,
